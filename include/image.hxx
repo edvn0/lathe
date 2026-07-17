@@ -12,203 +12,198 @@
 #include "forward.hxx"
 
 enum class ImageDescriptorView : std::uint8_t {
-  sampled_2d = 0,
-  sampled_cube,
-  sampled_2d_array,
-  storage_2d,
-  storage_2d_array,
-  count,
+    sampled_2d = 0,
+    sampled_cube,
+    sampled_2d_array,
+    storage_2d,
+    storage_2d_array,
+    count,
 };
 
 using ImageDescriptorViewFlags = std::uint32_t;
 
 [[nodiscard]]
-constexpr auto image_descriptor_view_bit(ImageDescriptorView view) noexcept
-    -> ImageDescriptorViewFlags {
-  return ImageDescriptorViewFlags{1} << static_cast<std::uint32_t>(view);
+constexpr auto image_descriptor_view_bit(ImageDescriptorView view) noexcept -> ImageDescriptorViewFlags {
+    return ImageDescriptorViewFlags{1} << static_cast<std::uint32_t>(view);
 }
 
 [[nodiscard]]
-constexpr auto has_image_descriptor_view(ImageDescriptorViewFlags flags,
-                                         ImageDescriptorView view) noexcept
-    -> bool {
-  return (flags & image_descriptor_view_bit(view)) != 0;
+constexpr auto has_image_descriptor_view(ImageDescriptorViewFlags flags, ImageDescriptorView view) noexcept -> bool {
+    return (flags & image_descriptor_view_bit(view)) != 0;
 }
 
 enum class ImageErrorType : std::uint8_t {
-  invalid_argument,
-  image_creation_failed,
-  view_creation_failed,
+    invalid_argument,
+    image_creation_failed,
+    view_creation_failed,
 };
 
 struct ImageError {
-  ImageErrorType type = ImageErrorType::invalid_argument;
+    ImageErrorType type = ImageErrorType::invalid_argument;
 
-  VkResult result = VK_SUCCESS;
+    VkResult result = VK_SUCCESS;
 };
 
 struct ImageCreateInfo {
-  VkExtent3D extent{
-      .width = 1,
-      .height = 1,
-      .depth = 1,
-  };
+    VkExtent3D extent{
+            .width = 1,
+            .height = 1,
+            .depth = 1,
+    };
 
-  VkFormat format = VK_FORMAT_UNDEFINED;
+    VkFormat format = VK_FORMAT_UNDEFINED;
 
-  VkImageUsageFlags usage = 0;
-  VkImageAspectFlags aspect = 0;
+    VkImageUsageFlags usage = 0;
+    VkImageAspectFlags aspect = 0;
 
-  VkImageType image_type = VK_IMAGE_TYPE_2D;
+    VkImageType image_type = VK_IMAGE_TYPE_2D;
 
-  /*
-   * The primary view used for attachments and ordinary
-   * CPU-side access through Image::view().
-   */
-  VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_2D;
+    /*
+     * The primary view used for attachments and ordinary
+     * CPU-side access through Image::view().
+     */
+    VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_2D;
 
-  /*
-   * Additional views exposed through the global GPU
-   * resource table.
-   */
-  ImageDescriptorViewFlags descriptor_views = 0;
+    /*
+     * Additional views exposed through the global GPU
+     * resource table.
+     */
+    ImageDescriptorViewFlags descriptor_views = 0;
 
-  VkImageCreateFlags flags = 0;
+    VkImageCreateFlags flags = 0;
 
-  VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 
-  VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
+    VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
 
-  std::uint32_t mip_levels = 1;
-  std::uint32_t array_layers = 1;
+    std::uint32_t mip_levels = 1;
+    std::uint32_t array_layers = 1;
 
-  std::string_view debug_name = "image";
+    std::string_view debug_name = "image";
 };
 
 class Image {
 public:
-  Image() = default;
-  ~Image();
+    Image() = default;
+    ~Image();
 
-  Image(Image const &) = delete;
+    Image(Image const &) = delete;
 
-  auto operator=(Image const &) -> Image & = delete;
+    auto operator=(Image const &) -> Image & = delete;
 
-  Image(Image &&other) noexcept;
+    Image(Image &&other) noexcept;
 
-  auto operator=(Image &&other) noexcept -> Image &;
+    auto operator=(Image &&other) noexcept -> Image &;
 
-  [[nodiscard]]
-  static auto create(VulkanContext &context, ImageCreateInfo const &create_info)
-      -> std::expected<Image, ImageError>;
+    [[nodiscard]]
+    static auto create(VulkanContext &context, ImageCreateInfo const &create_info) -> std::expected<Image, ImageError>;
 
-  auto destroy() noexcept -> void;
+    auto destroy() noexcept -> void;
 
-  [[nodiscard]]
-  auto valid() const noexcept -> bool {
-    return image_ != VK_NULL_HANDLE;
-  }
-
-  [[nodiscard]]
-  auto image() const noexcept -> VkImage {
-    return image_;
-  }
-
-  /*
-   * Primary full-resource view. This remains suitable
-   * for colour/depth attachments.
-   */
-  [[nodiscard]]
-  auto view() const noexcept -> VkImageView {
-    return view_;
-  }
-
-  [[nodiscard]]
-  auto descriptor_view(ImageDescriptorView type) const noexcept -> VkImageView {
-    auto const index = static_cast<std::size_t>(type);
-
-    if (index >= descriptor_views_.size()) {
-      return VK_NULL_HANDLE;
+    [[nodiscard]]
+    auto valid() const noexcept -> bool {
+        return image_ != VK_NULL_HANDLE;
     }
 
-    return descriptor_views_[index];
-  }
+    [[nodiscard]]
+    auto image() const noexcept -> VkImage {
+        return image_;
+    }
 
-  [[nodiscard]]
-  auto has_descriptor_view(ImageDescriptorView type) const noexcept -> bool {
-    return descriptor_view(type) != VK_NULL_HANDLE;
-  }
+    /*
+     * Primary full-resource view. This remains suitable
+     * for colour/depth attachments.
+     */
+    [[nodiscard]]
+    auto view() const noexcept -> VkImageView {
+        return view_;
+    }
 
-  [[nodiscard]]
-  auto allocation() const noexcept -> VmaAllocation {
-    return allocation_;
-  }
+    [[nodiscard]]
+    auto descriptor_view(ImageDescriptorView type) const noexcept -> VkImageView {
+        auto const index = static_cast<std::size_t>(type);
 
-  [[nodiscard]]
-  auto format() const noexcept -> VkFormat {
-    return format_;
-  }
+        if (index >= descriptor_views_.size()) {
+            return VK_NULL_HANDLE;
+        }
 
-  [[nodiscard]]
-  auto extent() const noexcept -> VkExtent3D {
-    return extent_;
-  }
+        return descriptor_views_[index];
+    }
 
-  [[nodiscard]]
-  auto extent_2d() const noexcept -> VkExtent2D {
-    return VkExtent2D{
-        .width = extent_.width,
-        .height = extent_.height,
-    };
-  }
+    [[nodiscard]]
+    auto has_descriptor_view(ImageDescriptorView type) const noexcept -> bool {
+        return descriptor_view(type) != VK_NULL_HANDLE;
+    }
 
-  [[nodiscard]]
-  auto usage() const noexcept -> VkImageUsageFlags {
-    return usage_;
-  }
+    [[nodiscard]]
+    auto allocation() const noexcept -> VmaAllocation {
+        return allocation_;
+    }
 
-  [[nodiscard]]
-  auto aspect() const noexcept -> VkImageAspectFlags {
-    return aspect_;
-  }
+    [[nodiscard]]
+    auto format() const noexcept -> VkFormat {
+        return format_;
+    }
 
-  [[nodiscard]]
-  auto mip_levels() const noexcept -> std::uint32_t {
-    return mip_levels_;
-  }
+    [[nodiscard]]
+    auto extent() const noexcept -> VkExtent3D {
+        return extent_;
+    }
 
-  [[nodiscard]]
-  auto array_layers() const noexcept -> std::uint32_t {
-    return array_layers_;
-  }
+    [[nodiscard]]
+    auto extent_2d() const noexcept -> VkExtent2D {
+        return VkExtent2D{
+                .width = extent_.width,
+                .height = extent_.height,
+        };
+    }
 
-  [[nodiscard]]
-  auto samples() const noexcept -> VkSampleCountFlagBits {
-    return samples_;
-  }
+    [[nodiscard]]
+    auto usage() const noexcept -> VkImageUsageFlags {
+        return usage_;
+    }
+
+    [[nodiscard]]
+    auto aspect() const noexcept -> VkImageAspectFlags {
+        return aspect_;
+    }
+
+    [[nodiscard]]
+    auto mip_levels() const noexcept -> std::uint32_t {
+        return mip_levels_;
+    }
+
+    [[nodiscard]]
+    auto array_layers() const noexcept -> std::uint32_t {
+        return array_layers_;
+    }
+
+    [[nodiscard]]
+    auto samples() const noexcept -> VkSampleCountFlagBits {
+        return samples_;
+    }
 
 private:
-  VulkanContext *context_ = nullptr;
+    VulkanContext *context_ = nullptr;
 
-  VkImage image_ = VK_NULL_HANDLE;
-  VkImageView view_ = VK_NULL_HANDLE;
+    VkImage image_ = VK_NULL_HANDLE;
+    VkImageView view_ = VK_NULL_HANDLE;
 
-  std::array<VkImageView, static_cast<std::size_t>(ImageDescriptorView::count)>
-      descriptor_views_{};
+    std::array<VkImageView, static_cast<std::size_t>(ImageDescriptorView::count)> descriptor_views_{};
 
-  VmaAllocation allocation_ = VK_NULL_HANDLE;
+    VmaAllocation allocation_ = VK_NULL_HANDLE;
 
-  VmaAllocationInfo allocation_info_{};
+    VmaAllocationInfo allocation_info_{};
 
-  VkFormat format_ = VK_FORMAT_UNDEFINED;
+    VkFormat format_ = VK_FORMAT_UNDEFINED;
 
-  VkExtent3D extent_{};
+    VkExtent3D extent_{};
 
-  VkImageUsageFlags usage_ = 0;
-  VkImageAspectFlags aspect_ = 0;
+    VkImageUsageFlags usage_ = 0;
+    VkImageAspectFlags aspect_ = 0;
 
-  VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
+    VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
 
-  std::uint32_t mip_levels_ = 0;
-  std::uint32_t array_layers_ = 0;
+    std::uint32_t mip_levels_ = 0;
+    std::uint32_t array_layers_ = 0;
 };

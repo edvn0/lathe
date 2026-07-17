@@ -25,402 +25,387 @@
 #include "slang_compiler.hxx"
 
 struct ModelHandle {
-  std::uint32_t index = 0;
-  std::uint32_t generation = 0;
+    std::uint32_t index = 0;
+    std::uint32_t generation = 0;
 
-  [[nodiscard]]
-  auto valid() const noexcept -> bool {
-    return index != 0;
-  }
+    [[nodiscard]]
+    auto valid() const noexcept -> bool {
+        return index != 0;
+    }
 
-  auto operator==(ModelHandle const &) const -> bool = default;
+    auto operator==(ModelHandle const &) const -> bool = default;
 };
 
 struct TextureHandle {
-  std::uint32_t index = 0;
-  std::uint32_t generation = 0;
+    std::uint32_t index = 0;
+    std::uint32_t generation = 0;
 
-  [[nodiscard]]
-  auto valid() const noexcept -> bool {
-    return generation != 0;
-  }
+    [[nodiscard]]
+    auto valid() const noexcept -> bool {
+        return generation != 0;
+    }
 
-  auto operator==(TextureHandle const &) const -> bool = default;
+    auto operator==(TextureHandle const &) const -> bool = default;
 };
 
 struct MeshHandle {
-  std::uint32_t index = 0;
-  std::uint32_t generation = 0;
+    std::uint32_t index = 0;
+    std::uint32_t generation = 0;
 
-  [[nodiscard]]
-  auto valid() const noexcept -> bool {
-    return index != 0;
-  }
+    [[nodiscard]]
+    auto valid() const noexcept -> bool {
+        return index != 0;
+    }
 
-  auto operator==(MeshHandle const &) const -> bool = default;
+    auto operator==(MeshHandle const &) const -> bool = default;
 };
 
 struct MaterialCreateInfo {
-  glm::vec4 base_colour_factor{1.0F};
-  glm::vec3 emissive_factor{0.0F};
+    glm::vec4 base_colour_factor{1.0F};
+    glm::vec3 emissive_factor{0.0F};
 
-  float emissive_strength = 1.0F;
-  float metallic_factor = 1.0F;
-  float roughness_factor = 1.0F;
-  float normal_scale = 1.0F;
-  float occlusion_strength = 1.0F;
-  float alpha_cutoff = 0.5F;
+    float emissive_strength = 1.0F;
+    float metallic_factor = 1.0F;
+    float roughness_factor = 1.0F;
+    float normal_scale = 1.0F;
+    float occlusion_strength = 1.0F;
+    float alpha_cutoff = 0.5F;
 
-  TextureHandle base_colour_texture{};
-  TextureHandle normal_texture{};
-  TextureHandle metallic_roughness_texture{};
-  TextureHandle occlusion_texture{};
-  TextureHandle emissive_texture{};
+    TextureHandle base_colour_texture{};
+    TextureHandle normal_texture{};
+    TextureHandle metallic_roughness_texture{};
+    TextureHandle occlusion_texture{};
+    TextureHandle emissive_texture{};
 
-  SamplerHandle sampler{};
+    SamplerHandle sampler{};
 
-  AlphaMode alpha_mode = AlphaMode::opaque;
+    AlphaMode alpha_mode = AlphaMode::opaque;
 };
 
 struct MeshPrimitiveCreateInfo {
-  MeshGeometry geometry{};
-  MaterialHandle material{};
+    MeshGeometry geometry{};
+    MaterialHandle material{};
 };
 
 struct MeshCreateInfo {
-  std::span<const MeshPrimitiveCreateInfo> primitives;
+    std::span<const MeshPrimitiveCreateInfo> primitives;
 };
 
 struct SwapchainImage {
-  VkImage image = VK_NULL_HANDLE;
-  VkImageView view = VK_NULL_HANDLE;
-  VkFormat format = VK_FORMAT_UNDEFINED;
-  VkExtent2D extent{};
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkExtent2D extent{};
 };
 
 enum class RendererErrorType : std::uint8_t {
-  invalid_argument,
-  invalid_mesh,
-  invalid_model,
-  invalid_material,
-  unsupported_index_type,
-  capacity_exceeded,
-  size_overflow,
-  model_load_error,
-  geometry_error,
-  material_error,
-  image_error,
-  forward_target_error,
-  device_error,
-  pipeline_error,
-  compiler_error,
-  pipeline_storage_error,
-  gpu_resource_table_error,
-  invalid_pipeline,
+    invalid_argument,
+    invalid_mesh,
+    invalid_model,
+    invalid_material,
+    unsupported_index_type,
+    capacity_exceeded,
+    size_overflow,
+    model_load_error,
+    geometry_error,
+    material_error,
+    image_error,
+    forward_target_error,
+    device_error,
+    pipeline_error,
+    compiler_error,
+    pipeline_storage_error,
+    gpu_resource_table_error,
+    invalid_pipeline,
 };
 
 struct RendererError {
-  RendererErrorType type = RendererErrorType::invalid_argument;
+    RendererErrorType type = RendererErrorType::invalid_argument;
 
-  DeviceError device_error{};
-  GeometryArenaError geometry_error{};
-  MaterialStorageError material_error{};
-  ModelLoadError model_load_error{};
-  ImageStorageError image_error{};
-  ForwardTargetError forward_target_error{};
-  PipelineError pipeline_error{};
-  renderer::ShaderCompileError compiler_error{};
-  PipelineStorageError pipeline_storage_error{};
-  GpuResourceTableError gpu_resource_table_error{};
+    DeviceError device_error{};
+    GeometryArenaError geometry_error{};
+    MaterialStorageError material_error{};
+    ModelLoadError model_load_error{};
+    ImageStorageError image_error{};
+    ForwardTargetError forward_target_error{};
+    PipelineError pipeline_error{};
+    renderer::ShaderCompileError compiler_error{};
+    PipelineStorageError pipeline_storage_error{};
+    GpuResourceTableError gpu_resource_table_error{};
 };
 
 struct RendererCreateInfo {
-  VkExtent2D extent{};
+    VkExtent2D extent{};
 
-  std::uint32_t frames_in_flight = 0;
+    std::uint32_t frames_in_flight = 0;
 
-  VkDeviceSize geometry_capacity = 256UZ * 1024UZ * 1024UZ;
+    VkDeviceSize geometry_capacity = 256UZ * 1024UZ * 1024UZ;
 
-  std::uint32_t material_capacity = 4096;
-  std::uint32_t mesh_capacity = 4096;
-  std::uint32_t model_capacity = 1024;
-  std::uint32_t image_capacity = 4096;
-  std::uint32_t sampler_capacity = 128;
-  std::uint32_t pipeline_capacity = 128;
+    std::uint32_t material_capacity = 4096;
+    std::uint32_t mesh_capacity = 4096;
+    std::uint32_t model_capacity = 1024;
+    std::uint32_t image_capacity = 4096;
+    std::uint32_t sampler_capacity = 128;
+    std::uint32_t pipeline_capacity = 128;
 
-  VkFormat hdr_format = VK_FORMAT_R16G16B16A16_SFLOAT;
-  VkFormat swapchain_format = VK_FORMAT_B8G8R8A8_SRGB;
+    VkFormat hdr_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkFormat swapchain_format = VK_FORMAT_B8G8R8A8_SRGB;
 
-  VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
+    VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
 
-  VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 
-  std::uint32_t maximum_draw_count = 65536;
-  std::uint32_t maximum_submission_count = 65536;
+    std::uint32_t maximum_draw_count = 65536;
+    std::uint32_t maximum_submission_count = 65536;
 };
 
 struct Renderer {
-  explicit Renderer(VulkanContext &context) noexcept;
+    explicit Renderer(VulkanContext &context) noexcept;
 
-  Renderer(Renderer const &) = delete;
-  auto operator=(Renderer const &) -> Renderer & = delete;
+    Renderer(Renderer const &) = delete;
+    auto operator=(Renderer const &) -> Renderer & = delete;
 
-  Renderer(Renderer &&) = delete;
-  auto operator=(Renderer &&) -> Renderer & = delete;
+    Renderer(Renderer &&) = delete;
+    auto operator=(Renderer &&) -> Renderer & = delete;
 
-  [[nodiscard]]
-  auto initialize(RendererCreateInfo const &create_info)
-      -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto initialize(RendererCreateInfo const &create_info) -> std::expected<void, RendererError>;
 
-  auto destroy() noexcept -> void;
+    auto destroy() noexcept -> void;
 
-  [[nodiscard]]
-  auto load_model(std::filesystem::path const &path)
-      -> std::expected<ModelHandle, RendererError>;
+    [[nodiscard]]
+    auto load_model(std::filesystem::path const &path) -> std::expected<ModelHandle, RendererError>;
 
-  [[nodiscard]]
-  auto create_model(Model const &model, MaterialHandle fallback_material)
-      -> std::expected<ModelHandle, RendererError>;
+    [[nodiscard]]
+    auto create_model(Model const &model, MaterialHandle fallback_material)
+            -> std::expected<ModelHandle, RendererError>;
 
-  [[nodiscard]]
-  auto create_model(Model const &model)
-      -> std::expected<ModelHandle, RendererError>;
+    [[nodiscard]]
+    auto create_model(Model const &model) -> std::expected<ModelHandle, RendererError>;
 
-  [[nodiscard]]
-  auto submit_model(ModelHandle model, glm::mat4 const &transform)
-      -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto submit_model(ModelHandle model, glm::mat4 const &transform) -> std::expected<void, RendererError>;
 
-  [[nodiscard]]
-  auto create_material(MaterialCreateInfo const &create_info)
-      -> std::expected<MaterialHandle, RendererError>;
+    [[nodiscard]]
+    auto create_material(MaterialCreateInfo const &create_info) -> std::expected<MaterialHandle, RendererError>;
 
-  [[nodiscard]]
-  auto update_material(MaterialHandle handle,
-                       MaterialCreateInfo const &create_info)
-      -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto update_material(MaterialHandle handle, MaterialCreateInfo const &create_info)
+            -> std::expected<void, RendererError>;
 
-  [[nodiscard]]
-  auto destroy_material(MaterialHandle handle)
-      -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto destroy_material(MaterialHandle handle) -> std::expected<void, RendererError>;
 
-  [[nodiscard]]
-  auto create_mesh(MeshCreateInfo const &create_info)
-      -> std::expected<MeshHandle, RendererError>;
+    [[nodiscard]]
+    auto create_mesh(MeshCreateInfo const &create_info) -> std::expected<MeshHandle, RendererError>;
 
-  [[nodiscard]]
-  auto destroy_mesh(MeshHandle handle) -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto destroy_mesh(MeshHandle handle) -> std::expected<void, RendererError>;
 
-  [[nodiscard]]
-  auto submit_mesh(MeshHandle mesh, glm::mat4 const &transform)
-      -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto submit_mesh(MeshHandle mesh, glm::mat4 const &transform) -> std::expected<void, RendererError>;
 
-  [[nodiscard]]
-  auto prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame_index)
-      -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> std::expected<void, RendererError>;
 
-  [[nodiscard]]
-  auto record_frame(VkCommandBuffer command_buffer,
-                    SwapchainImage const &swapchain_image,
-                    std::uint32_t frame_index)
-      -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, std::uint32_t frame_index)
+            -> std::expected<void, RendererError>;
 
-  [[nodiscard]]
-  auto resize(VkExtent2D extent) -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto resize(VkExtent2D extent) -> std::expected<void, RendererError>;
 
-  [[nodiscard]]
-  auto default_material() const noexcept -> MaterialHandle {
-    return default_material_handle_;
-  }
+    [[nodiscard]]
+    auto default_material() const noexcept -> MaterialHandle {
+        return default_material_handle_;
+    }
 
-  [[nodiscard]]
-  auto geometry_arena() noexcept -> GeometryArena & {
-    return geometry_arena_;
-  }
+    [[nodiscard]]
+    auto geometry_arena() noexcept -> GeometryArena & {
+        return geometry_arena_;
+    }
 
 private:
-  struct RenderPrimitive {
-    MeshGeometry geometry{};
-    MaterialHandle material{};
-  };
+    struct RenderPrimitive {
+        MeshGeometry geometry{};
+        MaterialHandle material{};
+    };
 
-  struct MeshSlot {
-    std::vector<RenderPrimitive> primitives;
+    struct MeshSlot {
+        std::vector<RenderPrimitive> primitives;
 
-    std::uint32_t generation = 1;
-    std::uint32_t next_free = 0;
+        std::uint32_t generation = 1;
+        std::uint32_t next_free = 0;
 
-    bool occupied = false;
-  };
+        bool occupied = false;
+    };
 
-  struct Submission {
-    MeshHandle mesh{};
-    glm::mat4 transform{1.0F};
-  };
+    struct Submission {
+        MeshHandle mesh{};
+        glm::mat4 transform{1.0F};
+    };
 
-  struct alignas(16) GpuDraw {
-    VkDeviceAddress vertex_address = 0;
+    struct alignas(16) GpuDraw {
+        VkDeviceAddress vertex_address = 0;
 
-    std::uint32_t material_index = 0;
-    std::uint32_t transform_index = 0;
-  };
+        std::uint32_t material_index = 0;
+        std::uint32_t transform_index = 0;
+    };
 
-  static_assert(std::is_trivially_copyable_v<GpuDraw>);
+    static_assert(std::is_trivially_copyable_v<GpuDraw>);
 
-  static_assert(sizeof(GpuDraw) == 16);
+    static_assert(sizeof(GpuDraw) == 16);
 
-  struct RendererFrame {
-    Buffer upload_buffer{};
-    Buffer draw_buffer{};
-    Buffer transform_buffer{};
-    Buffer indirect_buffer{};
+    struct RendererFrame {
+        Buffer upload_buffer{};
+        Buffer draw_buffer{};
+        Buffer transform_buffer{};
+        Buffer indirect_buffer{};
 
-    ForwardTarget forward_target{};
+        ForwardTarget forward_target{};
 
-    VkDeviceSize draw_upload_offset = 0;
-    VkDeviceSize transform_upload_offset = 0;
-    VkDeviceSize indirect_upload_offset = 0;
+        VkDeviceSize draw_upload_offset = 0;
+        VkDeviceSize transform_upload_offset = 0;
+        VkDeviceSize indirect_upload_offset = 0;
 
-    std::vector<GpuDraw> draws;
-    std::vector<glm::mat4> transforms;
+        std::vector<GpuDraw> draws;
+        std::vector<glm::mat4> transforms;
 
-    std::vector<VkDrawIndexedIndirectCommand> indirect_commands;
+        std::vector<VkDrawIndexedIndirectCommand> indirect_commands;
 
-    std::uint32_t draw_count = 0;
-  };
+        std::uint32_t draw_count = 0;
+    };
 
-  struct ModelDraw {
-    MeshHandle mesh{};
-    glm::mat4 local_transform{1.0F};
-  };
+    struct ModelDraw {
+        MeshHandle mesh{};
+        glm::mat4 local_transform{1.0F};
+    };
 
-  struct ModelSlot {
-    std::vector<ModelDraw> draws;
+    struct ModelSlot {
+        std::vector<ModelDraw> draws;
 
-    std::uint32_t generation = 1;
-    std::uint32_t next_free = 0;
+        std::uint32_t generation = 1;
+        std::uint32_t next_free = 0;
 
-    bool occupied = false;
-  };
+        bool occupied = false;
+    };
 
-  struct ModelSubmission {
-    ModelHandle model{};
-    glm::mat4 transform{1.0F};
-  };
+    struct ModelSubmission {
+        ModelHandle model{};
+        glm::mat4 transform{1.0F};
+    };
 
-  [[nodiscard]]
-  auto to_gpu_material(MaterialCreateInfo const &create_info) const noexcept
-      -> GpuMaterial;
+    [[nodiscard]]
+    auto to_gpu_material(MaterialCreateInfo const &create_info) const noexcept -> GpuMaterial;
 
-  [[nodiscard]]
-  auto mesh_slot(MeshHandle handle) noexcept -> MeshSlot *;
+    [[nodiscard]]
+    auto mesh_slot(MeshHandle handle) noexcept -> MeshSlot *;
 
-  [[nodiscard]]
-  auto mesh_slot(MeshHandle handle) const noexcept -> MeshSlot const *;
+    [[nodiscard]]
+    auto mesh_slot(MeshHandle handle) const noexcept -> MeshSlot const *;
 
-  [[nodiscard]]
-  auto model_slot(ModelHandle handle) noexcept -> ModelSlot *;
+    [[nodiscard]]
+    auto model_slot(ModelHandle handle) noexcept -> ModelSlot *;
 
-  [[nodiscard]]
-  auto model_slot(ModelHandle handle) const noexcept -> ModelSlot const *;
+    [[nodiscard]]
+    auto model_slot(ModelHandle handle) const noexcept -> ModelSlot const *;
 
-  [[nodiscard]]
-  auto upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame)
-      -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame) -> std::expected<void, RendererError>;
 
-  auto clear_submissions() noexcept -> void;
+    auto clear_submissions() noexcept -> void;
 
-  VulkanContext &context_;
+    VulkanContext &context_;
 
-  VkFormat hdr_format_ = VK_FORMAT_UNDEFINED;
+    VkFormat hdr_format_ = VK_FORMAT_UNDEFINED;
 
-  VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
+    VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
 
-  VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
+    VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
 
-  GeometryArena geometry_arena_{};
-  MaterialStorage material_storage_{};
-  ImageStorage image_storage_{};
-  SamplerStorage sampler_storage_{};
-  PipelineStorage pipeline_storage_{};
-  GpuResourceTable gpu_resource_table_{};
+    GeometryArena geometry_arena_{};
+    MaterialStorage material_storage_{};
+    ImageStorage image_storage_{};
+    SamplerStorage sampler_storage_{};
+    PipelineStorage pipeline_storage_{};
+    GpuResourceTable gpu_resource_table_{};
 
-  PipelineHandle forward_pipeline_{};
-  PipelineHandle composite_pipeline_{};
+    PipelineHandle forward_pipeline_{};
+    PipelineHandle composite_pipeline_{};
 
-  std::vector<MeshSlot> meshes_;
-  std::uint32_t mesh_free_head_ = 0;
+    std::vector<MeshSlot> meshes_;
+    std::uint32_t mesh_free_head_ = 0;
 
-  std::vector<ModelSlot> models_;
-  std::uint32_t model_free_head_ = 0;
+    std::vector<ModelSlot> models_;
+    std::uint32_t model_free_head_ = 0;
 
-  std::vector<Submission> submissions_;
-  std::vector<ModelSubmission> model_submissions_;
+    std::vector<Submission> submissions_;
+    std::vector<ModelSubmission> model_submissions_;
 
-  std::vector<RendererFrame> frames_;
+    std::vector<RendererFrame> frames_;
 
-  MaterialHandle default_material_handle_{};
+    MaterialHandle default_material_handle_{};
 
-  std::uint32_t maximum_draw_count_ = 0;
-  std::uint32_t maximum_submission_count_ = 0;
+    std::uint32_t maximum_draw_count_ = 0;
+    std::uint32_t maximum_submission_count_ = 0;
 
-  VkExtent2D extent_{};
+    VkExtent2D extent_{};
 
-  bool initialized_ = false;
+    bool initialized_ = false;
 
-  renderer::SlangCompiler compiler;
+    renderer::SlangCompiler compiler;
 
-  // ForwardTarget forward_target_{};
-  // ForwardPass forward_pass_{};
-  // CompositePass composite_pass_{};
+    // ForwardTarget forward_target_{};
+    // ForwardPass forward_pass_{};
+    // CompositePass composite_pass_{};
 };
 
-template <>
+template<>
 struct std::formatter<RendererErrorType> : std::formatter<std::string_view> {
-  constexpr auto format(RendererErrorType error,
-                        std::format_context &context) const {
-    auto const name = [&]() constexpr -> std::string_view {
-      switch (error) {
-      case RendererErrorType::invalid_argument:
-        return "invalid_argument";
-      case RendererErrorType::invalid_mesh:
-        return "invalid_mesh";
-      case RendererErrorType::invalid_model:
-        return "invalid_model";
-      case RendererErrorType::invalid_material:
-        return "invalid_material";
-      case RendererErrorType::unsupported_index_type:
-        return "unsupported_index_type";
-      case RendererErrorType::capacity_exceeded:
-        return "capacity_exceeded";
-      case RendererErrorType::size_overflow:
-        return "size_overflow";
-      case RendererErrorType::model_load_error:
-        return "model_load_error";
-      case RendererErrorType::geometry_error:
-        return "geometry_error";
-      case RendererErrorType::material_error:
-        return "material_error";
-      case RendererErrorType::image_error:
-        return "image_error";
-      case RendererErrorType::forward_target_error:
-        return "forward_target_error";
-      case RendererErrorType::device_error:
-        return "device_error";
-      case RendererErrorType::pipeline_error:
-        return "pipeline_error";
-      case RendererErrorType::compiler_error:
-        return "compiler_error";
-      case RendererErrorType::invalid_pipeline:
-        return "invalid_pipeline";
-      case RendererErrorType::pipeline_storage_error:
-        return "pipeline_storage_error";
-      case RendererErrorType::gpu_resource_table_error:
-        return "gpu_resource_table_error";
-      }
+    constexpr auto format(RendererErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case RendererErrorType::invalid_argument:
+                    return "invalid_argument";
+                case RendererErrorType::invalid_mesh:
+                    return "invalid_mesh";
+                case RendererErrorType::invalid_model:
+                    return "invalid_model";
+                case RendererErrorType::invalid_material:
+                    return "invalid_material";
+                case RendererErrorType::unsupported_index_type:
+                    return "unsupported_index_type";
+                case RendererErrorType::capacity_exceeded:
+                    return "capacity_exceeded";
+                case RendererErrorType::size_overflow:
+                    return "size_overflow";
+                case RendererErrorType::model_load_error:
+                    return "model_load_error";
+                case RendererErrorType::geometry_error:
+                    return "geometry_error";
+                case RendererErrorType::material_error:
+                    return "material_error";
+                case RendererErrorType::image_error:
+                    return "image_error";
+                case RendererErrorType::forward_target_error:
+                    return "forward_target_error";
+                case RendererErrorType::device_error:
+                    return "device_error";
+                case RendererErrorType::pipeline_error:
+                    return "pipeline_error";
+                case RendererErrorType::compiler_error:
+                    return "compiler_error";
+                case RendererErrorType::invalid_pipeline:
+                    return "invalid_pipeline";
+                case RendererErrorType::pipeline_storage_error:
+                    return "pipeline_storage_error";
+                case RendererErrorType::gpu_resource_table_error:
+                    return "gpu_resource_table_error";
+            }
 
-      return "unknown_renderer_error";
-    }();
+            return "unknown_renderer_error";
+        }();
 
-    return std::formatter<std::string_view>::format(name, context);
-  }
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };

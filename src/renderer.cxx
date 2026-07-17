@@ -17,1971 +17,1868 @@
 #include "slang_compiler.hxx"
 
 namespace {
-auto transition_forward_target_to_attachments(VkCommandBuffer command_buffer,
-                                              Image const &hdr,
-                                              Image const &depth) noexcept
-    -> void {
-  std::array<VkImageMemoryBarrier2, 2> barriers{
-      VkImageMemoryBarrier2{
-          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-          .pNext = nullptr,
-          .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-          .srcAccessMask = VK_ACCESS_2_NONE,
-          .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-          .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-          .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-          .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-          .image = hdr.image(),
-          .subresourceRange =
-              VkImageSubresourceRange{
-                  .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                  .baseMipLevel = 0,
-                  .levelCount = hdr.mip_levels(),
-                  .baseArrayLayer = 0,
-                  .layerCount = hdr.array_layers(),
-              },
-      },
-      VkImageMemoryBarrier2{
-          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-          .pNext = nullptr,
-          .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-          .srcAccessMask = VK_ACCESS_2_NONE,
-          .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                          VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-          .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-          .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-          .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-          .image = depth.image(),
-          .subresourceRange =
-              VkImageSubresourceRange{
-                  .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                  .baseMipLevel = 0,
-                  .levelCount = depth.mip_levels(),
-                  .baseArrayLayer = 0,
-                  .layerCount = depth.array_layers(),
-              },
-      },
-  };
+    auto transition_forward_target_to_attachments(VkCommandBuffer command_buffer, Image const &hdr,
+                                                  Image const &depth) noexcept -> void {
+        std::array<VkImageMemoryBarrier2, 2> barriers{
+                VkImageMemoryBarrier2{
+                        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                        .pNext = nullptr,
+                        .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                        .srcAccessMask = VK_ACCESS_2_NONE,
+                        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = hdr.image(),
+                        .subresourceRange =
+                                VkImageSubresourceRange{
+                                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                        .baseMipLevel = 0,
+                                        .levelCount = hdr.mip_levels(),
+                                        .baseArrayLayer = 0,
+                                        .layerCount = hdr.array_layers(),
+                                },
+                },
+                VkImageMemoryBarrier2{
+                        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                        .pNext = nullptr,
+                        .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                        .srcAccessMask = VK_ACCESS_2_NONE,
+                        .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                        .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                        .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = depth.image(),
+                        .subresourceRange =
+                                VkImageSubresourceRange{
+                                        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                        .baseMipLevel = 0,
+                                        .levelCount = depth.mip_levels(),
+                                        .baseArrayLayer = 0,
+                                        .layerCount = depth.array_layers(),
+                                },
+                },
+        };
 
-  VkDependencyInfo const dependency_info{
-      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-      .pNext = nullptr,
-      .dependencyFlags = 0,
-      .memoryBarrierCount = 0,
-      .pMemoryBarriers = nullptr,
-      .bufferMemoryBarrierCount = 0,
-      .pBufferMemoryBarriers = nullptr,
-      .imageMemoryBarrierCount = static_cast<std::uint32_t>(barriers.size()),
-      .pImageMemoryBarriers = barriers.data(),
-  };
+        VkDependencyInfo const dependency_info{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = nullptr,
+                .dependencyFlags = 0,
+                .memoryBarrierCount = 0,
+                .pMemoryBarriers = nullptr,
+                .bufferMemoryBarrierCount = 0,
+                .pBufferMemoryBarriers = nullptr,
+                .imageMemoryBarrierCount = static_cast<std::uint32_t>(barriers.size()),
+                .pImageMemoryBarriers = barriers.data(),
+        };
 
-  vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-}
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
 
-auto transition_hdr_to_shader_read(VkCommandBuffer command_buffer,
-                                   Image const &hdr) noexcept -> void {
-  VkImageMemoryBarrier2 const barrier{
-      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-      .pNext = nullptr,
-      .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-      .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-      .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-      .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-      .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-      .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-      .image = hdr.image(),
-      .subresourceRange =
-          VkImageSubresourceRange{
-              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-              .baseMipLevel = 0,
-              .levelCount = hdr.mip_levels(),
-              .baseArrayLayer = 0,
-              .layerCount = hdr.array_layers(),
-          },
-  };
+    auto transition_hdr_to_shader_read(VkCommandBuffer command_buffer, Image const &hdr) noexcept -> void {
+        VkImageMemoryBarrier2 const barrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = hdr.image(),
+                .subresourceRange =
+                        VkImageSubresourceRange{
+                                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                .baseMipLevel = 0,
+                                .levelCount = hdr.mip_levels(),
+                                .baseArrayLayer = 0,
+                                .layerCount = hdr.array_layers(),
+                        },
+        };
 
-  VkDependencyInfo const dependency_info{
-      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-      .pNext = nullptr,
-      .dependencyFlags = 0,
-      .memoryBarrierCount = 0,
-      .pMemoryBarriers = nullptr,
-      .bufferMemoryBarrierCount = 0,
-      .pBufferMemoryBarriers = nullptr,
-      .imageMemoryBarrierCount = 1,
-      .pImageMemoryBarriers = &barrier,
-  };
+        VkDependencyInfo const dependency_info{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = nullptr,
+                .dependencyFlags = 0,
+                .memoryBarrierCount = 0,
+                .pMemoryBarriers = nullptr,
+                .bufferMemoryBarrierCount = 0,
+                .pBufferMemoryBarriers = nullptr,
+                .imageMemoryBarrierCount = 1,
+                .pImageMemoryBarriers = &barrier,
+        };
 
-  vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-}
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
 
-auto transition_swapchain_to_attachment(VkCommandBuffer command_buffer,
-                                        VkImage image) noexcept -> void {
-  VkImageMemoryBarrier2 const barrier{
-      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-      .pNext = nullptr,
-      .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-      .srcAccessMask = VK_ACCESS_2_NONE,
-      .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-      .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-      .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-      .image = image,
-      .subresourceRange =
-          VkImageSubresourceRange{
-              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-              .baseMipLevel = 0,
-              .levelCount = 1,
-              .baseArrayLayer = 0,
-              .layerCount = 1,
-          },
-  };
+    auto transition_swapchain_to_attachment(VkCommandBuffer command_buffer, VkImage image) noexcept -> void {
+        VkImageMemoryBarrier2 const barrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                .srcAccessMask = VK_ACCESS_2_NONE,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image,
+                .subresourceRange =
+                        VkImageSubresourceRange{
+                                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                .baseMipLevel = 0,
+                                .levelCount = 1,
+                                .baseArrayLayer = 0,
+                                .layerCount = 1,
+                        },
+        };
 
-  VkDependencyInfo const dependency_info{
-      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-      .pNext = nullptr,
-      .dependencyFlags = 0,
-      .memoryBarrierCount = 0,
-      .pMemoryBarriers = nullptr,
-      .bufferMemoryBarrierCount = 0,
-      .pBufferMemoryBarriers = nullptr,
-      .imageMemoryBarrierCount = 1,
-      .pImageMemoryBarriers = &barrier,
-  };
+        VkDependencyInfo const dependency_info{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = nullptr,
+                .dependencyFlags = 0,
+                .memoryBarrierCount = 0,
+                .pMemoryBarriers = nullptr,
+                .bufferMemoryBarrierCount = 0,
+                .pBufferMemoryBarriers = nullptr,
+                .imageMemoryBarrierCount = 1,
+                .pImageMemoryBarriers = &barrier,
+        };
 
-  vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-}
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
 
-auto transition_swapchain_to_present(VkCommandBuffer command_buffer,
-                                     VkImage image) noexcept -> void {
-  VkImageMemoryBarrier2 const barrier{
-      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-      .pNext = nullptr,
-      .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-      .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-      .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
-      .dstAccessMask = VK_ACCESS_2_NONE,
-      .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-      .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-      .image = image,
-      .subresourceRange =
-          VkImageSubresourceRange{
-              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-              .baseMipLevel = 0,
-              .levelCount = 1,
-              .baseArrayLayer = 0,
-              .layerCount = 1,
-          },
-  };
+    auto transition_swapchain_to_present(VkCommandBuffer command_buffer, VkImage image) noexcept -> void {
+        VkImageMemoryBarrier2 const barrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
+                .dstAccessMask = VK_ACCESS_2_NONE,
+                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image,
+                .subresourceRange =
+                        VkImageSubresourceRange{
+                                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                .baseMipLevel = 0,
+                                .levelCount = 1,
+                                .baseArrayLayer = 0,
+                                .layerCount = 1,
+                        },
+        };
 
-  VkDependencyInfo const dependency_info{
-      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-      .pNext = nullptr,
-      .dependencyFlags = 0,
-      .memoryBarrierCount = 0,
-      .pMemoryBarriers = nullptr,
-      .bufferMemoryBarrierCount = 0,
-      .pBufferMemoryBarriers = nullptr,
-      .imageMemoryBarrierCount = 1,
-      .pImageMemoryBarriers = &barrier,
-  };
+        VkDependencyInfo const dependency_info{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = nullptr,
+                .dependencyFlags = 0,
+                .memoryBarrierCount = 0,
+                .pMemoryBarriers = nullptr,
+                .bufferMemoryBarrierCount = 0,
+                .pBufferMemoryBarriers = nullptr,
+                .imageMemoryBarrierCount = 1,
+                .pImageMemoryBarriers = &barrier,
+        };
 
-  vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-}
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
 
-auto set_forward_dynamic_state(VkCommandBuffer command_buffer,
-                               VkExtent2D extent) noexcept -> void {
-  VkViewport const viewport{
-      .x = 0.0F,
-      .y = static_cast<float>(extent.height),
-      .width = static_cast<float>(extent.width),
-      .height = -static_cast<float>(extent.height),
-      .minDepth = 0.0F,
-      .maxDepth = 1.0F,
-  };
+    auto set_forward_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent) noexcept -> void {
+        VkViewport const viewport{
+                .x = 0.0F,
+                .y = static_cast<float>(extent.height),
+                .width = static_cast<float>(extent.width),
+                .height = -static_cast<float>(extent.height),
+                .minDepth = 0.0F,
+                .maxDepth = 1.0F,
+        };
 
-  VkRect2D const scissor{
-      .offset = {0, 0},
-      .extent = extent,
-  };
+        VkRect2D const scissor{
+                .offset = {0, 0},
+                .extent = extent,
+        };
 
-  vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
 
-  vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
-  vkCmdSetPrimitiveTopology(command_buffer,
-                            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+        vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
-  vkCmdSetPrimitiveRestartEnable(command_buffer, VK_FALSE);
+        vkCmdSetPrimitiveRestartEnable(command_buffer, VK_FALSE);
 
-  vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
+        vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
 
-  vkCmdSetCullMode(command_buffer, VK_CULL_MODE_BACK_BIT);
+        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_BACK_BIT);
 
-  vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+        vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
 
-  vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
+        vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
 
-  vkCmdSetDepthWriteEnable(command_buffer, VK_TRUE);
+        vkCmdSetDepthWriteEnable(command_buffer, VK_TRUE);
 
-  vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
+        vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
 
-  vkCmdSetDepthBiasEnable(command_buffer, VK_FALSE);
+        vkCmdSetDepthBiasEnable(command_buffer, VK_FALSE);
 
-  vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
-}
+        vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
+    }
 
-auto set_composite_dynamic_state(VkCommandBuffer command_buffer,
-                                 VkExtent2D extent) noexcept -> void {
-  VkViewport const viewport{
-      .x = 0.0F,
-      .y = 0.0F,
-      .width = static_cast<float>(extent.width),
-      .height = static_cast<float>(extent.height),
-      .minDepth = 0.0F,
-      .maxDepth = 1.0F,
-  };
+    auto set_composite_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent) noexcept -> void {
+        VkViewport const viewport{
+                .x = 0.0F,
+                .y = 0.0F,
+                .width = static_cast<float>(extent.width),
+                .height = static_cast<float>(extent.height),
+                .minDepth = 0.0F,
+                .maxDepth = 1.0F,
+        };
 
-  VkRect2D const scissor{
-      .offset = {0, 0},
-      .extent = extent,
-  };
+        VkRect2D const scissor{
+                .offset = {0, 0},
+                .extent = extent,
+        };
 
-  vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
 
-  vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
-  vkCmdSetPrimitiveTopology(command_buffer,
-                            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+        vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
-  vkCmdSetPrimitiveRestartEnable(command_buffer, VK_FALSE);
+        vkCmdSetPrimitiveRestartEnable(command_buffer, VK_FALSE);
 
-  vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
+        vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
 
-  vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
 
-  vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+        vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
 
-  vkCmdSetDepthTestEnable(command_buffer, VK_FALSE);
+        vkCmdSetDepthTestEnable(command_buffer, VK_FALSE);
 
-  vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
+        vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
 
-  vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_ALWAYS);
+        vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_ALWAYS);
 
-  vkCmdSetDepthBiasEnable(command_buffer, VK_FALSE);
+        vkCmdSetDepthBiasEnable(command_buffer, VK_FALSE);
 
-  vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
-}
+        vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
+    }
 } // namespace
 
 namespace {
-auto make_error(RendererErrorType type) -> RendererError {
-  return RendererError{
-      .type = type,
-  };
-}
+    auto make_error(RendererErrorType type) -> RendererError {
+        return RendererError{
+                .type = type,
+        };
+    }
 
-auto make_resource_table_error(const GpuResourceTableError &err)
-    -> RendererError {
-  return RendererError{
-      .type = RendererErrorType::gpu_resource_table_error,
-      .gpu_resource_table_error = err,
-  };
-}
+    auto make_resource_table_error(const GpuResourceTableError &err) -> RendererError {
+        return RendererError{
+                .type = RendererErrorType::gpu_resource_table_error,
+                .gpu_resource_table_error = err,
+        };
+    }
 
-auto make_device_error(DeviceError const &error) -> RendererError {
-  return RendererError{
-      .type = RendererErrorType::device_error,
-      .device_error = error,
-  };
-}
+    auto make_device_error(DeviceError const &error) -> RendererError {
+        return RendererError{
+                .type = RendererErrorType::device_error,
+                .device_error = error,
+        };
+    }
 
-auto make_geometry_error(GeometryArenaError const &error) -> RendererError {
-  return RendererError{
-      .type = RendererErrorType::geometry_error,
-      .geometry_error = error,
-  };
-}
+    auto make_geometry_error(GeometryArenaError const &error) -> RendererError {
+        return RendererError{
+                .type = RendererErrorType::geometry_error,
+                .geometry_error = error,
+        };
+    }
 
-auto make_compiler_error(renderer::ShaderCompileError const &error)
-    -> RendererError {
-  return RendererError{
-      .type = RendererErrorType::compiler_error,
-      .compiler_error = error,
-  };
-}
+    auto make_compiler_error(renderer::ShaderCompileError const &error) -> RendererError {
+        return RendererError{
+                .type = RendererErrorType::compiler_error,
+                .compiler_error = error,
+        };
+    }
 
-auto make_pipeline_storage_error(PipelineStorageError const &error)
-    -> RendererError {
-  return RendererError{
-      .type = RendererErrorType::pipeline_storage_error,
-      .pipeline_storage_error = error,
-  };
-}
+    auto make_pipeline_storage_error(PipelineStorageError const &error) -> RendererError {
+        return RendererError{
+                .type = RendererErrorType::pipeline_storage_error,
+                .pipeline_storage_error = error,
+        };
+    }
 
-auto make_material_error(MaterialStorageError const &error) -> RendererError {
-  return RendererError{
-      .type = RendererErrorType::material_error,
-      .material_error = error,
-  };
-}
+    auto make_material_error(MaterialStorageError const &error) -> RendererError {
+        return RendererError{
+                .type = RendererErrorType::material_error,
+                .material_error = error,
+        };
+    }
 
-auto make_model_load_error(ModelLoadError const &error) -> RendererError {
-  return RendererError{
-      .type = RendererErrorType::model_load_error,
-      .model_load_error = error,
-  };
-}
+    auto make_model_load_error(ModelLoadError const &error) -> RendererError {
+        return RendererError{
+                .type = RendererErrorType::model_load_error,
+                .model_load_error = error,
+        };
+    }
 
-auto align_up(VkDeviceSize value, VkDeviceSize alignment) noexcept
-    -> VkDeviceSize {
-  return (value + alignment - 1) & ~(alignment - 1);
-}
+    auto align_up(VkDeviceSize value, VkDeviceSize alignment) noexcept -> VkDeviceSize {
+        return (value + alignment - 1) & ~(alignment - 1);
+    }
 
-auto checked_multiply(VkDeviceSize lhs, VkDeviceSize rhs)
-    -> std::expected<VkDeviceSize, RendererError> {
-  if (lhs != 0 && rhs > std::numeric_limits<VkDeviceSize>::max() / lhs) {
-    return std::unexpected(make_error(RendererErrorType::size_overflow));
-  }
+    auto checked_multiply(VkDeviceSize lhs, VkDeviceSize rhs) -> std::expected<VkDeviceSize, RendererError> {
+        if (lhs != 0 && rhs > std::numeric_limits<VkDeviceSize>::max() / lhs) {
+            return std::unexpected(make_error(RendererErrorType::size_overflow));
+        }
 
-  return lhs * rhs;
-}
+        return lhs * rhs;
+    }
 
-auto index_stride(VkIndexType index_type)
-    -> std::expected<VkDeviceSize, RendererError> {
-  switch (index_type) {
-  case VK_INDEX_TYPE_UINT16:
-    return sizeof(std::uint16_t);
+    auto index_stride(VkIndexType index_type) -> std::expected<VkDeviceSize, RendererError> {
+        switch (index_type) {
+            case VK_INDEX_TYPE_UINT16:
+                return sizeof(std::uint16_t);
 
-  case VK_INDEX_TYPE_UINT32:
-    return sizeof(std::uint32_t);
+            case VK_INDEX_TYPE_UINT32:
+                return sizeof(std::uint32_t);
 
-  default:
-    return std::unexpected(
-        make_error(RendererErrorType::unsupported_index_type));
-  }
-}
+            default:
+                return std::unexpected(make_error(RendererErrorType::unsupported_index_type));
+        }
+    }
 } // namespace
 
 Renderer::Renderer(VulkanContext &context) noexcept : context_(context) {}
 
-auto Renderer::initialize(RendererCreateInfo const &create_info)
-    -> std::expected<void, RendererError> {
-  if (initialized_ || create_info.extent.width == 0 ||
-      create_info.extent.height == 0 || create_info.frames_in_flight == 0 ||
-      create_info.material_capacity < 2 || create_info.mesh_capacity < 2 ||
-      create_info.model_capacity < 2 || create_info.maximum_draw_count == 0 ||
-      create_info.maximum_submission_count == 0) {
-    return std::unexpected(make_error(RendererErrorType::invalid_argument));
-  }
+auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expected<void, RendererError> {
+    if (initialized_ || create_info.extent.width == 0 || create_info.extent.height == 0 ||
+        create_info.frames_in_flight == 0 || create_info.material_capacity < 2 || create_info.mesh_capacity < 2 ||
+        create_info.model_capacity < 2 || create_info.maximum_draw_count == 0 ||
+        create_info.maximum_submission_count == 0) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
 
-  auto maybe_compiler = renderer::SlangCompiler::create();
-  if (!maybe_compiler) {
-    return std::unexpected(make_compiler_error(maybe_compiler.error()));
-  }
+    auto maybe_compiler = renderer::SlangCompiler::create();
+    if (!maybe_compiler) {
+        return std::unexpected(make_compiler_error(maybe_compiler.error()));
+    }
 
-  this->compiler = std::move(*maybe_compiler);
+    this->compiler = std::move(*maybe_compiler);
 
-  auto geometry_arena = GeometryArena::create(
-      context_, GeometryArenaCreateInfo{
-                    .capacity = create_info.geometry_capacity,
-                    .debug_name = "renderer.geometry",
-                });
+    auto geometry_arena = GeometryArena::create(context_, GeometryArenaCreateInfo{
+                                                                  .capacity = create_info.geometry_capacity,
+                                                                  .debug_name = "renderer.geometry",
+                                                          });
 
-  if (!geometry_arena) {
-    destroy();
+    if (!geometry_arena) {
+        destroy();
 
-    return std::unexpected(make_geometry_error(geometry_arena.error()));
-  }
+        return std::unexpected(make_geometry_error(geometry_arena.error()));
+    }
 
-  auto material_storage = MaterialStorage::create(
-      context_, MaterialStorageCreateInfo{
-                    .capacity = create_info.material_capacity,
-                    .debug_name = "renderer.materials",
-                });
+    auto material_storage = MaterialStorage::create(context_, MaterialStorageCreateInfo{
+                                                                      .capacity = create_info.material_capacity,
+                                                                      .debug_name = "renderer.materials",
+                                                              });
 
-  if (!material_storage) {
-    destroy();
+    if (!material_storage) {
+        destroy();
 
-    return std::unexpected(make_material_error(material_storage.error()));
-  }
+        return std::unexpected(make_material_error(material_storage.error()));
+    }
 
-  auto image_storage =
-      ImageStorage::create(context_, ImageStorageCreateInfo{
-                                         .capacity = create_info.image_capacity,
-                                         .debug_name = "renderer.images",
-                                     });
+    auto image_storage = ImageStorage::create(context_, ImageStorageCreateInfo{
+                                                                .capacity = create_info.image_capacity,
+                                                                .debug_name = "renderer.images",
+                                                        });
 
-  if (!image_storage) {
-    destroy();
+    if (!image_storage) {
+        destroy();
 
-    return std::unexpected(make_error(RendererErrorType::device_error));
-  }
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
 
-  auto sampler_storage =
-      SamplerStorage::create(context_, create_info.sampler_capacity);
+    auto sampler_storage = SamplerStorage::create(context_, create_info.sampler_capacity);
 
-  if (!sampler_storage) {
-    destroy();
+    if (!sampler_storage) {
+        destroy();
 
-    return std::unexpected(make_error(RendererErrorType::device_error));
-  }
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
 
-  auto gpu_resource_table = GpuResourceTable::create(
-      context_, GpuResourceTableCreateInfo{
-                    .frames_in_flight = create_info.frames_in_flight,
-                    .image_capacity = create_info.image_capacity,
-                    .sampler_capacity = create_info.sampler_capacity,
-                    .debug_name = "renderer.resources",
-                });
+    auto gpu_resource_table =
+            GpuResourceTable::create(context_, GpuResourceTableCreateInfo{
+                                                       .frames_in_flight = create_info.frames_in_flight,
+                                                       .image_capacity = create_info.image_capacity,
+                                                       .sampler_capacity = create_info.sampler_capacity,
+                                                       .debug_name = "renderer.resources",
+                                               });
 
-  if (!gpu_resource_table) {
-    destroy();
+    if (!gpu_resource_table) {
+        destroy();
 
-    return std::unexpected(
-        make_resource_table_error(gpu_resource_table.error()));
-  }
+        return std::unexpected(make_resource_table_error(gpu_resource_table.error()));
+    }
 
-  gpu_resource_table_ = std::move(*gpu_resource_table);
+    gpu_resource_table_ = std::move(*gpu_resource_table);
 
-  auto pipelines = PipelineStorage::create(
-      context_,
-      PipelineStorageCreateInfo{
-          .capacity = create_info.pipeline_capacity,
+    auto pipelines =
+            PipelineStorage::create(context_, PipelineStorageCreateInfo{
+                                                      .capacity = create_info.pipeline_capacity,
 
-          .global_descriptor_set_layout = gpu_resource_table_.layout(),
+                                                      .global_descriptor_set_layout = gpu_resource_table_.layout(),
 
-          .debug_name = "renderer.pipelines",
-      });
+                                                      .debug_name = "renderer.pipelines",
+                                              });
 
-  if (!pipelines) {
-    return std::unexpected(make_pipeline_storage_error(pipelines.error()));
-  }
+    if (!pipelines) {
+        return std::unexpected(make_pipeline_storage_error(pipelines.error()));
+    }
 
-  pipeline_storage_ = std::move(*pipelines);
-  image_storage_ = std::move(*image_storage);
-  sampler_storage_ = std::move(*sampler_storage);
-  geometry_arena_ = std::move(*geometry_arena);
-  material_storage_ = std::move(*material_storage);
+    pipeline_storage_ = std::move(*pipelines);
+    image_storage_ = std::move(*image_storage);
+    sampler_storage_ = std::move(*sampler_storage);
+    geometry_arena_ = std::move(*geometry_arena);
+    material_storage_ = std::move(*material_storage);
 
-  {
-    auto compiled_vertex = compiler.compile(renderer::ShaderCompileRequest{
-        .source_path = "assets/shaders/forward_geom.slang",
-        .entry_point = "mainVs",
-        .stage = renderer::ShaderStage::vertex,
-        .include_directories = {},
-        .defines = {},
+    {
+        auto compiled_vertex = compiler.compile(renderer::ShaderCompileRequest{
+                .source_path = "assets/shaders/forward_geom.slang",
+                .entry_point = "mainVs",
+                .stage = renderer::ShaderStage::vertex,
+                .include_directories = {},
+                .defines = {},
+        });
+
+        if (!compiled_vertex) {
+            destroy();
+
+            return std::unexpected(make_compiler_error(compiled_vertex.error()));
+        }
+
+        auto compiled_fragment = compiler.compile(renderer::ShaderCompileRequest{
+                .source_path = "assets/shaders/forward_geom.slang",
+                .entry_point = "mainFs",
+                .stage = renderer::ShaderStage::fragment,
+                .include_directories = {},
+                .defines = {},
+        });
+
+        if (!compiled_fragment) {
+            destroy();
+
+            return std::unexpected(make_compiler_error(compiled_fragment.error()));
+        }
+
+        std::array<ShaderStageInfo, 2> const stages{
+                ShaderStageInfo{
+                        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                        .spirv = compiled_vertex->spirv,
+                        .entry_point = "mainVs",
+                        .flags = 0,
+                        .specialization_info = nullptr,
+                },
+                ShaderStageInfo{
+                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                        .spirv = compiled_fragment->spirv,
+                        .entry_point = "mainFs",
+                        .flags = 0,
+                        .specialization_info = nullptr,
+                },
+        };
+
+        struct PC {
+            VkDeviceAddress a;
+            VkDeviceAddress b;
+            glm::mat4 vp;
+        };
+
+        auto const push_constant_range = VkPushConstantRange{
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                .offset = 0,
+                .size = sizeof(PC),
+        };
+
+        auto inserted_forward_pipeline = pipeline_storage_.create_graphics(GraphicsPipelineCreateInfo{
+                .shaders = stages,
+                .additional_descriptor_set_layouts = {},
+                .push_constant_ranges = {&push_constant_range, 1},
+                .dynamic_states = {},
+                .colour_formats =
+                        std::span{
+                                &create_info.hdr_format,
+                                1UZ,
+                        },
+                .depth_format = create_info.depth_format,
+                .stencil_format = VK_FORMAT_UNDEFINED,
+                .samples = create_info.samples,
+                .debug_name = "renderer.forward_pipeline",
+        });
+
+        if (!inserted_forward_pipeline) {
+            destroy();
+            return std::unexpected(make_pipeline_storage_error(inserted_forward_pipeline.error()));
+        }
+
+        forward_pipeline_ = *inserted_forward_pipeline;
+    }
+    {
+        auto compiled_composite_vertex = compiler.compile(renderer::ShaderCompileRequest{
+                .source_path = "assets/shaders/composite.slang",
+                .entry_point = "mainVs",
+                .stage = renderer::ShaderStage::vertex,
+                .include_directories = {},
+                .defines = {},
+        });
+
+        if (!compiled_composite_vertex) {
+            destroy();
+
+            return std::unexpected(make_compiler_error(compiled_composite_vertex.error()));
+        }
+
+        auto compiled_composite_fragment = compiler.compile(renderer::ShaderCompileRequest{
+                .source_path = "assets/shaders/composite.slang",
+                .entry_point = "mainFs",
+                .stage = renderer::ShaderStage::fragment,
+                .include_directories = {},
+                .defines = {},
+        });
+
+        if (!compiled_composite_fragment) {
+            destroy();
+
+            return std::unexpected(make_compiler_error(compiled_composite_fragment.error()));
+        }
+
+        std::array<ShaderStageInfo, 2> const composite_stages{
+                ShaderStageInfo{
+                        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                        .spirv = compiled_composite_vertex->spirv,
+                        .entry_point = "mainVs",
+                        .flags = 0,
+                        .specialization_info = nullptr,
+                },
+                ShaderStageInfo{
+                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                        .spirv = compiled_composite_fragment->spirv,
+                        .entry_point = "mainFs",
+                        .flags = 0,
+                        .specialization_info = nullptr,
+                },
+        };
+
+        struct CompositePC {
+            std::uint32_t hdr_texture_index;
+            std::uint32_t sampler_index;
+            float exposure;
+            std::uint32_t padding;
+        };
+
+        static_assert(sizeof(CompositePC) == 16);
+
+        VkPushConstantRange const composite_push_constant_range{
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .offset = 0,
+                .size = sizeof(CompositePC),
+        };
+
+        auto inserted_composite_pipeline = pipeline_storage_.create_graphics(GraphicsPipelineCreateInfo{
+                .shaders = composite_stages,
+                .additional_descriptor_set_layouts = {},
+                .push_constant_ranges =
+                        {
+                                &composite_push_constant_range,
+                                1,
+                        },
+                .dynamic_states = {},
+                .colour_formats =
+                        std::span{
+                                &create_info.swapchain_format,
+                                1UZ,
+                        },
+                .depth_format = VK_FORMAT_UNDEFINED,
+                .stencil_format = VK_FORMAT_UNDEFINED,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .debug_name = "renderer.composite_pipeline",
+        });
+
+        if (!inserted_composite_pipeline) {
+            destroy();
+
+            return std::unexpected(make_pipeline_storage_error(inserted_composite_pipeline.error()));
+        }
+
+        composite_pipeline_ = *inserted_composite_pipeline;
+    }
+
+    auto const white = image_storage_.white();
+
+    auto const flat_normal = image_storage_.flat_normal();
+
+    auto const metallic_roughness = image_storage_.metallic_roughness();
+
+    auto const occlusion = image_storage_.occlusion();
+
+    auto const emissive = image_storage_.emissive();
+    auto default_material = material_storage_.create_material(GpuMaterial{
+            .base_colour_factor = glm::vec4{1.0F},
+            .emissive_factor = glm::vec3{0.0F},
+            .emissive_strength = 1.0F,
+            .metallic_factor = 0.0F,
+            .roughness_factor = 1.0F,
+            .normal_scale = 1.0F,
+            .occlusion_strength = 1.0F,
+            .base_colour_texture = white.index,
+            .normal_texture = flat_normal.index,
+            .metallic_roughness_texture = metallic_roughness.index,
+            .occlusion_texture = occlusion.index,
+            .emissive_texture = emissive.index,
+            .sampler_index = 0,
+            .alpha_mode = AlphaMode::opaque,
+            .alpha_cutoff = 0.5F,
     });
 
-    if (!compiled_vertex) {
-      destroy();
+    if (!default_material) {
+        destroy();
 
-      return std::unexpected(make_compiler_error(compiled_vertex.error()));
+        return std::unexpected(make_material_error(default_material.error()));
     }
 
-    auto compiled_fragment = compiler.compile(renderer::ShaderCompileRequest{
-        .source_path = "assets/shaders/forward_geom.slang",
-        .entry_point = "mainFs",
-        .stage = renderer::ShaderStage::fragment,
-        .include_directories = {},
-        .defines = {},
-    });
+    default_material_handle_ = *default_material;
 
-    if (!compiled_fragment) {
-      destroy();
+    meshes_.resize(create_info.mesh_capacity);
 
-      return std::unexpected(make_compiler_error(compiled_fragment.error()));
+    for (std::uint32_t index = 1; index < create_info.mesh_capacity; ++index) {
+        meshes_[index].next_free = index + 1 < create_info.mesh_capacity ? index + 1 : 0;
     }
 
-    std::array<ShaderStageInfo, 2> const stages{
-        ShaderStageInfo{
-            .stage = VK_SHADER_STAGE_VERTEX_BIT,
-            .spirv = compiled_vertex->spirv,
-            .entry_point = "mainVs",
-            .flags = 0,
-            .specialization_info = nullptr,
-        },
-        ShaderStageInfo{
-            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .spirv = compiled_fragment->spirv,
-            .entry_point = "mainFs",
-            .flags = 0,
-            .specialization_info = nullptr,
-        },
-    };
+    mesh_free_head_ = 1;
 
-    struct PC {
-      VkDeviceAddress a;
-      VkDeviceAddress b;
-      glm::mat4 vp;
-    };
+    models_.resize(create_info.model_capacity);
 
-    auto const push_constant_range = VkPushConstantRange{
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        .offset = 0,
-        .size = sizeof(PC),
-    };
-
-    auto inserted_forward_pipeline =
-        pipeline_storage_.create_graphics(GraphicsPipelineCreateInfo{
-            .shaders = stages,
-            .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {&push_constant_range, 1},
-            .dynamic_states = {},
-            .colour_formats =
-                std::span{
-                    &create_info.hdr_format,
-                    1UZ,
-                },
-            .depth_format = create_info.depth_format,
-            .stencil_format = VK_FORMAT_UNDEFINED,
-            .samples = create_info.samples,
-            .debug_name = "renderer.forward_pipeline",
-        });
-
-    if (!inserted_forward_pipeline) {
-      destroy();
-      return std::unexpected(
-          make_pipeline_storage_error(inserted_forward_pipeline.error()));
+    for (std::uint32_t index = 1; index < create_info.model_capacity; ++index) {
+        models_[index].next_free = index + 1 < create_info.model_capacity ? index + 1 : 0;
     }
 
-    forward_pipeline_ = *inserted_forward_pipeline;
-  }
-  {
-    auto compiled_composite_vertex =
-        compiler.compile(renderer::ShaderCompileRequest{
-            .source_path = "assets/shaders/composite.slang",
-            .entry_point = "mainVs",
-            .stage = renderer::ShaderStage::vertex,
-            .include_directories = {},
-            .defines = {},
-        });
+    model_free_head_ = 1;
 
-    if (!compiled_composite_vertex) {
-      destroy();
+    maximum_draw_count_ = create_info.maximum_draw_count;
 
-      return std::unexpected(
-          make_compiler_error(compiled_composite_vertex.error()));
+    maximum_submission_count_ = create_info.maximum_submission_count;
+
+    submissions_.reserve(maximum_submission_count_);
+
+    model_submissions_.reserve(maximum_submission_count_);
+
+    auto draw_size_result = checked_multiply(sizeof(GpuDraw), maximum_draw_count_);
+
+    auto transform_size_result = checked_multiply(sizeof(glm::mat4), maximum_submission_count_);
+
+    auto indirect_size_result = checked_multiply(sizeof(VkDrawIndexedIndirectCommand), maximum_draw_count_);
+
+    if (!draw_size_result || !transform_size_result || !indirect_size_result) {
+        destroy();
+
+        return std::unexpected(make_error(RendererErrorType::size_overflow));
     }
 
-    auto compiled_composite_fragment =
-        compiler.compile(renderer::ShaderCompileRequest{
-            .source_path = "assets/shaders/composite.slang",
-            .entry_point = "mainFs",
-            .stage = renderer::ShaderStage::fragment,
-            .include_directories = {},
-            .defines = {},
-        });
+    auto const draw_size = *draw_size_result;
 
-    if (!compiled_composite_fragment) {
-      destroy();
+    auto const transform_size = *transform_size_result;
 
-      return std::unexpected(
-          make_compiler_error(compiled_composite_fragment.error()));
+    auto const indirect_size = *indirect_size_result;
+
+    auto const transform_offset = align_up(draw_size, 16);
+
+    auto const indirect_offset = align_up(transform_offset + transform_size, 16);
+
+    if (indirect_offset > std::numeric_limits<VkDeviceSize>::max() - indirect_size) {
+        destroy();
+
+        return std::unexpected(make_error(RendererErrorType::size_overflow));
     }
 
-    std::array<ShaderStageInfo, 2> const composite_stages{
-        ShaderStageInfo{
-            .stage = VK_SHADER_STAGE_VERTEX_BIT,
-            .spirv = compiled_composite_vertex->spirv,
-            .entry_point = "mainVs",
-            .flags = 0,
-            .specialization_info = nullptr,
-        },
-        ShaderStageInfo{
-            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .spirv = compiled_composite_fragment->spirv,
-            .entry_point = "mainFs",
-            .flags = 0,
-            .specialization_info = nullptr,
-        },
-    };
+    auto const upload_size = indirect_offset + indirect_size;
 
-    struct CompositePC {
-      std::uint32_t hdr_texture_index;
-      std::uint32_t sampler_index;
-      float exposure;
-      std::uint32_t padding;
-    };
+    frames_.resize(create_info.frames_in_flight);
 
-    static_assert(sizeof(CompositePC) == 16);
+    for (std::uint32_t frame_index = 0; frame_index < static_cast<std::uint32_t>(frames_.size()); ++frame_index) {
+        auto &frame = frames_[frame_index];
 
-    VkPushConstantRange const composite_push_constant_range{
-        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-        .offset = 0,
-        .size = sizeof(CompositePC),
-    };
+        auto upload = Buffer::create(context_, BufferCreateInfo{
+                                                       .size = upload_size,
+                                                       .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                       .memory = BufferMemory::upload,
+                                                       .debug_name = "renderer.frame_upload",
+                                               });
 
-    auto inserted_composite_pipeline =
-        pipeline_storage_.create_graphics(GraphicsPipelineCreateInfo{
-            .shaders = composite_stages,
-            .additional_descriptor_set_layouts = {},
-            .push_constant_ranges =
-                {
-                    &composite_push_constant_range,
-                    1,
-                },
-            .dynamic_states = {},
-            .colour_formats =
-                std::span{
-                    &create_info.swapchain_format,
-                    1UZ,
-                },
-            .depth_format = VK_FORMAT_UNDEFINED,
-            .stencil_format = VK_FORMAT_UNDEFINED,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .debug_name = "renderer.composite_pipeline",
-        });
+        if (!upload) {
+            destroy();
 
-    if (!inserted_composite_pipeline) {
-      destroy();
+            return std::unexpected(make_device_error(upload.error()));
+        }
 
-      return std::unexpected(
-          make_pipeline_storage_error(inserted_composite_pipeline.error()));
+        auto draws = Buffer::create(context_, BufferCreateInfo{
+                                                      .size = draw_size,
+                                                      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                      .memory = BufferMemory::device,
+                                                      .debug_name = "renderer.frame_draws",
+                                              });
+
+        if (!draws) {
+            upload->destroy();
+            destroy();
+
+            return std::unexpected(make_device_error(draws.error()));
+        }
+
+        auto transforms = Buffer::create(context_, BufferCreateInfo{
+                                                           .size = transform_size,
+                                                           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                           .memory = BufferMemory::device,
+                                                           .debug_name = "renderer.frame_transforms",
+                                                   });
+
+        if (!transforms) {
+            draws->destroy();
+            upload->destroy();
+            destroy();
+
+            return std::unexpected(make_device_error(transforms.error()));
+        }
+
+        auto indirect = Buffer::create(context_, BufferCreateInfo{
+                                                         .size = indirect_size,
+                                                         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                  VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                         .memory = BufferMemory::device,
+                                                         .debug_name = "renderer.frame_indirect",
+                                                 });
+
+        if (!indirect) {
+            transforms->destroy();
+            draws->destroy();
+            upload->destroy();
+            destroy();
+
+            return std::unexpected(make_device_error(indirect.error()));
+        }
+
+        auto const target_name = std::string{"renderer.forward_target_"} + std::to_string(frame_index);
+
+        auto forward_target = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
+                                                                            .extent = create_info.extent,
+                                                                            .hdr_format = create_info.hdr_format,
+                                                                            .depth_format = create_info.depth_format,
+                                                                            .samples = create_info.samples,
+                                                                            .debug_name = target_name,
+                                                                    });
+
+        if (!forward_target) {
+            indirect->destroy();
+            transforms->destroy();
+            draws->destroy();
+            upload->destroy();
+
+            destroy();
+
+            return std::unexpected(RendererError{
+                    .type = RendererErrorType::forward_target_error,
+                    .forward_target_error = forward_target.error(),
+            });
+        }
+
+        frame.forward_target = std::move(*forward_target);
+
+        frame.upload_buffer = std::move(*upload);
+
+        frame.draw_buffer = std::move(*draws);
+
+        frame.transform_buffer = std::move(*transforms);
+
+        frame.indirect_buffer = std::move(*indirect);
+
+        frame.draw_upload_offset = 0;
+
+        frame.transform_upload_offset = transform_offset;
+
+        frame.indirect_upload_offset = indirect_offset;
+
+        frame.draws.reserve(maximum_draw_count_);
+
+        frame.transforms.reserve(maximum_submission_count_);
+
+        frame.indirect_commands.reserve(maximum_draw_count_);
     }
 
-    composite_pipeline_ = *inserted_composite_pipeline;
-  }
+    hdr_format_ = create_info.hdr_format;
 
-  auto const white = image_storage_.white();
+    depth_format_ = create_info.depth_format;
 
-  auto const flat_normal = image_storage_.flat_normal();
+    samples_ = create_info.samples;
 
-  auto const metallic_roughness = image_storage_.metallic_roughness();
+    extent_ = create_info.extent;
+    initialized_ = true;
 
-  auto const occlusion = image_storage_.occlusion();
-
-  auto const emissive = image_storage_.emissive();
-  auto default_material = material_storage_.create_material(GpuMaterial{
-      .base_colour_factor = glm::vec4{1.0F},
-      .emissive_factor = glm::vec3{0.0F},
-      .emissive_strength = 1.0F,
-      .metallic_factor = 0.0F,
-      .roughness_factor = 1.0F,
-      .normal_scale = 1.0F,
-      .occlusion_strength = 1.0F,
-      .base_colour_texture = white.index,
-      .normal_texture = flat_normal.index,
-      .metallic_roughness_texture = metallic_roughness.index,
-      .occlusion_texture = occlusion.index,
-      .emissive_texture = emissive.index,
-      .sampler_index = 0,
-      .alpha_mode = AlphaMode::opaque,
-      .alpha_cutoff = 0.5F,
-  });
-
-  if (!default_material) {
-    destroy();
-
-    return std::unexpected(make_material_error(default_material.error()));
-  }
-
-  default_material_handle_ = *default_material;
-
-  meshes_.resize(create_info.mesh_capacity);
-
-  for (std::uint32_t index = 1; index < create_info.mesh_capacity; ++index) {
-    meshes_[index].next_free =
-        index + 1 < create_info.mesh_capacity ? index + 1 : 0;
-  }
-
-  mesh_free_head_ = 1;
-
-  models_.resize(create_info.model_capacity);
-
-  for (std::uint32_t index = 1; index < create_info.model_capacity; ++index) {
-    models_[index].next_free =
-        index + 1 < create_info.model_capacity ? index + 1 : 0;
-  }
-
-  model_free_head_ = 1;
-
-  maximum_draw_count_ = create_info.maximum_draw_count;
-
-  maximum_submission_count_ = create_info.maximum_submission_count;
-
-  submissions_.reserve(maximum_submission_count_);
-
-  model_submissions_.reserve(maximum_submission_count_);
-
-  auto draw_size_result =
-      checked_multiply(sizeof(GpuDraw), maximum_draw_count_);
-
-  auto transform_size_result =
-      checked_multiply(sizeof(glm::mat4), maximum_submission_count_);
-
-  auto indirect_size_result = checked_multiply(
-      sizeof(VkDrawIndexedIndirectCommand), maximum_draw_count_);
-
-  if (!draw_size_result || !transform_size_result || !indirect_size_result) {
-    destroy();
-
-    return std::unexpected(make_error(RendererErrorType::size_overflow));
-  }
-
-  auto const draw_size = *draw_size_result;
-
-  auto const transform_size = *transform_size_result;
-
-  auto const indirect_size = *indirect_size_result;
-
-  auto const transform_offset = align_up(draw_size, 16);
-
-  auto const indirect_offset = align_up(transform_offset + transform_size, 16);
-
-  if (indirect_offset >
-      std::numeric_limits<VkDeviceSize>::max() - indirect_size) {
-    destroy();
-
-    return std::unexpected(make_error(RendererErrorType::size_overflow));
-  }
-
-  auto const upload_size = indirect_offset + indirect_size;
-
-  frames_.resize(create_info.frames_in_flight);
-
-  for (std::uint32_t frame_index = 0;
-       frame_index < static_cast<std::uint32_t>(frames_.size());
-       ++frame_index) {
-    auto &frame = frames_[frame_index];
-
-    auto upload =
-        Buffer::create(context_, BufferCreateInfo{
-                                     .size = upload_size,
-                                     .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                     .memory = BufferMemory::upload,
-                                     .debug_name = "renderer.frame_upload",
-                                 });
-
-    if (!upload) {
-      destroy();
-
-      return std::unexpected(make_device_error(upload.error()));
-    }
-
-    auto draws = Buffer::create(
-        context_, BufferCreateInfo{
-                      .size = draw_size,
-                      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                      .memory = BufferMemory::device,
-                      .debug_name = "renderer.frame_draws",
-                  });
-
-    if (!draws) {
-      upload->destroy();
-      destroy();
-
-      return std::unexpected(make_device_error(draws.error()));
-    }
-
-    auto transforms = Buffer::create(
-        context_, BufferCreateInfo{
-                      .size = transform_size,
-                      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                      .memory = BufferMemory::device,
-                      .debug_name = "renderer.frame_transforms",
-                  });
-
-    if (!transforms) {
-      draws->destroy();
-      upload->destroy();
-      destroy();
-
-      return std::unexpected(make_device_error(transforms.error()));
-    }
-
-    auto indirect = Buffer::create(
-        context_, BufferCreateInfo{
-                      .size = indirect_size,
-                      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                               VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                      .memory = BufferMemory::device,
-                      .debug_name = "renderer.frame_indirect",
-                  });
-
-    if (!indirect) {
-      transforms->destroy();
-      draws->destroy();
-      upload->destroy();
-      destroy();
-
-      return std::unexpected(make_device_error(indirect.error()));
-    }
-
-    auto const target_name =
-        std::string{"renderer.forward_target_"} + std::to_string(frame_index);
-
-    auto forward_target = ForwardTarget::create(
-        image_storage_, ForwardTargetCreateInfo{
-                            .extent = create_info.extent,
-                            .hdr_format = create_info.hdr_format,
-                            .depth_format = create_info.depth_format,
-                            .samples = create_info.samples,
-                            .debug_name = target_name,
-                        });
-
-    if (!forward_target) {
-      indirect->destroy();
-      transforms->destroy();
-      draws->destroy();
-      upload->destroy();
-
-      destroy();
-
-      return std::unexpected(RendererError{
-          .type = RendererErrorType::forward_target_error,
-          .forward_target_error = forward_target.error(),
-      });
-    }
-
-    frame.forward_target = std::move(*forward_target);
-
-    frame.upload_buffer = std::move(*upload);
-
-    frame.draw_buffer = std::move(*draws);
-
-    frame.transform_buffer = std::move(*transforms);
-
-    frame.indirect_buffer = std::move(*indirect);
-
-    frame.draw_upload_offset = 0;
-
-    frame.transform_upload_offset = transform_offset;
-
-    frame.indirect_upload_offset = indirect_offset;
-
-    frame.draws.reserve(maximum_draw_count_);
-
-    frame.transforms.reserve(maximum_submission_count_);
-
-    frame.indirect_commands.reserve(maximum_draw_count_);
-  }
-
-  hdr_format_ = create_info.hdr_format;
-
-  depth_format_ = create_info.depth_format;
-
-  samples_ = create_info.samples;
-
-  extent_ = create_info.extent;
-  initialized_ = true;
-
-  return {};
+    return {};
 }
 
 auto Renderer::destroy() noexcept -> void {
-  /*
-   * Objects using pipeline layouts must go first.
-   */
-  pipeline_storage_.destroy();
+    /*
+     * Objects using pipeline layouts must go first.
+     */
+    pipeline_storage_.destroy();
 
-  /*
-   * Descriptor sets/pool/layout next.
-   */
-  gpu_resource_table_.destroy();
+    /*
+     * Descriptor sets/pool/layout next.
+     */
+    gpu_resource_table_.destroy();
 
-  /*
-   * Samplers and image views referenced by descriptors
-   * can now be destroyed.
-   */
-  sampler_storage_.destroy();
+    /*
+     * Samplers and image views referenced by descriptors
+     * can now be destroyed.
+     */
+    sampler_storage_.destroy();
 
-  for (auto &frame : frames_) {
-    frame.forward_target.destroy(image_storage_);
+    for (auto &frame: frames_) {
+        frame.forward_target.destroy(image_storage_);
 
-    frame.indirect_buffer.destroy();
-    frame.transform_buffer.destroy();
-    frame.draw_buffer.destroy();
-    frame.upload_buffer.destroy();
+        frame.indirect_buffer.destroy();
+        frame.transform_buffer.destroy();
+        frame.draw_buffer.destroy();
+        frame.upload_buffer.destroy();
+
+        frame.draws.clear();
+        frame.transforms.clear();
+        frame.indirect_commands.clear();
+
+        frame.draw_count = 0;
+    }
+
+    frames_.clear();
+
+    material_storage_.destroy();
+
+    /*
+     * Forward targets have already returned their image
+     * handles, so the remaining images can now be destroyed.
+     */
+    image_storage_.destroy();
+
+    geometry_arena_.buffer.destroy();
+
+    compiler.destroy();
+
+    clear_submissions();
+
+    for (auto &model: models_) {
+        model.draws.clear();
+        model.occupied = false;
+    }
+
+    models_.clear();
+
+    for (auto &mesh: meshes_) {
+        mesh.primitives.clear();
+        mesh.occupied = false;
+    }
+
+    meshes_.clear();
+
+    default_material_handle_ = {};
+
+    forward_pipeline_ = {};
+    composite_pipeline_ = {};
+
+    mesh_free_head_ = 0;
+    model_free_head_ = 0;
+
+    maximum_draw_count_ = 0;
+    maximum_submission_count_ = 0;
+
+    hdr_format_ = VK_FORMAT_UNDEFINED;
+    depth_format_ = VK_FORMAT_UNDEFINED;
+
+    samples_ = VK_SAMPLE_COUNT_1_BIT;
+    extent_ = {};
+
+    initialized_ = false;
+}
+
+auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<ModelHandle, RendererError> {
+    if (!initialized_) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    auto imported_model = ::load_model(path, geometry_arena_);
+
+    if (!imported_model) {
+        return std::unexpected(make_model_load_error(imported_model.error()));
+    }
+
+    return create_model(*imported_model, default_material_handle_);
+}
+
+auto Renderer::create_model(Model const &model) -> std::expected<ModelHandle, RendererError> {
+    return create_model(model, default_material_handle_);
+}
+
+auto Renderer::create_model(Model const &model, MaterialHandle fallback_material)
+        -> std::expected<ModelHandle, RendererError> {
+    if (!initialized_ || model_free_head_ == 0) {
+        return std::unexpected(make_error(model_free_head_ == 0 ? RendererErrorType::capacity_exceeded
+                                                                : RendererErrorType::invalid_argument));
+    }
+
+    if (material_storage_.get(fallback_material) == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_material));
+    }
+
+    std::vector<MeshHandle> imported_meshes;
+    imported_meshes.resize(model.meshes.size());
+
+    std::vector<MeshHandle> created_meshes;
+    created_meshes.reserve(model.meshes.size());
+
+    auto rollback_meshes = [this, &created_meshes] {
+        for (auto const handle: created_meshes) {
+            static_cast<void>(destroy_mesh(handle));
+        }
+    };
+
+    for (std::size_t mesh_index = 0; mesh_index < model.meshes.size(); ++mesh_index) {
+        auto const &source_mesh = model.meshes[mesh_index];
+
+        if (source_mesh.primitives.empty()) {
+            rollback_meshes();
+
+            return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+        }
+
+        std::vector<MeshPrimitiveCreateInfo> primitives;
+
+        primitives.reserve(source_mesh.primitives.size());
+
+        for (auto const &source_primitive: source_mesh.primitives) {
+            primitives.push_back(MeshPrimitiveCreateInfo{
+                    .geometry = source_primitive.geometry,
+                    .material = fallback_material,
+            });
+        }
+
+        auto mesh = create_mesh(MeshCreateInfo{
+                .primitives = primitives,
+        });
+
+        if (!mesh) {
+            rollback_meshes();
+            return std::unexpected(mesh.error());
+        }
+
+        imported_meshes[mesh_index] = *mesh;
+        created_meshes.push_back(*mesh);
+    }
+
+    std::vector<ModelDraw> flattened_draws;
+
+    auto add_node = [&](auto &&self, std::uint32_t node_index,
+                        glm::mat4 const &parent_transform) -> std::expected<void, RendererError> {
+        if (node_index >= model.nodes.size()) {
+            return std::unexpected(make_error(RendererErrorType::invalid_model));
+        }
+
+        auto const &node = model.nodes[node_index];
+
+        auto const local_to_model = parent_transform * node.local_transform;
+
+        constexpr auto invalid_mesh = std::numeric_limits<std::uint32_t>::max();
+
+        if (node.mesh_index != invalid_mesh) {
+            if (node.mesh_index >= imported_meshes.size()) {
+                return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+            }
+
+            flattened_draws.push_back(ModelDraw{
+                    .mesh = imported_meshes[node.mesh_index],
+                    .local_transform = local_to_model,
+            });
+        }
+
+        for (auto const child: node.children) {
+            auto result = self(self, child, local_to_model);
+
+            if (!result) {
+                return result;
+            }
+        }
+
+        return {};
+    };
+
+    for (auto const root: model.scene_roots) {
+        auto result = add_node(add_node, root, glm::mat4{1.0F});
+
+        if (!result) {
+            rollback_meshes();
+            return std::unexpected(result.error());
+        }
+    }
+
+    if (flattened_draws.empty()) {
+        rollback_meshes();
+
+        return std::unexpected(make_error(RendererErrorType::invalid_model));
+    }
+
+    auto const model_index = model_free_head_;
+
+    auto &destination = models_[model_index];
+
+    model_free_head_ = destination.next_free;
+
+    destination.draws = std::move(flattened_draws);
+
+    destination.next_free = 0;
+    destination.occupied = true;
+
+    return ModelHandle{
+            .index = model_index,
+            .generation = destination.generation,
+    };
+}
+
+auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform) -> std::expected<void, RendererError> {
+    if (model_slot(model) == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_model));
+    }
+
+    if (model_submissions_.size() >= maximum_submission_count_) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    model_submissions_.push_back(ModelSubmission{
+            .model = model,
+            .transform = transform,
+    });
+
+    return {};
+}
+
+auto Renderer::create_material(MaterialCreateInfo const &create_info) -> std::expected<MaterialHandle, RendererError> {
+    if (!initialized_) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    auto material = material_storage_.create_material(to_gpu_material(create_info));
+
+    if (!material) {
+        return std::unexpected(make_material_error(material.error()));
+    }
+
+    return *material;
+}
+
+auto Renderer::update_material(MaterialHandle handle, MaterialCreateInfo const &create_info)
+        -> std::expected<void, RendererError> {
+    if (!initialized_) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    auto result = material_storage_.update_material(handle, to_gpu_material(create_info));
+
+    if (!result) {
+        return std::unexpected(make_material_error(result.error()));
+    }
+
+    return {};
+}
+
+auto Renderer::destroy_material(MaterialHandle handle) -> std::expected<void, RendererError> {
+    if (handle == default_material_handle_) {
+        return std::unexpected(make_error(RendererErrorType::invalid_material));
+    }
+
+    auto result = material_storage_.destroy_material(handle);
+
+    if (!result) {
+        return std::unexpected(make_material_error(result.error()));
+    }
+
+    return {};
+}
+
+auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<MeshHandle, RendererError> {
+    if (!initialized_ || create_info.primitives.empty()) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    if (mesh_free_head_ == 0) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    for (auto const &primitive: create_info.primitives) {
+        if (!primitive.geometry.vertices.bytes.valid() || !primitive.geometry.indices.bytes.valid() ||
+            primitive.geometry.vertices.vertex_count == 0 || primitive.geometry.indices.index_count == 0) {
+            return std::unexpected(make_error(RendererErrorType::invalid_argument));
+        }
+
+        if (material_storage_.get(primitive.material) == nullptr) {
+            return std::unexpected(make_error(RendererErrorType::invalid_material));
+        }
+
+        auto stride = index_stride(primitive.geometry.indices.index_type);
+
+        if (!stride) {
+            return std::unexpected(stride.error());
+        }
+
+        if (primitive.geometry.indices.bytes.offset % *stride != 0) {
+            return std::unexpected(make_error(RendererErrorType::invalid_argument));
+        }
+    }
+
+    auto const index = mesh_free_head_;
+    auto &slot = meshes_[index];
+
+    mesh_free_head_ = slot.next_free;
+
+    slot.primitives.clear();
+
+    slot.primitives.reserve(create_info.primitives.size());
+
+    for (auto const &primitive: create_info.primitives) {
+        slot.primitives.push_back(RenderPrimitive{
+                .geometry = primitive.geometry,
+                .material = primitive.material,
+        });
+    }
+
+    slot.next_free = 0;
+    slot.occupied = true;
+
+    return MeshHandle{
+            .index = index,
+            .generation = slot.generation,
+    };
+}
+
+auto Renderer::destroy_mesh(MeshHandle handle) -> std::expected<void, RendererError> {
+    auto *slot = mesh_slot(handle);
+
+    if (slot == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+    }
+
+    slot->primitives.clear();
+    slot->occupied = false;
+
+    ++slot->generation;
+
+    if (slot->generation == 0) {
+        slot->generation = 1;
+    }
+
+    slot->next_free = mesh_free_head_;
+    mesh_free_head_ = handle.index;
+
+    return {};
+}
+
+auto Renderer::submit_mesh(MeshHandle mesh, glm::mat4 const &transform) -> std::expected<void, RendererError> {
+    if (mesh_slot(mesh) == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+    }
+
+    if (submissions_.size() >= maximum_submission_count_) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    submissions_.push_back(Submission{
+            .mesh = mesh,
+            .transform = transform,
+    });
+
+    return {};
+}
+
+auto Renderer::prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame_index)
+        -> std::expected<void, RendererError> {
+    if (!initialized_ || command_buffer == VK_NULL_HANDLE || frame_index >= frames_.size()) {
+        clear_submissions();
+
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    auto image_result = image_storage_.prepare_frame(command_buffer);
+
+    if (!image_result) {
+        clear_submissions();
+
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
+    auto resource_result = gpu_resource_table_.prepare_frame(frame_index, image_storage_, sampler_storage_);
+
+    if (!resource_result) {
+        return std::unexpected(make_resource_table_error(resource_result.error()));
+    }
+
+    auto &frame = frames_[frame_index];
 
     frame.draws.clear();
     frame.transforms.clear();
     frame.indirect_commands.clear();
-
     frame.draw_count = 0;
-  }
 
-  frames_.clear();
+    for (auto const &model_submission: model_submissions_) {
+        auto const *model = model_slot(model_submission.model);
 
-  material_storage_.destroy();
+        if (model == nullptr) {
+            clear_submissions();
 
-  /*
-   * Forward targets have already returned their image
-   * handles, so the remaining images can now be destroyed.
-   */
-  image_storage_.destroy();
+            return std::unexpected(make_error(RendererErrorType::invalid_model));
+        }
 
-  geometry_arena_.buffer.destroy();
+        for (auto const &model_draw: model->draws) {
+            if (submissions_.size() >= maximum_submission_count_) {
+                clear_submissions();
 
-  compiler.destroy();
+                return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+            }
 
-  clear_submissions();
+            submissions_.push_back(Submission{
+                    .mesh = model_draw.mesh,
+                    .transform = model_submission.transform * model_draw.local_transform,
+            });
+        }
+    }
 
-  for (auto &model : models_) {
-    model.draws.clear();
-    model.occupied = false;
-  }
+    for (auto const &submission: submissions_) {
+        auto const *mesh = mesh_slot(submission.mesh);
 
-  models_.clear();
+        if (mesh == nullptr) {
+            clear_submissions();
 
-  for (auto &mesh : meshes_) {
-    mesh.primitives.clear();
-    mesh.occupied = false;
-  }
+            return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+        }
 
-  meshes_.clear();
+        if (frame.transforms.size() >= maximum_submission_count_) {
+            clear_submissions();
 
-  default_material_handle_ = {};
+            return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+        }
 
-  forward_pipeline_ = {};
-  composite_pipeline_ = {};
+        auto const transform_index = static_cast<std::uint32_t>(frame.transforms.size());
 
-  mesh_free_head_ = 0;
-  model_free_head_ = 0;
+        frame.transforms.push_back(submission.transform);
 
-  maximum_draw_count_ = 0;
-  maximum_submission_count_ = 0;
+        for (auto const &primitive: mesh->primitives) {
+            if (frame.draws.size() >= maximum_draw_count_) {
+                clear_submissions();
 
-  hdr_format_ = VK_FORMAT_UNDEFINED;
-  depth_format_ = VK_FORMAT_UNDEFINED;
+                return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+            }
 
-  samples_ = VK_SAMPLE_COUNT_1_BIT;
-  extent_ = {};
+            auto const stride = index_stride(primitive.geometry.indices.index_type);
 
-  initialized_ = false;
+            if (!stride) {
+                clear_submissions();
+
+                return std::unexpected(stride.error());
+            }
+
+            auto const first_index_u64 = primitive.geometry.indices.bytes.offset / *stride;
+
+            if (first_index_u64 > std::numeric_limits<std::uint32_t>::max()) {
+                clear_submissions();
+
+                return std::unexpected(make_error(RendererErrorType::size_overflow));
+            }
+
+            auto const draw_index = static_cast<std::uint32_t>(frame.draws.size());
+
+            frame.draws.push_back(GpuDraw{
+                    .vertex_address = geometry_arena_.vertex_address(primitive.geometry.vertices),
+                    .material_index = material_storage_.gpu_index(primitive.material),
+                    .transform_index = transform_index,
+            });
+
+            frame.indirect_commands.push_back(VkDrawIndexedIndirectCommand{
+                    .indexCount = primitive.geometry.indices.index_count,
+                    .instanceCount = 1,
+                    .firstIndex = static_cast<std::uint32_t>(first_index_u64),
+                    .vertexOffset = 0,
+                    .firstInstance = draw_index,
+            });
+        }
+    }
+
+    frame.draw_count = static_cast<std::uint32_t>(frame.draws.size());
+
+    auto material_result = material_storage_.prepare_frame(command_buffer, frame_index);
+
+    if (!material_result) {
+        clear_submissions();
+
+        return std::unexpected(make_material_error(material_result.error()));
+    }
+
+    auto upload_result = upload_frame_data(command_buffer, frame);
+
+    clear_submissions();
+
+    return upload_result;
 }
 
-auto Renderer::load_model(std::filesystem::path const &path)
-    -> std::expected<ModelHandle, RendererError> {
-  if (!initialized_) {
-    return std::unexpected(make_error(RendererErrorType::invalid_argument));
-  }
-
-  auto imported_model = ::load_model(path, geometry_arena_);
-
-  if (!imported_model) {
-    return std::unexpected(make_model_load_error(imported_model.error()));
-  }
-
-  return create_model(*imported_model, default_material_handle_);
-}
-
-auto Renderer::create_model(Model const &model)
-    -> std::expected<ModelHandle, RendererError> {
-  return create_model(model, default_material_handle_);
-}
-
-auto Renderer::create_model(Model const &model,
-                            MaterialHandle fallback_material)
-    -> std::expected<ModelHandle, RendererError> {
-  if (!initialized_ || model_free_head_ == 0) {
-    return std::unexpected(make_error(
-        model_free_head_ == 0 ? RendererErrorType::capacity_exceeded
-                              : RendererErrorType::invalid_argument));
-  }
-
-  if (material_storage_.get(fallback_material) == nullptr) {
-    return std::unexpected(make_error(RendererErrorType::invalid_material));
-  }
-
-  std::vector<MeshHandle> imported_meshes;
-  imported_meshes.resize(model.meshes.size());
-
-  std::vector<MeshHandle> created_meshes;
-  created_meshes.reserve(model.meshes.size());
-
-  auto rollback_meshes = [this, &created_meshes] {
-    for (auto const handle : created_meshes) {
-      static_cast<void>(destroy_mesh(handle));
-    }
-  };
-
-  for (std::size_t mesh_index = 0; mesh_index < model.meshes.size();
-       ++mesh_index) {
-    auto const &source_mesh = model.meshes[mesh_index];
-
-    if (source_mesh.primitives.empty()) {
-      rollback_meshes();
-
-      return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
+                            std::uint32_t frame_index) -> std::expected<void, RendererError> {
+    if (!initialized_ || command_buffer == VK_NULL_HANDLE || swapchain_image.image == VK_NULL_HANDLE ||
+        swapchain_image.view == VK_NULL_HANDLE || swapchain_image.format == VK_FORMAT_UNDEFINED ||
+        swapchain_image.extent.width == 0 || swapchain_image.extent.height == 0 || frame_index >= frames_.size()) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    std::vector<MeshPrimitiveCreateInfo> primitives;
+    auto &frame = frames_[frame_index];
 
-    primitives.reserve(source_mesh.primitives.size());
+    auto const *hdr = image_storage_.get(frame.forward_target.hdr());
 
-    for (auto const &source_primitive : source_mesh.primitives) {
-      primitives.push_back(MeshPrimitiveCreateInfo{
-          .geometry = source_primitive.geometry,
-          .material = fallback_material,
-      });
+    auto const *depth = image_storage_.get(frame.forward_target.depth());
+
+    if (hdr == nullptr || depth == nullptr || !hdr->valid() || !depth->valid()) {
+        return std::unexpected(make_error(RendererErrorType::image_error));
     }
 
-    auto mesh = create_mesh(MeshCreateInfo{
-        .primitives = primitives,
-    });
+    auto const *forward_pipeline = pipeline_storage_.get(forward_pipeline_);
 
-    if (!mesh) {
-      rollback_meshes();
-      return std::unexpected(mesh.error());
+    if (forward_pipeline == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
-    imported_meshes[mesh_index] = *mesh;
-    created_meshes.push_back(*mesh);
-  }
+    auto const *composite_pipeline = pipeline_storage_.get(composite_pipeline_);
 
-  std::vector<ModelDraw> flattened_draws;
-
-  auto add_node = [&](auto &&self, std::uint32_t node_index,
-                      glm::mat4 const &parent_transform)
-      -> std::expected<void, RendererError> {
-    if (node_index >= model.nodes.size()) {
-      return std::unexpected(make_error(RendererErrorType::invalid_model));
+    if (composite_pipeline == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
-    auto const &node = model.nodes[node_index];
+    auto const target_extent = frame.forward_target.extent();
 
-    auto const local_to_model = parent_transform * node.local_transform;
-
-    constexpr auto invalid_mesh = std::numeric_limits<std::uint32_t>::max();
-
-    if (node.mesh_index != invalid_mesh) {
-      if (node.mesh_index >= imported_meshes.size()) {
-        return std::unexpected(make_error(RendererErrorType::invalid_mesh));
-      }
-
-      flattened_draws.push_back(ModelDraw{
-          .mesh = imported_meshes[node.mesh_index],
-          .local_transform = local_to_model,
-      });
+    if (target_extent.width == 0 || target_extent.height == 0 || hdr->extent_2d().width != target_extent.width ||
+        hdr->extent_2d().height != target_extent.height || depth->extent_2d().width != target_extent.width ||
+        depth->extent_2d().height != target_extent.height) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    for (auto const child : node.children) {
-      auto result = self(self, child, local_to_model);
+    /*
+     * The pass clears both images completely, so their
+     * previous contents and previous layouts can be
+     * discarded with oldLayout = UNDEFINED.
+     */
+    transition_forward_target_to_attachments(command_buffer, *hdr, *depth);
 
-      if (!result) {
-        return result;
-      }
+    VkRenderingAttachmentInfo const hdr_attachment{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .pNext = nullptr,
+            .imageView = hdr->view(),
+            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .resolveMode = VK_RESOLVE_MODE_NONE,
+            .resolveImageView = VK_NULL_HANDLE,
+            .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .clearValue =
+                    VkClearValue{
+                            .color =
+                                    VkClearColorValue{
+                                            .float32 =
+                                                    {
+                                                            0.015F,
+                                                            0.025F,
+                                                            0.050F,
+                                                            1.0F,
+                                                    },
+                                    },
+                    },
+    };
+
+    VkRenderingAttachmentInfo const depth_attachment{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .pNext = nullptr,
+            .imageView = depth->view(),
+            .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            .resolveMode = VK_RESOLVE_MODE_NONE,
+            .resolveImageView = VK_NULL_HANDLE,
+            .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .clearValue =
+                    VkClearValue{
+                            .depthStencil =
+                                    VkClearDepthStencilValue{
+                                            .depth = 0.0F,
+                                            .stencil = 0,
+                                    },
+                    },
+    };
+
+    VkRenderingInfo const forward_rendering_info{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .renderArea =
+                    VkRect2D{
+                            .offset = {0, 0},
+                            .extent = target_extent,
+                    },
+            .layerCount = 1,
+            .viewMask = 0,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &hdr_attachment,
+            .pDepthAttachment = &depth_attachment,
+            .pStencilAttachment = nullptr,
+    };
+
+    vkCmdBeginRendering(command_buffer, &forward_rendering_info);
+
+    vkCmdBindPipeline(command_buffer, forward_pipeline->bind_point(), forward_pipeline->pipeline());
+
+    gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, forward_pipeline->layout());
+    set_forward_dynamic_state(command_buffer, target_extent);
+
+    const auto view = glm::lookAtLH(glm::vec3{0, 3, -5}, {0, 0, 0}, {0, 1, 0});
+    const auto proj = glm::perspectiveFovLH_ZO(glm::radians(80.0F), 1280.0F, 800.0F, 0.1F, 10000.0F);
+
+    struct PC {
+        VkDeviceAddress a;
+        VkDeviceAddress b;
+        glm::mat4 vp;
+    } pc{
+            .a = frame.draw_buffer.device_address,
+            .b = frame.transform_buffer.device_address,
+            .vp = proj * view,
+    };
+
+    vkCmdPushConstants(command_buffer, forward_pipeline->layout(),
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PC), &pc);
+
+    vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+    if (frame.draw_count != 0) {
+        vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0, frame.draw_count,
+                                 sizeof(VkDrawIndexedIndirectCommand));
     }
+
+    /*
+     * Forward drawing goes here:
+     *
+     * vkCmdBindPipeline(
+     *     command_buffer,
+     *     VK_PIPELINE_BIND_POINT_GRAPHICS,
+     *     forward_pipeline_
+     * );
+     *
+     * vkCmdBindIndexBuffer(
+     *     command_buffer,
+     *     geometry_arena_.buffer.buffer,
+     *     0,
+     *     VK_INDEX_TYPE_UINT32
+     * );
+     *
+     * vkCmdPushConstants(...);
+     *
+     * if (frame.draw_count != 0) {
+     *     vkCmdDrawIndexedIndirect(
+     *         command_buffer,
+     *         frame.indirect_buffer.buffer,
+     *         0,
+     *         frame.draw_count,
+     *         sizeof(
+     *             VkDrawIndexedIndirectCommand
+     *         )
+     *     );
+     * }
+     */
+
+    vkCmdEndRendering(command_buffer);
+
+    transition_hdr_to_shader_read(command_buffer, *hdr);
+
+    transition_swapchain_to_attachment(command_buffer, swapchain_image.image);
+
+    VkRenderingAttachmentInfo const swapchain_attachment{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .pNext = nullptr,
+            .imageView = swapchain_image.view,
+            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .resolveMode = VK_RESOLVE_MODE_NONE,
+            .resolveImageView = VK_NULL_HANDLE,
+            .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .clearValue = {},
+    };
+
+    VkRenderingInfo const composite_rendering_info{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .renderArea =
+                    VkRect2D{
+                            .offset = {0, 0},
+                            .extent = swapchain_image.extent,
+                    },
+            .layerCount = 1,
+            .viewMask = 0,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &swapchain_attachment,
+            .pDepthAttachment = nullptr,
+            .pStencilAttachment = nullptr,
+    };
+
+    vkCmdBeginRendering(command_buffer, &composite_rendering_info);
+
+    vkCmdBindPipeline(command_buffer, composite_pipeline->bind_point(), composite_pipeline->pipeline());
+
+    gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             composite_pipeline->layout());
+
+    set_composite_dynamic_state(command_buffer, swapchain_image.extent);
+
+    struct CompositePC {
+        std::uint32_t hdr_texture_index;
+        std::uint32_t sampler_index;
+        float exposure;
+        std::uint32_t padding;
+    };
+
+    CompositePC const composite_pc{
+            .hdr_texture_index = frame.forward_target.hdr().index,
+            .sampler_index = sampler_storage_.linear_clamp().index,
+            .exposure = 1.0F,
+            .padding = 0,
+    };
+
+    vkCmdPushConstants(command_buffer, composite_pipeline->layout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(composite_pc), &composite_pc);
+
+    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+    vkCmdEndRendering(command_buffer);
+
+    transition_swapchain_to_present(command_buffer, swapchain_image.image);
 
     return {};
-  };
-
-  for (auto const root : model.scene_roots) {
-    auto result = add_node(add_node, root, glm::mat4{1.0F});
-
-    if (!result) {
-      rollback_meshes();
-      return std::unexpected(result.error());
-    }
-  }
-
-  if (flattened_draws.empty()) {
-    rollback_meshes();
-
-    return std::unexpected(make_error(RendererErrorType::invalid_model));
-  }
-
-  auto const model_index = model_free_head_;
-
-  auto &destination = models_[model_index];
-
-  model_free_head_ = destination.next_free;
-
-  destination.draws = std::move(flattened_draws);
-
-  destination.next_free = 0;
-  destination.occupied = true;
-
-  return ModelHandle{
-      .index = model_index,
-      .generation = destination.generation,
-  };
-}
-
-auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform)
-    -> std::expected<void, RendererError> {
-  if (model_slot(model) == nullptr) {
-    return std::unexpected(make_error(RendererErrorType::invalid_model));
-  }
-
-  if (model_submissions_.size() >= maximum_submission_count_) {
-    return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
-  }
-
-  model_submissions_.push_back(ModelSubmission{
-      .model = model,
-      .transform = transform,
-  });
-
-  return {};
-}
-
-auto Renderer::create_material(MaterialCreateInfo const &create_info)
-    -> std::expected<MaterialHandle, RendererError> {
-  if (!initialized_) {
-    return std::unexpected(make_error(RendererErrorType::invalid_argument));
-  }
-
-  auto material =
-      material_storage_.create_material(to_gpu_material(create_info));
-
-  if (!material) {
-    return std::unexpected(make_material_error(material.error()));
-  }
-
-  return *material;
-}
-
-auto Renderer::update_material(MaterialHandle handle,
-                               MaterialCreateInfo const &create_info)
-    -> std::expected<void, RendererError> {
-  if (!initialized_) {
-    return std::unexpected(make_error(RendererErrorType::invalid_argument));
-  }
-
-  auto result =
-      material_storage_.update_material(handle, to_gpu_material(create_info));
-
-  if (!result) {
-    return std::unexpected(make_material_error(result.error()));
-  }
-
-  return {};
-}
-
-auto Renderer::destroy_material(MaterialHandle handle)
-    -> std::expected<void, RendererError> {
-  if (handle == default_material_handle_) {
-    return std::unexpected(make_error(RendererErrorType::invalid_material));
-  }
-
-  auto result = material_storage_.destroy_material(handle);
-
-  if (!result) {
-    return std::unexpected(make_material_error(result.error()));
-  }
-
-  return {};
-}
-
-auto Renderer::create_mesh(MeshCreateInfo const &create_info)
-    -> std::expected<MeshHandle, RendererError> {
-  if (!initialized_ || create_info.primitives.empty()) {
-    return std::unexpected(make_error(RendererErrorType::invalid_argument));
-  }
-
-  if (mesh_free_head_ == 0) {
-    return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
-  }
-
-  for (auto const &primitive : create_info.primitives) {
-    if (!primitive.geometry.vertices.bytes.valid() ||
-        !primitive.geometry.indices.bytes.valid() ||
-        primitive.geometry.vertices.vertex_count == 0 ||
-        primitive.geometry.indices.index_count == 0) {
-      return std::unexpected(make_error(RendererErrorType::invalid_argument));
-    }
-
-    if (material_storage_.get(primitive.material) == nullptr) {
-      return std::unexpected(make_error(RendererErrorType::invalid_material));
-    }
-
-    auto stride = index_stride(primitive.geometry.indices.index_type);
-
-    if (!stride) {
-      return std::unexpected(stride.error());
-    }
-
-    if (primitive.geometry.indices.bytes.offset % *stride != 0) {
-      return std::unexpected(make_error(RendererErrorType::invalid_argument));
-    }
-  }
-
-  auto const index = mesh_free_head_;
-  auto &slot = meshes_[index];
-
-  mesh_free_head_ = slot.next_free;
-
-  slot.primitives.clear();
-
-  slot.primitives.reserve(create_info.primitives.size());
-
-  for (auto const &primitive : create_info.primitives) {
-    slot.primitives.push_back(RenderPrimitive{
-        .geometry = primitive.geometry,
-        .material = primitive.material,
-    });
-  }
-
-  slot.next_free = 0;
-  slot.occupied = true;
-
-  return MeshHandle{
-      .index = index,
-      .generation = slot.generation,
-  };
-}
-
-auto Renderer::destroy_mesh(MeshHandle handle)
-    -> std::expected<void, RendererError> {
-  auto *slot = mesh_slot(handle);
-
-  if (slot == nullptr) {
-    return std::unexpected(make_error(RendererErrorType::invalid_mesh));
-  }
-
-  slot->primitives.clear();
-  slot->occupied = false;
-
-  ++slot->generation;
-
-  if (slot->generation == 0) {
-    slot->generation = 1;
-  }
-
-  slot->next_free = mesh_free_head_;
-  mesh_free_head_ = handle.index;
-
-  return {};
-}
-
-auto Renderer::submit_mesh(MeshHandle mesh, glm::mat4 const &transform)
-    -> std::expected<void, RendererError> {
-  if (mesh_slot(mesh) == nullptr) {
-    return std::unexpected(make_error(RendererErrorType::invalid_mesh));
-  }
-
-  if (submissions_.size() >= maximum_submission_count_) {
-    return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
-  }
-
-  submissions_.push_back(Submission{
-      .mesh = mesh,
-      .transform = transform,
-  });
-
-  return {};
-}
-
-auto Renderer::prepare_frame(VkCommandBuffer command_buffer,
-                             std::uint32_t frame_index)
-    -> std::expected<void, RendererError> {
-  if (!initialized_ || command_buffer == VK_NULL_HANDLE ||
-      frame_index >= frames_.size()) {
-    clear_submissions();
-
-    return std::unexpected(make_error(RendererErrorType::invalid_argument));
-  }
-
-  auto image_result = image_storage_.prepare_frame(command_buffer);
-
-  if (!image_result) {
-    clear_submissions();
-
-    return std::unexpected(make_error(RendererErrorType::device_error));
-  }
-
-  auto resource_result = gpu_resource_table_.prepare_frame(
-      frame_index, image_storage_, sampler_storage_);
-
-  if (!resource_result) {
-    return std::unexpected(make_resource_table_error(resource_result.error()));
-  }
-
-  auto &frame = frames_[frame_index];
-
-  frame.draws.clear();
-  frame.transforms.clear();
-  frame.indirect_commands.clear();
-  frame.draw_count = 0;
-
-  for (auto const &model_submission : model_submissions_) {
-    auto const *model = model_slot(model_submission.model);
-
-    if (model == nullptr) {
-      clear_submissions();
-
-      return std::unexpected(make_error(RendererErrorType::invalid_model));
-    }
-
-    for (auto const &model_draw : model->draws) {
-      if (submissions_.size() >= maximum_submission_count_) {
-        clear_submissions();
-
-        return std::unexpected(
-            make_error(RendererErrorType::capacity_exceeded));
-      }
-
-      submissions_.push_back(Submission{
-          .mesh = model_draw.mesh,
-          .transform = model_submission.transform * model_draw.local_transform,
-      });
-    }
-  }
-
-  for (auto const &submission : submissions_) {
-    auto const *mesh = mesh_slot(submission.mesh);
-
-    if (mesh == nullptr) {
-      clear_submissions();
-
-      return std::unexpected(make_error(RendererErrorType::invalid_mesh));
-    }
-
-    if (frame.transforms.size() >= maximum_submission_count_) {
-      clear_submissions();
-
-      return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
-    }
-
-    auto const transform_index =
-        static_cast<std::uint32_t>(frame.transforms.size());
-
-    frame.transforms.push_back(submission.transform);
-
-    for (auto const &primitive : mesh->primitives) {
-      if (frame.draws.size() >= maximum_draw_count_) {
-        clear_submissions();
-
-        return std::unexpected(
-            make_error(RendererErrorType::capacity_exceeded));
-      }
-
-      auto const stride = index_stride(primitive.geometry.indices.index_type);
-
-      if (!stride) {
-        clear_submissions();
-
-        return std::unexpected(stride.error());
-      }
-
-      auto const first_index_u64 =
-          primitive.geometry.indices.bytes.offset / *stride;
-
-      if (first_index_u64 > std::numeric_limits<std::uint32_t>::max()) {
-        clear_submissions();
-
-        return std::unexpected(make_error(RendererErrorType::size_overflow));
-      }
-
-      auto const draw_index = static_cast<std::uint32_t>(frame.draws.size());
-
-      frame.draws.push_back(GpuDraw{
-          .vertex_address =
-              geometry_arena_.vertex_address(primitive.geometry.vertices),
-          .material_index = material_storage_.gpu_index(primitive.material),
-          .transform_index = transform_index,
-      });
-
-      frame.indirect_commands.push_back(VkDrawIndexedIndirectCommand{
-          .indexCount = primitive.geometry.indices.index_count,
-          .instanceCount = 1,
-          .firstIndex = static_cast<std::uint32_t>(first_index_u64),
-          .vertexOffset = 0,
-          .firstInstance = draw_index,
-      });
-    }
-  }
-
-  frame.draw_count = static_cast<std::uint32_t>(frame.draws.size());
-
-  auto material_result =
-      material_storage_.prepare_frame(command_buffer, frame_index);
-
-  if (!material_result) {
-    clear_submissions();
-
-    return std::unexpected(make_material_error(material_result.error()));
-  }
-
-  auto upload_result = upload_frame_data(command_buffer, frame);
-
-  clear_submissions();
-
-  return upload_result;
-}
-
-auto Renderer::record_frame(VkCommandBuffer command_buffer,
-                            SwapchainImage const &swapchain_image,
-                            std::uint32_t frame_index)
-    -> std::expected<void, RendererError> {
-  if (!initialized_ || command_buffer == VK_NULL_HANDLE ||
-      swapchain_image.image == VK_NULL_HANDLE ||
-      swapchain_image.view == VK_NULL_HANDLE ||
-      swapchain_image.format == VK_FORMAT_UNDEFINED ||
-      swapchain_image.extent.width == 0 || swapchain_image.extent.height == 0 ||
-      frame_index >= frames_.size()) {
-    return std::unexpected(make_error(RendererErrorType::invalid_argument));
-  }
-
-  auto &frame = frames_[frame_index];
-
-  auto const *hdr = image_storage_.get(frame.forward_target.hdr());
-
-  auto const *depth = image_storage_.get(frame.forward_target.depth());
-
-  if (hdr == nullptr || depth == nullptr || !hdr->valid() || !depth->valid()) {
-    return std::unexpected(make_error(RendererErrorType::image_error));
-  }
-
-  auto const *forward_pipeline = pipeline_storage_.get(forward_pipeline_);
-
-  if (forward_pipeline == nullptr) {
-    return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
-  }
-
-  auto const *composite_pipeline = pipeline_storage_.get(composite_pipeline_);
-
-  if (composite_pipeline == nullptr) {
-    return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
-  }
-
-  auto const target_extent = frame.forward_target.extent();
-
-  if (target_extent.width == 0 || target_extent.height == 0 ||
-      hdr->extent_2d().width != target_extent.width ||
-      hdr->extent_2d().height != target_extent.height ||
-      depth->extent_2d().width != target_extent.width ||
-      depth->extent_2d().height != target_extent.height) {
-    return std::unexpected(make_error(RendererErrorType::invalid_argument));
-  }
-
-  /*
-   * The pass clears both images completely, so their
-   * previous contents and previous layouts can be
-   * discarded with oldLayout = UNDEFINED.
-   */
-  transition_forward_target_to_attachments(command_buffer, *hdr, *depth);
-
-  VkRenderingAttachmentInfo const hdr_attachment{
-      .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-      .pNext = nullptr,
-      .imageView = hdr->view(),
-      .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-      .resolveMode = VK_RESOLVE_MODE_NONE,
-      .resolveImageView = VK_NULL_HANDLE,
-      .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-      .clearValue =
-          VkClearValue{
-              .color =
-                  VkClearColorValue{
-                      .float32 =
-                          {
-                              0.015F,
-                              0.025F,
-                              0.050F,
-                              1.0F,
-                          },
-                  },
-          },
-  };
-
-  VkRenderingAttachmentInfo const depth_attachment{
-      .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-      .pNext = nullptr,
-      .imageView = depth->view(),
-      .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-      .resolveMode = VK_RESOLVE_MODE_NONE,
-      .resolveImageView = VK_NULL_HANDLE,
-      .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-      .clearValue =
-          VkClearValue{
-              .depthStencil =
-                  VkClearDepthStencilValue{
-                      .depth = 0.0F,
-                      .stencil = 0,
-                  },
-          },
-  };
-
-  VkRenderingInfo const forward_rendering_info{
-      .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-      .pNext = nullptr,
-      .flags = 0,
-      .renderArea =
-          VkRect2D{
-              .offset = {0, 0},
-              .extent = target_extent,
-          },
-      .layerCount = 1,
-      .viewMask = 0,
-      .colorAttachmentCount = 1,
-      .pColorAttachments = &hdr_attachment,
-      .pDepthAttachment = &depth_attachment,
-      .pStencilAttachment = nullptr,
-  };
-
-  vkCmdBeginRendering(command_buffer, &forward_rendering_info);
-
-  vkCmdBindPipeline(command_buffer, forward_pipeline->bind_point(),
-                    forward_pipeline->pipeline());
-
-  gpu_resource_table_.bind(command_buffer, frame_index,
-                           VK_PIPELINE_BIND_POINT_GRAPHICS,
-                           forward_pipeline->layout());
-  set_forward_dynamic_state(command_buffer, target_extent);
-
-  const auto view = glm::lookAtLH(glm::vec3{0, 3, -5}, {0, 0, 0}, {0, 1, 0});
-  const auto proj = glm::perspectiveFovLH_ZO(glm::radians(80.0F), 1280.0F,
-                                             800.0F, 0.1F, 10000.0F);
-
-  struct PC {
-    VkDeviceAddress a;
-    VkDeviceAddress b;
-    glm::mat4 vp;
-  } pc{
-      .a = frame.draw_buffer.device_address,
-      .b = frame.transform_buffer.device_address,
-      .vp = proj * view,
-  };
-
-  vkCmdPushConstants(command_buffer, forward_pipeline->layout(),
-                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                     0, sizeof(PC), &pc);
-
-  vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0,
-                       VK_INDEX_TYPE_UINT32);
-
-  if (frame.draw_count != 0) {
-    vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0,
-                             frame.draw_count,
-                             sizeof(VkDrawIndexedIndirectCommand));
-  }
-
-  /*
-   * Forward drawing goes here:
-   *
-   * vkCmdBindPipeline(
-   *     command_buffer,
-   *     VK_PIPELINE_BIND_POINT_GRAPHICS,
-   *     forward_pipeline_
-   * );
-   *
-   * vkCmdBindIndexBuffer(
-   *     command_buffer,
-   *     geometry_arena_.buffer.buffer,
-   *     0,
-   *     VK_INDEX_TYPE_UINT32
-   * );
-   *
-   * vkCmdPushConstants(...);
-   *
-   * if (frame.draw_count != 0) {
-   *     vkCmdDrawIndexedIndirect(
-   *         command_buffer,
-   *         frame.indirect_buffer.buffer,
-   *         0,
-   *         frame.draw_count,
-   *         sizeof(
-   *             VkDrawIndexedIndirectCommand
-   *         )
-   *     );
-   * }
-   */
-
-  vkCmdEndRendering(command_buffer);
-
-  transition_hdr_to_shader_read(command_buffer, *hdr);
-
-  transition_swapchain_to_attachment(command_buffer, swapchain_image.image);
-
-  VkRenderingAttachmentInfo const swapchain_attachment{
-      .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-      .pNext = nullptr,
-      .imageView = swapchain_image.view,
-      .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-      .resolveMode = VK_RESOLVE_MODE_NONE,
-      .resolveImageView = VK_NULL_HANDLE,
-      .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-      .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-      .clearValue = {},
-  };
-
-  VkRenderingInfo const composite_rendering_info{
-      .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-      .pNext = nullptr,
-      .flags = 0,
-      .renderArea =
-          VkRect2D{
-              .offset = {0, 0},
-              .extent = swapchain_image.extent,
-          },
-      .layerCount = 1,
-      .viewMask = 0,
-      .colorAttachmentCount = 1,
-      .pColorAttachments = &swapchain_attachment,
-      .pDepthAttachment = nullptr,
-      .pStencilAttachment = nullptr,
-  };
-
-  vkCmdBeginRendering(command_buffer, &composite_rendering_info);
-
-  vkCmdBindPipeline(command_buffer, composite_pipeline->bind_point(),
-                    composite_pipeline->pipeline());
-
-  gpu_resource_table_.bind(command_buffer, frame_index,
-                           VK_PIPELINE_BIND_POINT_GRAPHICS,
-                           composite_pipeline->layout());
-
-  set_composite_dynamic_state(command_buffer, swapchain_image.extent);
-
-  struct CompositePC {
-    std::uint32_t hdr_texture_index;
-    std::uint32_t sampler_index;
-    float exposure;
-    std::uint32_t padding;
-  };
-
-  CompositePC const composite_pc{
-      .hdr_texture_index = frame.forward_target.hdr().index,
-      .sampler_index = sampler_storage_.linear_clamp().index,
-      .exposure = 1.0F,
-      .padding = 0,
-  };
-
-  vkCmdPushConstants(command_buffer, composite_pipeline->layout(),
-                     VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(composite_pc),
-                     &composite_pc);
-
-  vkCmdDraw(command_buffer, 3, 1, 0, 0);
-
-  vkCmdEndRendering(command_buffer);
-
-  transition_swapchain_to_present(command_buffer, swapchain_image.image);
-
-  return {};
 }
 
 auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
-  if (extent.width == 0 || extent.height == 0) {
-    return {};
-  }
-
-  if (extent.width == extent_.width && extent.height == extent_.height) {
-    return {};
-  }
-
-  std::vector<ForwardTarget> replacements;
-  replacements.reserve(frames_.size());
-
-  for (std::size_t index = 0; index < frames_.size(); ++index) {
-    auto const target_name =
-        std::string{"renderer.forward_target_"} + std::to_string(index);
-
-    auto replacement =
-        ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
-                                                  .extent = extent,
-                                                  .hdr_format = hdr_format_,
-                                                  .depth_format = depth_format_,
-                                                  .samples = samples_,
-                                                  .debug_name = target_name,
-                                              });
-
-    if (!replacement) {
-      for (auto &created : replacements) {
-        created.destroy(image_storage_);
-      }
-
-      return std::unexpected(RendererError{
-          .type = RendererErrorType::forward_target_error,
-          .forward_target_error = replacement.error(),
-      });
+    if (extent.width == 0 || extent.height == 0) {
+        return {};
     }
 
-    replacements.push_back(std::move(*replacement));
-  }
+    if (extent.width == extent_.width && extent.height == extent_.height) {
+        return {};
+    }
 
-  for (std::size_t index = 0; index < frames_.size(); ++index) {
-    frames_[index].forward_target.destroy(image_storage_);
+    std::vector<ForwardTarget> replacements;
+    replacements.reserve(frames_.size());
 
-    frames_[index].forward_target = std::move(replacements[index]);
-  }
+    for (std::size_t index = 0; index < frames_.size(); ++index) {
+        auto const target_name = std::string{"renderer.forward_target_"} + std::to_string(index);
 
-  extent_ = extent;
+        auto replacement = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
+                                                                         .extent = extent,
+                                                                         .hdr_format = hdr_format_,
+                                                                         .depth_format = depth_format_,
+                                                                         .samples = samples_,
+                                                                         .debug_name = target_name,
+                                                                 });
 
-  return {};
+        if (!replacement) {
+            for (auto &created: replacements) {
+                created.destroy(image_storage_);
+            }
+
+            return std::unexpected(RendererError{
+                    .type = RendererErrorType::forward_target_error,
+                    .forward_target_error = replacement.error(),
+            });
+        }
+
+        replacements.push_back(std::move(*replacement));
+    }
+
+    for (std::size_t index = 0; index < frames_.size(); ++index) {
+        frames_[index].forward_target.destroy(image_storage_);
+
+        frames_[index].forward_target = std::move(replacements[index]);
+    }
+
+    extent_ = extent;
+
+    return {};
 }
 
-auto Renderer::to_gpu_material(
-    MaterialCreateInfo const &create_info) const noexcept -> GpuMaterial {
-  return GpuMaterial{
-      .base_colour_factor = create_info.base_colour_factor,
-      .emissive_factor = create_info.emissive_factor,
-      .emissive_strength = create_info.emissive_strength,
-      .metallic_factor = create_info.metallic_factor,
-      .roughness_factor = create_info.roughness_factor,
-      .normal_scale = create_info.normal_scale,
-      .occlusion_strength = create_info.occlusion_strength,
-      .base_colour_texture = create_info.base_colour_texture.index,
-      .normal_texture = create_info.normal_texture.index,
-      .metallic_roughness_texture =
-          create_info.metallic_roughness_texture.index,
-      .occlusion_texture = create_info.occlusion_texture.index,
-      .emissive_texture = create_info.emissive_texture.index,
-      .sampler_index = create_info.sampler.index,
-      .alpha_mode = create_info.alpha_mode,
-      .alpha_cutoff = create_info.alpha_cutoff,
-  };
+auto Renderer::to_gpu_material(MaterialCreateInfo const &create_info) const noexcept -> GpuMaterial {
+    return GpuMaterial{
+            .base_colour_factor = create_info.base_colour_factor,
+            .emissive_factor = create_info.emissive_factor,
+            .emissive_strength = create_info.emissive_strength,
+            .metallic_factor = create_info.metallic_factor,
+            .roughness_factor = create_info.roughness_factor,
+            .normal_scale = create_info.normal_scale,
+            .occlusion_strength = create_info.occlusion_strength,
+            .base_colour_texture = create_info.base_colour_texture.index,
+            .normal_texture = create_info.normal_texture.index,
+            .metallic_roughness_texture = create_info.metallic_roughness_texture.index,
+            .occlusion_texture = create_info.occlusion_texture.index,
+            .emissive_texture = create_info.emissive_texture.index,
+            .sampler_index = create_info.sampler.index,
+            .alpha_mode = create_info.alpha_mode,
+            .alpha_cutoff = create_info.alpha_cutoff,
+    };
 }
 
 auto Renderer::mesh_slot(MeshHandle handle) noexcept -> MeshSlot * {
-  if (handle.index >= meshes_.size()) {
-    return nullptr;
-  }
+    if (handle.index >= meshes_.size()) {
+        return nullptr;
+    }
 
-  auto &slot = meshes_[handle.index];
+    auto &slot = meshes_[handle.index];
 
-  if (!slot.occupied || slot.generation != handle.generation) {
-    return nullptr;
-  }
+    if (!slot.occupied || slot.generation != handle.generation) {
+        return nullptr;
+    }
 
-  return &slot;
+    return &slot;
 }
 
 auto Renderer::mesh_slot(MeshHandle handle) const noexcept -> MeshSlot const * {
-  if (handle.index >= meshes_.size()) {
-    return nullptr;
-  }
+    if (handle.index >= meshes_.size()) {
+        return nullptr;
+    }
 
-  auto const &slot = meshes_[handle.index];
+    auto const &slot = meshes_[handle.index];
 
-  if (!slot.occupied || slot.generation != handle.generation) {
-    return nullptr;
-  }
+    if (!slot.occupied || slot.generation != handle.generation) {
+        return nullptr;
+    }
 
-  return &slot;
+    return &slot;
 }
 
 auto Renderer::model_slot(ModelHandle handle) noexcept -> ModelSlot * {
-  if (handle.index >= models_.size()) {
-    return nullptr;
-  }
+    if (handle.index >= models_.size()) {
+        return nullptr;
+    }
 
-  auto &slot = models_[handle.index];
+    auto &slot = models_[handle.index];
 
-  if (!slot.occupied || slot.generation != handle.generation) {
-    return nullptr;
-  }
+    if (!slot.occupied || slot.generation != handle.generation) {
+        return nullptr;
+    }
 
-  return &slot;
+    return &slot;
 }
 
-auto Renderer::model_slot(ModelHandle handle) const noexcept
-    -> ModelSlot const * {
-  if (handle.index >= models_.size()) {
-    return nullptr;
-  }
+auto Renderer::model_slot(ModelHandle handle) const noexcept -> ModelSlot const * {
+    if (handle.index >= models_.size()) {
+        return nullptr;
+    }
 
-  auto const &slot = models_[handle.index];
+    auto const &slot = models_[handle.index];
 
-  if (!slot.occupied || slot.generation != handle.generation) {
-    return nullptr;
-  }
+    if (!slot.occupied || slot.generation != handle.generation) {
+        return nullptr;
+    }
 
-  return &slot;
+    return &slot;
 }
 
-auto Renderer::upload_frame_data(VkCommandBuffer command_buffer,
-                                 RendererFrame &frame)
-    -> std::expected<void, RendererError> {
-  auto *mapped =
-      static_cast<std::byte *>(frame.upload_buffer.allocation_info.pMappedData);
+auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame)
+        -> std::expected<void, RendererError> {
+    auto *mapped = static_cast<std::byte *>(frame.upload_buffer.allocation_info.pMappedData);
 
-  if (mapped == nullptr) {
-    return std::unexpected(make_error(RendererErrorType::device_error));
-  }
+    if (mapped == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
 
-  auto const draw_size =
-      static_cast<VkDeviceSize>(frame.draws.size()) * sizeof(GpuDraw);
+    auto const draw_size = static_cast<VkDeviceSize>(frame.draws.size()) * sizeof(GpuDraw);
 
-  auto const transform_size =
-      static_cast<VkDeviceSize>(frame.transforms.size()) * sizeof(glm::mat4);
+    auto const transform_size = static_cast<VkDeviceSize>(frame.transforms.size()) * sizeof(glm::mat4);
 
-  auto const indirect_size =
-      static_cast<VkDeviceSize>(frame.indirect_commands.size()) *
-      sizeof(VkDrawIndexedIndirectCommand);
+    auto const indirect_size =
+            static_cast<VkDeviceSize>(frame.indirect_commands.size()) * sizeof(VkDrawIndexedIndirectCommand);
 
-  if (draw_size != 0) {
-    std::memcpy(mapped + frame.draw_upload_offset, frame.draws.data(),
-                static_cast<std::size_t>(draw_size));
-  }
+    if (draw_size != 0) {
+        std::memcpy(mapped + frame.draw_upload_offset, frame.draws.data(), static_cast<std::size_t>(draw_size));
+    }
 
-  if (transform_size != 0) {
-    std::memcpy(mapped + frame.transform_upload_offset, frame.transforms.data(),
-                static_cast<std::size_t>(transform_size));
-  }
+    if (transform_size != 0) {
+        std::memcpy(mapped + frame.transform_upload_offset, frame.transforms.data(),
+                    static_cast<std::size_t>(transform_size));
+    }
 
-  if (indirect_size != 0) {
-    std::memcpy(mapped + frame.indirect_upload_offset,
-                frame.indirect_commands.data(),
-                static_cast<std::size_t>(indirect_size));
-  }
+    if (indirect_size != 0) {
+        std::memcpy(mapped + frame.indirect_upload_offset, frame.indirect_commands.data(),
+                    static_cast<std::size_t>(indirect_size));
+    }
 
-  struct CopyOperation {
-    VkBuffer destination = VK_NULL_HANDLE;
-    VkBufferCopy2 region{};
-  };
+    struct CopyOperation {
+        VkBuffer destination = VK_NULL_HANDLE;
+        VkBufferCopy2 region{};
+    };
 
-  std::array<CopyOperation, 3> copies{};
-  std::uint32_t copy_count = 0;
+    std::array<CopyOperation, 3> copies{};
+    std::uint32_t copy_count = 0;
 
-  if (draw_size != 0) {
-    copies[copy_count++] = CopyOperation{
-        .destination = frame.draw_buffer.buffer,
-        .region =
-            VkBufferCopy2{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+    if (draw_size != 0) {
+        copies[copy_count++] = CopyOperation{
+                .destination = frame.draw_buffer.buffer,
+                .region =
+                        VkBufferCopy2{
+                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                                .pNext = nullptr,
+                                .srcOffset = frame.draw_upload_offset,
+                                .dstOffset = 0,
+                                .size = draw_size,
+                        },
+        };
+    }
+
+    if (transform_size != 0) {
+        copies[copy_count++] = CopyOperation{
+                .destination = frame.transform_buffer.buffer,
+                .region =
+                        VkBufferCopy2{
+                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                                .pNext = nullptr,
+                                .srcOffset = frame.transform_upload_offset,
+                                .dstOffset = 0,
+                                .size = transform_size,
+                        },
+        };
+    }
+
+    if (indirect_size != 0) {
+        copies[copy_count++] = CopyOperation{
+                .destination = frame.indirect_buffer.buffer,
+                .region =
+                        VkBufferCopy2{
+                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                                .pNext = nullptr,
+                                .srcOffset = frame.indirect_upload_offset,
+                                .dstOffset = 0,
+                                .size = indirect_size,
+                        },
+        };
+    }
+
+    for (std::uint32_t index = 0; index < copy_count; ++index) {
+        auto const &copy = copies[index];
+
+        VkCopyBufferInfo2 const copy_info{
+                .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
                 .pNext = nullptr,
-                .srcOffset = frame.draw_upload_offset,
-                .dstOffset = 0,
+                .srcBuffer = frame.upload_buffer.buffer,
+                .dstBuffer = copy.destination,
+                .regionCount = 1,
+                .pRegions = &copy.region,
+        };
+
+        vkCmdCopyBuffer2(command_buffer, &copy_info);
+    }
+
+    if (copy_count == 0) {
+        return {};
+    }
+
+    std::array<VkBufferMemoryBarrier2, 3> barriers{};
+
+    std::uint32_t barrier_count = 0;
+
+    if (draw_size != 0) {
+        barriers[barrier_count++] = VkBufferMemoryBarrier2{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = frame.draw_buffer.buffer,
+                .offset = 0,
                 .size = draw_size,
-            },
-    };
-  }
+        };
+    }
 
-  if (transform_size != 0) {
-    copies[copy_count++] = CopyOperation{
-        .destination = frame.transform_buffer.buffer,
-        .region =
-            VkBufferCopy2{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+    if (transform_size != 0) {
+        barriers[barrier_count++] = VkBufferMemoryBarrier2{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                 .pNext = nullptr,
-                .srcOffset = frame.transform_upload_offset,
-                .dstOffset = 0,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = frame.transform_buffer.buffer,
+                .offset = 0,
                 .size = transform_size,
-            },
-    };
-  }
+        };
+    }
 
-  if (indirect_size != 0) {
-    copies[copy_count++] = CopyOperation{
-        .destination = frame.indirect_buffer.buffer,
-        .region =
-            VkBufferCopy2{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+    if (indirect_size != 0) {
+        barriers[barrier_count++] = VkBufferMemoryBarrier2{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                 .pNext = nullptr,
-                .srcOffset = frame.indirect_upload_offset,
-                .dstOffset = 0,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = frame.indirect_buffer.buffer,
+                .offset = 0,
                 .size = indirect_size,
-            },
+        };
+    }
+
+    VkDependencyInfo const dependency_info{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = barrier_count,
+            .pBufferMemoryBarriers = barriers.data(),
+            .imageMemoryBarrierCount = 0,
+            .pImageMemoryBarriers = nullptr,
     };
-  }
 
-  for (std::uint32_t index = 0; index < copy_count; ++index) {
-    auto const &copy = copies[index];
+    vkCmdPipelineBarrier2(command_buffer, &dependency_info);
 
-    VkCopyBufferInfo2 const copy_info{
-        .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
-        .pNext = nullptr,
-        .srcBuffer = frame.upload_buffer.buffer,
-        .dstBuffer = copy.destination,
-        .regionCount = 1,
-        .pRegions = &copy.region,
-    };
-
-    vkCmdCopyBuffer2(command_buffer, &copy_info);
-  }
-
-  if (copy_count == 0) {
     return {};
-  }
-
-  std::array<VkBufferMemoryBarrier2, 3> barriers{};
-
-  std::uint32_t barrier_count = 0;
-
-  if (draw_size != 0) {
-    barriers[barrier_count++] = VkBufferMemoryBarrier2{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-        .pNext = nullptr,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = frame.draw_buffer.buffer,
-        .offset = 0,
-        .size = draw_size,
-    };
-  }
-
-  if (transform_size != 0) {
-    barriers[barrier_count++] = VkBufferMemoryBarrier2{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-        .pNext = nullptr,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = frame.transform_buffer.buffer,
-        .offset = 0,
-        .size = transform_size,
-    };
-  }
-
-  if (indirect_size != 0) {
-    barriers[barrier_count++] = VkBufferMemoryBarrier2{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-        .pNext = nullptr,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-        .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = frame.indirect_buffer.buffer,
-        .offset = 0,
-        .size = indirect_size,
-    };
-  }
-
-  VkDependencyInfo const dependency_info{
-      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-      .pNext = nullptr,
-      .dependencyFlags = 0,
-      .memoryBarrierCount = 0,
-      .pMemoryBarriers = nullptr,
-      .bufferMemoryBarrierCount = barrier_count,
-      .pBufferMemoryBarriers = barriers.data(),
-      .imageMemoryBarrierCount = 0,
-      .pImageMemoryBarriers = nullptr,
-  };
-
-  vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-
-  return {};
 }
 
 auto Renderer::clear_submissions() noexcept -> void {
-  submissions_.clear();
-  model_submissions_.clear();
+    submissions_.clear();
+    model_submissions_.clear();
 }

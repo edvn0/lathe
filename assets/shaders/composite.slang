@@ -10,9 +10,6 @@ struct CompositePC
     uint padding;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<CompositePC> pc;
-
 struct VertexOutput
 {
     float4 position : SV_Position;
@@ -20,7 +17,7 @@ struct VertexOutput
 };
 
 [shader("vertex")]
-VertexOutput mainVs(uint vertex_id : SV_VertexID)
+VertexOutput mainVs(uint vertex_id: SV_VertexID)
 {
     VertexOutput output;
 
@@ -71,7 +68,7 @@ struct FragmentOutput
 };
 
 [shader("fragment")]
-FragmentOutput mainFs(VertexOutput input)
+FragmentOutput mainFs(VertexOutput input, uniform CompositePC pc)
 {
     uint texture_index =
         NonUniformResourceIndex(pc.hdr_texture_index);

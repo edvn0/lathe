@@ -19,6 +19,49 @@ set(
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake")
 
 # ------------------------------------------------------------------------------
+# Mark third-party include directories as system includes
+# ------------------------------------------------------------------------------
+
+function(mark_target_includes_system target_name)
+  if(NOT TARGET "${target_name}")
+    return()
+  endif()
+
+  get_target_property(
+        aliased_target
+        "${target_name}"
+        ALIASED_TARGET
+    )
+
+  if(aliased_target)
+    set(real_target "${aliased_target}")
+  else()
+    set(real_target "${target_name}")
+  endif()
+
+  get_target_property(
+        target_include_dirs
+        "${real_target}"
+        INTERFACE_INCLUDE_DIRECTORIES
+    )
+
+  if(
+        NOT target_include_dirs
+        OR target_include_dirs MATCHES "-NOTFOUND$"
+    )
+    return()
+  endif()
+
+  set_property(
+        TARGET "${real_target}"
+        APPEND
+        PROPERTY
+            INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+            "${target_include_dirs}"
+    )
+endfunction()
+
+# ------------------------------------------------------------------------------
 # Project options
 # ------------------------------------------------------------------------------
 
@@ -143,6 +186,25 @@ cpmaddpackage(
         "GLM_BUILD_INSTALL OFF"
 )
 
+cpmaddpackage(
+    NAME meshoptimizer
+    GITHUB_REPOSITORY zeux/meshoptimizer
+    GIT_TAG v0.24
+    OPTIONS
+        "MESHOPT_BUILD_DEMO OFF"
+        "MESHOPT_BUILD_TOOLS OFF"
+        "MESHOPT_BUILD_SHARED_LIBS OFF"
+        "MESHOPT_BUILD_WERROR OFF"
+)
+
+mark_target_includes_system(meshoptimizer)
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/add_mikktspace.cmake")
+
+add_mikktspace_dependency()
+
+mark_target_includes_system(mikktspace::mikktspace)
+
 # ------------------------------------------------------------------------------
 # Slang binary distribution
 #
@@ -154,130 +216,130 @@ cpmaddpackage(
 # ------------------------------------------------------------------------------
 
 function(validate_slang_root root_path)
-    if(NOT IS_DIRECTORY "${root_path}")
-        message(
+  if(NOT IS_DIRECTORY "${root_path}")
+    message(
             FATAL_ERROR
             "Slang root is not a directory: ${root_path}"
         )
-    endif()
+  endif()
 
-    if(NOT EXISTS "${root_path}/include/slang.h")
-        message(
+  if(NOT EXISTS "${root_path}/include/slang.h")
+    message(
             FATAL_ERROR
             "Slang installation does not contain include/slang.h: "
             "${root_path}"
         )
-    endif()
+  endif()
 
-    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        if(NOT EXISTS "${root_path}/bin/slang.dll")
-            message(
+  if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    if(NOT EXISTS "${root_path}/bin/slang.dll")
+      message(
                 FATAL_ERROR
                 "Windows Slang installation does not contain bin/slang.dll: "
                 "${root_path}"
             )
-        endif()
-    elseif(APPLE)
-        if(
+    endif()
+  elseif(APPLE)
+    if(
             NOT EXISTS "${root_path}/lib/libslang.dylib"
             AND NOT EXISTS "${root_path}/bin/libslang.dylib"
         )
-            message(
+      message(
                 FATAL_ERROR
                 "macOS Slang installation does not contain libslang.dylib: "
                 "${root_path}"
             )
-        endif()
-    else()
-        if(
+    endif()
+  else()
+    if(
             NOT EXISTS "${root_path}/lib/libslang.so"
             AND NOT EXISTS "${root_path}/bin/libslang.so"
         )
-            message(
+      message(
                 FATAL_ERROR
                 "Linux Slang installation does not contain libslang.so: "
                 "${root_path}"
             )
-        endif()
     endif()
+  endif()
 endfunction()
 
 set(slang_root "")
 
 if(SLANG_ROOT)
-    cmake_path(
+  cmake_path(
         ABSOLUTE_PATH SLANG_ROOT
         BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         NORMALIZE
         OUTPUT_VARIABLE slang_root
     )
 
-    message(
+  message(
         STATUS
         "Using extracted local Slang installation: ${slang_root}"
     )
 
 elseif(SLANG_ARCHIVE)
-    cmake_path(
+  cmake_path(
         ABSOLUTE_PATH SLANG_ARCHIVE
         BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         NORMALIZE
         OUTPUT_VARIABLE slang_archive
     )
 
-    if(NOT EXISTS "${slang_archive}")
-        message(
+  if(NOT EXISTS "${slang_archive}")
+    message(
             FATAL_ERROR
             "SLANG_ARCHIVE does not exist: ${slang_archive}"
         )
-    endif()
+  endif()
 
-    message(
+  message(
         STATUS
         "Using local Slang archive: ${slang_archive}"
     )
 
-    cpmaddpackage(
+  cpmaddpackage(
         NAME slang_binary
         URL "${slang_archive}"
         DOWNLOAD_ONLY YES
     )
 
-    set(slang_root "${slang_binary_SOURCE_DIR}")
+  set(slang_root "${slang_binary_SOURCE_DIR}")
 
 else()
-    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        set(
+  if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(
             slang_archive_name
             "slang-${SLANG_VERSION}-windows-x86_64.tar.gz"
         )
-    elseif(APPLE)
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
-            set(
+  elseif(APPLE)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+      set(
                 slang_archive_name
                 "slang-${SLANG_VERSION}-macos-aarch64.tar.gz"
             )
-        else()
-            set(
+    else()
+      set(
                 slang_archive_name
                 "slang-${SLANG_VERSION}-macos-x86_64.tar.gz"
             )
-        endif()
-    else()
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
-            set(
+    endif()
+  else()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+      set(
                 slang_archive_name
                 "slang-${SLANG_VERSION}-linux-aarch64.tar.gz"
             )
-        else()
-            set(
+    else()
+      set(
                 slang_archive_name
                 "slang-${SLANG_VERSION}-linux-x86_64.tar.gz"
             )
-        endif()
     endif()
+  endif()
 
-    string(
+  string(
         CONCAT
         slang_download_url
         "https://github.com/shader-slang/slang/releases/download/"
@@ -285,18 +347,18 @@ else()
         "${slang_archive_name}"
     )
 
-    message(
+  message(
         STATUS
         "Downloading Slang ${SLANG_VERSION}: ${slang_archive_name}"
     )
 
-    cpmaddpackage(
+  cpmaddpackage(
         NAME slang_binary
         URL "${slang_download_url}"
         DOWNLOAD_ONLY YES
     )
 
-    set(slang_root "${slang_binary_SOURCE_DIR}")
+  set(slang_root "${slang_binary_SOURCE_DIR}")
 endif()
 
 validate_slang_root("${slang_root}")
@@ -315,48 +377,7 @@ target_include_directories(
         "${slang_include_dir}"
 )
 
-# ------------------------------------------------------------------------------
-# Mark third-party include directories as system includes
-# ------------------------------------------------------------------------------
 
-function(mark_target_includes_system target_name)
-    if(NOT TARGET "${target_name}")
-        return()
-    endif()
-
-    get_target_property(
-        aliased_target
-        "${target_name}"
-        ALIASED_TARGET
-    )
-
-    if(aliased_target)
-        set(real_target "${aliased_target}")
-    else()
-        set(real_target "${target_name}")
-    endif()
-
-    get_target_property(
-        target_include_dirs
-        "${real_target}"
-        INTERFACE_INCLUDE_DIRECTORIES
-    )
-
-    if(
-        NOT target_include_dirs
-        OR target_include_dirs MATCHES "-NOTFOUND$"
-    )
-        return()
-    endif()
-
-    set_property(
-        TARGET "${real_target}"
-        APPEND
-        PROPERTY
-            INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
-            "${target_include_dirs}"
-    )
-endfunction()
 
 mark_target_includes_system(Vulkan::Headers)
 mark_target_includes_system(volk::volk)
@@ -378,6 +399,23 @@ file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cxx"
 )
+list(FILTER mingw_vulkan_sources EXCLUDE REGEX "/platform/")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    file(
+        GLOB_RECURSE platform_sources
+        CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows/*.cxx"
+    )
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    file(
+        GLOB_RECURSE platform_sources
+        CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux/*.cxx"
+    )
+endif()
+
+list(APPEND mingw_vulkan_sources ${platform_sources})
 
 file(
     GLOB_RECURSE mingw_vulkan_headers
@@ -409,10 +447,12 @@ target_link_libraries(
         fastgltf::fastgltf
         glm::glm
         slang::headers
+        mikktspace::mikktspace
+        meshoptimizer
 )
 
 # ------------------------------------------------------------------------------
-# Compile definitions
+# Compile definitions (cross-platform)
 # ------------------------------------------------------------------------------
 
 target_compile_definitions(
@@ -423,21 +463,17 @@ target_compile_definitions(
         GLM_FORCE_RADIANS
         GLM_FORCE_DEPTH_ZERO_TO_ONE
         GLM_ENABLE_EXPERIMENTAL
-        NOMINMAX
-        WIN32_LEAN_AND_MEAN
-        UNICODE
-        _UNICODE
         SLANG_ROOT_PATH="${slang_root}"
 )
 
 if(MINGW_VULKAN_ENABLE_VALIDATION)
-    target_compile_definitions(
+  target_compile_definitions(
         mingw-vulkan
         PRIVATE
             MINGW_VULKAN_ENABLE_VALIDATION=1
     )
 else()
-    target_compile_definitions(
+  target_compile_definitions(
         mingw-vulkan
         PRIVATE
             MINGW_VULKAN_ENABLE_VALIDATION=0
@@ -445,102 +481,25 @@ else()
 endif()
 
 # ------------------------------------------------------------------------------
-# Exception and RTTI configuration
+# Compiler and platform-specific configuration
 # ------------------------------------------------------------------------------
 
-if(MINGW_VULKAN_ENABLE_EXCEPTIONS)
-    if(MSVC)
-        target_compile_options(
-            mingw-vulkan
-            PRIVATE
-                /EHsc
-                /GR-
-        )
-    elseif(
-        CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
-        OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"
-    )
-        target_compile_options(
-            mingw-vulkan
-            PRIVATE
-                -fexceptions
-                -fno-rtti
-        )
-    endif()
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/compiler_options.cmake")
+
+configure_compiler_options(mingw-vulkan)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/platform_windows.cmake")
+  configure_windows_target(mingw-vulkan "${slang_bin_dir}")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/platform_linux.cmake")
+  configure_linux_target(mingw-vulkan "${slang_lib_dir}" "${slang_bin_dir}")
 else()
-    target_compile_definitions(
-        mingw-vulkan
-        PRIVATE
-            SPDLOG_NO_EXCEPTIONS
-    )
-
-    if(MSVC)
-        target_compile_options(
-            mingw-vulkan
-            PRIVATE
-                /EHs-c-
-                /GR-
-        )
-
-        target_compile_definitions(
-            mingw-vulkan
-            PRIVATE
-                _HAS_EXCEPTIONS=0
-        )
-    elseif(
-        CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
-        OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"
-    )
-        target_compile_options(
-            mingw-vulkan
-            PRIVATE
-                -fno-exceptions
-                -fno-rtti
-        )
-    endif()
-endif()
-
-# ------------------------------------------------------------------------------
-# Warning configuration
-# ------------------------------------------------------------------------------
-
-if(MSVC)
-    target_compile_options(
-        mingw-vulkan
-        PRIVATE
-            /W4
-            /permissive-
-            /Zc:preprocessor
-            /Zc:__cplusplus
-    )
-elseif(
-    CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
-    OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"
-)
-    target_compile_options(
-        mingw-vulkan
-        PRIVATE
-            -Wall
-            -Wextra
-            -Wpedantic
-            -Wconversion
-            -Wsign-conversion
-            -Wshadow
-            -Wnon-virtual-dtor
-            -Wold-style-cast
-    )
-endif()
-
-# ------------------------------------------------------------------------------
-# MinGW runtime configuration
-# ------------------------------------------------------------------------------
-
-if(MINGW)
-    target_link_options(
-        mingw-vulkan
-        PRIVATE
-            -static-libgcc
-            -static-libstdc++
+  message(
+        WARNING
+        "No platform-specific target configuration for "
+        "${CMAKE_SYSTEM_NAME}; Slang runtime will not be deployed "
+        "automatically."
     )
 endif()
 
@@ -551,95 +510,22 @@ endif()
 set(vma_source "${CMAKE_CURRENT_SOURCE_DIR}/src/vma.cxx")
 
 if(EXISTS "${vma_source}")
-    if(MSVC)
-        set_source_files_properties(
+  if(MSVC)
+    set_source_files_properties(
             "${vma_source}"
             PROPERTIES
                 COMPILE_OPTIONS "/W0"
         )
-    elseif(
+  elseif(
         CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
         OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"
     )
-        set_source_files_properties(
+    set_source_files_properties(
             "${vma_source}"
             PROPERTIES
                 COMPILE_OPTIONS "-w"
         )
-    endif()
-endif()
-
-# ------------------------------------------------------------------------------
-# Slang runtime deployment
-# ------------------------------------------------------------------------------
-
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    file(
-        GLOB slang_runtime_files
-        CONFIGURE_DEPENDS
-        "${slang_bin_dir}/*.dll"
-    )
-
-    if(NOT slang_runtime_files)
-        message(
-            FATAL_ERROR
-            "No Slang DLL files found in ${slang_bin_dir}"
-        )
-    endif()
-
-    foreach(slang_runtime_file IN LISTS slang_runtime_files)
-        add_custom_command(
-            TARGET mingw-vulkan
-            POST_BUILD
-            COMMAND
-                "${CMAKE_COMMAND}" -E copy_if_different
-                "${slang_runtime_file}"
-                "$<TARGET_FILE_DIR:mingw-vulkan>"
-            VERBATIM
-        )
-    endforeach()
-
-elseif(APPLE)
-    file(
-        GLOB slang_runtime_files
-        CONFIGURE_DEPENDS
-        "${slang_lib_dir}/*.dylib"
-        "${slang_bin_dir}/*.dylib"
-    )
-
-    foreach(slang_runtime_file IN LISTS slang_runtime_files)
-        add_custom_command(
-            TARGET mingw-vulkan
-            POST_BUILD
-            COMMAND
-                "${CMAKE_COMMAND}" -E copy_if_different
-                "${slang_runtime_file}"
-                "$<TARGET_FILE_DIR:mingw-vulkan>"
-            VERBATIM
-        )
-    endforeach()
-
-else()
-    file(
-        GLOB slang_runtime_files
-        CONFIGURE_DEPENDS
-        "${slang_lib_dir}/*.so"
-        "${slang_lib_dir}/*.so.*"
-        "${slang_bin_dir}/*.so"
-        "${slang_bin_dir}/*.so.*"
-    )
-
-    foreach(slang_runtime_file IN LISTS slang_runtime_files)
-        add_custom_command(
-            TARGET mingw-vulkan
-            POST_BUILD
-            COMMAND
-                "${CMAKE_COMMAND}" -E copy_if_different
-                "${slang_runtime_file}"
-                "$<TARGET_FILE_DIR:mingw-vulkan>"
-            VERBATIM
-        )
-    endforeach()
+  endif()
 endif()
 
 # ------------------------------------------------------------------------------
@@ -652,8 +538,8 @@ set(
 )
 
 foreach(asset_directory IN LISTS project_asset_directories)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${asset_directory}")
-        add_custom_command(
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${asset_directory}")
+    add_custom_command(
             TARGET mingw-vulkan
             POST_BUILD
             COMMAND
@@ -662,7 +548,7 @@ foreach(asset_directory IN LISTS project_asset_directories)
                 "$<TARGET_FILE_DIR:mingw-vulkan>/${asset_directory}"
             VERBATIM
         )
-    endif()
+  endif()
 endforeach()
 
 # ------------------------------------------------------------------------------
@@ -673,7 +559,6 @@ set_target_properties(
     mingw-vulkan
     PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-        VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:mingw-vulkan>"
 )
 
 # ------------------------------------------------------------------------------
@@ -689,9 +574,9 @@ message(
 )
 
 if(SLANG_ROOT)
-    message(STATUS "Slang source: extracted local installation")
+  message(STATUS "Slang source: extracted local installation")
 elseif(SLANG_ARCHIVE)
-    message(STATUS "Slang source: local archive")
+  message(STATUS "Slang source: local archive")
 else()
-    message(STATUS "Slang source: CPM download")
+  message(STATUS "Slang source: CPM download")
 endif()

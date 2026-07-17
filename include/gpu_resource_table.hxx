@@ -25,105 +25,101 @@ enum class GpuResourceBinding :
  */
 
 enum class GpuResourceBinding : std::uint32_t {
-  sampled_2d = 0,
-  samplers = 1,
-  comparison_samplers = 2,
+    sampled_2d = 0,
+    samplers = 1,
+    comparison_samplers = 2,
 };
 
 enum class GpuResourceTableErrorType : std::uint8_t {
-  invalid_argument,
-  capacity_exceeded,
-  descriptor_layout_creation_failed,
-  descriptor_pool_creation_failed,
-  descriptor_set_allocation_failed,
+    invalid_argument,
+    capacity_exceeded,
+    descriptor_layout_creation_failed,
+    descriptor_pool_creation_failed,
+    descriptor_set_allocation_failed,
 };
 
 struct GpuResourceTableError {
-  GpuResourceTableErrorType type = GpuResourceTableErrorType::invalid_argument;
+    GpuResourceTableErrorType type = GpuResourceTableErrorType::invalid_argument;
 
-  VkResult result = VK_SUCCESS;
+    VkResult result = VK_SUCCESS;
 };
 
 struct GpuResourceTableCreateInfo {
-  std::uint32_t frames_in_flight = 0;
+    std::uint32_t frames_in_flight = 0;
 
-  std::uint32_t image_capacity = 4096;
-  std::uint32_t sampler_capacity = 64;
+    std::uint32_t image_capacity = 4096;
+    std::uint32_t sampler_capacity = 64;
 
-  std::string_view debug_name = "gpu_resource_table";
+    std::string_view debug_name = "gpu_resource_table";
 };
 
 class GpuResourceTable {
 public:
-  GpuResourceTable() = default;
-  ~GpuResourceTable();
+    GpuResourceTable() = default;
+    ~GpuResourceTable();
 
-  GpuResourceTable(GpuResourceTable const &) = delete;
+    GpuResourceTable(GpuResourceTable const &) = delete;
 
-  auto operator=(GpuResourceTable const &) -> GpuResourceTable & = delete;
+    auto operator=(GpuResourceTable const &) -> GpuResourceTable & = delete;
 
-  GpuResourceTable(GpuResourceTable &&other) noexcept;
+    GpuResourceTable(GpuResourceTable &&other) noexcept;
 
-  auto operator=(GpuResourceTable &&other) noexcept -> GpuResourceTable &;
+    auto operator=(GpuResourceTable &&other) noexcept -> GpuResourceTable &;
 
-  [[nodiscard]]
-  static auto create(VulkanContext &context,
-                     GpuResourceTableCreateInfo const &create_info)
-      -> std::expected<GpuResourceTable, GpuResourceTableError>;
+    [[nodiscard]]
+    static auto create(VulkanContext &context, GpuResourceTableCreateInfo const &create_info)
+            -> std::expected<GpuResourceTable, GpuResourceTableError>;
 
-  /*
-   * Call only after the frame fence associated with
-   * frame_index has completed.
-   */
-  [[nodiscard]]
-  auto prepare_frame(std::uint32_t frame_index, ImageStorage const &images,
-                     SamplerStorage const &samplers)
-      -> std::expected<void, GpuResourceTableError>;
+    /*
+     * Call only after the frame fence associated with
+     * frame_index has completed.
+     */
+    [[nodiscard]]
+    auto prepare_frame(std::uint32_t frame_index, ImageStorage const &images, SamplerStorage const &samplers)
+            -> std::expected<void, GpuResourceTableError>;
 
-  auto bind(VkCommandBuffer command_buffer, std::uint32_t frame_index,
-            VkPipelineBindPoint bind_point,
-            VkPipelineLayout pipeline_layout) const noexcept -> void;
+    auto bind(VkCommandBuffer command_buffer, std::uint32_t frame_index, VkPipelineBindPoint bind_point,
+              VkPipelineLayout pipeline_layout) const noexcept -> void;
 
-  [[nodiscard]]
-  auto layout() const noexcept -> VkDescriptorSetLayout {
-    return layout_;
-  }
+    [[nodiscard]]
+    auto layout() const noexcept -> VkDescriptorSetLayout {
+        return layout_;
+    }
 
-  [[nodiscard]]
-  auto descriptor_set(std::uint32_t frame_index) const noexcept
-      -> VkDescriptorSet;
+    [[nodiscard]]
+    auto descriptor_set(std::uint32_t frame_index) const noexcept -> VkDescriptorSet;
 
-  [[nodiscard]]
-  auto image_capacity() const noexcept -> std::uint32_t {
-    return image_capacity_;
-  }
+    [[nodiscard]]
+    auto image_capacity() const noexcept -> std::uint32_t {
+        return image_capacity_;
+    }
 
-  [[nodiscard]]
-  auto sampler_capacity() const noexcept -> std::uint32_t {
-    return sampler_capacity_;
-  }
+    [[nodiscard]]
+    auto sampler_capacity() const noexcept -> std::uint32_t {
+        return sampler_capacity_;
+    }
 
-  auto destroy() noexcept -> void;
+    auto destroy() noexcept -> void;
 
 private:
-  struct FrameState {
-    VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+    struct FrameState {
+        VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
 
-    std::vector<std::uint64_t> image_revisions;
+        std::vector<std::uint64_t> image_revisions;
 
-    std::vector<std::uint64_t> sampler_revisions;
-  };
+        std::vector<std::uint64_t> sampler_revisions;
+    };
 
-  VulkanContext *context_ = nullptr;
+    VulkanContext *context_ = nullptr;
 
-  VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
 
-  VkDescriptorPool pool_ = VK_NULL_HANDLE;
+    VkDescriptorPool pool_ = VK_NULL_HANDLE;
 
-  std::vector<FrameState> frames_;
+    std::vector<FrameState> frames_;
 
-  std::uint32_t image_capacity_ = 0;
-  std::uint32_t sampler_capacity_ = 0;
+    std::uint32_t image_capacity_ = 0;
+    std::uint32_t sampler_capacity_ = 0;
 
-  std::string debug_name_;
+    std::string debug_name_;
 };

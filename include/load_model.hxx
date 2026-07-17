@@ -13,51 +13,51 @@
 #include "geometry_arena.hxx"
 
 struct ModelVertex {
-  glm::vec3 position{};
-  glm::vec3 normal{};
-  glm::vec4 tangent{};
-  glm::vec2 texcoord{};
+    glm::vec3 position{};
+    glm::vec3 normal{};
+    glm::vec4 tangent{};
+    glm::vec2 texcoord{};
 };
 
 struct ModelPrimitive {
-  MeshGeometry geometry{};
-  std::uint32_t material_index = 0;
+    MeshGeometry geometry{};
+    std::uint32_t material_index = 0;
 };
 
 struct ModelMesh {
-  std::vector<ModelPrimitive> primitives;
+    std::vector<ModelPrimitive> primitives;
 };
 
 struct ModelNode {
-  glm::mat4 local_transform{1.0F};
+    glm::mat4 local_transform{1.0F};
 
-  std::uint32_t mesh_index = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t mesh_index = std::numeric_limits<std::uint32_t>::max();
 
-  std::vector<std::uint32_t> children{};
+    std::vector<std::uint32_t> children{};
 };
 
 struct Model {
-  std::vector<ModelMesh> meshes;
-  std::vector<ModelNode> nodes;
-  std::vector<std::uint32_t> scene_roots;
+    std::vector<ModelMesh> meshes;
+    std::vector<ModelNode> nodes;
+    std::vector<std::uint32_t> scene_roots;
 };
 
 enum class ModelLoadErrorType : std::uint8_t {
-  file_not_found,
-  parse_error,
-  unsupported_primitive,
-  missing_position,
-  invalid_accessor,
-  geometry_upload_failed,
+    file_not_found,
+    parse_error,
+    unsupported_primitive,
+    missing_position,
+    invalid_accessor,
+    geometry_upload_failed,
+    tangent_generation_failed,
 };
 
 struct ModelLoadError {
-  ModelLoadErrorType type = ModelLoadErrorType::parse_error;
+    ModelLoadErrorType type = ModelLoadErrorType::parse_error;
 
-  GeometryArenaError geometry_error{};
+    GeometryArenaError geometry_error{};
 };
 
 [[nodiscard]]
-auto load_model(std::filesystem::path const &path,
-                GeometryArena &geometry_arena)
-    -> std::expected<Model, ModelLoadError>;
+auto load_model(std::filesystem::path const &path, GeometryArena &geometry_arena)
+        -> std::expected<Model, ModelLoadError>;

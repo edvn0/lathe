@@ -1,11 +1,21 @@
 // assets/shaders/forward_geom.slang
 import bindless;
 
+/**
+struct ModelVertex {
+    glm::vec3 position{};
+    glm::vec3 normal{};
+    glm::vec4 tangent{};
+    glm::vec2 texcoord{};
+};
+*/
+
 struct Vertex
 {
     float3 position;
     float3 normal;
-    float2 texture_coordinate;
+    float4 tangent;
+    float2 uvs;
 };
 
 struct GpuDraw
@@ -66,7 +76,7 @@ VertexOutput mainVs(
     output.position = mul(pc.view_projection, world_position);
     output.world_position = world_position.xyz;
     output.world_normal = world_normal;
-    output.texture_coordinate = vertex.texture_coordinate;
+    output.texture_coordinate = vertex.uvs;
     output.material_index = draw.material_index;
 
     return output;

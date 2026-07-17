@@ -16,165 +16,152 @@
 #include <type_traits>
 
 enum class GeometryArenaErrorType : std::uint8_t {
-  invalid_argument,
-  unsupported_index_type,
-  out_of_memory,
-  size_overflow,
-  device_error,
+    invalid_argument,
+    unsupported_index_type,
+    out_of_memory,
+    size_overflow,
+    device_error,
 };
 
 struct GeometryArenaError {
-  GeometryArenaErrorType type = GeometryArenaErrorType::invalid_argument;
+    GeometryArenaErrorType type = GeometryArenaErrorType::invalid_argument;
 
-  DeviceError device_error{};
+    DeviceError device_error{};
 };
 
 struct GeometrySlice {
-  VkDeviceSize offset = 0;
-  VkDeviceSize size = 0;
-  VkDeviceSize reserved_size = 0;
+    VkDeviceSize offset = 0;
+    VkDeviceSize size = 0;
+    VkDeviceSize reserved_size = 0;
 
-  [[nodiscard]]
-  auto valid() const noexcept -> bool {
-    return size != 0;
-  }
+    [[nodiscard]]
+    auto valid() const noexcept -> bool {
+        return size != 0;
+    }
 };
 
 struct VertexSlice {
-  GeometrySlice bytes{};
-  std::uint32_t vertex_count = 0;
-  std::uint32_t vertex_stride = 0;
-  VkDeviceSize alignment = 1;
+    GeometrySlice bytes{};
+    std::uint32_t vertex_count = 0;
+    std::uint32_t vertex_stride = 0;
+    VkDeviceSize alignment = 1;
 };
 
 struct IndexSlice {
-  GeometrySlice bytes{};
-  std::uint32_t index_count = 0;
-  VkIndexType index_type = VK_INDEX_TYPE_UINT32;
+    GeometrySlice bytes{};
+    std::uint32_t index_count = 0;
+    VkIndexType index_type = VK_INDEX_TYPE_UINT32;
 };
 
 struct MeshGeometry {
-  VertexSlice vertices{};
-  IndexSlice indices{};
+    VertexSlice vertices{};
+    IndexSlice indices{};
 };
 
 struct GeometryArenaCreateInfo {
-  VkDeviceSize capacity = 0;
-  std::string_view debug_name = "geometry_arena";
+    VkDeviceSize capacity = 0;
+    std::string_view debug_name = "geometry_arena";
 };
 
 struct GeometryArena {
-  GeometryArena() = default;
+    GeometryArena() = default;
 
-  GeometryArena(GeometryArena const &) = delete;
-  auto operator=(GeometryArena const &) -> GeometryArena & = delete;
+    GeometryArena(GeometryArena const &) = delete;
+    auto operator=(GeometryArena const &) -> GeometryArena & = delete;
 
-  GeometryArena(GeometryArena &&) noexcept = default;
-  auto operator=(GeometryArena &&) noexcept -> GeometryArena & = default;
+    GeometryArena(GeometryArena &&) noexcept = default;
+    auto operator=(GeometryArena &&) noexcept -> GeometryArena & = default;
 
-  auto destroy(VulkanContext &) -> void;
+    auto destroy(VulkanContext &) -> void;
 
-  [[nodiscard]]
-  static auto create(VulkanContext &ctx,
-                     GeometryArenaCreateInfo const &create_info)
-      -> std::expected<GeometryArena, GeometryArenaError>;
+    [[nodiscard]]
+    static auto create(VulkanContext &ctx, GeometryArenaCreateInfo const &create_info)
+            -> std::expected<GeometryArena, GeometryArenaError>;
 
-  [[nodiscard]]
-  auto allocate_vertices(std::span<const std::byte> data,
-                         std::uint32_t vertex_stride, VkDeviceSize alignment)
-      -> std::expected<VertexSlice, GeometryArenaError>;
+    [[nodiscard]]
+    auto allocate_vertices(std::span<const std::byte> data, std::uint32_t vertex_stride, VkDeviceSize alignment)
+            -> std::expected<VertexSlice, GeometryArenaError>;
 
-  template <typename Vertex>
-    requires std::is_trivially_copyable_v<Vertex>
-  [[nodiscard]]
-  auto allocate_vertices(std::span<const Vertex> vertices)
-      -> std::expected<VertexSlice, GeometryArenaError> {
-    return allocate_vertices(std::as_bytes(vertices),
-                             static_cast<std::uint32_t>(sizeof(Vertex)),
-                             alignof(Vertex));
-  }
-
-  [[nodiscard]]
-  auto allocate_indices(std::span<const std::byte> data, VkIndexType index_type)
-      -> std::expected<IndexSlice, GeometryArenaError>;
-
-  template <typename Index>
-    requires(std::same_as<Index, std::uint16_t> ||
-             std::same_as<Index, std::uint32_t>)
-  [[nodiscard]]
-  auto allocate_indices(std::span<const Index> indices)
-      -> std::expected<IndexSlice, GeometryArenaError> {
-    constexpr auto index_type = [] {
-      if constexpr (std::same_as<Index, std::uint16_t>) {
-        return VK_INDEX_TYPE_UINT16;
-      } else {
-        return VK_INDEX_TYPE_UINT32;
-      }
-    }();
-
-    return allocate_indices(std::as_bytes(indices), index_type);
-  }
-
-  template <typename Vertex, typename Index>
-    requires(std::is_trivially_copyable_v<Vertex> &&
-             (std::same_as<Index, std::uint16_t> ||
-              std::same_as<Index, std::uint32_t>))
-  [[nodiscard]]
-  auto allocate_mesh(std::span<const Vertex> vertices,
-                     std::span<const Index> indices)
-      -> std::expected<MeshGeometry, GeometryArenaError> {
-    auto const checkpoint = next_offset;
-
-    auto vertex_slice = allocate_vertices(vertices);
-    if (!vertex_slice) {
-      return std::unexpected(vertex_slice.error());
+    template<typename Vertex>
+        requires std::is_trivially_copyable_v<Vertex>
+    [[nodiscard]]
+    auto allocate_vertices(std::span<const Vertex> vertices) -> std::expected<VertexSlice, GeometryArenaError> {
+        return allocate_vertices(std::as_bytes(vertices), static_cast<std::uint32_t>(sizeof(Vertex)), alignof(Vertex));
     }
 
-    auto index_slice = allocate_indices(indices);
-    if (!index_slice) {
-      next_offset = checkpoint;
-      return std::unexpected(index_slice.error());
+    [[nodiscard]]
+    auto allocate_indices(std::span<const std::byte> data, VkIndexType index_type)
+            -> std::expected<IndexSlice, GeometryArenaError>;
+
+    template<typename Index>
+        requires(std::same_as<Index, std::uint16_t> || std::same_as<Index, std::uint32_t>)
+    [[nodiscard]]
+    auto allocate_indices(std::span<const Index> indices) -> std::expected<IndexSlice, GeometryArenaError> {
+        constexpr auto index_type = [] {
+            if constexpr (std::same_as<Index, std::uint16_t>) {
+                return VK_INDEX_TYPE_UINT16;
+            } else {
+                return VK_INDEX_TYPE_UINT32;
+            }
+        }();
+
+        return allocate_indices(std::as_bytes(indices), index_type);
     }
 
-    return MeshGeometry{
-        .vertices = *vertex_slice,
-        .indices = *index_slice,
-    };
-  }
+    template<typename Vertex, typename Index>
+        requires(std::is_trivially_copyable_v<Vertex> &&
+                 (std::same_as<Index, std::uint16_t> || std::same_as<Index, std::uint32_t>) )
+    [[nodiscard]]
+    auto allocate_mesh(std::span<const Vertex> vertices, std::span<const Index> indices)
+            -> std::expected<MeshGeometry, GeometryArenaError> {
+        auto const checkpoint = next_offset;
 
-  [[nodiscard]]
-  auto device_address(GeometrySlice const &slice) const noexcept
-      -> VkDeviceAddress {
-    return buffer.device_address + slice.offset;
-  }
+        auto vertex_slice = allocate_vertices(vertices);
+        if (!vertex_slice) {
+            return std::unexpected(vertex_slice.error());
+        }
 
-  [[nodiscard]]
-  auto vertex_address(VertexSlice const &slice) const noexcept
-      -> VkDeviceAddress {
-    return device_address(slice.bytes);
-  }
+        auto index_slice = allocate_indices(indices);
+        if (!index_slice) {
+            next_offset = checkpoint;
+            return std::unexpected(index_slice.error());
+        }
 
-  [[nodiscard]]
-  auto used_size() const noexcept -> VkDeviceSize {
-    return next_offset;
-  }
+        return MeshGeometry{
+                .vertices = *vertex_slice,
+                .indices = *index_slice,
+        };
+    }
 
-  [[nodiscard]]
-  auto remaining_size() const noexcept -> VkDeviceSize {
-    return capacity - next_offset;
-  }
+    [[nodiscard]]
+    auto device_address(GeometrySlice const &slice) const noexcept -> VkDeviceAddress {
+        return buffer.device_address + slice.offset;
+    }
 
-  Buffer buffer{};
+    [[nodiscard]]
+    auto vertex_address(VertexSlice const &slice) const noexcept -> VkDeviceAddress {
+        return device_address(slice.bytes);
+    }
+
+    [[nodiscard]]
+    auto used_size() const noexcept -> VkDeviceSize {
+        return next_offset;
+    }
+
+    [[nodiscard]]
+    auto remaining_size() const noexcept -> VkDeviceSize {
+        return capacity - next_offset;
+    }
+
+    Buffer buffer{};
 
 private:
-  [[nodiscard]]
-  auto allocate_bytes(VkDeviceSize size, VkDeviceSize alignment)
-      -> std::expected<GeometrySlice, GeometryArenaError>;
+    [[nodiscard]]
+    auto allocate_bytes(VkDeviceSize size, VkDeviceSize alignment) -> std::expected<GeometrySlice, GeometryArenaError>;
 
-  [[nodiscard]]
-  auto write(GeometrySlice const &slice, std::span<const std::byte> data)
-      -> std::expected<void, GeometryArenaError>;
+    [[nodiscard]]
+    auto write(GeometrySlice const &slice, std::span<const std::byte> data) -> std::expected<void, GeometryArenaError>;
 
-  VkDeviceSize capacity = 0;
-  VkDeviceSize next_offset = 0;
+    VkDeviceSize capacity = 0;
+    VkDeviceSize next_offset = 0;
 };
