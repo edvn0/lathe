@@ -1,9 +1,11 @@
 #include "image.hxx"
 
+#include <expected>
 #include <string>
 #include <type_traits>
 #include <utility>
 
+#include "buffer.hxx"
 #include "context.hxx"
 
 namespace {
@@ -200,6 +202,7 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
             .pool = VK_NULL_HANDLE,
             .pUserData = nullptr,
             .priority = 1.0F,
+            .minAlignment = 0,
     };
 
     Image image;
@@ -332,6 +335,117 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
     auto const view_name = std::string{create_info.debug_name} + ".view";
 
     set_object_name(context.device, VK_OBJECT_TYPE_IMAGE_VIEW, object_handle(image.view_), view_name);
+
+    return image;
+}
+
+auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, std::span<const std::byte> pixels)
+        -> std::expected<Image, ImageError> {
+    auto image = create(context, create_info);
+    if (!image) {
+        return std::unexpected(image.error());
+    }
+
+    auto maybe_staging = Buffer::create(context, BufferCreateInfo{
+                                                         .size = pixels.size_bytes(),
+                                                         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                         .memory = BufferMemory::upload,
+                                                         .debug_name = "image_upload",
+                                                 });
+    if (!maybe_staging) {
+        return std::unexpected(ImageError{
+                .type = ImageErrorType::image_creation_failed,
+                .buffer_error = maybe_staging.error(),
+        });
+    }
+
+    auto staging = std::move(*maybe_staging);
+    if (!staging.write(0, pixels)) {
+        return std::unexpected(ImageError{
+                .type = ImageErrorType::image_creation_failed,
+                .result = VK_ERROR_DEVICE_LOST,
+        });
+    }
+
+    context.one_time_submit([&](VkCommandBuffer buf) {
+        VkImageMemoryBarrier2 barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+        barrier.srcAccessMask = 0;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.image = image->image();
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, create_info.mip_levels, 0, 1};
+
+        VkDependencyInfo dep_info{};
+        dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep_info.imageMemoryBarrierCount = 1;
+        dep_info.pImageMemoryBarriers = &barrier;
+
+        vkCmdPipelineBarrier2(buf, &dep_info);
+
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {create_info.extent.width, create_info.extent.height, 1};
+        vkCmdCopyBufferToImage(buf, staging.buffer, image->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+        // 3. Generate Mips
+        std::int32_t mip_width = static_cast<std::int32_t>(create_info.extent.width);
+        std::int32_t mip_height = static_cast<std::int32_t>(create_info.extent.height);
+
+        for (uint32_t i = 1; i < create_info.mip_levels; i++) {
+            // Transition i-1 to TRANSFER_SRC_OPTIMAL
+            barrier.subresourceRange.baseMipLevel = i - 1;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT; // from buffer copy or previous blit
+            barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            vkCmdPipelineBarrier2(buf, &dep_info);
+
+            // Calculate next mip dimensions (preventing going below 1)
+            std::int32_t next_width = mip_width > 1 ? mip_width / 2 : 1;
+            std::int32_t next_height = mip_height > 1 ? mip_height / 2 : 1;
+
+            VkImageBlit blit{};
+            blit.srcOffsets[0] = {0, 0, 0};
+            blit.srcOffsets[1] = {mip_width, mip_height, 1};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1};
+            blit.dstOffsets[0] = {0, 0, 0};
+            blit.dstOffsets[1] = {next_width, next_height, 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+
+            vkCmdBlitImage(buf, image->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image->image(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+            // Transition i-1 to SHADER_READ_ONLY_OPTIMAL
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            vkCmdPipelineBarrier2(buf, &dep_info);
+
+            mip_width = next_width;
+            mip_height = next_height;
+        }
+
+        // 4. Transition the final mip level
+        barrier.subresourceRange.baseMipLevel = create_info.mip_levels - 1;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier2(buf, &dep_info);
+    });
 
     return image;
 }

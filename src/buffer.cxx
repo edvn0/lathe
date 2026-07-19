@@ -178,6 +178,12 @@ auto Buffer::flush(VkDeviceSize offset, VkDeviceSize flush_size) -> std::expecte
     return {};
 }
 
+auto Buffer::zero() -> std::expected<void, DeviceError> {
+    std::memset(mapped_data(), 0, size());
+
+    return flush(0, size());
+}
+
 auto Buffer::invalidate(VkDeviceSize offset, VkDeviceSize invalidate_size) -> std::expected<void, DeviceError> {
     if (!validate_range(offset, invalidate_size)) {
         return std::unexpected{make_buffer_error("Buffer invalidate range is invalid", VK_ERROR_MEMORY_MAP_FAILED)};
@@ -272,6 +278,10 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
             return std::unexpected{
                     make_buffer_error("vkGetBufferDeviceAddress returned zero", VK_ERROR_INITIALIZATION_FAILED)};
         }
+    }
+
+    if (!result.zero()) {
+        return std::unexpected(make_buffer_error("Could not memset to zero", VK_ERROR_MEMORY_MAP_FAILED));
     }
 
     return std::expected<Buffer, DeviceError>{std::in_place, std::move(result)};

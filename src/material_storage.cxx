@@ -367,3 +367,23 @@ auto MaterialStorage::slot_for(MaterialHandle handle) const noexcept -> Slot con
 
     return &slot;
 }
+
+auto to_gpu_material(MaterialCreateInfo const &create_info) noexcept -> GpuMaterial {
+    return {
+            .base_colour_factor = create_info.base_colour_factor,
+            .emissive_factor = create_info.emissive_factor,
+            .emissive_strength = create_info.emissive_strength,
+            .metallic_factor = create_info.metallic_factor,
+            .roughness_factor = create_info.roughness_factor,
+            .normal_scale = create_info.normal_scale,
+            .occlusion_strength = create_info.occlusion_strength,
+            .base_colour_texture = create_info.base_colour_texture.index,
+            .normal_texture = create_info.normal_texture.index,
+            .metallic_roughness_texture = create_info.metallic_roughness_texture.index,
+            .occlusion_texture = create_info.occlusion_texture.index,
+            .emissive_texture = create_info.emissive_texture.index,
+            .sampler_index = create_info.sampler.index,
+            .alpha_mode = create_info.alpha_mode,
+            .alpha_cutoff = create_info.alpha_cutoff,
+    };
+}

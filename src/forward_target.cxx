@@ -101,6 +101,7 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
             .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
             .image_type = VK_IMAGE_TYPE_2D,
             .view_type = VK_IMAGE_VIEW_TYPE_2D,
+            .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
             .flags = 0,
             .samples = create_info.samples,
             .tiling = VK_IMAGE_TILING_OPTIMAL,

@@ -1,3 +1,4 @@
+#include <random>
 #include <volk.h>
 
 #include <GLFW/glfw3.h>
@@ -10,6 +11,9 @@
 #include <cstdlib>
 #include <expected>
 #include <filesystem>
+#include <glm/ext/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/random.hpp>
 #include <limits>
 #include <mutex>
 #include <string_view>
@@ -22,6 +26,7 @@
 #include "context.hxx"
 #include "logger.hxx"
 #include "renderer.hxx"
+#include "shader_hot_reload_watcher.hxx"
 #include "swapchain.hxx"
 
 namespace {
@@ -37,20 +42,85 @@ namespace {
     constexpr std::array<const char *, 0> validation_layers{};
 #endif
 
+    struct SceneTransform {
+        glm::vec3 position{0.0F};
+        glm::quat rotation{};
+        glm::vec3 scale{1.0F};
+
+        auto matrix() const {
+            return glm::translate(glm::mat4{1.0F}, position) * glm::mat4_cast(rotation) *
+                   glm::scale(glm::mat4{1.0F}, scale);
+        }
+    };
+
     struct SceneObject {
         ModelHandle model{};
-        glm::mat4 transform{1.0F};
+        SceneTransform transform{};
     };
 
     struct RenderScene {
         std::vector<SceneObject> objects;
     };
 
+    struct KeyPressedEvent {
+        std::int32_t key{};
+        std::int32_t modifiers{};
+    };
+
+    struct KeyReleasedEvent {
+        std::int32_t key{};
+        std::int32_t modifiers{};
+    };
+
     struct Application {
-        explicit Application(VulkanContext &context) noexcept : renderer{context} {}
+        explicit Application(VulkanContext &context) noexcept : renderer{context} {
+            std::array const shader_directories{
+                    std::filesystem::path{"assets/shaders"},
+            };
+            if (!shader_watcher_.start(renderer, shader_directories)) {
+                error("Shader hot-reload watcher failed to start -- shaders will not live-reload this run");
+            }
+        }
+        ~Application() { shader_watcher_.stop(); }
 
         Renderer renderer;
         RenderScene scene;
+        ShaderHotReloadWatcher shader_watcher_;
+
+        ModelHandle model;
+
+        auto on_event(KeyPressedEvent ev) -> bool {
+            if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL) {
+                recreate_entities();
+            }
+
+            return true;
+        }
+        auto on_event(KeyReleasedEvent) -> bool { return true; }
+
+        auto recreate_entities() -> void {
+            scene.objects.clear();
+
+            static std::random_device r; // 1
+            static std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()}; // 2
+            static std::mt19937 eng(seed);
+            static std::uniform_real_distribution<float> urd(-20, 20);
+
+            for (auto i = 0; i < 10; i++) {
+                for (auto j = 0; j < 10; j++) {
+                    for (auto k = 0; k < 10; k++) {
+                        scene.objects.emplace_back(model, SceneTransform{
+                                                                  .position =
+                                                                          glm::vec3{
+                                                                                  urd(eng),
+                                                                                  urd(eng),
+                                                                                  urd(eng),
+                                                                          },
+                                                          });
+                    }
+                }
+            }
+        }
     };
 
     auto vk_result_name(VkResult result) noexcept -> std::string_view {
@@ -217,10 +287,39 @@ namespace {
         }
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-        context.window = glfwCreateWindow(1280, 720, "GLFW Vulkan cross-compile test", nullptr, nullptr);
+        std::int32_t monitor_count{};
+        glfwGetMonitors(&monitor_count);
+        auto monitors = glfwGetMonitors(&monitor_count);
+        std::span<GLFWmonitor *> ms{monitors, static_cast<std::uint32_t>(monitor_count)};
+        GLFWmonitor *selected = nullptr;
+        std::int32_t max_width = std::numeric_limits<std::int32_t>::min();
+        debug("Evaluating monitors...");
+        for (auto &m: ms) {
+            auto name = glfwGetMonitorName(m);
+            auto mode = glfwGetVideoMode(m);
+            debug("\t{} - {}", name, mode->width);
+            if (mode->width > max_width) {
+                selected = m;
+                max_width = mode->width;
+            }
+        }
+        debug("Done.");
+
+        if (selected == nullptr) {
+            error("Could not find a monitor");
+            return false;
+        }
+
+
+        auto monitor = selected;
+        const GLFWvidmode *mode = glfwGetVideoMode(monitor);
+        glfwWindowHint(GLFW_RED_BITS, mode->redBits);
+        glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
+        glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
+        glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
+        context.window = glfwCreateWindow(mode->width, mode->height, "VK", monitor, NULL);
 
         if (context.window == nullptr) {
             error("glfwCreateWindow failed");
@@ -583,7 +682,9 @@ namespace {
         vulkan14_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
         vulkan14_features.maintenance5 = VK_TRUE;
 
-        VkPhysicalDeviceFeatures const enabled_features{};
+        VkPhysicalDeviceFeatures enabled_features{};
+        enabled_features.multiDrawIndirect = VK_TRUE;
+        enabled_features.samplerAnisotropy = VK_TRUE;
 
         VkDeviceCreateInfo const create_info{
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -619,6 +720,28 @@ namespace {
         }
 
         info("Logical Vulkan device created");
+
+        VkCommandPoolCreateInfo command_pool_create_info{};
+        command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        command_pool_create_info.queueFamilyIndex = context.queue_families.graphics;
+        command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        if (vkCreateCommandPool(context.device, &command_pool_create_info, nullptr, &context.one_time_pool) !=
+            VK_SUCCESS) {
+            error("Could not allocate a one time command pool;");
+            return false;
+        }
+
+        VkCommandBufferAllocateInfo command_buffer_allocate_info{};
+        command_buffer_allocate_info.commandPool = context.one_time_pool;
+        command_buffer_allocate_info.commandBufferCount =
+                static_cast<std::uint32_t>(context.one_time_command_buffers.size());
+        command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        command_buffer_allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        if (vkAllocateCommandBuffers(context.device, &command_buffer_allocate_info,
+                                     context.one_time_command_buffers.data()) != VK_SUCCESS) {
+            error("Could not allocate the command buffers");
+            return false;
+        }
 
         return true;
     }
@@ -705,7 +828,7 @@ namespace {
 
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
         for (auto const &object: application.scene.objects) {
-            auto result = application.renderer.submit_model(object.model, object.transform);
+            auto result = application.renderer.submit_model(object.model, object.transform.matrix());
 
             if (!result) {
                 return std::unexpected(result.error());
@@ -737,17 +860,11 @@ namespace {
         }
 
         auto model = application.renderer.load_model("assets/models/test_cube.glb");
-
         if (!model) {
             error("Could not load model: {}", static_cast<int>(model.error().type));
-
             return false;
         }
-
-        application.scene.objects.push_back(SceneObject{
-                .model = *model,
-                .transform = glm::mat4{1.0F},
-        });
+        application.model = *model;
 
         return true;
     }
@@ -885,40 +1002,63 @@ namespace {
         }
     }
 
+    struct WindowData {
+        VulkanContext *ctx;
+        Application *app;
+    };
+
     auto framebuffer_size_callback(GLFWwindow *window, int width, int height) noexcept -> void {
-        auto *context = static_cast<VulkanContext *>(glfwGetWindowUserPointer(window));
+        auto *context = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->ctx;
 
         if (context == nullptr) {
             return;
         }
 
         context->framebuffer_width.store(width, std::memory_order_release);
-
         context->framebuffer_height.store(height, std::memory_order_release);
-
         context->framebuffer_dirty.store(true, std::memory_order_release);
-
         context->render_wake_condition.notify_one();
     }
 
     auto window_refresh_callback(GLFWwindow *window) noexcept -> void {
-        auto *context = static_cast<VulkanContext *>(glfwGetWindowUserPointer(window));
+        auto *context = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->ctx;
 
         if (context != nullptr) {
             context->render_wake_condition.notify_one();
         }
     }
 
-    auto install_window_callbacks(VulkanContext &context) noexcept -> void {
-        glfwSetWindowUserPointer(context.window, &context);
+    auto event_callback(GLFWwindow *window, int key, int, int action, int mods) -> void {
+        auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
+
+        if (action == GLFW_PRESS && app->on_event(KeyPressedEvent{key, mods})) {
+        }
+
+        if (action == GLFW_RELEASE && app->on_event(KeyReleasedEvent{key, mods})) {
+        }
+    }
+
+
+    auto install_window_callbacks(VulkanContext &context, Application &app) noexcept -> void {
+        static WindowData wd{};
+        wd.app = &app;
+        wd.ctx = &context;
+        glfwSetWindowUserPointer(context.window, &wd);
 
         glfwSetFramebufferSizeCallback(context.window, framebuffer_size_callback);
-
         glfwSetWindowRefreshCallback(context.window, window_refresh_callback);
+        glfwSetKeyCallback(context.window, event_callback);
     }
 
     auto destroy_context(VulkanContext &context) noexcept -> void {
         context.swapchain.destroy();
+
+        if (context.one_time_pool != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(context.device, context.one_time_pool, nullptr);
+
+            context.one_time_pool = VK_NULL_HANDLE;
+            context.one_time_command_buffers.fill(VK_NULL_HANDLE);
+        }
 
         if (context.allocator != VK_NULL_HANDLE) {
             vmaDestroyAllocator(context.allocator);
@@ -987,9 +1127,9 @@ auto main() -> int {
         return EXIT_FAILURE;
     }
 
-    install_window_callbacks(context);
 
     Application application{context};
+    install_window_callbacks(context, application);
 
     if (!initialize_application(context, application)) {
         destroy_application(context, application);
@@ -999,6 +1139,7 @@ auto main() -> int {
 
     info("Initialization complete; close "
          "the window to exit");
+
 
     std::jthread render_thread{[&context, &application](std::stop_token stop_token) {
         render_loop(std::move(stop_token), context, application);

@@ -1,14 +1,4 @@
-// assets/shaders/forward_geom.slang
 import bindless;
-
-/**
-struct ModelVertex {
-    glm::vec3 position{};
-    glm::vec3 normal{};
-    glm::vec4 tangent{};
-    glm::vec2 texcoord{};
-};
-*/
 
 struct Vertex
 {
@@ -20,17 +10,44 @@ struct Vertex
 
 struct GpuDraw
 {
-    // Matches VkDeviceAddress on the C++ side.
     Ptr<Vertex> vertex_address;
 
     uint material_index;
     uint transform_index;
 };
 
+enum class AlphaMode : uint {
+    opaque,
+    mask,
+    blend,
+};
+
+struct Material {
+    float colour[4];
+    float emissive[3];
+    float emissive_strength = 0.0F;
+    float metallic_factor = 1.0F;
+    float roughness_factor = 1.0F;
+    float normal_scale = 1.0F;
+    float occlusion_strength = 1.0F;
+
+    uint base_colour_texture = 0;
+    uint normal_texture = 2;
+    uint metallic_roughness_texture = 3;
+    uint occlusion_texture = 4;
+
+    uint emissive_texture = 5;
+    uint sampler_index = 0;
+
+    AlphaMode alpha_mode = AlphaMode.opaque;
+    float alpha_cutoff = 0.5F;
+};
+
 struct PC
 {
     Ptr<GpuDraw> draws;
     Ptr<float4x4> transforms;
+    Ptr<Material> materials;
 
     float4x4 view_projection;
 };
@@ -41,6 +58,7 @@ struct VertexOutput
 
     float3 world_position;
     float3 world_normal;
+    float4 world_tangent; // xyz = tangent, w = handedness sign
     float2 texture_coordinate;
 
     nointerpolation uint material_index;
@@ -65,10 +83,19 @@ VertexOutput mainVs(
 
     // This is correct for uniform scale and rotation.
     // Use inverse-transpose when non-uniform scaling is supported.
+    float3x3 normal_matrix = (float3x3)model;
+
     float3 world_normal = normalize(
         mul(
-            (float3x3)model,
+            normal_matrix,
             vertex.normal
+        )
+    );
+
+    float3 world_tangent = normalize(
+        mul(
+            normal_matrix,
+            vertex.tangent.xyz
         )
     );
 
@@ -76,6 +103,7 @@ VertexOutput mainVs(
     output.position = mul(pc.view_projection, world_position);
     output.world_position = world_position.xyz;
     output.world_normal = world_normal;
+    output.world_tangent = float4(world_tangent, vertex.tangent.w);
     output.texture_coordinate = vertex.uvs;
     output.material_index = draw.material_index;
 
@@ -88,38 +116,47 @@ struct OutputFS
 };
 
 [shader("fragment")]
-OutputFS mainFs(VertexOutput input)
+OutputFS mainFs(VertexOutput input, uniform PC pc)
 {
     float3 normal = normalize(input.world_normal);
+    float3 tangent = normalize(input.world_tangent.xyz);
+
+    // Re-orthogonalize in case interpolation skewed the basis.
+    tangent = normalize(tangent - normal * dot(normal, tangent));
+    float3 bitangent = cross(normal, tangent) * input.world_tangent.w;
+
+    float3x3 tbn = float3x3(tangent, bitangent, normal);
 
     // Temporary directional lighting until material/image access is connected.
     float3 light_direction = normalize(
         float3(0.4, 0.8, 0.25)
     );
 
-    float ndotl = saturate(dot(normal, light_direction));
+    const var material = pc.materials[input.material_index];
+    const var texture = sampled_2d[NonUniformResourceIndex(material.base_colour_texture)];
+    const var normal_texture = sampled_2d[NonUniformResourceIndex(material.normal_texture)];
+    const var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
 
-    float3 base_colour = float3(
-        0.72,
-        0.76,
-        0.82
-    );
+    float2 uv = float2(input.texture_coordinate.x, 1.0 - input.texture_coordinate.y);
 
-    float debug_tint =
-    float(input.material_index & 1) * 0.05;
+    float3 tangent_normal = normal_texture.Sample(sampler, uv).xyz * 2.0 - 1.0;
+    tangent_normal.xy *= material.normal_scale;
+    tangent_normal = normalize(tangent_normal);
 
+    float3 shading_normal = normalize(mul(tangent_normal, tbn));
 
+    float ndotl = saturate(dot(shading_normal, light_direction));
 
-    float3 ambient = base_colour * 0.08;
+    var base_colour = texture.Sample(sampler, uv).xyz;
+
+    float3 ambient = base_colour;
     float3 diffuse = base_colour * ndotl;
 
-    /* OutputFS output;
-output.colour = float4(
-    ambient + diffuse + debug_tint,
-    1.0
-); */
-OutputFS output;
-output.colour = float4(1.0, 0.0, 0.0, 1.0);
+    OutputFS output;
+    output.colour = float4(
+        ambient + diffuse,
+        1.0
+    );
 
     return output;
 }

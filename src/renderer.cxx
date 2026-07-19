@@ -4,17 +4,38 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <glm/ext/matrix_clip_space.hpp>
+#include <glm/ext/matrix_transform.hpp>
 #include <limits>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "glm/ext/matrix_clip_space.hpp"
-#include "glm/ext/matrix_transform.hpp"
+#include "context.hxx"
 #include "gpu_resource_table.hxx"
 #include "logger.hxx"
+#include "material_storage.hxx"
 #include "sampler_storage.hxx"
 #include "slang_compiler.hxx"
+
+namespace {
+    struct ForwardPushConstants {
+        VkDeviceAddress draw_buffer_address;
+        VkDeviceAddress transform_buffer_address;
+        VkDeviceAddress material_buffer_address;
+        glm::mat4 view_projection;
+    };
+
+    struct CompositePushConstants {
+        std::uint32_t hdr_texture_index;
+        std::uint32_t sampler_index;
+        float exposure;
+        std::uint32_t padding;
+    };
+
+    static_assert(sizeof(CompositePushConstants) == 16);
+} // namespace
 
 namespace {
     auto transition_forward_target_to_attachments(VkCommandBuffer command_buffer, Image const &hdr,
@@ -201,8 +222,8 @@ namespace {
                 .y = static_cast<float>(extent.height),
                 .width = static_cast<float>(extent.width),
                 .height = -static_cast<float>(extent.height),
-                .minDepth = 0.0F,
-                .maxDepth = 1.0F,
+                .minDepth = 1.0F,
+                .maxDepth = 0.0F,
         };
 
         VkRect2D const scissor{
@@ -222,7 +243,7 @@ namespace {
 
         vkCmdSetCullMode(command_buffer, VK_CULL_MODE_BACK_BIT);
 
-        vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+        vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_CLOCKWISE);
 
         vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
 
@@ -241,8 +262,8 @@ namespace {
                 .y = 0.0F,
                 .width = static_cast<float>(extent.width),
                 .height = static_cast<float>(extent.height),
-                .minDepth = 0.0F,
-                .maxDepth = 1.0F,
+                .minDepth = 1.0F,
+                .maxDepth = 0.0F,
         };
 
         VkRect2D const scissor{
@@ -290,6 +311,13 @@ namespace {
         };
     }
 
+    auto make_pipeline_graph_error(PipelineGraphError const &error) -> RendererError {
+        return RendererError{
+                .type = RendererErrorType::pipeline_graph_error,
+                .pipeline_graph_error = error,
+        };
+    }
+
     auto make_device_error(DeviceError const &error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::device_error,
@@ -308,13 +336,6 @@ namespace {
         return RendererError{
                 .type = RendererErrorType::compiler_error,
                 .compiler_error = error,
-        };
-    }
-
-    auto make_pipeline_storage_error(PipelineStorageError const &error) -> RendererError {
-        return RendererError{
-                .type = RendererErrorType::pipeline_storage_error,
-                .pipeline_storage_error = error,
         };
     }
 
@@ -432,194 +453,112 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     gpu_resource_table_ = std::move(*gpu_resource_table);
 
-    auto pipelines =
-            PipelineStorage::create(context_, PipelineStorageCreateInfo{
-                                                      .capacity = create_info.pipeline_capacity,
+    auto pipeline_graph = PipelineGraphRepository::create(
+            context_, PipelineGraphCreateInfo{
+                              .pipeline_capacity = create_info.pipeline_capacity,
+                              .frames_in_flight = create_info.frames_in_flight,
+                              .global_descriptor_set_layout = gpu_resource_table_.layout(),
+                              .debug_name = "renderer.pipelines",
+                      });
 
-                                                      .global_descriptor_set_layout = gpu_resource_table_.layout(),
+    if (!pipeline_graph) {
+        destroy();
 
-                                                      .debug_name = "renderer.pipelines",
-                                              });
-
-    if (!pipelines) {
-        return std::unexpected(make_pipeline_storage_error(pipelines.error()));
+        return std::unexpected(make_pipeline_graph_error(pipeline_graph.error()));
     }
 
-    pipeline_storage_ = std::move(*pipelines);
+
+    pipeline_graph_ = std::move(*pipeline_graph);
     image_storage_ = std::move(*image_storage);
     sampler_storage_ = std::move(*sampler_storage);
     geometry_arena_ = std::move(*geometry_arena);
     material_storage_ = std::move(*material_storage);
 
     {
-        auto compiled_vertex = compiler.compile(renderer::ShaderCompileRequest{
-                .source_path = "assets/shaders/forward_geom.slang",
-                .entry_point = "mainVs",
-                .stage = renderer::ShaderStage::vertex,
-                .include_directories = {},
-                .defines = {},
-        });
-
-        if (!compiled_vertex) {
-            destroy();
-
-            return std::unexpected(make_compiler_error(compiled_vertex.error()));
-        }
-
-        auto compiled_fragment = compiler.compile(renderer::ShaderCompileRequest{
-                .source_path = "assets/shaders/forward_geom.slang",
-                .entry_point = "mainFs",
-                .stage = renderer::ShaderStage::fragment,
-                .include_directories = {},
-                .defines = {},
-        });
-
-        if (!compiled_fragment) {
-            destroy();
-
-            return std::unexpected(make_compiler_error(compiled_fragment.error()));
-        }
-
-        std::array<ShaderStageInfo, 2> const stages{
-                ShaderStageInfo{
-                        .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                        .spirv = compiled_vertex->spirv,
-                        .entry_point = "mainVs",
-                        .flags = 0,
-                        .specialization_info = nullptr,
-                },
-                ShaderStageInfo{
-                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                        .spirv = compiled_fragment->spirv,
-                        .entry_point = "mainFs",
-                        .flags = 0,
-                        .specialization_info = nullptr,
-                },
-        };
-
-        struct PC {
-            VkDeviceAddress a;
-            VkDeviceAddress b;
-            glm::mat4 vp;
-        };
-
-        auto const push_constant_range = VkPushConstantRange{
+        VkPushConstantRange const forward_push_constant_range{
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                 .offset = 0,
-                .size = sizeof(PC),
+                .size = sizeof(ForwardPushConstants),
         };
 
-        auto inserted_forward_pipeline = pipeline_storage_.create_graphics(GraphicsPipelineCreateInfo{
-                .shaders = stages,
-                .additional_descriptor_set_layouts = {},
-                .push_constant_ranges = {&push_constant_range, 1},
-                .dynamic_states = {},
-                .colour_formats =
-                        std::span{
-                                &create_info.hdr_format,
-                                1UZ,
-                        },
-                .depth_format = create_info.depth_format,
-                .stencil_format = VK_FORMAT_UNDEFINED,
-                .samples = create_info.samples,
-                .debug_name = "renderer.forward_pipeline",
-        });
+        auto registered_forward = pipeline_graph_.register_pipeline(
+                compiler, PipelineRegisterInfo{
+                                  .stages =
+                                          {
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/forward_geom.slang",
+                                                          .entry_point = "mainVs",
+                                                          .stage = renderer::ShaderStage::vertex,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/forward_geom.slang",
+                                                          .entry_point = "mainFs",
+                                                          .stage = renderer::ShaderStage::fragment,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                          },
+                                  .additional_descriptor_set_layouts = {},
+                                  .push_constant_ranges = {forward_push_constant_range},
+                                  .colour_formats = {create_info.hdr_format},
+                                  .depth_format = create_info.depth_format,
+                                  .stencil_format = VK_FORMAT_UNDEFINED,
+                                  .samples = create_info.samples,
+                                  .debug_name = "renderer.forward_pipeline",
+                          });
 
-        if (!inserted_forward_pipeline) {
+        if (!registered_forward) {
             destroy();
-            return std::unexpected(make_pipeline_storage_error(inserted_forward_pipeline.error()));
+
+            return std::unexpected(make_pipeline_graph_error(registered_forward.error()));
         }
 
-        forward_pipeline_ = *inserted_forward_pipeline;
+        forward_pipeline_ = *registered_forward;
     }
     {
-        auto compiled_composite_vertex = compiler.compile(renderer::ShaderCompileRequest{
-                .source_path = "assets/shaders/composite.slang",
-                .entry_point = "mainVs",
-                .stage = renderer::ShaderStage::vertex,
-                .include_directories = {},
-                .defines = {},
-        });
-
-        if (!compiled_composite_vertex) {
-            destroy();
-
-            return std::unexpected(make_compiler_error(compiled_composite_vertex.error()));
-        }
-
-        auto compiled_composite_fragment = compiler.compile(renderer::ShaderCompileRequest{
-                .source_path = "assets/shaders/composite.slang",
-                .entry_point = "mainFs",
-                .stage = renderer::ShaderStage::fragment,
-                .include_directories = {},
-                .defines = {},
-        });
-
-        if (!compiled_composite_fragment) {
-            destroy();
-
-            return std::unexpected(make_compiler_error(compiled_composite_fragment.error()));
-        }
-
-        std::array<ShaderStageInfo, 2> const composite_stages{
-                ShaderStageInfo{
-                        .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                        .spirv = compiled_composite_vertex->spirv,
-                        .entry_point = "mainVs",
-                        .flags = 0,
-                        .specialization_info = nullptr,
-                },
-                ShaderStageInfo{
-                        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                        .spirv = compiled_composite_fragment->spirv,
-                        .entry_point = "mainFs",
-                        .flags = 0,
-                        .specialization_info = nullptr,
-                },
-        };
-
-        struct CompositePC {
-            std::uint32_t hdr_texture_index;
-            std::uint32_t sampler_index;
-            float exposure;
-            std::uint32_t padding;
-        };
-
-        static_assert(sizeof(CompositePC) == 16);
-
         VkPushConstantRange const composite_push_constant_range{
                 .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                 .offset = 0,
-                .size = sizeof(CompositePC),
+                .size = sizeof(CompositePushConstants),
         };
 
-        auto inserted_composite_pipeline = pipeline_storage_.create_graphics(GraphicsPipelineCreateInfo{
-                .shaders = composite_stages,
-                .additional_descriptor_set_layouts = {},
-                .push_constant_ranges =
-                        {
-                                &composite_push_constant_range,
-                                1,
-                        },
-                .dynamic_states = {},
-                .colour_formats =
-                        std::span{
-                                &create_info.swapchain_format,
-                                1UZ,
-                        },
-                .depth_format = VK_FORMAT_UNDEFINED,
-                .stencil_format = VK_FORMAT_UNDEFINED,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .debug_name = "renderer.composite_pipeline",
-        });
+        auto registered_composite = pipeline_graph_.register_pipeline(
+                compiler, PipelineRegisterInfo{
+                                  .stages =
+                                          {
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/composite.slang",
+                                                          .entry_point = "mainVs",
+                                                          .stage = renderer::ShaderStage::vertex,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/composite.slang",
+                                                          .entry_point = "mainFs",
+                                                          .stage = renderer::ShaderStage::fragment,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                          },
+                                  .additional_descriptor_set_layouts = {},
+                                  .push_constant_ranges = {composite_push_constant_range},
+                                  .colour_formats = {create_info.swapchain_format},
+                                  .depth_format = VK_FORMAT_UNDEFINED,
+                                  .stencil_format = VK_FORMAT_UNDEFINED,
+                                  .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .debug_name = "renderer.composite_pipeline",
+                          });
 
-        if (!inserted_composite_pipeline) {
+        if (!registered_composite) {
             destroy();
 
-            return std::unexpected(make_pipeline_storage_error(inserted_composite_pipeline.error()));
+            return std::unexpected(make_pipeline_graph_error(registered_composite.error()));
         }
 
-        composite_pipeline_ = *inserted_composite_pipeline;
+        composite_pipeline_ = *registered_composite;
     }
 
     auto const white = image_storage_.white();
@@ -631,9 +570,22 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     auto const occlusion = image_storage_.occlusion();
 
     auto const emissive = image_storage_.emissive();
-    auto default_material = material_storage_.create_material(GpuMaterial{
-            .base_colour_factor = glm::vec4{1.0F},
-            .emissive_factor = glm::vec3{0.0F},
+
+    constexpr auto def_mat = MaterialHandle{0, 1};
+    const auto mat = GpuMaterial{
+            .base_colour_factor =
+                    {
+                            1.0F,
+                            1.0F,
+                            1.0F,
+                            1.0F,
+                    },
+            .emissive_factor =
+                    {
+                            0.0F,
+                            0.0F,
+                            0.0F,
+                    },
             .emissive_strength = 1.0F,
             .metallic_factor = 0.0F,
             .roughness_factor = 1.0F,
@@ -647,15 +599,16 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .sampler_index = 0,
             .alpha_mode = AlphaMode::opaque,
             .alpha_cutoff = 0.5F,
-    });
+    };
 
-    if (!default_material) {
-        destroy();
-
-        return std::unexpected(make_material_error(default_material.error()));
+    if (!material_storage_.update_material(def_mat, mat)) {
+        error("Could not update default material");
+        return std::unexpected(RendererError{
+                .type = RendererErrorType::material_error,
+        });
     }
 
-    default_material_handle_ = *default_material;
+    default_material_handle_ = def_mat;
 
     meshes_.resize(create_info.mesh_capacity);
 
@@ -843,7 +796,7 @@ auto Renderer::destroy() noexcept -> void {
     /*
      * Objects using pipeline layouts must go first.
      */
-    pipeline_storage_.destroy();
+    pipeline_graph_.destroy();
 
     /*
      * Descriptor sets/pool/layout next.
@@ -868,7 +821,7 @@ auto Renderer::destroy() noexcept -> void {
         frame.transforms.clear();
         frame.indirect_commands.clear();
 
-        frame.draw_count = 0;
+        frame.indirect_command_count = 0;
     }
 
     frames_.clear();
@@ -895,7 +848,7 @@ auto Renderer::destroy() noexcept -> void {
     models_.clear();
 
     for (auto &mesh: meshes_) {
-        mesh.primitives.clear();
+        mesh.submeshes.clear();
         mesh.occupied = false;
     }
 
@@ -926,14 +879,30 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    auto imported_model = ::load_model(path, geometry_arena_);
+    auto cpu_data = load_model_cpu(path, sampler_storage_);
+
+    if (!cpu_data) {
+        return std::unexpected(make_model_load_error(cpu_data.error()));
+    }
+
+    std::expected<Model, ModelLoadError> imported_model{
+            std::unexpected(ModelLoadError{.type = ModelLoadErrorType::invalid_argument})};
+
+    context_.one_time_submit([&](VkCommandBuffer command_buffer) {
+        imported_model =
+                record_model_gpu_upload(*cpu_data, command_buffer, geometry_arena_, image_storage_, material_storage_);
+    });
 
     if (!imported_model) {
         return std::unexpected(make_model_load_error(imported_model.error()));
     }
 
+
+    image_storage_.release_completed_uploads();
+
     return create_model(*imported_model, default_material_handle_);
 }
+
 
 auto Renderer::create_model(Model const &model) -> std::expected<ModelHandle, RendererError> {
     return create_model(model, default_material_handle_);
@@ -971,19 +940,29 @@ auto Renderer::create_model(Model const &model, MaterialHandle fallback_material
             return std::unexpected(make_error(RendererErrorType::invalid_mesh));
         }
 
-        std::vector<MeshPrimitiveCreateInfo> primitives;
+        std::vector<SubmeshCreateInfo> submesh_infos;
 
-        primitives.reserve(source_mesh.primitives.size());
+        submesh_infos.reserve(source_mesh.primitives.size());
 
-        for (auto const &source_primitive: source_mesh.primitives) {
-            primitives.push_back(MeshPrimitiveCreateInfo{
-                    .geometry = source_primitive.geometry,
-                    .material = fallback_material,
+        for (auto const &source_submesh: source_mesh.primitives) {
+            const auto index = source_submesh.material_index;
+
+            if (source_submesh.material_index >= model.materials.size()) {
+                rollback_meshes();
+
+                return std::unexpected(make_error(RendererErrorType::invalid_material));
+            }
+
+            auto material = index.has_value() ? model.materials[index.value()] : fallback_material;
+
+            submesh_infos.push_back(SubmeshCreateInfo{
+                    .geometry = source_submesh.geometry,
+                    .material = material,
             });
         }
 
         auto mesh = create_mesh(MeshCreateInfo{
-                .primitives = primitives,
+                .submeshes = submesh_infos,
         });
 
         if (!mesh) {
@@ -1080,6 +1059,23 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform) -> st
     return {};
 }
 
+auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform) -> std::expected<void, RendererError> {
+    if (model_slot(model) == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_model));
+    }
+
+    if (model_submissions_.size() >= maximum_submission_count_) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    model_submissions_.push_back(ModelSubmission{
+            .model = model,
+            .transform = std::move(transform),
+    });
+
+    return {};
+}
+
 auto Renderer::create_material(MaterialCreateInfo const &create_info) -> std::expected<MaterialHandle, RendererError> {
     if (!initialized_) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
@@ -1124,7 +1120,7 @@ auto Renderer::destroy_material(MaterialHandle handle) -> std::expected<void, Re
 }
 
 auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<MeshHandle, RendererError> {
-    if (!initialized_ || create_info.primitives.empty()) {
+    if (!initialized_ || create_info.submeshes.empty()) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
@@ -1132,23 +1128,23 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
     }
 
-    for (auto const &primitive: create_info.primitives) {
-        if (!primitive.geometry.vertices.bytes.valid() || !primitive.geometry.indices.bytes.valid() ||
-            primitive.geometry.vertices.vertex_count == 0 || primitive.geometry.indices.index_count == 0) {
+    for (auto const &submesh_info: create_info.submeshes) {
+        if (!submesh_info.geometry.vertices.bytes.valid() || !submesh_info.geometry.indices.bytes.valid() ||
+            submesh_info.geometry.vertices.vertex_count == 0 || submesh_info.geometry.indices.index_count == 0) {
             return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
 
-        if (material_storage_.get(primitive.material) == nullptr) {
+        if (material_storage_.get(submesh_info.material) == nullptr) {
             return std::unexpected(make_error(RendererErrorType::invalid_material));
         }
 
-        auto stride = index_stride(primitive.geometry.indices.index_type);
+        auto stride = index_stride(submesh_info.geometry.indices.index_type);
 
         if (!stride) {
             return std::unexpected(stride.error());
         }
 
-        if (primitive.geometry.indices.bytes.offset % *stride != 0) {
+        if (submesh_info.geometry.indices.bytes.offset % *stride != 0) {
             return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
     }
@@ -1158,14 +1154,14 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
 
     mesh_free_head_ = slot.next_free;
 
-    slot.primitives.clear();
+    slot.submeshes.clear();
 
-    slot.primitives.reserve(create_info.primitives.size());
+    slot.submeshes.reserve(create_info.submeshes.size());
 
-    for (auto const &primitive: create_info.primitives) {
-        slot.primitives.push_back(RenderPrimitive{
-                .geometry = primitive.geometry,
-                .material = primitive.material,
+    for (auto const &submesh_info: create_info.submeshes) {
+        slot.submeshes.push_back(Submesh{
+                .geometry = submesh_info.geometry,
+                .material = submesh_info.material,
         });
     }
 
@@ -1185,7 +1181,7 @@ auto Renderer::destroy_mesh(MeshHandle handle) -> std::expected<void, RendererEr
         return std::unexpected(make_error(RendererErrorType::invalid_mesh));
     }
 
-    slot->primitives.clear();
+    slot->submeshes.clear();
     slot->occupied = false;
 
     ++slot->generation;
@@ -1225,6 +1221,15 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
+    pipeline_graph_.tick_retirement();
+
+    if (auto changed = shader_change_queue_.drain(); !changed.empty()) {
+        pipeline_graph_.on_files_changed(changed);
+    }
+
+    pipeline_graph_.process_dirty(compiler);
+
+
     auto image_result = image_storage_.prepare_frame(command_buffer);
 
     if (!image_result) {
@@ -1244,7 +1249,29 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame
     frame.draws.clear();
     frame.transforms.clear();
     frame.indirect_commands.clear();
-    frame.draw_count = 0;
+    frame.indirect_command_count = 0;
+
+    struct batch_key {
+        std::uint32_t mesh_index;
+        std::uint32_t submesh_index;
+
+        auto operator==(batch_key const &) const noexcept -> bool = default;
+    };
+
+    struct batch_key_hash {
+        auto operator()(batch_key const &key) const noexcept -> std::size_t {
+            return std::hash<std::uint64_t>{}((static_cast<std::uint64_t>(key.mesh_index) << 32) | key.submesh_index);
+        }
+    };
+
+    struct batch_entry {
+        MeshHandle mesh{};
+        std::uint32_t submesh_index = 0;
+        std::vector<glm::mat4> transforms;
+    };
+
+    std::unordered_map<batch_key, batch_entry, batch_key_hash> batches;
+    batches.reserve(model_submissions_.size() + submissions_.size());
 
     for (auto const &model_submission: model_submissions_) {
         auto const *model = model_slot(model_submission.model);
@@ -1256,16 +1283,31 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame
         }
 
         for (auto const &model_draw: model->draws) {
-            if (submissions_.size() >= maximum_submission_count_) {
+            auto const *mesh = mesh_slot(model_draw.mesh);
+
+            if (mesh == nullptr) {
                 clear_submissions();
 
-                return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+                return std::unexpected(make_error(RendererErrorType::invalid_mesh));
             }
 
-            submissions_.push_back(Submission{
-                    .mesh = model_draw.mesh,
-                    .transform = model_submission.transform * model_draw.local_transform,
-            });
+            auto const instance_transform = model_submission.transform * model_draw.local_transform;
+
+            for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
+                auto const key = batch_key{
+                        .mesh_index = model_draw.mesh.index,
+                        .submesh_index = submesh_index,
+                };
+
+                auto [entry, inserted] = batches.try_emplace(key);
+
+                if (inserted) {
+                    entry->second.mesh = model_draw.mesh;
+                    entry->second.submesh_index = submesh_index;
+                }
+
+                entry->second.transforms.push_back(instance_transform);
+            }
         }
     }
 
@@ -1278,58 +1320,85 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame
             return std::unexpected(make_error(RendererErrorType::invalid_mesh));
         }
 
-        if (frame.transforms.size() >= maximum_submission_count_) {
+        for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
+            auto const key = batch_key{
+                    .mesh_index = submission.mesh.index,
+                    .submesh_index = submesh_index,
+            };
+
+            auto [entry, inserted] = batches.try_emplace(key);
+
+            if (inserted) {
+                entry->second.mesh = submission.mesh;
+                entry->second.submesh_index = submesh_index;
+            }
+
+            entry->second.transforms.push_back(submission.transform);
+        }
+    }
+
+    for (auto const &[key, batch]: batches) {
+        auto const *mesh = mesh_slot(batch.mesh);
+
+        if (mesh == nullptr) {
+            clear_submissions();
+
+            return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+        }
+
+        auto const &submesh = mesh->submeshes[batch.submesh_index];
+
+        auto const instance_count = static_cast<std::uint32_t>(batch.transforms.size());
+
+        if (frame.transforms.size() + instance_count > maximum_submission_count_ ||
+            frame.draws.size() + instance_count > maximum_draw_count_) {
             clear_submissions();
 
             return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
         }
 
-        auto const transform_index = static_cast<std::uint32_t>(frame.transforms.size());
+        auto const base_transform_index = static_cast<std::uint32_t>(frame.transforms.size());
 
-        frame.transforms.push_back(submission.transform);
+        for (auto const &transform: batch.transforms) {
+            frame.transforms.push_back(transform);
+        }
 
-        for (auto const &primitive: mesh->primitives) {
-            if (frame.draws.size() >= maximum_draw_count_) {
-                clear_submissions();
+        auto const stride = index_stride(submesh.geometry.indices.index_type);
 
-                return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
-            }
+        if (!stride) {
+            clear_submissions();
 
-            auto const stride = index_stride(primitive.geometry.indices.index_type);
+            return std::unexpected(stride.error());
+        }
 
-            if (!stride) {
-                clear_submissions();
+        auto const first_index_u64 = submesh.geometry.indices.bytes.offset / *stride;
 
-                return std::unexpected(stride.error());
-            }
+        if (first_index_u64 > std::numeric_limits<std::uint32_t>::max()) {
+            clear_submissions();
 
-            auto const first_index_u64 = primitive.geometry.indices.bytes.offset / *stride;
+            return std::unexpected(make_error(RendererErrorType::size_overflow));
+        }
 
-            if (first_index_u64 > std::numeric_limits<std::uint32_t>::max()) {
-                clear_submissions();
+        auto const first_instance = static_cast<std::uint32_t>(frame.draws.size());
 
-                return std::unexpected(make_error(RendererErrorType::size_overflow));
-            }
-
-            auto const draw_index = static_cast<std::uint32_t>(frame.draws.size());
-
+        for (std::uint32_t instance = 0; instance < instance_count; ++instance) {
             frame.draws.push_back(GpuDraw{
-                    .vertex_address = geometry_arena_.vertex_address(primitive.geometry.vertices),
-                    .material_index = material_storage_.gpu_index(primitive.material),
-                    .transform_index = transform_index,
-            });
-
-            frame.indirect_commands.push_back(VkDrawIndexedIndirectCommand{
-                    .indexCount = primitive.geometry.indices.index_count,
-                    .instanceCount = 1,
-                    .firstIndex = static_cast<std::uint32_t>(first_index_u64),
-                    .vertexOffset = 0,
-                    .firstInstance = draw_index,
+                    .vertex_address = geometry_arena_.vertex_address(submesh.geometry.vertices),
+                    .material_index = material_storage_.gpu_index(submesh.material),
+                    .transform_index = base_transform_index + instance,
             });
         }
+
+        frame.indirect_commands.push_back(VkDrawIndexedIndirectCommand{
+                .indexCount = submesh.geometry.indices.index_count,
+                .instanceCount = instance_count,
+                .firstIndex = static_cast<std::uint32_t>(first_index_u64),
+                .vertexOffset = 0,
+                .firstInstance = first_instance,
+        });
     }
 
-    frame.draw_count = static_cast<std::uint32_t>(frame.draws.size());
+    frame.indirect_command_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
 
     auto material_result = material_storage_.prepare_frame(command_buffer, frame_index);
 
@@ -1364,13 +1433,13 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
 
-    auto const *forward_pipeline = pipeline_storage_.get(forward_pipeline_);
+    auto const *forward_pipeline = pipeline_graph_.resolve(forward_pipeline_);
 
     if (forward_pipeline == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
-    auto const *composite_pipeline = pipeline_storage_.get(composite_pipeline_);
+    auto const *composite_pipeline = pipeline_graph_.resolve(composite_pipeline_);
 
     if (composite_pipeline == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
@@ -1384,201 +1453,180 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    /*
-     * The pass clears both images completely, so their
-     * previous contents and previous layouts can be
-     * discarded with oldLayout = UNDEFINED.
-     */
+
     transition_forward_target_to_attachments(command_buffer, *hdr, *depth);
 
-    VkRenderingAttachmentInfo const hdr_attachment{
-            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            .pNext = nullptr,
-            .imageView = hdr->view(),
-            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .resolveMode = VK_RESOLVE_MODE_NONE,
-            .resolveImageView = VK_NULL_HANDLE,
-            .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .clearValue =
-                    VkClearValue{
-                            .color =
-                                    VkClearColorValue{
-                                            .float32 =
-                                                    {
-                                                            0.015F,
-                                                            0.025F,
-                                                            0.050F,
-                                                            1.0F,
-                                                    },
-                                    },
-                    },
-    };
 
-    VkRenderingAttachmentInfo const depth_attachment{
-            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            .pNext = nullptr,
-            .imageView = depth->view(),
-            .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            .resolveMode = VK_RESOLVE_MODE_NONE,
-            .resolveImageView = VK_NULL_HANDLE,
-            .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .clearValue =
-                    VkClearValue{
-                            .depthStencil =
-                                    VkClearDepthStencilValue{
-                                            .depth = 0.0F,
-                                            .stencil = 0,
-                                    },
-                    },
-    };
+#pragma region Forward pass
+    {
+        VkRenderingAttachmentInfo const hdr_attachment{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext = nullptr,
+                .imageView = hdr->view(),
+                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .resolveMode = VK_RESOLVE_MODE_NONE,
+                .resolveImageView = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .clearValue =
+                        VkClearValue{
+                                .color =
+                                        VkClearColorValue{
+                                                .float32 =
+                                                        {
+                                                                0.015F,
+                                                                0.025F,
+                                                                0.050F,
+                                                                1.0F,
+                                                        },
+                                        },
+                        },
+        };
 
-    VkRenderingInfo const forward_rendering_info{
-            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .renderArea =
-                    VkRect2D{
-                            .offset = {0, 0},
-                            .extent = target_extent,
-                    },
-            .layerCount = 1,
-            .viewMask = 0,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &hdr_attachment,
-            .pDepthAttachment = &depth_attachment,
-            .pStencilAttachment = nullptr,
-    };
+        VkRenderingAttachmentInfo const depth_attachment{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext = nullptr,
+                .imageView = depth->view(),
+                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                .resolveMode = VK_RESOLVE_MODE_NONE,
+                .resolveImageView = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .clearValue =
+                        VkClearValue{
+                                .depthStencil =
+                                        VkClearDepthStencilValue{
+                                                .depth = 0.0F,
+                                                .stencil = 0,
+                                        },
+                        },
+        };
 
-    vkCmdBeginRendering(command_buffer, &forward_rendering_info);
+        VkRenderingInfo const forward_rendering_info{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .renderArea =
+                        VkRect2D{
+                                .offset = {0, 0},
+                                .extent = target_extent,
+                        },
+                .layerCount = 1,
+                .viewMask = 0,
+                .colorAttachmentCount = 1,
+                .pColorAttachments = &hdr_attachment,
+                .pDepthAttachment = &depth_attachment,
+                .pStencilAttachment = nullptr,
+        };
 
-    vkCmdBindPipeline(command_buffer, forward_pipeline->bind_point(), forward_pipeline->pipeline());
+        vkCmdBeginRendering(command_buffer, &forward_rendering_info);
 
-    gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, forward_pipeline->layout());
-    set_forward_dynamic_state(command_buffer, target_extent);
+        vkCmdBindPipeline(command_buffer, forward_pipeline->bind_point(), forward_pipeline->pipeline());
 
-    const auto view = glm::lookAtLH(glm::vec3{0, 3, -5}, {0, 0, 0}, {0, 1, 0});
-    const auto proj = glm::perspectiveFovLH_ZO(glm::radians(80.0F), 1280.0F, 800.0F, 0.1F, 10000.0F);
+        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 forward_pipeline->layout());
+        set_forward_dynamic_state(command_buffer, target_extent);
 
-    struct PC {
-        VkDeviceAddress a;
-        VkDeviceAddress b;
-        glm::mat4 vp;
-    } pc{
-            .a = frame.draw_buffer.device_address,
-            .b = frame.transform_buffer.device_address,
-            .vp = proj * view,
-    };
+        const auto view = glm::lookAtLH(glm::vec3{0, 3, -5}, {0, 0, 0}, {0, 1, 0});
+        const auto proj =
+                glm::perspectiveFovLH_ZO(glm::radians(80.0F), static_cast<float>(swapchain_image.extent.width),
+                                         static_cast<float>(swapchain_image.extent.height), 0.1F, 10000.0F);
 
-    vkCmdPushConstants(command_buffer, forward_pipeline->layout(),
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PC), &pc);
+        struct PC {
+            VkDeviceAddress a;
+            VkDeviceAddress b;
+            VkDeviceAddress c;
+            glm::mat4 vp;
+        } pc{
+                .a = frame.draw_buffer.device_address,
+                .b = frame.transform_buffer.device_address,
+                .c = material_storage_.device_address(),
+                .vp = proj * view,
+        };
 
-    vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdPushConstants(command_buffer, forward_pipeline->layout(),
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PC), &pc);
 
-    if (frame.draw_count != 0) {
-        vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0, frame.draw_count,
-                                 sizeof(VkDrawIndexedIndirectCommand));
+        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+        if (frame.indirect_command_count != 0) {
+            vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0, frame.indirect_command_count,
+                                     sizeof(VkDrawIndexedIndirectCommand));
+        }
+
+        vkCmdEndRendering(command_buffer);
     }
-
-    /*
-     * Forward drawing goes here:
-     *
-     * vkCmdBindPipeline(
-     *     command_buffer,
-     *     VK_PIPELINE_BIND_POINT_GRAPHICS,
-     *     forward_pipeline_
-     * );
-     *
-     * vkCmdBindIndexBuffer(
-     *     command_buffer,
-     *     geometry_arena_.buffer.buffer,
-     *     0,
-     *     VK_INDEX_TYPE_UINT32
-     * );
-     *
-     * vkCmdPushConstants(...);
-     *
-     * if (frame.draw_count != 0) {
-     *     vkCmdDrawIndexedIndirect(
-     *         command_buffer,
-     *         frame.indirect_buffer.buffer,
-     *         0,
-     *         frame.draw_count,
-     *         sizeof(
-     *             VkDrawIndexedIndirectCommand
-     *         )
-     *     );
-     * }
-     */
-
-    vkCmdEndRendering(command_buffer);
+#pragma endregion
 
     transition_hdr_to_shader_read(command_buffer, *hdr);
 
     transition_swapchain_to_attachment(command_buffer, swapchain_image.image);
 
-    VkRenderingAttachmentInfo const swapchain_attachment{
-            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            .pNext = nullptr,
-            .imageView = swapchain_image.view,
-            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .resolveMode = VK_RESOLVE_MODE_NONE,
-            .resolveImageView = VK_NULL_HANDLE,
-            .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .clearValue = {},
-    };
+#pragma region Composition for swapchain
+    {
+        VkRenderingAttachmentInfo const swapchain_attachment{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext = nullptr,
+                .imageView = swapchain_image.view,
+                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .resolveMode = VK_RESOLVE_MODE_NONE,
+                .resolveImageView = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .clearValue = {},
+        };
 
-    VkRenderingInfo const composite_rendering_info{
-            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .renderArea =
-                    VkRect2D{
-                            .offset = {0, 0},
-                            .extent = swapchain_image.extent,
-                    },
-            .layerCount = 1,
-            .viewMask = 0,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &swapchain_attachment,
-            .pDepthAttachment = nullptr,
-            .pStencilAttachment = nullptr,
-    };
+        VkRenderingInfo const composite_rendering_info{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .renderArea =
+                        VkRect2D{
+                                .offset = {0, 0},
+                                .extent = swapchain_image.extent,
+                        },
+                .layerCount = 1,
+                .viewMask = 0,
+                .colorAttachmentCount = 1,
+                .pColorAttachments = &swapchain_attachment,
+                .pDepthAttachment = nullptr,
+                .pStencilAttachment = nullptr,
+        };
 
-    vkCmdBeginRendering(command_buffer, &composite_rendering_info);
+        vkCmdBeginRendering(command_buffer, &composite_rendering_info);
 
-    vkCmdBindPipeline(command_buffer, composite_pipeline->bind_point(), composite_pipeline->pipeline());
+        vkCmdBindPipeline(command_buffer, composite_pipeline->bind_point(), composite_pipeline->pipeline());
 
-    gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                             composite_pipeline->layout());
+        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 composite_pipeline->layout());
 
-    set_composite_dynamic_state(command_buffer, swapchain_image.extent);
+        set_composite_dynamic_state(command_buffer, swapchain_image.extent);
 
-    struct CompositePC {
-        std::uint32_t hdr_texture_index;
-        std::uint32_t sampler_index;
-        float exposure;
-        std::uint32_t padding;
-    };
+        struct CompositePC {
+            std::uint32_t hdr_texture_index;
+            std::uint32_t sampler_index;
+            float exposure;
+            std::uint32_t padding;
+        };
 
-    CompositePC const composite_pc{
-            .hdr_texture_index = frame.forward_target.hdr().index,
-            .sampler_index = sampler_storage_.linear_clamp().index,
-            .exposure = 1.0F,
-            .padding = 0,
-    };
+        CompositePC const composite_pc{
+                .hdr_texture_index = frame.forward_target.hdr().index,
+                .sampler_index = sampler_storage_.linear_clamp().index,
+                .exposure = 1.0F,
+                .padding = 0,
+        };
 
-    vkCmdPushConstants(command_buffer, composite_pipeline->layout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(composite_pc), &composite_pc);
+        vkCmdPushConstants(command_buffer, composite_pipeline->layout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(composite_pc), &composite_pc);
 
-    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);
 
-    vkCmdEndRendering(command_buffer);
+        vkCmdEndRendering(command_buffer);
+    }
+#pragma endregion
 
     transition_swapchain_to_present(command_buffer, swapchain_image.image);
 
@@ -1631,26 +1679,6 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
     extent_ = extent;
 
     return {};
-}
-
-auto Renderer::to_gpu_material(MaterialCreateInfo const &create_info) const noexcept -> GpuMaterial {
-    return GpuMaterial{
-            .base_colour_factor = create_info.base_colour_factor,
-            .emissive_factor = create_info.emissive_factor,
-            .emissive_strength = create_info.emissive_strength,
-            .metallic_factor = create_info.metallic_factor,
-            .roughness_factor = create_info.roughness_factor,
-            .normal_scale = create_info.normal_scale,
-            .occlusion_strength = create_info.occlusion_strength,
-            .base_colour_texture = create_info.base_colour_texture.index,
-            .normal_texture = create_info.normal_texture.index,
-            .metallic_roughness_texture = create_info.metallic_roughness_texture.index,
-            .occlusion_texture = create_info.occlusion_texture.index,
-            .emissive_texture = create_info.emissive_texture.index,
-            .sampler_index = create_info.sampler.index,
-            .alpha_mode = create_info.alpha_mode,
-            .alpha_cutoff = create_info.alpha_cutoff,
-    };
 }
 
 auto Renderer::mesh_slot(MeshHandle handle) noexcept -> MeshSlot * {

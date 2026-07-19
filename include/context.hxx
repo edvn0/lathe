@@ -1,7 +1,12 @@
 #pragma once
 
+#include <volk.h>
+
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
+#include <functional>
+#include <limits>
 #include <volk.h>
 
 #include <GLFW/glfw3.h>
@@ -46,6 +51,11 @@ struct VulkanContext {
     std::atomic_bool framebuffer_dirty{false};
     std::atomic_int framebuffer_width{0};
     std::atomic_int framebuffer_height{0};
+
+    VkCommandPool one_time_pool;
+    std::array<VkCommandBuffer, 4> one_time_command_buffers;
+    std::uint32_t one_time_buffer_index{0};
+    auto one_time_submit(std::function<void(VkCommandBuffer)> &&) -> void;
 
     std::mutex render_wake_mutex{};
     std::condition_variable render_wake_condition{};

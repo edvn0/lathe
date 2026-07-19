@@ -111,6 +111,13 @@ public:
 
     [[nodiscard]]
     auto create_image(ImageCreateInfo const &create_info) -> std::expected<ImageHandle, ImageStorageError>;
+    [[nodiscard]]
+    auto create_image(ImageCreateInfo const &create_info, std::span<const std::byte>)
+            -> std::expected<ImageHandle, ImageStorageError>;
+
+    [[nodiscard]] auto create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
+                                    VkCommandBuffer command_buffer) -> std::expected<ImageHandle, ImageStorageError>;
+    auto release_completed_uploads() -> void;
 
     [[nodiscard]]
     auto destroy_image(ImageHandle handle) -> std::expected<void, ImageStorageError>;
@@ -225,6 +232,8 @@ private:
     std::uint32_t size_ = 0;
 
     bool defaults_uploaded_ = false;
+
+    std::vector<Buffer> pending_uploads_;
 
     std::string debug_name_;
 };

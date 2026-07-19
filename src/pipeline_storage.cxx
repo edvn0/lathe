@@ -98,8 +98,6 @@ auto PipelineStorage::create_graphics(GraphicsPipelineCreateInfo const &create_i
         return std::unexpected(make_error(PipelineStorageErrorType::capacity_exceeded));
     }
 
-    info("Global descriptor set layout {}", static_cast<void *>(global_descriptor_set_layout()));
-
     auto pipeline = Pipeline::create_graphics(*context_, create_info, global_descriptor_set_layout());
 
     if (!pipeline) {

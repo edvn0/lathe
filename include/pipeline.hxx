@@ -7,6 +7,7 @@
 #include <span>
 #include <string_view>
 
+#include "fly_string.hxx"
 #include "forward.hxx"
 
 enum class PipelineErrorType : std::uint8_t {
@@ -24,7 +25,7 @@ struct PipelineError {
 struct ShaderStageInfo {
     VkShaderStageFlagBits stage{};
     std::span<const std::uint32_t> spirv;
-    char const *entry_point = "main";
+    FlyString entry_point = FlyString{"main"};
     VkPipelineShaderStageCreateFlags flags = 0;
     VkSpecializationInfo const *specialization_info = nullptr;
 };
@@ -64,6 +65,8 @@ struct GraphicsPipelineCreateInfo {
     VkCompareOp depth_compare = VK_COMPARE_OP_ALWAYS;
 
     bool blending = false;
+
+    bool use_vertex_input = false; // VP
 
     std::string_view debug_name = "graphics_pipeline";
 };

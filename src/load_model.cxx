@@ -1,13 +1,20 @@
 #include "load_model.hxx"
 
+#include <bit>
 #include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
 
+#include <future>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <future>
 #include <meshoptimizer.h>
 #include <mikktspace.h>
+#include <mutex>
+#include <vector>
+
+#include <stb_image.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -15,23 +22,26 @@
 #include <filesystem>
 #include <limits>
 #include <optional>
+#include <ranges>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "image.hxx"
+#include "image_storage.hxx"
+#include "logger.hxx"
+#include "renderer.hxx"
+#include "sampler_storage.hxx"
+
 namespace {
 
+    // ------------------------------------------------------------------------
+    // Shared helpers — pure CPU, unchanged from before.
+    // ------------------------------------------------------------------------
+
     auto to_glm(fastgltf::math::fmat4x4 const &matrix) noexcept -> glm::mat4 {
-        glm::mat4 result{1.0F};
-
-        for (std::size_t column = 0; column < std::size_t{4}; ++column) {
-            for (std::size_t row = 0; row < std::size_t{4}; ++row) {
-                auto c = static_cast<glm::length_t>(column);
-                auto r = static_cast<glm::length_t>(row);
-                result[c][r] = matrix[column][row];
-            }
-        }
-
-        return result;
+        static_assert(matrix.size() == 16, "fastgltf changed its mat4 impl...?");
+        return glm::make_mat4(matrix.data());
     }
 
     auto find_attribute(fastgltf::Primitive const &primitive, std::string_view name) -> std::optional<std::size_t> {
@@ -85,18 +95,7 @@ namespace {
     }
 
     // ------------------------------------------------------------------------
-    // MikkTSpace tangent generation
-    //
-    // MikkTSpace evaluates tangents per triangle corner (face/vert), not per
-    // unique vertex. A vertex shared by two triangles on opposite sides of a
-    // UV seam legitimately wants two different tangents. Feeding it our
-    // indexed buffer directly would let the second triangle's callback
-    // silently overwrite the first triangle's result at that shared index.
-    //
-    // So: expand to an unindexed, per-face-vertex buffer, run MikkTSpace
-    // over that, then re-weld with meshoptimizer's vertex remap. Seam
-    // vertices end up split into distinct vertices automatically, same as
-    // if the seam had been authored that way from the start.
+    // MikkTSpace tangent generation (unchanged — pure CPU already).
     // ------------------------------------------------------------------------
 
     struct MikktspaceUserData {
@@ -196,8 +195,13 @@ namespace {
         return {};
     }
 
-    auto load_primitive(fastgltf::Asset const &asset, fastgltf::Primitive const &primitive,
-                        GeometryArena &geometry_arena) -> std::expected<ModelPrimitive, ModelLoadError> {
+    // ------------------------------------------------------------------------
+    // CPU pass — geometry. No GeometryArena involved anymore: this only
+    // builds the vertex/index arrays and hands them back as plain data.
+    // ------------------------------------------------------------------------
+
+    auto load_primitive_cpu(fastgltf::Asset const &asset, fastgltf::Primitive const &primitive)
+            -> std::expected<ModelCpuPrimitive, ModelLoadError> {
         if (primitive.type != fastgltf::PrimitiveType::Triangles) {
             return std::unexpected(ModelLoadError{
                     .type = ModelLoadErrorType::unsupported_primitive,
@@ -219,11 +223,8 @@ namespace {
         for (std::size_t index = 0; index < positions.size(); ++index) {
             vertices[index].position = positions[index];
 
-            // Safe defaults for optional glTF attributes.
             vertices[index].normal = glm::vec3{0.0F, 1.0F, 0.0F};
-
             vertices[index].tangent = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F};
-
             vertices[index].texcoord = glm::vec2{0.0F};
         }
 
@@ -281,9 +282,6 @@ namespace {
 
         auto indices = std::move(*indices_result);
 
-        // Only synthesize tangents when the source asset didn't ship its
-        // own — an authored TANGENT attribute is always preferable to a
-        // generated one.
         if (!has_tangents) {
             auto tangent_result = generate_tangents(vertices, indices);
 
@@ -292,27 +290,287 @@ namespace {
             }
         }
 
-        auto geometry = geometry_arena.allocate_mesh(std::span<const ModelVertex>{vertices},
-                                                     std::span<const std::uint32_t>{indices});
+        return ModelCpuPrimitive{
+                .vertices = std::move(vertices),
+                .indices = std::move(indices),
+                .material_index = primitive.materialIndex.has_value()
+                                          ? std::optional(static_cast<std::uint32_t>(*primitive.materialIndex))
+                                          : std::nullopt,
+        };
+    }
 
-        if (!geometry) {
+    // ------------------------------------------------------------------------
+    // CPU pass — material / texture import. Everything here decodes bytes
+    // into memory; nothing touches ImageStorage or MaterialStorage.
+    // ------------------------------------------------------------------------
+
+    auto image_bytes(fastgltf::Asset const &asset, fastgltf::Image const &image)
+            -> std::expected<std::span<std::byte const>, ModelLoadError> {
+        if (auto const *buffer_view_source = std::get_if<fastgltf::sources::BufferView>(&image.data)) {
+            auto const &buffer_view = asset.bufferViews[buffer_view_source->bufferViewIndex];
+            auto const &buffer = asset.buffers[buffer_view.bufferIndex];
+
+            auto const *array_source = std::get_if<fastgltf::sources::Array>(&buffer.data);
+
+            if (array_source == nullptr) {
+                return std::unexpected(ModelLoadError{
+                        .type = ModelLoadErrorType::unsupported_image_source,
+                });
+            }
+
+            auto const *bytes = reinterpret_cast<std::byte const *>(array_source->bytes.data());
+
+            return std::span<std::byte const>{bytes + buffer_view.byteOffset, buffer_view.byteLength};
+        }
+
+        if (auto const *array_source = std::get_if<fastgltf::sources::Array>(&image.data)) {
+            auto const *bytes = reinterpret_cast<std::byte const *>(array_source->bytes.data());
+
+            return std::span<std::byte const>{bytes, array_source->bytes.size()};
+        }
+
+        if (auto const *vector_source = std::get_if<fastgltf::sources::Vector>(&image.data)) {
+            auto const *bytes = reinterpret_cast<std::byte const *>(vector_source->bytes.data());
+
+            return std::span<std::byte const>{bytes, vector_source->bytes.size()};
+        }
+
+        // sources::URI without LoadExternalImages, or an unsupported source
+        // (basisu/dds/webp extension images) lands here.
+        return std::unexpected(ModelLoadError{
+                .type = ModelLoadErrorType::unsupported_image_source,
+        });
+    }
+
+    struct DecodedImage {
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::vector<std::byte> pixels; // RGBA8
+    };
+
+    auto decode_image(std::span<std::byte const> encoded) -> std::expected<DecodedImage, ModelLoadError> {
+        int width = 0;
+        int height = 0;
+        int source_channels = 0;
+
+        auto *pixels = stbi_load_from_memory(reinterpret_cast<stbi_uc const *>(encoded.data()),
+                                             static_cast<int>(encoded.size()), &width, &height, &source_channels, 4);
+
+        if (pixels == nullptr) {
             return std::unexpected(ModelLoadError{
-                    .type = ModelLoadErrorType::geometry_upload_failed,
-                    .geometry_error = geometry.error(),
+                    .type = ModelLoadErrorType::image_decode_failed,
             });
         }
 
-        return ModelPrimitive{
-                .geometry = *geometry,
-                .material_index =
-                        primitive.materialIndex.has_value() ? static_cast<std::uint32_t>(*primitive.materialIndex) : 0,
+        DecodedImage result{
+                .width = static_cast<std::uint32_t>(width),
+                .height = static_cast<std::uint32_t>(height),
+                .pixels = {},
         };
+
+        auto const byte_count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4;
+
+        result.pixels.assign(reinterpret_cast<std::byte const *>(pixels),
+                             reinterpret_cast<std::byte const *>(pixels) + byte_count);
+
+        stbi_image_free(pixels);
+
+        return result;
+    }
+
+    // Picks one of the renderer's small fixed set of samplers to best match
+    // a glTF sampler's filter/wrap settings. Just reads pre-created handles
+    // out of SamplerStorage, so this is safe to call during the CPU pass.
+    auto select_sampler(SamplerStorage &sampler_storage, fastgltf::Sampler const *gltf_sampler) -> SamplerHandle {
+        bool const nearest = gltf_sampler != nullptr && gltf_sampler->magFilter.has_value() &&
+                             *gltf_sampler->magFilter == fastgltf::Filter::Nearest;
+
+        bool const clamp = gltf_sampler != nullptr && (gltf_sampler->wrapS == fastgltf::Wrap::ClampToEdge ||
+                                                       gltf_sampler->wrapT == fastgltf::Wrap::ClampToEdge);
+
+        if (nearest) {
+            return clamp ? sampler_storage.nearest_clamp() : sampler_storage.nearest_repeat();
+        }
+
+        return clamp ? sampler_storage.linear_clamp() : sampler_storage.linear_repeat();
+    }
+
+    auto select_material_sampler(fastgltf::Asset const &asset, fastgltf::Material const &gltf_material,
+                                 SamplerStorage &sampler_storage) -> SamplerHandle {
+        std::optional<std::size_t> texture_index;
+
+        if (gltf_material.pbrData.baseColorTexture.has_value()) {
+            texture_index = gltf_material.pbrData.baseColorTexture->textureIndex;
+        } else if (gltf_material.pbrData.metallicRoughnessTexture.has_value()) {
+            texture_index = gltf_material.pbrData.metallicRoughnessTexture->textureIndex;
+        } else if (gltf_material.normalTexture.has_value()) {
+            texture_index = gltf_material.normalTexture->textureIndex;
+        }
+
+        if (!texture_index.has_value()) {
+            return select_sampler(sampler_storage, nullptr);
+        }
+
+        auto const &gltf_texture = asset.textures[*texture_index];
+
+        if (!gltf_texture.samplerIndex.has_value()) {
+            return select_sampler(sampler_storage, nullptr);
+        }
+
+        return select_sampler(sampler_storage, &asset.samplers[*gltf_texture.samplerIndex]);
+    }
+
+    // Decodes the image behind a glTF texture reference into `cpu_images`
+    // and returns its index there, or nullopt if `info` is empty (caller
+    // substitutes the appropriate ImageStorage default at record time).
+    // Cache is keyed by glTF image index only, so — same as before the
+    // split — if one raw image is reused across an srgb and a non-srgb
+    // slot, whichever texture type hits it first wins the format; that
+    // quirk is preserved rather than fixed here.
+    template<typename TextureInfoT>
+    auto resolve_texture_cpu(fastgltf::Asset const &asset, std::optional<TextureInfoT> const &info, bool is_srgb,
+                             std::unordered_map<std::size_t, std::size_t> &image_cache,
+                             std::vector<ModelCpuImage> &cpu_images)
+            -> std::expected<std::optional<std::size_t>, ModelLoadError> {
+        if (!info.has_value()) {
+            return std::nullopt;
+        }
+
+        auto const &gltf_texture = asset.textures[info->textureIndex];
+
+        if (!gltf_texture.imageIndex.has_value()) {
+            return std::nullopt;
+        }
+
+        auto const image_index = *gltf_texture.imageIndex;
+
+        if (auto const cached = image_cache.find(image_index); cached != image_cache.end()) {
+            return cached->second;
+        }
+
+        auto encoded = image_bytes(asset, asset.images[image_index]);
+
+        if (!encoded) {
+            return std::unexpected(encoded.error());
+        }
+
+        auto decoded = decode_image(*encoded);
+
+        if (!decoded) {
+            return std::unexpected(decoded.error());
+        }
+
+        auto const cpu_index = cpu_images.size();
+
+        cpu_images.push_back(ModelCpuImage{
+                .width = decoded->width,
+                .height = decoded->height,
+                .is_srgb = is_srgb,
+                .pixels = std::move(decoded->pixels),
+        });
+
+        image_cache.emplace(image_index, cpu_index);
+
+        return cpu_index;
+    }
+
+    auto load_material_cpu(fastgltf::Asset const &asset, fastgltf::Material const &gltf_material,
+                           SamplerStorage &sampler_storage, std::unordered_map<std::size_t, std::size_t> &image_cache,
+                           std::vector<ModelCpuImage> &cpu_images) -> std::expected<ModelCpuMaterial, ModelLoadError> {
+        ModelCpuMaterial material{};
+
+        auto const &base_colour = gltf_material.pbrData.baseColorFactor;
+        material.base_colour_factor = glm::vec4{base_colour[0], base_colour[1], base_colour[2], base_colour[3]};
+
+        auto const &emissive = gltf_material.emissiveFactor;
+        material.emissive_factor = glm::vec3{emissive[0], emissive[1], emissive[2]};
+
+        // ASSUMPTION: emissiveStrength requires KHR_materials_emissive_strength
+        // to have been parsed by fastgltf; drop this line if it fails to compile
+        // against your fastgltf version.
+        material.emissive_strength = gltf_material.emissiveStrength;
+
+        material.metallic_factor = gltf_material.pbrData.metallicFactor;
+        material.roughness_factor = gltf_material.pbrData.roughnessFactor;
+        material.alpha_cutoff = gltf_material.alphaCutoff;
+
+        switch (gltf_material.alphaMode) {
+            case fastgltf::AlphaMode::Opaque:
+                material.alpha_mode = AlphaMode::opaque;
+                break;
+            case fastgltf::AlphaMode::Mask:
+                material.alpha_mode = AlphaMode::mask;
+                break;
+            case fastgltf::AlphaMode::Blend:
+                material.alpha_mode = AlphaMode::blend;
+                break;
+        }
+
+        material.sampler = select_material_sampler(asset, gltf_material, sampler_storage);
+
+        auto base_colour_image =
+                resolve_texture_cpu(asset, gltf_material.pbrData.baseColorTexture, true, image_cache, cpu_images);
+
+        if (!base_colour_image) {
+            return std::unexpected(base_colour_image.error());
+        }
+
+        material.base_colour_image = *base_colour_image;
+
+        auto metallic_roughness_image = resolve_texture_cpu(asset, gltf_material.pbrData.metallicRoughnessTexture,
+                                                            false, image_cache, cpu_images);
+
+        if (!metallic_roughness_image) {
+            return std::unexpected(metallic_roughness_image.error());
+        }
+
+        material.metallic_roughness_image = *metallic_roughness_image;
+
+        if (gltf_material.normalTexture.has_value()) {
+            material.normal_scale = gltf_material.normalTexture->scale;
+        }
+
+        auto normal_image = resolve_texture_cpu(asset, gltf_material.normalTexture, false, image_cache, cpu_images);
+
+        if (!normal_image) {
+            return std::unexpected(normal_image.error());
+        }
+
+        material.normal_image = *normal_image;
+
+        if (gltf_material.occlusionTexture.has_value()) {
+            material.occlusion_strength = gltf_material.occlusionTexture->strength;
+        }
+
+        auto occlusion_image =
+                resolve_texture_cpu(asset, gltf_material.occlusionTexture, false, image_cache, cpu_images);
+
+        if (!occlusion_image) {
+            return std::unexpected(occlusion_image.error());
+        }
+
+        material.occlusion_image = *occlusion_image;
+
+        auto emissive_image = resolve_texture_cpu(asset, gltf_material.emissiveTexture, true, image_cache, cpu_images);
+
+        if (!emissive_image) {
+            return std::unexpected(emissive_image.error());
+        }
+
+        material.emissive_image = *emissive_image;
+
+        return material;
     }
 
 } // namespace
 
-auto load_model(std::filesystem::path const &path, GeometryArena &geometry_arena)
-        -> std::expected<Model, ModelLoadError> {
+// ------------------------------------------------------------------------
+// Phase 1 — CPU pass. Safe to run on a background thread: touches the
+// filesystem, stb_image, meshoptimizer, and MikkTSpace only.
+// ------------------------------------------------------------------------
+
+auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage)
+        -> std::expected<ModelCpuData, ModelLoadError> {
     fastgltf::GltfFileStream file_stream{path};
 
     if (!file_stream.isOpen()) {
@@ -321,9 +579,10 @@ auto load_model(std::filesystem::path const &path, GeometryArena &geometry_arena
         });
     }
 
-    static fastgltf::Parser parser;
+    static thread_local fastgltf::Parser parser{fastgltf::Extensions::KHR_materials_emissive_strength};
 
-    constexpr auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
+    constexpr auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices |
+                             fastgltf::Options::LoadExternalImages;
 
     auto asset_result = parser.loadGltfBinary(file_stream, path.parent_path(), options);
 
@@ -335,25 +594,47 @@ auto load_model(std::filesystem::path const &path, GeometryArena &geometry_arena
 
     auto asset = std::move(asset_result.get());
 
-    Model model;
-    model.meshes.reserve(asset.meshes.size());
-    model.nodes.reserve(asset.nodes.size());
+    ModelCpuData cpu_data;
+    cpu_data.meshes.reserve(asset.meshes.size());
+    cpu_data.nodes.reserve(asset.nodes.size());
+    cpu_data.materials.reserve(asset.materials.size());
+
+    // Dedup textures within this asset: several materials commonly share
+    // one atlas/texture, and we only want to decode it once. Keyed by
+    // glTF image index -> index into cpu_data.images.
+    std::unordered_map<std::size_t, std::size_t> image_cache;
+
+    for (auto const &gltf_material: asset.materials) {
+        auto material = load_material_cpu(asset, gltf_material, sampler_storage, image_cache, cpu_data.images);
+
+        if (!material) {
+            return std::unexpected(material.error());
+        }
+
+        cpu_data.materials.push_back(std::move(*material));
+    }
 
     for (auto const &gltf_mesh: asset.meshes) {
-        ModelMesh mesh;
+        ModelCpuMesh mesh;
         mesh.primitives.reserve(gltf_mesh.primitives.size());
 
         for (auto const &gltf_primitive: gltf_mesh.primitives) {
-            auto primitive = load_primitive(asset, gltf_primitive, geometry_arena);
+            auto primitive = load_primitive_cpu(asset, gltf_primitive);
 
             if (!primitive) {
                 return std::unexpected(primitive.error());
             }
 
+            if (primitive->material_index.has_value() && *primitive->material_index >= cpu_data.materials.size()) {
+                return std::unexpected(ModelLoadError{
+                        .type = ModelLoadErrorType::invalid_material_index,
+                });
+            }
+
             mesh.primitives.push_back(std::move(*primitive));
         }
 
-        model.meshes.push_back(std::move(mesh));
+        cpu_data.meshes.push_back(std::move(mesh));
     }
 
     for (auto const &gltf_node: asset.nodes) {
@@ -371,7 +652,7 @@ auto load_model(std::filesystem::path const &path, GeometryArena &geometry_arena
             node.children.push_back(static_cast<std::uint32_t>(child));
         }
 
-        model.nodes.push_back(std::move(node));
+        cpu_data.nodes.push_back(std::move(node));
     }
 
     auto const scene_index = asset.defaultScene.value_or(0);
@@ -379,12 +660,183 @@ auto load_model(std::filesystem::path const &path, GeometryArena &geometry_arena
     if (scene_index < asset.scenes.size()) {
         auto const &scene = asset.scenes[scene_index];
 
-        model.scene_roots.reserve(scene.nodeIndices.size());
+        cpu_data.scene_roots.reserve(scene.nodeIndices.size());
 
         for (auto const node_index: scene.nodeIndices) {
-            model.scene_roots.push_back(static_cast<std::uint32_t>(node_index));
+            cpu_data.scene_roots.push_back(static_cast<std::uint32_t>(node_index));
         }
     }
 
+    return cpu_data;
+}
+
+
+auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer command_buffer,
+                             GeometryArena &geometry_arena, ImageStorage &image_storage,
+                             MaterialStorage &material_storage) -> std::expected<Model, ModelLoadError> {
+    if (command_buffer == VK_NULL_HANDLE) {
+        return std::unexpected(ModelLoadError{
+                .type = ModelLoadErrorType::invalid_argument,
+        });
+    }
+
+    std::vector<ImageHandle> image_handles;
+    image_handles.reserve(cpu_data.images.size());
+
+    for (auto const &cpu_image: cpu_data.images) {
+        auto uploaded = image_storage.create_image(
+                ImageCreateInfo{
+                        .extent =
+                                VkExtent3D{
+                                        .width = cpu_image.width,
+                                        .height = cpu_image.height,
+                                        .depth = 1,
+                                },
+                        .format = cpu_image.is_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM,
+                        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .image_type = VK_IMAGE_TYPE_2D,
+                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                        .flags = 0,
+                        .samples = VK_SAMPLE_COUNT_1_BIT,
+                        .tiling = VK_IMAGE_TILING_OPTIMAL,
+                        .mip_levels =
+                                static_cast<std::uint32_t>(std::bit_width(std::max(cpu_image.width, cpu_image.height))),
+                        .array_layers = 1,
+                        .debug_name = "model_texture",
+                },
+                std::span<std::byte const>{cpu_image.pixels}, command_buffer);
+
+        if (!uploaded || !uploaded->valid()) {
+            return std::unexpected(ModelLoadError{
+                    .type = ModelLoadErrorType::texture_upload_failed,
+            });
+        }
+
+        image_handles.push_back(*uploaded);
+    }
+
+    auto const resolve_image = [&](std::optional<std::size_t> cpu_index, ImageHandle fallback) {
+        return cpu_index.has_value() ? image_handles[*cpu_index] : fallback;
+    };
+
+    Model model;
+    model.meshes.reserve(cpu_data.meshes.size());
+    model.materials.reserve(cpu_data.materials.size());
+
+    std::mutex sync_mutex;
+
+    std::vector<std::future<std::expected<MaterialHandle, ModelLoadError>>> material_futures;
+    material_futures.reserve(cpu_data.materials.size());
+
+    for (auto const &cpu_material: cpu_data.materials) {
+        material_futures.push_back(
+                std::async(std::launch::async, [&]() -> std::expected<MaterialHandle, ModelLoadError> {
+                    MaterialCreateInfo const info{
+                            .base_colour_factor = cpu_material.base_colour_factor,
+                            .emissive_factor = cpu_material.emissive_factor,
+                            .emissive_strength = cpu_material.emissive_strength,
+                            .metallic_factor = cpu_material.metallic_factor,
+                            .roughness_factor = cpu_material.roughness_factor,
+                            .normal_scale = cpu_material.normal_scale,
+                            .occlusion_strength = cpu_material.occlusion_strength,
+                            .alpha_cutoff = cpu_material.alpha_cutoff,
+                            .base_colour_texture = resolve_image(cpu_material.base_colour_image, image_storage.white()),
+                            .normal_texture = resolve_image(cpu_material.normal_image, image_storage.flat_normal()),
+                            .metallic_roughness_texture = resolve_image(cpu_material.metallic_roughness_image,
+                                                                        image_storage.metallic_roughness()),
+                            .occlusion_texture = resolve_image(cpu_material.occlusion_image, image_storage.occlusion()),
+                            .emissive_texture = resolve_image(cpu_material.emissive_image, image_storage.emissive()),
+                            .sampler = cpu_material.sampler,
+                            .alpha_mode = cpu_material.alpha_mode,
+                    };
+
+                    auto gpu_material = to_gpu_material(info);
+
+                    // Synchronize the external insertion
+                    std::lock_guard<std::mutex> lock(sync_mutex);
+                    auto material_handle = material_storage.create_material(gpu_material);
+
+                    if (!material_handle) {
+                        return std::unexpected(ModelLoadError{
+                                .type = ModelLoadErrorType::material_creation_failed,
+                                .material_storage_error = material_handle.error(),
+                        });
+                    }
+
+                    return *material_handle;
+                }));
+    }
+
+    for (auto &fut: material_futures) {
+        auto result = fut.get();
+        if (!result)
+            return std::unexpected(result.error());
+        model.materials.push_back(*result);
+    }
+
+    std::vector<std::future<std::expected<ModelMesh, ModelLoadError>>> mesh_futures;
+    mesh_futures.reserve(cpu_data.meshes.size());
+
+    for (auto const &cpu_mesh: cpu_data.meshes) {
+        mesh_futures.push_back(std::async(std::launch::async, [&]() -> std::expected<ModelMesh, ModelLoadError> {
+            ModelMesh mesh;
+            mesh.primitives.reserve(cpu_mesh.primitives.size());
+
+            for (auto const &cpu_primitive: cpu_mesh.primitives) {
+                auto geometry = [&]() {
+                    std::lock_guard<std::mutex> lock(sync_mutex);
+                    return geometry_arena.allocate_mesh(std::span<const ModelVertex>{cpu_primitive.vertices},
+                                                        std::span<const std::uint32_t>{cpu_primitive.indices});
+                }();
+
+                if (!geometry) {
+                    return std::unexpected(ModelLoadError{
+                            .type = ModelLoadErrorType::geometry_upload_failed,
+                            .geometry_error = geometry.error(),
+                    });
+                }
+
+                if (cpu_primitive.material_index.has_value() &&
+                    *cpu_primitive.material_index >= model.materials.size()) {
+                    return std::unexpected(ModelLoadError{
+                            .type = ModelLoadErrorType::invalid_material_index,
+                    });
+                }
+
+                mesh.primitives.push_back(ModelPrimitive{
+                        .geometry = *geometry,
+                        .material_index = cpu_primitive.material_index,
+                });
+            }
+
+            return mesh;
+        }));
+    }
+
+    for (auto &fut: mesh_futures) {
+        auto result = fut.get();
+        if (!result)
+            return std::unexpected(result.error());
+        model.meshes.push_back(std::move(*result));
+    }
+
+    model.nodes = cpu_data.nodes;
+    model.scene_roots = cpu_data.scene_roots;
+
     return model;
+}
+
+auto load_model(std::filesystem::path const &path, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
+                ImageStorage &image_storage, SamplerStorage &sampler_storage, MaterialStorage &material_storage)
+        -> std::expected<Model, ModelLoadError> {
+    auto cpu_data = load_model_cpu(path, sampler_storage);
+
+    if (!cpu_data) {
+        return std::unexpected(cpu_data.error());
+    }
+
+    return record_model_gpu_upload(*cpu_data, command_buffer, geometry_arena, image_storage, material_storage);
 }

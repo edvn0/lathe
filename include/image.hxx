@@ -1,5 +1,6 @@
 #pragma once
 
+#include <span>
 #include <volk.h>
 
 #include <array>
@@ -9,6 +10,7 @@
 
 #include <vk_mem_alloc.h>
 
+#include "device_error.hxx"
 #include "forward.hxx"
 
 enum class ImageDescriptorView : std::uint8_t {
@@ -41,6 +43,7 @@ enum class ImageErrorType : std::uint8_t {
 struct ImageError {
     ImageErrorType type = ImageErrorType::invalid_argument;
 
+    DeviceError buffer_error{};
     VkResult result = VK_SUCCESS;
 };
 
@@ -97,6 +100,10 @@ public:
 
     [[nodiscard]]
     static auto create(VulkanContext &context, ImageCreateInfo const &create_info) -> std::expected<Image, ImageError>;
+
+    [[nodiscard]]
+    static auto create(VulkanContext &context, ImageCreateInfo const &create_info, std::span<const std::byte> pixels)
+            -> std::expected<Image, ImageError>;
 
     auto destroy() noexcept -> void;
 

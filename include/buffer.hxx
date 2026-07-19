@@ -97,6 +97,8 @@ struct Buffer {
     [[nodiscard]]
     auto invalidate(VkDeviceSize offset = 0, VkDeviceSize size = VK_WHOLE_SIZE) -> std::expected<void, DeviceError>;
 
+    auto zero() -> std::expected<void, DeviceError>;
+
     auto destroy() noexcept -> void;
 
     [[nodiscard]]

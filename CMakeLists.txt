@@ -197,7 +197,24 @@ cpmaddpackage(
         "MESHOPT_BUILD_WERROR OFF"
 )
 
+cpmaddpackage(
+        NAME stb
+        GITHUB_REPOSITORY nothings/stb
+        GIT_TAG master
+        GIT_SHALLOW YES
+        DOWNLOAD_ONLY YES
+)
+
+CPMAddPackage(
+    NAME efsw
+    GITHUB_REPOSITORY SpartanJ/efsw
+    GIT_TAG 1.4.1
+    OPTIONS
+        "BUILD_SHARED_LIBS OFF"
+)
+
 mark_target_includes_system(meshoptimizer)
+mark_target_includes_system(efsw)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/add_mikktspace.cmake")
 
@@ -376,9 +393,6 @@ target_include_directories(
     INTERFACE
         "${slang_include_dir}"
 )
-
-
-
 mark_target_includes_system(Vulkan::Headers)
 mark_target_includes_system(volk::volk)
 mark_target_includes_system(glfw)
@@ -434,6 +448,7 @@ target_include_directories(
     mingw-vulkan
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${stb_SOURCE_DIR}"
 )
 
 target_link_libraries(
@@ -449,6 +464,7 @@ target_link_libraries(
         slang::headers
         mikktspace::mikktspace
         meshoptimizer
+        efsw
 )
 
 # ------------------------------------------------------------------------------

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "context.hxx"
+#include "load_model.hxx"
 
 namespace {
     inline constexpr std::array forward_dynamic_states{
@@ -98,6 +99,57 @@ auto Pipeline::operator=(Pipeline &&other) noexcept -> Pipeline & {
     return *this;
 }
 
+constexpr auto default_bindings() -> VkPipelineVertexInputStateCreateInfo {
+    static constexpr std::array<VkVertexInputBindingDescription, 1> bindings{VkVertexInputBindingDescription{
+            .binding = 0,
+            .stride = sizeof(ModelVertex),
+            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    }};
+    /**
+        glm::vec3 position{};
+    glm::vec3 normal{};
+    glm::vec4 tangent{};
+    glm::vec2 texcoord{}; */
+    static constexpr std::array<VkVertexInputAttributeDescription, 4> attributes{
+            VkVertexInputAttributeDescription{
+                    .location = 0,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32B32_SFLOAT,
+                    .offset = offsetof(ModelVertex, position),
+            },
+            VkVertexInputAttributeDescription{
+                    .location = 1,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32B32_SFLOAT,
+                    .offset = offsetof(ModelVertex, normal),
+            },
+            VkVertexInputAttributeDescription{
+                    .location = 2,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+                    .offset = offsetof(ModelVertex, tangent),
+            },
+            VkVertexInputAttributeDescription{
+                    .location = 3,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32_SFLOAT,
+                    .offset = offsetof(ModelVertex, texcoord),
+            },
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertex_input{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .vertexBindingDescriptionCount = static_cast<std::uint32_t>(bindings.size()),
+            .pVertexBindingDescriptions = bindings.data(),
+            .vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributes.size()),
+            .pVertexAttributeDescriptions = attributes.data(),
+    };
+
+    return vertex_input;
+}
+
 auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInfo const &create_info,
                                VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError> {
     if (context.device == VK_NULL_HANDLE || create_info.shaders.empty() || create_info.colour_formats.empty()) {
@@ -111,7 +163,7 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
     for (std::size_t index = 0; index < create_info.shaders.size(); ++index) {
         auto const &shader = create_info.shaders[index];
 
-        if (shader.spirv.empty() || shader.entry_point == nullptr ||
+        if (shader.spirv.empty() || shader.entry_point.empty() ||
             shader.spirv.size_bytes() % sizeof(std::uint32_t) != 0) {
             return std::unexpected(make_error(PipelineErrorType::invalid_argument));
         }
@@ -130,7 +182,7 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
                 .flags = shader.flags,
                 .stage = shader.stage,
                 .module = VK_NULL_HANDLE,
-                .pName = shader.entry_point,
+                .pName = shader.entry_point.view().data(),
                 .pSpecializationInfo = shader.specialization_info,
         };
     }
@@ -139,9 +191,6 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
 
     layouts.push_back(global_layout);
 
-    /*
-     * Caller-provided layouts begin at set 1.
-     */
     layouts.insert(layouts.end(), create_info.additional_descriptor_set_layouts.begin(),
                    create_info.additional_descriptor_set_layouts.end());
 
@@ -166,7 +215,7 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
         return std::unexpected(make_error(PipelineErrorType::layout_creation_failed, vk_result));
     }
 
-    VkPipelineVertexInputStateCreateInfo const vertex_input{
+    VkPipelineVertexInputStateCreateInfo const empty_vertex_input{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
@@ -175,6 +224,9 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
             .vertexAttributeDescriptionCount = 0,
             .pVertexAttributeDescriptions = nullptr,
     };
+
+    VkPipelineVertexInputStateCreateInfo const vertex_input =
+            create_info.use_vertex_input ? default_bindings() : empty_vertex_input;
 
     VkPipelineInputAssemblyStateCreateInfo const input_assembly{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,

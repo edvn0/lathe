@@ -193,8 +193,6 @@ auto Swapchain::end_frame(SwapchainFrame const &active_frame) noexcept -> Swapch
             .semaphore = frame.image_available,
             .value = 0,
 
-            // The acquired swapchain image is first used as a
-            // colour attachment by the composite pass.
             .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
 
             .deviceIndex = 0,
@@ -372,8 +370,6 @@ auto Swapchain::create_swapchain(VkSwapchainKHR old_swapchain) noexcept -> bool 
     if (capabilities.maxImageCount != 0) {
         image_count = std::min(image_count, capabilities.maxImageCount);
     }
-
-    info("Selected {} as image count", image_count);
 
     const std::array queue_family_indices{
             graphics_queue_family_,

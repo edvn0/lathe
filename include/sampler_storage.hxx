@@ -54,7 +54,7 @@ struct SamplerCreateInfo {
     VkSamplerAddressMode address_mode_w = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 
     float mip_lod_bias = 0.0F;
-    float max_anisotropy = 1.0F;
+    float max_anisotropy = 6.0F;
 
     VkCompareOp compare_op = VK_COMPARE_OP_NEVER;
 
@@ -130,6 +130,22 @@ public:
     auto linear_clamp() const noexcept -> SamplerHandle {
         return {
                 .index = 1,
+                .generation = 1,
+        };
+    }
+
+    [[nodiscard]]
+    auto nearest_repeat() const noexcept -> SamplerHandle {
+        return {
+                .index = 2,
+                .generation = 1,
+        };
+    }
+
+    [[nodiscard]]
+    auto nearest_clamp() const noexcept -> SamplerHandle {
+        return {
+                .index = 3,
                 .generation = 1,
         };
     }

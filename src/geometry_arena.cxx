@@ -10,8 +10,6 @@
 
 namespace {
 
-    constexpr auto copy_alignment = VkDeviceSize{4};
-
     [[nodiscard]]
     constexpr auto align_up(VkDeviceSize value, VkDeviceSize alignment) noexcept -> VkDeviceSize {
         return (value + alignment - 1) & ~(alignment - 1);

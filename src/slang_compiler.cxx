@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <slang.h>
 #include <span>
 #include <string_view>
 #include <system_error>
@@ -312,6 +313,9 @@ namespace renderer {
          * contract remains obvious.
          */
         options.push_back(make_integer_option(slang::CompilerOptionName::SkipSPIRVValidation, 0));
+
+        options.push_back(make_integer_option(slang::CompilerOptionName::MatrixLayoutColumn, 1));
+        options.push_back(make_integer_option(slang::CompilerOptionName::MatrixLayoutRow, 0));
 
         auto target_description = slang::TargetDesc{
                 .structureSize = sizeof(slang::TargetDesc),

@@ -19,9 +19,11 @@
 #include "gpu_resource_table.hxx"
 #include "image_storage.hxx"
 #include "load_model.hxx"
-#include "material_storage.hxx"
+#include "material_storage.hxx" // TextureHandle, MaterialCreateInfo now live here
+#include "pipeline_graph_repository.hxx"
 #include "pipeline_storage.hxx"
 #include "sampler_storage.hxx"
+#include "shader_change_queue.hxx"
 #include "slang_compiler.hxx"
 
 struct ModelHandle {
@@ -36,18 +38,6 @@ struct ModelHandle {
     auto operator==(ModelHandle const &) const -> bool = default;
 };
 
-struct TextureHandle {
-    std::uint32_t index = 0;
-    std::uint32_t generation = 0;
-
-    [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return generation != 0;
-    }
-
-    auto operator==(TextureHandle const &) const -> bool = default;
-};
-
 struct MeshHandle {
     std::uint32_t index = 0;
     std::uint32_t generation = 0;
@@ -60,35 +50,13 @@ struct MeshHandle {
     auto operator==(MeshHandle const &) const -> bool = default;
 };
 
-struct MaterialCreateInfo {
-    glm::vec4 base_colour_factor{1.0F};
-    glm::vec3 emissive_factor{0.0F};
-
-    float emissive_strength = 1.0F;
-    float metallic_factor = 1.0F;
-    float roughness_factor = 1.0F;
-    float normal_scale = 1.0F;
-    float occlusion_strength = 1.0F;
-    float alpha_cutoff = 0.5F;
-
-    TextureHandle base_colour_texture{};
-    TextureHandle normal_texture{};
-    TextureHandle metallic_roughness_texture{};
-    TextureHandle occlusion_texture{};
-    TextureHandle emissive_texture{};
-
-    SamplerHandle sampler{};
-
-    AlphaMode alpha_mode = AlphaMode::opaque;
-};
-
-struct MeshPrimitiveCreateInfo {
+struct SubmeshCreateInfo {
     MeshGeometry geometry{};
     MaterialHandle material{};
 };
 
 struct MeshCreateInfo {
-    std::span<const MeshPrimitiveCreateInfo> primitives;
+    std::span<const SubmeshCreateInfo> submeshes;
 };
 
 struct SwapchainImage {
@@ -116,6 +84,7 @@ enum class RendererErrorType : std::uint8_t {
     compiler_error,
     pipeline_storage_error,
     gpu_resource_table_error,
+    pipeline_graph_error,
     invalid_pipeline,
 };
 
@@ -132,6 +101,7 @@ struct RendererError {
     renderer::ShaderCompileError compiler_error{};
     PipelineStorageError pipeline_storage_error{};
     GpuResourceTableError gpu_resource_table_error{};
+    PipelineGraphError pipeline_graph_error{};
 };
 
 struct RendererCreateInfo {
@@ -185,6 +155,8 @@ struct Renderer {
 
     [[nodiscard]]
     auto submit_model(ModelHandle model, glm::mat4 const &transform) -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto submit_model(ModelHandle model, glm::mat4 &&) -> std::expected<void, RendererError>;
 
     [[nodiscard]]
     auto create_material(MaterialCreateInfo const &create_info) -> std::expected<MaterialHandle, RendererError>;
@@ -225,14 +197,16 @@ struct Renderer {
         return geometry_arena_;
     }
 
+    auto notify_shader_file_changed(std::filesystem::path path) -> void { shader_change_queue_.push(std::move(path)); }
+
 private:
-    struct RenderPrimitive {
+    struct Submesh {
         MeshGeometry geometry{};
         MaterialHandle material{};
     };
 
     struct MeshSlot {
-        std::vector<RenderPrimitive> primitives;
+        std::vector<Submesh> submeshes;
 
         std::uint32_t generation = 1;
         std::uint32_t next_free = 0;
@@ -273,7 +247,11 @@ private:
 
         std::vector<VkDrawIndexedIndirectCommand> indirect_commands;
 
-        std::uint32_t draw_count = 0;
+        // Number of VkDrawIndexedIndirectCommand entries in indirect_commands
+        // (one per unique (mesh, submesh) batch this frame) — NOT the number
+        // of GpuDraw / instance entries in `draws`. This is the value that
+        // must be passed as drawCount to vkCmdDrawIndexedIndirect.
+        std::uint32_t indirect_command_count = 0;
     };
 
     struct ModelDraw {
@@ -294,9 +272,6 @@ private:
         ModelHandle model{};
         glm::mat4 transform{1.0F};
     };
-
-    [[nodiscard]]
-    auto to_gpu_material(MaterialCreateInfo const &create_info) const noexcept -> GpuMaterial;
 
     [[nodiscard]]
     auto mesh_slot(MeshHandle handle) noexcept -> MeshSlot *;
@@ -327,11 +302,12 @@ private:
     MaterialStorage material_storage_{};
     ImageStorage image_storage_{};
     SamplerStorage sampler_storage_{};
-    PipelineStorage pipeline_storage_{};
     GpuResourceTable gpu_resource_table_{};
 
-    PipelineHandle forward_pipeline_{};
-    PipelineHandle composite_pipeline_{};
+    PipelineGraphRepository pipeline_graph_;
+    PipelineNodeHandle forward_pipeline_;
+    PipelineNodeHandle composite_pipeline_;
+    ShaderChangeQueue shader_change_queue_;
 
     std::vector<MeshSlot> meshes_;
     std::uint32_t mesh_free_head_ = 0;
@@ -401,6 +377,8 @@ struct std::formatter<RendererErrorType> : std::formatter<std::string_view> {
                     return "pipeline_storage_error";
                 case RendererErrorType::gpu_resource_table_error:
                     return "gpu_resource_table_error";
+                case RendererErrorType::pipeline_graph_error:
+                    return "pipeline_graph_error";
             }
 
             return "unknown_renderer_error";

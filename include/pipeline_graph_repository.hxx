@@ -1,0 +1,196 @@
+#pragma once
+
+#include <cstdint>
+#include <expected>
+#include <filesystem>
+#include <span>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "forward.hxx"
+#include "pipeline.hxx"
+#include "pipeline_storage.hxx"
+#include "slang_compiler.hxx"
+
+struct PipelineNodeHandle {
+    std::uint32_t index = 0;
+    std::uint32_t generation = 0;
+
+    [[nodiscard]]
+    auto valid() const noexcept -> bool {
+        return generation != 0;
+    }
+
+    auto operator==(PipelineNodeHandle const &) const -> bool = default;
+};
+
+enum class PipelineGraphErrorType : std::uint8_t {
+    invalid_argument,
+    invalid_handle,
+    capacity_exceeded,
+    compiler_error,
+    pipeline_storage_error,
+};
+
+struct PipelineGraphError {
+    PipelineGraphErrorType type = PipelineGraphErrorType::invalid_argument;
+
+    renderer::ShaderCompileError compiler_error{};
+    PipelineStorageError pipeline_storage_error{};
+};
+
+struct PipelineGraphCreateInfo {
+    std::uint32_t pipeline_capacity = 0;
+    std::uint32_t frames_in_flight = 1;
+
+    VkDescriptorSetLayout global_descriptor_set_layout = VK_NULL_HANDLE;
+
+    std::string_view debug_name = "pipeline_graph";
+};
+
+struct PipelineRegisterInfo {
+    std::vector<renderer::ShaderCompileRequest> stages;
+    std::vector<VkDescriptorSetLayout> additional_descriptor_set_layouts;
+    std::vector<VkPushConstantRange> push_constant_ranges;
+    std::vector<VkFormat> colour_formats;
+
+    VkFormat depth_format = VK_FORMAT_UNDEFINED;
+    VkFormat stencil_format = VK_FORMAT_UNDEFINED;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+
+    std::string debug_name;
+};
+
+/*
+ * Owns pipeline storage plus a small DAG:
+ *
+ *   source_file -> shader_stage -> pipeline
+ *
+ * A changed source file marks every shader_stage that reads it dirty,
+ * which marks every pipeline that owns one of those stages pending for
+ * rebuild. process_dirty() recompiles only the dirty stages (shared
+ * stages across pipelines recompile once) and rebuilds a VkPipeline
+ * only once every stage it needs is clean. Old VkPipeline handles are
+ * destroyed frames_in_flight frames after being replaced, never
+ * immediately, since in-flight command buffers may still reference
+ * them.
+ */
+class PipelineGraphRepository {
+public:
+    PipelineGraphRepository() = default;
+    ~PipelineGraphRepository();
+
+    PipelineGraphRepository(PipelineGraphRepository const &) = delete;
+    auto operator=(PipelineGraphRepository const &) -> PipelineGraphRepository & = delete;
+
+    PipelineGraphRepository(PipelineGraphRepository &&other) noexcept;
+    auto operator=(PipelineGraphRepository &&other) noexcept -> PipelineGraphRepository &;
+
+    [[nodiscard]]
+    static auto create(VulkanContext &context, PipelineGraphCreateInfo const &create_info)
+            -> std::expected<PipelineGraphRepository, PipelineGraphError>;
+
+    // Compiles every stage synchronously and builds the pipeline before
+    // returning. Shared stages (same source_path + entry_point + stage,
+    // already registered by another pipeline) reuse their existing
+    // compiled SPIR-V instead of recompiling.
+    [[nodiscard]]
+    auto register_pipeline(renderer::SlangCompiler const &compiler, PipelineRegisterInfo register_info)
+            -> std::expected<PipelineNodeHandle, PipelineGraphError>;
+
+    [[nodiscard]]
+    auto resolve(PipelineNodeHandle handle) const noexcept -> Pipeline const *;
+
+    [[nodiscard]]
+    auto pipeline_handle(PipelineNodeHandle handle) const noexcept -> PipelineHandle;
+
+    // Call once per frame with whatever changed-file paths a watcher
+    // collected since the last call. Cheap no-op if empty.
+    auto on_files_changed(std::span<std::filesystem::path const> changed_files) -> void;
+
+    // Call once per frame. Recompiles dirty stages and rebuilds any
+    // pipeline whose stages are now all clean. Failed compiles log and
+    // leave the live pipeline untouched.
+    auto process_dirty(renderer::SlangCompiler const &compiler) -> void;
+
+    // Call once per frame, before resolve() calls that will be recorded
+    // into a new command buffer. Destroys pipelines that have been
+    // retired for frames_in_flight frames.
+    auto tick_retirement() -> void;
+
+    auto destroy() noexcept -> void;
+
+private:
+    struct SourceFileNode {
+        std::filesystem::path path;
+        std::vector<std::uint32_t> dependent_stages;
+    };
+
+    struct ShaderStageNode {
+        renderer::ShaderCompileRequest request;
+        std::vector<std::uint32_t> spirv;
+        std::string entry_point;
+        std::vector<std::uint32_t> source_file_indices;
+        std::vector<std::uint32_t> dependent_pipelines;
+
+        bool dirty = true;
+        bool has_compiled_once = false;
+
+        // Used to avoid retrying a known-broken shader every single
+        // frame: only re-attempt once a *new* file change bumped
+        // last_change_generation past our last failed attempt.
+        std::uint64_t last_change_generation = 0;
+        std::uint64_t last_attempt_generation = 0;
+    };
+
+    struct PipelineNode {
+        std::vector<std::uint32_t> stage_indices;
+        PipelineRegisterInfo register_info;
+        PipelineHandle live_handle{};
+
+        std::uint32_t generation = 1;
+        std::uint32_t next_free = 0;
+
+        bool occupied = false;
+        bool pending_rebuild = false;
+    };
+
+    struct RetiringPipeline {
+        PipelineHandle handle;
+        std::uint32_t frames_remaining = 0;
+    };
+
+    [[nodiscard]]
+    auto find_or_create_source_file(std::filesystem::path const &path) -> std::uint32_t;
+
+    [[nodiscard]]
+    auto find_or_create_stage(renderer::ShaderCompileRequest const &request, std::uint32_t owning_pipeline)
+            -> std::uint32_t;
+
+    auto link_stage_source_files(std::uint32_t stage_index) -> void;
+
+    [[nodiscard]]
+    auto build_pipeline(PipelineNode const &node) -> std::expected<PipelineHandle, PipelineGraphError>;
+
+    auto retire(PipelineHandle handle) -> void;
+
+    [[nodiscard]]
+    static auto to_vk_stage(renderer::ShaderStage stage) noexcept -> VkShaderStageFlagBits;
+
+    PipelineStorage storage_;
+
+    std::vector<SourceFileNode> source_files_;
+    std::unordered_map<std::string, std::uint32_t> source_file_lookup_;
+
+    std::vector<ShaderStageNode> stage_nodes_;
+    std::unordered_map<std::string, std::uint32_t> stage_lookup_;
+
+    std::vector<PipelineNode> pipeline_nodes_;
+    std::uint32_t pipeline_free_head_ = 0;
+
+    std::vector<RetiringPipeline> retiring_;
+    std::uint32_t frames_in_flight_ = 1;
+
+    std::uint64_t change_generation_ = 0;
+};
