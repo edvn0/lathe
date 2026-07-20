@@ -36,5 +36,6 @@ auto VulkanContext::one_time_submit(std::function<void(VkCommandBuffer)> &&func)
 
     vkDestroyFence(device, fence, nullptr);
 
-    one_time_buffer_index = (one_time_buffer_index++ % one_time_command_buffers.size());
+    const auto size = static_cast<std::uint32_t>(one_time_command_buffers.size());
+    one_time_buffer_index = ((one_time_buffer_index + 1) % size);
 }

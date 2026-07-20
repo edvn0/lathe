@@ -357,6 +357,7 @@ auto PipelineGraphRepository::on_files_changed(std::span<std::filesystem::path c
         auto const existing = source_file_lookup_.find(key);
 
         if (existing == source_file_lookup_.end()) {
+            debug("Not found for {} and {}", key, existing->first);
             continue; // not part of any registered pipeline
         }
 
@@ -391,9 +392,6 @@ auto PipelineGraphRepository::process_dirty(renderer::SlangCompiler const &compi
             }
 
             if (stage.has_compiled_once && stage.last_attempt_generation >= stage.last_change_generation) {
-                // Already tried and failed for this change; wait for a
-                // new file change before retrying, instead of
-                // recompiling a known-broken shader every frame.
                 all_stages_clean = false;
                 continue;
             }
@@ -431,6 +429,8 @@ auto PipelineGraphRepository::process_dirty(renderer::SlangCompiler const &compi
 
         node.live_handle = *rebuilt;
         node.pending_rebuild = false;
+
+        debug("Recompiled {}", node.register_info.debug_name);
     }
 }
 

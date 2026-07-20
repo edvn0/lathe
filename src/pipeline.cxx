@@ -152,7 +152,7 @@ constexpr auto default_bindings() -> VkPipelineVertexInputStateCreateInfo {
 
 auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInfo const &create_info,
                                VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError> {
-    if (context.device == VK_NULL_HANDLE || create_info.shaders.empty() || create_info.colour_formats.empty()) {
+    if (context.device == VK_NULL_HANDLE || create_info.shaders.empty()) {
         return std::unexpected(make_error(PipelineErrorType::invalid_argument));
     }
 

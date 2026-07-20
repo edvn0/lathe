@@ -1,3 +1,4 @@
+#include <csignal>
 #include <random>
 #include <volk.h>
 
@@ -24,12 +25,41 @@
 #include "allocator.hxx"
 #include "config.hxx"
 #include "context.hxx"
+#include "editor_camera.hxx"
 #include "logger.hxx"
+#include "renderdoc.hxx"
 #include "renderer.hxx"
 #include "shader_hot_reload_watcher.hxx"
 #include "swapchain.hxx"
 
 namespace {
+    template<typename T>
+    concept HasDepth = requires(T t) {
+        { t.depth };
+    };
+
+    template<typename T>
+    concept HasHeight = requires(T t) {
+        { t.height };
+    };
+
+    template<typename T>
+    concept HasWidth = requires(T t) {
+        { t.width };
+    };
+
+    constexpr auto compare = []<typename A, typename B>(const A &a, const B &b) -> bool {
+        if constexpr (HasDepth<A> && HasDepth<B>) {
+            return a.width == b.width && a.height == b.height && a.depth == b.depth;
+        } else if constexpr ((HasHeight<A> && !HasDepth<A>) && (HasHeight<B> && !HasDepth<B>) ) {
+            return a.width == b.width && a.height == b.height;
+        } else if constexpr ((HasWidth<A> && !HasHeight<A>) && (HasWidth<B> && !HasHeight<B>) ) {
+            return a.width == b.width;
+        } else {
+            return false;
+        }
+    };
+
 #ifndef NDEBUG
     constexpr bool enable_validation = true;
 
@@ -72,6 +102,29 @@ namespace {
         std::int32_t modifiers{};
     };
 
+    // Raw cursor delta in pixels since the previous callback -- not an
+    // absolute position. Application decides whether it counts as a
+    // "look" based on whether a drag is currently active.
+    struct MouseMovedEvent {
+        double delta_x{};
+        double delta_y{};
+    };
+
+    struct MouseScrolledEvent {
+        double delta_x{};
+        double delta_y{};
+    };
+
+    struct MouseButtonPressedEvent {
+        std::int32_t button{};
+        std::int32_t modifiers{};
+    };
+
+    struct MouseButtonReleasedEvent {
+        std::int32_t button{};
+        std::int32_t modifiers{};
+    };
+
     struct Application {
         explicit Application(VulkanContext &context) noexcept : renderer{context} {
             std::array const shader_directories{
@@ -87,36 +140,116 @@ namespace {
         RenderScene scene;
         ShaderHotReloadWatcher shader_watcher_;
 
-        ModelHandle model;
+        EditorCamera camera;
+
+        // Right-mouse-drag look state. Cursor capture itself (hide + relative
+        // mode) is toggled directly in mouse_button_callback since that's
+        // where the GLFWwindow handle is already available.
+        bool mouse_dragging = false;
+
+        double last_mouse_x = 0.0;
+        double last_mouse_y = 0.0;
+        bool has_last_mouse_position = false;
+
+        auto on_startup() -> void {
+            renderer.queue_render_thread_event([this] { this->recreate_entities(); });
+        }
 
         auto on_event(KeyPressedEvent ev) -> bool {
             if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL) {
-                recreate_entities();
+                renderer.queue_render_thread_event([this] { this->recreate_entities(); });
+            }
+            camera.on_key_pressed(ev.key);
+            return true;
+        }
+
+        auto on_event(KeyReleasedEvent ev) -> bool {
+            camera.on_key_released(ev.key);
+
+            return true;
+        }
+
+        auto on_event(MouseMovedEvent ev) -> bool {
+            camera.on_mouse_moved(static_cast<float>(ev.delta_x), static_cast<float>(ev.delta_y), mouse_dragging);
+
+            return true;
+        }
+
+        auto on_event(MouseScrolledEvent ev) -> bool {
+            camera.on_mouse_scrolled(static_cast<float>(ev.delta_y));
+
+            return true;
+        }
+
+        auto on_event(MouseButtonPressedEvent ev) -> bool {
+            if (ev.button == GLFW_MOUSE_BUTTON_RIGHT) {
+                mouse_dragging = true;
             }
 
             return true;
         }
-        auto on_event(KeyReleasedEvent) -> bool { return true; }
+
+        auto on_event(MouseButtonReleasedEvent ev) -> bool {
+            if (ev.button == GLFW_MOUSE_BUTTON_RIGHT) {
+                mouse_dragging = false;
+            }
+
+            return true;
+        }
 
         auto recreate_entities() -> void {
+
+            if (auto could_wait = renderer.wait_idle(); !could_wait.has_value()) {
+                info("{}", could_wait.error().device_error.message.view());
+                return;
+            }
+
             scene.objects.clear();
 
-            static std::random_device r; // 1
-            static std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()}; // 2
-            static std::mt19937 eng(seed);
-            static std::uniform_real_distribution<float> urd(-20, 20);
 
-            for (auto i = 0; i < 10; i++) {
-                for (auto j = 0; j < 10; j++) {
-                    for (auto k = 0; k < 10; k++) {
-                        scene.objects.emplace_back(model, SceneTransform{
-                                                                  .position =
-                                                                          glm::vec3{
-                                                                                  urd(eng),
-                                                                                  urd(eng),
-                                                                                  urd(eng),
-                                                                          },
-                                                          });
+            auto helmet_model = renderer.load_model("assets/models/damaged_helmet/DamagedHelmet.gltf");
+            if (!helmet_model) {
+                error("Could not load model: {}", helmet_model.error().type);
+            }
+
+            auto cube_model = renderer.load_model("assets/models/test_cube.glb");
+            if (!cube_model) {
+                error("Could not load model: {}", helmet_model.error().type);
+            }
+
+            std::random_device r;
+            std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
+            std::mt19937 eng(seed);
+            std::uniform_real_distribution<float> urd(-20, 20);
+
+            const auto count = 10;
+            const auto other_count = 10;
+            for (auto i = 0; i < count; i++) {
+                for (auto j = 0; j < count; j++) {
+                    for (auto k = 0; k < count; k++) {
+                        scene.objects.emplace_back(*helmet_model, SceneTransform{
+                                                                          .position =
+                                                                                  glm::vec3{
+                                                                                          urd(eng),
+                                                                                          urd(eng),
+                                                                                          urd(eng),
+                                                                                  },
+                                                                  });
+                    }
+                }
+            }
+
+            for (auto i = 0; i < other_count; i++) {
+                for (auto j = 0; j < other_count; j++) {
+                    for (auto k = 0; k < other_count; k++) {
+                        scene.objects.emplace_back(*cube_model, SceneTransform{
+                                                                        .position =
+                                                                                glm::vec3{
+                                                                                        urd(eng),
+                                                                                        urd(eng),
+                                                                                        urd(eng),
+                                                                                },
+                                                                });
                     }
                 }
             }
@@ -262,7 +395,12 @@ namespace {
     auto initialize_glfw(VulkanContext &context) noexcept -> bool {
         glfwSetErrorCallback(glfw_error_callback);
 
-        glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+
+        auto renderdoc = renderdoc_init();
+
+        info("Was created via renderdoc: {}", renderdoc.is_active());
+        glfwInitHint(GLFW_PLATFORM, renderdoc.is_active() ? GLFW_PLATFORM_X11 : GLFW_PLATFORM_WAYLAND);
+        warn("Chosing: {} as platform.", renderdoc.is_active() ? "X11" : "Wayland");
 
         if (glfwInit() != GLFW_TRUE) {
             error("glfwInit failed");
@@ -368,6 +506,7 @@ namespace {
         std::vector<char const *> instance_extensions(required_extensions, required_extensions + extension_count);
 
         auto validation_enabled = enable_validation;
+        info("Validation is {}", validation_enabled ? "on" : "off");
 
         if (validation_enabled && !validation_layer_available()) {
             warn("{} is unavailable; validation "
@@ -670,6 +809,7 @@ namespace {
         vulkan12_features.scalarBlockLayout = VK_TRUE;
         vulkan12_features.runtimeDescriptorArray = VK_TRUE;
         vulkan12_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        vulkan12_features.hostQueryReset = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features vulkan13_features{};
         vulkan13_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -859,13 +999,6 @@ namespace {
             return false;
         }
 
-        auto model = application.renderer.load_model("assets/models/test_cube.glb");
-        if (!model) {
-            error("Could not load model: {}", static_cast<int>(model.error().type));
-            return false;
-        }
-        application.model = *model;
-
         return true;
     }
 
@@ -899,7 +1032,14 @@ namespace {
             return false;
         }
 
-        auto prepare_result = application.renderer.prepare_frame(frame->command_buffer, frame->frame_index);
+        auto aspect = application.renderer.aspect(frame->frame_index);
+        auto prepare_result =
+                application.renderer.prepare_frame(frame->command_buffer,
+                                                   {
+                                                           .view = application.camera.view(),
+                                                           .projection = application.camera.projection(aspect),
+                                                   },
+                                                   frame->frame_index);
 
         if (!prepare_result) {
             error("Could not prepare renderer frame: {}", static_cast<int>(prepare_result.error().type));
@@ -914,6 +1054,7 @@ namespace {
                                                                        .format = frame->format,
                                                                        .extent = frame->extent,
                                                                },
+
                                                                frame->frame_index);
 
         if (!record_result) {
@@ -955,11 +1096,14 @@ namespace {
     }
 
     auto render_loop(std::stop_token stop_token, VulkanContext &context, Application &application) noexcept -> void {
+
         auto renderer_extent = context.swapchain.extent();
+        auto last_frame_time = std::chrono::steady_clock::now();
 
         while (!stop_token.stop_requested() && context.running.load(std::memory_order_acquire)) {
-            auto const width = context.framebuffer_width.load(std::memory_order_acquire);
+            application.renderer.drain_event_queue();
 
+            auto const width = context.framebuffer_width.load(std::memory_order_acquire);
             auto const height = context.framebuffer_height.load(std::memory_order_acquire);
 
             if (width <= 0 || height <= 0) {
@@ -971,8 +1115,15 @@ namespace {
                             context.framebuffer_height.load(std::memory_order_acquire) > 0);
                 });
 
+                last_frame_time = std::chrono::steady_clock::now();
                 continue;
             }
+
+            auto const now = std::chrono::steady_clock::now();
+            auto const delta_time = std::chrono::duration<float>(now - last_frame_time).count();
+            last_frame_time = now;
+
+            application.camera.update(std::min(delta_time, 0.1F));
 
             request_resize_if_needed(context, width, height);
 
@@ -985,7 +1136,7 @@ namespace {
 
             auto const swapchain_extent = context.swapchain.extent();
 
-            if (swapchain_extent.width != renderer_extent.width || swapchain_extent.height != renderer_extent.height) {
+            if (compare(swapchain_extent, renderer_extent)) {
                 auto resize_result = application.renderer.resize(swapchain_extent);
 
                 if (!resize_result) {
@@ -1038,6 +1189,64 @@ namespace {
         }
     }
 
+    auto mouse_button_callback(GLFWwindow *window, int button, int action, int mods) -> void {
+        auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
+
+        if (app == nullptr) {
+            return;
+        }
+
+        // Capture + hide the cursor for the duration of the drag so it can't
+        // leave the window mid-look; GLFW_CURSOR_DISABLED also switches to
+        // unbounded virtual cursor movement, which is what we want for a
+        // free-look camera rather than clamping at the screen edge.
+        if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT) {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+            app->on_event(MouseButtonPressedEvent{button, mods});
+        } else if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_RIGHT) {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+
+            app->on_event(MouseButtonReleasedEvent{button, mods});
+        }
+    }
+
+    auto cursor_position_callback(GLFWwindow *window, double x_position, double y_position) -> void {
+        auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
+
+        if (app == nullptr) {
+            return;
+        }
+
+        // Swallow the first callback after (re)acquiring a cursor position:
+        // without a previous sample the delta would be "distance from
+        // wherever the cursor happened to be", producing a large spurious
+        // look jump on the first drag frame.
+        if (!app->has_last_mouse_position) {
+            app->last_mouse_x = x_position;
+            app->last_mouse_y = y_position;
+            app->has_last_mouse_position = true;
+
+            return;
+        }
+
+        auto const delta_x = x_position - app->last_mouse_x;
+        auto const delta_y = y_position - app->last_mouse_y;
+
+        app->last_mouse_x = x_position;
+        app->last_mouse_y = y_position;
+
+        app->on_event(MouseMovedEvent{delta_x, delta_y});
+    }
+
+    auto scroll_callback(GLFWwindow *window, double x_offset, double y_offset) -> void {
+        auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
+
+        if (app != nullptr) {
+            app->on_event(MouseScrolledEvent{x_offset, y_offset});
+        }
+    }
+
 
     auto install_window_callbacks(VulkanContext &context, Application &app) noexcept -> void {
         static WindowData wd{};
@@ -1048,6 +1257,9 @@ namespace {
         glfwSetFramebufferSizeCallback(context.window, framebuffer_size_callback);
         glfwSetWindowRefreshCallback(context.window, window_refresh_callback);
         glfwSetKeyCallback(context.window, event_callback);
+        glfwSetMouseButtonCallback(context.window, mouse_button_callback);
+        glfwSetCursorPosCallback(context.window, cursor_position_callback);
+        glfwSetScrollCallback(context.window, scroll_callback);
     }
 
     auto destroy_context(VulkanContext &context) noexcept -> void {
@@ -1114,8 +1326,18 @@ namespace {
     }
 } // namespace
 
+static std::atomic<bool> g_running{true};
+static auto ctrl_c_handler(int) -> void {
+    g_running.store(false, std::memory_order_relaxed);
+    info("Sigint received, exiting gracefully.");
+    glfwPostEmptyEvent();
+}
+
+
 auto main() -> int {
     info("Starting GLFW Vulkan test at {}", std::filesystem::current_path().string());
+
+    std::signal(SIGINT, ctrl_c_handler);
 
     VulkanContext context{};
 
@@ -1137,24 +1359,23 @@ auto main() -> int {
         return EXIT_FAILURE;
     }
 
-    info("Initialization complete; close "
-         "the window to exit");
-
-
     std::jthread render_thread{[&context, &application](std::stop_token stop_token) {
         render_loop(std::move(stop_token), context, application);
     }};
 
-    while (context.running.load(std::memory_order_acquire) && glfwWindowShouldClose(context.window) != GLFW_TRUE) {
+    application.on_startup();
+    context.render_wake_condition.notify_one();
+
+    info("Initialization complete; close the window to exit");
+
+    while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire) &&
+           glfwWindowShouldClose(context.window) != GLFW_TRUE) {
         glfwWaitEvents();
     }
 
     context.running.store(false, std::memory_order_release);
-
     render_thread.request_stop();
-
     context.render_wake_condition.notify_one();
-
     render_thread.join();
 
     auto const render_failed = glfwWindowShouldClose(context.window) != GLFW_TRUE;

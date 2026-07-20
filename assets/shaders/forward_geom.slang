@@ -43,13 +43,23 @@ struct Material {
     float alpha_cutoff = 0.5F;
 };
 
+struct UBO {
+    float4x4 view_projection;
+    float4x4 view;
+    float4x4 projection;
+
+    float3 camera_position;
+    float3 fog_colour;
+    float fog_extinction;     // A
+    float fog_inscattering;   // B
+};
+
 struct PC
 {
     Ptr<GpuDraw> draws;
     Ptr<float4x4> transforms;
     Ptr<Material> materials;
-
-    float4x4 view_projection;
+    Ptr<UBO> ubo;
 };
 
 struct VertexOutput
@@ -66,15 +76,17 @@ struct VertexOutput
 
 [shader("vertex")]
 VertexOutput mainVs(
-    uint vertex_id : SV_VertexID,
-    uint draw_id : SV_InstanceID,
+uint vertex_id: SV_VulkanVertexID,
+                 uint draw_id: SV_DrawIndex,
+                 uint inst_base: SV_VulkanInstanceID,
     uniform PC pc)
 {
-    GpuDraw draw = pc.draws[draw_id];
+    GpuDraw draw = pc.draws[inst_base];
+    const var ubo = pc.ubo;
 
     Vertex vertex = draw.vertex_address[vertex_id];
 
-    float4x4 model = pc.transforms[draw.transform_index];
+    float4x4 model = pc.transforms[inst_base];
 
     float4 world_position = mul(
         model,
@@ -100,7 +112,7 @@ VertexOutput mainVs(
     );
 
     VertexOutput output;
-    output.position = mul(pc.view_projection, world_position);
+    output.position = mul(ubo.view_projection, world_position);
     output.world_position = world_position.xyz;
     output.world_normal = world_normal;
     output.world_tangent = float4(world_tangent, vertex.tangent.w);
@@ -137,7 +149,7 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
     const var normal_texture = sampled_2d[NonUniformResourceIndex(material.normal_texture)];
     const var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
 
-    float2 uv = float2(input.texture_coordinate.x, 1.0 - input.texture_coordinate.y);
+    float2 uv = float2(input.texture_coordinate.x, input.texture_coordinate.y);
 
     float3 tangent_normal = normal_texture.Sample(sampler, uv).xyz * 2.0 - 1.0;
     tangent_normal.xy *= material.normal_scale;
@@ -152,11 +164,18 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
     float3 ambient = base_colour;
     float3 diffuse = base_colour * ndotl;
 
+    float3 shaded_colour = ambient + diffuse;
+
+    const var ubo = pc.ubo;
+    float distance_to_camera = length(ubo.camera_position - input.world_position);
+
+    float transmittance = exp(-distance_to_camera * ubo.fog_extinction);
+    float3 scattered = ubo.fog_colour * ubo.fog_inscattering * (1.0 - transmittance);
+
+    float3 fogged_colour = shaded_colour * transmittance + scattered;
+
     OutputFS output;
-    output.colour = float4(
-        ambient + diffuse,
-        1.0
-    );
+    output.colour = float4(fogged_colour, 1.0);
 
     return output;
 }

@@ -414,6 +414,7 @@ file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cxx"
 )
 list(FILTER mingw_vulkan_sources EXCLUDE REGEX "/platform/")
+list(FILTER mingw_vulkan_sources EXCLUDE REGEX "/renderdoc/")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     file(
@@ -465,6 +466,13 @@ target_link_libraries(
         mikktspace::mikktspace
         meshoptimizer
         efsw
+)
+
+include (${CMAKE_SOURCE_DIR}/cmake/renderdoc_config.cmake)
+configure_renderdoc(mingw-vulkan
+        REAL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/renderdoc/renderdoc.cxx"
+        STUB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/renderdoc/stub.cxx"
+        INCLUDE_CACHE_VARIABLE RENDERDOC_INCLUDE_PATH
 )
 
 # ------------------------------------------------------------------------------

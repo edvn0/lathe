@@ -6,13 +6,10 @@
 #include "renderer.hxx"
 
 struct ShaderHotReloadWatcher::Listener final : efsw::FileWatchListener {
-    explicit Listener(Renderer &renderer) noexcept : renderer(&renderer) {}
+    explicit Listener(Renderer &r) noexcept : renderer(&r) {}
 
     auto handleFileAction(efsw::WatchID /*watch_id*/, std::string const &directory, std::string const &filename,
                           efsw::Action action, std::string old_filename) -> void override {
-        // Renames arrive as two events (Delete old_filename, Add
-        // filename) -- both matter, since either the old or the new
-        // path could be a tracked shader source.
         switch (action) {
             case efsw::Actions::Add:
             case efsw::Actions::Modified:
@@ -25,9 +22,6 @@ struct ShaderHotReloadWatcher::Listener final : efsw::FileWatchListener {
                 break;
 
             case efsw::Actions::Delete:
-                // A deleted source file will just fail to recompile on
-                // its next dirty pass, which logs and leaves the live
-                // pipeline alone -- no special handling needed here.
                 break;
 
             default:
@@ -99,9 +93,6 @@ auto ShaderHotReloadWatcher::start(Renderer &renderer, std::span<std::filesystem
 }
 
 auto ShaderHotReloadWatcher::stop() noexcept -> void {
-    // efsw::FileWatcher's destructor stops its thread and joins; this
-    // guarantees no further Listener callbacks fire once watcher_ is
-    // reset, so it's always safe to destroy listener_ right after.
     watcher_.reset();
     listener_.reset();
 }

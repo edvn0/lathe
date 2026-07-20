@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <queue>
 #include <volk.h>
 
 #include <glm/glm.hpp>
@@ -25,6 +27,24 @@
 #include "sampler_storage.hxx"
 #include "shader_change_queue.hxx"
 #include "slang_compiler.hxx"
+
+enum class RenderStage : std::uint32_t { FullFrame = 0, DepthPrepass, ForwardPass, Composition, Count };
+constexpr auto to_string(RenderStage stage) -> std::string_view {
+    switch (stage) {
+        case RenderStage::FullFrame:
+            return "Full Frame";
+        case RenderStage::DepthPrepass:
+            return "Depth prepass";
+        case RenderStage::ForwardPass:
+            return "Forward Pass";
+        case RenderStage::Composition:
+            return "Composition Pass";
+        default:
+            return "Unknown";
+    }
+}
+inline constexpr std::uint32_t stage_count = static_cast<std::uint32_t>(RenderStage::Count);
+inline constexpr std::uint32_t query_count = stage_count * 2;
 
 struct ModelHandle {
     std::uint32_t index = 0;
@@ -86,6 +106,17 @@ enum class RendererErrorType : std::uint8_t {
     gpu_resource_table_error,
     pipeline_graph_error,
     invalid_pipeline,
+};
+
+struct UBO {
+    glm::mat4 view_projection;
+    glm::mat4 view;
+    glm::mat4 projection;
+
+    glm::vec3 camera_position;
+    glm::vec3 fog_colour;
+    float fog_extinction = 0.003F;
+    float fog_inscattering = 1.0F;
 };
 
 struct RendererError {
@@ -177,8 +208,13 @@ struct Renderer {
     [[nodiscard]]
     auto submit_mesh(MeshHandle mesh, glm::mat4 const &transform) -> std::expected<void, RendererError>;
 
+    struct CameraMatrices {
+        glm::mat4 view;
+        glm::mat4 projection;
+    };
     [[nodiscard]]
-    auto prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> std::expected<void, RendererError>;
+    auto prepare_frame(VkCommandBuffer command_buffer, const CameraMatrices &, std::uint32_t frame_index)
+            -> std::expected<void, RendererError>;
 
     [[nodiscard]]
     auto record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, std::uint32_t frame_index)
@@ -198,6 +234,33 @@ struct Renderer {
     }
 
     auto notify_shader_file_changed(std::filesystem::path path) -> void { shader_change_queue_.push(std::move(path)); }
+
+
+    [[nodiscard]] auto aspect(std::uint32_t index) const -> float {
+        return static_cast<float>(frames_[index].forward_target.extent().width) /
+               static_cast<float>(frames_[index].forward_target.extent().height);
+    }
+
+    void queue_render_thread_event(std::function<void()> &&);
+    void drain_event_queue() {
+        if (queued_events_.load(std::memory_order_relaxed) == 0) [[likely]] {
+            return;
+        }
+
+        std::queue<std::function<void()>> local_queue;
+
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            std::swap(event_queue_, local_queue);
+        }
+
+        while (!local_queue.empty()) {
+            local_queue.front()();
+            local_queue.pop();
+        }
+    }
+
+    auto wait_idle() -> std::expected<void, RendererError>;
 
 private:
     struct Submesh {
@@ -304,7 +367,10 @@ private:
     SamplerStorage sampler_storage_{};
     GpuResourceTable gpu_resource_table_{};
 
+    std::vector<Buffer> ubos_;
+
     PipelineGraphRepository pipeline_graph_;
+    PipelineNodeHandle depth_prepass_pipeline_;
     PipelineNodeHandle forward_pipeline_;
     PipelineNodeHandle composite_pipeline_;
     ShaderChangeQueue shader_change_queue_;
@@ -314,6 +380,8 @@ private:
 
     std::vector<ModelSlot> models_;
     std::uint32_t model_free_head_ = 0;
+
+    std::unordered_map<std::size_t, ModelHandle> model_cache_;
 
     std::vector<Submission> submissions_;
     std::vector<ModelSubmission> model_submissions_;
@@ -326,6 +394,17 @@ private:
     std::uint32_t maximum_submission_count_ = 0;
 
     VkExtent2D extent_{};
+
+    std::queue<std::function<void()>> event_queue_;
+    std::atomic_uint32_t queued_events_;
+    std::mutex queue_mutex_;
+
+    struct FrameTimestamps {
+        VkQueryPool query_pool{VK_NULL_HANDLE};
+        bool has_results{false};
+    };
+    std::vector<FrameTimestamps> timestamp_queries_;
+    float timestamp_period_{1.0F};
 
     bool initialized_ = false;
 

@@ -88,7 +88,7 @@ FragmentOutput mainFs(VertexOutput input, uniform CompositePC pc)
         aces_fitted(hdr_colour * pc.exposure);
 
     FragmentOutput output;
-    output.colour = float4(hdr_colour, 1.0);
+    output.colour = float4(mapped, 1.0);
 
     return output;
 }

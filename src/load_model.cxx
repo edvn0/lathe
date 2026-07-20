@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <ranges>
@@ -304,8 +305,12 @@ namespace {
     // into memory; nothing touches ImageStorage or MaterialStorage.
     // ------------------------------------------------------------------------
 
-    auto image_bytes(fastgltf::Asset const &asset, fastgltf::Image const &image)
-            -> std::expected<std::span<std::byte const>, ModelLoadError> {
+    // Returns owned bytes rather than a span: the URI branch below has to
+    // read a file off disk, so every branch needs to hand back memory it
+    // actually owns rather than a view into someone else's buffer.
+    auto image_bytes(fastgltf::Asset const &asset, fastgltf::Image const &image,
+                     std::filesystem::path const &base_directory)
+            -> std::expected<std::vector<std::byte>, ModelLoadError> {
         if (auto const *buffer_view_source = std::get_if<fastgltf::sources::BufferView>(&image.data)) {
             auto const &buffer_view = asset.bufferViews[buffer_view_source->bufferViewIndex];
             auto const &buffer = asset.buffers[buffer_view.bufferIndex];
@@ -320,23 +325,57 @@ namespace {
 
             auto const *bytes = reinterpret_cast<std::byte const *>(array_source->bytes.data());
 
-            return std::span<std::byte const>{bytes + buffer_view.byteOffset, buffer_view.byteLength};
+            return std::vector<std::byte>{bytes + buffer_view.byteOffset,
+                                          bytes + buffer_view.byteOffset + buffer_view.byteLength};
         }
 
         if (auto const *array_source = std::get_if<fastgltf::sources::Array>(&image.data)) {
             auto const *bytes = reinterpret_cast<std::byte const *>(array_source->bytes.data());
 
-            return std::span<std::byte const>{bytes, array_source->bytes.size()};
+            return std::vector<std::byte>{bytes, bytes + array_source->bytes.size()};
         }
 
         if (auto const *vector_source = std::get_if<fastgltf::sources::Vector>(&image.data)) {
             auto const *bytes = reinterpret_cast<std::byte const *>(vector_source->bytes.data());
 
-            return std::span<std::byte const>{bytes, vector_source->bytes.size()};
+            return std::vector<std::byte>{bytes, bytes + vector_source->bytes.size()};
         }
 
-        // sources::URI without LoadExternalImages, or an unsupported source
-        // (basisu/dds/webp extension images) lands here.
+        // External image referenced by a relative/absolute file path in a
+        // .gltf (JSON) document — e.g. "textures/albedo.png". Data URIs are
+        // already decoded into sources::Array/Vector by fastgltf itself, so
+        // by the time we get here a URI source is always a real file on
+        // disk that we resolve relative to the glTF's own directory.
+        if (auto const *uri_source = std::get_if<fastgltf::sources::URI>(&image.data)) {
+            if (uri_source->uri.isLocalPath() && uri_source->fileByteOffset == 0) {
+                auto const image_path = base_directory / uri_source->uri.fspath();
+
+                std::ifstream file_stream{image_path, std::ios::binary | std::ios::ate};
+
+                if (!file_stream.is_open()) {
+                    return std::unexpected(ModelLoadError{
+                            .type = ModelLoadErrorType::unsupported_image_source,
+                    });
+                }
+
+                auto const file_size = static_cast<std::size_t>(file_stream.tellg());
+                file_stream.seekg(0);
+
+                std::vector<std::byte> bytes(file_size);
+                file_stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(file_size));
+
+                if (!file_stream) {
+                    return std::unexpected(ModelLoadError{
+                            .type = ModelLoadErrorType::unsupported_image_source,
+                    });
+                }
+
+                return bytes;
+            }
+        }
+
+        // A non-local URI (e.g. http/https), a byte-offset URI, or an
+        // unsupported source (basisu/dds/webp extension images) lands here.
         return std::unexpected(ModelLoadError{
                 .type = ModelLoadErrorType::unsupported_image_source,
         });
@@ -429,6 +468,7 @@ namespace {
     // quirk is preserved rather than fixed here.
     template<typename TextureInfoT>
     auto resolve_texture_cpu(fastgltf::Asset const &asset, std::optional<TextureInfoT> const &info, bool is_srgb,
+                             std::filesystem::path const &base_directory,
                              std::unordered_map<std::size_t, std::size_t> &image_cache,
                              std::vector<ModelCpuImage> &cpu_images)
             -> std::expected<std::optional<std::size_t>, ModelLoadError> {
@@ -448,13 +488,13 @@ namespace {
             return cached->second;
         }
 
-        auto encoded = image_bytes(asset, asset.images[image_index]);
+        auto encoded = image_bytes(asset, asset.images[image_index], base_directory);
 
         if (!encoded) {
             return std::unexpected(encoded.error());
         }
 
-        auto decoded = decode_image(*encoded);
+        auto decoded = decode_image(std::span<std::byte const>{*encoded});
 
         if (!decoded) {
             return std::unexpected(decoded.error());
@@ -475,7 +515,8 @@ namespace {
     }
 
     auto load_material_cpu(fastgltf::Asset const &asset, fastgltf::Material const &gltf_material,
-                           SamplerStorage &sampler_storage, std::unordered_map<std::size_t, std::size_t> &image_cache,
+                           SamplerStorage &sampler_storage, std::filesystem::path const &base_directory,
+                           std::unordered_map<std::size_t, std::size_t> &image_cache,
                            std::vector<ModelCpuImage> &cpu_images) -> std::expected<ModelCpuMaterial, ModelLoadError> {
         ModelCpuMaterial material{};
 
@@ -508,8 +549,8 @@ namespace {
 
         material.sampler = select_material_sampler(asset, gltf_material, sampler_storage);
 
-        auto base_colour_image =
-                resolve_texture_cpu(asset, gltf_material.pbrData.baseColorTexture, true, image_cache, cpu_images);
+        auto base_colour_image = resolve_texture_cpu(asset, gltf_material.pbrData.baseColorTexture, true,
+                                                     base_directory, image_cache, cpu_images);
 
         if (!base_colour_image) {
             return std::unexpected(base_colour_image.error());
@@ -518,7 +559,7 @@ namespace {
         material.base_colour_image = *base_colour_image;
 
         auto metallic_roughness_image = resolve_texture_cpu(asset, gltf_material.pbrData.metallicRoughnessTexture,
-                                                            false, image_cache, cpu_images);
+                                                            false, base_directory, image_cache, cpu_images);
 
         if (!metallic_roughness_image) {
             return std::unexpected(metallic_roughness_image.error());
@@ -530,7 +571,8 @@ namespace {
             material.normal_scale = gltf_material.normalTexture->scale;
         }
 
-        auto normal_image = resolve_texture_cpu(asset, gltf_material.normalTexture, false, image_cache, cpu_images);
+        auto normal_image =
+                resolve_texture_cpu(asset, gltf_material.normalTexture, false, base_directory, image_cache, cpu_images);
 
         if (!normal_image) {
             return std::unexpected(normal_image.error());
@@ -542,8 +584,8 @@ namespace {
             material.occlusion_strength = gltf_material.occlusionTexture->strength;
         }
 
-        auto occlusion_image =
-                resolve_texture_cpu(asset, gltf_material.occlusionTexture, false, image_cache, cpu_images);
+        auto occlusion_image = resolve_texture_cpu(asset, gltf_material.occlusionTexture, false, base_directory,
+                                                   image_cache, cpu_images);
 
         if (!occlusion_image) {
             return std::unexpected(occlusion_image.error());
@@ -551,7 +593,8 @@ namespace {
 
         material.occlusion_image = *occlusion_image;
 
-        auto emissive_image = resolve_texture_cpu(asset, gltf_material.emissiveTexture, true, image_cache, cpu_images);
+        auto emissive_image = resolve_texture_cpu(asset, gltf_material.emissiveTexture, true, base_directory,
+                                                  image_cache, cpu_images);
 
         if (!emissive_image) {
             return std::unexpected(emissive_image.error());
@@ -584,7 +627,12 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
     constexpr auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices |
                              fastgltf::Options::LoadExternalImages;
 
-    auto asset_result = parser.loadGltfBinary(file_stream, path.parent_path(), options);
+    auto const base_directory = path.parent_path();
+
+    // loadGltf (rather than loadGltfBinary) sniffs the header and accepts
+    // both .glb (binary) and .gltf (JSON, with external .bin/.png/.jpg
+    // siblings) — same call handles both container types.
+    auto asset_result = parser.loadGltf(file_stream, base_directory, options);
 
     if (asset_result.error() != fastgltf::Error::None) {
         return std::unexpected(ModelLoadError{
@@ -605,7 +653,8 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
     std::unordered_map<std::size_t, std::size_t> image_cache;
 
     for (auto const &gltf_material: asset.materials) {
-        auto material = load_material_cpu(asset, gltf_material, sampler_storage, image_cache, cpu_data.images);
+        auto material =
+                load_material_cpu(asset, gltf_material, sampler_storage, base_directory, image_cache, cpu_data.images);
 
         if (!material) {
             return std::unexpected(material.error());

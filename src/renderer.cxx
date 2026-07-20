@@ -4,6 +4,8 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <expected>
+#include <fstream>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <limits>
@@ -11,8 +13,11 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <vulkan/vulkan_core.h>
 
+#include "buffer.hxx"
 #include "context.hxx"
+#include "device_error.hxx"
 #include "gpu_resource_table.hxx"
 #include "logger.hxx"
 #include "material_storage.hxx"
@@ -24,7 +29,7 @@ namespace {
         VkDeviceAddress draw_buffer_address;
         VkDeviceAddress transform_buffer_address;
         VkDeviceAddress material_buffer_address;
-        glm::mat4 view_projection;
+        VkDeviceAddress ubo_buffer_address;
     };
 
     struct CompositePushConstants {
@@ -216,7 +221,8 @@ namespace {
         vkCmdPipelineBarrier2(command_buffer, &dependency_info);
     }
 
-    auto set_forward_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent) noexcept -> void {
+    auto set_forward_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent, bool is_prepass) noexcept
+            -> void {
         VkViewport const viewport{
                 .x = 0.0F,
                 .y = static_cast<float>(extent.height),
@@ -249,7 +255,7 @@ namespace {
 
         vkCmdSetDepthWriteEnable(command_buffer, VK_TRUE);
 
-        vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
+        vkCmdSetDepthCompareOp(command_buffer, is_prepass ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_EQUAL);
 
         vkCmdSetDepthBiasEnable(command_buffer, VK_FALSE);
 
@@ -518,6 +524,42 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         forward_pipeline_ = *registered_forward;
     }
     {
+        VkPushConstantRange const depth_prepass_pc{
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                .offset = 0,
+                .size = sizeof(ForwardPushConstants),
+        };
+
+        auto registered_predepth = pipeline_graph_.register_pipeline(
+                compiler, PipelineRegisterInfo{
+                                  .stages =
+                                          {
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/depth_prepass.slang",
+                                                          .entry_point = "mainVs",
+                                                          .stage = renderer::ShaderStage::vertex,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                          },
+                                  .additional_descriptor_set_layouts = {},
+                                  .push_constant_ranges = {depth_prepass_pc},
+                                  .colour_formats = {},
+                                  .depth_format = create_info.depth_format,
+                                  .stencil_format = VK_FORMAT_UNDEFINED,
+                                  .samples = create_info.samples,
+                                  .debug_name = "renderer.depth_prepass_pipeline",
+                          });
+
+        if (!registered_predepth) {
+            destroy();
+
+            return std::unexpected(make_pipeline_graph_error(registered_predepth.error()));
+        }
+
+        depth_prepass_pipeline_ = *registered_predepth;
+    }
+    {
         VkPushConstantRange const composite_push_constant_range{
                 .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                 .offset = 0,
@@ -780,6 +822,59 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.indirect_commands.reserve(maximum_draw_count_);
     }
 
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(context_.physical_device, &properties);
+
+    if (!properties.limits.timestampComputeAndGraphics) {
+        error("Physical device does not support timestamps on graphics/compute queues!");
+    }
+
+    this->timestamp_period_ = properties.limits.timestampPeriod;
+
+    timestamp_queries_.resize(create_info.frames_in_flight);
+
+    VkQueryPoolCreateInfo query_pool_info{
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .queryType = VK_QUERY_TYPE_TIMESTAMP,
+            .queryCount = static_cast<std::uint32_t>(RenderStage::Count) * 2,
+            .pipelineStatistics = 0,
+    };
+
+    for (std::uint32_t frame_index = 0; frame_index < create_info.frames_in_flight; ++frame_index) {
+        VkQueryPool query_pool = VK_NULL_HANDLE;
+        VkResult result = vkCreateQueryPool(context_.device, &query_pool_info, nullptr, &query_pool);
+
+        if (result != VK_SUCCESS) {
+            error("Failed to create timestamp query pool for frame index {}", frame_index);
+            destroy();
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+
+        timestamp_queries_[frame_index] = FrameTimestamps{.query_pool = query_pool, .has_results = false};
+        vkResetQueryPool(context_.device, query_pool, 0, query_count);
+    }
+
+    constexpr auto size = sizeof(UBO);
+    ubos_.resize(create_info.frames_in_flight);
+    for (auto &ubo: ubos_) {
+        auto maybe_ubo = Buffer::create(context_, BufferCreateInfo{
+                                                          .size = size,
+                                                          .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                          .memory = BufferMemory::device,
+                                                          .debug_name = "renderer.ubo",
+                                                  });
+        if (!maybe_ubo || !maybe_ubo->zero()) {
+            error("Failed to create ubo");
+            destroy();
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+
+        ubo = std::move(*maybe_ubo);
+    }
+
     hdr_format_ = create_info.hdr_format;
 
     depth_format_ = create_info.depth_format;
@@ -793,21 +888,22 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 }
 
 auto Renderer::destroy() noexcept -> void {
-    /*
-     * Objects using pipeline layouts must go first.
-     */
     pipeline_graph_.destroy();
 
-    /*
-     * Descriptor sets/pool/layout next.
-     */
     gpu_resource_table_.destroy();
 
-    /*
-     * Samplers and image views referenced by descriptors
-     * can now be destroyed.
-     */
     sampler_storage_.destroy();
+
+    for (auto &query: timestamp_queries_) {
+        if (query.query_pool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(context_.device, query.query_pool, nullptr);
+            query.query_pool = VK_NULL_HANDLE;
+        }
+    }
+
+    for (auto &ubo: ubos_) {
+        ubo.destroy();
+    }
 
     for (auto &frame: frames_) {
         frame.forward_target.destroy(image_storage_);
@@ -879,8 +975,25 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    auto cpu_data = load_model_cpu(path, sampler_storage_);
+    std::array<char, 64> header_buffer{};
+    std::ifstream file(path, std::ios::binary);
 
+    if (!file.is_open()) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    file.read(header_buffer.data(), header_buffer.size());
+    std::streamsize bytes_read = file.gcount();
+    file.close();
+
+    std::string_view header_view(header_buffer.data(), static_cast<std::size_t>(bytes_read));
+    std::size_t file_hash = std::hash<std::string_view>{}(header_view);
+
+    if (auto it = model_cache_.find(file_hash); it != model_cache_.end()) {
+        return it->second; // Return cached handle
+    }
+
+    auto cpu_data = load_model_cpu(path, sampler_storage_);
     if (!cpu_data) {
         return std::unexpected(make_model_load_error(cpu_data.error()));
     }
@@ -897,10 +1010,17 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
         return std::unexpected(make_model_load_error(imported_model.error()));
     }
 
-
     image_storage_.release_completed_uploads();
 
-    return create_model(*imported_model, default_material_handle_);
+    auto model_result = create_model(*imported_model, default_material_handle_);
+
+    if (!model_result) {
+        return std::unexpected{model_result.error()};
+    }
+
+    model_cache_[file_hash] = *model_result;
+
+    return model_result;
 }
 
 
@@ -1213,7 +1333,7 @@ auto Renderer::submit_mesh(MeshHandle mesh, glm::mat4 const &transform) -> std::
     return {};
 }
 
-auto Renderer::prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame_index)
+auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrices &matrices, std::uint32_t frame_index)
         -> std::expected<void, RendererError> {
     if (!initialized_ || command_buffer == VK_NULL_HANDLE || frame_index >= frames_.size()) {
         clear_submissions();
@@ -1410,7 +1530,44 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame
 
     auto upload_result = upload_frame_data(command_buffer, frame);
 
+    auto &&[view, projection] = matrices;
+    UBO ubo{
+            .view_projection = projection * view,
+            .view = view,
+            .projection = projection,
+            .camera_position = glm::vec3(glm::inverse(view)[3]),
+            .fog_colour = glm::vec3{0.5F},
+    };
+    if (!ubos_[frame_index].write(0, std::as_bytes(std::span{&ubo, 1}))) {
+        clear_submissions();
+
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
     clear_submissions();
+
+    auto &frame_query = timestamp_queries_[frame_index];
+    if (frame_query.has_results) {
+        std::vector<std::uint64_t> results(query_count);
+
+        VkResult query_res = vkGetQueryPoolResults(context_.device, frame_query.query_pool, 0, query_count,
+                                                   sizeof(std::uint64_t) * query_count, results.data(),
+                                                   sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
+
+        if (query_res == VK_SUCCESS) {
+            info("====== STAGE =======");
+            for (std::uint32_t i = 0; i < stage_count; ++i) {
+                auto stage = static_cast<RenderStage>(i);
+                std::uint64_t start = results[i * 2];
+                std::uint64_t end = results[i * 2 + 1];
+
+                float elapsed_ms = static_cast<float>(end - start) * timestamp_period_ / 1000000.0f;
+                info("  {}: {:.3f} ms", to_string(stage), elapsed_ms);
+            }
+            info("====== Done =======");
+        }
+        frame_query.has_results = false;
+    }
 
     return upload_result;
 }
@@ -1423,10 +1580,14 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
+    auto &frame_query = timestamp_queries_[frame_index];
+    vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, query_count);
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
+                         static_cast<std::uint32_t>(RenderStage::FullFrame) * 2);
+
     auto &frame = frames_[frame_index];
-
     auto const *hdr = image_storage_.get(frame.forward_target.hdr());
-
     auto const *depth = image_storage_.get(frame.forward_target.depth());
 
     if (hdr == nullptr || depth == nullptr || !hdr->valid() || !depth->valid()) {
@@ -1434,13 +1595,16 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
     }
 
     auto const *forward_pipeline = pipeline_graph_.resolve(forward_pipeline_);
-
     if (forward_pipeline == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
-    auto const *composite_pipeline = pipeline_graph_.resolve(composite_pipeline_);
+    auto const *depth_prepass_pipeline = pipeline_graph_.resolve(depth_prepass_pipeline_);
+    if (depth_prepass_pipeline == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
 
+    auto const *composite_pipeline = pipeline_graph_.resolve(composite_pipeline_);
     if (composite_pipeline == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
@@ -1453,12 +1617,84 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-
     transition_forward_target_to_attachments(command_buffer, *hdr, *depth);
 
+#pragma region Predepth pass
+    {
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
+                             static_cast<std::uint32_t>(RenderStage::DepthPrepass) * 2);
+
+        VkRenderingAttachmentInfo const depth_attachment{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext = nullptr,
+                .imageView = depth->view(),
+                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                .resolveMode = VK_RESOLVE_MODE_NONE,
+                .resolveImageView = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .clearValue =
+                        VkClearValue{
+                                .depthStencil =
+                                        VkClearDepthStencilValue{
+                                                .depth = 0.0F,
+                                                .stencil = 0,
+                                        },
+                        },
+        };
+
+        VkRenderingInfo const depth_prepass_info{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .renderArea =
+                        VkRect2D{
+                                .offset = {0, 0},
+                                .extent = target_extent,
+                        },
+                .layerCount = 1,
+                .viewMask = 0,
+                .colorAttachmentCount = 0,
+                .pColorAttachments = nullptr,
+                .pDepthAttachment = &depth_attachment,
+                .pStencilAttachment = nullptr,
+        };
+
+        vkCmdBeginRendering(command_buffer, &depth_prepass_info);
+        vkCmdBindPipeline(command_buffer, depth_prepass_pipeline->bind_point(), depth_prepass_pipeline->pipeline());
+        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 depth_prepass_pipeline->layout());
+        set_forward_dynamic_state(command_buffer, target_extent, true);
+
+        ForwardPushConstants pc{
+                .draw_buffer_address = frame.draw_buffer.device_address,
+                .transform_buffer_address = frame.transform_buffer.device_address,
+                .material_buffer_address = material_storage_.device_address(),
+                .ubo_buffer_address = ubos_[frame_index].device_address,
+        };
+
+        vkCmdPushConstants(command_buffer, depth_prepass_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(ForwardPushConstants), &pc);
+        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+        if (frame.indirect_command_count != 0) {
+            vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0, frame.indirect_command_count,
+                                     sizeof(VkDrawIndexedIndirectCommand));
+        }
+
+        vkCmdEndRendering(command_buffer);
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, frame_query.query_pool,
+                             (static_cast<std::uint32_t>(RenderStage::DepthPrepass) * 2) + 1);
+    }
+#pragma endregion
 
 #pragma region Forward pass
     {
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, frame_query.query_pool,
+                             static_cast<std::uint32_t>(RenderStage::ForwardPass) * 2);
+
         VkRenderingAttachmentInfo const hdr_attachment{
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .pNext = nullptr,
@@ -1492,16 +1728,9 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 .resolveMode = VK_RESOLVE_MODE_NONE,
                 .resolveImageView = VK_NULL_HANDLE,
                 .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue =
-                        VkClearValue{
-                                .depthStencil =
-                                        VkClearDepthStencilValue{
-                                                .depth = 0.0F,
-                                                .stencil = 0,
-                                        },
-                        },
+                .clearValue = {},
         };
 
         VkRenderingInfo const forward_rendering_info{
@@ -1522,32 +1751,21 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         };
 
         vkCmdBeginRendering(command_buffer, &forward_rendering_info);
-
         vkCmdBindPipeline(command_buffer, forward_pipeline->bind_point(), forward_pipeline->pipeline());
-
         gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                  forward_pipeline->layout());
-        set_forward_dynamic_state(command_buffer, target_extent);
+        set_forward_dynamic_state(command_buffer, target_extent, false);
 
-        const auto view = glm::lookAtLH(glm::vec3{0, 3, -5}, {0, 0, 0}, {0, 1, 0});
-        const auto proj =
-                glm::perspectiveFovLH_ZO(glm::radians(80.0F), static_cast<float>(swapchain_image.extent.width),
-                                         static_cast<float>(swapchain_image.extent.height), 0.1F, 10000.0F);
-
-        struct PC {
-            VkDeviceAddress a;
-            VkDeviceAddress b;
-            VkDeviceAddress c;
-            glm::mat4 vp;
-        } pc{
-                .a = frame.draw_buffer.device_address,
-                .b = frame.transform_buffer.device_address,
-                .c = material_storage_.device_address(),
-                .vp = proj * view,
+        ForwardPushConstants pc{
+                .draw_buffer_address = frame.draw_buffer.device_address,
+                .transform_buffer_address = frame.transform_buffer.device_address,
+                .material_buffer_address = material_storage_.device_address(),
+                .ubo_buffer_address = ubos_[frame_index].device_address,
         };
 
         vkCmdPushConstants(command_buffer, forward_pipeline->layout(),
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PC), &pc);
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ForwardPushConstants),
+                           &pc);
 
         vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
@@ -1557,15 +1775,20 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         }
 
         vkCmdEndRendering(command_buffer);
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, frame_query.query_pool,
+                             (static_cast<std::uint32_t>(RenderStage::ForwardPass) * 2) + 1);
     }
 #pragma endregion
 
     transition_hdr_to_shader_read(command_buffer, *hdr);
-
     transition_swapchain_to_attachment(command_buffer, swapchain_image.image);
 
 #pragma region Composition for swapchain
     {
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, frame_query.query_pool,
+                             static_cast<std::uint32_t>(RenderStage::Composition) * 2);
+
         VkRenderingAttachmentInfo const swapchain_attachment{
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .pNext = nullptr,
@@ -1597,12 +1820,9 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         };
 
         vkCmdBeginRendering(command_buffer, &composite_rendering_info);
-
         vkCmdBindPipeline(command_buffer, composite_pipeline->bind_point(), composite_pipeline->pipeline());
-
         gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                  composite_pipeline->layout());
-
         set_composite_dynamic_state(command_buffer, swapchain_image.extent);
 
         struct CompositePC {
@@ -1621,15 +1841,22 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
 
         vkCmdPushConstants(command_buffer, composite_pipeline->layout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(composite_pc), &composite_pc);
-
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
 
         vkCmdEndRendering(command_buffer);
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, frame_query.query_pool,
+                             (static_cast<std::uint32_t>(RenderStage::Composition) * 2) + 1);
     }
 #pragma endregion
 
     transition_swapchain_to_present(command_buffer, swapchain_image.image);
 
+    // Full frame end
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, frame_query.query_pool,
+                         (static_cast<std::uint32_t>(RenderStage::FullFrame) * 2) + 1);
+
+    frame_query.has_results = true;
     return {};
 }
 
@@ -1679,6 +1906,28 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
     extent_ = extent;
 
     return {};
+}
+
+void Renderer::queue_render_thread_event(std::function<void()> &&task) {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    event_queue_.push(std::move(task));
+    queued_events_.fetch_add(1);
+
+    context_.render_wake_condition.notify_one();
+}
+
+auto Renderer::wait_idle() -> std::expected<void, RendererError> {
+    auto result = vkDeviceWaitIdle(context_.device);
+    return result == VK_SUCCESS ? std::expected<void, RendererError>{}
+                                : std::unexpected<RendererError>(RendererError{
+                                          .type = RendererErrorType::device_error,
+                                          .device_error =
+                                                  DeviceError{
+                                                          .type = DeviceError::Type::Unknown,
+                                                          .message = FlyString{"Could not wait"},
+                                                          .vk_result = result,
+                                                  },
+                                  });
 }
 
 auto Renderer::mesh_slot(MeshHandle handle) noexcept -> MeshSlot * {
@@ -1739,31 +1988,31 @@ auto Renderer::model_slot(ModelHandle handle) const noexcept -> ModelSlot const 
 
 auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame)
         -> std::expected<void, RendererError> {
-    auto *mapped = static_cast<std::byte *>(frame.upload_buffer.allocation_info.pMappedData);
-
-    if (mapped == nullptr) {
-        return std::unexpected(make_error(RendererErrorType::device_error));
-    }
 
     auto const draw_size = static_cast<VkDeviceSize>(frame.draws.size()) * sizeof(GpuDraw);
-
     auto const transform_size = static_cast<VkDeviceSize>(frame.transforms.size()) * sizeof(glm::mat4);
-
     auto const indirect_size =
             static_cast<VkDeviceSize>(frame.indirect_commands.size()) * sizeof(VkDrawIndexedIndirectCommand);
 
     if (draw_size != 0) {
-        std::memcpy(mapped + frame.draw_upload_offset, frame.draws.data(), static_cast<std::size_t>(draw_size));
+        auto const data_span = std::as_bytes(std::span{frame.draws});
+        if (auto const result = frame.upload_buffer.write(frame.draw_upload_offset, data_span); !result) {
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
     }
 
     if (transform_size != 0) {
-        std::memcpy(mapped + frame.transform_upload_offset, frame.transforms.data(),
-                    static_cast<std::size_t>(transform_size));
+        auto const data_span = std::as_bytes(std::span{frame.transforms});
+        if (auto const result = frame.upload_buffer.write(frame.transform_upload_offset, data_span); !result) {
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
     }
 
     if (indirect_size != 0) {
-        std::memcpy(mapped + frame.indirect_upload_offset, frame.indirect_commands.data(),
-                    static_cast<std::size_t>(indirect_size));
+        auto const data_span = std::as_bytes(std::span{frame.indirect_commands});
+        if (auto const result = frame.upload_buffer.write(frame.indirect_upload_offset, data_span); !result) {
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
     }
 
     struct CopyOperation {
@@ -1836,7 +2085,6 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
     }
 
     std::array<VkBufferMemoryBarrier2, 3> barriers{};
-
     std::uint32_t barrier_count = 0;
 
     if (draw_size != 0) {
