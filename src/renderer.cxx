@@ -1555,17 +1555,17 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                                                    sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
 
         if (query_res == VK_SUCCESS) {
-            info("====== STAGE =======");
             for (std::uint32_t i = 0; i < stage_count; ++i) {
-                auto stage = static_cast<RenderStage>(i);
-                std::uint64_t start = results[i * 2];
-                std::uint64_t end = results[i * 2 + 1];
+                std::uint64_t const start = results[i * 2];
+                std::uint64_t const end = results[i * 2 + 1];
 
-                float elapsed_ms = static_cast<float>(end - start) * timestamp_period_ / 1000000.0f;
-                info("  {}: {:.3f} ms", to_string(stage), elapsed_ms);
+                last_frame_timings_.milliseconds[i] =
+                        static_cast<float>(end - start) * timestamp_period_ / 1000000.0f;
             }
-            info("====== Done =======");
+
+            last_frame_timings_.valid = true;
         }
+
         frame_query.has_results = false;
     }
 
@@ -1573,7 +1573,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 }
 
 auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
-                            std::uint32_t frame_index) -> std::expected<void, RendererError> {
+                            std::uint32_t frame_index, std::function<void(VkCommandBuffer)> const &overlay)
+        -> std::expected<void, RendererError> {
     if (!initialized_ || command_buffer == VK_NULL_HANDLE || swapchain_image.image == VK_NULL_HANDLE ||
         swapchain_image.view == VK_NULL_HANDLE || swapchain_image.format == VK_FORMAT_UNDEFINED ||
         swapchain_image.extent.width == 0 || swapchain_image.extent.height == 0 || frame_index >= frames_.size()) {
@@ -1842,6 +1843,10 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         vkCmdPushConstants(command_buffer, composite_pipeline->layout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(composite_pc), &composite_pc);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+        if (overlay) {
+            overlay(command_buffer);
+        }
 
         vkCmdEndRendering(command_buffer);
 

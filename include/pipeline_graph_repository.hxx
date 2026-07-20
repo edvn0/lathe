@@ -51,13 +51,15 @@ struct PipelineGraphCreateInfo {
 
 struct PipelineRegisterInfo {
     std::vector<renderer::ShaderCompileRequest> stages;
-    std::vector<VkDescriptorSetLayout> additional_descriptor_set_layouts;
+    std::vector<VkDescriptorSetLayout> additional_descriptor_set_layouts{};
     std::vector<VkPushConstantRange> push_constant_ranges;
     std::vector<VkFormat> colour_formats;
 
     VkFormat depth_format = VK_FORMAT_UNDEFINED;
     VkFormat stencil_format = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+
+    bool blending = false;
 
     std::string debug_name;
 };

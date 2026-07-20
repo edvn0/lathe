@@ -29,11 +29,11 @@ namespace renderer {
         std::string entry_point;
         ShaderStage stage = ShaderStage::vertex;
 
-        std::vector<std::filesystem::path> include_directories;
+        std::vector<std::filesystem::path> include_directories{};
 
-        std::vector<ShaderDefine> defines;
+        std::vector<ShaderDefine> defines{};
 
-        bool generate_debug_info = false;
+        bool generate_debug_info = true;
         bool optimize = true;
     };
 

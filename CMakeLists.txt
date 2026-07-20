@@ -213,6 +213,78 @@ CPMAddPackage(
         "BUILD_SHARED_LIBS OFF"
 )
 
+CPMAddPackage(
+        NAME freetype
+        GITHUB_REPOSITORY freetype/freetype
+        GIT_TAG VER-2-13-3
+        OPTIONS
+        "BUILD_SHARED_LIBS OFF"
+        "FT_DISABLE_ZLIB ON"
+        "FT_DISABLE_BZIP2 ON"
+        "FT_DISABLE_PNG ON"
+        "FT_DISABLE_HARFBUZZ ON"
+        "FT_DISABLE_BROTLI ON"
+)
+
+CPMAddPackage(
+        NAME ImGui
+        GITHUB_REPOSITORY ocornut/imgui
+        GIT_TAG v1.92.5-docking
+        GIT_SHALLOW YES
+        DOWNLOAD_ONLY YES
+)
+
+CPMAddPackage(
+        NAME ImPlot
+        GITHUB_REPOSITORY epezent/implot
+        GIT_TAG bd99f8d8b9a80c493782ab8cb3335af102f61304
+        GIT_SHALLOW NO
+        DOWNLOAD_ONLY YES
+)
+
+CPMAddPackage(
+        NAME ImGuizmo
+        GITHUB_REPOSITORY CedricGuillemet/ImGuizmo
+        GIT_TAG a15acd87a3f3241a29ea1363ceafc680dca3a96b
+        GIT_SHALLOW NO
+        DOWNLOAD_ONLY YES
+)
+
+if (ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
+  add_library(imgui STATIC
+          ${ImGui_SOURCE_DIR}/imgui.cpp
+          ${ImGui_SOURCE_DIR}/imgui_demo.cpp
+          ${ImGui_SOURCE_DIR}/imgui_draw.cpp
+          ${ImGui_SOURCE_DIR}/imgui_tables.cpp
+          ${ImGui_SOURCE_DIR}/imgui_widgets.cpp
+          ${ImGui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+          ${ImGui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+          ${ImGui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp
+          ${ImPlot_SOURCE_DIR}/implot.cpp
+          ${ImPlot_SOURCE_DIR}/implot_items.cpp
+          ${ImGuizmo_SOURCE_DIR}/ImGuizmo.cpp
+  )
+  target_include_directories(imgui PUBLIC
+          ${ImGui_SOURCE_DIR}
+          ${ImGui_SOURCE_DIR}/backends
+          ${ImPlot_SOURCE_DIR}
+          ${ImGuizmo_SOURCE_DIR}
+  )
+  target_link_libraries(imgui PUBLIC glfw volk volk::volk_headers freetype)
+  target_compile_definitions(imgui PUBLIC
+          GLFW_INCLUDE_NONE
+          IMGUI_IMPL_VULKAN_USE_VOLK
+          IMGUI_ENABLE_FREETYPE
+  )
+
+  find_package(X11 REQUIRED)
+
+  if (UNIX AND NOT APPLE)
+    target_link_libraries(imgui PUBLIC X11::X11)
+  endif ()
+endif ()
+
+
 mark_target_includes_system(meshoptimizer)
 mark_target_includes_system(efsw)
 
@@ -466,6 +538,7 @@ target_link_libraries(
         mikktspace::mikktspace
         meshoptimizer
         efsw
+        imgui
 )
 
 include (${CMAKE_SOURCE_DIR}/cmake/renderdoc_config.cmake)

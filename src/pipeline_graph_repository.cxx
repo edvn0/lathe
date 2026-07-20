@@ -219,11 +219,6 @@ auto PipelineGraphRepository::build_pipeline(PipelineNode const &node)
         });
     }
 
-    // NOTE: assumes GraphicsPipelineCreateInfo's fields are span-like
-    // (std::span<T const>), matching how renderer.cxx already
-    // constructs them (e.g. .colour_formats = std::span{&fmt, 1UZ}).
-    // Vectors convert implicitly; they stay alive for the duration of
-    // this call, which is all create_graphics needs.
     auto created = storage_.create_graphics(GraphicsPipelineCreateInfo{
             .shaders = stage_infos,
             .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
@@ -233,6 +228,7 @@ auto PipelineGraphRepository::build_pipeline(PipelineNode const &node)
             .depth_format = node.register_info.depth_format,
             .stencil_format = node.register_info.stencil_format,
             .samples = node.register_info.samples,
+            .blending = node.register_info.blending,
             .debug_name = node.register_info.debug_name,
     });
 
@@ -357,7 +353,7 @@ auto PipelineGraphRepository::on_files_changed(std::span<std::filesystem::path c
         auto const existing = source_file_lookup_.find(key);
 
         if (existing == source_file_lookup_.end()) {
-            debug("Not found for {} and {}", key, existing->first);
+            debug("Not found for {}", key);
             continue; // not part of any registered pipeline
         }
 

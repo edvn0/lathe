@@ -1,4 +1,5 @@
 #include <csignal>
+#include <memory>
 #include <random>
 #include <volk.h>
 
@@ -26,6 +27,8 @@
 #include "config.hxx"
 #include "context.hxx"
 #include "editor_camera.hxx"
+#include "imgui_renderer.hxx"
+#include "implot.h"
 #include "logger.hxx"
 #include "renderdoc.hxx"
 #include "renderer.hxx"
@@ -33,6 +36,26 @@
 #include "swapchain.hxx"
 
 namespace {
+
+    struct ScrollingBuffer {
+        int max_size;
+        int offset = 0;
+        std::vector<ImVec2> data;
+
+        explicit ScrollingBuffer(const int max_size = 600) : max_size(max_size) {
+            data.reserve(static_cast<std::size_t>(max_size));
+        }
+
+        auto add_point(float x, float y) -> void {
+            if (static_cast<int>(data.size()) < max_size) {
+                data.emplace_back(x, y);
+            } else {
+                data[static_cast<std::size_t>(offset)] = ImVec2(x, y);
+                offset = (offset + 1) % max_size;
+            }
+        }
+    };
+
     template<typename T>
     concept HasDepth = requires(T t) {
         { t.depth };
@@ -77,7 +100,7 @@ namespace {
         glm::quat rotation{};
         glm::vec3 scale{1.0F};
 
-        auto matrix() const {
+        [[nodiscard]] auto matrix() const {
             return glm::translate(glm::mat4{1.0F}, position) * glm::mat4_cast(rotation) *
                    glm::scale(glm::mat4{1.0F}, scale);
         }
@@ -125,20 +148,78 @@ namespace {
         std::int32_t modifiers{};
     };
 
+    constexpr auto widget = [](const std::string_view name, auto &&f) -> bool {
+        if (!ImGui::Begin(name.data())) {
+            ImGui::End();
+            return false;
+        }
+
+        f();
+
+        ImGui::End();
+        return false;
+    };
+
     struct Application {
-        explicit Application(VulkanContext &context) noexcept : renderer{context} {
-            std::array const shader_directories{
-                    std::filesystem::path{"assets/shaders"},
-            };
-            if (!shader_watcher_.start(renderer, shader_directories)) {
-                error("Shader hot-reload watcher failed to start -- shaders will not live-reload this run");
-            }
+        explicit Application(VulkanContext &ctx) noexcept :
+            context(ctx), renderer(std::make_unique<Renderer>(context)) {
+            timing_buffers.fill(ScrollingBuffer{600});
         }
         ~Application() { shader_watcher_.stop(); }
 
-        Renderer renderer;
+        void on_ui() const {
+            widget("Frame timings", [&] {
+                if (ImPlot::BeginPlot("Stage timings (cumulative ms)", ImVec2(-1, 250))) {
+                    ImPlot::SetupAxes("Frame", "ms");
+                    ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x,
+                                            ImGuiCond_Always);
+
+                    constexpr auto first_stage = static_cast<std::uint32_t>(RenderStage::DepthPrepass);
+
+                    for (std::uint32_t stage = first_stage; stage < stage_count; ++stage) {
+                        auto const &buf = timing_buffers[stage];
+
+                        if (buf.data.empty()) {
+                            continue;
+                        }
+
+                        ImPlotSpec spec;
+                        spec.Offset = buf.offset;
+                        spec.Stride = sizeof(ImVec2);
+                        spec.FillAlpha = 0.35F;
+
+                        if (stage == first_stage) {
+                            ImPlot::PlotShaded(to_string(static_cast<RenderStage>(stage)).data(), &buf.data[0].x,
+                                               &buf.data[0].y, static_cast<int>(buf.data.size()), 0.0, spec);
+                        } else {
+                            auto const &prev = timing_buffers[stage - 1];
+
+                            ImPlotSpec prev_spec;
+                            prev_spec.Offset = prev.offset;
+                            prev_spec.Stride = sizeof(ImVec2);
+
+                            ImPlot::PlotShaded(to_string(static_cast<RenderStage>(stage)).data(), &buf.data[0].x,
+                                               &buf.data[0].y, &prev.data[0].y, static_cast<int>(buf.data.size()),
+                                               prev_spec);
+                        }
+
+                        ImPlot::PlotLine(to_string(static_cast<RenderStage>(stage)).data(), &buf.data[0].x,
+                                         &buf.data[0].y, static_cast<int>(buf.data.size()), spec);
+                    }
+
+                    ImPlot::EndPlot();
+                }
+            });
+        }
+
+        VulkanContext &context;
+        std::unique_ptr<Renderer> renderer;
+        std::unique_ptr<gui::ImGuiRenderer> imgui_renderer;
         RenderScene scene;
         ShaderHotReloadWatcher shader_watcher_;
+
+        std::array<ScrollingBuffer, stage_count> timing_buffers;
+        float timing_x = 0.0F;
 
         EditorCamera camera;
 
@@ -152,12 +233,24 @@ namespace {
         bool has_last_mouse_position = false;
 
         auto on_startup() -> void {
-            renderer.queue_render_thread_event([this] { this->recreate_entities(); });
+
+            std::array const shader_directories{
+                    std::filesystem::path{"assets/shaders"},
+            };
+            if (!shader_watcher_.start(*renderer, shader_directories)) {
+                error("Shader hot-reload watcher failed to start -- shaders will not live-reload this run");
+            }
+            imgui_renderer = std::make_unique<gui::ImGuiRenderer>(
+                    *renderer, gui::FontChoice{
+                                       .font_path = "assets/fonts/GoogleSansCode-Regular.ttf",
+                                       .size = 12,
+                               });
+            renderer->queue_render_thread_event([this] { this->recreate_entities(); });
         }
 
         auto on_event(KeyPressedEvent ev) -> bool {
             if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL) {
-                renderer.queue_render_thread_event([this] { this->recreate_entities(); });
+                renderer->queue_render_thread_event([this] { this->recreate_entities(); });
             }
             camera.on_key_pressed(ev.key);
             return true;
@@ -199,7 +292,7 @@ namespace {
 
         auto recreate_entities() -> void {
 
-            if (auto could_wait = renderer.wait_idle(); !could_wait.has_value()) {
+            if (auto could_wait = renderer->wait_idle(); !could_wait.has_value()) {
                 info("{}", could_wait.error().device_error.message.view());
                 return;
             }
@@ -207,12 +300,12 @@ namespace {
             scene.objects.clear();
 
 
-            auto helmet_model = renderer.load_model("assets/models/damaged_helmet/DamagedHelmet.gltf");
+            auto helmet_model = renderer->load_model("assets/models/damaged_helmet/DamagedHelmet.gltf");
             if (!helmet_model) {
                 error("Could not load model: {}", helmet_model.error().type);
             }
 
-            auto cube_model = renderer.load_model("assets/models/test_cube.glb");
+            auto cube_model = renderer->load_model("assets/models/test_cube.glb");
             if (!cube_model) {
                 error("Could not load model: {}", helmet_model.error().type);
             }
@@ -968,7 +1061,7 @@ namespace {
 
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
         for (auto const &object: application.scene.objects) {
-            auto result = application.renderer.submit_model(object.model, object.transform.matrix());
+            auto result = application.renderer->submit_model(object.model, object.transform.matrix());
 
             if (!result) {
                 return std::unexpected(result.error());
@@ -979,7 +1072,7 @@ namespace {
     }
 
     auto initialize_application(VulkanContext &context, Application &application) noexcept -> bool {
-        auto renderer_result = application.renderer.initialize(RendererCreateInfo{
+        auto renderer_result = application.renderer->initialize(RendererCreateInfo{
                 .extent = context.swapchain.extent(),
                 .frames_in_flight = context.swapchain.frame_count(),
                 .geometry_capacity = 256UZ * 1024UZ * 1024UZ,
@@ -1032,14 +1125,22 @@ namespace {
             return false;
         }
 
-        auto aspect = application.renderer.aspect(frame->frame_index);
+        application.imgui_renderer->begin_frame(gui::ImGuiFramebuffer{frame->extent, frame->format});
+
+        {
+            application.on_ui();
+        }
+
+        application.imgui_renderer->end_frame();
+
+        auto aspect = application.renderer->aspect(frame->frame_index);
         auto prepare_result =
-                application.renderer.prepare_frame(frame->command_buffer,
-                                                   {
-                                                           .view = application.camera.view(),
-                                                           .projection = application.camera.projection(aspect),
-                                                   },
-                                                   frame->frame_index);
+                application.renderer->prepare_frame(frame->command_buffer,
+                                                    {
+                                                            .view = application.camera.view(),
+                                                            .projection = application.camera.projection(aspect),
+                                                    },
+                                                    frame->frame_index);
 
         if (!prepare_result) {
             error("Could not prepare renderer frame: {}", static_cast<int>(prepare_result.error().type));
@@ -1047,15 +1148,28 @@ namespace {
             return false;
         }
 
-        auto record_result = application.renderer.record_frame(frame->command_buffer,
-                                                               SwapchainImage{
-                                                                       .image = frame->image,
-                                                                       .view = frame->image_view,
-                                                                       .format = frame->format,
-                                                                       .extent = frame->extent,
-                                                               },
+        if (auto const &timings = application.renderer->last_frame_timings(); timings.valid) {
+            application.timing_x += 1.0F;
 
-                                                               frame->frame_index);
+            float running_total = 0.0F;
+
+            for (auto stage = static_cast<std::uint32_t>(RenderStage::DepthPrepass); stage < stage_count; ++stage) {
+                running_total += timings.milliseconds[stage];
+                application.timing_buffers[stage].add_point(application.timing_x, running_total);
+            }
+        }
+
+        auto record_result =
+                application.renderer->record_frame(frame->command_buffer,
+                                                   SwapchainImage{
+                                                           .image = frame->image,
+                                                           .view = frame->image_view,
+                                                           .format = frame->format,
+                                                           .extent = frame->extent,
+                                                   },
+                                                   frame->frame_index, [&](VkCommandBuffer c) {
+                                                       application.imgui_renderer->render(c, frame->frame_index);
+                                                   });
 
         if (!record_result) {
             error("Could not record renderer frame: {}", static_cast<int>(record_result.error().type));
@@ -1101,7 +1215,7 @@ namespace {
         auto last_frame_time = std::chrono::steady_clock::now();
 
         while (!stop_token.stop_requested() && context.running.load(std::memory_order_acquire)) {
-            application.renderer.drain_event_queue();
+            application.renderer->drain_event_queue();
 
             auto const width = context.framebuffer_width.load(std::memory_order_acquire);
             auto const height = context.framebuffer_height.load(std::memory_order_acquire);
@@ -1137,7 +1251,7 @@ namespace {
             auto const swapchain_extent = context.swapchain.extent();
 
             if (compare(swapchain_extent, renderer_extent)) {
-                auto resize_result = application.renderer.resize(swapchain_extent);
+                auto resize_result = application.renderer->resize(swapchain_extent);
 
                 if (!resize_result) {
                     error("Could not resize renderer: {}", static_cast<int>(resize_result.error().type));
@@ -1320,7 +1434,8 @@ namespace {
             }
         }
 
-        application.renderer.destroy();
+        application.imgui_renderer.reset();
+        application.renderer->destroy();
 
         destroy_context(context);
     }
@@ -1359,12 +1474,13 @@ auto main() -> int {
         return EXIT_FAILURE;
     }
 
+    application.on_startup();
+    context.render_wake_condition.notify_one();
+
     std::jthread render_thread{[&context, &application](std::stop_token stop_token) {
         render_loop(std::move(stop_token), context, application);
     }};
 
-    application.on_startup();
-    context.render_wake_condition.notify_one();
 
     info("Initialization complete; close the window to exit");
 

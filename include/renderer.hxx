@@ -46,6 +46,11 @@ constexpr auto to_string(RenderStage stage) -> std::string_view {
 inline constexpr std::uint32_t stage_count = static_cast<std::uint32_t>(RenderStage::Count);
 inline constexpr std::uint32_t query_count = stage_count * 2;
 
+struct StageTimings {
+    std::array<float, stage_count> milliseconds{};
+    bool valid = false;
+};
+
 struct ModelHandle {
     std::uint32_t index = 0;
     std::uint32_t generation = 0;
@@ -217,8 +222,8 @@ struct Renderer {
             -> std::expected<void, RendererError>;
 
     [[nodiscard]]
-    auto record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, std::uint32_t frame_index)
-            -> std::expected<void, RendererError>;
+    auto record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, std::uint32_t frame_index,
+                      std::function<void(VkCommandBuffer)> const &overlay = {}) -> std::expected<void, RendererError>;
 
     [[nodiscard]]
     auto resize(VkExtent2D extent) -> std::expected<void, RendererError>;
@@ -259,6 +264,33 @@ struct Renderer {
             local_queue.pop();
         }
     }
+
+    [[nodiscard]] auto context() noexcept -> VulkanContext & { return context_; }
+
+    [[nodiscard]] auto image_storage() noexcept -> ImageStorage & { return image_storage_; }
+    [[nodiscard]] auto sampler_storage() noexcept -> SamplerStorage & { return sampler_storage_; }
+    [[nodiscard]] auto resource_table() noexcept -> GpuResourceTable & { return gpu_resource_table_; }
+
+    [[nodiscard]] auto resolve_pipeline(PipelineNodeHandle handle) const noexcept -> Pipeline const * {
+        return pipeline_graph_.resolve(handle);
+    }
+
+    [[nodiscard]] auto register_pipeline(PipelineRegisterInfo info)
+            -> std::expected<PipelineNodeHandle, RendererError> {
+        auto registered = pipeline_graph_.register_pipeline(compiler, std::move(info));
+
+        if (!registered) {
+            return std::unexpected(RendererError{
+                    .type = RendererErrorType::pipeline_graph_error,
+                    .pipeline_graph_error = registered.error(),
+            });
+        }
+
+        return *registered;
+    }
+
+    [[nodiscard]] auto last_frame_timings() const noexcept -> StageTimings const & { return last_frame_timings_; }
+
 
     auto wait_idle() -> std::expected<void, RendererError>;
 
@@ -392,6 +424,8 @@ private:
 
     std::uint32_t maximum_draw_count_ = 0;
     std::uint32_t maximum_submission_count_ = 0;
+
+    StageTimings last_frame_timings_{};
 
     VkExtent2D extent_{};
 

@@ -146,6 +146,8 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
 
     const var material = pc.materials[input.material_index];
     const var texture = sampled_2d[NonUniformResourceIndex(material.base_colour_texture)];
+    const var emissive_texture = sampled_2d[NonUniformResourceIndex(material.emissive_texture)];
+    const var ambient_occlusion_texture = sampled_2d[NonUniformResourceIndex(material.occlusion_texture)];
     const var normal_texture = sampled_2d[NonUniformResourceIndex(material.normal_texture)];
     const var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
 
@@ -159,12 +161,19 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
 
     float ndotl = saturate(dot(shading_normal, light_direction));
 
-    var base_colour = texture.Sample(sampler, uv).xyz;
 
-    float3 ambient = base_colour;
+    float ambient_occlusion = ambient_occlusion_texture.Sample(sampler, uv).r;
+ambient_occlusion = lerp(1.0, ambient_occlusion, material.occlusion_strength);
+
+var base_colour = texture.Sample(sampler, uv).xyz;
+
+float3 ambient = base_colour * ambient_occlusion;
     float3 diffuse = base_colour * ndotl;
+    float3 emissive = emissive_texture.Sample(sampler, uv).xyz *
+                  float3(material.emissive[0], material.emissive[1], material.emissive[2]) *
+                  material.emissive_strength;
 
-    float3 shaded_colour = ambient + diffuse;
+    float3 shaded_colour = ambient + diffuse + emissive;
 
     const var ubo = pc.ubo;
     float distance_to_camera = length(ubo.camera_position - input.world_position);
