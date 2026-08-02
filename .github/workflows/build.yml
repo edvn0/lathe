@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  build_type: Debug
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [linux-native, windows-mingw]
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build toolchain image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: cross-build:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Cache CPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ matrix.target }}-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}
+          restore-keys: |
+            cpm-${{ matrix.target }}-
+
+      - name: Configure
+        run: |
+          mkdir -p ~/.cache/CPM
+          build_dir="build/${{ matrix.target }}-${build_type,,}"
+          toolchain_args=()
+          if [[ "${{ matrix.target }}" == "windows-mingw" ]]; then
+            toolchain_args=(--toolchain /workspace/cmake/toolchains/windows-mingw-x64.cmake)
+          fi
+          docker run --rm \
+            --mount type=bind,source="$PWD",target=/workspace \
+            --mount type=bind,source="$HOME/.cache/CPM",target=/cpm-cache \
+            --env CPM_SOURCE_CACHE=/cpm-cache \
+            --workdir /workspace \
+            cross-build:latest \
+            cmake -S . -B "${build_dir}" -G Ninja -DCMAKE_BUILD_TYPE="${build_type}" "${toolchain_args[@]}"
+
+      - name: Build
+        run: |
+          build_dir="build/${{ matrix.target }}-${build_type,,}"
+          docker run --rm \
+            --mount type=bind,source="$PWD",target=/workspace \
+            --mount type=bind,source="$HOME/.cache/CPM",target=/cpm-cache \
+            --env CPM_SOURCE_CACHE=/cpm-cache \
+            --workdir /workspace \
+            cross-build:latest \
+            cmake --build "${build_dir}" --parallel
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-${{ env.build_type }}
+          path: build/${{ matrix.target }}-*/**
+          if-no-files-found: ignore
