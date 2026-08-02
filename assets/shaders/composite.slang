@@ -79,7 +79,7 @@ FragmentOutput mainFs(VertexOutput input, uniform CompositePC pc)
     float3 hdr_colour =
         sampled_2d[texture_index]
             .Sample(
-                samplers[sampler_index],
+                get_sampler(sampler_index),
                 input.uv
             )
             .rgb;

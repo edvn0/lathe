@@ -54,7 +54,7 @@ float3 srgb_to_linear(float3 c) {
 float4 fs_main(VertexOutput input, uniform PC pc) : SV_Target0
 {
     var sampled = sampled_2d[NonUniformResourceIndex(pc.texture_id)]
-                          .Sample(samplers[NonUniformResourceIndex(pc.sampler_id)], input.uv);
+                          .Sample(get_sampler(NonUniformResourceIndex(pc.sampler_id)), input.uv);
 
     float4 colour = sampled * input.colour;
     colour.rgb = srgb_to_linear(colour.rgb);

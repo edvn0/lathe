@@ -34,13 +34,9 @@ struct ForwardTargetCreateInfo {
 class ForwardTarget {
 public:
     ForwardTarget() = default;
-
     ForwardTarget(ForwardTarget const &) = delete;
-
     auto operator=(ForwardTarget const &) -> ForwardTarget & = delete;
-
     ForwardTarget(ForwardTarget &&other) noexcept;
-
     auto operator=(ForwardTarget &&other) noexcept -> ForwardTarget &;
 
     [[nodiscard]]
@@ -51,12 +47,8 @@ public:
 
     [[nodiscard]]
     auto valid() const noexcept -> bool {
-        return hdr_.valid() && depth_.valid();
-    }
-
-    [[nodiscard]]
-    auto hdr() const noexcept -> ImageHandle {
-        return hdr_;
+        bool const resolve_ok = samples_ <= VK_SAMPLE_COUNT_1_BIT || (resolved_hdr_.valid() && resolved_depth_.valid());
+        return hdr_.valid() && depth_.valid() && resolve_ok;
     }
 
     [[nodiscard]]
@@ -84,15 +76,35 @@ public:
         return samples_;
     }
 
+    [[nodiscard]]
+    auto hdr() const noexcept -> ImageHandle {
+        return hdr_;
+    }
+
+    [[nodiscard]]
+    auto resolved_hdr() const noexcept -> ImageHandle {
+        return resolved_hdr_.valid() ? resolved_hdr_ : hdr_;
+    }
+
+    [[nodiscard]]
+    auto is_multisampled() const noexcept -> bool {
+        return samples_ > VK_SAMPLE_COUNT_1_BIT;
+    }
+
+    [[nodiscard]]
+    auto resolved_depth() const noexcept -> ImageHandle {
+        return resolved_depth_.valid() ? resolved_depth_ : depth_;
+    }
+
 private:
     ImageHandle hdr_{};
+    ImageHandle resolved_hdr_{};
     ImageHandle depth_{};
+    ImageHandle resolved_depth_{};
 
     VkExtent2D extent_{};
 
     VkFormat hdr_format_ = VK_FORMAT_UNDEFINED;
-
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
-
     VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
 };

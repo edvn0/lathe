@@ -1,0 +1,137 @@
+{
+	"version": "2.0.0",
+	"problemMatchers": [],
+	"tasks": [
+		{
+			"label": "configure (linux-native)",
+			"type": "shell",
+			"command": "./compile.sh",
+			"args": [
+				"--configure"
+			],
+			"options": {
+				"env": {
+					"TARGET": "linux-native"
+				}
+			},
+			"problemMatcher": {
+				"owner": "cpp",
+				"source": "gcc",
+				"fileLocation": "absolute",
+				"pattern": {
+					"regexp": "^(.*?):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+					"file": 1,
+					"line": 2,
+					"column": 3,
+					"severity": 4,
+					"message": 5
+				}
+			},
+			"group": "build",
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "build (linux-native)",
+			"type": "shell",
+			"command": "./compile.sh",
+			"args": [
+				"--build"
+			],
+			"options": {
+				"env": {
+					"TARGET": "linux-native"
+				}
+			},
+			"problemMatcher": {
+				"owner": "cpp",
+				"source": "gcc",
+				"fileLocation": "absolute",
+				"pattern": {
+					"regexp": "^(.*?):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+					"file": 1,
+					"line": 2,
+					"column": 3,
+					"severity": 4,
+					"message": 5
+				}
+			},
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "configure (windows-mingw)",
+			"type": "shell",
+			"command": "./compile.sh",
+			"args": [
+				"--configure"
+			],
+			"options": {
+				"env": {
+					"TARGET": "windows-mingw"
+				}
+			},
+			"problemMatcher": {
+				"owner": "cpp",
+				"source": "gcc",
+				"fileLocation": "absolute",
+				"pattern": {
+					"regexp": "^(.*?):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+					"file": 1,
+					"line": 2,
+					"column": 3,
+					"severity": 4,
+					"message": 5
+				}
+			},
+			"group": "build",
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "build (windows-mingw)",
+			"type": "shell",
+			"command": "./compile.sh",
+			"args": [
+				"--build"
+			],
+			"options": {
+				"env": {
+					"TARGET": "windows-mingw"
+				}
+			},
+			"problemMatcher": {
+				"owner": "cpp",
+				"source": "gcc",
+				"fileLocation": "absolute",
+				"pattern": {
+					"regexp": "^(.*?):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+					"file": 1,
+					"line": 2,
+					"column": 3,
+					"severity": 4,
+					"message": 5
+				}
+			},
+			"group": "build",
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		}
+	]
+}

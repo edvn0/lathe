@@ -1,10 +1,3 @@
-# ------------------------------------------------------------------------------
-# Compiler-specific warnings and exception/RTTI configuration
-#
-# MSVC only appears on Windows. GNU/Clang appears on both Windows (MinGW) and
-# Linux, so this stays compiler-gated rather than platform-gated.
-# ------------------------------------------------------------------------------
-
 function(configure_compiler_options target_name)
   if(MSVC)
     target_compile_options(
@@ -49,10 +42,8 @@ function(configure_compiler_options target_name)
                 -Wextra
                 -Wpedantic
                 -Wconversion
-                -Wsign-conversion
                 -Wshadow
                 -Wnon-virtual-dtor
-                -Wold-style-cast
         )
 
     if(MINGW_VULKAN_ENABLE_EXCEPTIONS)

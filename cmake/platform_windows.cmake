@@ -1,7 +1,3 @@
-# ------------------------------------------------------------------------------
-# Windows / MinGW / MSVC target configuration
-# ------------------------------------------------------------------------------
-
 function(configure_windows_target target_name slang_bin_dir)
   target_compile_definitions(
         ${target_name}

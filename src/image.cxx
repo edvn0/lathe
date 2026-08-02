@@ -7,6 +7,7 @@
 
 #include "buffer.hxx"
 #include "context.hxx"
+#include "vk_object_name.hxx"
 
 namespace {
     [[nodiscard]]
@@ -86,34 +87,6 @@ namespace {
             default:
                 return VK_IMAGE_ASPECT_COLOR_BIT;
         }
-    }
-
-    template<typename Handle>
-    auto object_handle(Handle handle) noexcept -> std::uint64_t {
-        if constexpr (std::is_pointer_v<Handle>) {
-            return reinterpret_cast<std::uint64_t>(handle);
-        } else {
-            return static_cast<std::uint64_t>(handle);
-        }
-    }
-
-    auto set_object_name(VkDevice device, VkObjectType object_type, std::uint64_t handle,
-                         std::string_view name) noexcept -> void {
-        if (device == VK_NULL_HANDLE || handle == 0 || name.empty() || vkSetDebugUtilsObjectNameEXT == nullptr) {
-            return;
-        }
-
-        std::string null_terminated_name{name};
-
-        VkDebugUtilsObjectNameInfoEXT const info{
-                .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
-                .pNext = nullptr,
-                .objectType = object_type,
-                .objectHandle = handle,
-                .pObjectName = null_terminated_name.c_str(),
-        };
-
-        static_cast<void>(vkSetDebugUtilsObjectNameEXT(device, &info));
     }
 } // namespace
 
@@ -312,29 +285,21 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
         auto const descriptor_view_name =
                 std::string{create_info.debug_name} + ".descriptor_view." + std::to_string(raw_type);
 
-        set_object_name(context.device, VK_OBJECT_TYPE_IMAGE_VIEW,
-                        object_handle(image.descriptor_views_[descriptor_view_index]), descriptor_view_name);
+        vk::set_object_name(context.device, VK_OBJECT_TYPE_IMAGE_VIEW,
+                            vk::object_handle(image.descriptor_views_[descriptor_view_index]), descriptor_view_name);
     }
 
     image.format_ = create_info.format;
-
     image.extent_ = create_info.extent;
-
     image.usage_ = create_info.usage;
-
     image.aspect_ = aspect;
-
     image.samples_ = create_info.samples;
-
     image.mip_levels_ = create_info.mip_levels;
-
     image.array_layers_ = create_info.array_layers;
 
-    set_object_name(context.device, VK_OBJECT_TYPE_IMAGE, object_handle(image.image_), create_info.debug_name);
-
+    vk::set_object_name(context.device, VK_OBJECT_TYPE_IMAGE, vk::object_handle(image.image_), create_info.debug_name);
     auto const view_name = std::string{create_info.debug_name} + ".view";
-
-    set_object_name(context.device, VK_OBJECT_TYPE_IMAGE_VIEW, object_handle(image.view_), view_name);
+    vk::set_object_name(context.device, VK_OBJECT_TYPE_IMAGE_VIEW, vk::object_handle(image.view_), view_name);
 
     return image;
 }

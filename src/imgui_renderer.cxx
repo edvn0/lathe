@@ -475,7 +475,8 @@ namespace gui {
                         .array_layers = 1,
                         .debug_name = "imgui_fonts",
                 },
-                std::span<const std::byte>(as_bytes, static_cast<std::size_t>(width) * height * 4));
+                std::span<const std::byte>(as_bytes,
+                                           static_cast<std::size_t>(height) * static_cast<std::size_t>(width) * 4));
 
         if (!created_image) {
             error("(ImGui) Failed to create font atlas image: {}",

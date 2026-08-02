@@ -37,24 +37,6 @@
 
 namespace {
 
-    struct ScrollingBuffer {
-        int max_size;
-        int offset = 0;
-        std::vector<ImVec2> data;
-
-        explicit ScrollingBuffer(const int max_size = 600) : max_size(max_size) {
-            data.reserve(static_cast<std::size_t>(max_size));
-        }
-
-        auto add_point(float x, float y) -> void {
-            if (static_cast<int>(data.size()) < max_size) {
-                data.emplace_back(x, y);
-            } else {
-                data[static_cast<std::size_t>(offset)] = ImVec2(x, y);
-                offset = (offset + 1) % max_size;
-            }
-        }
-    };
 
     template<typename T>
     concept HasDepth = requires(T t) {
@@ -80,6 +62,31 @@ namespace {
             return a.width == b.width;
         } else {
             return false;
+        }
+    };
+
+    struct ScrollingBuffer {
+        std::int32_t max_size;
+        std::int32_t offset = 0;
+        std::vector<ImVec2> data;
+
+        explicit ScrollingBuffer(const std::int32_t m = 600U) : max_size(m) {
+            data.reserve(static_cast<std::size_t>(max_size));
+        }
+
+        [[gnu::always_inline]]
+        constexpr auto size() -> decltype(auto) {
+            return data.size();
+        }
+
+        auto add_point(float x, float y) -> void {
+
+            if (std::cmp_less(size(), max_size)) {
+                data.emplace_back(x, y);
+            } else {
+                data[static_cast<std::size_t>(offset)] = ImVec2(x, y);
+                offset = (offset + 1) % max_size;
+            }
         }
     };
 
@@ -170,7 +177,7 @@ namespace {
         void on_ui() const {
             widget("Frame timings", [&] {
                 if (ImPlot::BeginPlot("Stage timings (cumulative ms)", ImVec2(-1, 250))) {
-                    ImPlot::SetupAxes("Frame", "ms");
+                    ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
                     ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x,
                                             ImGuiCond_Always);
 
@@ -1081,6 +1088,7 @@ namespace {
                 .model_capacity = 1024,
                 .pipeline_capacity = 1024,
                 .swapchain_format = context.swapchain.format(),
+                .samples = VK_SAMPLE_COUNT_4_BIT,
                 .maximum_draw_count = 65536,
                 .maximum_submission_count = 65536,
         });

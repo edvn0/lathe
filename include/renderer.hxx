@@ -388,10 +388,9 @@ private:
     VulkanContext &context_;
 
     VkFormat hdr_format_ = VK_FORMAT_UNDEFINED;
-
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
-
     VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
+    VkExtent2D extent_{};
 
     GeometryArena geometry_arena_{};
     MaterialStorage material_storage_{};
@@ -427,8 +426,6 @@ private:
 
     StageTimings last_frame_timings_{};
 
-    VkExtent2D extent_{};
-
     std::queue<std::function<void()>> event_queue_;
     std::atomic_uint32_t queued_events_;
     std::mutex queue_mutex_;
@@ -441,12 +438,7 @@ private:
     float timestamp_period_{1.0F};
 
     bool initialized_ = false;
-
     renderer::SlangCompiler compiler;
-
-    // ForwardTarget forward_target_{};
-    // ForwardPass forward_pass_{};
-    // CompositePass composite_pass_{};
 };
 
 template<>

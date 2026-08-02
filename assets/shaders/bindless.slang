@@ -11,5 +11,10 @@ Texture2D<float4> sampled_2d[];
 public [[vk::binding(sampler_binding, 0)]]
 SamplerState samplers[];
 
+public SamplerState get_sampler(uint index) {
+    var sampler = samplers[index];
+    return sampler;
+}
+
 public [[vk::binding(comparison_sampler_binding, 0)]]
 SamplerComparisonState comparison_samplers[];

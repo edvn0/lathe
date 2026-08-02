@@ -548,10 +548,6 @@ configure_renderdoc(mingw-vulkan
         INCLUDE_CACHE_VARIABLE RENDERDOC_INCLUDE_PATH
 )
 
-# ------------------------------------------------------------------------------
-# Compile definitions (cross-platform)
-# ------------------------------------------------------------------------------
-
 target_compile_definitions(
     mingw-vulkan
     PRIVATE
@@ -562,6 +558,9 @@ target_compile_definitions(
         GLM_ENABLE_EXPERIMENTAL
         SLANG_ROOT_PATH="${slang_root}"
 )
+
+target_compile_options(mingw-vulkan PRIVATE -Wno-old-style-cast)
+
 
 if(MINGW_VULKAN_ENABLE_VALIDATION)
   target_compile_definitions(
@@ -576,10 +575,6 @@ else()
             MINGW_VULKAN_ENABLE_VALIDATION=0
     )
 endif()
-
-# ------------------------------------------------------------------------------
-# Compiler and platform-specific configuration
-# ------------------------------------------------------------------------------
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/compiler_options.cmake")
 
@@ -599,10 +594,6 @@ else()
         "automatically."
     )
 endif()
-
-# ------------------------------------------------------------------------------
-# VMA implementation warning suppression
-# ------------------------------------------------------------------------------
 
 set(vma_source "${CMAKE_CURRENT_SOURCE_DIR}/src/vma.cxx")
 
@@ -625,10 +616,6 @@ if(EXISTS "${vma_source}")
   endif()
 endif()
 
-# ------------------------------------------------------------------------------
-# Asset deployment
-# ------------------------------------------------------------------------------
-
 set(
     project_asset_directories
     assets
@@ -648,19 +635,11 @@ foreach(asset_directory IN LISTS project_asset_directories)
   endif()
 endforeach()
 
-# ------------------------------------------------------------------------------
-# Output configuration
-# ------------------------------------------------------------------------------
-
 set_target_properties(
     mingw-vulkan
     PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
-
-# ------------------------------------------------------------------------------
-# Configuration summary
-# ------------------------------------------------------------------------------
 
 message(STATUS "Slang root: ${slang_root}")
 message(STATUS "Slang include directory: ${slang_include_dir}")

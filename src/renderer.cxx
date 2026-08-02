@@ -43,54 +43,106 @@ namespace {
 } // namespace
 
 namespace {
-    auto transition_forward_target_to_attachments(VkCommandBuffer command_buffer, Image const &hdr,
-                                                  Image const &depth) noexcept -> void {
-        std::array<VkImageMemoryBarrier2, 2> barriers{
-                VkImageMemoryBarrier2{
-                        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                        .pNext = nullptr,
-                        .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-                        .srcAccessMask = VK_ACCESS_2_NONE,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .image = hdr.image(),
-                        .subresourceRange =
-                                VkImageSubresourceRange{
-                                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                        .baseMipLevel = 0,
-                                        .levelCount = hdr.mip_levels(),
-                                        .baseArrayLayer = 0,
-                                        .layerCount = hdr.array_layers(),
-                                },
-                },
-                VkImageMemoryBarrier2{
-                        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                        .pNext = nullptr,
-                        .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-                        .srcAccessMask = VK_ACCESS_2_NONE,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                        .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                        .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .image = depth.image(),
-                        .subresourceRange =
-                                VkImageSubresourceRange{
-                                        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                                        .baseMipLevel = 0,
-                                        .levelCount = depth.mip_levels(),
-                                        .baseArrayLayer = 0,
-                                        .layerCount = depth.array_layers(),
-                                },
-                },
+    auto transition_forward_target_to_attachments(VkCommandBuffer command_buffer, Image const &hdr, Image const &depth,
+                                                  Image const *resolved_hdr, Image const *resolved_depth) noexcept
+            -> void {
+        std::array<VkImageMemoryBarrier2, 4> barriers{};
+        std::uint32_t barrier_count = 0;
+
+        barriers[barrier_count++] = VkImageMemoryBarrier2{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                .srcAccessMask = VK_ACCESS_2_NONE,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = hdr.image(),
+                .subresourceRange =
+                        VkImageSubresourceRange{
+                                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                .baseMipLevel = 0,
+                                .levelCount = hdr.mip_levels(),
+                                .baseArrayLayer = 0,
+                                .layerCount = hdr.array_layers(),
+                        },
         };
+
+        barriers[barrier_count++] = VkImageMemoryBarrier2{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                .srcAccessMask = VK_ACCESS_2_NONE,
+                .dstStageMask =
+                        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                .dstAccessMask =
+                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = depth.image(),
+                .subresourceRange =
+                        VkImageSubresourceRange{
+                                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                .baseMipLevel = 0,
+                                .levelCount = depth.mip_levels(),
+                                .baseArrayLayer = 0,
+                                .layerCount = depth.array_layers(),
+                        },
+        };
+
+        if (resolved_hdr != nullptr) {
+            barriers[barrier_count++] = VkImageMemoryBarrier2{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .pNext = nullptr,
+                    .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                    .srcAccessMask = VK_ACCESS_2_NONE,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = resolved_hdr->image(),
+                    .subresourceRange =
+                            VkImageSubresourceRange{
+                                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                    .baseMipLevel = 0,
+                                    .levelCount = resolved_hdr->mip_levels(),
+                                    .baseArrayLayer = 0,
+                                    .layerCount = resolved_hdr->array_layers(),
+                            },
+            };
+        }
+
+        if (resolved_depth != nullptr) {
+            barriers[barrier_count++] = VkImageMemoryBarrier2{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .pNext = nullptr,
+                    .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                    .srcAccessMask = VK_ACCESS_2_NONE,
+                    .dstStageMask =
+                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                    .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = resolved_depth->image(),
+                    .subresourceRange =
+                            VkImageSubresourceRange{
+                                    .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                    .baseMipLevel = 0,
+                                    .levelCount = resolved_depth->mip_levels(),
+                                    .baseArrayLayer = 0,
+                                    .layerCount = resolved_depth->array_layers(),
+                            },
+            };
+        }
 
         VkDependencyInfo const dependency_info{
                 .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -100,7 +152,7 @@ namespace {
                 .pMemoryBarriers = nullptr,
                 .bufferMemoryBarrierCount = 0,
                 .pBufferMemoryBarriers = nullptr,
-                .imageMemoryBarrierCount = static_cast<std::uint32_t>(barriers.size()),
+                .imageMemoryBarrierCount = barrier_count,
                 .pImageMemoryBarriers = barriers.data(),
         };
 
@@ -394,6 +446,11 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         create_info.maximum_submission_count == 0) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
+
+    hdr_format_ = create_info.hdr_format;
+    depth_format_ = create_info.depth_format;
+    samples_ = create_info.samples;
+    extent_ = create_info.extent;
 
     auto maybe_compiler = renderer::SlangCompiler::create();
     if (!maybe_compiler) {
@@ -800,25 +857,15 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         frame.forward_target = std::move(*forward_target);
-
         frame.upload_buffer = std::move(*upload);
-
         frame.draw_buffer = std::move(*draws);
-
         frame.transform_buffer = std::move(*transforms);
-
         frame.indirect_buffer = std::move(*indirect);
-
         frame.draw_upload_offset = 0;
-
         frame.transform_upload_offset = transform_offset;
-
         frame.indirect_upload_offset = indirect_offset;
-
         frame.draws.reserve(maximum_draw_count_);
-
         frame.transforms.reserve(maximum_submission_count_);
-
         frame.indirect_commands.reserve(maximum_draw_count_);
     }
 
@@ -875,13 +922,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         ubo = std::move(*maybe_ubo);
     }
 
-    hdr_format_ = create_info.hdr_format;
 
-    depth_format_ = create_info.depth_format;
-
-    samples_ = create_info.samples;
-
-    extent_ = create_info.extent;
     initialized_ = true;
 
     return {};
@@ -1595,6 +1636,21 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
 
+    bool const is_msaa = frame.forward_target.is_multisampled();
+
+    Image const *resolved_hdr = hdr;
+    Image const *resolved_depth = depth;
+
+    if (is_msaa) {
+        resolved_hdr = image_storage_.get(frame.forward_target.resolved_hdr());
+        resolved_depth = image_storage_.get(frame.forward_target.resolved_depth());
+
+        if (resolved_hdr == nullptr || resolved_depth == nullptr || !resolved_hdr->valid() ||
+            !resolved_depth->valid()) {
+            return std::unexpected(make_error(RendererErrorType::image_error));
+        }
+    }
+
     auto const *forward_pipeline = pipeline_graph_.resolve(forward_pipeline_);
     if (forward_pipeline == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
@@ -1618,14 +1674,14 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    transition_forward_target_to_attachments(command_buffer, *hdr, *depth);
-
+    transition_forward_target_to_attachments(command_buffer, *hdr, *depth, is_msaa ? resolved_hdr : nullptr,
+                                             is_msaa ? resolved_depth : nullptr);
 #pragma region Predepth pass
     {
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
                              static_cast<std::uint32_t>(RenderStage::DepthPrepass) * 2);
 
-        VkRenderingAttachmentInfo const depth_attachment{
+        VkRenderingAttachmentInfo depth_attachment{
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .pNext = nullptr,
                 .imageView = depth->view(),
@@ -1635,15 +1691,14 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue =
-                        VkClearValue{
-                                .depthStencil =
-                                        VkClearDepthStencilValue{
-                                                .depth = 0.0F,
-                                                .stencil = 0,
-                                        },
-                        },
+                .clearValue = {},
         };
+
+        if (is_msaa) {
+            depth_attachment.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+            depth_attachment.resolveImageView = resolved_depth->view();
+            depth_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        }
 
         VkRenderingInfo const depth_prepass_info{
                 .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -1696,7 +1751,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, frame_query.query_pool,
                              static_cast<std::uint32_t>(RenderStage::ForwardPass) * 2);
 
-        VkRenderingAttachmentInfo const hdr_attachment{
+        VkRenderingAttachmentInfo hdr_attachment{
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .pNext = nullptr,
                 .imageView = hdr->view(),
@@ -1720,6 +1775,13 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                                         },
                         },
         };
+
+        if (is_msaa) {
+            hdr_attachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+            hdr_attachment.resolveImageView = resolved_hdr->view();
+            hdr_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            hdr_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        }
 
         VkRenderingAttachmentInfo const depth_attachment{
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -1782,7 +1844,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
     }
 #pragma endregion
 
-    transition_hdr_to_shader_read(command_buffer, *hdr);
+    transition_hdr_to_shader_read(command_buffer, *resolved_hdr);
     transition_swapchain_to_attachment(command_buffer, swapchain_image.image);
 
 #pragma region Composition for swapchain
@@ -1834,7 +1896,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         };
 
         CompositePC const composite_pc{
-                .hdr_texture_index = frame.forward_target.hdr().index,
+                .hdr_texture_index = frame.forward_target.resolved_hdr().index,
                 .sampler_index = sampler_storage_.linear_clamp().index,
                 .exposure = 1.0F,
                 .padding = 0,

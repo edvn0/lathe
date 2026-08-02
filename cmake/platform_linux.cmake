@@ -31,10 +31,4 @@ function(configure_linux_target target_name slang_lib_dir slang_bin_dir)
             VERBATIM
         )
   endforeach()
-
-  # SlangLibrary::create_from_executable_directory() resolves the runtime
-  # to an absolute path next to the executable and calls dlopen() with
-  # that absolute path, so no rpath/$ORIGIN setup is needed for the Slang
-  # runtime itself. Revisit if other dynamically-linked dependencies are
-  # introduced later.
 endfunction()

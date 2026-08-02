@@ -9,6 +9,7 @@
 
 #include "context.hxx"
 #include "load_model.hxx"
+#include "vk_object_name.hxx"
 
 namespace {
     inline constexpr std::array forward_dynamic_states{
@@ -43,34 +44,6 @@ namespace {
                 .type = type,
                 .result = result,
         };
-    }
-
-    template<typename Handle>
-    auto object_handle(Handle handle) noexcept -> std::uint64_t {
-        if constexpr (std::is_pointer_v<Handle>) {
-            return reinterpret_cast<std::uint64_t>(handle);
-        } else {
-            return static_cast<std::uint64_t>(handle);
-        }
-    }
-
-    auto set_object_name(VkDevice device, VkObjectType object_type, std::uint64_t handle,
-                         std::string_view name) noexcept -> void {
-        if (device == VK_NULL_HANDLE || handle == 0 || name.empty() || vkSetDebugUtilsObjectNameEXT == nullptr) {
-            return;
-        }
-
-        std::string storage{name};
-
-        VkDebugUtilsObjectNameInfoEXT const info{
-                .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
-                .pNext = nullptr,
-                .objectType = object_type,
-                .objectHandle = handle,
-                .pObjectName = storage.c_str(),
-        };
-
-        static_cast<void>(vkSetDebugUtilsObjectNameEXT(device, &info));
     }
 } // namespace
 
@@ -391,11 +364,10 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
 
     result.bind_point_ = VK_PIPELINE_BIND_POINT_GRAPHICS;
 
-    set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE, object_handle(result.pipeline_), create_info.debug_name);
-
+    vk::set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE, vk::object_handle(result.pipeline_),
+                        create_info.debug_name);
     auto const layout_name = std::string{create_info.debug_name} + ".layout";
-
-    set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, object_handle(result.layout_), layout_name);
+    vk::set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, vk::object_handle(result.layout_), layout_name);
 
     return result;
 }
