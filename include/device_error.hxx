@@ -4,7 +4,9 @@
 
 #include "fly_string.hxx"
 
+#include <format>
 #include <source_location>
+#include <string_view>
 
 struct DeviceError {
     enum class Type {
@@ -27,5 +29,27 @@ struct DeviceError {
                 .vk_result = result,
                 .location = location,
         };
+    }
+};
+
+template<>
+struct std::formatter<DeviceError::Type> : std::formatter<std::string_view> {
+    constexpr auto format(DeviceError::Type error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case DeviceError::Type::Unknown:
+                    return "Unknown";
+                case DeviceError::Type::BufferCreation:
+                    return "BufferCreation";
+                case DeviceError::Type::AllocationFailure:
+                    return "AllocationFailure";
+                case DeviceError::Type::AddressRetrieval:
+                    return "AddressRetrieval";
+            }
+
+            return "UnknownDeviceError";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
     }
 };

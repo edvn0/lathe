@@ -3,10 +3,14 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "error_context.hxx"
 
 #include "buffer.hxx"
 #include "forward.hxx"
@@ -82,8 +86,33 @@ enum class ImageStorageErrorType : std::uint8_t {
 struct ImageStorageError {
     ImageStorageErrorType type = ImageStorageErrorType::invalid_argument;
 
-    ImageError image_error{};
-    DeviceError device_error{};
+    std::optional<ErrorCause> cause;
+};
+
+template<>
+struct std::formatter<ImageStorageErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(ImageStorageErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case ImageStorageErrorType::invalid_argument:
+                    return "invalid_argument";
+                case ImageStorageErrorType::invalid_handle:
+                    return "invalid_handle";
+                case ImageStorageErrorType::protected_default:
+                    return "protected_default";
+                case ImageStorageErrorType::capacity_exceeded:
+                    return "capacity_exceeded";
+                case ImageStorageErrorType::image_error:
+                    return "image_error";
+                case ImageStorageErrorType::device_error:
+                    return "device_error";
+            }
+
+            return "unknown_image_storage_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };
 
 struct ImageStorageCreateInfo {

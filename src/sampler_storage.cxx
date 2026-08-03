@@ -1,7 +1,10 @@
 #include "sampler_storage.hxx"
 
 #include <array>
+#include <format>
+#include <source_location>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -11,10 +14,16 @@
 
 namespace {
 
-    auto make_error(SamplerStorageErrorType type, VkResult result = VK_SUCCESS) noexcept -> SamplerStorageError {
+    auto make_error(SamplerStorageErrorType type, std::string_view message = {}, VkResult result = VK_SUCCESS,
+                    std::source_location location = std::source_location::current()) noexcept -> SamplerStorageError {
         return SamplerStorageError{
                 .type = type,
-                .result = result,
+                .context =
+                        ErrorContext{
+                                .message = FlyString{message},
+                                .vk_result = result != VK_SUCCESS ? std::optional{result} : std::nullopt,
+                                .location = location,
+                        },
         };
     }
 
@@ -167,7 +176,9 @@ namespace {
         auto const result = vkCreateSampler(context.device, &sampler_info, nullptr, &sampler);
 
         if (result != VK_SUCCESS) {
-            return std::unexpected(make_error(SamplerStorageErrorType::sampler_creation_failed, result));
+            return std::unexpected(make_error(
+                    SamplerStorageErrorType::sampler_creation_failed,
+                    std::format("vkCreateSampler failed for sampler '{}'", create_info.debug_name), result));
         }
 
         vk::set_object_name(context.device, VK_OBJECT_TYPE_SAMPLER, vk::object_handle(sampler), create_info.debug_name);

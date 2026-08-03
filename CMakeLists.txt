@@ -561,6 +561,13 @@ target_compile_definitions(
 
 target_compile_options(mingw-vulkan PRIVATE -Wno-old-style-cast)
 
+# The error-context types (ErrorContext and the *Error aggregates' `.cause`/
+# `.context` fields) are deliberately optional trailing members with defaults
+# -- callers only ever fill in what's relevant to that failure. GCC's
+# -Wmissing-field-initializers fires on every designated-init that omits them
+# even though a default member initializer exists, which isn't a real bug.
+target_compile_options(mingw-vulkan PRIVATE -Wno-missing-field-initializers)
+
 
 if(MINGW_VULKAN_ENABLE_VALIDATION)
   target_compile_definitions(

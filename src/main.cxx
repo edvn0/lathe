@@ -31,6 +31,8 @@
 #include "implot.h"
 #include "logger.hxx"
 #include "renderdoc.hxx"
+#include "engine_models.hxx"
+#include "error_describe.hxx"
 #include "renderer.hxx"
 #include "shader_hot_reload_watcher.hxx"
 #include "swapchain.hxx"
@@ -225,6 +227,12 @@ namespace {
         RenderScene scene;
         ShaderHotReloadWatcher shader_watcher_;
 
+        // Procedural fallback models (cube, sphere, ...). Created once on
+        // the render thread before the first recreate_entities() call.
+        // Unlike disk-loaded models, failing to create these is fatal --
+        // see on_startup().
+        EngineModels engine_models{};
+
         std::array<ScrollingBuffer, stage_count> timing_buffers;
         float timing_x = 0.0F;
 
@@ -252,7 +260,22 @@ namespace {
                                        .font_path = "assets/fonts/GoogleSansCode-Regular.ttf",
                                        .size = 12,
                                });
-            renderer->queue_render_thread_event([this] { this->recreate_entities(); });
+            renderer->queue_render_thread_event([this] {
+                auto models = create_engine_models(*renderer);
+
+                if (!models) {
+                    error("Fatal: could not create built-in engine models: {}", describe(models.error()));
+
+                    context.running.store(false, std::memory_order_release);
+                    glfwPostEmptyEvent();
+
+                    return;
+                }
+
+                engine_models = *models;
+
+                this->recreate_entities();
+            });
         }
 
         auto on_event(KeyPressedEvent ev) -> bool {
@@ -300,22 +323,28 @@ namespace {
         auto recreate_entities() -> void {
 
             if (auto could_wait = renderer->wait_idle(); !could_wait.has_value()) {
-                info("{}", could_wait.error().device_error.message.view());
+                info("{}", describe(could_wait.error()));
                 return;
             }
 
             scene.objects.clear();
 
 
-            auto helmet_model = renderer->load_model("assets/models/damaged_helmet/DamagedHelmet.gltf");
-            if (!helmet_model) {
-                error("Could not load model: {}", helmet_model.error().type);
-            }
+            auto const load_or_fallback = [this](std::filesystem::path const &path) -> ModelHandle {
+                auto model = renderer->load_model(path);
 
-            auto cube_model = renderer->load_model("assets/models/test_cube.glb");
-            if (!cube_model) {
-                error("Could not load model: {}", helmet_model.error().type);
-            }
+                if (model) {
+                    return *model;
+                }
+
+                error("Could not load model '{}': {}", path.string(), describe(model.error()));
+                warn("Falling back to engine cube for '{}'", path.string());
+
+                return engine_models.cube;
+            };
+
+            auto const helmet_model = load_or_fallback("assets/models/damaged_helmet/DamagedHelmet.gltf");
+            auto const cube_model = load_or_fallback("assets/models/test_cube.glb");
 
             std::random_device r;
             std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
@@ -327,7 +356,7 @@ namespace {
             for (auto i = 0; i < count; i++) {
                 for (auto j = 0; j < count; j++) {
                     for (auto k = 0; k < count; k++) {
-                        scene.objects.emplace_back(*helmet_model, SceneTransform{
+                        scene.objects.emplace_back(helmet_model, SceneTransform{
                                                                           .position =
                                                                                   glm::vec3{
                                                                                           urd(eng),
@@ -342,7 +371,7 @@ namespace {
             for (auto i = 0; i < other_count; i++) {
                 for (auto j = 0; j < other_count; j++) {
                     for (auto k = 0; k < other_count; k++) {
-                        scene.objects.emplace_back(*cube_model, SceneTransform{
+                        scene.objects.emplace_back(cube_model, SceneTransform{
                                                                         .position =
                                                                                 glm::vec3{
                                                                                         urd(eng),
@@ -499,8 +528,12 @@ namespace {
         auto renderdoc = renderdoc_init();
 
         info("Was created via renderdoc: {}", renderdoc.is_active());
-        glfwInitHint(GLFW_PLATFORM, renderdoc.is_active() ? GLFW_PLATFORM_X11 : GLFW_PLATFORM_WAYLAND);
-        warn("Chosing: {} as platform.", renderdoc.is_active() ? "X11" : "Wayland");
+
+#if defined(__linux__)
+        // RenderDoc does not support capturing Wayland surfaces, so force X11 when active.
+        glfwInitHint(GLFW_PLATFORM, renderdoc.is_active() ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM);
+        warn("Chosing: {} as platform.", renderdoc.is_active() ? "X11" : "auto-detected");
+#endif
 
         if (glfwInit() != GLFW_TRUE) {
             error("glfwInit failed");
@@ -1067,11 +1100,15 @@ namespace {
     }
 
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
+        // A single bad submission (e.g. a stale handle after a resize/recreate
+        // race) shouldn't take the whole frame down -- log it and keep going
+        // so the rest of the scene still renders.
         for (auto const &object: application.scene.objects) {
             auto result = application.renderer->submit_model(object.model, object.transform.matrix());
 
             if (!result) {
-                return std::unexpected(result.error());
+                error("Could not submit scene object (model index {}): {}", object.model.index,
+                      describe(result.error()));
             }
         }
 
@@ -1094,8 +1131,7 @@ namespace {
         });
 
         if (!renderer_result) {
-            error("Could not initialize renderer: {} - {}", renderer_result.error().type,
-                  renderer_result.error().compiler_error.diagnostics);
+            error("Could not initialize renderer: {}", describe(renderer_result.error()));
 
             return false;
         }
@@ -1107,17 +1143,21 @@ namespace {
         auto frame = context.swapchain.begin_frame();
 
         if (!frame) {
-            switch (frame.error()) {
-                case SwapchainBeginFrameError::recreated:
+            switch (frame.error().kind) {
+                case SwapchainBeginFrameError::Kind::recreated:
                     return true;
 
-                case SwapchainBeginFrameError::device_lost:
+                case SwapchainBeginFrameError::Kind::device_lost:
                     error("The Vulkan device was lost");
 
                     return false;
 
-                case SwapchainBeginFrameError::fatal_error:
-                    error("Could not begin swapchain frame");
+                case SwapchainBeginFrameError::Kind::fatal_error:
+                    if (frame.error().context.has_value()) {
+                        error("Could not begin swapchain frame: {}", describe(*frame.error().context));
+                    } else {
+                        error("Could not begin swapchain frame");
+                    }
 
                     return false;
             }
@@ -1128,7 +1168,7 @@ namespace {
         auto submit_result = submit_scene(application);
 
         if (!submit_result) {
-            error("Could not submit scene: {}", static_cast<int>(submit_result.error().type));
+            error("Could not submit scene: {}", describe(submit_result.error()));
 
             return false;
         }
@@ -1151,7 +1191,7 @@ namespace {
                                                     frame->frame_index);
 
         if (!prepare_result) {
-            error("Could not prepare renderer frame: {}", static_cast<int>(prepare_result.error().type));
+            error("Could not prepare renderer frame: {}", describe(prepare_result.error()));
 
             return false;
         }
@@ -1180,7 +1220,7 @@ namespace {
                                                    });
 
         if (!record_result) {
-            error("Could not record renderer frame: {}", static_cast<int>(record_result.error().type));
+            error("Could not record renderer frame: {}", describe(record_result.error()));
 
             return false;
         }
@@ -1262,7 +1302,7 @@ namespace {
                 auto resize_result = application.renderer->resize(swapchain_extent);
 
                 if (!resize_result) {
-                    error("Could not resize renderer: {}", static_cast<int>(resize_result.error().type));
+                    error("Could not resize renderer: {}", describe(resize_result.error()));
 
                     context.running.store(false, std::memory_order_release);
 

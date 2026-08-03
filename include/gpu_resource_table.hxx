@@ -4,10 +4,13 @@
 
 #include <cstdint>
 #include <expected>
+#include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "error_context.hxx"
 #include "forward.hxx"
 #include "image_storage.hxx"
 #include "sampler_storage.hxx"
@@ -41,7 +44,31 @@ enum class GpuResourceTableErrorType : std::uint8_t {
 struct GpuResourceTableError {
     GpuResourceTableErrorType type = GpuResourceTableErrorType::invalid_argument;
 
-    VkResult result = VK_SUCCESS;
+    std::optional<ErrorContext> context;
+};
+
+template<>
+struct std::formatter<GpuResourceTableErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(GpuResourceTableErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case GpuResourceTableErrorType::invalid_argument:
+                    return "invalid_argument";
+                case GpuResourceTableErrorType::capacity_exceeded:
+                    return "capacity_exceeded";
+                case GpuResourceTableErrorType::descriptor_layout_creation_failed:
+                    return "descriptor_layout_creation_failed";
+                case GpuResourceTableErrorType::descriptor_pool_creation_failed:
+                    return "descriptor_pool_creation_failed";
+                case GpuResourceTableErrorType::descriptor_set_allocation_failed:
+                    return "descriptor_set_allocation_failed";
+            }
+
+            return "unknown_gpu_resource_table_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };
 
 struct GpuResourceTableCreateInfo {

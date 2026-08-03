@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "context.hxx"
+#include "error_describe.hxx"
 #include "logger.hxx"
 #include "pipeline.hxx"
 #include "renderer.hxx"
@@ -479,8 +480,7 @@ namespace gui {
                                            static_cast<std::size_t>(height) * static_cast<std::size_t>(width) * 4));
 
         if (!created_image) {
-            error("(ImGui) Failed to create font atlas image: {}",
-                  static_cast<std::uint32_t>(created_image.error().image_error.type));
+            error("(ImGui) Failed to create font atlas image: {}", describe(created_image.error()));
             return;
         }
 

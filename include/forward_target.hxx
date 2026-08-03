@@ -2,10 +2,13 @@
 
 #include <cstdint>
 #include <expected>
+#include <format>
+#include <optional>
 #include <string_view>
 
 #include <volk.h>
 
+#include "error_context.hxx"
 #include "image_storage.hxx"
 
 enum class ForwardTargetErrorType : std::uint8_t {
@@ -16,7 +19,25 @@ enum class ForwardTargetErrorType : std::uint8_t {
 struct ForwardTargetError {
     ForwardTargetErrorType type = ForwardTargetErrorType::invalid_argument;
 
-    ImageStorageError image_error{};
+    std::optional<ErrorCause> cause;
+};
+
+template<>
+struct std::formatter<ForwardTargetErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(ForwardTargetErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case ForwardTargetErrorType::invalid_argument:
+                    return "invalid_argument";
+                case ForwardTargetErrorType::image_error:
+                    return "image_error";
+            }
+
+            return "unknown_forward_target_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };
 
 struct ForwardTargetCreateInfo {

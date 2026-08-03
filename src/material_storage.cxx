@@ -16,10 +16,10 @@ namespace {
         };
     }
 
-    auto make_device_error(DeviceError const &error) -> MaterialStorageError {
+    auto make_device_error(DeviceError error) -> MaterialStorageError {
         return MaterialStorageError{
                 .type = MaterialStorageErrorType::device_error,
-                .device_error = error,
+                .cause = ErrorCause{Boxed<DeviceError>{std::move(error)}},
         };
     }
 

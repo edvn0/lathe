@@ -149,52 +149,56 @@ namespace {
                 glm::vec4{tangent[0], tangent[1], tangent[2], sign};
     }
 
-    auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices)
-            -> std::expected<void, ModelLoadError> {
-        std::vector<ModelVertex> expanded(indices.size());
+} // namespace
 
-        for (std::size_t index = 0; index < indices.size(); ++index) {
-            expanded[index] = vertices[indices[index]];
-        }
+auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices)
+        -> std::expected<void, ModelLoadError> {
+    std::vector<ModelVertex> expanded(indices.size());
 
-        MikktspaceUserData user_data{.vertices = &expanded};
-
-        SMikkTSpaceInterface interface{};
-        interface.m_getNumFaces = mikktspace_get_num_faces;
-        interface.m_getNumVerticesOfFace = mikktspace_get_num_vertices_of_face;
-        interface.m_getPosition = mikktspace_get_position;
-        interface.m_getNormal = mikktspace_get_normal;
-        interface.m_getTexCoord = mikktspace_get_tex_coord;
-        interface.m_setTSpaceBasic = mikktspace_set_tspace_basic;
-        interface.m_setTSpace = nullptr;
-
-        SMikkTSpaceContext context{};
-        context.m_pInterface = &interface;
-        context.m_pUserData = &user_data;
-
-        if (genTangSpaceDefault(&context) == 0) {
-            return std::unexpected(ModelLoadError{
-                    .type = ModelLoadErrorType::tangent_generation_failed,
-            });
-        }
-
-        std::vector<unsigned int> remap(expanded.size());
-
-        auto const unique_vertex_count = meshopt_generateVertexRemap(
-                remap.data(), nullptr, expanded.size(), expanded.data(), expanded.size(), sizeof(ModelVertex));
-
-        std::vector<ModelVertex> welded_vertices(unique_vertex_count);
-        meshopt_remapVertexBuffer(welded_vertices.data(), expanded.data(), expanded.size(), sizeof(ModelVertex),
-                                  remap.data());
-
-        std::vector<std::uint32_t> welded_indices(expanded.size());
-        meshopt_remapIndexBuffer(welded_indices.data(), nullptr, expanded.size(), remap.data());
-
-        vertices = std::move(welded_vertices);
-        indices = std::move(welded_indices);
-
-        return {};
+    for (std::size_t index = 0; index < indices.size(); ++index) {
+        expanded[index] = vertices[indices[index]];
     }
+
+    MikktspaceUserData user_data{.vertices = &expanded};
+
+    SMikkTSpaceInterface interface{};
+    interface.m_getNumFaces = mikktspace_get_num_faces;
+    interface.m_getNumVerticesOfFace = mikktspace_get_num_vertices_of_face;
+    interface.m_getPosition = mikktspace_get_position;
+    interface.m_getNormal = mikktspace_get_normal;
+    interface.m_getTexCoord = mikktspace_get_tex_coord;
+    interface.m_setTSpaceBasic = mikktspace_set_tspace_basic;
+    interface.m_setTSpace = nullptr;
+
+    SMikkTSpaceContext context{};
+    context.m_pInterface = &interface;
+    context.m_pUserData = &user_data;
+
+    if (genTangSpaceDefault(&context) == 0) {
+        return std::unexpected(ModelLoadError{
+                .type = ModelLoadErrorType::tangent_generation_failed,
+        });
+    }
+
+    std::vector<unsigned int> remap(expanded.size());
+
+    auto const unique_vertex_count = meshopt_generateVertexRemap(
+            remap.data(), nullptr, expanded.size(), expanded.data(), expanded.size(), sizeof(ModelVertex));
+
+    std::vector<ModelVertex> welded_vertices(unique_vertex_count);
+    meshopt_remapVertexBuffer(welded_vertices.data(), expanded.data(), expanded.size(), sizeof(ModelVertex),
+                              remap.data());
+
+    std::vector<std::uint32_t> welded_indices(expanded.size());
+    meshopt_remapIndexBuffer(welded_indices.data(), nullptr, expanded.size(), remap.data());
+
+    vertices = std::move(welded_vertices);
+    indices = std::move(welded_indices);
+
+    return {};
+}
+
+namespace {
 
     // ------------------------------------------------------------------------
     // CPU pass — geometry. No GeometryArena involved anymore: this only
@@ -811,7 +815,7 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                     if (!material_handle) {
                         return std::unexpected(ModelLoadError{
                                 .type = ModelLoadErrorType::material_creation_failed,
-                                .material_storage_error = material_handle.error(),
+                                .cause = ErrorCause{Boxed<MaterialStorageError>{material_handle.error()}},
                         });
                     }
 
@@ -844,7 +848,7 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                 if (!geometry) {
                     return std::unexpected(ModelLoadError{
                             .type = ModelLoadErrorType::geometry_upload_failed,
-                            .geometry_error = geometry.error(),
+                            .cause = ErrorCause{Boxed<GeometryArenaError>{geometry.error()}},
                     });
                 }
 

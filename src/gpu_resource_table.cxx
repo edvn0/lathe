@@ -1,16 +1,25 @@
 #include "gpu_resource_table.hxx"
 
 #include <array>
+#include <format>
+#include <source_location>
+#include <string_view>
 #include <utility>
 
 #include "context.hxx"
 
 namespace {
 
-    auto make_error(GpuResourceTableErrorType type, VkResult result = VK_SUCCESS) noexcept -> GpuResourceTableError {
+    auto make_error(GpuResourceTableErrorType type, std::string_view message = {}, VkResult result = VK_SUCCESS,
+                    std::source_location location = std::source_location::current()) noexcept -> GpuResourceTableError {
         return {
                 .type = type,
-                .result = result,
+                .context =
+                        ErrorContext{
+                                .message = FlyString{message},
+                                .vk_result = result != VK_SUCCESS ? std::optional{result} : std::nullopt,
+                                .location = location,
+                        },
         };
     }
 
@@ -85,7 +94,8 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     if (result != VK_SUCCESS) {
         table.destroy();
 
-        return std::unexpected(make_error(GpuResourceTableErrorType::descriptor_layout_creation_failed, result));
+        return std::unexpected(make_error(GpuResourceTableErrorType::descriptor_layout_creation_failed,
+                                          "vkCreateDescriptorSetLayout failed", result));
     }
 
     auto const frame_count = create_info.frames_in_flight;
@@ -119,7 +129,9 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     if (result != VK_SUCCESS) {
         table.destroy();
 
-        return std::unexpected(make_error(GpuResourceTableErrorType::descriptor_pool_creation_failed, result));
+        return std::unexpected(
+                make_error(GpuResourceTableErrorType::descriptor_pool_creation_failed, "vkCreateDescriptorPool failed",
+                          result));
     }
 
     auto layouts = std::vector<VkDescriptorSetLayout>(frame_count, table.layout_);
@@ -139,7 +151,8 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     if (result != VK_SUCCESS) {
         table.destroy();
 
-        return std::unexpected(make_error(GpuResourceTableErrorType::descriptor_set_allocation_failed, result));
+        return std::unexpected(make_error(GpuResourceTableErrorType::descriptor_set_allocation_failed,
+                                          "vkAllocateDescriptorSets failed", result));
     }
 
     table.frames_.resize(frame_count);

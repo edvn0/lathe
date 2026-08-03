@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "error_describe.hxx"
 #include "logger.hxx"
 
 namespace {
@@ -75,7 +76,7 @@ auto PipelineGraphRepository::create(VulkanContext &context, PipelineGraphCreate
     if (!storage) {
         return std::unexpected(PipelineGraphError{
                 .type = PipelineGraphErrorType::pipeline_storage_error,
-                .pipeline_storage_error = storage.error(),
+                .cause = ErrorCause{Boxed<PipelineStorageError>{storage.error()}},
         });
     }
 
@@ -235,7 +236,7 @@ auto PipelineGraphRepository::build_pipeline(PipelineNode const &node)
     if (!created) {
         return std::unexpected(PipelineGraphError{
                 .type = PipelineGraphErrorType::pipeline_storage_error,
-                .pipeline_storage_error = created.error(),
+                .cause = ErrorCause{Boxed<PipelineStorageError>{created.error()}},
         });
     }
 
@@ -279,7 +280,7 @@ auto PipelineGraphRepository::register_pipeline(renderer::SlangCompiler const &c
         if (!compiled) {
             return std::unexpected(PipelineGraphError{
                     .type = PipelineGraphErrorType::compiler_error,
-                    .compiler_error = compiled.error(),
+                    .cause = ErrorCause{Boxed<renderer::ShaderCompileError>{compiled.error()}},
             });
         }
 
@@ -398,7 +399,7 @@ auto PipelineGraphRepository::process_dirty(renderer::SlangCompiler const &compi
 
             if (!compiled) {
                 error("Shader reload failed for {} ({}): {}", stage.request.source_path.string(),
-                      stage.request.entry_point, compiled.error().diagnostics);
+                      stage.request.entry_point, describe(compiled.error()));
 
                 all_stages_clean = false;
                 continue;

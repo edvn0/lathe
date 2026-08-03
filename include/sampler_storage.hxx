@@ -4,11 +4,14 @@
 
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "error_context.hxx"
 #include "forward.hxx"
 
 inline constexpr auto invalid_sampler_index = std::numeric_limits<std::uint32_t>::max();
@@ -77,7 +80,31 @@ enum class SamplerStorageErrorType : std::uint8_t {
 struct SamplerStorageError {
     SamplerStorageErrorType type = SamplerStorageErrorType::invalid_argument;
 
-    VkResult result = VK_SUCCESS;
+    std::optional<ErrorContext> context;
+};
+
+template<>
+struct std::formatter<SamplerStorageErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(SamplerStorageErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case SamplerStorageErrorType::invalid_argument:
+                    return "invalid_argument";
+                case SamplerStorageErrorType::invalid_handle:
+                    return "invalid_handle";
+                case SamplerStorageErrorType::protected_default:
+                    return "protected_default";
+                case SamplerStorageErrorType::capacity_exceeded:
+                    return "capacity_exceeded";
+                case SamplerStorageErrorType::sampler_creation_failed:
+                    return "sampler_creation_failed";
+            }
+
+            return "unknown_sampler_storage_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };
 
 struct SamplerDescriptorRecord {

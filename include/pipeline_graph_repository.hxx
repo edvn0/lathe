@@ -3,10 +3,14 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "error_context.hxx"
 
 #include "forward.hxx"
 #include "pipeline.hxx"
@@ -36,8 +40,31 @@ enum class PipelineGraphErrorType : std::uint8_t {
 struct PipelineGraphError {
     PipelineGraphErrorType type = PipelineGraphErrorType::invalid_argument;
 
-    renderer::ShaderCompileError compiler_error{};
-    PipelineStorageError pipeline_storage_error{};
+    std::optional<ErrorCause> cause;
+};
+
+template<>
+struct std::formatter<PipelineGraphErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(PipelineGraphErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case PipelineGraphErrorType::invalid_argument:
+                    return "invalid_argument";
+                case PipelineGraphErrorType::invalid_handle:
+                    return "invalid_handle";
+                case PipelineGraphErrorType::capacity_exceeded:
+                    return "capacity_exceeded";
+                case PipelineGraphErrorType::compiler_error:
+                    return "compiler_error";
+                case PipelineGraphErrorType::pipeline_storage_error:
+                    return "pipeline_storage_error";
+            }
+
+            return "unknown_pipeline_graph_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };
 
 struct PipelineGraphCreateInfo {

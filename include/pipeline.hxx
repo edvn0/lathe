@@ -4,9 +4,13 @@
 
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <span>
 #include <string_view>
 
+#include <optional>
+
+#include "error_context.hxx"
 #include "fly_string.hxx"
 #include "forward.hxx"
 
@@ -19,7 +23,29 @@ enum class PipelineErrorType : std::uint8_t {
 struct PipelineError {
     PipelineErrorType type = PipelineErrorType::invalid_argument;
 
-    VkResult result = VK_SUCCESS;
+    // Carries the pipeline's debug_name / rejected-argument reason plus, when
+    // applicable, the failing VkResult (see ErrorContext::vk_result).
+    std::optional<ErrorContext> context;
+};
+
+template<>
+struct std::formatter<PipelineErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(PipelineErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case PipelineErrorType::invalid_argument:
+                    return "invalid_argument";
+                case PipelineErrorType::layout_creation_failed:
+                    return "layout_creation_failed";
+                case PipelineErrorType::pipeline_creation_failed:
+                    return "pipeline_creation_failed";
+            }
+
+            return "unknown_pipeline_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };
 
 struct ShaderStageInfo {

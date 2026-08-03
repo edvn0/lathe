@@ -4,15 +4,49 @@
 
 #include <algorithm>
 #include <array>
+#include <format>
 #include <limits>
+#include <string_view>
 #include <utility>
 
 #include "config.hxx"
 
 namespace {
 
+    // Used by the bool-returning setup helpers below (create_swapchain,
+    // create_image_views, ...), which have no SwapchainBeginFrameError to
+    // carry a VkResult in -- this is just a log line at the call site.
     auto report_vk_error(const char *operation, VkResult result) noexcept -> void {
         error("{} failed with VkResult {}", operation, static_cast<int>(result));
+    }
+
+    // Builds the error value AND logs it -- used by begin_frame(), which DOES
+    // return a SwapchainBeginFrameError, so the VkResult that used to only
+    // reach the log line now also survives in the returned value.
+    auto make_vk_error(SwapchainBeginFrameError::Kind kind, std::string_view operation, VkResult result) noexcept
+            -> SwapchainBeginFrameError {
+        error("{} failed with VkResult {}", operation, static_cast<int>(result));
+
+        return SwapchainBeginFrameError{
+                .kind = kind,
+                .context =
+                        ErrorContext{
+                                .message = FlyString{operation},
+                                .vk_result = result,
+                        },
+        };
+    }
+
+    auto make_error(SwapchainBeginFrameError::Kind kind, std::string_view message = {}) noexcept
+            -> SwapchainBeginFrameError {
+        if (message.empty()) {
+            return SwapchainBeginFrameError{.kind = kind};
+        }
+
+        return SwapchainBeginFrameError{
+                .kind = kind,
+                .context = ErrorContext{.message = FlyString{message}},
+        };
     }
 
 } // namespace
@@ -60,18 +94,20 @@ auto Swapchain::initialize(const SwapchainCreateInfo &create_info) noexcept -> b
 }
 
 auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError> {
+    using Kind = SwapchainBeginFrameError::Kind;
+
     if (recreate_requested_) {
         recreate_requested_ = false;
 
         if (!recreate()) {
-            return std::unexpected(SwapchainBeginFrameError::fatal_error);
+            return std::unexpected(make_error(Kind::fatal_error, "swapchain recreate failed"));
         }
 
-        return std::unexpected(SwapchainBeginFrameError::recreated);
+        return std::unexpected(make_error(Kind::recreated));
     }
 
     if (frames_.empty() || swapchain_ == VK_NULL_HANDLE) {
-        return std::unexpected(SwapchainBeginFrameError::fatal_error);
+        return std::unexpected(make_error(Kind::fatal_error, "swapchain has no frames / VK_NULL_HANDLE"));
     }
 
     auto &frame = frames_[current_frame_];
@@ -79,13 +115,11 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
     auto result = vkWaitForFences(device_, 1, &frame.in_flight, VK_TRUE, std::numeric_limits<std::uint64_t>::max());
 
     if (result == VK_ERROR_DEVICE_LOST) {
-        return std::unexpected(SwapchainBeginFrameError::device_lost);
+        return std::unexpected(make_error(Kind::device_lost, "vkWaitForFences"));
     }
 
     if (result != VK_SUCCESS) {
-        report_vk_error("vkWaitForFences", result);
-
-        return std::unexpected(SwapchainBeginFrameError::fatal_error);
+        return std::unexpected(make_vk_error(Kind::fatal_error, "vkWaitForFences", result));
     }
 
     std::uint32_t image_index = 0;
@@ -95,36 +129,31 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         if (!recreate()) {
-            return std::unexpected(SwapchainBeginFrameError::fatal_error);
+            return std::unexpected(make_error(Kind::fatal_error, "swapchain recreate failed (out of date)"));
         }
 
-        return std::unexpected(SwapchainBeginFrameError::recreated);
+        return std::unexpected(make_error(Kind::recreated));
     }
 
     if (result == VK_ERROR_DEVICE_LOST) {
-        return std::unexpected(SwapchainBeginFrameError::device_lost);
+        return std::unexpected(make_error(Kind::device_lost, "vkAcquireNextImageKHR"));
     }
 
     auto const acquire_suboptimal = result == VK_SUBOPTIMAL_KHR;
 
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-        report_vk_error("vkAcquireNextImageKHR", result);
-
-        return std::unexpected(SwapchainBeginFrameError::fatal_error);
+        return std::unexpected(make_vk_error(Kind::fatal_error, "vkAcquireNextImageKHR", result));
     }
 
     if (image_index >= images_.size() || image_index >= image_views_.size()) {
-        error("Swapchain returned invalid image index {}", image_index);
-
-        return std::unexpected(SwapchainBeginFrameError::fatal_error);
+        return std::unexpected(
+                make_error(Kind::fatal_error, std::format("swapchain returned invalid image index {}", image_index)));
     }
 
     result = vkResetCommandBuffer(frame.command_buffer, 0);
 
     if (result != VK_SUCCESS) {
-        report_vk_error("vkResetCommandBuffer", result);
-
-        return std::unexpected(SwapchainBeginFrameError::fatal_error);
+        return std::unexpected(make_vk_error(Kind::fatal_error, "vkResetCommandBuffer", result));
     }
 
     VkCommandBufferBeginInfo const begin_info{
@@ -137,9 +166,7 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
     result = vkBeginCommandBuffer(frame.command_buffer, &begin_info);
 
     if (result != VK_SUCCESS) {
-        report_vk_error("vkBeginCommandBuffer", result);
-
-        return std::unexpected(SwapchainBeginFrameError::fatal_error);
+        return std::unexpected(make_vk_error(Kind::fatal_error, "vkBeginCommandBuffer", result));
     }
 
     return SwapchainFrame{
@@ -364,6 +391,10 @@ auto Swapchain::create_swapchain(VkSwapchainKHR old_swapchain) noexcept -> bool 
     const VkPresentModeKHR present_mode = choose_present_mode(present_modes);
     extent_ = choose_extent(capabilities);
 
+    if (extent_.width == 0 || extent_.height == 0) {
+        return false;
+    }
+
     constexpr auto requested = 5u;
     std::uint32_t image_count = std::max(requested, capabilities.minImageCount + 1);
 
@@ -584,6 +615,11 @@ auto Swapchain::recreate() noexcept -> bool {
     if (!create_swapchain(old_swapchain) || !create_image_views()) {
         if (old_swapchain != VK_NULL_HANDLE) {
             vkDestroySwapchainKHR(device_, old_swapchain, nullptr);
+        }
+
+        if (extent_.width == 0 || extent_.height == 0) {
+            recreate_requested_ = true;
+            return true;
         }
 
         return false;

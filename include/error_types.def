@@ -1,0 +1,29 @@
+// X-macro list of every subsystem error type that can appear as an
+// ErrorCause. Included multiple times (error_context.hxx, error_describe.hxx)
+// with X/NX redefined by the includer -- this is the one place to touch when
+// adding a new subsystem's error type to the cause chain.
+//
+// X(Name)        -- type lives in the global namespace
+// NX(ns, Name)   -- type lives in namespace `ns`
+//
+// Adding a system does NOT require touching this file's includers: define
+// X and NX before including, #include this file, then #undef X and NX.
+
+#if !defined(X) || !defined(NX)
+#error "define X(Name) and NX(ns, Name) before including error_types.def"
+#endif
+
+X(DeviceError)
+X(ImageError)
+X(ImageStorageError)
+X(GeometryArenaError)
+X(MaterialStorageError)
+X(PipelineError)
+X(PipelineStorageError)
+X(PipelineGraphError)
+X(ForwardTargetError)
+X(GpuResourceTableError)
+X(SamplerStorageError)
+X(ModelLoadError)
+X(SlangLibraryError)
+NX(renderer, ShaderCompileError)

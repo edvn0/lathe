@@ -13,10 +13,10 @@ namespace {
         };
     }
 
-    auto make_pipeline_error(PipelineError const &error) noexcept -> PipelineStorageError {
+    auto make_pipeline_error(PipelineError error) noexcept -> PipelineStorageError {
         return PipelineStorageError{
                 .type = PipelineStorageErrorType::pipeline_error,
-                .pipeline_error = error,
+                .cause = ErrorCause{Boxed<PipelineError>{std::move(error)}},
         };
     }
 } // namespace

@@ -8,8 +8,11 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <format>
+#include <optional>
 #include <vector>
 
+#include "error_context.hxx"
 #include "forward.hxx"
 
 #include "geometry_arena.hxx"
@@ -66,8 +69,7 @@ enum class ModelLoadErrorType : std::uint8_t {
 struct ModelLoadError {
     ModelLoadErrorType type = ModelLoadErrorType::parse_error;
 
-    GeometryArenaError geometry_error{};
-    MaterialStorageError material_storage_error{};
+    std::optional<ErrorCause> cause;
 };
 
 struct ModelCpuImage {
@@ -114,6 +116,13 @@ struct ModelCpuData {
     std::vector<std::uint32_t> scene_roots;
 };
 
+// Generates MikkTSpace tangents for a triangle list, then welds duplicate
+// vertices via meshoptimizer. Exposed (not just an internal helper of the
+// glTF importer) so procedurally-generated meshes (see primitive_meshes.hxx)
+// can produce the same ModelVertex layout without re-deriving tangent math.
+auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices)
+        -> std::expected<void, ModelLoadError>;
+
 auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage)
         -> std::expected<ModelCpuData, ModelLoadError>;
 
@@ -124,3 +133,43 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
 auto load_model(std::filesystem::path const &path, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
                 ImageStorage &image_storage, SamplerStorage &sampler_storage, MaterialStorage &material_storage)
         -> std::expected<Model, ModelLoadError>;
+
+template<>
+struct std::formatter<ModelLoadErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(ModelLoadErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case ModelLoadErrorType::file_not_found:
+                    return "file_not_found";
+                case ModelLoadErrorType::parse_error:
+                    return "parse_error";
+                case ModelLoadErrorType::unsupported_primitive:
+                    return "unsupported_primitive";
+                case ModelLoadErrorType::missing_position:
+                    return "missing_position";
+                case ModelLoadErrorType::invalid_accessor:
+                    return "invalid_accessor";
+                case ModelLoadErrorType::geometry_upload_failed:
+                    return "geometry_upload_failed";
+                case ModelLoadErrorType::texture_upload_failed:
+                    return "texture_upload_failed";
+                case ModelLoadErrorType::tangent_generation_failed:
+                    return "tangent_generation_failed";
+                case ModelLoadErrorType::unsupported_image_source:
+                    return "unsupported_image_source";
+                case ModelLoadErrorType::material_creation_failed:
+                    return "material_creation_failed";
+                case ModelLoadErrorType::invalid_material_index:
+                    return "invalid_material_index";
+                case ModelLoadErrorType::invalid_argument:
+                    return "invalid_argument";
+                case ModelLoadErrorType::image_decode_failed:
+                    return "image_decode_failed";
+            }
+
+            return "unknown_model_load_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
+};

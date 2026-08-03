@@ -362,52 +362,52 @@ namespace {
         };
     }
 
-    auto make_resource_table_error(const GpuResourceTableError &err) -> RendererError {
+    auto make_resource_table_error(GpuResourceTableError error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::gpu_resource_table_error,
-                .gpu_resource_table_error = err,
+                .cause = ErrorCause{Boxed<GpuResourceTableError>{std::move(error)}},
         };
     }
 
-    auto make_pipeline_graph_error(PipelineGraphError const &error) -> RendererError {
+    auto make_pipeline_graph_error(PipelineGraphError error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::pipeline_graph_error,
-                .pipeline_graph_error = error,
+                .cause = ErrorCause{Boxed<PipelineGraphError>{std::move(error)}},
         };
     }
 
-    auto make_device_error(DeviceError const &error) -> RendererError {
+    auto make_device_error(DeviceError error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::device_error,
-                .device_error = error,
+                .cause = ErrorCause{Boxed<DeviceError>{std::move(error)}},
         };
     }
 
-    auto make_geometry_error(GeometryArenaError const &error) -> RendererError {
+    auto make_geometry_error(GeometryArenaError error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::geometry_error,
-                .geometry_error = error,
+                .cause = ErrorCause{Boxed<GeometryArenaError>{std::move(error)}},
         };
     }
 
-    auto make_compiler_error(renderer::ShaderCompileError const &error) -> RendererError {
+    auto make_compiler_error(renderer::ShaderCompileError error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::compiler_error,
-                .compiler_error = error,
+                .cause = ErrorCause{Boxed<renderer::ShaderCompileError>{std::move(error)}},
         };
     }
 
-    auto make_material_error(MaterialStorageError const &error) -> RendererError {
+    auto make_material_error(MaterialStorageError error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::material_error,
-                .material_error = error,
+                .cause = ErrorCause{Boxed<MaterialStorageError>{std::move(error)}},
         };
     }
 
-    auto make_model_load_error(ModelLoadError const &error) -> RendererError {
+    auto make_model_load_error(ModelLoadError error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::model_load_error,
-                .model_load_error = error,
+                .cause = ErrorCause{Boxed<ModelLoadError>{std::move(error)}},
         };
     }
 
@@ -852,7 +852,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
             return std::unexpected(RendererError{
                     .type = RendererErrorType::forward_target_error,
-                    .forward_target_error = forward_target.error(),
+                    .cause = ErrorCause{Boxed<ForwardTargetError>{forward_target.error()}},
             });
         }
 
@@ -1039,21 +1039,7 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
         return std::unexpected(make_model_load_error(cpu_data.error()));
     }
 
-    std::expected<Model, ModelLoadError> imported_model{
-            std::unexpected(ModelLoadError{.type = ModelLoadErrorType::invalid_argument})};
-
-    context_.one_time_submit([&](VkCommandBuffer command_buffer) {
-        imported_model =
-                record_model_gpu_upload(*cpu_data, command_buffer, geometry_arena_, image_storage_, material_storage_);
-    });
-
-    if (!imported_model) {
-        return std::unexpected(make_model_load_error(imported_model.error()));
-    }
-
-    image_storage_.release_completed_uploads();
-
-    auto model_result = create_model(*imported_model, default_material_handle_);
+    auto model_result = create_model_from_cpu_data(*cpu_data);
 
     if (!model_result) {
         return std::unexpected{model_result.error()};
@@ -1062,6 +1048,28 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
     model_cache_[file_hash] = *model_result;
 
     return model_result;
+}
+
+auto Renderer::create_model_from_cpu_data(ModelCpuData const &cpu_data) -> std::expected<ModelHandle, RendererError> {
+    if (!initialized_) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    std::expected<Model, ModelLoadError> imported_model{
+            std::unexpected(ModelLoadError{.type = ModelLoadErrorType::invalid_argument})};
+
+    context_.one_time_submit([&](VkCommandBuffer command_buffer) {
+        imported_model =
+                record_model_gpu_upload(cpu_data, command_buffer, geometry_arena_, image_storage_, material_storage_);
+    });
+
+    if (!imported_model) {
+        return std::unexpected(make_model_load_error(imported_model.error()));
+    }
+
+    image_storage_.release_completed_uploads();
+
+    return create_model(*imported_model, default_material_handle_);
 }
 
 
@@ -1957,7 +1965,7 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
 
             return std::unexpected(RendererError{
                     .type = RendererErrorType::forward_target_error,
-                    .forward_target_error = replacement.error(),
+                    .cause = ErrorCause{Boxed<ForwardTargetError>{replacement.error()}},
             });
         }
 
@@ -1985,16 +1993,17 @@ void Renderer::queue_render_thread_event(std::function<void()> &&task) {
 
 auto Renderer::wait_idle() -> std::expected<void, RendererError> {
     auto result = vkDeviceWaitIdle(context_.device);
-    return result == VK_SUCCESS ? std::expected<void, RendererError>{}
-                                : std::unexpected<RendererError>(RendererError{
-                                          .type = RendererErrorType::device_error,
-                                          .device_error =
-                                                  DeviceError{
-                                                          .type = DeviceError::Type::Unknown,
-                                                          .message = FlyString{"Could not wait"},
-                                                          .vk_result = result,
-                                                  },
-                                  });
+    return result == VK_SUCCESS
+                 ? std::expected<void, RendererError>{}
+                 : std::unexpected<RendererError>(RendererError{
+                           .type = RendererErrorType::device_error,
+                           .cause =
+                                   ErrorCause{Boxed<DeviceError>{DeviceError{
+                                           .type = DeviceError::Type::Unknown,
+                                           .message = FlyString{"Could not wait"},
+                                           .vk_result = result,
+                                   }}},
+                   });
 }
 
 auto Renderer::mesh_slot(MeshHandle handle) noexcept -> MeshSlot * {

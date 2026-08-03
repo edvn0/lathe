@@ -6,12 +6,16 @@
 
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <string_view>
 #include <type_traits>
 #include <vector>
 
+#include <optional>
+
 #include "buffer.hxx"
 #include "device_error.hxx"
+#include "error_context.hxx"
 #include "forward.hxx"
 #include "image_storage.hxx"
 #include "sampler_storage.hxx"
@@ -97,7 +101,29 @@ enum class MaterialStorageErrorType : std::uint8_t {
 struct MaterialStorageError {
     MaterialStorageErrorType type = MaterialStorageErrorType::invalid_argument;
 
-    DeviceError device_error{};
+    std::optional<ErrorCause> cause;
+};
+
+template<>
+struct std::formatter<MaterialStorageErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(MaterialStorageErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case MaterialStorageErrorType::invalid_argument:
+                    return "invalid_argument";
+                case MaterialStorageErrorType::invalid_handle:
+                    return "invalid_handle";
+                case MaterialStorageErrorType::capacity_exceeded:
+                    return "capacity_exceeded";
+                case MaterialStorageErrorType::device_error:
+                    return "device_error";
+            }
+
+            return "unknown_material_storage_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };
 
 struct MaterialStorageCreateInfo {

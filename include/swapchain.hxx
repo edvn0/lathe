@@ -4,7 +4,12 @@
 
 #include <cstdint>
 #include <expected>
+#include <format>
+#include <optional>
+#include <string_view>
 #include <vector>
+
+#include "error_context.hxx"
 
 struct SwapchainCreateInfo {
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
@@ -28,10 +33,61 @@ enum class SwapchainFrameResult {
     fatal_error,
 };
 
-enum class SwapchainBeginFrameError {
-    recreated,
-    device_lost,
-    fatal_error,
+struct SwapchainBeginFrameError {
+    enum class Kind : std::uint8_t {
+        recreated,
+        device_lost,
+        fatal_error,
+    };
+
+    Kind kind = Kind::fatal_error;
+
+    // Populated for Vulkan-call failures (report_vk_error in swapchain.cxx);
+    // left empty for control-flow cases like `recreated` that aren't really
+    // failures.
+    std::optional<ErrorContext> context;
+};
+
+template<>
+struct std::formatter<SwapchainFrameResult> : std::formatter<std::string_view> {
+    constexpr auto format(SwapchainFrameResult error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case SwapchainFrameResult::success:
+                    return "success";
+                case SwapchainFrameResult::recreated:
+                    return "recreated";
+                case SwapchainFrameResult::device_lost:
+                    return "device_lost";
+                case SwapchainFrameResult::fatal_error:
+                    return "fatal_error";
+            }
+
+            return "unknown_swapchain_frame_result";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
+};
+
+template<>
+struct std::formatter<SwapchainBeginFrameError::Kind> : std::formatter<std::string_view> {
+    constexpr auto format(SwapchainBeginFrameError::Kind error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case SwapchainBeginFrameError::Kind::recreated:
+                    return "recreated";
+                case SwapchainBeginFrameError::Kind::device_lost:
+                    return "device_lost";
+                case SwapchainBeginFrameError::Kind::fatal_error:
+                    return "fatal_error";
+            }
+
+            return "unknown_swapchain_begin_frame_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };
 
 struct SwapchainFrame {

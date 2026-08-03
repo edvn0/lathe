@@ -40,17 +40,17 @@ namespace {
         };
     }
 
-    auto make_image_error(ImageError const &error) noexcept -> ImageStorageError {
+    auto make_image_error(ImageError error) noexcept -> ImageStorageError {
         return ImageStorageError{
                 .type = ImageStorageErrorType::image_error,
-                .image_error = error,
+                .cause = ErrorCause{Boxed<ImageError>{std::move(error)}},
         };
     }
 
-    auto make_device_error(DeviceError const &error) noexcept -> ImageStorageError {
+    auto make_device_error(DeviceError error) noexcept -> ImageStorageError {
         return ImageStorageError{
                 .type = ImageStorageErrorType::device_error,
-                .device_error = error,
+                .cause = ErrorCause{Boxed<DeviceError>{std::move(error)}},
         };
     }
 } // namespace

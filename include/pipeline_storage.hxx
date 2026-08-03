@@ -2,10 +2,13 @@
 
 #include <cstdint>
 #include <expected>
+#include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "error_context.hxx"
 #include "forward.hxx"
 #include "pipeline.hxx"
 
@@ -31,7 +34,29 @@ enum class PipelineStorageErrorType : std::uint8_t {
 struct PipelineStorageError {
     PipelineStorageErrorType type = PipelineStorageErrorType::invalid_argument;
 
-    PipelineError pipeline_error{};
+    std::optional<ErrorCause> cause;
+};
+
+template<>
+struct std::formatter<PipelineStorageErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(PipelineStorageErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case PipelineStorageErrorType::invalid_argument:
+                    return "invalid_argument";
+                case PipelineStorageErrorType::invalid_handle:
+                    return "invalid_handle";
+                case PipelineStorageErrorType::capacity_exceeded:
+                    return "capacity_exceeded";
+                case PipelineStorageErrorType::pipeline_error:
+                    return "pipeline_error";
+            }
+
+            return "unknown_pipeline_storage_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };
 
 struct PipelineStorageCreateInfo {

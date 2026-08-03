@@ -4,6 +4,7 @@
 
 #include "buffer.hxx"
 #include "device_error.hxx"
+#include "error_context.hxx"
 #include "forward.hxx"
 
 #include <bit>
@@ -11,6 +12,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <format>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <type_traits>
@@ -26,7 +29,31 @@ enum class GeometryArenaErrorType : std::uint8_t {
 struct GeometryArenaError {
     GeometryArenaErrorType type = GeometryArenaErrorType::invalid_argument;
 
-    DeviceError device_error{};
+    std::optional<ErrorCause> cause;
+};
+
+template<>
+struct std::formatter<GeometryArenaErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(GeometryArenaErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case GeometryArenaErrorType::invalid_argument:
+                    return "invalid_argument";
+                case GeometryArenaErrorType::unsupported_index_type:
+                    return "unsupported_index_type";
+                case GeometryArenaErrorType::out_of_memory:
+                    return "out_of_memory";
+                case GeometryArenaErrorType::size_overflow:
+                    return "size_overflow";
+                case GeometryArenaErrorType::device_error:
+                    return "device_error";
+            }
+
+            return "unknown_geometry_arena_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };
 
 struct GeometrySlice {

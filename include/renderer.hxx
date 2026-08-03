@@ -9,12 +9,14 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <type_traits>
 #include <vector>
 
 #include "buffer.hxx"
 #include "config.hxx"
+#include "error_context.hxx"
 #include "forward.hxx"
 #include "forward_target.hxx"
 #include "geometry_arena.hxx"
@@ -127,18 +129,11 @@ struct UBO {
 struct RendererError {
     RendererErrorType type = RendererErrorType::invalid_argument;
 
-    DeviceError device_error{};
-    GeometryArenaError geometry_error{};
-    MaterialStorageError material_error{};
-    ModelLoadError model_load_error{};
-    ImageStorageError image_error{};
-    ForwardTargetError forward_target_error{};
-    PipelineError pipeline_error{};
-    renderer::ShaderCompileError compiler_error{};
-    PipelineStorageError pipeline_storage_error{};
-    GpuResourceTableError gpu_resource_table_error{};
-    PipelineGraphError pipeline_graph_error{};
+    std::optional<ErrorCause> cause;
 };
+
+static_assert(std::is_copy_constructible_v<RendererError>,
+             "RendererError must stay copyable -- std::expected<T, RendererError> copies it throughout this codebase");
 
 struct RendererCreateInfo {
     VkExtent2D extent{};
@@ -181,6 +176,13 @@ struct Renderer {
 
     [[nodiscard]]
     auto load_model(std::filesystem::path const &path) -> std::expected<ModelHandle, RendererError>;
+
+    // Uploads already-CPU-side geometry (e.g. procedurally generated engine
+    // primitives — see primitive_meshes.hxx / engine_models.hxx) through the
+    // same GPU upload path as load_model, without touching disk or a glTF
+    // parser. Skips the path-based model cache load_model uses.
+    [[nodiscard]]
+    auto create_model_from_cpu_data(ModelCpuData const &cpu_data) -> std::expected<ModelHandle, RendererError>;
 
     [[nodiscard]]
     auto create_model(Model const &model, MaterialHandle fallback_material)
@@ -282,7 +284,7 @@ struct Renderer {
         if (!registered) {
             return std::unexpected(RendererError{
                     .type = RendererErrorType::pipeline_graph_error,
-                    .pipeline_graph_error = registered.error(),
+                    .cause = ErrorCause{Boxed<PipelineGraphError>{registered.error()}},
             });
         }
 

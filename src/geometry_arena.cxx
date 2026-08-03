@@ -33,7 +33,7 @@ namespace {
     auto from_device_error(DeviceError error) -> GeometryArenaError {
         return GeometryArenaError{
                 .type = GeometryArenaErrorType::device_error,
-                .device_error = std::move(error),
+                .cause = ErrorCause{Boxed<DeviceError>{std::move(error)}},
         };
     }
 

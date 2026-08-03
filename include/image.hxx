@@ -6,11 +6,15 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <string_view>
 
 #include <vk_mem_alloc.h>
 
+#include <optional>
+
 #include "device_error.hxx"
+#include "error_context.hxx"
 #include "forward.hxx"
 
 enum class ImageDescriptorView : std::uint8_t {
@@ -43,8 +47,7 @@ enum class ImageErrorType : std::uint8_t {
 struct ImageError {
     ImageErrorType type = ImageErrorType::invalid_argument;
 
-    DeviceError buffer_error{};
-    VkResult result = VK_SUCCESS;
+    std::optional<ErrorCause> cause;
 };
 
 struct ImageCreateInfo {
@@ -213,4 +216,24 @@ private:
 
     std::uint32_t mip_levels_ = 0;
     std::uint32_t array_layers_ = 0;
+};
+
+template<>
+struct std::formatter<ImageErrorType> : std::formatter<std::string_view> {
+    constexpr auto format(ImageErrorType error, std::format_context &context) const {
+        auto const name = [&]() constexpr -> std::string_view {
+            switch (error) {
+                case ImageErrorType::invalid_argument:
+                    return "invalid_argument";
+                case ImageErrorType::image_creation_failed:
+                    return "image_creation_failed";
+                case ImageErrorType::view_creation_failed:
+                    return "view_creation_failed";
+            }
+
+            return "unknown_image_error";
+        }();
+
+        return std::formatter<std::string_view>::format(name, context);
+    }
 };

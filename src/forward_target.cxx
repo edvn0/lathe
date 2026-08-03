@@ -13,10 +13,10 @@ namespace {
         };
     }
 
-    auto make_image_error(ImageStorageError const &error) noexcept -> ForwardTargetError {
+    auto make_image_error(ImageStorageError error) noexcept -> ForwardTargetError {
         return ForwardTargetError{
                 .type = ForwardTargetErrorType::image_error,
-                .image_error = error,
+                .cause = ErrorCause{Boxed<ImageStorageError>{std::move(error)}},
         };
     }
 

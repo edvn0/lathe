@@ -1,7 +1,10 @@
 #include "pipeline.hxx"
 
 #include <array>
+#include <format>
+#include <source_location>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -39,10 +42,16 @@ namespace {
             VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
     };
 
-    auto make_error(PipelineErrorType type, VkResult result = VK_SUCCESS) noexcept -> PipelineError {
+    auto make_error(PipelineErrorType type, std::string_view message = {}, VkResult result = VK_SUCCESS,
+                    std::source_location location = std::source_location::current()) noexcept -> PipelineError {
         return PipelineError{
                 .type = type,
-                .result = result,
+                .context =
+                        ErrorContext{
+                                .message = FlyString{message},
+                                .vk_result = result != VK_SUCCESS ? std::optional{result} : std::nullopt,
+                                .location = location,
+                        },
         };
     }
 } // namespace
@@ -126,7 +135,9 @@ constexpr auto default_bindings() -> VkPipelineVertexInputStateCreateInfo {
 auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInfo const &create_info,
                                VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError> {
     if (context.device == VK_NULL_HANDLE || create_info.shaders.empty()) {
-        return std::unexpected(make_error(PipelineErrorType::invalid_argument));
+        return std::unexpected(make_error(PipelineErrorType::invalid_argument,
+                                          context.device == VK_NULL_HANDLE ? "device is VK_NULL_HANDLE"
+                                                                            : "no shader stages provided"));
     }
 
     std::vector<VkShaderModuleCreateInfo> shader_module_infos(create_info.shaders.size());
@@ -138,7 +149,10 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
 
         if (shader.spirv.empty() || shader.entry_point.empty() ||
             shader.spirv.size_bytes() % sizeof(std::uint32_t) != 0) {
-            return std::unexpected(make_error(PipelineErrorType::invalid_argument));
+            return std::unexpected(make_error(
+                    PipelineErrorType::invalid_argument,
+                    std::format("shader stage {} has invalid SPIR-V or entry point '{}'", index,
+                               shader.entry_point.view())));
         }
 
         shader_module_infos[index] = VkShaderModuleCreateInfo{
@@ -185,7 +199,9 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
     if (vk_result != VK_SUCCESS) {
         result.context_ = nullptr;
 
-        return std::unexpected(make_error(PipelineErrorType::layout_creation_failed, vk_result));
+        return std::unexpected(make_error(
+                PipelineErrorType::layout_creation_failed,
+                std::format("vkCreatePipelineLayout failed for pipeline '{}'", create_info.debug_name), vk_result));
     }
 
     VkPipelineVertexInputStateCreateInfo const empty_vertex_input{
@@ -359,7 +375,9 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
 
         result.context_ = nullptr;
 
-        return std::unexpected(make_error(PipelineErrorType::pipeline_creation_failed, vk_result));
+        return std::unexpected(make_error(
+                PipelineErrorType::pipeline_creation_failed,
+                std::format("vkCreateGraphicsPipelines failed for pipeline '{}'", create_info.debug_name), vk_result));
     }
 
     result.bind_point_ = VK_PIPELINE_BIND_POINT_GRAPHICS;
