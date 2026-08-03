@@ -187,6 +187,12 @@ cpmaddpackage(
 )
 
 cpmaddpackage(
+    NAME EnTT
+    GITHUB_REPOSITORY skypjack/entt
+    GIT_TAG v3.15.0
+)
+
+cpmaddpackage(
     NAME meshoptimizer
     GITHUB_REPOSITORY zeux/meshoptimizer
     GIT_TAG v0.24
@@ -472,6 +478,7 @@ mark_target_includes_system(spdlog::spdlog)
 mark_target_includes_system(GPUOpen::VulkanMemoryAllocator)
 mark_target_includes_system(fastgltf::fastgltf)
 mark_target_includes_system(glm::glm)
+mark_target_includes_system(EnTT::EnTT)
 
 # slang_binary_headers already uses SYSTEM above.
 
@@ -534,6 +541,7 @@ target_link_libraries(
         GPUOpen::VulkanMemoryAllocator
         fastgltf::fastgltf
         glm::glm
+        EnTT::EnTT
         slang::headers
         mikktspace::mikktspace
         meshoptimizer

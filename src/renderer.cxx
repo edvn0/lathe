@@ -1613,6 +1613,11 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
+    // Swapchain::begin_frame() already waited on this slot's in_flight fence
+    // before handing us this frame_index again, so any capture recorded into
+    // it 3 frames ago is guaranteed GPU-complete and safe to read back now.
+    screenshot_.try_resolve(frame_index);
+
     auto &frame_query = timestamp_queries_[frame_index];
     vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, query_count);
 
@@ -1908,7 +1913,12 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
     }
 #pragma endregion
 
-    transition_swapchain_to_present(command_buffer, swapchain_image.image);
+    bool const screenshot_recorded = screenshot_.record(context_, command_buffer, swapchain_image.image,
+                                                         swapchain_image.format, swapchain_image.extent, frame_index);
+
+    if (!screenshot_recorded) {
+        transition_swapchain_to_present(command_buffer, swapchain_image.image);
+    }
 
     // Full frame end
     vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, frame_query.query_pool,

@@ -112,7 +112,14 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
 
     auto &frame = frames_[current_frame_];
 
-    auto result = vkWaitForFences(device_, 1, &frame.in_flight, VK_TRUE, std::numeric_limits<std::uint64_t>::max());
+    // Bounded rather than INT64_MAX: an indefinite wait here can never be
+    // interrupted by shutdown (request_stop()/context.running don't reach
+    // into a blocking Vulkan call), so a stuck fence -- e.g. a driver stall
+    // racing window close -- would hang the process forever instead of
+    // surfacing as the fatal_error this already knows how to handle.
+    constexpr std::uint64_t frame_wait_timeout_ns = 2'000'000'000ULL;
+
+    auto result = vkWaitForFences(device_, 1, &frame.in_flight, VK_TRUE, frame_wait_timeout_ns);
 
     if (result == VK_ERROR_DEVICE_LOST) {
         return std::unexpected(make_error(Kind::device_lost, "vkWaitForFences"));
@@ -124,8 +131,8 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
 
     std::uint32_t image_index = 0;
 
-    result = vkAcquireNextImageKHR(device_, swapchain_, std::numeric_limits<std::uint64_t>::max(),
-                                   frame.image_available, VK_NULL_HANDLE, &image_index);
+    result = vkAcquireNextImageKHR(device_, swapchain_, frame_wait_timeout_ns, frame.image_available, VK_NULL_HANDLE,
+                                   &image_index);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         if (!recreate()) {
@@ -379,7 +386,8 @@ auto Swapchain::create_swapchain(VkSwapchainKHR old_swapchain) noexcept -> bool 
         return false;
     }
 
-    constexpr VkImageUsageFlags required_usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    constexpr VkImageUsageFlags required_usage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
     if ((capabilities.supportedUsageFlags & required_usage) != required_usage) {
         error("Surface does not support required swapchain "

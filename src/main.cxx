@@ -23,6 +23,8 @@
 #include <utility>
 #include <vector>
 
+#include <entt/entt.hpp>
+
 #include "allocator.hxx"
 #include "config.hxx"
 #include "context.hxx"
@@ -30,12 +32,15 @@
 #include "imgui_renderer.hxx"
 #include "implot.h"
 #include "logger.hxx"
+#include "physics.hxx"
 #include "renderdoc.hxx"
+#include "scene.hxx"
 #include "engine_models.hxx"
 #include "error_describe.hxx"
 #include "renderer.hxx"
 #include "shader_hot_reload_watcher.hxx"
 #include "swapchain.hxx"
+#include "transform.hxx"
 
 namespace {
 
@@ -104,26 +109,6 @@ namespace {
     constexpr std::array<const char *, 0> validation_layers{};
 #endif
 
-    struct SceneTransform {
-        glm::vec3 position{0.0F};
-        glm::quat rotation{};
-        glm::vec3 scale{1.0F};
-
-        [[nodiscard]] auto matrix() const {
-            return glm::translate(glm::mat4{1.0F}, position) * glm::mat4_cast(rotation) *
-                   glm::scale(glm::mat4{1.0F}, scale);
-        }
-    };
-
-    struct SceneObject {
-        ModelHandle model{};
-        SceneTransform transform{};
-    };
-
-    struct RenderScene {
-        std::vector<SceneObject> objects;
-    };
-
     struct KeyPressedEvent {
         std::int32_t key{};
         std::int32_t modifiers{};
@@ -174,7 +159,11 @@ namespace {
             context(ctx), renderer(std::make_unique<Renderer>(context)) {
             timing_buffers.fill(ScrollingBuffer{600});
         }
-        ~Application() { shader_watcher_.stop(); }
+        ~Application() {
+            info("~Application: stopping shader watcher");
+            shader_watcher_.stop();
+            info("~Application: shader watcher stopped");
+        }
 
         void on_ui() const {
             widget("Frame timings", [&] {
@@ -224,8 +213,34 @@ namespace {
         VulkanContext &context;
         std::unique_ptr<Renderer> renderer;
         std::unique_ptr<gui::ImGuiRenderer> imgui_renderer;
-        RenderScene scene;
         ShaderHotReloadWatcher shader_watcher_;
+
+        // The scene being edited, alive for the whole app lifetime.
+        std::unique_ptr<Scene> editor_scene = std::make_unique<Scene>();
+        // Clone of editor_scene spun up on play() and torn down on stop(),
+        // so simulation never mutates the editor's own registry.
+        std::unique_ptr<Scene> runtime_scene;
+        // What render/physics actually iterate this frame.
+        Scene *active_scene = editor_scene.get();
+        bool is_playing = false;
+
+        auto play() -> void {
+            runtime_scene = std::make_unique<Scene>();
+            runtime_scene->physics_settings = editor_scene->physics_settings;
+            clone_registry<Transform, ModelHandle, RigidBody, Attractor>(editor_scene->registry,
+                                                                          runtime_scene->registry);
+
+            active_scene = runtime_scene.get();
+            is_playing = true;
+            active_scene->on_scene_start();
+        }
+
+        auto stop() -> void {
+            active_scene->on_scene_stop();
+            is_playing = false;
+            active_scene = editor_scene.get();
+            runtime_scene.reset();
+        }
 
         // Procedural fallback models (cube, sphere, ...). Created once on
         // the render thread before the first recreate_entities() call.
@@ -246,6 +261,28 @@ namespace {
         double last_mouse_x = 0.0;
         double last_mouse_y = 0.0;
         bool has_last_mouse_position = false;
+
+        // Fixed-timestep physics update. The accumulator absorbs the
+        // variable frame delta_time so gravity integration stays stable
+        // regardless of render framerate; steps are capped per call so a
+        // stall (e.g. a breakpoint or minimized window) can't turn into a
+        // catch-up spiral once the window comes back.
+        auto update_physics(float delta_time) -> void {
+            if (!is_playing) {
+                return;
+            }
+
+            constexpr float fixed_dt = 1.0F / 120.0F;
+            constexpr int max_steps_per_frame = 8;
+
+            active_scene->physics_accumulator += std::min(delta_time, 0.25F);
+
+            for (int steps = 0; active_scene->physics_accumulator >= fixed_dt && steps < max_steps_per_frame;
+                 ++steps) {
+                simulate_physics(active_scene->registry, active_scene->physics_settings, fixed_dt);
+                active_scene->physics_accumulator -= fixed_dt;
+            }
+        }
 
         auto on_startup() -> void {
 
@@ -281,6 +318,9 @@ namespace {
         auto on_event(KeyPressedEvent ev) -> bool {
             if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL) {
                 renderer->queue_render_thread_event([this] { this->recreate_entities(); });
+            }
+            if (ev.key == GLFW_KEY_F12) {
+                renderer->request_screenshot();
             }
             camera.on_key_pressed(ev.key);
             return true;
@@ -327,7 +367,8 @@ namespace {
                 return;
             }
 
-            scene.objects.clear();
+            editor_scene->registry.clear();
+            editor_scene->physics_accumulator = 0.0F;
 
 
             auto const load_or_fallback = [this](std::filesystem::path const &path) -> ModelHandle {
@@ -352,35 +393,73 @@ namespace {
             std::uniform_real_distribution<float> urd(-20, 20);
 
             const auto count = 10;
-            const auto other_count = 10;
             for (auto i = 0; i < count; i++) {
                 for (auto j = 0; j < count; j++) {
                     for (auto k = 0; k < count; k++) {
-                        scene.objects.emplace_back(helmet_model, SceneTransform{
-                                                                          .position =
-                                                                                  glm::vec3{
-                                                                                          urd(eng),
-                                                                                          urd(eng),
-                                                                                          urd(eng),
-                                                                                  },
-                                                                  });
+                        auto const entity = editor_scene->registry.create();
+                        editor_scene->registry.emplace<Transform>(entity, Transform{
+                                                                     .position =
+                                                                             glm::vec3{
+                                                                                     urd(eng),
+                                                                                     urd(eng),
+                                                                                     urd(eng),
+                                                                             },
+                                                             });
+                        editor_scene->registry.emplace<ModelHandle>(entity, helmet_model);
                     }
                 }
             }
 
-            for (auto i = 0; i < other_count; i++) {
-                for (auto j = 0; j < other_count; j++) {
-                    for (auto k = 0; k < other_count; k++) {
-                        scene.objects.emplace_back(cube_model, SceneTransform{
-                                                                        .position =
-                                                                                glm::vec3{
-                                                                                        urd(eng),
-                                                                                        urd(eng),
-                                                                                        urd(eng),
-                                                                                },
-                                                                });
+            // A grid of physics-driven cubes dropped from above the ground
+            // plane -- gravity, then AABB collision against each other and
+            // the floor, is stepped in update_physics() every frame. Spacing
+            // is deliberately tighter than the cube diameter so neighbours
+            // start slightly overlapping and separate into each other from
+            // frame one, instead of falling straight down in independent
+            // columns that never actually touch.
+            constexpr auto physics_grid = 6;
+            constexpr auto cube_half_extent = 0.5F;
+            constexpr auto spacing = 0.9F;
+
+            for (auto i = 0; i < physics_grid; i++) {
+                for (auto j = 0; j < physics_grid; j++) {
+                    for (auto k = 0; k < physics_grid; k++) {
+                        auto const entity = editor_scene->registry.create();
+                        auto const position = glm::vec3{
+                                static_cast<float>(i - physics_grid / 2) * spacing,
+                                5.0F + static_cast<float>(j) * spacing,
+                                static_cast<float>(k - physics_grid / 2) * spacing,
+                        };
+                        editor_scene->registry.emplace<Transform>(entity, Transform{.position = position});
+                        editor_scene->registry.emplace<ModelHandle>(entity, cube_model);
+                        editor_scene->registry.emplace<RigidBody>(entity, RigidBody{.half_extents = glm::vec3{cube_half_extent}});
                     }
                 }
+            }
+
+            // A couple of dedicated attractor cubes -- bigger, and pulling
+            // every other dynamic body toward them each step (see
+            // Attractor / apply_attraction() in physics.cxx). They're
+            // dynamic themselves, so they fall and collide too rather than
+            // acting as fixed anchors.
+            constexpr auto attractor_half_extent = 1.0F;
+            constexpr auto attractor_strength = 60.0F;
+
+            std::array const attractor_positions{
+                    glm::vec3{-6.0F, 8.0F, 0.0F},
+                    glm::vec3{6.0F, 8.0F, 0.0F},
+            };
+
+            for (auto const &position: attractor_positions) {
+                auto const entity = editor_scene->registry.create();
+                editor_scene->registry.emplace<Transform>(entity, Transform{
+                                                             .position = position,
+                                                             .scale = glm::vec3{attractor_half_extent * 2.0F},
+                                                     });
+                editor_scene->registry.emplace<ModelHandle>(entity, cube_model);
+                editor_scene->registry.emplace<RigidBody>(entity,
+                                             RigidBody{.half_extents = glm::vec3{attractor_half_extent}});
+                editor_scene->registry.emplace<Attractor>(entity, Attractor{.strength = attractor_strength});
             }
         }
     };
@@ -1103,12 +1182,13 @@ namespace {
         // A single bad submission (e.g. a stale handle after a resize/recreate
         // race) shouldn't take the whole frame down -- log it and keep going
         // so the rest of the scene still renders.
-        for (auto const &object: application.scene.objects) {
-            auto result = application.renderer->submit_model(object.model, object.transform.matrix());
+        auto view = application.active_scene->registry.view<Transform const, ModelHandle const>();
+
+        for (auto [entity, transform, model]: view.each()) {
+            auto result = application.renderer->submit_model(model, transform.matrix());
 
             if (!result) {
-                error("Could not submit scene object (model index {}): {}", object.model.index,
-                      describe(result.error()));
+                error("Could not submit scene object (model index {}): {}", model.index, describe(result.error()));
             }
         }
 
@@ -1257,12 +1337,12 @@ namespace {
         });
     }
 
-    auto render_loop(std::stop_token stop_token, VulkanContext &context, Application &application) noexcept -> void {
+    auto render_loop(VulkanContext &context, Application &application) noexcept -> void {
 
         auto renderer_extent = context.swapchain.extent();
         auto last_frame_time = std::chrono::steady_clock::now();
 
-        while (!stop_token.stop_requested() && context.running.load(std::memory_order_acquire)) {
+        while (context.running.load(std::memory_order_acquire)) {
             application.renderer->drain_event_queue();
 
             auto const width = context.framebuffer_width.load(std::memory_order_acquire);
@@ -1271,8 +1351,8 @@ namespace {
             if (width <= 0 || height <= 0) {
                 std::unique_lock lock{context.render_wake_mutex};
 
-                context.render_wake_condition.wait(lock, [&context, &stop_token] {
-                    return stop_token.stop_requested() || !context.running.load(std::memory_order_acquire) ||
+                context.render_wake_condition.wait(lock, [&context] {
+                    return !context.running.load(std::memory_order_acquire) ||
                            (context.framebuffer_width.load(std::memory_order_acquire) > 0 &&
                             context.framebuffer_height.load(std::memory_order_acquire) > 0);
                 });
@@ -1286,6 +1366,7 @@ namespace {
             last_frame_time = now;
 
             application.camera.update(std::min(delta_time, 0.1F));
+            application.update_physics(delta_time);
 
             request_resize_if_needed(context, width, height);
 
@@ -1313,6 +1394,8 @@ namespace {
                 renderer_extent = swapchain_extent;
             }
         }
+
+        info("render_loop: exiting loop");
     }
 
     struct WindowData {
@@ -1475,24 +1558,37 @@ namespace {
 
     auto destroy_application(VulkanContext &context, Application &application) noexcept -> void {
         if (context.device != VK_NULL_HANDLE) {
+            info("destroy_application: vkDeviceWaitIdle");
             auto const result = vkDeviceWaitIdle(context.device);
+            info("destroy_application: vkDeviceWaitIdle returned");
 
             if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
                 report_vk_error("vkDeviceWaitIdle(application destroy)", result);
             }
         }
 
+        info("destroy_application: resetting imgui_renderer");
         application.imgui_renderer.reset();
+        info("destroy_application: destroying renderer");
         application.renderer->destroy();
+        info("destroy_application: renderer destroyed");
 
+        info("destroy_application: destroy_context");
         destroy_context(context);
+        info("destroy_application: destroy_context done");
     }
 } // namespace
 
 static std::atomic<bool> g_running{true};
+// On Windows, signal(SIGINT, ...) runs the handler on a CRT-spawned thread,
+// not the main thread -- so this races the main/render threads for real.
+// Keep it to signal-safe-ish operations only (atomic store + the one GLFW
+// call docs promise is safe off-thread): calling info() here took spdlog's
+// console-sink mutex from that ad-hoc thread, and if Windows tore the thread
+// down mid-call, the mutex stayed locked forever, wedging every later log
+// call on the main/render threads. That's the ~50% Ctrl+C hang.
 static auto ctrl_c_handler(int) -> void {
     g_running.store(false, std::memory_order_relaxed);
-    info("Sigint received, exiting gracefully.");
     glfwPostEmptyEvent();
 }
 
@@ -1525,8 +1621,9 @@ auto main() -> int {
     application.on_startup();
     context.render_wake_condition.notify_one();
 
-    std::jthread render_thread{[&context, &application](std::stop_token stop_token) {
-        render_loop(std::move(stop_token), context, application);
+    std::thread render_thread{[&context, &application] {
+        render_loop(context, application);
+        info("render thread lambda: returning");
     }};
 
 
@@ -1537,14 +1634,18 @@ auto main() -> int {
         glfwWaitEvents();
     }
 
+    info("Shutdown: requesting render thread stop");
     context.running.store(false, std::memory_order_release);
-    render_thread.request_stop();
     context.render_wake_condition.notify_one();
+    info("Shutdown: joining render thread");
     render_thread.join();
+    info("Shutdown: render thread joined");
 
     auto const render_failed = glfwWindowShouldClose(context.window) != GLFW_TRUE;
 
+    info("Shutdown: destroying application");
     destroy_application(context, application);
+    info("Shutdown: application destroyed");
 
     if (render_failed) {
         return EXIT_FAILURE;

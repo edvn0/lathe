@@ -27,6 +27,7 @@
 #include "pipeline_graph_repository.hxx"
 #include "pipeline_storage.hxx"
 #include "sampler_storage.hxx"
+#include "screenshot.hxx"
 #include "shader_change_queue.hxx"
 #include "slang_compiler.hxx"
 
@@ -293,6 +294,10 @@ struct Renderer {
 
     [[nodiscard]] auto last_frame_timings() const noexcept -> StageTimings const & { return last_frame_timings_; }
 
+    // Safe to call from any thread. Captures the swapchain image (scene +
+    // ImGui overlay) on the next recorded frame and writes it to
+    // screenshots/ as a PNG; see ScreenshotCapture for the sync model.
+    auto request_screenshot() noexcept -> void { screenshot_.request(); }
 
     auto wait_idle() -> std::expected<void, RendererError>;
 
@@ -438,6 +443,8 @@ private:
     };
     std::vector<FrameTimestamps> timestamp_queries_;
     float timestamp_period_{1.0F};
+
+    ScreenshotCapture screenshot_;
 
     bool initialized_ = false;
     renderer::SlangCompiler compiler;
