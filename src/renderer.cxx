@@ -25,6 +25,16 @@
 #include "slang_compiler.hxx"
 
 namespace {
+    // Runs `action` when it goes out of scope. Used to roll back a
+    // partially-constructed Renderer via a single guard instead of a
+    // manual destroy() call on every failure branch.
+    template<typename Action>
+    struct FinalAction {
+        Action action;
+
+        ~FinalAction() { action(); }
+    };
+
     struct ForwardPushConstants {
         VkDeviceAddress draw_buffer_address;
         VkDeviceAddress transform_buffer_address;
@@ -452,6 +462,17 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     samples_ = create_info.samples;
     extent_ = create_info.extent;
 
+    // destroy() is safe to call on a partially-initialized Renderer (every
+    // sub-object's destroy() is null-guarded), so a single scope guard rolls
+    // back whichever prefix of initialization succeeded instead of every
+    // failure branch repeating its own cleanup.
+    auto rollback_on_failure = true;
+    auto const rollback_guard = FinalAction{[this, &rollback_on_failure] {
+        if (rollback_on_failure) {
+            destroy();
+        }
+    }};
+
     auto maybe_compiler = renderer::SlangCompiler::create();
     if (!maybe_compiler) {
         return std::unexpected(make_compiler_error(maybe_compiler.error()));
@@ -465,8 +486,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                                           });
 
     if (!geometry_arena) {
-        destroy();
-
         return std::unexpected(make_geometry_error(geometry_arena.error()));
     }
 
@@ -476,8 +495,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                                               });
 
     if (!material_storage) {
-        destroy();
-
         return std::unexpected(make_material_error(material_storage.error()));
     }
 
@@ -487,16 +504,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                                         });
 
     if (!image_storage) {
-        destroy();
-
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
     auto sampler_storage = SamplerStorage::create(context_, create_info.sampler_capacity);
 
     if (!sampler_storage) {
-        destroy();
-
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
@@ -509,8 +522,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                                });
 
     if (!gpu_resource_table) {
-        destroy();
-
         return std::unexpected(make_resource_table_error(gpu_resource_table.error()));
     }
 
@@ -525,8 +536,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                       });
 
     if (!pipeline_graph) {
-        destroy();
-
         return std::unexpected(make_pipeline_graph_error(pipeline_graph.error()));
     }
 
@@ -573,8 +582,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                           });
 
         if (!registered_forward) {
-            destroy();
-
             return std::unexpected(make_pipeline_graph_error(registered_forward.error()));
         }
 
@@ -609,8 +616,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                           });
 
         if (!registered_predepth) {
-            destroy();
-
             return std::unexpected(make_pipeline_graph_error(registered_predepth.error()));
         }
 
@@ -652,8 +657,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                           });
 
         if (!registered_composite) {
-            destroy();
-
             return std::unexpected(make_pipeline_graph_error(registered_composite.error()));
         }
 
@@ -740,8 +743,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     auto indirect_size_result = checked_multiply(sizeof(VkDrawIndexedIndirectCommand), maximum_draw_count_);
 
     if (!draw_size_result || !transform_size_result || !indirect_size_result) {
-        destroy();
-
         return std::unexpected(make_error(RendererErrorType::size_overflow));
     }
 
@@ -756,8 +757,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     auto const indirect_offset = align_up(transform_offset + transform_size, 16);
 
     if (indirect_offset > std::numeric_limits<VkDeviceSize>::max() - indirect_size) {
-        destroy();
-
         return std::unexpected(make_error(RendererErrorType::size_overflow));
     }
 
@@ -776,10 +775,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                                });
 
         if (!upload) {
-            destroy();
-
             return std::unexpected(make_device_error(upload.error()));
         }
+
+        // Moved into `frame` immediately so the blanket destroy() (run by
+        // rollback_guard on any later failure in this loop) finds it via
+        // frames_ without a manual pre-destroy chain.
+        frame.upload_buffer = std::move(*upload);
 
         auto draws = Buffer::create(context_, BufferCreateInfo{
                                                       .size = draw_size,
@@ -791,11 +793,10 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                               });
 
         if (!draws) {
-            upload->destroy();
-            destroy();
-
             return std::unexpected(make_device_error(draws.error()));
         }
+
+        frame.draw_buffer = std::move(*draws);
 
         auto transforms = Buffer::create(context_, BufferCreateInfo{
                                                            .size = transform_size,
@@ -807,12 +808,10 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                                    });
 
         if (!transforms) {
-            draws->destroy();
-            upload->destroy();
-            destroy();
-
             return std::unexpected(make_device_error(transforms.error()));
         }
+
+        frame.transform_buffer = std::move(*transforms);
 
         auto indirect = Buffer::create(context_, BufferCreateInfo{
                                                          .size = indirect_size,
@@ -824,13 +823,10 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                                  });
 
         if (!indirect) {
-            transforms->destroy();
-            draws->destroy();
-            upload->destroy();
-            destroy();
-
             return std::unexpected(make_device_error(indirect.error()));
         }
+
+        frame.indirect_buffer = std::move(*indirect);
 
         auto const target_name = std::string{"renderer.forward_target_"} + std::to_string(frame_index);
 
@@ -843,13 +839,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                                                     });
 
         if (!forward_target) {
-            indirect->destroy();
-            transforms->destroy();
-            draws->destroy();
-            upload->destroy();
-
-            destroy();
-
             return std::unexpected(RendererError{
                     .type = RendererErrorType::forward_target_error,
                     .cause = ErrorCause{Boxed<ForwardTargetError>{forward_target.error()}},
@@ -857,10 +846,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         frame.forward_target = std::move(*forward_target);
-        frame.upload_buffer = std::move(*upload);
-        frame.draw_buffer = std::move(*draws);
-        frame.transform_buffer = std::move(*transforms);
-        frame.indirect_buffer = std::move(*indirect);
         frame.draw_upload_offset = 0;
         frame.transform_upload_offset = transform_offset;
         frame.indirect_upload_offset = indirect_offset;
@@ -895,7 +880,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         if (result != VK_SUCCESS) {
             error("Failed to create timestamp query pool for frame index {}", frame_index);
-            destroy();
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
 
@@ -915,14 +899,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                                   });
         if (!maybe_ubo || !maybe_ubo->zero()) {
             error("Failed to create ubo");
-            destroy();
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
 
         ubo = std::move(*maybe_ubo);
     }
 
-
+    rollback_on_failure = false;
     initialized_ = true;
 
     return {};
