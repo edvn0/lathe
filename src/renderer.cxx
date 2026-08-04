@@ -1162,6 +1162,8 @@ auto Renderer::create_model(Model const &model, MaterialHandle fallback_material
     model_free_head_ = destination.next_free;
 
     destination.draws = std::move(flattened_draws);
+    destination.bounds_min = model.bounds_min;
+    destination.bounds_max = model.bounds_max;
 
     destination.next_free = 0;
     destination.occupied = true;
@@ -1170,6 +1172,16 @@ auto Renderer::create_model(Model const &model, MaterialHandle fallback_material
             .index = model_index,
             .generation = destination.generation,
     };
+}
+
+auto Renderer::model_bounds(ModelHandle model) const -> std::optional<std::pair<glm::vec3, glm::vec3>> {
+    auto const *slot = model_slot(model);
+
+    if (slot == nullptr) {
+        return std::nullopt;
+    }
+
+    return std::make_pair(slot->bounds_min, slot->bounds_max);
 }
 
 auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform) -> std::expected<void, RendererError> {

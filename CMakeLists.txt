@@ -233,6 +233,41 @@ CPMAddPackage(
 )
 
 CPMAddPackage(
+        NAME bullet3
+        GITHUB_REPOSITORY bulletphysics/bullet3
+        GIT_TAG 3.25
+        GIT_SHALLOW YES
+        OPTIONS
+        "BUILD_SHARED_LIBS OFF"
+        "BUILD_BULLET2_DEMOS OFF"
+        "BUILD_CPU_DEMOS OFF"
+        "BUILD_OPENGL3_DEMOS OFF"
+        "BUILD_EXTRAS OFF"
+        "BUILD_UNIT_TESTS OFF"
+        "BUILD_PYBULLET OFF"
+        "USE_DOUBLE_PRECISION OFF"
+        "USE_GRAPHICAL_BENCHMARK OFF"
+        "INSTALL_LIBS OFF"
+)
+
+if (bullet3_SOURCE_DIR)
+  # Bullet is old code that never sets its own C++ standard, and the
+  # directory-scoped CMAKE_CXX_STANDARD 23 / CMAKE_CXX_EXTENSIONS OFF above
+  # would otherwise leak into it -- pin it back to a standard it's actually
+  # written against (see cmake/add_mikktspace.cmake for the same pattern
+  # applied to mikktspace's C standard).
+  foreach(bullet_target IN ITEMS BulletDynamics BulletCollision LinearMath)
+    if (TARGET ${bullet_target})
+      set_target_properties(${bullet_target} PROPERTIES
+              CXX_STANDARD 17
+              CXX_STANDARD_REQUIRED ON
+              CXX_EXTENSIONS OFF
+      )
+    endif ()
+  endforeach()
+endif ()
+
+CPMAddPackage(
         NAME ImGui
         GITHUB_REPOSITORY ocornut/imgui
         GIT_TAG v1.92.5-docking
@@ -496,13 +531,13 @@ list(FILTER mingw_vulkan_sources EXCLUDE REGEX "/platform/")
 list(FILTER mingw_vulkan_sources EXCLUDE REGEX "/renderdoc/")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    file(
+  file(
         GLOB_RECURSE platform_sources
         CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows/*.cxx"
     )
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    file(
+  file(
         GLOB_RECURSE platform_sources
         CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux/*.cxx"
@@ -531,12 +566,25 @@ target_include_directories(
         "${stb_SOURCE_DIR}"
 )
 
+# Bullet's own CMakeLists uses directory-scoped INCLUDE_DIRECTORIES() rather
+# than target_include_directories(), so its include path never reaches
+# downstream targets via target_link_libraries() -- add it explicitly.
+target_include_directories(
+    mingw-vulkan
+    SYSTEM
+    PRIVATE
+        "${bullet3_SOURCE_DIR}/src"
+)
+
 target_link_libraries(
     mingw-vulkan
     PRIVATE
         Vulkan::Headers
         volk::volk
         glfw
+        BulletDynamics
+        BulletCollision
+        LinearMath
         spdlog::spdlog
         GPUOpen::VulkanMemoryAllocator
         fastgltf::fastgltf
@@ -567,14 +615,13 @@ target_compile_definitions(
         SLANG_ROOT_PATH="${slang_root}"
 )
 
-# target_compile_options(mingw-vulkan PRIVATE -Wno-old-style-cast)
-
 # The error-context types (ErrorContext and the *Error aggregates' `.cause`/
 # `.context` fields) are deliberately optional trailing members with defaults
 # -- callers only ever fill in what's relevant to that failure. GCC's
 # -Wmissing-field-initializers fires on every designated-init that omits them
 # even though a default member initializer exists, which isn't a real bug.
-# target_compile_options(mingw-vulkan PRIVATE -Wno-missing-field-initializers)
+target_compile_options(mingw-vulkan PRIVATE -Wno-missing-field-initializers)
+target_compile_options(mingw-vulkan PRIVATE -Wno-old-style-cast)
 
 
 if(MINGW_VULKAN_ENABLE_VALIDATION)

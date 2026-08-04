@@ -12,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "buffer.hxx"
@@ -197,6 +198,12 @@ struct Renderer {
     [[nodiscard]]
     auto submit_model(ModelHandle model, glm::mat4 &&) -> std::expected<void, RendererError>;
 
+    // Model-space AABB across every vertex of the model, as loaded --
+    // callers can use this to size collision volumes/gizmos to the actual
+    // geometry instead of guessing.
+    [[nodiscard]]
+    auto model_bounds(ModelHandle model) const -> std::optional<std::pair<glm::vec3, glm::vec3>>;
+
     [[nodiscard]]
     auto create_material(MaterialCreateInfo const &create_info) -> std::expected<MaterialHandle, RendererError>;
 
@@ -363,6 +370,9 @@ private:
 
     struct ModelSlot {
         std::vector<ModelDraw> draws;
+
+        glm::vec3 bounds_min{-0.5F};
+        glm::vec3 bounds_max{0.5F};
 
         std::uint32_t generation = 1;
         std::uint32_t next_free = 0;

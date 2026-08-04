@@ -48,6 +48,13 @@ struct Model {
     std::vector<ModelNode> nodes;
     std::vector<std::uint32_t> scene_roots;
     std::vector<MaterialHandle> materials;
+
+    // Model-space AABB across every vertex of every mesh reachable from
+    // scene_roots, with each node's local_transform applied. Lets callers
+    // (e.g. physics) size collision volumes to the actual geometry instead
+    // of guessing.
+    glm::vec3 bounds_min{-0.5F};
+    glm::vec3 bounds_max{0.5F};
 };
 
 enum class ModelLoadErrorType : std::uint8_t {

@@ -9,7 +9,6 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <expected>
@@ -19,12 +18,8 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
 #include <limits>
-#include <mutex>
-#include <stop_token>
 #include <string_view>
-#include <thread>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include <entt/entt.hpp>
@@ -39,6 +34,7 @@
 #include "implot.h"
 #include "logger.hxx"
 #include "physics.hxx"
+#include "physics_world.hxx"
 #include "renderdoc.hxx"
 #include "renderer.hxx"
 #include "scene.hxx"
@@ -158,36 +154,6 @@ namespace {
         return false;
     };
 
-    // Mailbox for GLFW input callbacks (main thread) to hand events to the
-    // render thread, instead of the callback mutating Application/camera
-    // state directly while the render thread reads it with no
-    // synchronization at all. Traffic is at most a handful of events per
-    // frame, so a mutex beats the complexity of a lock-free queue here --
-    // correctness matters far more than throughput for input events.
-    class InputEventQueue {
-    public:
-        using Event = std::variant<KeyPressedEvent, KeyReleasedEvent, MouseMovedEvent, MouseScrolledEvent,
-                                   MouseButtonPressedEvent, MouseButtonReleasedEvent>;
-
-        auto push(Event event) -> void {
-            std::lock_guard lock{mutex_};
-            pending_.push_back(std::move(event));
-        }
-
-        // Hands back everything queued since the last call and leaves the
-        // queue empty. Meant to be called once per frame by the render
-        // thread; the lock is only held for the swap, not while the
-        // caller processes the returned events.
-        [[nodiscard]] auto drain() -> std::vector<Event> {
-            std::lock_guard lock{mutex_};
-            return std::exchange(pending_, {});
-        }
-
-    private:
-        std::mutex mutex_;
-        std::vector<Event> pending_;
-    };
-
     struct Application {
         explicit Application(VulkanContext &ctx) noexcept :
             context(ctx), renderer(std::make_unique<Renderer>(context)) {
@@ -199,7 +165,19 @@ namespace {
             info("~Application: shader watcher stopped");
         }
 
-        void on_ui() const {
+        void on_ui() {
+            widget("Simulation", [&] {
+                if (is_playing) {
+                    if (ImGui::Button("Stop")) {
+                        stop();
+                    }
+                } else {
+                    if (ImGui::Button("Play")) {
+                        play();
+                    }
+                }
+            });
+
             widget("Frame timings", [&] {
                 if (ImPlot::BeginPlot("Stage timings (cumulative ms)", ImVec2(-1, 250))) {
                     ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
@@ -256,8 +234,7 @@ namespace {
         auto play() -> void {
             runtime_scene = std::make_unique<Scene>();
             runtime_scene->physics_settings = editor_scene->physics_settings;
-            clone_registry<Transform, ModelHandle, RigidBody, Attractor>(editor_scene->registry,
-                                                                         runtime_scene->registry);
+            clone_registry<Transform, ModelHandle, RigidBody>(editor_scene->registry, runtime_scene->registry);
 
             active_scene = runtime_scene.get();
             is_playing = true;
@@ -273,6 +250,12 @@ namespace {
 
         EngineModels engine_models{};
 
+        // Set by recreate_entities() -- reused by shoot_bullet() so
+        // projectiles are built from the same model/collision-shape
+        // relationship as the grid cubes and floor.
+        ModelHandle cube_model{};
+        glm::vec3 cube_half_extents{0.5F};
+
         std::array<ScrollingBuffer, stage_count> timing_buffers;
         float timing_x = 0.0F;
 
@@ -280,25 +263,20 @@ namespace {
 
         bool mouse_dragging = false;
 
-        // Only ever touched from the render thread now: on_event() is only
-        // called after draining input_queue below, never directly from a
-        // GLFW callback.
-        InputEventQueue input_queue;
+        double last_mouse_x = 0.0;
+        double last_mouse_y = 0.0;
+        bool has_last_mouse_position = false;
 
         auto update_physics(float delta_time) -> void {
             if (!is_playing) {
                 return;
             }
 
-            constexpr float fixed_dt = 1.0F / 120.0F;
-            constexpr int max_steps_per_frame = 8;
-
-            active_scene->physics_accumulator += std::min(delta_time, 0.25F);
-
-            for (int steps = 0; active_scene->physics_accumulator >= fixed_dt && steps < max_steps_per_frame; ++steps) {
-                simulate_physics(active_scene->registry, active_scene->physics_settings, fixed_dt);
-                active_scene->physics_accumulator -= fixed_dt;
-            }
+            // PhysicsWorld::step() delegates to btDiscreteDynamicsWorld::
+            // stepSimulation(), which already implements its own fixed-step
+            // accumulator (capped substeps, leftover time carried to the
+            // next call) -- no need to hand-roll one here.
+            active_scene->physics_world->step(active_scene->registry, std::min(delta_time, 0.25F));
         }
 
         auto on_startup() -> void {
@@ -366,7 +344,86 @@ namespace {
                 mouse_dragging = true;
             }
 
+            if (ev.button == GLFW_MOUSE_BUTTON_LEFT) {
+                shoot_bullet();
+            }
+
             return true;
+        }
+
+        // Unprojects the current cursor position into a world-space ray,
+        // using the same view/projection the camera renders with. The
+        // cursor isn't locked to screen center outside of a right-drag
+        // look, so aiming from camera.forward() alone would visibly miss
+        // wherever the mouse actually is.
+        [[nodiscard]] auto cursor_ray() const -> std::pair<glm::vec3, glm::vec3> {
+            int window_width = 0;
+            int window_height = 0;
+            glfwGetWindowSize(context.window, &window_width, &window_height);
+
+            auto const framebuffer_width = context.framebuffer_width.load(std::memory_order_relaxed);
+            auto const framebuffer_height = context.framebuffer_height.load(std::memory_order_relaxed);
+
+            if (window_width <= 0 || window_height <= 0 || framebuffer_width <= 0 || framebuffer_height <= 0) {
+                return {camera.position(), camera.forward()};
+            }
+
+            // NDC fraction comes from the mouse position in window
+            // coordinates (what GLFW reports); the projection's aspect
+            // ratio comes from the framebuffer (what's actually rendered).
+            // They differ only under HiDPI content scaling.
+            auto const ndc_x = (2.0F * static_cast<float>(last_mouse_x)) / static_cast<float>(window_width) - 1.0F;
+            auto const ndc_y = 1.0F - (2.0F * static_cast<float>(last_mouse_y)) / static_cast<float>(window_height);
+            auto const aspect_ratio = static_cast<float>(framebuffer_width) / static_cast<float>(framebuffer_height);
+
+            auto const inverse_view_projection = glm::inverse(camera.view_projection(aspect_ratio));
+
+            auto const unproject = [&](float ndc_z) {
+                auto const clip_space_point = inverse_view_projection * glm::vec4{ndc_x, ndc_y, ndc_z, 1.0F};
+                return glm::vec3{clip_space_point} / clip_space_point.w;
+            };
+
+            auto const ray_origin = unproject(0.0F);
+            auto const ray_direction = glm::normalize(unproject(1.0F) - ray_origin);
+
+            return {ray_origin, ray_direction};
+        }
+
+        // Spawns a small dynamic cube along the cursor ray, moving at
+        // bullet_speed. Only meaningful while playing -- active_scene's
+        // PhysicsWorld only exists between on_scene_start()/on_scene_stop(),
+        // and (unlike recreate_entities(), which runs before a world
+        // exists) this entity is created after the world was already
+        // populated, so it must be registered with add_body() explicitly
+        // rather than picked up by populate_from().
+        auto shoot_bullet() -> void {
+            if (!is_playing) {
+                return;
+            }
+
+            constexpr auto bullet_half_extent = 0.15F;
+            constexpr auto bullet_speed = 40.0F;
+            constexpr auto bullet_mass = 0.2F;
+
+            auto const [ray_origin, ray_direction] = cursor_ray();
+
+            auto const transform = Transform{
+                    .position = ray_origin + ray_direction * (bullet_half_extent + 0.2F),
+                    .scale = glm::vec3{bullet_half_extent} / cube_half_extents,
+            };
+            auto const rigid_body = RigidBody{
+                    .velocity = ray_direction * bullet_speed,
+                    .half_extents = glm::vec3{bullet_half_extent},
+                    .restitution = 0.3F,
+                    .mass = bullet_mass,
+            };
+
+            auto const entity = active_scene->registry.create();
+            active_scene->registry.emplace<Transform>(entity, transform);
+            active_scene->registry.emplace<ModelHandle>(entity, cube_model);
+            active_scene->registry.emplace<RigidBody>(entity, rigid_body);
+
+            active_scene->physics_world->add_body(entity, transform, rigid_body);
         }
 
         auto on_event(MouseButtonReleasedEvent ev) -> bool {
@@ -385,7 +442,6 @@ namespace {
             }
 
             editor_scene->registry.clear();
-            editor_scene->physics_accumulator = 0.0F;
 
 
             auto const load_or_fallback = [this](std::filesystem::path const &path) -> ModelHandle {
@@ -402,7 +458,7 @@ namespace {
             };
 
             auto const helmet_model = load_or_fallback("assets/models/damaged_helmet/DamagedHelmet.gltf");
-            auto const cube_model = load_or_fallback("assets/models/test_cube.glb");
+            cube_model = load_or_fallback("assets/models/test_cube.glb");
 
             std::random_device r;
             std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
@@ -428,15 +484,20 @@ namespace {
             }
 
             // A grid of physics-driven cubes dropped from above the ground
-            // plane -- gravity, then AABB collision against each other and
+            // plane -- gravity, then Bullet collision against each other and
             // the floor, is stepped in update_physics() every frame. Spacing
-            // is deliberately tighter than the cube diameter so neighbours
-            // start slightly overlapping and separate into each other from
-            // frame one, instead of falling straight down in independent
-            // columns that never actually touch.
+            // is derived from the model's actual bounds (rather than an
+            // assumed half-extent) so the collision shapes match what's
+            // rendered, and neighbours start apart so they only overlap once
+            // gravity pulls them into each other.
             constexpr auto physics_grid = 6;
-            constexpr auto cube_half_extent = 0.5F;
-            constexpr auto spacing = 0.9F;
+
+            auto const cube_bounds = renderer->model_bounds(cube_model);
+            cube_half_extents =
+                    cube_bounds.has_value() ? (cube_bounds->second - cube_bounds->first) * 0.5F : glm::vec3{0.5F};
+            auto const cube_diameter =
+                    std::max({cube_half_extents.x, cube_half_extents.y, cube_half_extents.z}) * 2.0F;
+            auto const spacing = cube_diameter * 1.3F;
 
             for (auto i = 0; i < physics_grid; i++) {
                 for (auto j = 0; j < physics_grid; j++) {
@@ -449,37 +510,30 @@ namespace {
                         };
                         editor_scene->registry.emplace<Transform>(entity, Transform{.position = position});
                         editor_scene->registry.emplace<ModelHandle>(entity, cube_model);
-                        editor_scene->registry.emplace<RigidBody>(
-                                entity, RigidBody{.half_extents = glm::vec3{cube_half_extent}});
+                        editor_scene->registry.emplace<RigidBody>(entity, RigidBody{.half_extents = cube_half_extents});
                     }
                 }
             }
 
-            // A couple of dedicated attractor cubes -- bigger, and pulling
-            // every other dynamic body toward them each step (see
-            // Attractor / apply_attraction() in physics.cxx). They're
-            // dynamic themselves, so they fall and collide too rather than
-            // acting as fixed anchors.
-            constexpr auto attractor_half_extent = 1.0F;
-            constexpr auto attractor_strength = 60.0F;
+            // A visible floor slab, sized/scaled from the same cube model so
+            // its rendered surface matches its collider exactly -- reusing
+            // an ordinary static RigidBody rather than a bespoke ground
+            // plane means PhysicsWorld needs no special-case handling for
+            // it, and it renders through the same submit_scene() path as
+            // everything else.
+            constexpr auto floor_half_extents = glm::vec3{40.0F, 0.5F, 40.0F};
 
-            std::array const attractor_positions{
-                    glm::vec3{-6.0F, 8.0F, 0.0F},
-                    glm::vec3{6.0F, 8.0F, 0.0F},
-            };
-
-            for (auto const &position: attractor_positions) {
-                auto const entity = editor_scene->registry.create();
-                editor_scene->registry.emplace<Transform>(entity,
-                                                          Transform{
-                                                                  .position = position,
-                                                                  .scale = glm::vec3{attractor_half_extent * 2.0F},
-                                                          });
-                editor_scene->registry.emplace<ModelHandle>(entity, cube_model);
-                editor_scene->registry.emplace<RigidBody>(entity,
-                                                          RigidBody{.half_extents = glm::vec3{attractor_half_extent}});
-                editor_scene->registry.emplace<Attractor>(entity, Attractor{.strength = attractor_strength});
-            }
+            auto const floor_entity = editor_scene->registry.create();
+            editor_scene->registry.emplace<Transform>(
+                    floor_entity, Transform{
+                                          .position = glm::vec3{0.0F, editor_scene->physics_settings.ground_y -
+                                                                               floor_half_extents.y,
+                                                                 0.0F},
+                                          .scale = floor_half_extents / cube_half_extents,
+                                  });
+            editor_scene->registry.emplace<ModelHandle>(floor_entity, cube_model);
+            editor_scene->registry.emplace<RigidBody>(
+                    floor_entity, RigidBody{.half_extents = floor_half_extents, .is_static = true});
         }
     };
 
@@ -1386,104 +1440,9 @@ namespace {
         });
     }
 
-    auto render_loop(std::stop_token stop_token, VulkanContext &context, Application &application) noexcept -> void {
-
-        auto renderer_extent = context.swapchain.extent();
-        auto last_frame_time = std::chrono::steady_clock::now();
-
-        while (!stop_token.stop_requested()) {
-            application.renderer->drain_event_queue();
-
-            for (auto const &event: application.input_queue.drain()) {
-                std::visit([&application](auto const &ev) { application.on_event(ev); }, event);
-            }
-
-            auto const width = context.framebuffer_width.load(std::memory_order_acquire);
-            auto const height = context.framebuffer_height.load(std::memory_order_acquire);
-
-            if (width <= 0 || height <= 0) {
-                // std::condition_variable has no wait() overload that takes a
-                // stop_token directly -- that overload only exists on
-                // condition_variable_any. A hand-registered stop_callback
-                // gets the same effect: it fires notify_all() the moment
-                // request_stop() is called (synchronously, even if that
-                // already happened before we get here), and the predicate
-                // below re-checks stop_requested() itself, so there's no
-                // missed-wakeup window either way.
-                std::stop_callback const wake_on_stop{stop_token,
-                                                      [&context] { context.render_wake_condition.notify_all(); }};
-
-                std::unique_lock lock{context.render_wake_mutex};
-
-                context.render_wake_condition.wait(lock, [&context, &stop_token] {
-                    return stop_token.stop_requested() ||
-                           (context.framebuffer_width.load(std::memory_order_acquire) > 0 &&
-                            context.framebuffer_height.load(std::memory_order_acquire) > 0);
-                });
-
-                last_frame_time = std::chrono::steady_clock::now();
-                continue;
-            }
-
-            auto const now = std::chrono::steady_clock::now();
-            auto const delta_time = std::chrono::duration<float>(now - last_frame_time).count();
-            last_frame_time = now;
-
-            application.camera.update(std::min(delta_time, 0.1F));
-            application.update_physics(delta_time);
-
-            request_resize_if_needed(context, width, height);
-
-            // A stop may have been requested while we were doing the above --
-            // don't start a fresh present against a window that may already
-            // be tearing down.
-            if (stop_token.stop_requested()) {
-                break;
-            }
-
-            if (!draw(context, application)) {
-                // running is written only here, read only by main() after
-                // join() -- unlike the old design, main never writes to it,
-                // so there's exactly one writer for "did the render thread
-                // fail" and exactly one writer (main, via request_stop())
-                // for "please stop".
-                context.running.store(false, std::memory_order_release);
-                glfwPostEmptyEvent();
-
-                return;
-            }
-
-            auto const swapchain_extent = context.swapchain.extent();
-
-            if (compare(swapchain_extent, renderer_extent)) {
-                auto resize_result = application.renderer->resize(swapchain_extent);
-
-                if (!resize_result) {
-                    error("Could not resize renderer: {}", describe(resize_result.error()));
-
-                    context.running.store(false, std::memory_order_release);
-                    glfwPostEmptyEvent();
-
-                    return;
-                }
-
-                renderer_extent = swapchain_extent;
-            }
-        }
-
-        info("render_loop: exiting ({})", stop_token.stop_requested() ? "stop requested" : "fatal error");
-    }
-
-    struct CursorTracker {
-        double last_x = 0.0;
-        double last_y = 0.0;
-        bool has_last_position = false;
-    };
-
     struct WindowData {
-        VulkanContext *ctx = nullptr;
-        Application *app = nullptr;
-        CursorTracker cursor{};
+        VulkanContext *ctx;
+        Application *app;
     };
 
     auto framebuffer_size_callback(GLFWwindow *window, int width, int height) noexcept -> void {
@@ -1493,48 +1452,21 @@ namespace {
             return;
         }
 
-        {
-            std::lock_guard lock{context->render_wake_mutex};
-            context->framebuffer_width.store(width, std::memory_order_relaxed);
-            context->framebuffer_height.store(height, std::memory_order_relaxed);
-            context->framebuffer_dirty.store(true, std::memory_order_relaxed);
-        }
-        context->render_wake_condition.notify_one();
+        // This callback and the render loop both run on the main thread
+        // now, so there's no concurrent reader/writer to lock against --
+        // a plain relaxed store is enough.
+        context->framebuffer_width.store(width, std::memory_order_relaxed);
+        context->framebuffer_height.store(height, std::memory_order_relaxed);
+        context->framebuffer_dirty.store(true, std::memory_order_relaxed);
     }
-
-    auto window_refresh_callback(GLFWwindow *window) noexcept -> void {
-        auto *context = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->ctx;
-
-        if (context != nullptr) {
-            // Fires synchronously during e.g. a Windows live-resize drag,
-            // while glfwPollEvents() on the main thread is stuck inside the
-            // OS's modal sizing loop. Waking the render thread here is what
-            // keeps frames presenting at the new size while the drag is
-            // still in progress, instead of the window appearing frozen
-            // until the mouse button is released.
-            context->render_wake_condition.notify_one();
-        }
-    }
-
-    // event_callback, mouse_button_callback, cursor_position_callback and
-    // scroll_callback all run on the main thread (GLFW dispatches them from
-    // whichever thread calls glfwPollEvents/glfwWaitEvents). They no longer
-    // call Application::on_event() directly -- that mutates camera state
-    // that the render thread also touches every frame. Instead they push
-    // onto Application::input_queue, and only the render thread ever calls
-    // on_event(), once per frame, after draining it.
 
     auto event_callback(GLFWwindow *window, int key, int, int action, int mods) -> void {
         auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
-        if (app == nullptr) {
-            return;
+        if (action == GLFW_PRESS && app->on_event(KeyPressedEvent{key, mods})) {
         }
 
-        if (action == GLFW_PRESS) {
-            app->input_queue.push(KeyPressedEvent{key, mods});
-        } else if (action == GLFW_RELEASE) {
-            app->input_queue.push(KeyReleasedEvent{key, mods});
+        if (action == GLFW_RELEASE && app->on_event(KeyReleasedEvent{key, mods})) {
         }
     }
 
@@ -1545,61 +1477,58 @@ namespace {
             return;
         }
 
-        // Capture + hide the cursor for the duration of the drag so it can't
-        // leave the window mid-look; GLFW_CURSOR_DISABLED also switches to
-        // unbounded virtual cursor movement, which is what we want for a
-        // free-look camera rather than clamping at the screen edge. This
-        // itself is a GLFW/window call, so it stays on the main thread --
-        // only the resulting mouse_dragging state is handed to the render
-        // thread via the queue.
+        // Capture + hide the cursor for the duration of a right-drag so it
+        // can't leave the window mid-look; GLFW_CURSOR_DISABLED also
+        // switches to unbounded virtual cursor movement, which is what we
+        // want for a free-look camera rather than clamping at the screen
+        // edge. This is specific to the right button; every button's
+        // press/release still gets forwarded to on_event() below.
         if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT) {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-
-            app->input_queue.push(MouseButtonPressedEvent{button, mods});
         } else if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_RIGHT) {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        }
 
-            app->input_queue.push(MouseButtonReleasedEvent{button, mods});
+        if (action == GLFW_PRESS) {
+            app->on_event(MouseButtonPressedEvent{button, mods});
+        } else if (action == GLFW_RELEASE) {
+            app->on_event(MouseButtonReleasedEvent{button, mods});
         }
     }
 
     auto cursor_position_callback(GLFWwindow *window, double x_position, double y_position) -> void {
-        auto *window_data = static_cast<WindowData *>(glfwGetWindowUserPointer(window));
+        auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
-        if (window_data == nullptr || window_data->app == nullptr) {
+        if (app == nullptr) {
             return;
         }
-
-        auto &cursor = window_data->cursor;
 
         // Swallow the first callback after (re)acquiring a cursor position:
         // without a previous sample the delta would be "distance from
         // wherever the cursor happened to be", producing a large spurious
-        // look jump on the first drag frame. This tracker is main-thread-only
-        // now (it lives on WindowData, not Application), so it needs no
-        // synchronization at all -- only the derived delta is queued.
-        if (!cursor.has_last_position) {
-            cursor.last_x = x_position;
-            cursor.last_y = y_position;
-            cursor.has_last_position = true;
+        // look jump on the first drag frame.
+        if (!app->has_last_mouse_position) {
+            app->last_mouse_x = x_position;
+            app->last_mouse_y = y_position;
+            app->has_last_mouse_position = true;
 
             return;
         }
 
-        auto const delta_x = x_position - cursor.last_x;
-        auto const delta_y = y_position - cursor.last_y;
+        auto const delta_x = x_position - app->last_mouse_x;
+        auto const delta_y = y_position - app->last_mouse_y;
 
-        cursor.last_x = x_position;
-        cursor.last_y = y_position;
+        app->last_mouse_x = x_position;
+        app->last_mouse_y = y_position;
 
-        window_data->app->input_queue.push(MouseMovedEvent{delta_x, delta_y});
+        app->on_event(MouseMovedEvent{delta_x, delta_y});
     }
 
     auto scroll_callback(GLFWwindow *window, double x_offset, double y_offset) -> void {
         auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
         if (app != nullptr) {
-            app->input_queue.push(MouseScrolledEvent{x_offset, y_offset});
+            app->on_event(MouseScrolledEvent{x_offset, y_offset});
         }
     }
 
@@ -1611,7 +1540,6 @@ namespace {
         glfwSetWindowUserPointer(context.window, &wd);
 
         glfwSetFramebufferSizeCallback(context.window, framebuffer_size_callback);
-        glfwSetWindowRefreshCallback(context.window, window_refresh_callback);
         glfwSetKeyCallback(context.window, event_callback);
         glfwSetMouseButtonCallback(context.window, mouse_button_callback);
         glfwSetCursorPosCallback(context.window, cursor_position_callback);
@@ -1746,37 +1674,81 @@ auto main() -> int {
 
     application.on_startup();
 
-    std::jthread render_thread{render_loop, std::ref(context), std::ref(application)};
-
     info("Initialization complete; close the window to exit");
 
-    // context.running has a single writer now -- the render thread, only on
-    // a fatal error -- and a single reader, this loop. Requesting shutdown
-    // is a completely separate concern handled below via the jthread's own
-    // stop_token, so there's no longer a flag that both threads write.
+    auto renderer_extent = context.swapchain.extent();
+    auto last_frame_time = std::chrono::steady_clock::now();
+    auto exit_code = EXIT_SUCCESS;
+
     while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire) &&
            glfwWindowShouldClose(context.window) != GLFW_TRUE) {
-        glfwWaitEvents();
+
+        auto const width = context.framebuffer_width.load(std::memory_order_relaxed);
+        auto const height = context.framebuffer_height.load(std::memory_order_relaxed);
+
+        // Minimized / zero-sized framebuffer: nothing to render, so block
+        // for the next event instead of busy-looping. Everywhere else we
+        // poll (non-blocking), since we want to keep rendering every
+        // iteration rather than waiting for input.
+        if (width <= 0 || height <= 0) {
+            glfwWaitEvents();
+        } else {
+            glfwPollEvents();
+        }
+
+        if (glfwWindowShouldClose(context.window) == GLFW_TRUE) {
+            break;
+        }
+
+        application.renderer->drain_event_queue();
+
+        auto const current_width = context.framebuffer_width.load(std::memory_order_relaxed);
+        auto const current_height = context.framebuffer_height.load(std::memory_order_relaxed);
+
+        if (current_width <= 0 || current_height <= 0) {
+            last_frame_time = std::chrono::steady_clock::now();
+            continue;
+        }
+
+        auto const now = std::chrono::steady_clock::now();
+        auto const delta_time = std::chrono::duration<float>(now - last_frame_time).count();
+        last_frame_time = now;
+
+        application.camera.update(std::min(delta_time, 0.1F));
+        application.update_physics(delta_time);
+
+        request_resize_if_needed(context, current_width, current_height);
+
+        if (!draw(context, application)) {
+            exit_code = EXIT_FAILURE;
+            break;
+        }
+
+        auto const swapchain_extent = context.swapchain.extent();
+
+        if (compare(swapchain_extent, renderer_extent)) {
+            auto resize_result = application.renderer->resize(swapchain_extent);
+
+            if (!resize_result) {
+                error("Could not resize renderer: {}", describe(resize_result.error()));
+
+                exit_code = EXIT_FAILURE;
+                break;
+            }
+
+            renderer_extent = swapchain_extent;
+        }
     }
 
-    info("Shutdown: requesting render thread stop");
-    render_thread.request_stop();
-
-    info("Shutdown: joining render thread");
-    render_thread.join();
-    info("Shutdown: render thread joined");
-
-    auto const render_failed = !context.running.load(std::memory_order_acquire);
+    context.running.store(false, std::memory_order_release);
 
     info("Shutdown: destroying application");
     destroy_application(context, application);
     info("Shutdown: application destroyed");
 
-    if (render_failed) {
-        return EXIT_FAILURE;
+    if (exit_code == EXIT_SUCCESS) {
+        info("Application exited successfully");
     }
 
-    info("Application exited successfully");
-
-    return EXIT_SUCCESS;
+    return exit_code;
 }

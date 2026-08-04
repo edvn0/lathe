@@ -6,20 +6,31 @@
 #include <entt/entity/snapshot.hpp>
 
 #include <any>
+#include <memory>
 #include <utility>
 #include <vector>
+
+class PhysicsWorld;
 
 // Owns everything simulate/render iterate over. The editor keeps one Scene
 // alive for the whole app lifetime; play/simulate just points Application's
 // active_scene at whichever Scene should be ticked this frame.
+//
+// physics_world only exists while the scene is playing: on_scene_start()
+// builds it (from whatever Transform+RigidBody entities are in the
+// registry at that point) and on_scene_stop() tears it down. Kept behind a
+// unique_ptr, and PhysicsWorld only forward-declared here, so pulling in
+// Bullet's headers doesn't ripple out to every TU that includes scene.hxx.
 struct Scene {
     entt::registry registry;
     PhysicsWorldSettings physics_settings{};
-    float physics_accumulator = 0.0F;
+    std::unique_ptr<PhysicsWorld> physics_world;
 
-    auto on_scene_start() -> void { physics_accumulator = 0.0F; }
+    Scene();
+    ~Scene();
 
-    auto on_scene_stop() -> void { physics_accumulator = 0.0F; }
+    auto on_scene_start() -> void;
+    auto on_scene_stop() -> void;
 };
 
 namespace detail {

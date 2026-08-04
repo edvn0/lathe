@@ -24,6 +24,7 @@
 #include <limits>
 #include <optional>
 #include <ranges>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -35,6 +36,52 @@
 #include "sampler_storage.hxx"
 
 namespace {
+
+    // Walks the node hierarchy from scene_roots, accumulating each node's
+    // local_transform, and folds every mesh's vertex positions (transformed
+    // into model space) into a running min/max.
+    auto accumulate_node_bounds(ModelCpuData const &cpu_data, std::uint32_t node_index,
+                                glm::mat4 const &parent_transform, glm::vec3 &bounds_min, glm::vec3 &bounds_max)
+            -> void {
+        if (node_index >= cpu_data.nodes.size()) {
+            return;
+        }
+
+        auto const &node = cpu_data.nodes[node_index];
+        auto const local_to_model = parent_transform * node.local_transform;
+
+        constexpr auto invalid_mesh = std::numeric_limits<std::uint32_t>::max();
+
+        if (node.mesh_index != invalid_mesh && node.mesh_index < cpu_data.meshes.size()) {
+            for (auto const &primitive: cpu_data.meshes[node.mesh_index].primitives) {
+                for (auto const &vertex: primitive.vertices) {
+                    auto const model_space_position = glm::vec3{local_to_model * glm::vec4{vertex.position, 1.0F}};
+
+                    bounds_min = glm::min(bounds_min, model_space_position);
+                    bounds_max = glm::max(bounds_max, model_space_position);
+                }
+            }
+        }
+
+        for (auto const child: node.children) {
+            accumulate_node_bounds(cpu_data, child, local_to_model, bounds_min, bounds_max);
+        }
+    }
+
+    auto compute_model_bounds(ModelCpuData const &cpu_data) -> std::pair<glm::vec3, glm::vec3> {
+        auto bounds_min = glm::vec3{std::numeric_limits<float>::max()};
+        auto bounds_max = glm::vec3{std::numeric_limits<float>::lowest()};
+
+        for (auto const root: cpu_data.scene_roots) {
+            accumulate_node_bounds(cpu_data, root, glm::mat4{1.0F}, bounds_min, bounds_max);
+        }
+
+        if (bounds_min.x > bounds_max.x) {
+            return {glm::vec3{-0.5F}, glm::vec3{0.5F}};
+        }
+
+        return {bounds_min, bounds_max};
+    }
 
     // ------------------------------------------------------------------------
     // Shared helpers — pure CPU, unchanged from before.
@@ -878,6 +925,7 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
 
     model.nodes = cpu_data.nodes;
     model.scene_roots = cpu_data.scene_roots;
+    std::tie(model.bounds_min, model.bounds_max) = compute_model_bounds(cpu_data);
 
     return model;
 }
