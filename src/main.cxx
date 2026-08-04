@@ -8,19 +8,23 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <expected>
 #include <filesystem>
+#include <future>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
 #include <limits>
 #include <mutex>
+#include <stop_token>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <entt/entt.hpp>
@@ -29,15 +33,15 @@
 #include "config.hxx"
 #include "context.hxx"
 #include "editor_camera.hxx"
+#include "engine_models.hxx"
+#include "error_describe.hxx"
 #include "imgui_renderer.hxx"
 #include "implot.h"
 #include "logger.hxx"
 #include "physics.hxx"
 #include "renderdoc.hxx"
-#include "scene.hxx"
-#include "engine_models.hxx"
-#include "error_describe.hxx"
 #include "renderer.hxx"
+#include "scene.hxx"
 #include "shader_hot_reload_watcher.hxx"
 #include "swapchain.hxx"
 #include "transform.hxx"
@@ -154,6 +158,36 @@ namespace {
         return false;
     };
 
+    // Mailbox for GLFW input callbacks (main thread) to hand events to the
+    // render thread, instead of the callback mutating Application/camera
+    // state directly while the render thread reads it with no
+    // synchronization at all. Traffic is at most a handful of events per
+    // frame, so a mutex beats the complexity of a lock-free queue here --
+    // correctness matters far more than throughput for input events.
+    class InputEventQueue {
+    public:
+        using Event = std::variant<KeyPressedEvent, KeyReleasedEvent, MouseMovedEvent, MouseScrolledEvent,
+                                   MouseButtonPressedEvent, MouseButtonReleasedEvent>;
+
+        auto push(Event event) -> void {
+            std::lock_guard lock{mutex_};
+            pending_.push_back(std::move(event));
+        }
+
+        // Hands back everything queued since the last call and leaves the
+        // queue empty. Meant to be called once per frame by the render
+        // thread; the lock is only held for the swap, not while the
+        // caller processes the returned events.
+        [[nodiscard]] auto drain() -> std::vector<Event> {
+            std::lock_guard lock{mutex_};
+            return std::exchange(pending_, {});
+        }
+
+    private:
+        std::mutex mutex_;
+        std::vector<Event> pending_;
+    };
+
     struct Application {
         explicit Application(VulkanContext &ctx) noexcept :
             context(ctx), renderer(std::make_unique<Renderer>(context)) {
@@ -169,8 +203,7 @@ namespace {
             widget("Frame timings", [&] {
                 if (ImPlot::BeginPlot("Stage timings (cumulative ms)", ImVec2(-1, 250))) {
                     ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
-                    ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x,
-                                            ImGuiCond_Always);
+                    ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x, ImGuiCond_Always);
 
                     constexpr auto first_stage = static_cast<std::uint32_t>(RenderStage::DepthPrepass);
 
@@ -215,12 +248,8 @@ namespace {
         std::unique_ptr<gui::ImGuiRenderer> imgui_renderer;
         ShaderHotReloadWatcher shader_watcher_;
 
-        // The scene being edited, alive for the whole app lifetime.
         std::unique_ptr<Scene> editor_scene = std::make_unique<Scene>();
-        // Clone of editor_scene spun up on play() and torn down on stop(),
-        // so simulation never mutates the editor's own registry.
         std::unique_ptr<Scene> runtime_scene;
-        // What render/physics actually iterate this frame.
         Scene *active_scene = editor_scene.get();
         bool is_playing = false;
 
@@ -228,7 +257,7 @@ namespace {
             runtime_scene = std::make_unique<Scene>();
             runtime_scene->physics_settings = editor_scene->physics_settings;
             clone_registry<Transform, ModelHandle, RigidBody, Attractor>(editor_scene->registry,
-                                                                          runtime_scene->registry);
+                                                                         runtime_scene->registry);
 
             active_scene = runtime_scene.get();
             is_playing = true;
@@ -242,10 +271,6 @@ namespace {
             runtime_scene.reset();
         }
 
-        // Procedural fallback models (cube, sphere, ...). Created once on
-        // the render thread before the first recreate_entities() call.
-        // Unlike disk-loaded models, failing to create these is fatal --
-        // see on_startup().
         EngineModels engine_models{};
 
         std::array<ScrollingBuffer, stage_count> timing_buffers;
@@ -253,20 +278,13 @@ namespace {
 
         EditorCamera camera;
 
-        // Right-mouse-drag look state. Cursor capture itself (hide + relative
-        // mode) is toggled directly in mouse_button_callback since that's
-        // where the GLFWwindow handle is already available.
         bool mouse_dragging = false;
 
-        double last_mouse_x = 0.0;
-        double last_mouse_y = 0.0;
-        bool has_last_mouse_position = false;
+        // Only ever touched from the render thread now: on_event() is only
+        // called after draining input_queue below, never directly from a
+        // GLFW callback.
+        InputEventQueue input_queue;
 
-        // Fixed-timestep physics update. The accumulator absorbs the
-        // variable frame delta_time so gravity integration stays stable
-        // regardless of render framerate; steps are capped per call so a
-        // stall (e.g. a breakpoint or minimized window) can't turn into a
-        // catch-up spiral once the window comes back.
         auto update_physics(float delta_time) -> void {
             if (!is_playing) {
                 return;
@@ -277,8 +295,7 @@ namespace {
 
             active_scene->physics_accumulator += std::min(delta_time, 0.25F);
 
-            for (int steps = 0; active_scene->physics_accumulator >= fixed_dt && steps < max_steps_per_frame;
-                 ++steps) {
+            for (int steps = 0; active_scene->physics_accumulator >= fixed_dt && steps < max_steps_per_frame; ++steps) {
                 simulate_physics(active_scene->registry, active_scene->physics_settings, fixed_dt);
                 active_scene->physics_accumulator -= fixed_dt;
             }
@@ -398,13 +415,13 @@ namespace {
                     for (auto k = 0; k < count; k++) {
                         auto const entity = editor_scene->registry.create();
                         editor_scene->registry.emplace<Transform>(entity, Transform{
-                                                                     .position =
-                                                                             glm::vec3{
-                                                                                     urd(eng),
-                                                                                     urd(eng),
-                                                                                     urd(eng),
-                                                                             },
-                                                             });
+                                                                                  .position =
+                                                                                          glm::vec3{
+                                                                                                  5 * urd(eng),
+                                                                                                  5 * urd(eng),
+                                                                                                  5 * urd(eng),
+                                                                                          },
+                                                                          });
                         editor_scene->registry.emplace<ModelHandle>(entity, helmet_model);
                     }
                 }
@@ -432,7 +449,8 @@ namespace {
                         };
                         editor_scene->registry.emplace<Transform>(entity, Transform{.position = position});
                         editor_scene->registry.emplace<ModelHandle>(entity, cube_model);
-                        editor_scene->registry.emplace<RigidBody>(entity, RigidBody{.half_extents = glm::vec3{cube_half_extent}});
+                        editor_scene->registry.emplace<RigidBody>(
+                                entity, RigidBody{.half_extents = glm::vec3{cube_half_extent}});
                     }
                 }
             }
@@ -452,13 +470,14 @@ namespace {
 
             for (auto const &position: attractor_positions) {
                 auto const entity = editor_scene->registry.create();
-                editor_scene->registry.emplace<Transform>(entity, Transform{
-                                                             .position = position,
-                                                             .scale = glm::vec3{attractor_half_extent * 2.0F},
-                                                     });
+                editor_scene->registry.emplace<Transform>(entity,
+                                                          Transform{
+                                                                  .position = position,
+                                                                  .scale = glm::vec3{attractor_half_extent * 2.0F},
+                                                          });
                 editor_scene->registry.emplace<ModelHandle>(entity, cube_model);
                 editor_scene->registry.emplace<RigidBody>(entity,
-                                             RigidBody{.half_extents = glm::vec3{attractor_half_extent}});
+                                                          RigidBody{.half_extents = glm::vec3{attractor_half_extent}});
                 editor_scene->registry.emplace<Attractor>(entity, Attractor{.strength = attractor_strength});
             }
         }
@@ -669,7 +688,7 @@ namespace {
         glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
         glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
         glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
-        context.window = glfwCreateWindow(mode->width, mode->height, "VK", monitor, NULL);
+        context.window = glfwCreateWindow(mode->width, mode->height, "VK", NULL, NULL);
 
         if (context.window == nullptr) {
             error("glfwCreateWindow failed");
@@ -1179,9 +1198,6 @@ namespace {
     }
 
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
-        // A single bad submission (e.g. a stale handle after a resize/recreate
-        // race) shouldn't take the whole frame down -- log it and keep going
-        // so the rest of the scene still renders.
         auto view = application.active_scene->registry.view<Transform const, ModelHandle const>();
 
         for (auto [entity, transform, model]: view.each()) {
@@ -1245,69 +1261,102 @@ namespace {
             return false;
         }
 
+        // From here on, begin_frame() has already signalled
+        // frame.image_available (a binary semaphore) and put the frame's
+        // command buffer into the recording state. Both must be retired
+        // through end_frame() -- no matter what happens below -- or that
+        // semaphore is left signalled with nothing to consume it. Signalling
+        // a binary semaphore again before it's been waited on is invalid
+        // Vulkan usage, and doing so on this frame slot's *next*
+        // vkAcquireNextImageKHR is exactly the kind of thing that can stall
+        // a later wait on some drivers rather than fail cleanly -- which
+        // would show up later and non-deterministically, including inside a
+        // vkDeviceWaitIdle at shutdown, since that's the first point
+        // everything is forced to actually finish.
+        auto frame_ok = true;
+
         auto submit_result = submit_scene(application);
 
         if (!submit_result) {
             error("Could not submit scene: {}", describe(submit_result.error()));
 
-            return false;
+            frame_ok = false;
         }
 
-        application.imgui_renderer->begin_frame(gui::ImGuiFramebuffer{frame->extent, frame->format});
+        if (frame_ok) {
+            application.imgui_renderer->begin_frame(gui::ImGuiFramebuffer{frame->extent, frame->format});
 
-        {
-            application.on_ui();
-        }
+            {
+                application.on_ui();
+            }
 
-        application.imgui_renderer->end_frame();
+            application.imgui_renderer->end_frame();
 
-        auto aspect = application.renderer->aspect(frame->frame_index);
-        auto prepare_result =
-                application.renderer->prepare_frame(frame->command_buffer,
-                                                    {
-                                                            .view = application.camera.view(),
-                                                            .projection = application.camera.projection(aspect),
-                                                    },
-                                                    frame->frame_index);
+            auto aspect = application.renderer->aspect(frame->frame_index);
+            auto prepare_result =
+                    application.renderer->prepare_frame(frame->command_buffer,
+                                                        {
+                                                                .view = application.camera.view(),
+                                                                .projection = application.camera.projection(aspect),
+                                                        },
+                                                        frame->frame_index);
 
-        if (!prepare_result) {
-            error("Could not prepare renderer frame: {}", describe(prepare_result.error()));
+            if (!prepare_result) {
+                error("Could not prepare renderer frame: {}", describe(prepare_result.error()));
 
-            return false;
-        }
-
-        if (auto const &timings = application.renderer->last_frame_timings(); timings.valid) {
-            application.timing_x += 1.0F;
-
-            float running_total = 0.0F;
-
-            for (auto stage = static_cast<std::uint32_t>(RenderStage::DepthPrepass); stage < stage_count; ++stage) {
-                running_total += timings.milliseconds[stage];
-                application.timing_buffers[stage].add_point(application.timing_x, running_total);
+                frame_ok = false;
             }
         }
 
-        auto record_result =
-                application.renderer->record_frame(frame->command_buffer,
-                                                   SwapchainImage{
-                                                           .image = frame->image,
-                                                           .view = frame->image_view,
-                                                           .format = frame->format,
-                                                           .extent = frame->extent,
-                                                   },
-                                                   frame->frame_index, [&](VkCommandBuffer c) {
-                                                       application.imgui_renderer->render(c, frame->frame_index);
-                                                   });
+        if (frame_ok) {
+            if (auto const &timings = application.renderer->last_frame_timings(); timings.valid) {
+                application.timing_x += 1.0F;
 
-        if (!record_result) {
-            error("Could not record renderer frame: {}", describe(record_result.error()));
+                float running_total = 0.0F;
 
+                for (auto stage = static_cast<std::uint32_t>(RenderStage::DepthPrepass); stage < stage_count; ++stage) {
+                    running_total += timings.milliseconds[stage];
+                    application.timing_buffers[stage].add_point(application.timing_x, running_total);
+                }
+            }
+
+            auto record_result =
+                    application.renderer->record_frame(frame->command_buffer,
+                                                       SwapchainImage{
+                                                               .image = frame->image,
+                                                               .view = frame->image_view,
+                                                               .format = frame->format,
+                                                               .extent = frame->extent,
+                                                       },
+                                                       frame->frame_index, [&](VkCommandBuffer c) {
+                                                           application.imgui_renderer->render(c, frame->frame_index);
+                                                       });
+
+            if (!record_result) {
+                error("Could not record renderer frame: {}", describe(record_result.error()));
+
+                frame_ok = false;
+            }
+        }
+
+        // Always retire the frame we began, whether or not its content ended
+        // up being usable -- this is what keeps image_available's
+        // signal/wait balanced and in_flight's state honest, regardless of
+        // which step above failed.
+        //
+        // Caveat: this assumes prepare_frame()/record_frame() never return
+        // failure while frame->command_buffer still has an open dynamic
+        // rendering scope (vkCmdBeginRendering without a matching
+        // vkCmdEndRendering) -- ending a command buffer with one open is
+        // itself invalid. If that assumption doesn't hold on the renderer
+        // side, this needs a matching fix there too.
+        auto const end_result = context.swapchain.end_frame(*frame);
+
+        if (!frame_ok) {
             return false;
         }
 
-        auto const result = context.swapchain.end_frame(*frame);
-
-        switch (result) {
+        switch (end_result) {
             case SwapchainFrameResult::success:
             case SwapchainFrameResult::recreated:
                 return true;
@@ -1337,22 +1386,37 @@ namespace {
         });
     }
 
-    auto render_loop(VulkanContext &context, Application &application) noexcept -> void {
+    auto render_loop(std::stop_token stop_token, VulkanContext &context, Application &application) noexcept -> void {
 
         auto renderer_extent = context.swapchain.extent();
         auto last_frame_time = std::chrono::steady_clock::now();
 
-        while (context.running.load(std::memory_order_acquire)) {
+        while (!stop_token.stop_requested()) {
             application.renderer->drain_event_queue();
+
+            for (auto const &event: application.input_queue.drain()) {
+                std::visit([&application](auto const &ev) { application.on_event(ev); }, event);
+            }
 
             auto const width = context.framebuffer_width.load(std::memory_order_acquire);
             auto const height = context.framebuffer_height.load(std::memory_order_acquire);
 
             if (width <= 0 || height <= 0) {
+                // std::condition_variable has no wait() overload that takes a
+                // stop_token directly -- that overload only exists on
+                // condition_variable_any. A hand-registered stop_callback
+                // gets the same effect: it fires notify_all() the moment
+                // request_stop() is called (synchronously, even if that
+                // already happened before we get here), and the predicate
+                // below re-checks stop_requested() itself, so there's no
+                // missed-wakeup window either way.
+                std::stop_callback const wake_on_stop{stop_token,
+                                                      [&context] { context.render_wake_condition.notify_all(); }};
+
                 std::unique_lock lock{context.render_wake_mutex};
 
-                context.render_wake_condition.wait(lock, [&context] {
-                    return !context.running.load(std::memory_order_acquire) ||
+                context.render_wake_condition.wait(lock, [&context, &stop_token] {
+                    return stop_token.stop_requested() ||
                            (context.framebuffer_width.load(std::memory_order_acquire) > 0 &&
                             context.framebuffer_height.load(std::memory_order_acquire) > 0);
                 });
@@ -1370,11 +1434,23 @@ namespace {
 
             request_resize_if_needed(context, width, height);
 
-            if (!draw(context, application)) {
-                context.running.store(false, std::memory_order_release);
-
-                glfwPostEmptyEvent();
+            // A stop may have been requested while we were doing the above --
+            // don't start a fresh present against a window that may already
+            // be tearing down.
+            if (stop_token.stop_requested()) {
                 break;
+            }
+
+            if (!draw(context, application)) {
+                // running is written only here, read only by main() after
+                // join() -- unlike the old design, main never writes to it,
+                // so there's exactly one writer for "did the render thread
+                // fail" and exactly one writer (main, via request_stop())
+                // for "please stop".
+                context.running.store(false, std::memory_order_release);
+                glfwPostEmptyEvent();
+
+                return;
             }
 
             auto const swapchain_extent = context.swapchain.extent();
@@ -1386,21 +1462,28 @@ namespace {
                     error("Could not resize renderer: {}", describe(resize_result.error()));
 
                     context.running.store(false, std::memory_order_release);
-
                     glfwPostEmptyEvent();
-                    break;
+
+                    return;
                 }
 
                 renderer_extent = swapchain_extent;
             }
         }
 
-        info("render_loop: exiting loop");
+        info("render_loop: exiting ({})", stop_token.stop_requested() ? "stop requested" : "fatal error");
     }
 
+    struct CursorTracker {
+        double last_x = 0.0;
+        double last_y = 0.0;
+        bool has_last_position = false;
+    };
+
     struct WindowData {
-        VulkanContext *ctx;
-        Application *app;
+        VulkanContext *ctx = nullptr;
+        Application *app = nullptr;
+        CursorTracker cursor{};
     };
 
     auto framebuffer_size_callback(GLFWwindow *window, int width, int height) noexcept -> void {
@@ -1410,9 +1493,12 @@ namespace {
             return;
         }
 
-        context->framebuffer_width.store(width, std::memory_order_release);
-        context->framebuffer_height.store(height, std::memory_order_release);
-        context->framebuffer_dirty.store(true, std::memory_order_release);
+        {
+            std::lock_guard lock{context->render_wake_mutex};
+            context->framebuffer_width.store(width, std::memory_order_relaxed);
+            context->framebuffer_height.store(height, std::memory_order_relaxed);
+            context->framebuffer_dirty.store(true, std::memory_order_relaxed);
+        }
         context->render_wake_condition.notify_one();
     }
 
@@ -1420,17 +1506,35 @@ namespace {
         auto *context = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->ctx;
 
         if (context != nullptr) {
+            // Fires synchronously during e.g. a Windows live-resize drag,
+            // while glfwPollEvents() on the main thread is stuck inside the
+            // OS's modal sizing loop. Waking the render thread here is what
+            // keeps frames presenting at the new size while the drag is
+            // still in progress, instead of the window appearing frozen
+            // until the mouse button is released.
             context->render_wake_condition.notify_one();
         }
     }
 
+    // event_callback, mouse_button_callback, cursor_position_callback and
+    // scroll_callback all run on the main thread (GLFW dispatches them from
+    // whichever thread calls glfwPollEvents/glfwWaitEvents). They no longer
+    // call Application::on_event() directly -- that mutates camera state
+    // that the render thread also touches every frame. Instead they push
+    // onto Application::input_queue, and only the render thread ever calls
+    // on_event(), once per frame, after draining it.
+
     auto event_callback(GLFWwindow *window, int key, int, int action, int mods) -> void {
         auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
-        if (action == GLFW_PRESS && app->on_event(KeyPressedEvent{key, mods})) {
+        if (app == nullptr) {
+            return;
         }
 
-        if (action == GLFW_RELEASE && app->on_event(KeyReleasedEvent{key, mods})) {
+        if (action == GLFW_PRESS) {
+            app->input_queue.push(KeyPressedEvent{key, mods});
+        } else if (action == GLFW_RELEASE) {
+            app->input_queue.push(KeyReleasedEvent{key, mods});
         }
     }
 
@@ -1444,51 +1548,58 @@ namespace {
         // Capture + hide the cursor for the duration of the drag so it can't
         // leave the window mid-look; GLFW_CURSOR_DISABLED also switches to
         // unbounded virtual cursor movement, which is what we want for a
-        // free-look camera rather than clamping at the screen edge.
+        // free-look camera rather than clamping at the screen edge. This
+        // itself is a GLFW/window call, so it stays on the main thread --
+        // only the resulting mouse_dragging state is handed to the render
+        // thread via the queue.
         if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT) {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-            app->on_event(MouseButtonPressedEvent{button, mods});
+            app->input_queue.push(MouseButtonPressedEvent{button, mods});
         } else if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_RIGHT) {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 
-            app->on_event(MouseButtonReleasedEvent{button, mods});
+            app->input_queue.push(MouseButtonReleasedEvent{button, mods});
         }
     }
 
     auto cursor_position_callback(GLFWwindow *window, double x_position, double y_position) -> void {
-        auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
+        auto *window_data = static_cast<WindowData *>(glfwGetWindowUserPointer(window));
 
-        if (app == nullptr) {
+        if (window_data == nullptr || window_data->app == nullptr) {
             return;
         }
+
+        auto &cursor = window_data->cursor;
 
         // Swallow the first callback after (re)acquiring a cursor position:
         // without a previous sample the delta would be "distance from
         // wherever the cursor happened to be", producing a large spurious
-        // look jump on the first drag frame.
-        if (!app->has_last_mouse_position) {
-            app->last_mouse_x = x_position;
-            app->last_mouse_y = y_position;
-            app->has_last_mouse_position = true;
+        // look jump on the first drag frame. This tracker is main-thread-only
+        // now (it lives on WindowData, not Application), so it needs no
+        // synchronization at all -- only the derived delta is queued.
+        if (!cursor.has_last_position) {
+            cursor.last_x = x_position;
+            cursor.last_y = y_position;
+            cursor.has_last_position = true;
 
             return;
         }
 
-        auto const delta_x = x_position - app->last_mouse_x;
-        auto const delta_y = y_position - app->last_mouse_y;
+        auto const delta_x = x_position - cursor.last_x;
+        auto const delta_y = y_position - cursor.last_y;
 
-        app->last_mouse_x = x_position;
-        app->last_mouse_y = y_position;
+        cursor.last_x = x_position;
+        cursor.last_y = y_position;
 
-        app->on_event(MouseMovedEvent{delta_x, delta_y});
+        window_data->app->input_queue.push(MouseMovedEvent{delta_x, delta_y});
     }
 
     auto scroll_callback(GLFWwindow *window, double x_offset, double y_offset) -> void {
         auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
         if (app != nullptr) {
-            app->on_event(MouseScrolledEvent{x_offset, y_offset});
+            app->input_queue.push(MouseScrolledEvent{x_offset, y_offset});
         }
     }
 
@@ -1556,10 +1667,32 @@ namespace {
         glfwTerminate();
     }
 
+    // vkDeviceWaitIdle has no timeout parameter -- a genuinely non-responding
+    // GPU hangs it forever with no way to interrupt the wait from this
+    // thread. Running it as an async task and giving up on *waiting for it*
+    // after a bound at least lets the process exit instead of hanging. Once
+    // we've given up, continuing on to call more Vulkan destroy functions
+    // against a device the driver may still be touching is itself unsafe, so
+    // this terminates immediately rather than attempting further cleanup.
+    auto wait_idle_bounded(VkDevice device, std::string_view label) noexcept -> VkResult {
+        constexpr auto timeout = std::chrono::seconds{3};
+
+        auto future = std::async(std::launch::async, [device] { return vkDeviceWaitIdle(device); });
+
+        if (future.wait_for(timeout) != std::future_status::ready) {
+            error("{}: vkDeviceWaitIdle did not return within {} -- the GPU is not responding. Exiting immediately.",
+                  label, timeout);
+
+            std::_Exit(EXIT_FAILURE);
+        }
+
+        return future.get();
+    }
+
     auto destroy_application(VulkanContext &context, Application &application) noexcept -> void {
         if (context.device != VK_NULL_HANDLE) {
             info("destroy_application: vkDeviceWaitIdle");
-            auto const result = vkDeviceWaitIdle(context.device);
+            auto const result = wait_idle_bounded(context.device, "destroy_application");
             info("destroy_application: vkDeviceWaitIdle returned");
 
             if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
@@ -1580,13 +1713,6 @@ namespace {
 } // namespace
 
 static std::atomic<bool> g_running{true};
-// On Windows, signal(SIGINT, ...) runs the handler on a CRT-spawned thread,
-// not the main thread -- so this races the main/render threads for real.
-// Keep it to signal-safe-ish operations only (atomic store + the one GLFW
-// call docs promise is safe off-thread): calling info() here took spdlog's
-// console-sink mutex from that ad-hoc thread, and if Windows tore the thread
-// down mid-call, the mutex stayed locked forever, wedging every later log
-// call on the main/render threads. That's the ~50% Ctrl+C hang.
 static auto ctrl_c_handler(int) -> void {
     g_running.store(false, std::memory_order_relaxed);
     glfwPostEmptyEvent();
@@ -1619,29 +1745,28 @@ auto main() -> int {
     }
 
     application.on_startup();
-    context.render_wake_condition.notify_one();
 
-    std::thread render_thread{[&context, &application] {
-        render_loop(context, application);
-        info("render thread lambda: returning");
-    }};
-
+    std::jthread render_thread{render_loop, std::ref(context), std::ref(application)};
 
     info("Initialization complete; close the window to exit");
 
+    // context.running has a single writer now -- the render thread, only on
+    // a fatal error -- and a single reader, this loop. Requesting shutdown
+    // is a completely separate concern handled below via the jthread's own
+    // stop_token, so there's no longer a flag that both threads write.
     while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire) &&
            glfwWindowShouldClose(context.window) != GLFW_TRUE) {
         glfwWaitEvents();
     }
 
     info("Shutdown: requesting render thread stop");
-    context.running.store(false, std::memory_order_release);
-    context.render_wake_condition.notify_one();
+    render_thread.request_stop();
+
     info("Shutdown: joining render thread");
     render_thread.join();
     info("Shutdown: render thread joined");
 
-    auto const render_failed = glfwWindowShouldClose(context.window) != GLFW_TRUE;
+    auto const render_failed = !context.running.load(std::memory_order_acquire);
 
     info("Shutdown: destroying application");
     destroy_application(context, application);

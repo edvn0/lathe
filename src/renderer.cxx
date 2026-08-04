@@ -13,7 +13,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <vulkan/vulkan_core.h>
 
 #include "buffer.hxx"
 #include "context.hxx"
@@ -25,9 +24,6 @@
 #include "slang_compiler.hxx"
 
 namespace {
-    // Runs `action` when it goes out of scope. Used to roll back a
-    // partially-constructed Renderer via a single guard instead of a
-    // manual destroy() call on every failure branch.
     template<typename Action>
     struct FinalAction {
         Action action;
@@ -462,10 +458,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     samples_ = create_info.samples;
     extent_ = create_info.extent;
 
-    // destroy() is safe to call on a partially-initialized Renderer (every
-    // sub-object's destroy() is null-guarded), so a single scope guard rolls
-    // back whichever prefix of initialization succeeded instead of every
-    // failure branch repeating its own cleanup.
     auto rollback_on_failure = true;
     auto const rollback_guard = FinalAction{[this, &rollback_on_failure] {
         if (rollback_on_failure) {
@@ -674,7 +666,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     auto const emissive = image_storage_.emissive();
 
     constexpr auto def_mat = MaterialHandle{0, 1};
-    const auto mat = GpuMaterial{
+    const GpuMaterial mat {
             .base_colour_factor =
                     {
                             1.0F,
@@ -778,9 +770,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             return std::unexpected(make_device_error(upload.error()));
         }
 
-        // Moved into `frame` immediately so the blanket destroy() (run by
-        // rollback_guard on any later failure in this loop) finds it via
-        // frames_ without a manual pre-destroy chain.
         frame.upload_buffer = std::move(*upload);
 
         auto draws = Buffer::create(context_, BufferCreateInfo{
@@ -828,8 +817,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.indirect_buffer = std::move(*indirect);
 
-        auto const target_name = std::string{"renderer.forward_target_"} + std::to_string(frame_index);
-
+        const auto target_name = std::format("renderer.forward_target_{}", frame_index);
         auto forward_target = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
                                                                             .extent = create_info.extent,
                                                                             .hdr_format = create_info.hdr_format,
@@ -913,9 +901,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
 auto Renderer::destroy() noexcept -> void {
     pipeline_graph_.destroy();
-
     gpu_resource_table_.destroy();
-
     sampler_storage_.destroy();
 
     for (auto &query: timestamp_queries_) {
@@ -945,17 +931,9 @@ auto Renderer::destroy() noexcept -> void {
     }
 
     frames_.clear();
-
     material_storage_.destroy();
-
-    /*
-     * Forward targets have already returned their image
-     * handles, so the remaining images can now be destroyed.
-     */
     image_storage_.destroy();
-
     geometry_arena_.buffer.destroy();
-
     compiler.destroy();
 
     clear_submissions();

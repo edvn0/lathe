@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdlib>
 #include <format>
+#include <future>
 #include <limits>
 #include <string_view>
 #include <utility>
@@ -47,6 +50,28 @@ namespace {
                 .kind = kind,
                 .context = ErrorContext{.message = FlyString{message}},
         };
+    }
+
+    // vkDeviceWaitIdle has no timeout parameter -- a genuinely non-responding
+    // GPU hangs it forever with no way to interrupt the wait from this
+    // thread. Running it as an async task and giving up on *waiting for it*
+    // after a bound at least lets the process exit instead of hanging. Once
+    // we've given up, continuing on to call more Vulkan destroy functions
+    // against a device the driver may still be touching is itself unsafe, so
+    // this terminates immediately rather than attempting further cleanup.
+    auto wait_idle_bounded(VkDevice device, std::string_view label) noexcept -> VkResult {
+        constexpr auto timeout = std::chrono::seconds{3};
+
+        auto future = std::async(std::launch::async, [device] { return vkDeviceWaitIdle(device); });
+
+        if (future.wait_for(timeout) != std::future_status::ready) {
+            error("{}: vkDeviceWaitIdle did not return within {} -- the GPU is not responding. Exiting immediately.",
+                  label, timeout);
+
+            std::_Exit(EXIT_FAILURE);
+        }
+
+        return future.get();
     }
 
 } // namespace
@@ -317,7 +342,7 @@ auto Swapchain::end_frame(SwapchainFrame const &active_frame) noexcept -> Swapch
 
 auto Swapchain::destroy() noexcept -> void {
     if (device_ != VK_NULL_HANDLE) {
-        const VkResult wait_result = vkDeviceWaitIdle(device_);
+        const VkResult wait_result = wait_idle_bounded(device_, "Swapchain::destroy");
 
         if (wait_result != VK_SUCCESS && wait_result != VK_ERROR_DEVICE_LOST) {
             report_vk_error("vkDeviceWaitIdle(swapchain destroy)", wait_result);
