@@ -8,6 +8,7 @@
 #include <fstream>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -37,6 +38,18 @@ namespace {
         VkDeviceAddress material_buffer_address;
         VkDeviceAddress ubo_buffer_address;
     };
+
+    struct ShadowPushConstants {
+        VkDeviceAddress draw_buffer_address;
+        VkDeviceAddress transform_buffer_address;
+        VkDeviceAddress material_buffer_address;
+        VkDeviceAddress ubo_buffer_address;
+        std::uint32_t cascade_index;
+        std::uint32_t padding;
+    };
+
+    static_assert(sizeof(ShadowPushConstants) == 40);
+    static_assert(offsetof(ShadowPushConstants, cascade_index) == 32);
 
     struct CompositePushConstants {
         std::uint32_t hdr_texture_index;
@@ -203,6 +216,84 @@ namespace {
         vkCmdPipelineBarrier2(command_buffer, &dependency_info);
     }
 
+    auto transition_shadow_atlas_to_attachment(VkCommandBuffer command_buffer, Image const &atlas) noexcept -> void {
+        VkImageMemoryBarrier2 const barrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                .srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                .dstStageMask =
+                        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                .dstAccessMask =
+                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = atlas.image(),
+                .subresourceRange =
+                        VkImageSubresourceRange{
+                                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                .baseMipLevel = 0,
+                                .levelCount = atlas.mip_levels(),
+                                .baseArrayLayer = 0,
+                                .layerCount = atlas.array_layers(),
+                        },
+        };
+
+        VkDependencyInfo const dependency_info{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = nullptr,
+                .dependencyFlags = 0,
+                .memoryBarrierCount = 0,
+                .pMemoryBarriers = nullptr,
+                .bufferMemoryBarrierCount = 0,
+                .pBufferMemoryBarriers = nullptr,
+                .imageMemoryBarrierCount = 1,
+                .pImageMemoryBarriers = &barrier,
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
+
+    auto transition_shadow_atlas_to_shader_read(VkCommandBuffer command_buffer, Image const &atlas) noexcept -> void {
+        VkImageMemoryBarrier2 const barrier{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                .srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = atlas.image(),
+                .subresourceRange =
+                        VkImageSubresourceRange{
+                                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                .baseMipLevel = 0,
+                                .levelCount = atlas.mip_levels(),
+                                .baseArrayLayer = 0,
+                                .layerCount = atlas.array_layers(),
+                        },
+        };
+
+        VkDependencyInfo const dependency_info{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = nullptr,
+                .dependencyFlags = 0,
+                .memoryBarrierCount = 0,
+                .pMemoryBarriers = nullptr,
+                .bufferMemoryBarrierCount = 0,
+                .pBufferMemoryBarriers = nullptr,
+                .imageMemoryBarrierCount = 1,
+                .pImageMemoryBarriers = &barrier,
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    }
+
     auto transition_swapchain_to_attachment(VkCommandBuffer command_buffer, VkImage image) noexcept -> void {
         VkImageMemoryBarrier2 const barrier{
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -320,6 +411,61 @@ namespace {
         vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
     }
 
+    // Plain (non-inverted) viewport: reverse-Z here is baked into
+    // cascade_view_projection via a swapped near/far in the orthographic
+    // projection, not via the viewport depth range the main pass uses.
+    // Doing both would cancel out. See shadow_cascades.cxx.
+    auto set_shadow_dynamic_state(VkCommandBuffer command_buffer, std::uint32_t cascade, std::uint32_t resolution,
+                                  float depth_bias_constant, float depth_bias_slope) noexcept -> void {
+        VkViewport const viewport{
+                .x = static_cast<float>(cascade * resolution),
+                .y = 0.0F,
+                .width = static_cast<float>(resolution),
+                .height = static_cast<float>(resolution),
+                .minDepth = 0.0F,
+                .maxDepth = 1.0F,
+        };
+
+        VkRect2D const scissor{
+                .offset = {static_cast<std::int32_t>(cascade * resolution), 0},
+                .extent = {resolution, resolution},
+        };
+
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+        // Mandatory, not decorative: without it rasterization bleeds into
+        // neighbouring cascade tiles in the shared atlas.
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+        vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+
+        vkCmdSetPrimitiveRestartEnable(command_buffer, VK_FALSE);
+
+        vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
+
+        // No Y flip in this pass inverts framebuffer-space winding relative
+        // to the main pass, so front-face culling would cull the wrong side.
+        // CULL_MODE_NONE sidesteps the question -- the standard robust
+        // choice for shadow casters.
+        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+
+        vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_CLOCKWISE);
+
+        vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
+
+        vkCmdSetDepthWriteEnable(command_buffer, VK_TRUE);
+
+        vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
+
+        vkCmdSetDepthBiasEnable(command_buffer, VK_TRUE);
+
+        // Negative: bias adds to the fragment's depth, and in reverse-Z
+        // "farther from the light" is smaller.
+        vkCmdSetDepthBias(command_buffer, depth_bias_constant, 0.0F, depth_bias_slope);
+
+        vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
+    }
+
     auto set_composite_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent) noexcept -> void {
         VkViewport const viewport{
                 .x = 0.0F,
@@ -414,6 +560,13 @@ namespace {
         return RendererError{
                 .type = RendererErrorType::model_load_error,
                 .cause = ErrorCause{Boxed<ModelLoadError>{std::move(error)}},
+        };
+    }
+
+    auto make_image_error(ImageStorageError error) -> RendererError {
+        return RendererError{
+                .type = RendererErrorType::image_error,
+                .cause = ErrorCause{Boxed<ImageStorageError>{std::move(error)}},
         };
     }
 
@@ -578,6 +731,40 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         forward_pipeline_ = *registered_forward;
+    }
+    {
+        VkPushConstantRange const shadow_pc{
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                .offset = 0,
+                .size = sizeof(ShadowPushConstants),
+        };
+
+        auto registered_shadow = pipeline_graph_.register_pipeline(
+                compiler, PipelineRegisterInfo{
+                                  .stages =
+                                          {
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/shadow_depth.slang",
+                                                          .entry_point = "mainVs",
+                                                          .stage = renderer::ShaderStage::vertex,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                          },
+                                  .additional_descriptor_set_layouts = {},
+                                  .push_constant_ranges = {shadow_pc},
+                                  .colour_formats = {},
+                                  .depth_format = VK_FORMAT_D32_SFLOAT,
+                                  .stencil_format = VK_FORMAT_UNDEFINED,
+                                  .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .debug_name = "renderer.shadow_pipeline",
+                          });
+
+        if (!registered_shadow) {
+            return std::unexpected(make_pipeline_graph_error(registered_shadow.error()));
+        }
+
+        shadow_pipeline_ = *registered_shadow;
     }
     {
         VkPushConstantRange const depth_prepass_pc{
@@ -834,6 +1021,34 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         frame.forward_target = std::move(*forward_target);
+
+        const auto shadow_atlas_name = std::format("renderer.shadow_atlas_{}", frame_index);
+        auto shadow_atlas = image_storage_.create_image(ImageCreateInfo{
+                .extent =
+                        VkExtent3D{
+                                .width = shadow_atlas_width,
+                                .height = shadow_atlas_height,
+                                .depth = 1,
+                        },
+                .format = VK_FORMAT_D32_SFLOAT,
+                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+                .image_type = VK_IMAGE_TYPE_2D,
+                .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                .flags = 0,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .debug_name = shadow_atlas_name,
+        });
+
+        if (!shadow_atlas) {
+            return std::unexpected(make_image_error(shadow_atlas.error()));
+        }
+
+        frame.shadow_atlas = *shadow_atlas;
         frame.draw_upload_offset = 0;
         frame.transform_upload_offset = transform_offset;
         frame.indirect_upload_offset = indirect_offset;
@@ -917,6 +1132,11 @@ auto Renderer::destroy() noexcept -> void {
 
     for (auto &frame: frames_) {
         frame.forward_target.destroy(image_storage_);
+
+        if (frame.shadow_atlas.valid()) {
+            static_cast<void>(image_storage_.destroy_image(frame.shadow_atlas));
+            frame.shadow_atlas = ImageHandle{};
+        }
 
         frame.indirect_buffer.destroy();
         frame.transform_buffer.destroy();
@@ -1552,13 +1772,41 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
     auto upload_result = upload_frame_data(command_buffer, frame);
 
-    auto &&[view, projection] = matrices;
+    auto const &view = matrices.view;
+    auto const &projection = matrices.projection;
+
+    auto const cascades = fit_shadow_cascades(ShadowCascadeFitInput{
+            .camera_view = view,
+            .camera_near = matrices.near_clip,
+            .camera_far = matrices.far_clip,
+            .vertical_fov_radians = matrices.vertical_fov_radians,
+            .aspect_ratio = matrices.aspect_ratio,
+            .light_direction = glm::normalize(light_.direction),
+            .settings = shadow_settings_.cascades,
+    });
+
     UBO ubo{
             .view_projection = projection * view,
             .view = view,
             .projection = projection,
             .camera_position = glm::vec3(glm::inverse(view)[3]),
             .fog_colour = glm::vec3{0.5F},
+            .cascade_view_projection = cascades.view_projection,
+            .cascade_split_far = glm::make_vec4(cascades.split_far.data()),
+            .cascade_texel_world = glm::make_vec4(cascades.texel_world.data()),
+            .cascade_depth_scale = glm::make_vec4(cascades.depth_scale.data()),
+            .light_direction = glm::normalize(light_.direction),
+            .light_intensity = light_.intensity,
+            .light_colour = light_.colour,
+            .shadow_normal_offset_texels = shadow_settings_.normal_offset_texels,
+            .shadow_atlas_texture = frame.shadow_atlas.index,
+            .shadow_sampler = sampler_storage_.shadow_compare().index,
+            .shadow_depth_bias_world = shadow_settings_.depth_bias_world,
+            .shadow_pcf_radius_texels = shadow_settings_.pcf_radius_texels,
+            .cascade_count = shadow_cascade_count,
+            .shadow_atlas_texel_u = 1.0F / static_cast<float>(shadow_atlas_width),
+            .shadow_atlas_texel_v = 1.0F / static_cast<float>(shadow_atlas_height),
+            .shadow_debug_cascade_tint = shadow_settings_.debug_cascade_tint ? 1U : 0U,
     };
     if (!ubos_[frame_index].write(0, std::as_bytes(std::span{&ubo, 1}))) {
         clear_submissions();
@@ -1652,6 +1900,16 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
+    auto const *shadow_pipeline = pipeline_graph_.resolve(shadow_pipeline_);
+    if (shadow_pipeline == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    auto const *shadow_atlas = image_storage_.get(frame.shadow_atlas);
+    if (shadow_atlas == nullptr || !shadow_atlas->valid()) {
+        return std::unexpected(make_error(RendererErrorType::image_error));
+    }
+
     auto const target_extent = frame.forward_target.extent();
 
     if (target_extent.width == 0 || target_extent.height == 0 || hdr->extent_2d().width != target_extent.width ||
@@ -1659,6 +1917,83 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         depth->extent_2d().height != target_extent.height) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
+
+#pragma region Shadow pass
+    {
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
+                             static_cast<std::uint32_t>(RenderStage::ShadowPass) * 2);
+
+        transition_shadow_atlas_to_attachment(command_buffer, *shadow_atlas);
+
+        VkRenderingAttachmentInfo shadow_attachment{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext = nullptr,
+                .imageView = shadow_atlas->view(),
+                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                .resolveMode = VK_RESOLVE_MODE_NONE,
+                .resolveImageView = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                // Reverse-Z far value -- "nothing occludes" until a caster writes into it.
+                .clearValue = {.depthStencil = {.depth = 0.0F, .stencil = 0}},
+        };
+
+        VkRenderingInfo const shadow_rendering_info{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .renderArea =
+                        VkRect2D{
+                                .offset = {0, 0},
+                                .extent = {shadow_atlas_width, shadow_atlas_height},
+                        },
+                .layerCount = 1,
+                .viewMask = 0,
+                .colorAttachmentCount = 0,
+                .pColorAttachments = nullptr,
+                .pDepthAttachment = &shadow_attachment,
+                .pStencilAttachment = nullptr,
+        };
+
+        vkCmdBeginRendering(command_buffer, &shadow_rendering_info);
+        vkCmdBindPipeline(command_buffer, shadow_pipeline->bind_point(), shadow_pipeline->pipeline());
+        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 shadow_pipeline->layout());
+        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+        ShadowPushConstants pc{
+                .draw_buffer_address = frame.draw_buffer.device_address,
+                .transform_buffer_address = frame.transform_buffer.device_address,
+                .material_buffer_address = material_storage_.device_address(),
+                .ubo_buffer_address = ubos_[frame_index].device_address,
+                .cascade_index = 0,
+                .padding = 0,
+        };
+
+        vkCmdPushConstants(command_buffer, shadow_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(ShadowPushConstants), &pc);
+
+        for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+            set_shadow_dynamic_state(command_buffer, cascade, shadow_cascade_resolution,
+                                     shadow_settings_.depth_bias_constant, shadow_settings_.depth_bias_slope);
+
+            vkCmdPushConstants(command_buffer, shadow_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT,
+                               offsetof(ShadowPushConstants, cascade_index), sizeof(std::uint32_t), &cascade);
+
+            if (frame.indirect_command_count != 0) {
+                vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0,
+                                         frame.indirect_command_count, sizeof(VkDrawIndexedIndirectCommand));
+            }
+        }
+
+        vkCmdEndRendering(command_buffer);
+        transition_shadow_atlas_to_shader_read(command_buffer, *shadow_atlas);
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, frame_query.query_pool,
+                             (static_cast<std::uint32_t>(RenderStage::ShadowPass) * 2) + 1);
+    }
+#pragma endregion
 
     transition_forward_target_to_attachments(command_buffer, *hdr, *depth, is_msaa ? resolved_hdr : nullptr,
                                              is_msaa ? resolved_depth : nullptr);

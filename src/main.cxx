@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <expected>
@@ -183,7 +184,7 @@ namespace {
                     ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
                     ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x, ImGuiCond_Always);
 
-                    constexpr auto first_stage = static_cast<std::uint32_t>(RenderStage::DepthPrepass);
+                    constexpr auto first_stage = static_cast<std::uint32_t>(RenderStage::ShadowPass);
 
                     for (std::uint32_t stage = first_stage; stage < stage_count; ++stage) {
                         auto const &buf = timing_buffers[stage];
@@ -217,6 +218,42 @@ namespace {
                     }
 
                     ImPlot::EndPlot();
+                }
+            });
+
+            widget("Lighting", [&] {
+                auto light = renderer->directional_light();
+                auto shadows = renderer->shadow_settings();
+                bool dirty = false;
+
+                dirty |= ImGui::SliderFloat("Azimuth", &light_azimuth_degrees, -180.0F, 180.0F, "%.1f deg");
+                // Clamped so the light never goes horizontal -- that
+                // degenerates the ortho depth range in shadow_cascades.cxx.
+                dirty |= ImGui::SliderFloat("Elevation", &light_elevation_degrees, 5.0F, 89.0F, "%.1f deg");
+                dirty |= ImGui::ColorEdit3("Colour", &light.colour.x);
+                dirty |= ImGui::SliderFloat("Intensity", &light.intensity, 0.0F, 10.0F);
+
+                ImGui::SeparatorText("Shadows");
+                dirty |= ImGui::SliderFloat("Split lambda", &shadows.cascades.split_lambda, 0.0F, 1.0F);
+                dirty |= ImGui::SliderFloat("Shadow distance", &shadows.cascades.shadow_distance, 20.0F, 500.0F);
+                dirty |= ImGui::SliderFloat("PCF radius", &shadows.pcf_radius_texels, 0.5F, 4.0F);
+                dirty |= ImGui::SliderFloat("Normal offset", &shadows.normal_offset_texels, 0.0F, 8.0F);
+                dirty |= ImGui::SliderFloat("Depth bias", &shadows.depth_bias_world, 0.0F, 0.5F);
+                dirty |= ImGui::SliderFloat("Bias slope", &shadows.depth_bias_slope, -8.0F, 0.0F);
+                dirty |= ImGui::Checkbox("Cascade tint", &shadows.debug_cascade_tint);
+
+                if (dirty) {
+                    auto const azimuth = glm::radians(light_azimuth_degrees);
+                    auto const elevation = glm::radians(light_elevation_degrees);
+
+                    light.direction = glm::normalize(glm::vec3{
+                            std::cos(elevation) * std::cos(azimuth),
+                            std::sin(elevation),
+                            std::cos(elevation) * std::sin(azimuth),
+                    });
+
+                    renderer->set_directional_light(light);
+                    renderer->set_shadow_settings(shadows);
                 }
             });
         }
@@ -260,6 +297,9 @@ namespace {
         float timing_x = 0.0F;
 
         EditorCamera camera;
+
+        float light_azimuth_degrees = 30.0F;
+        float light_elevation_degrees = 55.0F;
 
         bool mouse_dragging = false;
 
@@ -1352,6 +1392,11 @@ namespace {
                                                         {
                                                                 .view = application.camera.view(),
                                                                 .projection = application.camera.projection(aspect),
+                                                                .near_clip = application.camera.near_clip(),
+                                                                .far_clip = application.camera.far_clip(),
+                                                                .vertical_fov_radians = glm::radians(
+                                                                        application.camera.field_of_view_degrees()),
+                                                                .aspect_ratio = aspect,
                                                         },
                                                         frame->frame_index);
 
@@ -1368,7 +1413,7 @@ namespace {
 
                 float running_total = 0.0F;
 
-                for (auto stage = static_cast<std::uint32_t>(RenderStage::DepthPrepass); stage < stage_count; ++stage) {
+                for (auto stage = static_cast<std::uint32_t>(RenderStage::ShadowPass); stage < stage_count; ++stage) {
                     running_total += timings.milliseconds[stage];
                     application.timing_buffers[stage].add_point(application.timing_x, running_total);
                 }

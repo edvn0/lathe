@@ -6,6 +6,8 @@
 
 #include <glm/glm.hpp>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -30,13 +32,16 @@
 #include "sampler_storage.hxx"
 #include "screenshot.hxx"
 #include "shader_change_queue.hxx"
+#include "shadow_cascades.hxx"
 #include "slang_compiler.hxx"
 
-enum class RenderStage : std::uint32_t { FullFrame = 0, DepthPrepass, ForwardPass, Composition, Count };
+enum class RenderStage : std::uint32_t { FullFrame = 0, ShadowPass, DepthPrepass, ForwardPass, Composition, Count };
 constexpr auto to_string(RenderStage stage) -> std::string_view {
     switch (stage) {
         case RenderStage::FullFrame:
             return "Full Frame";
+        case RenderStage::ShadowPass:
+            return "Shadow Pass";
         case RenderStage::DepthPrepass:
             return "Depth prepass";
         case RenderStage::ForwardPass:
@@ -126,7 +131,34 @@ struct UBO {
     glm::vec3 fog_colour;
     float fog_extinction = 0.003F;
     float fog_inscattering = 1.0F;
+
+    // ---- PSSM cascades ----
+    std::array<glm::mat4, shadow_cascade_count> cascade_view_projection{};
+    glm::vec4 cascade_split_far{}; // view-space far distance per cascade
+    glm::vec4 cascade_texel_world{}; // world-space size of one shadow texel per cascade
+    glm::vec4 cascade_depth_scale{}; // 1 / (z_far - z_near) per cascade
+
+    glm::vec3 light_direction{0.4F, 0.8F, 0.25F}; // normalized, points from surface to light
+    float light_intensity = 3.0F;
+    glm::vec3 light_colour{1.0F, 0.97F, 0.92F};
+    float shadow_normal_offset_texels = 2.0F;
+
+    std::uint32_t shadow_atlas_texture = 0; // bindless sampled_2d index
+    std::uint32_t shadow_sampler = 0; // bindless comparison_samplers index
+    float shadow_depth_bias_world = 0.02F;
+    float shadow_pcf_radius_texels = 1.0F;
+
+    std::uint32_t cascade_count = shadow_cascade_count;
+    float shadow_atlas_texel_u = 1.0F / static_cast<float>(shadow_atlas_width);
+    float shadow_atlas_texel_v = 1.0F / static_cast<float>(shadow_atlas_height);
+    std::uint32_t shadow_debug_cascade_tint = 0;
 };
+
+static_assert(sizeof(UBO) == 592,
+             "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(std::is_trivially_copyable_v<UBO>);
+static_assert(offsetof(UBO, cascade_view_projection) == 224);
+static_assert(offsetof(UBO, light_direction) == 528);
 
 struct RendererError {
     RendererErrorType type = RendererErrorType::invalid_argument;
@@ -226,7 +258,34 @@ struct Renderer {
     struct CameraMatrices {
         glm::mat4 view;
         glm::mat4 projection;
+        float near_clip = 0.1F;
+        float far_clip = 10000.0F;
+        float vertical_fov_radians = 1.0471976F;
+        float aspect_ratio = 1.7777778F;
     };
+
+    struct DirectionalLight {
+        glm::vec3 direction{0.4F, 0.8F, 0.25F}; // normalized, points from surface to light
+        glm::vec3 colour{1.0F, 0.97F, 0.92F};
+        float intensity = 3.0F;
+    };
+
+    struct ShadowSettings {
+        ShadowCascadeSettings cascades{};
+        float normal_offset_texels = 2.0F;
+        float depth_bias_world = 0.02F;
+        float pcf_radius_texels = 1.0F;
+        float depth_bias_constant = -1.0F; // negative: reverse-Z
+        float depth_bias_slope = -2.5F;
+        bool debug_cascade_tint = false;
+    };
+
+    auto set_directional_light(DirectionalLight const &light) noexcept -> void { light_ = light; }
+    [[nodiscard]] auto directional_light() const noexcept -> DirectionalLight const & { return light_; }
+
+    auto set_shadow_settings(ShadowSettings const &settings) noexcept -> void { shadow_settings_ = settings; }
+    [[nodiscard]] auto shadow_settings() const noexcept -> ShadowSettings const & { return shadow_settings_; }
+
     [[nodiscard]]
     auto prepare_frame(VkCommandBuffer command_buffer, const CameraMatrices &, std::uint32_t frame_index)
             -> std::expected<void, RendererError>;
@@ -347,6 +406,8 @@ private:
 
         ForwardTarget forward_target{};
 
+        ImageHandle shadow_atlas{};
+
         VkDeviceSize draw_upload_offset = 0;
         VkDeviceSize transform_upload_offset = 0;
         VkDeviceSize indirect_upload_offset = 0;
@@ -418,10 +479,14 @@ private:
     std::vector<Buffer> ubos_;
 
     PipelineGraphRepository pipeline_graph_;
+    PipelineNodeHandle shadow_pipeline_;
     PipelineNodeHandle depth_prepass_pipeline_;
     PipelineNodeHandle forward_pipeline_;
     PipelineNodeHandle composite_pipeline_;
     ShaderChangeQueue shader_change_queue_;
+
+    DirectionalLight light_{};
+    ShadowSettings shadow_settings_{};
 
     std::vector<MeshSlot> meshes_;
     std::uint32_t mesh_free_head_ = 0;

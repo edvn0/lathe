@@ -55,6 +55,10 @@ public:
     [[nodiscard]] auto forward() const noexcept -> glm::vec3 { return forward_; }
     [[nodiscard]] auto move_speed() const noexcept -> float { return move_speed_; }
 
+    [[nodiscard]] auto near_clip() const noexcept -> float { return near_clip_; }
+    [[nodiscard]] auto far_clip() const noexcept -> float { return far_clip_; }
+    [[nodiscard]] auto field_of_view_degrees() const noexcept -> float { return field_of_view_degrees_; }
+
     auto set_position(glm::vec3 const &position) noexcept -> void { position_ = position; }
 
 private:

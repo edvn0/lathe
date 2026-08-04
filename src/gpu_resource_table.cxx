@@ -48,7 +48,7 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
 
     table.debug_name_ = std::string{create_info.debug_name};
 
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings{
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings{
             VkDescriptorSetLayoutBinding{
                     .binding = binding_index(GpuResourceBinding::sampled_2d),
                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
@@ -69,6 +69,16 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
                     .descriptorCount =
 
                             table.sampler_capacity_,
+                    .stageFlags = VK_SHADER_STAGE_ALL,
+                    .pImmutableSamplers = nullptr,
+            },
+            VkDescriptorSetLayoutBinding{
+                    // Scalar-element view of the same sampled_2d images, for
+                    // SampleCmpLevelZero. See bindless.slang for why this
+                    // can't just alias binding 0.
+                    .binding = binding_index(GpuResourceBinding::sampled_2d_depth),
+                    .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                    .descriptorCount = table.image_capacity_,
                     .stageFlags = VK_SHADER_STAGE_ALL,
                     .pImmutableSamplers = nullptr,
             },
@@ -228,6 +238,11 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
 
         append_image_write(binding_index(GpuResourceBinding::sampled_2d), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                            sampled_2d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // Same image, same view -- just declared with a scalar element type
+        // for SampleCmpLevelZero. See bindless.slang / sampled_2d_depth.
+        append_image_write(binding_index(GpuResourceBinding::sampled_2d_depth), index,
+                           VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sampled_2d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         /*
          * A production implementation should use dedicated

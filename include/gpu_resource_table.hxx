@@ -31,6 +31,7 @@ enum class GpuResourceBinding : std::uint32_t {
     sampled_2d = 0,
     samplers = 1,
     comparison_samplers = 2,
+    sampled_2d_depth = 3,
 };
 
 enum class GpuResourceTableErrorType : std::uint8_t {
