@@ -40,6 +40,12 @@ struct FrustumSliceSphere {
     return FrustumSliceSphere{.centre_distance = centre, .radius = radius};
 }
 
+[[nodiscard]] auto normalize_plane(glm::vec4 const &plane) noexcept -> glm::vec4 {
+    auto const length = glm::length(glm::vec3{plane});
+
+    return length > 0.0F ? plane / length : plane;
+}
+
 [[nodiscard]] auto practical_split_scheme(float near_distance, float far_distance, float lambda,
                                           std::uint32_t cascade_count) noexcept -> std::array<float, shadow_cascade_count> {
     std::array<float, shadow_cascade_count> bounds{};
@@ -115,4 +121,31 @@ auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowC
     }
 
     return result;
+}
+
+auto extract_frustum_planes(glm::mat4 const &view_projection) noexcept -> std::array<glm::vec4, 6> {
+    // GLM matrices transform column vectors (clip = M * v), so clip.x is the
+    // dot product of v with row 0 of M (not column 0) -- glm::mat4's
+    // operator[] indexes columns, so rows are gathered manually below.
+    auto const row = [&](int index) noexcept {
+        return glm::vec4{view_projection[0][index], view_projection[1][index], view_projection[2][index],
+                         view_projection[3][index]};
+    };
+
+    auto const row0 = row(0);
+    auto const row1 = row(1);
+    auto const row2 = row(2);
+    auto const row3 = row(3);
+
+    // Inside-frustum inequalities: -w <= x <= w, -w <= y <= w, 0 <= z <= w
+    // (zero-to-one depth). Each plane below is the corresponding
+    // rearranged inequality, giving an inward-facing normal directly.
+    return std::array<glm::vec4, 6>{
+            normalize_plane(row3 + row0), // left:   x >= -w
+            normalize_plane(row3 - row0), // right:  x <= w
+            normalize_plane(row3 + row1), // bottom: y >= -w
+            normalize_plane(row3 - row1), // top:    y <= w
+            normalize_plane(row2), // near:   z >= 0
+            normalize_plane(row3 - row2), // far:    z <= w
+    };
 }

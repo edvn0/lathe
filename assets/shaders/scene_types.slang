@@ -43,6 +43,13 @@ public struct Material {
 
     public AlphaMode alpha_mode = AlphaMode.opaque;
     public float alpha_cutoff = 0.5F;
+
+    // Blade sway amplitude driven by UBO.time in the vertex shader; 0 for
+    // every ordinary (non-foliage) material -- see wind.slang.
+    public float wind_strength = 0.0F;
+    public float _pad0 = 0.0F;
+    public float _pad1 = 0.0F;
+    public float _pad2 = 0.0F;
 };
 
 public struct UBO {
@@ -75,6 +82,8 @@ public struct UBO {
     public float shadow_atlas_texel_u;
     public float shadow_atlas_texel_v;
     public uint shadow_debug_cascade_tint;
+
+    public float time; // seconds since startup -- drives wind sway in vertex shaders
 };
 
 public struct PC

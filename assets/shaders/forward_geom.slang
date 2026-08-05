@@ -1,5 +1,6 @@
 import bindless;
 import scene_types;
+import wind;
 
 struct VertexOutput
 {
@@ -31,6 +32,9 @@ uint vertex_id: SV_VulkanVertexID,
         model,
         float4(vertex.position, 1.0)
     );
+
+    const var wind_material = pc.materials[draw.material_index];
+    world_position.xz += wind_offset(vertex.position, world_position.xyz, wind_material.wind_strength, ubo.time);
 
     // This is correct for uniform scale and rotation.
     // Use inverse-transpose when non-uniform scaling is supported.

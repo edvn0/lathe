@@ -390,6 +390,105 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
     return result;
 }
 
+auto Pipeline::create_compute(VulkanContext &context, ComputePipelineCreateInfo const &create_info,
+                              VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError> {
+    if (context.device == VK_NULL_HANDLE || create_info.shader.spirv.empty()) {
+        return std::unexpected(make_error(PipelineErrorType::invalid_argument,
+                                          context.device == VK_NULL_HANDLE ? "device is VK_NULL_HANDLE"
+                                                                            : "no shader stage provided"));
+    }
+
+    auto const &shader = create_info.shader;
+
+    if (shader.entry_point.empty() || shader.spirv.size_bytes() % sizeof(std::uint32_t) != 0) {
+        return std::unexpected(make_error(
+                PipelineErrorType::invalid_argument,
+                std::format("compute shader has invalid SPIR-V or entry point '{}'", shader.entry_point.view())));
+    }
+
+    VkShaderModuleCreateInfo const shader_module_info{
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .codeSize = shader.spirv.size_bytes(),
+            .pCode = shader.spirv.data(),
+    };
+
+    VkPipelineShaderStageCreateInfo const shader_stage{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext = &shader_module_info,
+            .flags = shader.flags,
+            .stage = shader.stage,
+            .module = VK_NULL_HANDLE,
+            .pName = shader.entry_point.view().data(),
+            .pSpecializationInfo = shader.specialization_info,
+    };
+
+    auto layouts = std::vector<VkDescriptorSetLayout>{};
+
+    layouts.push_back(global_layout);
+
+    layouts.insert(layouts.end(), create_info.additional_descriptor_set_layouts.begin(),
+                   create_info.additional_descriptor_set_layouts.end());
+
+    VkPipelineLayoutCreateInfo const layout_info{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
+            .pSetLayouts = layouts.data(),
+            .pushConstantRangeCount = static_cast<std::uint32_t>(create_info.push_constant_ranges.size()),
+            .pPushConstantRanges = create_info.push_constant_ranges.data(),
+    };
+
+    Pipeline result;
+    result.context_ = &context;
+
+    auto vk_result = vkCreatePipelineLayout(context.device, &layout_info, nullptr, &result.layout_);
+
+    if (vk_result != VK_SUCCESS) {
+        result.context_ = nullptr;
+
+        return std::unexpected(make_error(
+                PipelineErrorType::layout_creation_failed,
+                std::format("vkCreatePipelineLayout failed for pipeline '{}'", create_info.debug_name), vk_result));
+    }
+
+    VkComputePipelineCreateInfo const pipeline_info{
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .stage = shader_stage,
+            .layout = result.layout_,
+            .basePipelineHandle = VK_NULL_HANDLE,
+            .basePipelineIndex = -1,
+    };
+
+    vk_result =
+            vkCreateComputePipelines(context.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &result.pipeline_);
+
+    if (vk_result != VK_SUCCESS) {
+        vkDestroyPipelineLayout(context.device, result.layout_, nullptr);
+
+        result.layout_ = VK_NULL_HANDLE;
+
+        result.context_ = nullptr;
+
+        return std::unexpected(make_error(
+                PipelineErrorType::pipeline_creation_failed,
+                std::format("vkCreateComputePipelines failed for pipeline '{}'", create_info.debug_name), vk_result));
+    }
+
+    result.bind_point_ = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+    vk::set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE, vk::object_handle(result.pipeline_),
+                        create_info.debug_name);
+    auto const layout_name = std::string{create_info.debug_name} + ".layout";
+    vk::set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, vk::object_handle(result.layout_), layout_name);
+
+    return result;
+}
+
 auto Pipeline::destroy() noexcept -> void {
     if (context_ == nullptr) {
         return;

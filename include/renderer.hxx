@@ -87,6 +87,11 @@ struct MeshHandle {
 struct SubmeshCreateInfo {
     MeshGeometry geometry{};
     MaterialHandle material{};
+
+    // Local-space (untransformed) AABB over this submesh's own vertices,
+    // used as the culling volume for GPU frustum culling.
+    glm::vec3 bounds_min{-0.5F};
+    glm::vec3 bounds_max{0.5F};
 };
 
 struct MeshCreateInfo {
@@ -152,9 +157,11 @@ struct UBO {
     float shadow_atlas_texel_u = 1.0F / static_cast<float>(shadow_atlas_width);
     float shadow_atlas_texel_v = 1.0F / static_cast<float>(shadow_atlas_height);
     std::uint32_t shadow_debug_cascade_tint = 0;
+
+    float time = 0.0F; // seconds since startup -- drives wind sway in vertex shaders
 };
 
-static_assert(sizeof(UBO) == 592,
+static_assert(sizeof(UBO) == 596,
              "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 224);
@@ -225,10 +232,15 @@ struct Renderer {
     [[nodiscard]]
     auto create_model(Model const &model) -> std::expected<ModelHandle, RendererError>;
 
+    // material_override, when valid(), replaces every submesh material for
+    // this submission -- e.g. force an entity to render solid red regardless
+    // of what its model's submeshes normally use.
     [[nodiscard]]
-    auto submit_model(ModelHandle model, glm::mat4 const &transform) -> std::expected<void, RendererError>;
+    auto submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override = {})
+            -> std::expected<void, RendererError>;
     [[nodiscard]]
-    auto submit_model(ModelHandle model, glm::mat4 &&) -> std::expected<void, RendererError>;
+    auto submit_model(ModelHandle model, glm::mat4 &&, MaterialHandle material_override = {})
+            -> std::expected<void, RendererError>;
 
     // Model-space AABB across every vertex of the model, as loaded --
     // callers can use this to size collision volumes/gizmos to the actual
@@ -253,7 +265,8 @@ struct Renderer {
     auto destroy_mesh(MeshHandle handle) -> std::expected<void, RendererError>;
 
     [[nodiscard]]
-    auto submit_mesh(MeshHandle mesh, glm::mat4 const &transform) -> std::expected<void, RendererError>;
+    auto submit_mesh(MeshHandle mesh, glm::mat4 const &transform, MaterialHandle material_override = {})
+            -> std::expected<void, RendererError>;
 
     struct CameraMatrices {
         glm::mat4 view;
@@ -262,6 +275,7 @@ struct Renderer {
         float far_clip = 10000.0F;
         float vertical_fov_radians = 1.0471976F;
         float aspect_ratio = 1.7777778F;
+        float time = 0.0F; // seconds since startup -- forwarded to UBO.time for wind sway
     };
 
     struct DirectionalLight {
@@ -285,6 +299,15 @@ struct Renderer {
 
     auto set_shadow_settings(ShadowSettings const &settings) noexcept -> void { shadow_settings_ = settings; }
     [[nodiscard]] auto shadow_settings() const noexcept -> ShadowSettings const & { return shadow_settings_; }
+
+    // Debug toggle: when true (default), the depth prepass and forward pass
+    // read the GPU-frustum-culled draw/transform/indirect buffers. When
+    // false, they fall back to the un-culled buffers -- the A/B switch used
+    // to verify culling produces a pixel-identical image. The shadow pass is
+    // never affected by this flag; it always reads the un-culled buffers
+    // (see prepare_frame / frustum_cull.slang for why).
+    auto set_frustum_culling_enabled(bool enabled) noexcept -> void { frustum_culling_enabled_ = enabled; }
+    [[nodiscard]] auto frustum_culling_enabled() const noexcept -> bool { return frustum_culling_enabled_; }
 
     [[nodiscard]]
     auto prepare_frame(VkCommandBuffer command_buffer, const CameraMatrices &, std::uint32_t frame_index)
@@ -371,6 +394,9 @@ private:
     struct Submesh {
         MeshGeometry geometry{};
         MaterialHandle material{};
+
+        glm::vec3 bounds_min{-0.5F};
+        glm::vec3 bounds_max{0.5F};
     };
 
     struct MeshSlot {
@@ -385,6 +411,7 @@ private:
     struct Submission {
         MeshHandle mesh{};
         glm::mat4 transform{1.0F};
+        MaterialHandle material_override{};
     };
 
     struct alignas(16) GpuDraw {
@@ -398,11 +425,56 @@ private:
 
     static_assert(sizeof(GpuDraw) == 16);
 
+    // Local-space AABB for one batch (mesh+submesh+material), used by the
+    // GPU frustum-culling compute pass. Mirrors GpuAabb in
+    // assets/shaders/frustum_cull.slang.
+    struct alignas(16) GpuAabb {
+        glm::vec3 bounds_min{-0.5F};
+        float pad0 = 0.0F;
+        glm::vec3 bounds_max{0.5F};
+        float pad1 = 0.0F;
+    };
+
+    static_assert(std::is_trivially_copyable_v<GpuAabb>);
+
+    static_assert(sizeof(GpuAabb) == 32);
+
     struct RendererFrame {
         Buffer upload_buffer{};
         Buffer draw_buffer{};
         Buffer transform_buffer{};
         Buffer indirect_buffer{};
+
+        // GPU frustum-culling inputs/outputs. cull_batch_buffer maps each
+        // instance in draw_buffer/transform_buffer to its batch; batch_bounds
+        // gives that batch's local-space AABB; culled_indirect_buffer starts
+        // as a copy of indirect_buffer with instanceCount zeroed, and the
+        // compute pass atomically fills it back in as instances survive.
+        // visible_draw_buffer/visible_transform_buffer are the compaction
+        // destination that the main-view passes (depth prepass, forward)
+        // read instead of draw_buffer/transform_buffer. The shadow pass is
+        // untouched -- it keeps reading draw_buffer/transform_buffer/
+        // indirect_buffer directly (see prepare_frame).
+        Buffer cull_batch_buffer{};
+        Buffer batch_bounds_buffer{};
+        Buffer culled_indirect_buffer{};
+        Buffer visible_draw_buffer{};
+        Buffer visible_transform_buffer{};
+
+        // Per-batch atomic survivor counter -- see the comment on
+        // CullPC::batch_visible_count in assets/shaders/frustum_cull.slang
+        // for why this is a separate flat buffer rather than a field
+        // atomically incremented inside culled_indirect_buffer directly.
+        Buffer batch_visible_count_buffer{};
+
+        // 6 world-space frustum planes (vec4 each), written fresh every
+        // frame in prepare_frame. Deliberately its own tiny buffer rather
+        // than a field on the shared UBO -- a Ptr<float4> array has an
+        // unambiguous 16-byte stride under every struct-layout convention,
+        // whereas a trailing array field on UBO would depend on exactly
+        // which packing rule the Slang compiler applies to that struct,
+        // which is not worth staking correctness on.
+        Buffer frustum_planes_buffer{};
 
         ForwardTarget forward_target{};
 
@@ -411,11 +483,33 @@ private:
         VkDeviceSize draw_upload_offset = 0;
         VkDeviceSize transform_upload_offset = 0;
         VkDeviceSize indirect_upload_offset = 0;
+        VkDeviceSize cull_batch_upload_offset = 0;
+        VkDeviceSize batch_bounds_upload_offset = 0;
+        VkDeviceSize culled_indirect_upload_offset = 0;
+        VkDeviceSize batch_visible_count_upload_offset = 0;
 
         std::vector<GpuDraw> draws;
         std::vector<glm::mat4> transforms;
 
         std::vector<VkDrawIndexedIndirectCommand> indirect_commands;
+
+        // Per-instance batch index, parallel to `draws`/`transforms`: for
+        // instance i, cull_batch_indices[i] is the index into batch_bounds /
+        // indirect_commands / culled_indirect_commands that instance belongs
+        // to.
+        std::vector<std::uint32_t> cull_batch_indices;
+
+        // Per-batch local-space AABB, parallel to indirect_commands.
+        std::vector<GpuAabb> batch_bounds;
+
+        // Copy of indirect_commands with instanceCount zeroed -- the second
+        // (finalize) compute dispatch writes the real instanceCount in once
+        // the first (cull) dispatch's atomic counts are final.
+        std::vector<VkDrawIndexedIndirectCommand> culled_indirect_commands;
+
+        // Per-batch atomic survivor counter, zeroed every frame, parallel
+        // to indirect_commands/batch_bounds/culled_indirect_commands.
+        std::vector<std::uint32_t> batch_visible_counts;
 
         // Number of VkDrawIndexedIndirectCommand entries in indirect_commands
         // (one per unique (mesh, submesh) batch this frame) — NOT the number
@@ -444,6 +538,7 @@ private:
     struct ModelSubmission {
         ModelHandle model{};
         glm::mat4 transform{1.0F};
+        MaterialHandle material_override{};
     };
 
     [[nodiscard]]
@@ -483,10 +578,13 @@ private:
     PipelineNodeHandle depth_prepass_pipeline_;
     PipelineNodeHandle forward_pipeline_;
     PipelineNodeHandle composite_pipeline_;
+    PipelineNodeHandle frustum_cull_pipeline_;
+    PipelineNodeHandle frustum_cull_finalize_pipeline_;
     ShaderChangeQueue shader_change_queue_;
 
     DirectionalLight light_{};
     ShadowSettings shadow_settings_{};
+    bool frustum_culling_enabled_ = false;
 
     std::vector<MeshSlot> meshes_;
     std::uint32_t mesh_free_head_ = 0;

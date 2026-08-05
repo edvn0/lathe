@@ -122,6 +122,40 @@ auto PipelineStorage::create_graphics(GraphicsPipelineCreateInfo const &create_i
     };
 }
 
+auto PipelineStorage::create_compute(ComputePipelineCreateInfo const &create_info)
+        -> std::expected<PipelineHandle, PipelineStorageError> {
+    if (context_ == nullptr) {
+        return std::unexpected(make_error(PipelineStorageErrorType::invalid_argument));
+    }
+
+    if (free_head_ >= capacity_) {
+        return std::unexpected(make_error(PipelineStorageErrorType::capacity_exceeded));
+    }
+
+    auto pipeline = Pipeline::create_compute(*context_, create_info, global_descriptor_set_layout());
+
+    if (!pipeline) {
+        return std::unexpected(make_pipeline_error(pipeline.error()));
+    }
+
+    auto const index = free_head_;
+    auto &slot = slots_[index];
+
+    free_head_ = slot.next_free;
+
+    slot.pipeline = std::move(*pipeline);
+
+    slot.next_free = capacity_;
+    slot.occupied = true;
+
+    ++size_;
+
+    return PipelineHandle{
+            .index = index,
+            .generation = slot.generation,
+    };
+}
+
 auto PipelineStorage::destroy_pipeline(PipelineHandle handle) -> std::expected<void, PipelineStorageError> {
     auto *slot = slot_for(handle);
 

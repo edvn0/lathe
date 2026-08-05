@@ -155,6 +155,12 @@ namespace {
         return false;
     };
 
+    // Attach to an entity to force its render material regardless of what
+    // its ModelHandle's submeshes normally use -- e.g. making the floor red.
+    struct MaterialOverride {
+        MaterialHandle material{};
+    };
+
     struct Application {
         explicit Application(VulkanContext &ctx) noexcept :
             context(ctx), renderer(std::make_unique<Renderer>(context)) {
@@ -180,6 +186,16 @@ namespace {
             });
 
             widget("Frame timings", [&] {
+                bool frustum_culling_enabled = renderer->frustum_culling_enabled();
+
+                // A/B check: with the camera stationary, toggling this must
+                // not change the rendered image at all -- only the depth
+                // prepass and forward pass timings. The shadow pass is
+                // never affected (see Renderer::frustum_culling_enabled).
+                if (ImGui::Checkbox("GPU frustum culling", &frustum_culling_enabled)) {
+                    renderer->set_frustum_culling_enabled(frustum_culling_enabled);
+                }
+
                 if (ImPlot::BeginPlot("Stage timings (cumulative ms)", ImVec2(-1, 250))) {
                     ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
                     ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x, ImGuiCond_Always);
@@ -271,7 +287,8 @@ namespace {
         auto play() -> void {
             runtime_scene = std::make_unique<Scene>();
             runtime_scene->physics_settings = editor_scene->physics_settings;
-            clone_registry<Transform, ModelHandle, RigidBody>(editor_scene->registry, runtime_scene->registry);
+            clone_registry<Transform, ModelHandle, RigidBody, MaterialOverride>(editor_scene->registry,
+                                                                                runtime_scene->registry);
 
             active_scene = runtime_scene.get();
             is_playing = true;
@@ -292,6 +309,14 @@ namespace {
         // relationship as the grid cubes and floor.
         ModelHandle cube_model{};
         glm::vec3 cube_half_extents{0.5F};
+
+        // Wind-swaying grass material -- created once in recreate_entities()
+        // and shared as a MaterialOverride across every grass clump entity.
+        MaterialHandle grass_material{};
+
+        // Seconds since startup -- forwarded to UBO.time each frame so the
+        // wind shader (wind.slang) has something to animate against.
+        float elapsed_time = 0.0F;
 
         std::array<ScrollingBuffer, stage_count> timing_buffers;
         float timing_x = 0.0F;
@@ -535,8 +560,7 @@ namespace {
             auto const cube_bounds = renderer->model_bounds(cube_model);
             cube_half_extents =
                     cube_bounds.has_value() ? (cube_bounds->second - cube_bounds->first) * 0.5F : glm::vec3{0.5F};
-            auto const cube_diameter =
-                    std::max({cube_half_extents.x, cube_half_extents.y, cube_half_extents.z}) * 2.0F;
+            auto const cube_diameter = std::max({cube_half_extents.x, cube_half_extents.y, cube_half_extents.z}) * 2.0F;
             auto const spacing = cube_diameter * 1.3F;
 
             for (auto i = 0; i < physics_grid; i++) {
@@ -565,15 +589,95 @@ namespace {
 
             auto const floor_entity = editor_scene->registry.create();
             editor_scene->registry.emplace<Transform>(
-                    floor_entity, Transform{
-                                          .position = glm::vec3{0.0F, editor_scene->physics_settings.ground_y -
-                                                                               floor_half_extents.y,
-                                                                 0.0F},
-                                          .scale = floor_half_extents / cube_half_extents,
-                                  });
+                    floor_entity,
+                    Transform{
+                            .position = glm::vec3{0.0F, editor_scene->physics_settings.ground_y - floor_half_extents.y,
+                                                  0.0F},
+                            .scale = floor_half_extents / cube_half_extents,
+                    });
             editor_scene->registry.emplace<ModelHandle>(floor_entity, cube_model);
-            editor_scene->registry.emplace<RigidBody>(
-                    floor_entity, RigidBody{.half_extents = floor_half_extents, .is_static = true});
+            editor_scene->registry.emplace<RigidBody>(floor_entity,
+                                                      RigidBody{.half_extents = floor_half_extents, .is_static = true});
+
+            // Texture fields must be filled with real dummy handles (not
+            // left default) -- a default-constructed ImageHandle carries
+            // invalid_image_index (UINT32_MAX), and to_gpu_material() copies
+            // that straight into the bindless texture index with no
+            // validity check, so leaving it unset means an out-of-bounds
+            // descriptor read on the GPU (device lost).
+            auto &images = renderer->image_storage();
+            auto &samplers = renderer->sampler_storage();
+
+            auto const floor_material = renderer->create_material(MaterialCreateInfo{
+                    .base_colour_factor = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F},
+                    .base_colour_texture = images.white(),
+                    .normal_texture = images.flat_normal(),
+                    .metallic_roughness_texture = images.metallic_roughness(),
+                    .occlusion_texture = images.occlusion(),
+                    .emissive_texture = images.emissive(),
+                    .sampler = samplers.linear_repeat(),
+            });
+
+            if (floor_material) {
+                editor_scene->registry.emplace<MaterialOverride>(floor_entity, MaterialOverride{*floor_material});
+            } else {
+                error("Could not create floor material override: {}", describe(floor_material.error()));
+            }
+
+            // A dense field of wind-swaying grass clumps covering a 100x100
+            // area centred on the ground plane. Positions are jittered on a
+            // fine grid rather than drawn from a fully uniform distribution
+            // so density stays even (uniform-random over this area visibly
+            // clumps and gaps); each clump gets a MaterialOverride pointing
+            // at the same grass_material, whose wind_strength > 0 is what
+            // the vertex shader (wind.slang) keys the sway off of -- every
+            // other material in the scene defaults to wind_strength = 0.
+            auto const grass_material_result = renderer->create_material(MaterialCreateInfo{
+                    .base_colour_factor = glm::vec4{0.25F, 0.55F, 0.18F, 1.0F},
+                    .base_colour_texture = images.white(),
+                    .normal_texture = images.flat_normal(),
+                    .metallic_roughness_texture = images.metallic_roughness(),
+                    .occlusion_texture = images.occlusion(),
+                    .emissive_texture = images.emissive(),
+                    .sampler = samplers.linear_repeat(),
+                    .wind_strength = 0.28F,
+            });
+
+            if (!grass_material_result) {
+                error("Could not create grass material: {}", describe(grass_material_result.error()));
+            } else {
+                grass_material = *grass_material_result;
+
+                constexpr auto grass_field_size = 100.0F;
+                constexpr auto grass_spacing = 0.5F;
+                constexpr auto grass_cells = static_cast<int>(grass_field_size / grass_spacing);
+
+                std::uniform_real_distribution<float> jitter(-grass_spacing * 0.4F, grass_spacing * 0.4F);
+                std::uniform_real_distribution<float> yaw(0.0F, 6.2831853F);
+                std::uniform_real_distribution<float> height_scale(0.7F, 1.3F);
+                std::uniform_real_distribution<float> width_scale(0.8F, 1.2F);
+
+                for (auto cell_x = 0; cell_x < grass_cells; ++cell_x) {
+                    for (auto cell_z = 0; cell_z < grass_cells; ++cell_z) {
+                        auto const x = (static_cast<float>(cell_x) + 0.5F) * grass_spacing - grass_field_size * 0.5F +
+                                       jitter(eng);
+                        auto const z = (static_cast<float>(cell_z) + 0.5F) * grass_spacing - grass_field_size * 0.5F +
+                                       jitter(eng);
+
+                        auto const grass_entity = editor_scene->registry.create();
+                        editor_scene->registry.emplace<Transform>(
+                                grass_entity,
+                                Transform{
+                                        .position = glm::vec3{x, editor_scene->physics_settings.ground_y, z},
+                                        .rotation = glm::angleAxis(yaw(eng), glm::vec3{0.0F, 1.0F, 0.0F}),
+                                        .scale = glm::vec3{width_scale(eng), height_scale(eng), width_scale(eng)},
+                                });
+                        editor_scene->registry.emplace<ModelHandle>(grass_entity, engine_models.grass_clump);
+                        editor_scene->registry.emplace<MaterialOverride>(grass_entity,
+                                                                         MaterialOverride{grass_material});
+                    }
+                }
+            }
         }
     };
 
@@ -782,7 +886,7 @@ namespace {
         glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
         glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
         glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
-        context.window = glfwCreateWindow(mode->width, mode->height, "VK", NULL, NULL);
+        context.window = glfwCreateWindow(mode->width, mode->height, "VK", monitor, NULL);
 
         if (context.window == nullptr) {
             error("glfwCreateWindow failed");
@@ -1292,10 +1396,15 @@ namespace {
     }
 
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
-        auto view = application.active_scene->registry.view<Transform const, ModelHandle const>();
+        auto &registry = application.active_scene->registry;
+        auto view = registry.view<Transform const, ModelHandle const>();
 
         for (auto [entity, transform, model]: view.each()) {
-            auto result = application.renderer->submit_model(model, transform.matrix());
+            auto const *override_component = registry.try_get<MaterialOverride const>(entity);
+            auto const material_override =
+                    override_component != nullptr ? override_component->material : MaterialHandle{};
+
+            auto result = application.renderer->submit_model(model, transform.matrix(), material_override);
 
             if (!result) {
                 error("Could not submit scene object (model index {}): {}", model.index, describe(result.error()));
@@ -1387,18 +1496,18 @@ namespace {
             application.imgui_renderer->end_frame();
 
             auto aspect = application.renderer->aspect(frame->frame_index);
-            auto prepare_result =
-                    application.renderer->prepare_frame(frame->command_buffer,
-                                                        {
-                                                                .view = application.camera.view(),
-                                                                .projection = application.camera.projection(aspect),
-                                                                .near_clip = application.camera.near_clip(),
-                                                                .far_clip = application.camera.far_clip(),
-                                                                .vertical_fov_radians = glm::radians(
-                                                                        application.camera.field_of_view_degrees()),
-                                                                .aspect_ratio = aspect,
-                                                        },
-                                                        frame->frame_index);
+            auto prepare_result = application.renderer->prepare_frame(
+                    frame->command_buffer,
+                    {
+                            .view = application.camera.view(),
+                            .projection = application.camera.projection(aspect),
+                            .near_clip = application.camera.near_clip(),
+                            .far_clip = application.camera.far_clip(),
+                            .vertical_fov_radians = glm::radians(application.camera.field_of_view_degrees()),
+                            .aspect_ratio = aspect,
+                            .time = application.elapsed_time,
+                    },
+                    frame->frame_index);
 
             if (!prepare_result) {
                 error("Could not prepare renderer frame: {}", describe(prepare_result.error()));
@@ -1758,6 +1867,8 @@ auto main() -> int {
         auto const now = std::chrono::steady_clock::now();
         auto const delta_time = std::chrono::duration<float>(now - last_frame_time).count();
         last_frame_time = now;
+
+        application.elapsed_time += delta_time;
 
         application.camera.update(std::min(delta_time, 0.1F));
         application.update_physics(delta_time);

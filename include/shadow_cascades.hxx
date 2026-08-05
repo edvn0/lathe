@@ -39,3 +39,13 @@ struct ShadowCascades {
 };
 
 [[nodiscard]] auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowCascades;
+
+// Extracts the 6 world-space view-frustum planes from a combined
+// view_projection matrix (Gribb-Hartmann), for the GPU frustum-culling
+// compute pass. Each plane is (nx, ny, nz, d) with the normal pointing
+// inward and normalized, i.e. dot(normal, point) + d >= 0 for points inside
+// the frustum. Order: left, right, bottom, top, near, far. Assumes a
+// zero-to-one depth range (matches every *_ZO/*_LH_ZO projection in this
+// codebase); handedness of the projection does not matter for this
+// extraction.
+[[nodiscard]] auto extract_frustum_planes(glm::mat4 const &view_projection) noexcept -> std::array<glm::vec4, 6>;

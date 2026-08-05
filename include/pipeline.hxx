@@ -97,6 +97,20 @@ struct GraphicsPipelineCreateInfo {
     std::string_view debug_name = "graphics_pipeline";
 };
 
+struct ComputePipelineCreateInfo {
+    ShaderStageInfo shader;
+
+    /*
+     * Additional layouts beginning at descriptor set 1.
+     * Set 0 is injected by PipelineStorage.
+     */
+    std::span<VkDescriptorSetLayout const> additional_descriptor_set_layouts;
+
+    std::span<VkPushConstantRange const> push_constant_ranges;
+
+    std::string_view debug_name = "compute_pipeline";
+};
+
 class Pipeline {
 public:
     Pipeline() = default;
@@ -145,4 +159,8 @@ private:
     [[nodiscard]]
     static auto create_graphics(VulkanContext &context, GraphicsPipelineCreateInfo const &create_info,
                                 VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError>;
+
+    [[nodiscard]]
+    static auto create_compute(VulkanContext &context, ComputePipelineCreateInfo const &create_info,
+                               VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError>;
 };

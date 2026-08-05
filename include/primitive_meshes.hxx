@@ -19,3 +19,11 @@ struct PrimitiveMeshData {
 
 [[nodiscard]] auto make_sphere_mesh(std::uint32_t rings = 16, std::uint32_t segments = 32)
         -> std::expected<PrimitiveMeshData, ModelLoadError>;
+
+// A single grass "clump": three crossed blade quads fanned around the
+// vertical axis, base at local y=0, tip at local y=1. Meant to be scaled/
+// rotated/scattered per-instance and drawn with a material whose
+// wind_strength > 0 -- see wind.slang. Both winding orders are emitted per
+// quad so blades stay visible under the forward pass's back-face culling
+// from any viewing angle, without needing a dedicated no-cull pipeline.
+[[nodiscard]] auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>;

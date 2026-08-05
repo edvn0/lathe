@@ -59,6 +59,33 @@ namespace {
     };
 
     static_assert(sizeof(CompositePushConstants) == 16);
+
+    // Mirrors CullPC in assets/shaders/frustum_cull.slang.
+    struct CullPushConstants {
+        VkDeviceAddress src_draws_address;
+        VkDeviceAddress src_transforms_address;
+        VkDeviceAddress cull_batch_address;
+        VkDeviceAddress batch_bounds_address;
+        VkDeviceAddress culled_indirect_address;
+        VkDeviceAddress dst_draws_address;
+        VkDeviceAddress dst_transforms_address;
+        VkDeviceAddress frustum_planes_address;
+        VkDeviceAddress batch_visible_count_address;
+        std::uint32_t instance_count;
+        std::uint32_t padding;
+    };
+
+    static_assert(sizeof(CullPushConstants) == 80);
+
+    // Mirrors FinalizePC in assets/shaders/frustum_cull.slang.
+    struct CullFinalizePushConstants {
+        VkDeviceAddress batch_visible_count_address;
+        VkDeviceAddress culled_indirect_address;
+        std::uint32_t batch_count;
+        std::uint32_t padding;
+    };
+
+    static_assert(sizeof(CullFinalizePushConstants) == 24);
 } // namespace
 
 namespace {
@@ -841,6 +868,74 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         composite_pipeline_ = *registered_composite;
     }
+    {
+        VkPushConstantRange const frustum_cull_pc{
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                .offset = 0,
+                .size = sizeof(CullPushConstants),
+        };
+
+        auto registered_frustum_cull = pipeline_graph_.register_pipeline(
+                compiler, PipelineRegisterInfo{
+                                  .stages =
+                                          {
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/frustum_cull.slang",
+                                                          .entry_point = "mainCs",
+                                                          .stage = renderer::ShaderStage::compute,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                          },
+                                  .additional_descriptor_set_layouts = {},
+                                  .push_constant_ranges = {frustum_cull_pc},
+                                  .colour_formats = {},
+                                  .depth_format = VK_FORMAT_UNDEFINED,
+                                  .stencil_format = VK_FORMAT_UNDEFINED,
+                                  .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .debug_name = "renderer.frustum_cull_pipeline",
+                          });
+
+        if (!registered_frustum_cull) {
+            return std::unexpected(make_pipeline_graph_error(registered_frustum_cull.error()));
+        }
+
+        frustum_cull_pipeline_ = *registered_frustum_cull;
+    }
+    {
+        VkPushConstantRange const frustum_cull_finalize_pc{
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                .offset = 0,
+                .size = sizeof(CullFinalizePushConstants),
+        };
+
+        auto registered_frustum_cull_finalize = pipeline_graph_.register_pipeline(
+                compiler, PipelineRegisterInfo{
+                                  .stages =
+                                          {
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/frustum_cull.slang",
+                                                          .entry_point = "mainFinalizeCs",
+                                                          .stage = renderer::ShaderStage::compute,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                          },
+                                  .additional_descriptor_set_layouts = {},
+                                  .push_constant_ranges = {frustum_cull_finalize_pc},
+                                  .colour_formats = {},
+                                  .depth_format = VK_FORMAT_UNDEFINED,
+                                  .stencil_format = VK_FORMAT_UNDEFINED,
+                                  .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .debug_name = "renderer.frustum_cull_finalize_pipeline",
+                          });
+
+        if (!registered_frustum_cull_finalize) {
+            return std::unexpected(make_pipeline_graph_error(registered_frustum_cull_finalize.error()));
+        }
+
+        frustum_cull_finalize_pipeline_ = *registered_frustum_cull_finalize;
+    }
 
     auto const white = image_storage_.white();
 
@@ -921,7 +1016,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     auto indirect_size_result = checked_multiply(sizeof(VkDrawIndexedIndirectCommand), maximum_draw_count_);
 
-    if (!draw_size_result || !transform_size_result || !indirect_size_result) {
+    auto cull_batch_size_result = checked_multiply(sizeof(std::uint32_t), maximum_draw_count_);
+
+    auto batch_bounds_size_result = checked_multiply(sizeof(GpuAabb), maximum_draw_count_);
+
+    auto batch_visible_count_size_result = checked_multiply(sizeof(std::uint32_t), maximum_draw_count_);
+
+    if (!draw_size_result || !transform_size_result || !indirect_size_result || !cull_batch_size_result ||
+        !batch_bounds_size_result || !batch_visible_count_size_result) {
         return std::unexpected(make_error(RendererErrorType::size_overflow));
     }
 
@@ -931,6 +1033,17 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     auto const indirect_size = *indirect_size_result;
 
+    // The culled indirect buffer mirrors indirect_commands 1:1 (same batch
+    // count, same capacity), so it reuses indirect_size rather than a fresh
+    // checked_multiply.
+    auto const culled_indirect_size = indirect_size;
+
+    auto const cull_batch_size = *cull_batch_size_result;
+
+    auto const batch_bounds_size = *batch_bounds_size_result;
+
+    auto const batch_visible_count_size = *batch_visible_count_size_result;
+
     auto const transform_offset = align_up(draw_size, 16);
 
     auto const indirect_offset = align_up(transform_offset + transform_size, 16);
@@ -939,7 +1052,31 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         return std::unexpected(make_error(RendererErrorType::size_overflow));
     }
 
-    auto const upload_size = indirect_offset + indirect_size;
+    auto const cull_batch_offset = align_up(indirect_offset + indirect_size, 16);
+
+    if (cull_batch_offset > std::numeric_limits<VkDeviceSize>::max() - cull_batch_size) {
+        return std::unexpected(make_error(RendererErrorType::size_overflow));
+    }
+
+    auto const batch_bounds_offset = align_up(cull_batch_offset + cull_batch_size, 16);
+
+    if (batch_bounds_offset > std::numeric_limits<VkDeviceSize>::max() - batch_bounds_size) {
+        return std::unexpected(make_error(RendererErrorType::size_overflow));
+    }
+
+    auto const culled_indirect_offset = align_up(batch_bounds_offset + batch_bounds_size, 16);
+
+    if (culled_indirect_offset > std::numeric_limits<VkDeviceSize>::max() - culled_indirect_size) {
+        return std::unexpected(make_error(RendererErrorType::size_overflow));
+    }
+
+    auto const batch_visible_count_offset = align_up(culled_indirect_offset + culled_indirect_size, 16);
+
+    if (batch_visible_count_offset > std::numeric_limits<VkDeviceSize>::max() - batch_visible_count_size) {
+        return std::unexpected(make_error(RendererErrorType::size_overflow));
+    }
+
+    auto const upload_size = batch_visible_count_offset + batch_visible_count_size;
 
     frames_.resize(create_info.frames_in_flight);
 
@@ -1004,6 +1141,109 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.indirect_buffer = std::move(*indirect);
 
+        auto cull_batch = Buffer::create(context_, BufferCreateInfo{
+                                                            .size = cull_batch_size,
+                                                            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                            .memory = BufferMemory::device,
+                                                            .debug_name = "renderer.frame_cull_batch",
+                                                    });
+
+        if (!cull_batch) {
+            return std::unexpected(make_device_error(cull_batch.error()));
+        }
+
+        frame.cull_batch_buffer = std::move(*cull_batch);
+
+        auto batch_bounds = Buffer::create(context_, BufferCreateInfo{
+                                                              .size = batch_bounds_size,
+                                                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                              .memory = BufferMemory::device,
+                                                              .debug_name = "renderer.frame_batch_bounds",
+                                                      });
+
+        if (!batch_bounds) {
+            return std::unexpected(make_device_error(batch_bounds.error()));
+        }
+
+        frame.batch_bounds_buffer = std::move(*batch_bounds);
+
+        auto culled_indirect = Buffer::create(context_, BufferCreateInfo{
+                                                                 .size = culled_indirect_size,
+                                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                          VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                 .memory = BufferMemory::device,
+                                                                 .debug_name = "renderer.frame_culled_indirect",
+                                                         });
+
+        if (!culled_indirect) {
+            return std::unexpected(make_device_error(culled_indirect.error()));
+        }
+
+        frame.culled_indirect_buffer = std::move(*culled_indirect);
+
+        auto visible_draws = Buffer::create(context_, BufferCreateInfo{
+                                                               .size = draw_size,
+                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                               .memory = BufferMemory::device,
+                                                               .debug_name = "renderer.frame_visible_draws",
+                                                       });
+
+        if (!visible_draws) {
+            return std::unexpected(make_device_error(visible_draws.error()));
+        }
+
+        frame.visible_draw_buffer = std::move(*visible_draws);
+
+        auto visible_transforms = Buffer::create(context_, BufferCreateInfo{
+                                                                    .size = transform_size,
+                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                    .memory = BufferMemory::device,
+                                                                    .debug_name = "renderer.frame_visible_transforms",
+                                                            });
+
+        if (!visible_transforms) {
+            return std::unexpected(make_device_error(visible_transforms.error()));
+        }
+
+        frame.visible_transform_buffer = std::move(*visible_transforms);
+
+        auto batch_visible_count = Buffer::create(context_, BufferCreateInfo{
+                                                                     .size = batch_visible_count_size,
+                                                                     .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                     .memory = BufferMemory::device,
+                                                                     .debug_name = "renderer.frame_batch_visible_count",
+                                                             });
+
+        if (!batch_visible_count) {
+            return std::unexpected(make_device_error(batch_visible_count.error()));
+        }
+
+        frame.batch_visible_count_buffer = std::move(*batch_visible_count);
+
+        auto frustum_planes_buffer = Buffer::create(context_, BufferCreateInfo{
+                                                                       .size = sizeof(glm::vec4) * 6,
+                                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                       .memory = BufferMemory::device,
+                                                                       .debug_name = "renderer.frame_frustum_planes",
+                                                               });
+
+        if (!frustum_planes_buffer) {
+            return std::unexpected(make_device_error(frustum_planes_buffer.error()));
+        }
+
+        frame.frustum_planes_buffer = std::move(*frustum_planes_buffer);
+
         const auto target_name = std::format("renderer.forward_target_{}", frame_index);
         auto forward_target = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
                                                                             .extent = create_info.extent,
@@ -1052,9 +1292,17 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.draw_upload_offset = 0;
         frame.transform_upload_offset = transform_offset;
         frame.indirect_upload_offset = indirect_offset;
+        frame.cull_batch_upload_offset = cull_batch_offset;
+        frame.batch_bounds_upload_offset = batch_bounds_offset;
+        frame.culled_indirect_upload_offset = culled_indirect_offset;
+        frame.batch_visible_count_upload_offset = batch_visible_count_offset;
         frame.draws.reserve(maximum_draw_count_);
         frame.transforms.reserve(maximum_submission_count_);
         frame.indirect_commands.reserve(maximum_draw_count_);
+        frame.cull_batch_indices.reserve(maximum_draw_count_);
+        frame.batch_bounds.reserve(maximum_draw_count_);
+        frame.culled_indirect_commands.reserve(maximum_draw_count_);
+        frame.batch_visible_counts.reserve(maximum_draw_count_);
     }
 
     VkPhysicalDeviceProperties properties{};
@@ -1138,6 +1386,13 @@ auto Renderer::destroy() noexcept -> void {
             frame.shadow_atlas = ImageHandle{};
         }
 
+        frame.batch_visible_count_buffer.destroy();
+        frame.frustum_planes_buffer.destroy();
+        frame.visible_transform_buffer.destroy();
+        frame.visible_draw_buffer.destroy();
+        frame.culled_indirect_buffer.destroy();
+        frame.batch_bounds_buffer.destroy();
+        frame.cull_batch_buffer.destroy();
         frame.indirect_buffer.destroy();
         frame.transform_buffer.destroy();
         frame.draw_buffer.destroy();
@@ -1146,6 +1401,10 @@ auto Renderer::destroy() noexcept -> void {
         frame.draws.clear();
         frame.transforms.clear();
         frame.indirect_commands.clear();
+        frame.cull_batch_indices.clear();
+        frame.batch_bounds.clear();
+        frame.culled_indirect_commands.clear();
+        frame.batch_visible_counts.clear();
 
         frame.indirect_command_count = 0;
     }
@@ -1308,6 +1567,8 @@ auto Renderer::create_model(Model const &model, MaterialHandle fallback_material
             submesh_infos.push_back(SubmeshCreateInfo{
                     .geometry = source_submesh.geometry,
                     .material = material,
+                    .bounds_min = source_submesh.bounds_min,
+                    .bounds_max = source_submesh.bounds_max,
             });
         }
 
@@ -1404,7 +1665,8 @@ auto Renderer::model_bounds(ModelHandle model) const -> std::optional<std::pair<
     return std::make_pair(slot->bounds_min, slot->bounds_max);
 }
 
-auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform) -> std::expected<void, RendererError> {
+auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override)
+        -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
@@ -1416,12 +1678,14 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform) -> st
     model_submissions_.push_back(ModelSubmission{
             .model = model,
             .transform = transform,
+            .material_override = material_override,
     });
 
     return {};
 }
 
-auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform) -> std::expected<void, RendererError> {
+auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHandle material_override)
+        -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
@@ -1433,6 +1697,7 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform) -> std::ex
     model_submissions_.push_back(ModelSubmission{
             .model = model,
             .transform = std::move(transform),
+            .material_override = material_override,
     });
 
     return {};
@@ -1524,6 +1789,8 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
         slot.submeshes.push_back(Submesh{
                 .geometry = submesh_info.geometry,
                 .material = submesh_info.material,
+                .bounds_min = submesh_info.bounds_min,
+                .bounds_max = submesh_info.bounds_max,
         });
     }
 
@@ -1558,7 +1825,8 @@ auto Renderer::destroy_mesh(MeshHandle handle) -> std::expected<void, RendererEr
     return {};
 }
 
-auto Renderer::submit_mesh(MeshHandle mesh, glm::mat4 const &transform) -> std::expected<void, RendererError> {
+auto Renderer::submit_mesh(MeshHandle mesh, glm::mat4 const &transform, MaterialHandle material_override)
+        -> std::expected<void, RendererError> {
     if (mesh_slot(mesh) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_mesh));
     }
@@ -1570,6 +1838,7 @@ auto Renderer::submit_mesh(MeshHandle mesh, glm::mat4 const &transform) -> std::
     submissions_.push_back(Submission{
             .mesh = mesh,
             .transform = transform,
+            .material_override = material_override,
     });
 
     return {};
@@ -1611,24 +1880,33 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     frame.draws.clear();
     frame.transforms.clear();
     frame.indirect_commands.clear();
+    frame.cull_batch_indices.clear();
+    frame.batch_bounds.clear();
+    frame.culled_indirect_commands.clear();
+    frame.batch_visible_counts.clear();
     frame.indirect_command_count = 0;
 
     struct batch_key {
         std::uint32_t mesh_index;
         std::uint32_t submesh_index;
+        std::uint32_t material_index;
 
         auto operator==(batch_key const &) const noexcept -> bool = default;
     };
 
     struct batch_key_hash {
         auto operator()(batch_key const &key) const noexcept -> std::size_t {
-            return std::hash<std::uint64_t>{}((static_cast<std::uint64_t>(key.mesh_index) << 32) | key.submesh_index);
+            auto const mesh_hash = std::hash<std::uint64_t>{}((static_cast<std::uint64_t>(key.mesh_index) << 32) |
+                                                                key.submesh_index);
+
+            return mesh_hash ^ (std::hash<std::uint32_t>{}(key.material_index) << 1);
         }
     };
 
     struct batch_entry {
         MeshHandle mesh{};
         std::uint32_t submesh_index = 0;
+        MaterialHandle material{};
         std::vector<glm::mat4> transforms;
     };
 
@@ -1656,9 +1934,15 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             auto const instance_transform = model_submission.transform * model_draw.local_transform;
 
             for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
+                auto const &submesh = mesh->submeshes[submesh_index];
+
+                auto const material = model_submission.material_override.valid() ? model_submission.material_override
+                                                                                   : submesh.material;
+
                 auto const key = batch_key{
                         .mesh_index = model_draw.mesh.index,
                         .submesh_index = submesh_index,
+                        .material_index = material_storage_.gpu_index(material),
                 };
 
                 auto [entry, inserted] = batches.try_emplace(key);
@@ -1666,6 +1950,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                 if (inserted) {
                     entry->second.mesh = model_draw.mesh;
                     entry->second.submesh_index = submesh_index;
+                    entry->second.material = material;
                 }
 
                 entry->second.transforms.push_back(instance_transform);
@@ -1683,9 +1968,15 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         }
 
         for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
+            auto const &submesh = mesh->submeshes[submesh_index];
+
+            auto const material =
+                    submission.material_override.valid() ? submission.material_override : submesh.material;
+
             auto const key = batch_key{
                     .mesh_index = submission.mesh.index,
                     .submesh_index = submesh_index,
+                    .material_index = material_storage_.gpu_index(material),
             };
 
             auto [entry, inserted] = batches.try_emplace(key);
@@ -1693,6 +1984,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             if (inserted) {
                 entry->second.mesh = submission.mesh;
                 entry->second.submesh_index = submesh_index;
+                entry->second.material = material;
             }
 
             entry->second.transforms.push_back(submission.transform);
@@ -1743,21 +2035,48 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
         auto const first_instance = static_cast<std::uint32_t>(frame.draws.size());
 
+        // Index of the indirect command this batch is about to push --
+        // cull_batch_indices below points each instance back at this same
+        // index into batch_bounds/indirect_commands/culled_indirect_commands.
+        auto const batch_index = static_cast<std::uint32_t>(frame.indirect_commands.size());
+
         for (std::uint32_t instance = 0; instance < instance_count; ++instance) {
             frame.draws.push_back(GpuDraw{
                     .vertex_address = geometry_arena_.vertex_address(submesh.geometry.vertices),
-                    .material_index = material_storage_.gpu_index(submesh.material),
+                    .material_index = material_storage_.gpu_index(batch.material),
                     .transform_index = base_transform_index + instance,
             });
+
+            frame.cull_batch_indices.push_back(batch_index);
         }
 
-        frame.indirect_commands.push_back(VkDrawIndexedIndirectCommand{
+        auto const indirect_command = VkDrawIndexedIndirectCommand{
                 .indexCount = submesh.geometry.indices.index_count,
                 .instanceCount = instance_count,
                 .firstIndex = static_cast<std::uint32_t>(first_index_u64),
                 .vertexOffset = 0,
                 .firstInstance = first_instance,
+        };
+
+        frame.indirect_commands.push_back(indirect_command);
+
+        frame.batch_bounds.push_back(GpuAabb{
+                .bounds_min = submesh.bounds_min,
+                .bounds_max = submesh.bounds_max,
         });
+
+        // Same firstInstance/indexCount/firstIndex, but instanceCount starts
+        // at zero -- the finalize compute pass writes the real count in
+        // once the cull pass's atomic batch_visible_counts entry is final.
+        frame.culled_indirect_commands.push_back(VkDrawIndexedIndirectCommand{
+                .indexCount = indirect_command.indexCount,
+                .instanceCount = 0,
+                .firstIndex = indirect_command.firstIndex,
+                .vertexOffset = indirect_command.vertexOffset,
+                .firstInstance = indirect_command.firstInstance,
+        });
+
+        frame.batch_visible_counts.push_back(0);
     }
 
     frame.indirect_command_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
@@ -1785,8 +2104,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             .settings = shadow_settings_.cascades,
     });
 
+    auto const view_projection = projection * view;
+    auto const frustum_planes = extract_frustum_planes(view_projection);
+
     UBO ubo{
-            .view_projection = projection * view,
+            .view_projection = view_projection,
             .view = view,
             .projection = projection,
             .camera_position = glm::vec3(glm::inverse(view)[3]),
@@ -1807,11 +2129,184 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             .shadow_atlas_texel_u = 1.0F / static_cast<float>(shadow_atlas_width),
             .shadow_atlas_texel_v = 1.0F / static_cast<float>(shadow_atlas_height),
             .shadow_debug_cascade_tint = shadow_settings_.debug_cascade_tint ? 1U : 0U,
+            .time = matrices.time,
     };
     if (!ubos_[frame_index].write(0, std::as_bytes(std::span{&ubo, 1}))) {
         clear_submissions();
 
         return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
+    if (!frame.frustum_planes_buffer.write(0, std::as_bytes(std::span{frustum_planes}))) {
+        clear_submissions();
+
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
+    // GPU frustum culling: one dispatch, main view only (see
+    // frustum_cull.slang for why the shadow pass is excluded). Recorded here
+    // -- after the buffer uploads/barriers above, before record_frame's
+    // rendering commands -- so its output (visible_draw_buffer,
+    // visible_transform_buffer, culled_indirect_buffer) is ready by the time
+    // the depth prepass and forward pass read it. The UBO write above is a
+    // host-visible memcpy that completes before this command buffer is
+    // submitted, so it doesn't matter that this dispatch is recorded before
+    // or after it -- the compute shader only ever runs post-submission.
+    auto const total_instance_count = static_cast<std::uint32_t>(frame.draws.size());
+
+    if (frame.indirect_command_count != 0 && total_instance_count != 0) {
+        auto const *frustum_cull_pipeline = pipeline_graph_.resolve(frustum_cull_pipeline_);
+
+        if (frustum_cull_pipeline == nullptr) {
+            clear_submissions();
+
+            return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+        }
+
+        vkCmdBindPipeline(command_buffer, frustum_cull_pipeline->bind_point(), frustum_cull_pipeline->pipeline());
+        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                 frustum_cull_pipeline->layout());
+
+        CullPushConstants const cull_pc{
+                .src_draws_address = frame.draw_buffer.device_address,
+                .src_transforms_address = frame.transform_buffer.device_address,
+                .cull_batch_address = frame.cull_batch_buffer.device_address,
+                .batch_bounds_address = frame.batch_bounds_buffer.device_address,
+                .culled_indirect_address = frame.culled_indirect_buffer.device_address,
+                .dst_draws_address = frame.visible_draw_buffer.device_address,
+                .dst_transforms_address = frame.visible_transform_buffer.device_address,
+                .frustum_planes_address = frame.frustum_planes_buffer.device_address,
+                .batch_visible_count_address = frame.batch_visible_count_buffer.device_address,
+                .instance_count = total_instance_count,
+                .padding = 0,
+        };
+
+        vkCmdPushConstants(command_buffer, frustum_cull_pipeline->layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(CullPushConstants), &cull_pc);
+
+        constexpr std::uint32_t workgroup_size = 64;
+        auto const group_count = (total_instance_count + workgroup_size - 1) / workgroup_size;
+
+        vkCmdDispatch(command_buffer, group_count, 1, 1);
+
+        // Barrier before the finalize dispatch: batch_visible_count_buffer
+        // must be fully written by every mainCs thread before
+        // mainFinalizeCs reads it. visible_draw_buffer/visible_transform_buffer
+        // are already complete at this point too (mainCs is their only
+        // writer) -- their vertex-shader-read barrier is included here
+        // rather than a separate call, since it doesn't need to wait for
+        // the finalize dispatch below.
+        std::array<VkBufferMemoryBarrier2, 3> pre_finalize_barriers{
+                VkBufferMemoryBarrier2{
+                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                        .pNext = nullptr,
+                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .buffer = frame.batch_visible_count_buffer.buffer,
+                        .offset = 0,
+                        .size = VK_WHOLE_SIZE,
+                },
+                VkBufferMemoryBarrier2{
+                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                        .pNext = nullptr,
+                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                        .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .buffer = frame.visible_draw_buffer.buffer,
+                        .offset = 0,
+                        .size = VK_WHOLE_SIZE,
+                },
+                VkBufferMemoryBarrier2{
+                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                        .pNext = nullptr,
+                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                        .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .buffer = frame.visible_transform_buffer.buffer,
+                        .offset = 0,
+                        .size = VK_WHOLE_SIZE,
+                },
+        };
+
+        VkDependencyInfo const pre_finalize_dependency_info{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = nullptr,
+                .dependencyFlags = 0,
+                .memoryBarrierCount = 0,
+                .pMemoryBarriers = nullptr,
+                .bufferMemoryBarrierCount = static_cast<std::uint32_t>(pre_finalize_barriers.size()),
+                .pBufferMemoryBarriers = pre_finalize_barriers.data(),
+                .imageMemoryBarrierCount = 0,
+                .pImageMemoryBarriers = nullptr,
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &pre_finalize_dependency_info);
+
+        auto const *frustum_cull_finalize_pipeline = pipeline_graph_.resolve(frustum_cull_finalize_pipeline_);
+
+        if (frustum_cull_finalize_pipeline == nullptr) {
+            clear_submissions();
+
+            return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+        }
+
+        vkCmdBindPipeline(command_buffer, frustum_cull_finalize_pipeline->bind_point(),
+                          frustum_cull_finalize_pipeline->pipeline());
+        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                 frustum_cull_finalize_pipeline->layout());
+
+        CullFinalizePushConstants const finalize_pc{
+                .batch_visible_count_address = frame.batch_visible_count_buffer.device_address,
+                .culled_indirect_address = frame.culled_indirect_buffer.device_address,
+                .batch_count = frame.indirect_command_count,
+                .padding = 0,
+        };
+
+        vkCmdPushConstants(command_buffer, frustum_cull_finalize_pipeline->layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(CullFinalizePushConstants), &finalize_pc);
+
+        auto const finalize_group_count =
+                (frame.indirect_command_count + workgroup_size - 1) / workgroup_size;
+
+        vkCmdDispatch(command_buffer, finalize_group_count, 1, 1);
+
+        VkBufferMemoryBarrier2 const culled_indirect_barrier{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = frame.culled_indirect_buffer.buffer,
+                .offset = 0,
+                .size = VK_WHOLE_SIZE,
+        };
+
+        VkDependencyInfo const post_finalize_dependency_info{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = nullptr,
+                .dependencyFlags = 0,
+                .memoryBarrierCount = 0,
+                .pMemoryBarriers = nullptr,
+                .bufferMemoryBarrierCount = 1,
+                .pBufferMemoryBarriers = &culled_indirect_barrier,
+                .imageMemoryBarrierCount = 0,
+                .pImageMemoryBarriers = nullptr,
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &post_finalize_dependency_info);
     }
 
     clear_submissions();
@@ -1997,6 +2492,18 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
 
     transition_forward_target_to_attachments(command_buffer, *hdr, *depth, is_msaa ? resolved_hdr : nullptr,
                                              is_msaa ? resolved_depth : nullptr);
+
+    // Depth prepass and forward read the frustum-culled buffers by default;
+    // the shadow pass above never does (see prepare_frame). The toggle lets
+    // this be disabled at runtime as an A/B check against the un-culled
+    // buffers -- same indirect_command_count either way, since culling only
+    // zeroes/refills instanceCount per batch, never changes the batch count.
+    auto const &main_view_draw_buffer = frustum_culling_enabled_ ? frame.visible_draw_buffer : frame.draw_buffer;
+    auto const &main_view_transform_buffer =
+            frustum_culling_enabled_ ? frame.visible_transform_buffer : frame.transform_buffer;
+    auto const &main_view_indirect_buffer =
+            frustum_culling_enabled_ ? frame.culled_indirect_buffer : frame.indirect_buffer;
+
 #pragma region Predepth pass
     {
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
@@ -2045,8 +2552,8 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         set_forward_dynamic_state(command_buffer, target_extent, true);
 
         ForwardPushConstants pc{
-                .draw_buffer_address = frame.draw_buffer.device_address,
-                .transform_buffer_address = frame.transform_buffer.device_address,
+                .draw_buffer_address = main_view_draw_buffer.device_address,
+                .transform_buffer_address = main_view_transform_buffer.device_address,
                 .material_buffer_address = material_storage_.device_address(),
                 .ubo_buffer_address = ubos_[frame_index].device_address,
         };
@@ -2056,8 +2563,8 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
         if (frame.indirect_command_count != 0) {
-            vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0, frame.indirect_command_count,
-                                     sizeof(VkDrawIndexedIndirectCommand));
+            vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0,
+                                     frame.indirect_command_count, sizeof(VkDrawIndexedIndirectCommand));
         }
 
         vkCmdEndRendering(command_buffer);
@@ -2141,8 +2648,8 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         set_forward_dynamic_state(command_buffer, target_extent, false);
 
         ForwardPushConstants pc{
-                .draw_buffer_address = frame.draw_buffer.device_address,
-                .transform_buffer_address = frame.transform_buffer.device_address,
+                .draw_buffer_address = main_view_draw_buffer.device_address,
+                .transform_buffer_address = main_view_transform_buffer.device_address,
                 .material_buffer_address = material_storage_.device_address(),
                 .ubo_buffer_address = ubos_[frame_index].device_address,
         };
@@ -2154,8 +2661,8 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
         if (frame.indirect_command_count != 0) {
-            vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0, frame.indirect_command_count,
-                                     sizeof(VkDrawIndexedIndirectCommand));
+            vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0,
+                                     frame.indirect_command_count, sizeof(VkDrawIndexedIndirectCommand));
         }
 
         vkCmdEndRendering(command_buffer);
@@ -2387,6 +2894,12 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
     auto const transform_size = static_cast<VkDeviceSize>(frame.transforms.size()) * sizeof(glm::mat4);
     auto const indirect_size =
             static_cast<VkDeviceSize>(frame.indirect_commands.size()) * sizeof(VkDrawIndexedIndirectCommand);
+    auto const cull_batch_size = static_cast<VkDeviceSize>(frame.cull_batch_indices.size()) * sizeof(std::uint32_t);
+    auto const batch_bounds_size = static_cast<VkDeviceSize>(frame.batch_bounds.size()) * sizeof(GpuAabb);
+    auto const culled_indirect_size =
+            static_cast<VkDeviceSize>(frame.culled_indirect_commands.size()) * sizeof(VkDrawIndexedIndirectCommand);
+    auto const batch_visible_count_size =
+            static_cast<VkDeviceSize>(frame.batch_visible_counts.size()) * sizeof(std::uint32_t);
 
     if (draw_size != 0) {
         auto const data_span = std::as_bytes(std::span{frame.draws});
@@ -2409,12 +2922,42 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         }
     }
 
+    if (cull_batch_size != 0) {
+        auto const data_span = std::as_bytes(std::span{frame.cull_batch_indices});
+        if (auto const result = frame.upload_buffer.write(frame.cull_batch_upload_offset, data_span); !result) {
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+    }
+
+    if (batch_bounds_size != 0) {
+        auto const data_span = std::as_bytes(std::span{frame.batch_bounds});
+        if (auto const result = frame.upload_buffer.write(frame.batch_bounds_upload_offset, data_span); !result) {
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+    }
+
+    if (culled_indirect_size != 0) {
+        auto const data_span = std::as_bytes(std::span{frame.culled_indirect_commands});
+        if (auto const result = frame.upload_buffer.write(frame.culled_indirect_upload_offset, data_span);
+            !result) {
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+    }
+
+    if (batch_visible_count_size != 0) {
+        auto const data_span = std::as_bytes(std::span{frame.batch_visible_counts});
+        if (auto const result = frame.upload_buffer.write(frame.batch_visible_count_upload_offset, data_span);
+            !result) {
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+    }
+
     struct CopyOperation {
         VkBuffer destination = VK_NULL_HANDLE;
         VkBufferCopy2 region{};
     };
 
-    std::array<CopyOperation, 3> copies{};
+    std::array<CopyOperation, 7> copies{};
     std::uint32_t copy_count = 0;
 
     if (draw_size != 0) {
@@ -2459,6 +3002,62 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         };
     }
 
+    if (cull_batch_size != 0) {
+        copies[copy_count++] = CopyOperation{
+                .destination = frame.cull_batch_buffer.buffer,
+                .region =
+                        VkBufferCopy2{
+                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                                .pNext = nullptr,
+                                .srcOffset = frame.cull_batch_upload_offset,
+                                .dstOffset = 0,
+                                .size = cull_batch_size,
+                        },
+        };
+    }
+
+    if (batch_bounds_size != 0) {
+        copies[copy_count++] = CopyOperation{
+                .destination = frame.batch_bounds_buffer.buffer,
+                .region =
+                        VkBufferCopy2{
+                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                                .pNext = nullptr,
+                                .srcOffset = frame.batch_bounds_upload_offset,
+                                .dstOffset = 0,
+                                .size = batch_bounds_size,
+                        },
+        };
+    }
+
+    if (culled_indirect_size != 0) {
+        copies[copy_count++] = CopyOperation{
+                .destination = frame.culled_indirect_buffer.buffer,
+                .region =
+                        VkBufferCopy2{
+                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                                .pNext = nullptr,
+                                .srcOffset = frame.culled_indirect_upload_offset,
+                                .dstOffset = 0,
+                                .size = culled_indirect_size,
+                        },
+        };
+    }
+
+    if (batch_visible_count_size != 0) {
+        copies[copy_count++] = CopyOperation{
+                .destination = frame.batch_visible_count_buffer.buffer,
+                .region =
+                        VkBufferCopy2{
+                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                                .pNext = nullptr,
+                                .srcOffset = frame.batch_visible_count_upload_offset,
+                                .dstOffset = 0,
+                                .size = batch_visible_count_size,
+                        },
+        };
+    }
+
     for (std::uint32_t index = 0; index < copy_count; ++index) {
         auto const &copy = copies[index];
 
@@ -2478,7 +3077,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         return {};
     }
 
-    std::array<VkBufferMemoryBarrier2, 3> barriers{};
+    std::array<VkBufferMemoryBarrier2, 7> barriers{};
     std::uint32_t barrier_count = 0;
 
     if (draw_size != 0) {
@@ -2528,6 +3127,73 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
                 .buffer = frame.indirect_buffer.buffer,
                 .offset = 0,
                 .size = indirect_size,
+        };
+    }
+
+    // cull_batch_buffer and batch_bounds_buffer are read-only inputs to the
+    // frustum-cull compute pass; culled_indirect_buffer is both read
+    // (firstInstance) and atomically written (instanceCount) by it.
+    if (cull_batch_size != 0) {
+        barriers[barrier_count++] = VkBufferMemoryBarrier2{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = frame.cull_batch_buffer.buffer,
+                .offset = 0,
+                .size = cull_batch_size,
+        };
+    }
+
+    if (batch_bounds_size != 0) {
+        barriers[barrier_count++] = VkBufferMemoryBarrier2{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = frame.batch_bounds_buffer.buffer,
+                .offset = 0,
+                .size = batch_bounds_size,
+        };
+    }
+
+    if (culled_indirect_size != 0) {
+        barriers[barrier_count++] = VkBufferMemoryBarrier2{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = frame.culled_indirect_buffer.buffer,
+                .offset = 0,
+                .size = culled_indirect_size,
+        };
+    }
+
+    if (batch_visible_count_size != 0) {
+        barriers[barrier_count++] = VkBufferMemoryBarrier2{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = frame.batch_visible_count_buffer.buffer,
+                .offset = 0,
+                .size = batch_visible_count_size,
         };
     }
 

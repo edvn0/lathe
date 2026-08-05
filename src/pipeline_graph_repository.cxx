@@ -220,18 +220,28 @@ auto PipelineGraphRepository::build_pipeline(PipelineNode const &node)
         });
     }
 
-    auto created = storage_.create_graphics(GraphicsPipelineCreateInfo{
-            .shaders = stage_infos,
-            .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
-            .push_constant_ranges = node.register_info.push_constant_ranges,
-            .dynamic_states = {},
-            .colour_formats = node.register_info.colour_formats,
-            .depth_format = node.register_info.depth_format,
-            .stencil_format = node.register_info.stencil_format,
-            .samples = node.register_info.samples,
-            .blending = node.register_info.blending,
-            .debug_name = node.register_info.debug_name,
-    });
+    auto const is_compute =
+            node.stage_indices.size() == 1 && stage_nodes_[node.stage_indices[0]].request.stage == renderer::ShaderStage::compute;
+
+    auto created = is_compute
+            ? storage_.create_compute(ComputePipelineCreateInfo{
+                      .shader = stage_infos[0],
+                      .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
+                      .push_constant_ranges = node.register_info.push_constant_ranges,
+                      .debug_name = node.register_info.debug_name,
+              })
+            : storage_.create_graphics(GraphicsPipelineCreateInfo{
+                      .shaders = stage_infos,
+                      .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
+                      .push_constant_ranges = node.register_info.push_constant_ranges,
+                      .dynamic_states = {},
+                      .colour_formats = node.register_info.colour_formats,
+                      .depth_format = node.register_info.depth_format,
+                      .stencil_format = node.register_info.stencil_format,
+                      .samples = node.register_info.samples,
+                      .blending = node.register_info.blending,
+                      .debug_name = node.register_info.debug_name,
+              });
 
     if (!created) {
         return std::unexpected(PipelineGraphError{

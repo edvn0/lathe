@@ -29,6 +29,13 @@ struct ModelPrimitive {
     MeshGeometry geometry{};
     std::optional<std::uint32_t> material_index{
             std::nullopt}; // If it has -> index into global array, else -> index 0 in global array.
+
+    // Local-space (untransformed) AABB over this primitive's own vertices
+    // only -- unlike Model::bounds_min/max, no node transform is baked in,
+    // since that's applied per-instance at render time. Used as the culling
+    // volume for GPU frustum culling.
+    glm::vec3 bounds_min{-0.5F};
+    glm::vec3 bounds_max{0.5F};
 };
 
 struct ModelMesh {

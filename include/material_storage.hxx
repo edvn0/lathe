@@ -58,6 +58,13 @@ struct alignas(16) GpuMaterial {
     std::uint32_t sampler_index = 0;
     AlphaMode alpha_mode = AlphaMode::opaque;
     float alpha_cutoff = 0.5F;
+
+    // Blade sway amplitude driven by UBO.time in the vertex shader; 0 for
+    // every ordinary (non-foliage) material -- see wind.slang.
+    float wind_strength = 0.0F;
+    float _pad0 = 0.0F;
+    float _pad1 = 0.0F;
+    float _pad2 = 0.0F;
 };
 
 static_assert(std::is_trivially_copyable_v<GpuMaterial>);
@@ -85,6 +92,8 @@ struct MaterialCreateInfo {
     SamplerHandle sampler{};
 
     AlphaMode alpha_mode = AlphaMode::opaque;
+
+    float wind_strength = 0.0F;
 };
 
 auto to_gpu_material(MaterialCreateInfo const &) noexcept -> GpuMaterial;

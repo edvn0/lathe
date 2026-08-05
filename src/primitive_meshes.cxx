@@ -1,6 +1,7 @@
 #include "primitive_meshes.hxx"
 
 #include <glm/geometric.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <array>
 #include <cmath>
@@ -112,6 +113,74 @@ auto make_sphere_mesh(std::uint32_t rings, std::uint32_t segments) -> std::expec
             indices.push_back(a);
             indices.push_back(b + 1);
             indices.push_back(b);
+        }
+    }
+
+    if (auto tangents = generate_tangents(vertices, indices); !tangents) {
+        return std::unexpected(tangents.error());
+    }
+
+    return PrimitiveMeshData{.vertices = std::move(vertices), .indices = std::move(indices)};
+}
+
+auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError> {
+    constexpr auto blade_count = 3U;
+    constexpr auto half_width = 0.22F;
+    constexpr auto tip_half_width = 0.03F;
+
+    std::vector<ModelVertex> vertices;
+    std::vector<std::uint32_t> indices;
+
+    vertices.reserve(blade_count * 2ULL * 4ULL);
+    indices.reserve(blade_count * 2ULL * 6ULL);
+
+    for (std::uint32_t blade = 0; blade < blade_count; ++blade) {
+        auto const angle =
+                static_cast<float>(blade) * std::numbers::pi_v<float> / static_cast<float>(blade_count);
+
+        auto const across = glm::vec3{std::cos(angle), 0.0F, std::sin(angle)};
+        auto const face_normal = glm::vec3{-std::sin(angle), 0.0F, std::cos(angle)};
+
+        std::array<glm::vec3, 4> const corners{{
+                across * -half_width,
+                across * half_width,
+                across * tip_half_width + glm::vec3{0.0F, 1.0F, 0.0F},
+                across * -tip_half_width + glm::vec3{0.0F, 1.0F, 0.0F},
+        }};
+
+        // Emit the quad with both winding orders (front normal, then back
+        // normal with reversed index order) so the blade stays lit and
+        // visible under back-face culling regardless of which side the
+        // camera ends up on.
+        for (auto const winding_forward: {true, false}) {
+            auto const normal = winding_forward ? face_normal : -face_normal;
+            auto const tangent = glm::vec4{across, 1.0F};
+            auto const base_index = static_cast<std::uint32_t>(vertices.size());
+
+            for (std::size_t corner = 0; corner < corners.size(); ++corner) {
+                vertices.push_back(ModelVertex{
+                        .position = corners[corner],
+                        .normal = normal,
+                        .tangent = tangent,
+                        .texcoord = glm::vec2{corner == 0 || corner == 3 ? 0.0F : 1.0F, corner < 2 ? 1.0F : 0.0F},
+                });
+            }
+
+            if (winding_forward) {
+                indices.push_back(base_index + 0);
+                indices.push_back(base_index + 1);
+                indices.push_back(base_index + 2);
+                indices.push_back(base_index + 0);
+                indices.push_back(base_index + 2);
+                indices.push_back(base_index + 3);
+            } else {
+                indices.push_back(base_index + 2);
+                indices.push_back(base_index + 1);
+                indices.push_back(base_index + 0);
+                indices.push_back(base_index + 3);
+                indices.push_back(base_index + 2);
+                indices.push_back(base_index + 0);
+            }
         }
     }
 

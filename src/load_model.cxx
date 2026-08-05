@@ -68,6 +68,27 @@ namespace {
         }
     }
 
+    // Local-space AABB over a primitive's own vertices, with no node
+    // transform applied (that's baked in per-instance at render time via
+    // ModelDraw::local_transform). Shared by both the glTF loader and
+    // procedural primitives, since both converge on ModelCpuPrimitive before
+    // reaching the geometry arena.
+    auto compute_primitive_bounds(std::span<ModelVertex const> vertices) -> std::pair<glm::vec3, glm::vec3> {
+        auto bounds_min = glm::vec3{std::numeric_limits<float>::max()};
+        auto bounds_max = glm::vec3{std::numeric_limits<float>::lowest()};
+
+        for (auto const &vertex: vertices) {
+            bounds_min = glm::min(bounds_min, vertex.position);
+            bounds_max = glm::max(bounds_max, vertex.position);
+        }
+
+        if (bounds_min.x > bounds_max.x) {
+            return {glm::vec3{-0.5F}, glm::vec3{0.5F}};
+        }
+
+        return {bounds_min, bounds_max};
+    }
+
     auto compute_model_bounds(ModelCpuData const &cpu_data) -> std::pair<glm::vec3, glm::vec3> {
         auto bounds_min = glm::vec3{std::numeric_limits<float>::max()};
         auto bounds_max = glm::vec3{std::numeric_limits<float>::lowest()};
@@ -471,9 +492,20 @@ namespace {
     // Picks one of the renderer's small fixed set of samplers to best match
     // a glTF sampler's filter/wrap settings. Just reads pre-created handles
     // out of SamplerStorage, so this is safe to call during the CPU pass.
+    auto is_nearest_filter(fastgltf::Filter filter) -> bool {
+        return filter == fastgltf::Filter::Nearest || filter == fastgltf::Filter::NearestMipMapNearest ||
+               filter == fastgltf::Filter::NearestMipMapLinear;
+    }
+
+    // minFilter governs minification/mipmap quality, which is what actually
+    // matters for how the texture looks at a distance, so it takes priority
+    // over magFilter when both are present.
     auto select_sampler(SamplerStorage &sampler_storage, fastgltf::Sampler const *gltf_sampler) -> SamplerHandle {
-        bool const nearest = gltf_sampler != nullptr && gltf_sampler->magFilter.has_value() &&
-                             *gltf_sampler->magFilter == fastgltf::Filter::Nearest;
+        bool const nearest = gltf_sampler != nullptr &&
+                             (gltf_sampler->minFilter.has_value()
+                                      ? is_nearest_filter(*gltf_sampler->minFilter)
+                                      : (gltf_sampler->magFilter.has_value() &&
+                                         *gltf_sampler->magFilter == fastgltf::Filter::Nearest));
 
         bool const clamp = gltf_sampler != nullptr && (gltf_sampler->wrapS == fastgltf::Wrap::ClampToEdge ||
                                                        gltf_sampler->wrapT == fastgltf::Wrap::ClampToEdge);
@@ -906,9 +938,14 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                     });
                 }
 
+                auto const [primitive_bounds_min, primitive_bounds_max] =
+                        compute_primitive_bounds(std::span<ModelVertex const>{cpu_primitive.vertices});
+
                 mesh.primitives.push_back(ModelPrimitive{
                         .geometry = *geometry,
                         .material_index = cpu_primitive.material_index,
+                        .bounds_min = primitive_bounds_min,
+                        .bounds_max = primitive_bounds_max,
                 });
             }
 

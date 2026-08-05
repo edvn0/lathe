@@ -2,7 +2,7 @@
 
 #include <array>
 
-static constexpr auto frames_in_flight = 3U;
+static constexpr auto frames_in_flight = 2U;
 
 template<typename T>
 using FIFArray = std::array<T, frames_in_flight>;

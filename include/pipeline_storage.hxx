@@ -89,6 +89,10 @@ public:
             -> std::expected<PipelineHandle, PipelineStorageError>;
 
     [[nodiscard]]
+    auto create_compute(ComputePipelineCreateInfo const &create_info)
+            -> std::expected<PipelineHandle, PipelineStorageError>;
+
+    [[nodiscard]]
     auto destroy_pipeline(PipelineHandle handle) -> std::expected<void, PipelineStorageError>;
 
     [[nodiscard]]

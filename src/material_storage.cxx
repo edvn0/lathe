@@ -385,5 +385,6 @@ auto to_gpu_material(MaterialCreateInfo const &create_info) noexcept -> GpuMater
             .sampler_index = create_info.sampler.index,
             .alpha_mode = create_info.alpha_mode,
             .alpha_cutoff = create_info.alpha_cutoff,
+            .wind_strength = create_info.wind_strength,
     };
 }
