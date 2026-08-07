@@ -60,32 +60,40 @@ namespace {
 
     static_assert(sizeof(CompositePushConstants) == 16);
 
-    // Mirrors CullPC in assets/shaders/frustum_cull.slang.
+    // Mirrors CullPC in assets/shaders/frustum_cull.slang. One compute
+    // workgroup handles one batch: it reads that batch's un-culled
+    // indirect command to learn [firstInstance, firstInstance +
+    // instanceCount), culls each instance, compacts survivors in place via
+    // a shared-memory scan, and writes the recomputed command to
+    // dst_indirect[batch]. No per-instance batch lookup or atomic counter
+    // buffer is needed -- the batch index *is* the workgroup index.
     struct CullPushConstants {
         VkDeviceAddress src_draws_address;
         VkDeviceAddress src_transforms_address;
-        VkDeviceAddress cull_batch_address;
         VkDeviceAddress batch_bounds_address;
-        VkDeviceAddress culled_indirect_address;
+        VkDeviceAddress src_indirect_address;
+        VkDeviceAddress dst_indirect_address;
         VkDeviceAddress dst_draws_address;
         VkDeviceAddress dst_transforms_address;
         VkDeviceAddress frustum_planes_address;
-        VkDeviceAddress batch_visible_count_address;
-        std::uint32_t instance_count;
-        std::uint32_t padding;
-    };
-
-    static_assert(sizeof(CullPushConstants) == 80);
-
-    // Mirrors FinalizePC in assets/shaders/frustum_cull.slang.
-    struct CullFinalizePushConstants {
-        VkDeviceAddress batch_visible_count_address;
-        VkDeviceAddress culled_indirect_address;
         std::uint32_t batch_count;
         std::uint32_t padding;
     };
 
-    static_assert(sizeof(CullFinalizePushConstants) == 24);
+    static_assert(sizeof(CullPushConstants) == 72);
+
+    // Pins VkDrawIndexedIndirectCommand's ABI layout against IndirectCommand
+    // in assets/shaders/frustum_cull.slang, which mirrors it field-for-field
+    // (both sides: indexCount, instanceCount, firstIndex, vertexOffset,
+    // firstInstance -- 4 x uint32 + 1 x int32, tightly packed, no padding).
+    // The Vulkan spec guarantees this layout for the host-side struct; nothing
+    // enforced the Slang side matching it before this, so pin it explicitly.
+    static_assert(sizeof(VkDrawIndexedIndirectCommand) == 20);
+    static_assert(offsetof(VkDrawIndexedIndirectCommand, indexCount) == 0);
+    static_assert(offsetof(VkDrawIndexedIndirectCommand, instanceCount) == 4);
+    static_assert(offsetof(VkDrawIndexedIndirectCommand, firstIndex) == 8);
+    static_assert(offsetof(VkDrawIndexedIndirectCommand, vertexOffset) == 12);
+    static_assert(offsetof(VkDrawIndexedIndirectCommand, firstInstance) == 16);
 } // namespace
 
 namespace {
@@ -902,40 +910,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frustum_cull_pipeline_ = *registered_frustum_cull;
     }
-    {
-        VkPushConstantRange const frustum_cull_finalize_pc{
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-                .offset = 0,
-                .size = sizeof(CullFinalizePushConstants),
-        };
-
-        auto registered_frustum_cull_finalize = pipeline_graph_.register_pipeline(
-                compiler, PipelineRegisterInfo{
-                                  .stages =
-                                          {
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/frustum_cull.slang",
-                                                          .entry_point = "mainFinalizeCs",
-                                                          .stage = renderer::ShaderStage::compute,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                          },
-                                  .additional_descriptor_set_layouts = {},
-                                  .push_constant_ranges = {frustum_cull_finalize_pc},
-                                  .colour_formats = {},
-                                  .depth_format = VK_FORMAT_UNDEFINED,
-                                  .stencil_format = VK_FORMAT_UNDEFINED,
-                                  .samples = VK_SAMPLE_COUNT_1_BIT,
-                                  .debug_name = "renderer.frustum_cull_finalize_pipeline",
-                          });
-
-        if (!registered_frustum_cull_finalize) {
-            return std::unexpected(make_pipeline_graph_error(registered_frustum_cull_finalize.error()));
-        }
-
-        frustum_cull_finalize_pipeline_ = *registered_frustum_cull_finalize;
-    }
 
     auto const white = image_storage_.white();
 
@@ -1016,14 +990,9 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     auto indirect_size_result = checked_multiply(sizeof(VkDrawIndexedIndirectCommand), maximum_draw_count_);
 
-    auto cull_batch_size_result = checked_multiply(sizeof(std::uint32_t), maximum_draw_count_);
+    auto batch_bounds_size_result = checked_multiply(sizeof(GpuCullBounds), maximum_draw_count_);
 
-    auto batch_bounds_size_result = checked_multiply(sizeof(GpuAabb), maximum_draw_count_);
-
-    auto batch_visible_count_size_result = checked_multiply(sizeof(std::uint32_t), maximum_draw_count_);
-
-    if (!draw_size_result || !transform_size_result || !indirect_size_result || !cull_batch_size_result ||
-        !batch_bounds_size_result || !batch_visible_count_size_result) {
+    if (!draw_size_result || !transform_size_result || !indirect_size_result || !batch_bounds_size_result) {
         return std::unexpected(make_error(RendererErrorType::size_overflow));
     }
 
@@ -1038,11 +1007,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     // checked_multiply.
     auto const culled_indirect_size = indirect_size;
 
-    auto const cull_batch_size = *cull_batch_size_result;
-
     auto const batch_bounds_size = *batch_bounds_size_result;
-
-    auto const batch_visible_count_size = *batch_visible_count_size_result;
 
     auto const transform_offset = align_up(draw_size, 16);
 
@@ -1052,31 +1017,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         return std::unexpected(make_error(RendererErrorType::size_overflow));
     }
 
-    auto const cull_batch_offset = align_up(indirect_offset + indirect_size, 16);
-
-    if (cull_batch_offset > std::numeric_limits<VkDeviceSize>::max() - cull_batch_size) {
-        return std::unexpected(make_error(RendererErrorType::size_overflow));
-    }
-
-    auto const batch_bounds_offset = align_up(cull_batch_offset + cull_batch_size, 16);
+    auto const batch_bounds_offset = align_up(indirect_offset + indirect_size, 16);
 
     if (batch_bounds_offset > std::numeric_limits<VkDeviceSize>::max() - batch_bounds_size) {
         return std::unexpected(make_error(RendererErrorType::size_overflow));
     }
 
-    auto const culled_indirect_offset = align_up(batch_bounds_offset + batch_bounds_size, 16);
-
-    if (culled_indirect_offset > std::numeric_limits<VkDeviceSize>::max() - culled_indirect_size) {
-        return std::unexpected(make_error(RendererErrorType::size_overflow));
-    }
-
-    auto const batch_visible_count_offset = align_up(culled_indirect_offset + culled_indirect_size, 16);
-
-    if (batch_visible_count_offset > std::numeric_limits<VkDeviceSize>::max() - batch_visible_count_size) {
-        return std::unexpected(make_error(RendererErrorType::size_overflow));
-    }
-
-    auto const upload_size = batch_visible_count_offset + batch_visible_count_size;
+    auto const upload_size = batch_bounds_offset + batch_bounds_size;
 
     frames_.resize(create_info.frames_in_flight);
 
@@ -1126,11 +1073,15 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.transform_buffer = std::move(*transforms);
 
+        // SHADER_DEVICE_ADDRESS_BIT: mainCs reads this batch's un-culled
+        // command (firstInstance/instanceCount) through a Ptr<>, same as
+        // culled_indirect_buffer below.
         auto indirect = Buffer::create(context_, BufferCreateInfo{
                                                          .size = indirect_size,
                                                          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                                                   VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                                          .memory = BufferMemory::device,
                                                          .debug_name = "renderer.frame_indirect",
                                                  });
@@ -1140,21 +1091,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         frame.indirect_buffer = std::move(*indirect);
-
-        auto cull_batch = Buffer::create(context_, BufferCreateInfo{
-                                                            .size = cull_batch_size,
-                                                            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                            .memory = BufferMemory::device,
-                                                            .debug_name = "renderer.frame_cull_batch",
-                                                    });
-
-        if (!cull_batch) {
-            return std::unexpected(make_device_error(cull_batch.error()));
-        }
-
-        frame.cull_batch_buffer = std::move(*cull_batch);
 
         auto batch_bounds = Buffer::create(context_, BufferCreateInfo{
                                                               .size = batch_bounds_size,
@@ -1171,10 +1107,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.batch_bounds_buffer = std::move(*batch_bounds);
 
+        // No TRANSFER_DST: unlike indirect_buffer above, this is never
+        // host-seeded -- mainCs is its sole writer, one thread (lane 0)
+        // per batch, no atomics needed.
         auto culled_indirect = Buffer::create(context_, BufferCreateInfo{
                                                                  .size = culled_indirect_size,
-                                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                          VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                                                 .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                                                  .memory = BufferMemory::device,
@@ -1215,26 +1153,18 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.visible_transform_buffer = std::move(*visible_transforms);
 
-        auto batch_visible_count = Buffer::create(context_, BufferCreateInfo{
-                                                                     .size = batch_visible_count_size,
-                                                                     .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                     .memory = BufferMemory::device,
-                                                                     .debug_name = "renderer.frame_batch_visible_count",
-                                                             });
-
-        if (!batch_visible_count) {
-            return std::unexpected(make_device_error(batch_visible_count.error()));
-        }
-
-        frame.batch_visible_count_buffer = std::move(*batch_visible_count);
-
+        // BufferMemory::upload, not ::device: this is written every frame
+        // by a host memcpy (Buffer::write in prepare_frame below), never by
+        // the GPU, so its memory class should say so honestly. It happened
+        // to work under BufferMemory::device too, because every memory
+        // class here requests VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT (see
+        // make_allocation_create_info in buffer.cxx) -- but that's an
+        // accident of this allocator's current policy, not a guarantee.
         auto frustum_planes_buffer = Buffer::create(context_, BufferCreateInfo{
                                                                        .size = sizeof(glm::vec4) * 6,
                                                                        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                                                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                       .memory = BufferMemory::device,
+                                                                       .memory = BufferMemory::upload,
                                                                        .debug_name = "renderer.frame_frustum_planes",
                                                                });
 
@@ -1292,17 +1222,11 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.draw_upload_offset = 0;
         frame.transform_upload_offset = transform_offset;
         frame.indirect_upload_offset = indirect_offset;
-        frame.cull_batch_upload_offset = cull_batch_offset;
         frame.batch_bounds_upload_offset = batch_bounds_offset;
-        frame.culled_indirect_upload_offset = culled_indirect_offset;
-        frame.batch_visible_count_upload_offset = batch_visible_count_offset;
         frame.draws.reserve(maximum_draw_count_);
         frame.transforms.reserve(maximum_submission_count_);
         frame.indirect_commands.reserve(maximum_draw_count_);
-        frame.cull_batch_indices.reserve(maximum_draw_count_);
         frame.batch_bounds.reserve(maximum_draw_count_);
-        frame.culled_indirect_commands.reserve(maximum_draw_count_);
-        frame.batch_visible_counts.reserve(maximum_draw_count_);
     }
 
     VkPhysicalDeviceProperties properties{};
@@ -1386,13 +1310,11 @@ auto Renderer::destroy() noexcept -> void {
             frame.shadow_atlas = ImageHandle{};
         }
 
-        frame.batch_visible_count_buffer.destroy();
         frame.frustum_planes_buffer.destroy();
         frame.visible_transform_buffer.destroy();
         frame.visible_draw_buffer.destroy();
         frame.culled_indirect_buffer.destroy();
         frame.batch_bounds_buffer.destroy();
-        frame.cull_batch_buffer.destroy();
         frame.indirect_buffer.destroy();
         frame.transform_buffer.destroy();
         frame.draw_buffer.destroy();
@@ -1401,10 +1323,7 @@ auto Renderer::destroy() noexcept -> void {
         frame.draws.clear();
         frame.transforms.clear();
         frame.indirect_commands.clear();
-        frame.cull_batch_indices.clear();
         frame.batch_bounds.clear();
-        frame.culled_indirect_commands.clear();
-        frame.batch_visible_counts.clear();
 
         frame.indirect_command_count = 0;
     }
@@ -1880,10 +1799,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     frame.draws.clear();
     frame.transforms.clear();
     frame.indirect_commands.clear();
-    frame.cull_batch_indices.clear();
     frame.batch_bounds.clear();
-    frame.culled_indirect_commands.clear();
-    frame.batch_visible_counts.clear();
     frame.indirect_command_count = 0;
 
     struct batch_key {
@@ -2035,19 +1951,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
         auto const first_instance = static_cast<std::uint32_t>(frame.draws.size());
 
-        // Index of the indirect command this batch is about to push --
-        // cull_batch_indices below points each instance back at this same
-        // index into batch_bounds/indirect_commands/culled_indirect_commands.
-        auto const batch_index = static_cast<std::uint32_t>(frame.indirect_commands.size());
-
         for (std::uint32_t instance = 0; instance < instance_count; ++instance) {
             frame.draws.push_back(GpuDraw{
                     .vertex_address = geometry_arena_.vertex_address(submesh.geometry.vertices),
                     .material_index = material_storage_.gpu_index(batch.material),
                     .transform_index = base_transform_index + instance,
             });
-
-            frame.cull_batch_indices.push_back(batch_index);
         }
 
         auto const indirect_command = VkDrawIndexedIndirectCommand{
@@ -2060,23 +1969,19 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
         frame.indirect_commands.push_back(indirect_command);
 
-        frame.batch_bounds.push_back(GpuAabb{
+        // wind_padding conservatively grows this batch's world-space AABB
+        // (in transform_aabb, frustum_cull.slang) so swaying foliage
+        // doesn't pop at the frustum edge before it's actually offscreen --
+        // see the comment on GpuCullBounds and on wind_offset() in
+        // wind.slang for the padding derivation.
+        auto const *material = material_storage_.get(batch.material);
+        auto const wind_padding = material != nullptr ? material->wind_strength : 0.0F;
+
+        frame.batch_bounds.push_back(GpuCullBounds{
                 .bounds_min = submesh.bounds_min,
+                .wind_padding = wind_padding,
                 .bounds_max = submesh.bounds_max,
         });
-
-        // Same firstInstance/indexCount/firstIndex, but instanceCount starts
-        // at zero -- the finalize compute pass writes the real count in
-        // once the cull pass's atomic batch_visible_counts entry is final.
-        frame.culled_indirect_commands.push_back(VkDrawIndexedIndirectCommand{
-                .indexCount = indirect_command.indexCount,
-                .instanceCount = 0,
-                .firstIndex = indirect_command.firstIndex,
-                .vertexOffset = indirect_command.vertexOffset,
-                .firstInstance = indirect_command.firstInstance,
-        });
-
-        frame.batch_visible_counts.push_back(0);
     }
 
     frame.indirect_command_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
@@ -2089,7 +1994,16 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         return std::unexpected(make_material_error(material_result.error()));
     }
 
-    auto upload_result = upload_frame_data(command_buffer, frame);
+    // Checked immediately, not deferred to the end of this function: the
+    // dispatch and draws recorded below all read buffers this call fills,
+    // so recording them against a failed (partial/unwritten) upload would
+    // be worse than bailing out with the frame's other work already
+    // clear_submissions()-ed.
+    if (auto upload_result = upload_frame_data(command_buffer, frame); !upload_result) {
+        clear_submissions();
+
+        return std::unexpected(upload_result.error());
+    }
 
     auto const &view = matrices.view;
     auto const &projection = matrices.projection;
@@ -2143,18 +2057,31 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
-    // GPU frustum culling: one dispatch, main view only (see
-    // frustum_cull.slang for why the shadow pass is excluded). Recorded here
-    // -- after the buffer uploads/barriers above, before record_frame's
-    // rendering commands -- so its output (visible_draw_buffer,
-    // visible_transform_buffer, culled_indirect_buffer) is ready by the time
-    // the depth prepass and forward pass read it. The UBO write above is a
-    // host-visible memcpy that completes before this command buffer is
-    // submitted, so it doesn't matter that this dispatch is recorded before
-    // or after it -- the compute shader only ever runs post-submission.
-    auto const total_instance_count = static_cast<std::uint32_t>(frame.draws.size());
+    // GPU frustum culling: one dispatch, one workgroup per batch, main view
+    // only (see frustum_cull.slang for why the shadow pass is excluded).
+    // Recorded here -- after the buffer uploads/barriers above, before
+    // record_frame's rendering commands -- so its output
+    // (visible_draw_buffer, visible_transform_buffer, culled_indirect_buffer)
+    // is ready by the time the depth prepass and forward pass read it. The
+    // UBO write above is a host-visible memcpy that completes before this
+    // command buffer is submitted, so it doesn't matter that this dispatch
+    // is recorded before or after it -- the compute shader only ever runs
+    // post-submission.
+    //
+    // Dispatch size is frame.indirect_command_count (the batch count), and
+    // *never* depends on total instance count -- each workgroup internally
+    // loops its own batch's instances in WG_SIZE-wide chunks. This also
+    // means the batch count must stay under the device's guaranteed-minimum
+    // vkCmdDispatch groupCountX limit (65535); maximum_draw_count_ can
+    // exceed that, so it's checked explicitly rather than left to fail
+    // inside the driver.
+    if (frame.indirect_command_count != 0) {
+        if (frame.indirect_command_count > 65535) {
+            clear_submissions();
 
-    if (frame.indirect_command_count != 0 && total_instance_count != 0) {
+            return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+        }
+
         auto const *frustum_cull_pipeline = pipeline_graph_.resolve(frustum_cull_pipeline_);
 
         if (frustum_cull_pipeline == nullptr) {
@@ -2170,46 +2097,26 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         CullPushConstants const cull_pc{
                 .src_draws_address = frame.draw_buffer.device_address,
                 .src_transforms_address = frame.transform_buffer.device_address,
-                .cull_batch_address = frame.cull_batch_buffer.device_address,
                 .batch_bounds_address = frame.batch_bounds_buffer.device_address,
-                .culled_indirect_address = frame.culled_indirect_buffer.device_address,
+                .src_indirect_address = frame.indirect_buffer.device_address,
+                .dst_indirect_address = frame.culled_indirect_buffer.device_address,
                 .dst_draws_address = frame.visible_draw_buffer.device_address,
                 .dst_transforms_address = frame.visible_transform_buffer.device_address,
                 .frustum_planes_address = frame.frustum_planes_buffer.device_address,
-                .batch_visible_count_address = frame.batch_visible_count_buffer.device_address,
-                .instance_count = total_instance_count,
+                .batch_count = frame.indirect_command_count,
                 .padding = 0,
         };
 
         vkCmdPushConstants(command_buffer, frustum_cull_pipeline->layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(CullPushConstants), &cull_pc);
 
-        constexpr std::uint32_t workgroup_size = 64;
-        auto const group_count = (total_instance_count + workgroup_size - 1) / workgroup_size;
+        vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
 
-        vkCmdDispatch(command_buffer, group_count, 1, 1);
-
-        // Barrier before the finalize dispatch: batch_visible_count_buffer
-        // must be fully written by every mainCs thread before
-        // mainFinalizeCs reads it. visible_draw_buffer/visible_transform_buffer
-        // are already complete at this point too (mainCs is their only
-        // writer) -- their vertex-shader-read barrier is included here
-        // rather than a separate call, since it doesn't need to wait for
-        // the finalize dispatch below.
-        std::array<VkBufferMemoryBarrier2, 3> pre_finalize_barriers{
-                VkBufferMemoryBarrier2{
-                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                        .pNext = nullptr,
-                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .buffer = frame.batch_visible_count_buffer.buffer,
-                        .offset = 0,
-                        .size = VK_WHOLE_SIZE,
-                },
+        // Single barrier covering everything this one dispatch wrote:
+        // visible_draw_buffer/visible_transform_buffer (compute write ->
+        // vertex-shader read by the depth prepass and forward pass below)
+        // and culled_indirect_buffer (compute write -> indirect-draw read).
+        std::array<VkBufferMemoryBarrier2, 3> const post_cull_barriers{
                 VkBufferMemoryBarrier2{
                         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                         .pNext = nullptr,
@@ -2236,77 +2143,34 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                         .offset = 0,
                         .size = VK_WHOLE_SIZE,
                 },
+                VkBufferMemoryBarrier2{
+                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                        .pNext = nullptr,
+                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                        .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                        .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .buffer = frame.culled_indirect_buffer.buffer,
+                        .offset = 0,
+                        .size = VK_WHOLE_SIZE,
+                },
         };
 
-        VkDependencyInfo const pre_finalize_dependency_info{
+        VkDependencyInfo const post_cull_dependency_info{
                 .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                 .pNext = nullptr,
                 .dependencyFlags = 0,
                 .memoryBarrierCount = 0,
                 .pMemoryBarriers = nullptr,
-                .bufferMemoryBarrierCount = static_cast<std::uint32_t>(pre_finalize_barriers.size()),
-                .pBufferMemoryBarriers = pre_finalize_barriers.data(),
+                .bufferMemoryBarrierCount = static_cast<std::uint32_t>(post_cull_barriers.size()),
+                .pBufferMemoryBarriers = post_cull_barriers.data(),
                 .imageMemoryBarrierCount = 0,
                 .pImageMemoryBarriers = nullptr,
         };
 
-        vkCmdPipelineBarrier2(command_buffer, &pre_finalize_dependency_info);
-
-        auto const *frustum_cull_finalize_pipeline = pipeline_graph_.resolve(frustum_cull_finalize_pipeline_);
-
-        if (frustum_cull_finalize_pipeline == nullptr) {
-            clear_submissions();
-
-            return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
-        }
-
-        vkCmdBindPipeline(command_buffer, frustum_cull_finalize_pipeline->bind_point(),
-                          frustum_cull_finalize_pipeline->pipeline());
-        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                 frustum_cull_finalize_pipeline->layout());
-
-        CullFinalizePushConstants const finalize_pc{
-                .batch_visible_count_address = frame.batch_visible_count_buffer.device_address,
-                .culled_indirect_address = frame.culled_indirect_buffer.device_address,
-                .batch_count = frame.indirect_command_count,
-                .padding = 0,
-        };
-
-        vkCmdPushConstants(command_buffer, frustum_cull_finalize_pipeline->layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(CullFinalizePushConstants), &finalize_pc);
-
-        auto const finalize_group_count =
-                (frame.indirect_command_count + workgroup_size - 1) / workgroup_size;
-
-        vkCmdDispatch(command_buffer, finalize_group_count, 1, 1);
-
-        VkBufferMemoryBarrier2 const culled_indirect_barrier{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                .pNext = nullptr,
-                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-                .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = frame.culled_indirect_buffer.buffer,
-                .offset = 0,
-                .size = VK_WHOLE_SIZE,
-        };
-
-        VkDependencyInfo const post_finalize_dependency_info{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .pNext = nullptr,
-                .dependencyFlags = 0,
-                .memoryBarrierCount = 0,
-                .pMemoryBarriers = nullptr,
-                .bufferMemoryBarrierCount = 1,
-                .pBufferMemoryBarriers = &culled_indirect_barrier,
-                .imageMemoryBarrierCount = 0,
-                .pImageMemoryBarriers = nullptr,
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &post_finalize_dependency_info);
+        vkCmdPipelineBarrier2(command_buffer, &post_cull_dependency_info);
     }
 
     clear_submissions();
@@ -2334,7 +2198,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         frame_query.has_results = false;
     }
 
-    return upload_result;
+    return {};
 }
 
 auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
@@ -2894,12 +2758,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
     auto const transform_size = static_cast<VkDeviceSize>(frame.transforms.size()) * sizeof(glm::mat4);
     auto const indirect_size =
             static_cast<VkDeviceSize>(frame.indirect_commands.size()) * sizeof(VkDrawIndexedIndirectCommand);
-    auto const cull_batch_size = static_cast<VkDeviceSize>(frame.cull_batch_indices.size()) * sizeof(std::uint32_t);
-    auto const batch_bounds_size = static_cast<VkDeviceSize>(frame.batch_bounds.size()) * sizeof(GpuAabb);
-    auto const culled_indirect_size =
-            static_cast<VkDeviceSize>(frame.culled_indirect_commands.size()) * sizeof(VkDrawIndexedIndirectCommand);
-    auto const batch_visible_count_size =
-            static_cast<VkDeviceSize>(frame.batch_visible_counts.size()) * sizeof(std::uint32_t);
+    auto const batch_bounds_size = static_cast<VkDeviceSize>(frame.batch_bounds.size()) * sizeof(GpuCullBounds);
 
     if (draw_size != 0) {
         auto const data_span = std::as_bytes(std::span{frame.draws});
@@ -2922,32 +2781,9 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         }
     }
 
-    if (cull_batch_size != 0) {
-        auto const data_span = std::as_bytes(std::span{frame.cull_batch_indices});
-        if (auto const result = frame.upload_buffer.write(frame.cull_batch_upload_offset, data_span); !result) {
-            return std::unexpected(make_error(RendererErrorType::device_error));
-        }
-    }
-
     if (batch_bounds_size != 0) {
         auto const data_span = std::as_bytes(std::span{frame.batch_bounds});
         if (auto const result = frame.upload_buffer.write(frame.batch_bounds_upload_offset, data_span); !result) {
-            return std::unexpected(make_error(RendererErrorType::device_error));
-        }
-    }
-
-    if (culled_indirect_size != 0) {
-        auto const data_span = std::as_bytes(std::span{frame.culled_indirect_commands});
-        if (auto const result = frame.upload_buffer.write(frame.culled_indirect_upload_offset, data_span);
-            !result) {
-            return std::unexpected(make_error(RendererErrorType::device_error));
-        }
-    }
-
-    if (batch_visible_count_size != 0) {
-        auto const data_span = std::as_bytes(std::span{frame.batch_visible_counts});
-        if (auto const result = frame.upload_buffer.write(frame.batch_visible_count_upload_offset, data_span);
-            !result) {
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
     }
@@ -2957,7 +2793,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         VkBufferCopy2 region{};
     };
 
-    std::array<CopyOperation, 7> copies{};
+    std::array<CopyOperation, 4> copies{};
     std::uint32_t copy_count = 0;
 
     if (draw_size != 0) {
@@ -3002,20 +2838,6 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         };
     }
 
-    if (cull_batch_size != 0) {
-        copies[copy_count++] = CopyOperation{
-                .destination = frame.cull_batch_buffer.buffer,
-                .region =
-                        VkBufferCopy2{
-                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
-                                .pNext = nullptr,
-                                .srcOffset = frame.cull_batch_upload_offset,
-                                .dstOffset = 0,
-                                .size = cull_batch_size,
-                        },
-        };
-    }
-
     if (batch_bounds_size != 0) {
         copies[copy_count++] = CopyOperation{
                 .destination = frame.batch_bounds_buffer.buffer,
@@ -3026,34 +2848,6 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
                                 .srcOffset = frame.batch_bounds_upload_offset,
                                 .dstOffset = 0,
                                 .size = batch_bounds_size,
-                        },
-        };
-    }
-
-    if (culled_indirect_size != 0) {
-        copies[copy_count++] = CopyOperation{
-                .destination = frame.culled_indirect_buffer.buffer,
-                .region =
-                        VkBufferCopy2{
-                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
-                                .pNext = nullptr,
-                                .srcOffset = frame.culled_indirect_upload_offset,
-                                .dstOffset = 0,
-                                .size = culled_indirect_size,
-                        },
-        };
-    }
-
-    if (batch_visible_count_size != 0) {
-        copies[copy_count++] = CopyOperation{
-                .destination = frame.batch_visible_count_buffer.buffer,
-                .region =
-                        VkBufferCopy2{
-                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
-                                .pNext = nullptr,
-                                .srcOffset = frame.batch_visible_count_upload_offset,
-                                .dstOffset = 0,
-                                .size = batch_visible_count_size,
                         },
         };
     }
@@ -3077,7 +2871,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         return {};
     }
 
-    std::array<VkBufferMemoryBarrier2, 7> barriers{};
+    std::array<VkBufferMemoryBarrier2, 4> barriers{};
     std::uint32_t barrier_count = 0;
 
     if (draw_size != 0) {
@@ -3114,14 +2908,18 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         };
     }
 
+    // Read by two consumers now: the shadow pass's raw vkCmdDrawIndexedIndirect
+    // (DRAW_INDIRECT / INDIRECT_COMMAND_READ) and mainCs's src_indirect Ptr<>,
+    // which reads each batch's un-culled firstInstance/instanceCount
+    // (COMPUTE_SHADER / SHADER_STORAGE_READ).
     if (indirect_size != 0) {
         barriers[barrier_count++] = VkBufferMemoryBarrier2{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                 .pNext = nullptr,
                 .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-                .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .buffer = frame.indirect_buffer.buffer,
@@ -3130,25 +2928,11 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         };
     }
 
-    // cull_batch_buffer and batch_bounds_buffer are read-only inputs to the
-    // frustum-cull compute pass; culled_indirect_buffer is both read
-    // (firstInstance) and atomically written (instanceCount) by it.
-    if (cull_batch_size != 0) {
-        barriers[barrier_count++] = VkBufferMemoryBarrier2{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                .pNext = nullptr,
-                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = frame.cull_batch_buffer.buffer,
-                .offset = 0,
-                .size = cull_batch_size,
-        };
-    }
-
+    // batch_bounds_buffer is a read-only input to the frustum-cull compute
+    // pass. culled_indirect_buffer and visible_draw_buffer/
+    // visible_transform_buffer need no transfer barrier here -- they are
+    // never host-uploaded; mainCs is their sole writer (see the dispatch's
+    // own post-cull barrier in prepare_frame).
     if (batch_bounds_size != 0) {
         barriers[barrier_count++] = VkBufferMemoryBarrier2{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -3162,38 +2946,6 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
                 .buffer = frame.batch_bounds_buffer.buffer,
                 .offset = 0,
                 .size = batch_bounds_size,
-        };
-    }
-
-    if (culled_indirect_size != 0) {
-        barriers[barrier_count++] = VkBufferMemoryBarrier2{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                .pNext = nullptr,
-                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = frame.culled_indirect_buffer.buffer,
-                .offset = 0,
-                .size = culled_indirect_size,
-        };
-    }
-
-    if (batch_visible_count_size != 0) {
-        barriers[barrier_count++] = VkBufferMemoryBarrier2{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                .pNext = nullptr,
-                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = frame.batch_visible_count_buffer.buffer,
-                .offset = 0,
-                .size = batch_visible_count_size,
         };
     }
 

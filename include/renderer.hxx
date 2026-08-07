@@ -426,18 +426,22 @@ private:
     static_assert(sizeof(GpuDraw) == 16);
 
     // Local-space AABB for one batch (mesh+submesh+material), used by the
-    // GPU frustum-culling compute pass. Mirrors GpuAabb in
-    // assets/shaders/frustum_cull.slang.
-    struct alignas(16) GpuAabb {
+    // GPU frustum-culling compute pass. Mirrors GpuCullBounds in
+    // assets/shaders/frustum_cull.slang. wind_padding conservatively grows
+    // the world-space AABB (in transform_aabb) along X/Z to cover the
+    // maximum sway wind_offset() (wind.slang) can apply to this batch's
+    // material -- without it, wind-swaying foliage can visibly pop as it
+    // sways past its static bounds at the frustum edge.
+    struct alignas(16) GpuCullBounds {
         glm::vec3 bounds_min{-0.5F};
-        float pad0 = 0.0F;
+        float wind_padding = 0.0F;
         glm::vec3 bounds_max{0.5F};
         float pad1 = 0.0F;
     };
 
-    static_assert(std::is_trivially_copyable_v<GpuAabb>);
+    static_assert(std::is_trivially_copyable_v<GpuCullBounds>);
 
-    static_assert(sizeof(GpuAabb) == 32);
+    static_assert(sizeof(GpuCullBounds) == 32);
 
     struct RendererFrame {
         Buffer upload_buffer{};
@@ -445,27 +449,22 @@ private:
         Buffer transform_buffer{};
         Buffer indirect_buffer{};
 
-        // GPU frustum-culling inputs/outputs. cull_batch_buffer maps each
-        // instance in draw_buffer/transform_buffer to its batch; batch_bounds
-        // gives that batch's local-space AABB; culled_indirect_buffer starts
-        // as a copy of indirect_buffer with instanceCount zeroed, and the
-        // compute pass atomically fills it back in as instances survive.
-        // visible_draw_buffer/visible_transform_buffer are the compaction
-        // destination that the main-view passes (depth prepass, forward)
-        // read instead of draw_buffer/transform_buffer. The shadow pass is
-        // untouched -- it keeps reading draw_buffer/transform_buffer/
-        // indirect_buffer directly (see prepare_frame).
-        Buffer cull_batch_buffer{};
+        // GPU frustum-culling inputs/outputs. One compute workgroup handles
+        // one batch (see mainCs in assets/shaders/frustum_cull.slang):
+        // batch_bounds gives that batch's local-space AABB + wind padding;
+        // indirect_buffer is read as the source [firstInstance,
+        // firstInstance + instanceCount) range for that batch;
+        // culled_indirect_buffer receives the same command with a
+        // recomputed instanceCount. visible_draw_buffer/
+        // visible_transform_buffer are the compaction destination that the
+        // main-view passes (depth prepass, forward) read instead of
+        // draw_buffer/transform_buffer. The shadow pass is untouched -- it
+        // keeps reading draw_buffer/transform_buffer/indirect_buffer
+        // directly (see prepare_frame).
         Buffer batch_bounds_buffer{};
         Buffer culled_indirect_buffer{};
         Buffer visible_draw_buffer{};
         Buffer visible_transform_buffer{};
-
-        // Per-batch atomic survivor counter -- see the comment on
-        // CullPC::batch_visible_count in assets/shaders/frustum_cull.slang
-        // for why this is a separate flat buffer rather than a field
-        // atomically incremented inside culled_indirect_buffer directly.
-        Buffer batch_visible_count_buffer{};
 
         // 6 world-space frustum planes (vec4 each), written fresh every
         // frame in prepare_frame. Deliberately its own tiny buffer rather
@@ -483,33 +482,18 @@ private:
         VkDeviceSize draw_upload_offset = 0;
         VkDeviceSize transform_upload_offset = 0;
         VkDeviceSize indirect_upload_offset = 0;
-        VkDeviceSize cull_batch_upload_offset = 0;
         VkDeviceSize batch_bounds_upload_offset = 0;
-        VkDeviceSize culled_indirect_upload_offset = 0;
-        VkDeviceSize batch_visible_count_upload_offset = 0;
 
         std::vector<GpuDraw> draws;
         std::vector<glm::mat4> transforms;
 
         std::vector<VkDrawIndexedIndirectCommand> indirect_commands;
 
-        // Per-instance batch index, parallel to `draws`/`transforms`: for
-        // instance i, cull_batch_indices[i] is the index into batch_bounds /
-        // indirect_commands / culled_indirect_commands that instance belongs
-        // to.
-        std::vector<std::uint32_t> cull_batch_indices;
-
-        // Per-batch local-space AABB, parallel to indirect_commands.
-        std::vector<GpuAabb> batch_bounds;
-
-        // Copy of indirect_commands with instanceCount zeroed -- the second
-        // (finalize) compute dispatch writes the real instanceCount in once
-        // the first (cull) dispatch's atomic counts are final.
-        std::vector<VkDrawIndexedIndirectCommand> culled_indirect_commands;
-
-        // Per-batch atomic survivor counter, zeroed every frame, parallel
-        // to indirect_commands/batch_bounds/culled_indirect_commands.
-        std::vector<std::uint32_t> batch_visible_counts;
+        // Per-batch local-space AABB + wind padding, parallel to
+        // indirect_commands. culled_indirect_buffer is written entirely by
+        // the compute pass (mainCs copies each batch's source command and
+        // overwrites instanceCount) -- no CPU-side seed vector is needed.
+        std::vector<GpuCullBounds> batch_bounds;
 
         // Number of VkDrawIndexedIndirectCommand entries in indirect_commands
         // (one per unique (mesh, submesh) batch this frame) — NOT the number
@@ -579,7 +563,6 @@ private:
     PipelineNodeHandle forward_pipeline_;
     PipelineNodeHandle composite_pipeline_;
     PipelineNodeHandle frustum_cull_pipeline_;
-    PipelineNodeHandle frustum_cull_finalize_pipeline_;
     ShaderChangeQueue shader_change_queue_;
 
     DirectionalLight light_{};
