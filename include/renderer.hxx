@@ -161,8 +161,7 @@ struct UBO {
     float time = 0.0F; // seconds since startup -- drives wind sway in vertex shaders
 };
 
-static_assert(sizeof(UBO) == 596,
-             "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 596, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 224);
 static_assert(offsetof(UBO, light_direction) == 528);
@@ -174,7 +173,7 @@ struct RendererError {
 };
 
 static_assert(std::is_copy_constructible_v<RendererError>,
-             "RendererError must stay copyable -- std::expected<T, RendererError> copies it throughout this codebase");
+              "RendererError must stay copyable -- std::expected<T, RendererError> copies it throughout this codebase");
 
 struct RendererCreateInfo {
     VkExtent2D extent{};
@@ -567,7 +566,7 @@ private:
 
     DirectionalLight light_{};
     ShadowSettings shadow_settings_{};
-    bool frustum_culling_enabled_ = false;
+    bool frustum_culling_enabled_ = true;
 
     std::vector<MeshSlot> meshes_;
     std::uint32_t mesh_free_head_ = 0;
