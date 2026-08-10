@@ -209,7 +209,7 @@ float3 ambient = base_colour * ambient_occlusion;
     float3 fogged_colour = shaded_colour * transmittance + scattered;
 
     OutputFS output;
-    output.colour = float4(fogged_colour, 1.0);
+    output.colour = float4(fogged_colour, base_sample.a);
 
     return output;
 }

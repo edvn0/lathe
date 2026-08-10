@@ -5,6 +5,9 @@ import wind;
 struct VertexOutput
 {
     float4 position : SV_Position;
+
+    nointerpolation uint material_index;
+    float2 texture_coordinate;
 };
 
 [shader("vertex")]
@@ -28,5 +31,25 @@ uint vertex_id: SV_VulkanVertexID,
 
     VertexOutput output;
     output.position = mul(ubo.cascade_view_projection[pc.cascade_index], world_position);
+    output.material_index = draw.material_index;
+    output.texture_coordinate = vertex.uvs;
     return output;
+}
+
+// Only used by shadow_mask_pipeline_ -- the opaque shadow PSO stays
+// vertex-only (no mainFs) to preserve early-Z / cheap depth-only rendering.
+[shader("fragment")]
+void mainFs(VertexOutput input, uniform ShadowPC pc)
+{
+    const var material = pc.base.materials[input.material_index];
+
+    if (material.alpha_mode == AlphaMode.mask) {
+        const var texture = sampled_2d[NonUniformResourceIndex(material.base_colour_texture)];
+        const var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
+        float alpha = texture.Sample(sampler, input.texture_coordinate).a;
+
+        if (alpha < material.alpha_cutoff) {
+            discard;
+        }
+    }
 }

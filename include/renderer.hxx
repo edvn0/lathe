@@ -499,6 +499,15 @@ private:
         // of GpuDraw / instance entries in `draws`. This is the value that
         // must be passed as drawCount to vkCmdDrawIndexedIndirect.
         std::uint32_t indirect_command_count = 0;
+
+        // indirect_commands (and therefore culled_indirect_buffer, since GPU
+        // culling is order-preserving) is partitioned into three contiguous
+        // ranges, in this order: [0, opaque_indirect_count), then
+        // [opaque_indirect_count, opaque_indirect_count + mask_indirect_count),
+        // then the remainder is blend. See prepare_frame's batch partition.
+        std::uint32_t opaque_indirect_count = 0;
+        std::uint32_t mask_indirect_count = 0;
+        std::uint32_t blend_indirect_count = 0;
     };
 
     struct ModelDraw {
@@ -558,8 +567,11 @@ private:
 
     PipelineGraphRepository pipeline_graph_;
     PipelineNodeHandle shadow_pipeline_;
+    PipelineNodeHandle shadow_mask_pipeline_;
     PipelineNodeHandle depth_prepass_pipeline_;
+    PipelineNodeHandle depth_prepass_mask_pipeline_;
     PipelineNodeHandle forward_pipeline_;
+    PipelineNodeHandle forward_blend_pipeline_;
     PipelineNodeHandle composite_pipeline_;
     PipelineNodeHandle frustum_cull_pipeline_;
     ShaderChangeQueue shader_change_queue_;

@@ -405,8 +405,18 @@ namespace {
         vkCmdPipelineBarrier2(command_buffer, &dependency_info);
     }
 
-    auto set_forward_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent, bool is_prepass) noexcept
-            -> void {
+    // main: opaque/mask forward draws (depth write on, EQUAL against the
+    // prepass-written depth). blend has no prepass contribution, so it
+    // tests GREATER_OR_EQUAL (reverse-Z) against existing depth without
+    // expecting an exact match, and must not write depth itself.
+    enum class ForwardDynamicStateMode : std::uint8_t {
+        prepass,
+        main,
+        blend,
+    };
+
+    auto set_forward_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent,
+                                   ForwardDynamicStateMode mode) noexcept -> void {
         VkViewport const viewport{
                 .x = 0.0F,
                 .y = static_cast<float>(extent.height),
@@ -431,15 +441,18 @@ namespace {
 
         vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
 
+        // Default; callers issuing a mask or blend draw override this with
+        // an explicit vkCmdSetCullMode(VK_CULL_MODE_NONE) afterwards.
         vkCmdSetCullMode(command_buffer, VK_CULL_MODE_BACK_BIT);
 
         vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_CLOCKWISE);
 
         vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
 
-        vkCmdSetDepthWriteEnable(command_buffer, VK_TRUE);
+        vkCmdSetDepthWriteEnable(command_buffer, mode == ForwardDynamicStateMode::blend ? VK_FALSE : VK_TRUE);
 
-        vkCmdSetDepthCompareOp(command_buffer, is_prepass ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_EQUAL);
+        vkCmdSetDepthCompareOp(command_buffer, mode == ForwardDynamicStateMode::main ? VK_COMPARE_OP_EQUAL
+                                                                                     : VK_COMPARE_OP_GREATER_OR_EQUAL);
 
         vkCmdSetDepthBiasEnable(command_buffer, VK_FALSE);
 
@@ -768,6 +781,51 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         forward_pipeline_ = *registered_forward;
     }
     {
+        // Same shaders/layout as forward_pipeline_, blending enabled -- see
+        // PipelineRegisterInfo::blending, which pipeline.cxx turns into
+        // standard alpha-over (SRC_ALPHA / ONE_MINUS_SRC_ALPHA) factors.
+        VkPushConstantRange const forward_blend_push_constant_range{
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                .offset = 0,
+                .size = sizeof(ForwardPushConstants),
+        };
+
+        auto registered_forward_blend = pipeline_graph_.register_pipeline(
+                compiler, PipelineRegisterInfo{
+                                  .stages =
+                                          {
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/forward_geom.slang",
+                                                          .entry_point = "mainVs",
+                                                          .stage = renderer::ShaderStage::vertex,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/forward_geom.slang",
+                                                          .entry_point = "mainFs",
+                                                          .stage = renderer::ShaderStage::fragment,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                          },
+                                  .additional_descriptor_set_layouts = {},
+                                  .push_constant_ranges = {forward_blend_push_constant_range},
+                                  .colour_formats = {create_info.hdr_format},
+                                  .depth_format = create_info.depth_format,
+                                  .stencil_format = VK_FORMAT_UNDEFINED,
+                                  .samples = create_info.samples,
+                                  .blending = true,
+                                  .debug_name = "renderer.forward_blend_pipeline",
+                          });
+
+        if (!registered_forward_blend) {
+            return std::unexpected(make_pipeline_graph_error(registered_forward_blend.error()));
+        }
+
+        forward_blend_pipeline_ = *registered_forward_blend;
+    }
+    {
         VkPushConstantRange const shadow_pc{
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
                 .offset = 0,
@@ -802,6 +860,50 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         shadow_pipeline_ = *registered_shadow;
     }
     {
+        // Fragment stage added (vs shadow_pipeline_'s vertex-only layout) so
+        // the material buffer address is readable in mainFs for the
+        // alpha-cutoff test.
+        VkPushConstantRange const shadow_mask_pc{
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                .offset = 0,
+                .size = sizeof(ShadowPushConstants),
+        };
+
+        auto registered_shadow_mask = pipeline_graph_.register_pipeline(
+                compiler, PipelineRegisterInfo{
+                                  .stages =
+                                          {
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/shadow_depth.slang",
+                                                          .entry_point = "mainVs",
+                                                          .stage = renderer::ShaderStage::vertex,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/shadow_depth.slang",
+                                                          .entry_point = "mainFs",
+                                                          .stage = renderer::ShaderStage::fragment,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                          },
+                                  .additional_descriptor_set_layouts = {},
+                                  .push_constant_ranges = {shadow_mask_pc},
+                                  .colour_formats = {},
+                                  .depth_format = VK_FORMAT_D32_SFLOAT,
+                                  .stencil_format = VK_FORMAT_UNDEFINED,
+                                  .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .debug_name = "renderer.shadow_mask_pipeline",
+                          });
+
+        if (!registered_shadow_mask) {
+            return std::unexpected(make_pipeline_graph_error(registered_shadow_mask.error()));
+        }
+
+        shadow_mask_pipeline_ = *registered_shadow_mask;
+    }
+    {
         VkPushConstantRange const depth_prepass_pc{
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
                 .offset = 0,
@@ -834,6 +936,50 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         depth_prepass_pipeline_ = *registered_predepth;
+    }
+    {
+        // Fragment stage added (vs depth_prepass_pipeline_'s vertex-only
+        // layout) so the material buffer address is readable in mainFs for
+        // the alpha-cutoff test.
+        VkPushConstantRange const depth_prepass_mask_pc{
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                .offset = 0,
+                .size = sizeof(ForwardPushConstants),
+        };
+
+        auto registered_predepth_mask = pipeline_graph_.register_pipeline(
+                compiler, PipelineRegisterInfo{
+                                  .stages =
+                                          {
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/depth_prepass.slang",
+                                                          .entry_point = "mainVs",
+                                                          .stage = renderer::ShaderStage::vertex,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/depth_prepass.slang",
+                                                          .entry_point = "mainFs",
+                                                          .stage = renderer::ShaderStage::fragment,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                          },
+                                  .additional_descriptor_set_layouts = {},
+                                  .push_constant_ranges = {depth_prepass_mask_pc},
+                                  .colour_formats = {},
+                                  .depth_format = create_info.depth_format,
+                                  .stencil_format = VK_FORMAT_UNDEFINED,
+                                  .samples = create_info.samples,
+                                  .debug_name = "renderer.depth_prepass_mask_pipeline",
+                          });
+
+        if (!registered_predepth_mask) {
+            return std::unexpected(make_pipeline_graph_error(registered_predepth_mask.error()));
+        }
+
+        depth_prepass_mask_pipeline_ = *registered_predepth_mask;
     }
     {
         VkPushConstantRange const composite_push_constant_range{
@@ -1801,6 +1947,14 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     frame.indirect_commands.clear();
     frame.batch_bounds.clear();
     frame.indirect_command_count = 0;
+    frame.opaque_indirect_count = 0;
+    frame.mask_indirect_count = 0;
+    frame.blend_indirect_count = 0;
+
+    // Used below to sort blend batches back-to-front; computed here (rather
+    // than where the UBO is built further down) so it's available before
+    // the batch partition.
+    auto const camera_position = glm::vec3(glm::inverse(matrices.view)[3]);
 
     struct batch_key {
         std::uint32_t mesh_index;
@@ -1907,7 +2061,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         }
     }
 
-    for (auto const &[key, batch]: batches) {
+    // Emits one batch into frame.transforms/draws/indirect_commands/
+    // batch_bounds -- the same per-batch logic the single loop used to run
+    // inline, now shared by the three-way partition below so opaque, mask
+    // and blend batches land in three contiguous ranges (opaque, then mask,
+    // then blend) within frame.indirect_commands.
+    auto const emit_batch = [this, &frame](batch_entry const &batch) -> std::expected<void, RendererError> {
         auto const *mesh = mesh_slot(batch.mesh);
 
         if (mesh == nullptr) {
@@ -1982,7 +2141,90 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                 .wind_padding = wind_padding,
                 .bounds_max = submesh.bounds_max,
         });
+
+        return {};
+    };
+
+    struct pending_blend_batch {
+        batch_entry const *entry;
+        float camera_distance_sq;
+    };
+
+    std::vector<batch_entry const *> opaque_batches;
+    std::vector<batch_entry const *> mask_batches;
+    std::vector<pending_blend_batch> blend_batches;
+
+    opaque_batches.reserve(batches.size());
+    mask_batches.reserve(batches.size());
+    blend_batches.reserve(batches.size());
+
+    for (auto const &[key, batch]: batches) {
+        auto const *material = material_storage_.get(batch.material);
+        auto const alpha_mode = material != nullptr ? material->alpha_mode : AlphaMode::opaque;
+
+        switch (alpha_mode) {
+            case AlphaMode::opaque:
+                opaque_batches.push_back(&batch);
+                break;
+
+            case AlphaMode::mask:
+                mask_batches.push_back(&batch);
+                break;
+
+            case AlphaMode::blend: {
+                auto const *mesh = mesh_slot(batch.mesh);
+
+                if (mesh == nullptr) {
+                    clear_submissions();
+
+                    return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+                }
+
+                auto const &submesh = mesh->submeshes[batch.submesh_index];
+                auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
+
+                // Batches share one alpha mode/PSO but can hold many
+                // instances at different depths -- sorting is per-batch, not
+                // per-instance (see the "Known sorting limitation" note in
+                // docs/alpha-mode-support.md), so one representative
+                // transform is all that's used here.
+                auto const world_centre =
+                        glm::vec3(batch.transforms.front() * glm::vec4(local_centre, 1.0F));
+                auto const distance = world_centre - camera_position;
+
+                blend_batches.push_back({&batch, glm::dot(distance, distance)});
+                break;
+            }
+        }
     }
+
+    std::sort(blend_batches.begin(), blend_batches.end(),
+              [](auto const &a, auto const &b) { return a.camera_distance_sq > b.camera_distance_sq; });
+
+    for (auto const *batch: opaque_batches) {
+        if (auto result = emit_batch(*batch); !result) {
+            return std::unexpected(result.error());
+        }
+    }
+
+    frame.opaque_indirect_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
+
+    for (auto const *batch: mask_batches) {
+        if (auto result = emit_batch(*batch); !result) {
+            return std::unexpected(result.error());
+        }
+    }
+
+    frame.mask_indirect_count = static_cast<std::uint32_t>(frame.indirect_commands.size()) - frame.opaque_indirect_count;
+
+    for (auto const &pending: blend_batches) {
+        if (auto result = emit_batch(*pending.entry); !result) {
+            return std::unexpected(result.error());
+        }
+    }
+
+    frame.blend_indirect_count = static_cast<std::uint32_t>(frame.indirect_commands.size()) -
+                                  frame.opaque_indirect_count - frame.mask_indirect_count;
 
     frame.indirect_command_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
 
@@ -2025,7 +2267,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             .view_projection = view_projection,
             .view = view,
             .projection = projection,
-            .camera_position = glm::vec3(glm::inverse(view)[3]),
+            .camera_position = camera_position,
             .fog_colour = glm::vec3{0.5F},
             .cascade_view_projection = cascades.view_projection,
             .cascade_split_far = glm::make_vec4(cascades.split_far.data()),
@@ -2249,8 +2491,18 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
+    auto const *forward_blend_pipeline = pipeline_graph_.resolve(forward_blend_pipeline_);
+    if (forward_blend_pipeline == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
     auto const *depth_prepass_pipeline = pipeline_graph_.resolve(depth_prepass_pipeline_);
     if (depth_prepass_pipeline == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    auto const *depth_prepass_mask_pipeline = pipeline_graph_.resolve(depth_prepass_mask_pipeline_);
+    if (depth_prepass_mask_pipeline == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
@@ -2261,6 +2513,11 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
 
     auto const *shadow_pipeline = pipeline_graph_.resolve(shadow_pipeline_);
     if (shadow_pipeline == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    auto const *shadow_mask_pipeline = pipeline_graph_.resolve(shadow_mask_pipeline_);
+    if (shadow_mask_pipeline == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
@@ -2316,33 +2573,74 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         };
 
         vkCmdBeginRendering(command_buffer, &shadow_rendering_info);
-        vkCmdBindPipeline(command_buffer, shadow_pipeline->bind_point(), shadow_pipeline->pipeline());
-        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 shadow_pipeline->layout());
         vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-        ShadowPushConstants pc{
-                .draw_buffer_address = frame.draw_buffer.device_address,
-                .transform_buffer_address = frame.transform_buffer.device_address,
-                .material_buffer_address = material_storage_.device_address(),
-                .ubo_buffer_address = ubos_[frame_index].device_address,
-                .cascade_index = 0,
-                .padding = 0,
-        };
+        // Blend never casts shadows (see docs/alpha-mode-support.md) -- only
+        // the opaque and mask ranges of frame.indirect_buffer are drawn
+        // here. Both ranges use VK_CULL_MODE_NONE already (set inside
+        // set_shadow_dynamic_state, unconditionally -- this pass has no Y
+        // flip, so back-face culling would cull the wrong side regardless of
+        // alpha mode), so no cull-mode override is needed between them.
+        if (frame.opaque_indirect_count != 0) {
+            vkCmdBindPipeline(command_buffer, shadow_pipeline->bind_point(), shadow_pipeline->pipeline());
+            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                     shadow_pipeline->layout());
 
-        vkCmdPushConstants(command_buffer, shadow_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                           sizeof(ShadowPushConstants), &pc);
+            ShadowPushConstants pc{
+                    .draw_buffer_address = frame.draw_buffer.device_address,
+                    .transform_buffer_address = frame.transform_buffer.device_address,
+                    .material_buffer_address = material_storage_.device_address(),
+                    .ubo_buffer_address = ubos_[frame_index].device_address,
+                    .cascade_index = 0,
+                    .padding = 0,
+            };
 
-        for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
-            set_shadow_dynamic_state(command_buffer, cascade, shadow_cascade_resolution,
-                                     shadow_settings_.depth_bias_constant, shadow_settings_.depth_bias_slope);
+            vkCmdPushConstants(command_buffer, shadow_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+                               sizeof(ShadowPushConstants), &pc);
 
-            vkCmdPushConstants(command_buffer, shadow_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT,
-                               offsetof(ShadowPushConstants, cascade_index), sizeof(std::uint32_t), &cascade);
+            for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+                set_shadow_dynamic_state(command_buffer, cascade, shadow_cascade_resolution,
+                                         shadow_settings_.depth_bias_constant, shadow_settings_.depth_bias_slope);
 
-            if (frame.indirect_command_count != 0) {
+                vkCmdPushConstants(command_buffer, shadow_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT,
+                                   offsetof(ShadowPushConstants, cascade_index), sizeof(std::uint32_t), &cascade);
+
                 vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0,
-                                         frame.indirect_command_count, sizeof(VkDrawIndexedIndirectCommand));
+                                         frame.opaque_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
+            }
+        }
+
+        if (frame.mask_indirect_count != 0) {
+            vkCmdBindPipeline(command_buffer, shadow_mask_pipeline->bind_point(), shadow_mask_pipeline->pipeline());
+            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                     shadow_mask_pipeline->layout());
+
+            ShadowPushConstants pc{
+                    .draw_buffer_address = frame.draw_buffer.device_address,
+                    .transform_buffer_address = frame.transform_buffer.device_address,
+                    .material_buffer_address = material_storage_.device_address(),
+                    .ubo_buffer_address = ubos_[frame_index].device_address,
+                    .cascade_index = 0,
+                    .padding = 0,
+            };
+
+            vkCmdPushConstants(command_buffer, shadow_mask_pipeline->layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               sizeof(ShadowPushConstants), &pc);
+
+            auto const mask_offset =
+                    static_cast<VkDeviceSize>(frame.opaque_indirect_count) * sizeof(VkDrawIndexedIndirectCommand);
+
+            for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+                set_shadow_dynamic_state(command_buffer, cascade, shadow_cascade_resolution,
+                                         shadow_settings_.depth_bias_constant, shadow_settings_.depth_bias_slope);
+
+                vkCmdPushConstants(command_buffer, shadow_mask_pipeline->layout(),
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   offsetof(ShadowPushConstants, cascade_index), sizeof(std::uint32_t), &cascade);
+
+                vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, mask_offset,
+                                         frame.mask_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
             }
         }
 
@@ -2410,25 +2708,49 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         };
 
         vkCmdBeginRendering(command_buffer, &depth_prepass_info);
-        vkCmdBindPipeline(command_buffer, depth_prepass_pipeline->bind_point(), depth_prepass_pipeline->pipeline());
-        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 depth_prepass_pipeline->layout());
-        set_forward_dynamic_state(command_buffer, target_extent, true);
+        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-        ForwardPushConstants pc{
+        ForwardPushConstants const pc{
                 .draw_buffer_address = main_view_draw_buffer.device_address,
                 .transform_buffer_address = main_view_transform_buffer.device_address,
                 .material_buffer_address = material_storage_.device_address(),
                 .ubo_buffer_address = ubos_[frame_index].device_address,
         };
 
-        vkCmdPushConstants(command_buffer, depth_prepass_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
-                           sizeof(ForwardPushConstants), &pc);
-        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        // Blend never contributes to prepass depth (see
+        // docs/alpha-mode-support.md) -- only opaque and mask are drawn
+        // here. Opaque stays vertex-only (depth_prepass_pipeline_) to
+        // preserve early-Z; mask needs its own discard-capable PSO and
+        // VK_CULL_MODE_NONE.
+        if (frame.opaque_indirect_count != 0) {
+            vkCmdBindPipeline(command_buffer, depth_prepass_pipeline->bind_point(),
+                              depth_prepass_pipeline->pipeline());
+            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                     depth_prepass_pipeline->layout());
+            set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::prepass);
+            vkCmdPushConstants(command_buffer, depth_prepass_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+                               sizeof(ForwardPushConstants), &pc);
 
-        if (frame.indirect_command_count != 0) {
             vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0,
-                                     frame.indirect_command_count, sizeof(VkDrawIndexedIndirectCommand));
+                                     frame.opaque_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
+        }
+
+        if (frame.mask_indirect_count != 0) {
+            vkCmdBindPipeline(command_buffer, depth_prepass_mask_pipeline->bind_point(),
+                              depth_prepass_mask_pipeline->pipeline());
+            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                     depth_prepass_mask_pipeline->layout());
+            set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::prepass);
+            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+            vkCmdPushConstants(command_buffer, depth_prepass_mask_pipeline->layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               sizeof(ForwardPushConstants), &pc);
+
+            auto const mask_offset =
+                    static_cast<VkDeviceSize>(frame.opaque_indirect_count) * sizeof(VkDrawIndexedIndirectCommand);
+
+            vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, mask_offset,
+                                     frame.mask_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
         }
 
         vkCmdEndRendering(command_buffer);
@@ -2506,27 +2828,60 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         };
 
         vkCmdBeginRendering(command_buffer, &forward_rendering_info);
-        vkCmdBindPipeline(command_buffer, forward_pipeline->bind_point(), forward_pipeline->pipeline());
-        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 forward_pipeline->layout());
-        set_forward_dynamic_state(command_buffer, target_extent, false);
+        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-        ForwardPushConstants pc{
+        ForwardPushConstants const pc{
                 .draw_buffer_address = main_view_draw_buffer.device_address,
                 .transform_buffer_address = main_view_transform_buffer.device_address,
                 .material_buffer_address = material_storage_.device_address(),
                 .ubo_buffer_address = ubos_[frame_index].device_address,
         };
 
+        // Opaque and mask share forward_pipeline_ -- only the cull mode
+        // differs between them (mask needs VK_CULL_MODE_NONE) -- while blend
+        // needs a dedicated PSO (forward_blend_pipeline_, blending enabled,
+        // depth write off). See docs/alpha-mode-support.md.
+        vkCmdBindPipeline(command_buffer, forward_pipeline->bind_point(), forward_pipeline->pipeline());
+        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 forward_pipeline->layout());
         vkCmdPushConstants(command_buffer, forward_pipeline->layout(),
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ForwardPushConstants),
                            &pc);
 
-        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        if (frame.opaque_indirect_count != 0) {
+            set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::main);
 
-        if (frame.indirect_command_count != 0) {
             vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0,
-                                     frame.indirect_command_count, sizeof(VkDrawIndexedIndirectCommand));
+                                     frame.opaque_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
+        }
+
+        if (frame.mask_indirect_count != 0) {
+            set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::main);
+            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+
+            auto const mask_offset =
+                    static_cast<VkDeviceSize>(frame.opaque_indirect_count) * sizeof(VkDrawIndexedIndirectCommand);
+
+            vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, mask_offset,
+                                     frame.mask_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
+        }
+
+        if (frame.blend_indirect_count != 0) {
+            vkCmdBindPipeline(command_buffer, forward_blend_pipeline->bind_point(),
+                              forward_blend_pipeline->pipeline());
+            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                     forward_blend_pipeline->layout());
+            vkCmdPushConstants(command_buffer, forward_blend_pipeline->layout(),
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               sizeof(ForwardPushConstants), &pc);
+            set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::blend);
+            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+
+            auto const blend_offset = static_cast<VkDeviceSize>(frame.opaque_indirect_count + frame.mask_indirect_count) *
+                                       sizeof(VkDrawIndexedIndirectCommand);
+
+            vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, blend_offset,
+                                     frame.blend_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
         }
 
         vkCmdEndRendering(command_buffer);
