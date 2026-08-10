@@ -175,7 +175,13 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
     float ambient_occlusion = ambient_occlusion_texture.Sample(sampler, uv).r;
 ambient_occlusion = lerp(1.0, ambient_occlusion, material.occlusion_strength);
 
-var base_colour = texture.Sample(sampler, uv).xyz *
+const var base_sample = texture.Sample(sampler, uv);
+
+if (material.alpha_mode == AlphaMode.mask && base_sample.a < material.alpha_cutoff) {
+    discard;
+}
+
+var base_colour = base_sample.xyz *
                   float3(material.colour[0], material.colour[1], material.colour[2]);
 
 float3 ambient = base_colour * ambient_occlusion;

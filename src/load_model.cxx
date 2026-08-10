@@ -260,7 +260,19 @@ auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint
     std::vector<std::uint32_t> welded_indices(expanded.size());
     meshopt_remapIndexBuffer(welded_indices.data(), nullptr, expanded.size(), remap.data());
 
-    vertices = std::move(welded_vertices);
+    meshopt_optimizeVertexCache(welded_indices.data(), welded_indices.data(), welded_indices.size(),
+                                unique_vertex_count);
+
+    meshopt_optimizeOverdraw(welded_indices.data(), welded_indices.data(), welded_indices.size(),
+                             &welded_vertices[0].position.x, unique_vertex_count, sizeof(ModelVertex), 1.05f);
+
+    std::vector<ModelVertex> fetch_optimized_vertices(unique_vertex_count);
+    auto const fetch_remap_count =
+            meshopt_optimizeVertexFetch(fetch_optimized_vertices.data(), welded_indices.data(), welded_indices.size(),
+                                        welded_vertices.data(), unique_vertex_count, sizeof(ModelVertex));
+    fetch_optimized_vertices.resize(fetch_remap_count);
+
+    vertices = std::move(fetch_optimized_vertices);
     indices = std::move(welded_indices);
 
     return {};
