@@ -33,6 +33,7 @@
 #include "error_describe.hxx"
 #include "imgui_renderer.hxx"
 #include "implot.h"
+#include "light.hxx"
 #include "logger.hxx"
 #include "physics.hxx"
 #include "physics_world.hxx"
@@ -200,7 +201,7 @@ namespace {
                     ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
                     ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x, ImGuiCond_Always);
 
-                    constexpr auto first_stage = static_cast<std::uint32_t>(RenderStage::ShadowPass);
+                    constexpr auto first_stage = static_cast<std::uint32_t>(RenderStage::Culling);
 
                     for (std::uint32_t stage = first_stage; stage < stage_count; ++stage) {
                         auto const &buf = timing_buffers[stage];
@@ -249,6 +250,11 @@ namespace {
                 dirty |= ImGui::ColorEdit3("Colour", &light.colour.x);
                 dirty |= ImGui::SliderFloat("Intensity", &light.intensity, 0.0F, 10.0F);
 
+                float ambient_intensity = renderer->ambient_intensity();
+                if (ImGui::SliderFloat("Ambient intensity", &ambient_intensity, 0.0F, 1.0F)) {
+                    renderer->set_ambient_intensity(ambient_intensity);
+                }
+
                 ImGui::SeparatorText("Shadows");
                 dirty |= ImGui::SliderFloat("Split lambda", &shadows.cascades.split_lambda, 0.0F, 1.0F);
                 dirty |= ImGui::SliderFloat("Shadow distance", &shadows.cascades.shadow_distance, 20.0F, 500.0F);
@@ -271,6 +277,36 @@ namespace {
                     renderer->set_directional_light(light);
                     renderer->set_shadow_settings(shadows);
                 }
+
+                ImGui::SeparatorText("Punctual lights");
+                auto &registry = active_scene->registry;
+
+                std::size_t index = 0;
+                for (auto [entity, transform, point_light]: registry.view<Transform, PointLight>().each()) {
+                    ImGui::PushID(static_cast<int>(index++));
+                    if (ImGui::TreeNode("Point light")) {
+                        ImGui::DragFloat3("Position", &transform.position.x, 0.1F);
+                        ImGui::ColorEdit3("Colour", &point_light.colour.x);
+                        ImGui::SliderFloat("Intensity", &point_light.intensity, 0.0F, 200.0F);
+                        ImGui::SliderFloat("Range", &point_light.range, 0.5F, 100.0F);
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
+                }
+
+                for (auto [entity, transform, spot_light]: registry.view<Transform, SpotLight>().each()) {
+                    ImGui::PushID(static_cast<int>(index++));
+                    if (ImGui::TreeNode("Spot light")) {
+                        ImGui::DragFloat3("Position", &transform.position.x, 0.1F);
+                        ImGui::ColorEdit3("Colour", &spot_light.colour.x);
+                        ImGui::SliderFloat("Intensity", &spot_light.intensity, 0.0F, 200.0F);
+                        ImGui::SliderFloat("Range", &spot_light.range, 0.5F, 100.0F);
+                        ImGui::SliderFloat("Inner cone", &spot_light.inner_cone_degrees, 0.0F, 89.0F, "%.1f deg");
+                        ImGui::SliderFloat("Outer cone", &spot_light.outer_cone_degrees, 0.0F, 89.0F, "%.1f deg");
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
+                }
             });
         }
 
@@ -287,8 +323,8 @@ namespace {
         auto play() -> void {
             runtime_scene = std::make_unique<Scene>();
             runtime_scene->physics_settings = editor_scene->physics_settings;
-            clone_registry<Transform, ModelHandle, RigidBody, MaterialOverride>(editor_scene->registry,
-                                                                                runtime_scene->registry);
+            clone_registry<Transform, ModelHandle, RigidBody, MaterialOverride, PointLight, SpotLight>(
+                    editor_scene->registry, runtime_scene->registry);
 
             active_scene = runtime_scene.get();
             is_playing = true;
@@ -622,6 +658,53 @@ namespace {
                 editor_scene->registry.emplace<MaterialOverride>(floor_entity, MaterialOverride{*floor_material});
             } else {
                 error("Could not create floor material override: {}", describe(floor_material.error()));
+            }
+
+            // A handful of coloured point lights hovering over the physics
+            // cube grid, and one spot light angled down at it -- demo
+            // content exercising the punctual-light path end to end
+            // (ECS component -> submit_scene -> lights SSBO -> BRDF).
+            {
+                constexpr std::array<glm::vec3, 4> point_light_colours{
+                        glm::vec3{1.0F, 0.35F, 0.25F},
+                        glm::vec3{0.25F, 0.55F, 1.0F},
+                        glm::vec3{0.35F, 1.0F, 0.4F},
+                        glm::vec3{1.0F, 0.85F, 0.25F},
+                };
+
+                for (std::size_t i = 0; i < point_light_colours.size(); ++i) {
+                    auto const angle = (static_cast<float>(i) / static_cast<float>(point_light_colours.size())) *
+                                       6.2831853F;
+                    auto const radius = spacing * static_cast<float>(physics_grid) * 0.5F;
+
+                    auto const light_entity = editor_scene->registry.create();
+                    editor_scene->registry.emplace<Transform>(
+                            light_entity, Transform{
+                                                  .position = glm::vec3{radius * std::cos(angle), 12.0F,
+                                                                        radius * std::sin(angle)},
+                                          });
+                    editor_scene->registry.emplace<PointLight>(
+                            light_entity, PointLight{
+                                                  .colour = point_light_colours[i],
+                                                  .intensity = 25.0F,
+                                                  .range = 20.0F,
+                                          });
+                }
+
+                auto const spot_entity = editor_scene->registry.create();
+                editor_scene->registry.emplace<Transform>(
+                        spot_entity, Transform{
+                                            .position = glm::vec3{0.0F, 15.0F, 0.0F},
+                                            .rotation = glm::angleAxis(glm::radians(30.0F), glm::vec3{1.0F, 0.0F, 0.0F}),
+                                    });
+                editor_scene->registry.emplace<SpotLight>(
+                        spot_entity, SpotLight{
+                                            .colour = glm::vec3{0.9F, 0.95F, 1.0F},
+                                            .intensity = 60.0F,
+                                            .range = 30.0F,
+                                            .inner_cone_degrees = 15.0F,
+                                            .outer_cone_degrees = 25.0F,
+                                    });
             }
 
             // A dense field of wind-swaying grass clumps covering a 100x100
@@ -1411,6 +1494,43 @@ namespace {
             }
         }
 
+        auto point_light_view = registry.view<Transform const, PointLight const>();
+
+        for (auto [entity, transform, light]: point_light_view.each()) {
+            auto result = application.renderer->submit_point_light(Renderer::PointLight{
+                    .position = transform.position,
+                    .colour = light.colour,
+                    .intensity = light.intensity,
+                    .range = light.range,
+            });
+
+            if (!result) {
+                error("Could not submit point light: {}", describe(result.error()));
+            }
+        }
+
+        // A spot light "points down" (-Y) before Transform::rotation is
+        // applied, matching glTF KHR_lights_punctual's convention.
+        auto spot_light_view = registry.view<Transform const, SpotLight const>();
+
+        for (auto [entity, transform, light]: spot_light_view.each()) {
+            auto const direction = transform.rotation * glm::vec3{0.0F, -1.0F, 0.0F};
+
+            auto result = application.renderer->submit_spot_light(Renderer::SpotLight{
+                    .position = transform.position,
+                    .direction = direction,
+                    .colour = light.colour,
+                    .intensity = light.intensity,
+                    .range = light.range,
+                    .inner_cone_degrees = light.inner_cone_degrees,
+                    .outer_cone_degrees = light.outer_cone_degrees,
+            });
+
+            if (!result) {
+                error("Could not submit spot light: {}", describe(result.error()));
+            }
+        }
+
         return {};
     }
 
@@ -1522,7 +1642,7 @@ namespace {
 
                 float running_total = 0.0F;
 
-                for (auto stage = static_cast<std::uint32_t>(RenderStage::ShadowPass); stage < stage_count; ++stage) {
+                for (auto stage = static_cast<std::uint32_t>(RenderStage::Culling); stage < stage_count; ++stage) {
                     running_total += timings.milliseconds[stage];
                     application.timing_buffers[stage].add_point(application.timing_x, running_total);
                 }

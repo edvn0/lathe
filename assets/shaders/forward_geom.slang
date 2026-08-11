@@ -1,6 +1,7 @@
 import bindless;
 import scene_types;
 import wind;
+import pbr;
 
 struct VertexOutput
 {
@@ -122,6 +123,7 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
     const var emissive_texture = sampled_2d[NonUniformResourceIndex(material.emissive_texture)];
     const var ambient_occlusion_texture = sampled_2d[NonUniformResourceIndex(material.occlusion_texture)];
     const var normal_texture = sampled_2d[NonUniformResourceIndex(material.normal_texture)];
+    const var metallic_roughness_texture = sampled_2d[NonUniformResourceIndex(material.metallic_roughness_texture)];
     const var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
 
     float2 uv = float2(input.texture_coordinate.x, input.texture_coordinate.y);
@@ -173,7 +175,7 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
     }
 
     float ambient_occlusion = ambient_occlusion_texture.Sample(sampler, uv).r;
-ambient_occlusion = lerp(1.0, ambient_occlusion, material.occlusion_strength);
+    ambient_occlusion = lerp(1.0, ambient_occlusion, material.occlusion_strength);
 
 const var base_sample = texture.Sample(sampler, uv);
 
@@ -184,14 +186,53 @@ if (material.alpha_mode == AlphaMode.mask && base_sample.a < material.alpha_cuto
 var base_colour = base_sample.xyz *
                   float3(material.colour[0], material.colour[1], material.colour[2]);
 
-float3 ambient = base_colour * ambient_occlusion;
-    float3 radiance = ubo.light_colour * ubo.light_intensity;
-    float3 diffuse = base_colour * ndotl * radiance * shadow;
+    // glTF metallic-roughness convention: roughness in G, metallic in B.
+    float2 metallic_roughness = metallic_roughness_texture.Sample(sampler, uv).bg *
+                                float2(material.metallic_factor, material.roughness_factor);
+    float metallic = metallic_roughness.x;
+    float roughness = clamp(metallic_roughness.y, 0.045, 1.0);
+
+    float3 view_direction = normalize(ubo.camera_position - input.world_position);
+
+    float3 directional_contribution = shade_punctual(
+            shading_normal, view_direction, light_direction, ubo.light_colour * ubo.light_intensity, base_colour,
+            metallic, roughness) * shadow;
+
+    float3 punctual_contribution = float3(0.0);
+
+    for (uint light_index = 0; light_index < pc.light_count; ++light_index) {
+        const var punctual_light = pc.lights[light_index];
+
+        float3 to_light = punctual_light.position - input.world_position;
+        float distance = length(to_light);
+        float3 light_dir = to_light / max(distance, 1e-6);
+
+        // Smooth range window on top of inverse-square falloff so lights
+        // reach exactly zero at `range` instead of cutting off with a hard
+        // edge -- same shape as glTF KHR_lights_punctual's recommended
+        // attenuation.
+        float distance_falloff = clamp(1.0 - pow(distance / max(punctual_light.range, 1e-4), 4.0), 0.0, 1.0);
+        distance_falloff = (distance_falloff * distance_falloff) / max(distance * distance, 1e-4);
+
+        float cone_falloff = 1.0;
+        if (punctual_light.type == LightType.spot) {
+            float cd = dot(normalize(punctual_light.direction), -light_dir);
+            cone_falloff = clamp(cd * punctual_light.spot_scale + punctual_light.spot_offset, 0.0, 1.0);
+            cone_falloff *= cone_falloff;
+        }
+
+        float3 radiance = punctual_light.colour * punctual_light.intensity * distance_falloff * cone_falloff;
+
+        punctual_contribution += shade_punctual(shading_normal, view_direction, light_dir, radiance, base_colour,
+                                                metallic, roughness);
+    }
+
+    float3 ambient = base_colour * ambient_occlusion * ubo.ambient_intensity;
     float3 emissive = emissive_texture.Sample(sampler, uv).xyz *
                   float3(material.emissive[0], material.emissive[1], material.emissive[2]) *
                   material.emissive_strength;
 
-    float3 shaded_colour = ambient + diffuse + emissive;
+    float3 shaded_colour = ambient + directional_contribution + punctual_contribution + emissive;
 
     if (ubo.shadow_debug_cascade_tint != 0) {
         const float3 tints[5] = {

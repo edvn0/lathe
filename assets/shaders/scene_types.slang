@@ -44,6 +44,32 @@ public struct Material {
     public float _pad2 = 0.0F;
 };
 
+public enum class LightType : uint {
+    point,
+    spot,
+};
+
+// One punctual light. Mirrors GpuLight in include/renderer.hxx. direction is
+// unused for point lights. spot_scale/spot_offset are the glTF-style
+// precomputed cone falloff terms (see KHR_lights_punctual):
+// angular_attenuation = saturate(dot(spot_dir, -light_to_surface) * spot_scale + spot_offset),
+// computed on the CPU so the shader never evaluates cos()/acos() per pixel.
+public struct GpuLight {
+    public float3 position;
+    public float range;
+
+    public float3 colour;
+    public float intensity;
+
+    public float3 direction; // normalized, points from the light outward -- spot lights only
+    public float spot_scale;
+
+    public float spot_offset;
+    public LightType type;
+    public float _pad0;
+    public float _pad1;
+};
+
 public struct UBO {
     public float4x4 view_projection;
     public float4x4 view;
@@ -76,6 +102,10 @@ public struct UBO {
     public uint shadow_debug_cascade_tint;
 
     public float time; // seconds since startup -- drives wind sway in vertex shaders
+
+    // Flat multiplier on the (already-albedo-scaled) ambient term -- see the
+    // comment on this field in include/renderer.hxx for why it exists.
+    public float ambient_intensity;
 };
 
 public struct PC
@@ -84,6 +114,14 @@ public struct PC
     public Ptr<float4x4> transforms;
     public Ptr<Material> materials;
     public Ptr<UBO> ubo;
+
+    // Punctual (point/spot) lights, in a standalone buffer rather than a
+    // trailing UBO array -- same reasoning as frustum_planes_buffer (see
+    // include/renderer.hxx): unambiguous 16-byte-stride Ptr<> indexing
+    // instead of staking correctness on Slang's struct-array packing.
+    public Ptr<GpuLight> lights;
+    public uint light_count;
+    public uint _padding;
 };
 
 public struct ShadowPC

@@ -35,11 +35,21 @@
 #include "shadow_cascades.hxx"
 #include "slang_compiler.hxx"
 
-enum class RenderStage : std::uint32_t { FullFrame = 0, ShadowPass, DepthPrepass, ForwardPass, Composition, Count };
+enum class RenderStage : std::uint32_t {
+    FullFrame = 0,
+    Culling,
+    ShadowPass,
+    DepthPrepass,
+    ForwardPass,
+    Composition,
+    Count
+};
 constexpr auto to_string(RenderStage stage) -> std::string_view {
     switch (stage) {
         case RenderStage::FullFrame:
             return "Full Frame";
+        case RenderStage::Culling:
+            return "GPU Culling";
         case RenderStage::ShadowPass:
             return "Shadow Pass";
         case RenderStage::DepthPrepass:
@@ -159,9 +169,15 @@ struct UBO {
     std::uint32_t shadow_debug_cascade_tint = 0;
 
     float time = 0.0F; // seconds since startup -- drives wind sway in vertex shaders
+
+    // Flat multiplier on the (already-albedo-scaled) ambient term. A real
+    // Lambert BRDF (albedo/pi, see pbr.slang) is noticeably darker than the
+    // old ambient = albedo term this replaced, so this exists purely to let
+    // the scene be re-tuned back to a sane brightness without an IBL/skybox.
+    float ambient_intensity = 0.15F;
 };
 
-static_assert(sizeof(UBO) == 596, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 600, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 224);
 static_assert(offsetof(UBO, light_direction) == 528);
@@ -282,6 +298,38 @@ struct Renderer {
         glm::vec3 colour{1.0F, 0.97F, 0.92F};
         float intensity = 3.0F;
     };
+
+    // Punctual lights -- submitted per frame like submit_model/submit_mesh,
+    // not sticky settings. Unlike DirectionalLight, these never cast
+    // shadows (see the plan this shipped under: BRDF + point/spot lights,
+    // no shadows yet).
+    struct PointLight {
+        glm::vec3 position{0.0F};
+        glm::vec3 colour{1.0F};
+        float intensity = 1.0F;
+        float range = 10.0F;
+    };
+
+    struct SpotLight {
+        glm::vec3 position{0.0F};
+        glm::vec3 direction{0.0F, -1.0F, 0.0F}; // normalized, points from the light outward
+        glm::vec3 colour{1.0F};
+        float intensity = 1.0F;
+        float range = 10.0F;
+        float inner_cone_degrees = 20.0F;
+        float outer_cone_degrees = 30.0F;
+    };
+
+    [[nodiscard]]
+    auto submit_point_light(PointLight const &light) -> std::expected<void, RendererError>;
+
+    [[nodiscard]]
+    auto submit_spot_light(SpotLight const &light) -> std::expected<void, RendererError>;
+
+    // Multiplies the ambient term (albedo * AO), standing in for IBL/skybox
+    // ambient lighting until one exists.
+    auto set_ambient_intensity(float intensity) noexcept -> void { ambient_intensity_ = intensity; }
+    [[nodiscard]] auto ambient_intensity() const noexcept -> float { return ambient_intensity_; }
 
     struct ShadowSettings {
         ShadowCascadeSettings cascades{};
@@ -442,6 +490,36 @@ private:
 
     static_assert(sizeof(GpuCullBounds) == 32);
 
+    enum class GpuLightType : std::uint32_t {
+        point = 0,
+        spot = 1,
+    };
+
+    // One punctual light as uploaded to lights_buffer. Mirrors GpuLight in
+    // assets/shaders/scene_types.slang. spot_scale/spot_offset are the
+    // glTF-style precomputed cone-falloff terms (KHR_lights_punctual),
+    // computed once here rather than per-pixel in the shader.
+    struct alignas(16) GpuLight {
+        glm::vec3 position{0.0F};
+        float range = 10.0F;
+
+        glm::vec3 colour{1.0F};
+        float intensity = 1.0F;
+
+        glm::vec3 direction{0.0F, -1.0F, 0.0F};
+        float spot_scale = 1.0F;
+
+        float spot_offset = 0.0F;
+        GpuLightType type = GpuLightType::point;
+        float _pad0 = 0.0F;
+        float _pad1 = 0.0F;
+    };
+
+    static_assert(std::is_trivially_copyable_v<GpuLight>);
+    static_assert(sizeof(GpuLight) == 64);
+
+    static constexpr std::uint32_t maximum_light_count = 256;
+
     struct RendererFrame {
         Buffer upload_buffer{};
         Buffer draw_buffer{};
@@ -473,6 +551,14 @@ private:
         // which packing rule the Slang compiler applies to that struct,
         // which is not worth staking correctness on.
         Buffer frustum_planes_buffer{};
+
+        // Punctual (point/spot) lights this frame, fixed capacity
+        // (maximum_light_count), host-written every frame in prepare_frame
+        // just like frustum_planes_buffer above -- same reasoning applies.
+        // light_count is how many of lights_buffer's slots are populated;
+        // read back in record_frame when filling push constants.
+        Buffer lights_buffer{};
+        std::uint32_t light_count = 0;
 
         ForwardTarget forward_target{};
 
@@ -579,6 +665,10 @@ private:
     DirectionalLight light_{};
     ShadowSettings shadow_settings_{};
     bool frustum_culling_enabled_ = true;
+    float ambient_intensity_ = 0.15F;
+
+    std::vector<PointLight> point_light_submissions_;
+    std::vector<SpotLight> spot_light_submissions_;
 
     std::vector<MeshSlot> meshes_;
     std::uint32_t mesh_free_head_ = 0;

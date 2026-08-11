@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <expected>
@@ -37,19 +38,27 @@ namespace {
         VkDeviceAddress transform_buffer_address;
         VkDeviceAddress material_buffer_address;
         VkDeviceAddress ubo_buffer_address;
+        VkDeviceAddress lights_buffer_address;
+        std::uint32_t light_count;
+        std::uint32_t padding;
     };
+
+    static_assert(sizeof(ForwardPushConstants) == 48);
 
     struct ShadowPushConstants {
         VkDeviceAddress draw_buffer_address;
         VkDeviceAddress transform_buffer_address;
         VkDeviceAddress material_buffer_address;
         VkDeviceAddress ubo_buffer_address;
+        VkDeviceAddress lights_buffer_address;
+        std::uint32_t light_count;
+        std::uint32_t padding0;
         std::uint32_t cascade_index;
-        std::uint32_t padding;
+        std::uint32_t padding1;
     };
 
-    static_assert(sizeof(ShadowPushConstants) == 40);
-    static_assert(offsetof(ShadowPushConstants, cascade_index) == 32);
+    static_assert(sizeof(ShadowPushConstants) == 56);
+    static_assert(offsetof(ShadowPushConstants, cascade_index) == 48);
 
     struct CompositePushConstants {
         std::uint32_t hdr_texture_index;
@@ -1320,6 +1329,23 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.frustum_planes_buffer = std::move(*frustum_planes_buffer);
 
+        // BufferMemory::upload for the same reason as frustum_planes_buffer
+        // above -- rebuilt and host-written every frame in prepare_frame,
+        // never written by the GPU.
+        auto lights_buffer = Buffer::create(context_, BufferCreateInfo{
+                                                                .size = sizeof(GpuLight) * maximum_light_count,
+                                                                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                .memory = BufferMemory::upload,
+                                                                .debug_name = "renderer.frame_lights",
+                                                        });
+
+        if (!lights_buffer) {
+            return std::unexpected(make_device_error(lights_buffer.error()));
+        }
+
+        frame.lights_buffer = std::move(*lights_buffer);
+
         const auto target_name = std::format("renderer.forward_target_{}", frame_index);
         auto forward_target = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
                                                                             .extent = create_info.extent,
@@ -1456,6 +1482,7 @@ auto Renderer::destroy() noexcept -> void {
             frame.shadow_atlas = ImageHandle{};
         }
 
+        frame.lights_buffer.destroy();
         frame.frustum_planes_buffer.destroy();
         frame.visible_transform_buffer.destroy();
         frame.visible_draw_buffer.destroy();
@@ -1890,6 +1917,26 @@ auto Renderer::destroy_mesh(MeshHandle handle) -> std::expected<void, RendererEr
     return {};
 }
 
+auto Renderer::submit_point_light(PointLight const &light) -> std::expected<void, RendererError> {
+    if (point_light_submissions_.size() + spot_light_submissions_.size() >= maximum_light_count) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    point_light_submissions_.push_back(light);
+
+    return {};
+}
+
+auto Renderer::submit_spot_light(SpotLight const &light) -> std::expected<void, RendererError> {
+    if (point_light_submissions_.size() + spot_light_submissions_.size() >= maximum_light_count) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    spot_light_submissions_.push_back(light);
+
+    return {};
+}
+
 auto Renderer::submit_mesh(MeshHandle mesh, glm::mat4 const &transform, MaterialHandle material_override)
         -> std::expected<void, RendererError> {
     if (mesh_slot(mesh) == nullptr) {
@@ -1916,6 +1963,17 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
+
+    // The frustum-culling compute dispatch below is recorded into this same
+    // command buffer before record_frame() runs, so the query pool must be
+    // reset and the FullFrame timer started here rather than at the top of
+    // record_frame -- otherwise record_frame's reset would wipe out the
+    // Culling timestamps written below.
+    auto &frame_query = timestamp_queries_[frame_index];
+    vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, query_count);
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
+                         static_cast<std::uint32_t>(RenderStage::FullFrame) * 2);
 
     pipeline_graph_.tick_retirement();
 
@@ -2281,6 +2339,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             .shadow_atlas_texel_v = 1.0F / static_cast<float>(shadow_atlas_height),
             .shadow_debug_cascade_tint = shadow_settings_.debug_cascade_tint ? 1U : 0U,
             .time = matrices.time,
+            .ambient_intensity = ambient_intensity_,
     };
     if (!ubos_[frame_index].write(0, std::as_bytes(std::span{&ubo, 1}))) {
         clear_submissions();
@@ -2292,6 +2351,56 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         clear_submissions();
 
         return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
+    // Pack this frame's point/spot light submissions into lights_buffer.
+    // submit_point_light/submit_spot_light already cap the combined count
+    // at maximum_light_count, so no further clamping is needed here.
+    {
+        std::vector<GpuLight> gpu_lights;
+        gpu_lights.reserve(point_light_submissions_.size() + spot_light_submissions_.size());
+
+        for (auto const &point: point_light_submissions_) {
+            gpu_lights.push_back(GpuLight{
+                    .position = point.position,
+                    .range = point.range,
+                    .colour = point.colour,
+                    .intensity = point.intensity,
+                    .type = GpuLightType::point,
+            });
+        }
+
+        for (auto const &spot: spot_light_submissions_) {
+            auto const inner = glm::radians(std::min(spot.inner_cone_degrees, spot.outer_cone_degrees));
+            auto const outer = glm::radians(std::max(spot.inner_cone_degrees, spot.outer_cone_degrees));
+            auto const cos_inner = std::cos(inner);
+            auto const cos_outer = std::cos(outer);
+
+            // glTF KHR_lights_punctual cone-falloff terms: angular_attenuation
+            // = saturate(cos_angle * spot_scale + spot_offset), precomputed
+            // here so the shader avoids acos()/per-pixel trig.
+            auto const spot_scale = 1.0F / std::max(cos_inner - cos_outer, 1e-4F);
+            auto const spot_offset = -cos_outer * spot_scale;
+
+            gpu_lights.push_back(GpuLight{
+                    .position = spot.position,
+                    .range = spot.range,
+                    .colour = spot.colour,
+                    .intensity = spot.intensity,
+                    .direction = glm::normalize(spot.direction),
+                    .spot_scale = spot_scale,
+                    .spot_offset = spot_offset,
+                    .type = GpuLightType::spot,
+            });
+        }
+
+        frame.light_count = static_cast<std::uint32_t>(gpu_lights.size());
+
+        if (!gpu_lights.empty() && !frame.lights_buffer.write(0, std::as_bytes(std::span{gpu_lights}))) {
+            clear_submissions();
+
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
     }
 
     // GPU frustum culling: one dispatch, one workgroup per batch, main view
@@ -2312,6 +2421,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     // vkCmdDispatch groupCountX limit (65535); maximum_draw_count_ can
     // exceed that, so it's checked explicitly rather than left to fail
     // inside the driver.
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
+                         static_cast<std::uint32_t>(RenderStage::Culling) * 2);
+
     if (frame.indirect_command_count != 0) {
         if (frame.indirect_command_count > 65535) {
             clear_submissions();
@@ -2348,6 +2460,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                            sizeof(CullPushConstants), &cull_pc);
 
         vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
+                             (static_cast<std::uint32_t>(RenderStage::Culling) * 2) + 1);
 
         // Single barrier covering everything this one dispatch wrote:
         // visible_draw_buffer/visible_transform_buffer (compute write ->
@@ -2408,11 +2523,13 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         };
 
         vkCmdPipelineBarrier2(command_buffer, &post_cull_dependency_info);
+    } else {
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
+                             (static_cast<std::uint32_t>(RenderStage::Culling) * 2) + 1);
     }
 
     clear_submissions();
 
-    auto &frame_query = timestamp_queries_[frame_index];
     if (frame_query.has_results) {
         std::vector<std::uint64_t> results(query_count);
 
@@ -2451,10 +2568,6 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
     screenshot_.try_resolve(frame_index);
 
     auto &frame_query = timestamp_queries_[frame_index];
-    vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, query_count);
-
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
-                         static_cast<std::uint32_t>(RenderStage::FullFrame) * 2);
 
     auto &frame = frames_[frame_index];
     auto const *hdr = image_storage_.get(frame.forward_target.hdr());
@@ -2578,14 +2691,21 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
             vkCmdBindPipeline(command_buffer, shadow_pipeline->bind_point(), shadow_pipeline->pipeline());
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                      shadow_pipeline->layout());
-
             ShadowPushConstants pc{
                     .draw_buffer_address = frame.draw_buffer.device_address,
                     .transform_buffer_address = frame.transform_buffer.device_address,
                     .material_buffer_address = material_storage_.device_address(),
                     .ubo_buffer_address = ubos_[frame_index].device_address,
+                    // The shadow pass never shades punctual lights (only the
+                    // directional light casts shadows), but the vertex shader's
+                    // PC still declares these fields since ShadowPC.base is PC
+                    // -- left zeroed/unused rather than plumbing a second,
+                    // lights-less push constant type.
+                    .lights_buffer_address = frame.lights_buffer.device_address,
+                    .light_count = 0,
+                    .padding0 = 0,
                     .cascade_index = 0,
-                    .padding = 0,
+                    .padding1 = 0,
             };
 
             vkCmdPushConstants(command_buffer, shadow_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
@@ -2613,8 +2733,11 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                     .transform_buffer_address = frame.transform_buffer.device_address,
                     .material_buffer_address = material_storage_.device_address(),
                     .ubo_buffer_address = ubos_[frame_index].device_address,
+                    .lights_buffer_address = frame.lights_buffer.device_address,
+                    .light_count = 0,
+                    .padding0 = 0,
                     .cascade_index = 0,
-                    .padding = 0,
+                    .padding1 = 0,
             };
 
             vkCmdPushConstants(command_buffer, shadow_mask_pipeline->layout(),
@@ -2703,18 +2826,16 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         vkCmdBeginRendering(command_buffer, &depth_prepass_info);
         vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-        ForwardPushConstants const pc{
+        ForwardPushConstants pc{
                 .draw_buffer_address = main_view_draw_buffer.device_address,
                 .transform_buffer_address = main_view_transform_buffer.device_address,
                 .material_buffer_address = material_storage_.device_address(),
                 .ubo_buffer_address = ubos_[frame_index].device_address,
+                .lights_buffer_address = frame.lights_buffer.device_address,
+                .light_count = 0,
+                .padding = 0,
         };
 
-        // Blend never contributes to prepass depth (see
-        // docs/alpha-mode-support.md) -- only opaque and mask are drawn
-        // here. Opaque stays vertex-only (depth_prepass_pipeline_) to
-        // preserve early-Z; mask needs its own discard-capable PSO and
-        // VK_CULL_MODE_NONE.
         if (frame.opaque_indirect_count != 0) {
             vkCmdBindPipeline(command_buffer, depth_prepass_pipeline->bind_point(),
                               depth_prepass_pipeline->pipeline());
@@ -2828,6 +2949,9 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 .transform_buffer_address = main_view_transform_buffer.device_address,
                 .material_buffer_address = material_storage_.device_address(),
                 .ubo_buffer_address = ubos_[frame_index].device_address,
+                .lights_buffer_address = frame.lights_buffer.device_address,
+                .light_count = frame.light_count,
+                .padding = 0,
         };
 
         // Opaque and mask share forward_pipeline_ -- only the cull mode
@@ -3317,4 +3441,6 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
 auto Renderer::clear_submissions() noexcept -> void {
     submissions_.clear();
     model_submissions_.clear();
+    point_light_submissions_.clear();
+    spot_light_submissions_.clear();
 }
