@@ -2,17 +2,9 @@ module scene_types;
 
 public static const uint shadow_cascade_count = 4;
 
-public struct Vertex
-{
-    public float3 position;
-    public float3 normal;
-    public float4 tangent;
-    public float2 uvs;
-};
-
 public struct GpuDraw
 {
-    public Ptr<Vertex> vertex_address;
+    public Ptr<CompressedVertex> vertex_address;
 
     public uint material_index;
     public uint transform_index;
@@ -100,3 +92,53 @@ public struct ShadowPC
     public uint cascade_index;
     public uint padding;
 };
+
+public struct CompressedVertex
+{
+    uint normal_oct;
+    uint tangent_oct;
+    uint16_t position_x, position_y, position_z;
+    uint16_t texcoord_u, texcoord_v;
+    uint16_t pad_;
+};
+
+public float3 decode_octahedral(float2 encoded)
+{
+    float3 direction = float3(encoded.x, encoded.y, 1.0 - abs(encoded.x) - abs(encoded.y));
+    float t = max(-direction.z, 0.0);
+
+    direction.x += direction.x >= 0.0 ? -t : t;
+    direction.y += direction.y >= 0.0 ? -t : t;
+
+    return normalize(direction);
+}
+
+public float2 unpack_snorm2x16(uint packed)
+{
+    int2 signed_value = int2((int)(packed << 16) >> 16, (int)packed >> 16);
+    return clamp(float2(signed_value) / 32767.0, -1.0, 1.0);
+}
+
+public struct DecodedVertex
+{
+    public float3 position;
+    public float3 normal;
+    public float4 tangent; // xyz = direction, w = handedness sign
+    public float2 uvs;
+};
+
+public DecodedVertex decode_vertex(CompressedVertex vertex)
+{
+    DecodedVertex decoded;
+
+    decoded.position = float3(f16tof32(vertex.position_x), f16tof32(vertex.position_y), f16tof32(vertex.position_z));
+    decoded.uvs = float2(f16tof32(vertex.texcoord_u), f16tof32(vertex.texcoord_v));
+
+    decoded.normal = decode_octahedral(unpack_snorm2x16(vertex.normal_oct));
+
+    bool tangent_sign = (vertex.tangent_oct & 1) != 0;
+    decoded.tangent.xyz = decode_octahedral(unpack_snorm2x16(vertex.tangent_oct & 0xFFFFFFFEu));
+    decoded.tangent.w = tangent_sign ? -1.0 : 1.0;
+
+    return decoded;
+}

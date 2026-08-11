@@ -19,7 +19,7 @@ uint vertex_id: SV_VulkanVertexID,
 {
     const var draw = pc.draws[inst_base];
     const var ubo = pc.ubo;
-    const var vertex = draw.vertex_address[vertex_id];
+    const var vertex = decode_vertex(draw.vertex_address[vertex_id]);
     const var model = pc.transforms[inst_base];
     var world_position = mul(
         model,

@@ -82,43 +82,7 @@ auto Pipeline::operator=(Pipeline &&other) noexcept -> Pipeline & {
 }
 
 constexpr auto default_bindings() -> VkPipelineVertexInputStateCreateInfo {
-    static constexpr std::array<VkVertexInputBindingDescription, 1> bindings{VkVertexInputBindingDescription{
-            .binding = 0,
-            .stride = sizeof(ModelVertex),
-            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
-    }};
-    /**
-        glm::vec3 position{};
-    glm::vec3 normal{};
-    glm::vec4 tangent{};
-    glm::vec2 texcoord{}; */
-    static constexpr std::array<VkVertexInputAttributeDescription, 4> attributes{
-            VkVertexInputAttributeDescription{
-                    .location = 0,
-                    .binding = 0,
-                    .format = VK_FORMAT_R32G32B32_SFLOAT,
-                    .offset = offsetof(ModelVertex, position),
-            },
-            VkVertexInputAttributeDescription{
-                    .location = 1,
-                    .binding = 0,
-                    .format = VK_FORMAT_R32G32B32_SFLOAT,
-                    .offset = offsetof(ModelVertex, normal),
-            },
-            VkVertexInputAttributeDescription{
-                    .location = 2,
-                    .binding = 0,
-                    .format = VK_FORMAT_R32G32B32A32_SFLOAT,
-                    .offset = offsetof(ModelVertex, tangent),
-            },
-            VkVertexInputAttributeDescription{
-                    .location = 3,
-                    .binding = 0,
-                    .format = VK_FORMAT_R32G32_SFLOAT,
-                    .offset = offsetof(ModelVertex, texcoord),
-            },
-    };
-
+    auto [attributes, bindings] = default_vertex_description();
     VkPipelineVertexInputStateCreateInfo vertex_input{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             .pNext = nullptr,

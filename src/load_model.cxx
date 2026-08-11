@@ -36,10 +36,41 @@
 #include "sampler_storage.hxx"
 
 namespace {
+    constexpr auto pack_sign_into_snorm2x16(glm::vec2 value, bool sign_bit) -> glm::uint32 {
+        auto const packed = glm::packSnorm2x16(value);
+        return (packed & ~glm::uint32{1}) | (sign_bit ? 1U : 0U);
+    }
+} // namespace
 
-    // Walks the node hierarchy from scene_roots, accumulating each node's
-    // local_transform, and folds every mesh's vertex positions (transformed
-    // into model space) into a running min/max.
+auto compress_vertex(ModelVertex const &vertex) -> CompressedModelVertex {
+    CompressedModelVertex compressed{};
+
+    compressed.normal_oct = glm::packSnorm2x16(encode_octahedral(glm::normalize(vertex.normal)));
+
+    auto const tangent_direction = glm::vec3{vertex.tangent};
+    compressed.tangent_oct =
+            pack_sign_into_snorm2x16(encode_octahedral(glm::normalize(tangent_direction)), vertex.tangent.w < 0.0F);
+
+    compressed.position_x = glm::packHalf1x16(vertex.position.x);
+    compressed.position_y = glm::packHalf1x16(vertex.position.y);
+    compressed.position_z = glm::packHalf1x16(vertex.position.z);
+
+    compressed.texcoord_u = glm::packHalf1x16(vertex.texcoord.x);
+    compressed.texcoord_v = glm::packHalf1x16(vertex.texcoord.y);
+
+    return compressed;
+}
+
+auto compress_vertices(std::span<ModelVertex const> vertices) -> std::vector<CompressedModelVertex> {
+    std::vector<CompressedModelVertex> compressed(vertices.size());
+
+    std::ranges::transform(vertices, compressed.begin(),
+                           [](ModelVertex const &vertex) { return compress_vertex(vertex); });
+
+    return compressed;
+}
+
+namespace {
     auto accumulate_node_bounds(ModelCpuData const &cpu_data, std::uint32_t node_index,
                                 glm::mat4 const &parent_transform, glm::vec3 &bounds_min, glm::vec3 &bounds_max)
             -> void {
@@ -928,12 +959,12 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
         mesh_futures.push_back(std::async(std::launch::async, [&]() -> std::expected<ModelMesh, ModelLoadError> {
             ModelMesh mesh;
             mesh.primitives.reserve(cpu_mesh.primitives.size());
-
             for (auto const &cpu_primitive: cpu_mesh.primitives) {
+                auto const compressed_vertices = compress_vertices(cpu_primitive.vertices);
                 auto geometry = [&]() {
                     std::lock_guard<std::mutex> lock(sync_mutex);
-                    return geometry_arena.allocate_mesh(std::span<const ModelVertex>{cpu_primitive.vertices},
-                                                        std::span<const std::uint32_t>{cpu_primitive.indices});
+                    return geometry_arena.allocate_mesh(std::span<CompressedModelVertex const>{compressed_vertices},
+                                                        std::span<std::uint32_t const>{cpu_primitive.indices});
                 }();
 
                 if (!geometry) {

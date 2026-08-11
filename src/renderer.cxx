@@ -2183,11 +2183,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                 auto const &submesh = mesh->submeshes[batch.submesh_index];
                 auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
 
-                // Batches share one alpha mode/PSO but can hold many
-                // instances at different depths -- sorting is per-batch, not
-                // per-instance (see the "Known sorting limitation" note in
-                // docs/alpha-mode-support.md), so one representative
-                // transform is all that's used here.
                 auto const world_centre =
                         glm::vec3(batch.transforms.front() * glm::vec4(local_centre, 1.0F));
                 auto const distance = world_centre - camera_position;
@@ -2452,9 +2447,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    // Swapchain::begin_frame() already waited on this slot's in_flight fence
-    // before handing us this frame_index again, so any capture recorded into
-    // it 3 frames ago is guaranteed GPU-complete and safe to read back now.
+
     screenshot_.try_resolve(frame_index);
 
     auto &frame_query = timestamp_queries_[frame_index];

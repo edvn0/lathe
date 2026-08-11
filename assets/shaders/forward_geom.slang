@@ -24,7 +24,7 @@ uint vertex_id: SV_VulkanVertexID,
     GpuDraw draw = pc.draws[inst_base];
     const var ubo = pc.ubo;
 
-    Vertex vertex = draw.vertex_address[vertex_id];
+    const var vertex = decode_vertex(draw.vertex_address[vertex_id]);
 
     float4x4 model = pc.transforms[inst_base];
 

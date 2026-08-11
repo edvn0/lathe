@@ -24,16 +24,89 @@ struct ModelVertex {
     glm::vec4 tangent{};
     glm::vec2 texcoord{};
 };
+constexpr auto default_vertex_description() {
+    std::array<VkVertexInputAttributeDescription, 4> attributes{};
+    attributes[0] = {
+            .location = 0,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = offsetof(ModelVertex, position),
+    };
+    attributes[1] = {
+            .location = 1,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = offsetof(ModelVertex, normal),
+    };
+    attributes[2] = {
+            .location = 2,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+            .offset = offsetof(ModelVertex, tangent),
+    };
+    attributes[3] = {
+            .location = 3,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32_SFLOAT,
+            .offset = offsetof(ModelVertex, texcoord),
+    };
+    std::array<VkVertexInputBindingDescription, 1> bindings{};
+    bindings[0] = {
+            .binding = 0,
+            .stride = sizeof(ModelVertex),
+            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    return std::pair{attributes, bindings};
+}
+
+#include <glm/gtc/packing.hpp>
+
+// Encodes a normalized direction into the octahedral mapping used for
+// compact normal/tangent storage.
+inline auto encode_octahedral(glm::vec3 direction) -> glm::vec2 {
+    auto const l1_norm = std::abs(direction.x) + std::abs(direction.y) + std::abs(direction.z);
+    auto encoded = glm::vec2{direction.x, direction.y} / l1_norm;
+
+    if (direction.z < 0.0F) {
+        auto const wrapped = glm::vec2{1.0F} - glm::abs(glm::vec2{encoded.y, encoded.x});
+        encoded = glm::vec2{
+                encoded.x >= 0.0F ? wrapped.x : -wrapped.x,
+                encoded.y >= 0.0F ? wrapped.y : -wrapped.y,
+        };
+    }
+
+    return encoded;
+}
+
+inline auto decode_octahedral(glm::vec2 encoded) -> glm::vec3 {
+    auto direction = glm::vec3{encoded.x, encoded.y, 1.0F - std::abs(encoded.x) - std::abs(encoded.y)};
+    auto const t = std::max(-direction.z, 0.0F);
+
+    direction.x += direction.x >= 0.0F ? -t : t;
+    direction.y += direction.y >= 0.0F ? -t : t;
+
+    return glm::normalize(direction);
+}
+
+#pragma pack(push, 1)
+struct CompressedModelVertex {
+    glm::uint32 normal_oct{}; // packSnorm2x16(encode_octahedral(normal))
+    glm::uint32 tangent_oct{}; // packSnorm2x16(encode_octahedral(tangent.xyz));
+                               // LSB of the packed value doubles as the
+                               // handedness sign (tangent.w < 0 ? 1 : 0)
+    glm::uint16 position_x{}, position_y{}, position_z{}; // half floats
+    glm::uint16 texcoord_u{}, texcoord_v{}; // half floats
+    glm::uint16 pad_{};
+};
+#pragma pack(pop)
+static_assert(sizeof(CompressedModelVertex) == 20);
+
+auto compress_vertex(ModelVertex const &vertex) -> CompressedModelVertex;
+auto compress_vertices(std::span<ModelVertex const> vertices) -> std::vector<CompressedModelVertex>;
 
 struct ModelPrimitive {
     MeshGeometry geometry{};
-    std::optional<std::uint32_t> material_index{
-            std::nullopt}; // If it has -> index into global array, else -> index 0 in global array.
-
-    // Local-space (untransformed) AABB over this primitive's own vertices
-    // only -- unlike Model::bounds_min/max, no node transform is baked in,
-    // since that's applied per-instance at render time. Used as the culling
-    // volume for GPU frustum culling.
+    std::optional<std::uint32_t> material_index{std::nullopt};
     glm::vec3 bounds_min{-0.5F};
     glm::vec3 bounds_max{0.5F};
 };
@@ -44,9 +117,7 @@ struct ModelMesh {
 
 struct ModelNode {
     glm::mat4 local_transform{1.0F};
-
     std::uint32_t mesh_index = std::numeric_limits<std::uint32_t>::max();
-
     std::vector<std::uint32_t> children{};
 };
 
@@ -56,10 +127,6 @@ struct Model {
     std::vector<std::uint32_t> scene_roots;
     std::vector<MaterialHandle> materials;
 
-    // Model-space AABB across every vertex of every mesh reachable from
-    // scene_roots, with each node's local_transform applied. Lets callers
-    // (e.g. physics) size collision volumes to the actual geometry instead
-    // of guessing.
     glm::vec3 bounds_min{-0.5F};
     glm::vec3 bounds_max{0.5F};
 };
@@ -82,15 +149,14 @@ enum class ModelLoadErrorType : std::uint8_t {
 
 struct ModelLoadError {
     ModelLoadErrorType type = ModelLoadErrorType::parse_error;
-
-    std::optional<ErrorCause> cause;
+    std::optional<ErrorCause> cause{std::nullopt};
 };
 
 struct ModelCpuImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     bool is_srgb = false;
-    std::vector<std::byte> pixels; // RGBA8, tightly packed
+    std::vector<std::byte> pixels;
 };
 
 struct ModelCpuMaterial {
@@ -130,10 +196,6 @@ struct ModelCpuData {
     std::vector<std::uint32_t> scene_roots;
 };
 
-// Generates MikkTSpace tangents for a triangle list, then welds duplicate
-// vertices via meshoptimizer. Exposed (not just an internal helper of the
-// glTF importer) so procedurally-generated meshes (see primitive_meshes.hxx)
-// can produce the same ModelVertex layout without re-deriving tangent math.
 auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices)
         -> std::expected<void, ModelLoadError>;
 
