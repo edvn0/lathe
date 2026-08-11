@@ -91,7 +91,7 @@ auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowC
         auto const centre_world = camera_position + (camera_forward * sphere.centre_distance);
         auto const centre_light = glm::vec3(light_view * glm::vec4(centre_world, 1.0F));
 
-        auto const resolution = static_cast<float>(shadow_cascade_resolution);
+        auto const resolution = static_cast<float>(shadow_cascade_resolutions[cascade]);
         auto const texel_size = (2.0F * sphere.radius) / resolution;
 
         auto const snap = [texel_size](float value) noexcept {

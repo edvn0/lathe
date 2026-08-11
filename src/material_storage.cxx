@@ -386,5 +386,6 @@ auto to_gpu_material(MaterialCreateInfo const &create_info) noexcept -> GpuMater
             .alpha_mode = create_info.alpha_mode,
             .alpha_cutoff = create_info.alpha_cutoff,
             .wind_strength = create_info.wind_strength,
+            .max_shadow_cascade = create_info.max_shadow_cascade,
     };
 }

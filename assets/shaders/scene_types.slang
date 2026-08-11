@@ -86,6 +86,13 @@ public struct UBO {
     public float4 cascade_texel_world; // world-space size of one shadow texel per cascade
     public float4 cascade_depth_scale; // 1 / (z_far - z_near) per cascade
 
+    // Atlas tiles are packed side-by-side at variable width, not a uniform
+    // grid -- see shadow_cascade_resolutions in shadow_cascades.hxx. These
+    // remap a cascade-local [0,1] tile UV into the shared atlas texture.
+    public float4 cascade_atlas_offset_u; // atlas-normalized U of each tile's left edge
+    public float4 cascade_atlas_scale_u;  // tile width / atlas width, per cascade
+    public float4 cascade_atlas_scale_v;  // tile height / atlas height, per cascade
+
     public float3 light_direction;     // normalized, points from surface to light
     public float light_intensity;
     public float3 light_colour;

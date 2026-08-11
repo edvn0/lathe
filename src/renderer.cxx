@@ -472,10 +472,13 @@ namespace {
     // cascade_view_projection via a swapped near/far in the orthographic
     // projection, not via the viewport depth range the main pass uses.
     // Doing both would cancel out. See shadow_cascades.cxx.
-    auto set_shadow_dynamic_state(VkCommandBuffer command_buffer, std::uint32_t cascade, std::uint32_t resolution,
-                                  float depth_bias_constant, float depth_bias_slope) noexcept -> void {
+    auto set_shadow_dynamic_state(VkCommandBuffer command_buffer, std::uint32_t cascade, float depth_bias_constant,
+                                  float depth_bias_slope) noexcept -> void {
+        auto const resolution = shadow_cascade_resolutions[cascade];
+        auto const offset_x = shadow_cascade_offset_x[cascade];
+
         VkViewport const viewport{
-                .x = static_cast<float>(cascade * resolution),
+                .x = static_cast<float>(offset_x),
                 .y = 0.0F,
                 .width = static_cast<float>(resolution),
                 .height = static_cast<float>(resolution),
@@ -484,7 +487,7 @@ namespace {
         };
 
         VkRect2D const scissor{
-                .offset = {static_cast<std::int32_t>(cascade * resolution), 0},
+                .offset = {static_cast<std::int32_t>(offset_x), 0},
                 .extent = {resolution, resolution},
         };
 
@@ -2254,6 +2257,44 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     std::sort(blend_batches.begin(), blend_batches.end(),
               [](auto const &a, auto const &b) { return a.camera_distance_sq > b.camera_distance_sq; });
 
+    // Sort opaque/mask batches by descending max_shadow_cascade so that
+    // batches restricted to fewer cascades sort to the back. Because the
+    // resulting order is non-increasing, "how many leading indirect commands
+    // does cascade C need" is just a prefix length -- computed below and
+    // used to shrink drawCount per cascade in the shadow pass, skipping
+    // batches (e.g. grass) that opted out of the farther cascades entirely
+    // instead of rasterizing them into every cascade regardless.
+    auto const batch_max_shadow_cascade = [this](batch_entry const *batch) noexcept -> std::uint32_t {
+        auto const *material = material_storage_.get(batch->material);
+
+        return material != nullptr ? material->max_shadow_cascade : shadow_cascade_count - 1;
+    };
+
+    std::sort(opaque_batches.begin(), opaque_batches.end(), [&](auto const *a, auto const *b) {
+        return batch_max_shadow_cascade(a) > batch_max_shadow_cascade(b);
+    });
+
+    std::sort(mask_batches.begin(), mask_batches.end(), [&](auto const *a, auto const *b) {
+        return batch_max_shadow_cascade(a) > batch_max_shadow_cascade(b);
+    });
+
+    auto const shadow_prefix_counts = [&batch_max_shadow_cascade](std::vector<batch_entry const *> const &sorted_batches) {
+        std::array<std::uint32_t, shadow_cascade_count> counts{};
+
+        for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+            auto const it = std::find_if(sorted_batches.begin(), sorted_batches.end(), [&](batch_entry const *batch) {
+                return batch_max_shadow_cascade(batch) < cascade;
+            });
+
+            counts[cascade] = static_cast<std::uint32_t>(std::distance(sorted_batches.begin(), it));
+        }
+
+        return counts;
+    };
+
+    frame.shadow_opaque_indirect_count = shadow_prefix_counts(opaque_batches);
+    frame.shadow_mask_indirect_count = shadow_prefix_counts(mask_batches);
+
     for (auto const *batch: opaque_batches) {
         if (auto result = emit_batch(*batch); !result) {
             return std::unexpected(result.error());
@@ -2326,6 +2367,21 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             .cascade_split_far = glm::make_vec4(cascades.split_far.data()),
             .cascade_texel_world = glm::make_vec4(cascades.texel_world.data()),
             .cascade_depth_scale = glm::make_vec4(cascades.depth_scale.data()),
+            .cascade_atlas_offset_u = glm::vec4{static_cast<float>(shadow_cascade_offset_x[0]),
+                                                static_cast<float>(shadow_cascade_offset_x[1]),
+                                                static_cast<float>(shadow_cascade_offset_x[2]),
+                                                static_cast<float>(shadow_cascade_offset_x[3])} /
+                                      static_cast<float>(shadow_atlas_width),
+            .cascade_atlas_scale_u = glm::vec4{static_cast<float>(shadow_cascade_resolutions[0]),
+                                               static_cast<float>(shadow_cascade_resolutions[1]),
+                                               static_cast<float>(shadow_cascade_resolutions[2]),
+                                               static_cast<float>(shadow_cascade_resolutions[3])} /
+                                     static_cast<float>(shadow_atlas_width),
+            .cascade_atlas_scale_v = glm::vec4{static_cast<float>(shadow_cascade_resolutions[0]),
+                                               static_cast<float>(shadow_cascade_resolutions[1]),
+                                               static_cast<float>(shadow_cascade_resolutions[2]),
+                                               static_cast<float>(shadow_cascade_resolutions[3])} /
+                                     static_cast<float>(shadow_atlas_height),
             .light_direction = glm::normalize(light_.direction),
             .light_intensity = light_.intensity,
             .light_colour = light_.colour,
@@ -2712,14 +2768,20 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                                sizeof(ShadowPushConstants), &pc);
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
-                set_shadow_dynamic_state(command_buffer, cascade, shadow_cascade_resolution,
-                                         shadow_settings_.depth_bias_constant, shadow_settings_.depth_bias_slope);
+                auto const cascade_draw_count = frame.shadow_opaque_indirect_count[cascade];
+
+                if (cascade_draw_count == 0) {
+                    continue;
+                }
+
+                set_shadow_dynamic_state(command_buffer, cascade, shadow_settings_.depth_bias_constant,
+                                         shadow_settings_.depth_bias_slope);
 
                 vkCmdPushConstants(command_buffer, shadow_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT,
                                    offsetof(ShadowPushConstants, cascade_index), sizeof(std::uint32_t), &cascade);
 
-                vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0,
-                                         frame.opaque_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
+                vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0, cascade_draw_count,
+                                         sizeof(VkDrawIndexedIndirectCommand));
             }
         }
 
@@ -2748,15 +2810,21 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                     static_cast<VkDeviceSize>(frame.opaque_indirect_count) * sizeof(VkDrawIndexedIndirectCommand);
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
-                set_shadow_dynamic_state(command_buffer, cascade, shadow_cascade_resolution,
-                                         shadow_settings_.depth_bias_constant, shadow_settings_.depth_bias_slope);
+                auto const cascade_draw_count = frame.shadow_mask_indirect_count[cascade];
+
+                if (cascade_draw_count == 0) {
+                    continue;
+                }
+
+                set_shadow_dynamic_state(command_buffer, cascade, shadow_settings_.depth_bias_constant,
+                                         shadow_settings_.depth_bias_slope);
 
                 vkCmdPushConstants(command_buffer, shadow_mask_pipeline->layout(),
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    offsetof(ShadowPushConstants, cascade_index), sizeof(std::uint32_t), &cascade);
 
-                vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, mask_offset,
-                                         frame.mask_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
+                vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, mask_offset, cascade_draw_count,
+                                         sizeof(VkDrawIndexedIndirectCommand));
             }
         }
 

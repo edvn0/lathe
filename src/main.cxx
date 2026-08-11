@@ -724,6 +724,12 @@ namespace {
                     .emissive_texture = images.emissive(),
                     .sampler = samplers.linear_repeat(),
                     .wind_strength = 0.28F,
+                    // Individual blades are sub-pixel by cascade 2 already
+                    // (see shadow_cascade_resolutions), so the ~40k-instance
+                    // grass batch is skipped entirely in the farthest two
+                    // cascades -- see Renderer::prepare_frame's shadow
+                    // batch partition.
+                    .max_shadow_cascade = 1,
             });
 
             if (!grass_material_result) {

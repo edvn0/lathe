@@ -94,7 +94,8 @@ float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float refe
         [unroll]
         for (int x = -1; x <= 1; ++x) {
             float2 tap = clamp(tile_uv + float2(float(x) * step_u, float(y) * step_v), lo, hi);
-            float2 atlas_uv = float2((float(cascade) + tap.x) / float(shadow_cascade_count), tap.y);
+            float2 atlas_uv = float2(ubo.cascade_atlas_offset_u[cascade] + tap.x * ubo.cascade_atlas_scale_u[cascade],
+                                     tap.y * ubo.cascade_atlas_scale_v[cascade]);
             sum += atlas.SampleCmpLevelZero(cmp, atlas_uv, reference);
         }
     }

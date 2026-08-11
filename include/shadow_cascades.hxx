@@ -9,9 +9,62 @@
 // dependency -- so it can be exercised in isolation from the renderer.
 
 inline constexpr std::uint32_t shadow_cascade_count = 4;
-inline constexpr std::uint32_t shadow_cascade_resolution = 2048;
-inline constexpr std::uint32_t shadow_atlas_width = shadow_cascade_resolution * shadow_cascade_count;
-inline constexpr std::uint32_t shadow_atlas_height = shadow_cascade_resolution;
+
+// Per-cascade shadow-map resolution. Far cascades (2, 3) cover huge
+// world-space areas -- their texel-snapped projection (see
+// fit_shadow_cascades) already produces texels tens of centimetres across at
+// 2048, so halving their resolution costs no visible detail while cutting
+// their fill-rate/bandwidth 4x. Packed side-by-side into one atlas row
+// (variable-width tiles), not a uniform grid -- see shadow_cascade_offset_x.
+inline constexpr std::array<std::uint32_t, shadow_cascade_count> shadow_cascade_resolutions = {2048, 2048, 1024,
+                                                                                                1024};
+
+namespace shadow_atlas_detail {
+
+[[nodiscard]] constexpr auto sum(std::array<std::uint32_t, shadow_cascade_count> const &values) noexcept
+        -> std::uint32_t {
+    std::uint32_t total = 0;
+
+    for (auto const value: values) {
+        total += value;
+    }
+
+    return total;
+}
+
+[[nodiscard]] constexpr auto max_value(std::array<std::uint32_t, shadow_cascade_count> const &values) noexcept
+        -> std::uint32_t {
+    std::uint32_t result = 0;
+
+    for (auto const value: values) {
+        result = value > result ? value : result;
+    }
+
+    return result;
+}
+
+[[nodiscard]] constexpr auto prefix_offsets(std::array<std::uint32_t, shadow_cascade_count> const &values) noexcept
+        -> std::array<std::uint32_t, shadow_cascade_count> {
+    std::array<std::uint32_t, shadow_cascade_count> offsets{};
+    std::uint32_t running = 0;
+
+    for (std::uint32_t i = 0; i < shadow_cascade_count; ++i) {
+        offsets[i] = running;
+        running += values[i];
+    }
+
+    return offsets;
+}
+
+} // namespace shadow_atlas_detail
+
+inline constexpr std::uint32_t shadow_atlas_width = shadow_atlas_detail::sum(shadow_cascade_resolutions);
+inline constexpr std::uint32_t shadow_atlas_height = shadow_atlas_detail::max_value(shadow_cascade_resolutions);
+
+// X offset in pixels of each cascade's tile within the atlas -- prefix sum of
+// shadow_cascade_resolutions. Every tile starts at y = 0.
+inline constexpr std::array<std::uint32_t, shadow_cascade_count> shadow_cascade_offset_x =
+        shadow_atlas_detail::prefix_offsets(shadow_cascade_resolutions);
 
 struct ShadowCascadeSettings {
     float shadow_distance = 150.0F; // metres covered by the cascades, clamped to camera far

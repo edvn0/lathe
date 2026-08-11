@@ -19,6 +19,7 @@
 #include "forward.hxx"
 #include "image_storage.hxx"
 #include "sampler_storage.hxx"
+#include "shadow_cascades.hxx"
 
 struct MaterialHandle {
     std::uint32_t index = 0;
@@ -62,7 +63,16 @@ struct alignas(16) GpuMaterial {
     // Blade sway amplitude driven by UBO.time in the vertex shader; 0 for
     // every ordinary (non-foliage) material -- see wind.slang.
     float wind_strength = 0.0F;
-    float _pad0 = 0.0F;
+
+    // CPU-only shadow-caster policy, consumed by Renderer::prepare_frame's
+    // batch partition -- never read on the GPU (the mirror in
+    // scene_types.slang leaves this word as padding). Highest cascade index
+    // this material's geometry is drawn into; batches restricted to fewer
+    // cascades are prioritised so their indirect commands land in the
+    // draw-count prefix each farther cascade skips. See max_shadow_cascade
+    // on MaterialCreateInfo for why this exists (dense foliage that's
+    // pointless to shadow at cascade-3 texel density).
+    std::uint32_t max_shadow_cascade = shadow_cascade_count - 1;
     float _pad1 = 0.0F;
     float _pad2 = 0.0F;
 };
@@ -94,6 +104,12 @@ struct MaterialCreateInfo {
     AlphaMode alpha_mode = AlphaMode::opaque;
 
     float wind_strength = 0.0F;
+
+    // See GpuMaterial::max_shadow_cascade -- defaults to casting into every
+    // cascade. Lower this for foliage/detail geometry whose shadow contrib
+    // is invisible past a certain cascade (sub-pixel at that texel density)
+    // to skip it in the shadow pass's farther cascades entirely.
+    std::uint32_t max_shadow_cascade = shadow_cascade_count - 1;
 };
 
 auto to_gpu_material(MaterialCreateInfo const &) noexcept -> GpuMaterial;

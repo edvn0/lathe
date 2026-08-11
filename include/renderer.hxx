@@ -153,6 +153,14 @@ struct UBO {
     glm::vec4 cascade_texel_world{}; // world-space size of one shadow texel per cascade
     glm::vec4 cascade_depth_scale{}; // 1 / (z_far - z_near) per cascade
 
+    // Atlas tiles are packed side-by-side at variable width (see
+    // shadow_cascade_resolutions) rather than a uniform grid, so the shader
+    // can't derive a cascade's placement from cascade_count alone -- these
+    // remap a cascade-local [0,1] tile UV into the shared atlas texture.
+    glm::vec4 cascade_atlas_offset_u{}; // atlas-normalized U of each tile's left edge
+    glm::vec4 cascade_atlas_scale_u{}; // tile width / atlas width, per cascade
+    glm::vec4 cascade_atlas_scale_v{}; // tile height / atlas height, per cascade
+
     glm::vec3 light_direction{0.4F, 0.8F, 0.25F}; // normalized, points from surface to light
     float light_intensity = 3.0F;
     glm::vec3 light_colour{1.0F, 0.97F, 0.92F};
@@ -177,10 +185,11 @@ struct UBO {
     float ambient_intensity = 0.15F;
 };
 
-static_assert(sizeof(UBO) == 600, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 648, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 224);
-static_assert(offsetof(UBO, light_direction) == 528);
+static_assert(offsetof(UBO, cascade_atlas_offset_u) == 528);
+static_assert(offsetof(UBO, light_direction) == 576);
 
 struct RendererError {
     RendererErrorType type = RendererErrorType::invalid_argument;
@@ -594,6 +603,15 @@ private:
         std::uint32_t opaque_indirect_count = 0;
         std::uint32_t mask_indirect_count = 0;
         std::uint32_t blend_indirect_count = 0;
+
+        // Per-cascade drawCount for the shadow pass -- a prefix of
+        // [0, opaque_indirect_count) / [0, mask_indirect_count) respectively,
+        // since prepare_frame sorts opaque/mask batches by descending
+        // material max_shadow_cascade before emitting them. Lets a batch
+        // (e.g. grass) opt out of the farther cascades instead of being
+        // rasterized into all shadow_cascade_count of them unconditionally.
+        std::array<std::uint32_t, shadow_cascade_count> shadow_opaque_indirect_count{};
+        std::array<std::uint32_t, shadow_cascade_count> shadow_mask_indirect_count{};
     };
 
     struct ModelDraw {
