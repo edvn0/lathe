@@ -40,6 +40,14 @@ struct VulkanContext {
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
 
+    // Whether VK_EXT_shader_object + the extended-dynamic-state3 bits it
+    // needs are all present on physical_device. Decided once at device
+    // selection (see select_physical_device in main.cxx) and used both to
+    // gate which extensions/features create_device() enables and to pick
+    // VkPipeline vs ShaderObjectSet at pipeline-registration time -- not
+    // every GPU (e.g. some Intel iGPUs) implements this extension yet.
+    bool shader_objects_supported = false;
+
     VkQueue graphics_queue = VK_NULL_HANDLE;
     VkQueue present_queue = VK_NULL_HANDLE;
 

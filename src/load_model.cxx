@@ -29,7 +29,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
+#include <execution>
 
 #include "image.hxx"
 #include "image_storage.hxx"
@@ -90,8 +90,15 @@ auto compress_vertex(ModelVertex const &vertex) -> CompressedModelVertex {
 auto compress_vertices(std::span<ModelVertex const> vertices) -> std::vector<CompressedModelVertex> {
     std::vector<CompressedModelVertex> compressed(vertices.size());
 
-    std::ranges::transform(vertices, compressed.begin(),
-                           [](ModelVertex const &vertex) { return compress_vertex(vertex); });
+    auto& thread_pool = Renderer::thread_pool();
+
+    auto blocks = thread_pool.submit_blocks(std::size_t{0}, vertices.size(),
+        [&](std::size_t begin, std::size_t end) {
+            for (std::size_t i = begin; i < end; ++i) {
+                compressed[i] = compress_vertex(vertices[i]);
+            }
+        });
+    blocks.wait();
 
     return compressed;
 }
@@ -209,7 +216,6 @@ namespace {
     // ------------------------------------------------------------------------
 
     auto to_glm(fastgltf::math::fmat4x4 const &matrix) noexcept -> glm::mat4 {
-        static_assert(matrix.size() == 16, "fastgltf changed its mat4 impl...?");
         return glm::make_mat4(matrix.data());
     }
 

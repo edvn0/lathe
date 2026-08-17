@@ -15,6 +15,8 @@
 #include "forward.hxx"
 #include "pipeline.hxx"
 #include "pipeline_storage.hxx"
+#include "shader_object.hxx"
+#include "shader_object_storage.hxx"
 #include "slang_compiler.hxx"
 
 struct PipelineNodeHandle {
@@ -88,6 +90,12 @@ struct PipelineRegisterInfo {
 
     bool blending = false;
 
+    // When true, register_pipeline() builds a ShaderObjectSet (via
+    // ShaderObjectStorage) instead of a Pipeline for this node. See
+    // docs/pipeline_to_shader_objects.md Phase 4 -- allows migrating one
+    // registered pipeline at a time while the rest keep using VkPipeline.
+    bool use_shader_objects = false;
+
     std::string debug_name;
 };
 
@@ -134,6 +142,14 @@ public:
     [[nodiscard]]
     auto pipeline_handle(PipelineNodeHandle handle) const noexcept -> PipelineHandle;
 
+    // Valid only for nodes registered with use_shader_objects = true; returns
+    // nullptr for a VkPipeline-backed node (or an unknown/stale handle).
+    [[nodiscard]]
+    auto resolve_shader_objects(PipelineNodeHandle handle) const noexcept -> ShaderObjectSet const *;
+
+    [[nodiscard]]
+    auto shader_object_handle(PipelineNodeHandle handle) const noexcept -> ShaderObjectHandle;
+
     // Call once per frame with whatever changed-file paths a watcher
     // collected since the last call. Cheap no-op if empty.
     auto on_files_changed(std::span<std::filesystem::path const> changed_files) -> void;
@@ -177,6 +193,7 @@ private:
         std::vector<std::uint32_t> stage_indices;
         PipelineRegisterInfo register_info;
         PipelineHandle live_handle{};
+        ShaderObjectHandle live_shader_object_handle{};
 
         std::uint32_t generation = 1;
         std::uint32_t next_free = 0;
@@ -187,7 +204,14 @@ private:
 
     struct RetiringPipeline {
         PipelineHandle handle;
+        ShaderObjectHandle shader_object_handle;
+        bool is_shader_object = false;
         std::uint32_t frames_remaining = 0;
+    };
+
+    struct BuiltNode {
+        PipelineHandle handle;
+        ShaderObjectHandle shader_object_handle;
     };
 
     [[nodiscard]]
@@ -200,14 +224,16 @@ private:
     auto link_stage_source_files(std::uint32_t stage_index) -> void;
 
     [[nodiscard]]
-    auto build_pipeline(PipelineNode const &node) -> std::expected<PipelineHandle, PipelineGraphError>;
+    auto build_node(PipelineNode const &node) -> std::expected<BuiltNode, PipelineGraphError>;
 
     auto retire(PipelineHandle handle) -> void;
+    auto retire(ShaderObjectHandle handle) -> void;
 
     [[nodiscard]]
     static auto to_vk_stage(renderer::ShaderStage stage) noexcept -> VkShaderStageFlagBits;
 
     PipelineStorage storage_;
+    ShaderObjectStorage shader_object_storage_;
 
     std::vector<SourceFileNode> source_files_;
     std::unordered_map<std::string, std::uint32_t> source_file_lookup_;

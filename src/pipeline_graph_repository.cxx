@@ -23,11 +23,12 @@ namespace {
 PipelineGraphRepository::~PipelineGraphRepository() { destroy(); }
 
 PipelineGraphRepository::PipelineGraphRepository(PipelineGraphRepository &&other) noexcept :
-    storage_(std::move(other.storage_)), source_files_(std::move(other.source_files_)),
-    source_file_lookup_(std::move(other.source_file_lookup_)), stage_nodes_(std::move(other.stage_nodes_)),
-    stage_lookup_(std::move(other.stage_lookup_)), pipeline_nodes_(std::move(other.pipeline_nodes_)),
-    pipeline_free_head_(other.pipeline_free_head_), retiring_(std::move(other.retiring_)),
-    frames_in_flight_(other.frames_in_flight_), change_generation_(other.change_generation_) {
+    storage_(std::move(other.storage_)), shader_object_storage_(std::move(other.shader_object_storage_)),
+    source_files_(std::move(other.source_files_)), source_file_lookup_(std::move(other.source_file_lookup_)),
+    stage_nodes_(std::move(other.stage_nodes_)), stage_lookup_(std::move(other.stage_lookup_)),
+    pipeline_nodes_(std::move(other.pipeline_nodes_)), pipeline_free_head_(other.pipeline_free_head_),
+    retiring_(std::move(other.retiring_)), frames_in_flight_(other.frames_in_flight_),
+    change_generation_(other.change_generation_) {
     other.pipeline_free_head_ = 0;
     other.frames_in_flight_ = 1;
     other.change_generation_ = 0;
@@ -41,6 +42,7 @@ auto PipelineGraphRepository::operator=(PipelineGraphRepository &&other) noexcep
     destroy();
 
     storage_ = std::move(other.storage_);
+    shader_object_storage_ = std::move(other.shader_object_storage_);
     source_files_ = std::move(other.source_files_);
     source_file_lookup_ = std::move(other.source_file_lookup_);
     stage_nodes_ = std::move(other.stage_nodes_);
@@ -80,9 +82,24 @@ auto PipelineGraphRepository::create(VulkanContext &context, PipelineGraphCreate
         });
     }
 
+    auto shader_object_storage = ShaderObjectStorage::create(
+            context, ShaderObjectStorageCreateInfo{
+                             .capacity = create_info.pipeline_capacity,
+                             .global_descriptor_set_layout = create_info.global_descriptor_set_layout,
+                             .debug_name = create_info.debug_name,
+                     });
+
+    if (!shader_object_storage) {
+        return std::unexpected(PipelineGraphError{
+                .type = PipelineGraphErrorType::pipeline_storage_error,
+                .cause = ErrorCause{Boxed<ShaderObjectStorageError>{shader_object_storage.error()}},
+        });
+    }
+
     PipelineGraphRepository repository;
 
     repository.storage_ = std::move(*storage);
+    repository.shader_object_storage_ = std::move(*shader_object_storage);
     repository.frames_in_flight_ = create_info.frames_in_flight;
 
     repository.pipeline_nodes_.resize(create_info.pipeline_capacity);
@@ -203,8 +220,7 @@ auto PipelineGraphRepository::to_vk_stage(renderer::ShaderStage stage) noexcept 
     return VK_SHADER_STAGE_VERTEX_BIT;
 }
 
-auto PipelineGraphRepository::build_pipeline(PipelineNode const &node)
-        -> std::expected<PipelineHandle, PipelineGraphError> {
+auto PipelineGraphRepository::build_node(PipelineNode const &node) -> std::expected<BuiltNode, PipelineGraphError> {
     std::vector<ShaderStageInfo> stage_infos;
     stage_infos.reserve(node.stage_indices.size());
 
@@ -222,6 +238,31 @@ auto PipelineGraphRepository::build_pipeline(PipelineNode const &node)
 
     auto const is_compute =
             node.stage_indices.size() == 1 && stage_nodes_[node.stage_indices[0]].request.stage == renderer::ShaderStage::compute;
+
+    if (node.register_info.use_shader_objects) {
+        auto created = is_compute
+                ? shader_object_storage_.create_compute(ComputeShaderCreateInfo{
+                          .shader = stage_infos[0],
+                          .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
+                          .push_constant_ranges = node.register_info.push_constant_ranges,
+                          .debug_name = node.register_info.debug_name,
+                  })
+                : shader_object_storage_.create_linked(ShaderObjectCreateInfo{
+                          .shaders = stage_infos,
+                          .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
+                          .push_constant_ranges = node.register_info.push_constant_ranges,
+                          .debug_name = node.register_info.debug_name,
+                  });
+
+        if (!created) {
+            return std::unexpected(PipelineGraphError{
+                    .type = PipelineGraphErrorType::pipeline_storage_error,
+                    .cause = ErrorCause{Boxed<ShaderObjectStorageError>{created.error()}},
+            });
+        }
+
+        return BuiltNode{.handle = {}, .shader_object_handle = *created};
+    }
 
     auto created = is_compute
             ? storage_.create_compute(ComputePipelineCreateInfo{
@@ -250,7 +291,7 @@ auto PipelineGraphRepository::build_pipeline(PipelineNode const &node)
         });
     }
 
-    return *created;
+    return BuiltNode{.handle = *created, .shader_object_handle = {}};
 }
 
 auto PipelineGraphRepository::register_pipeline(renderer::SlangCompiler const &compiler,
@@ -305,14 +346,15 @@ auto PipelineGraphRepository::register_pipeline(renderer::SlangCompiler const &c
     node.pending_rebuild = false;
     node.occupied = true;
 
-    auto built = build_pipeline(node);
+    auto built = build_node(node);
 
     if (!built) {
         node.occupied = false;
         return std::unexpected(built.error());
     }
 
-    node.live_handle = *built;
+    node.live_handle = built->handle;
+    node.live_shader_object_handle = built->shader_object_handle;
 
     pipeline_free_head_ = node.next_free;
     node.next_free = 0;
@@ -349,6 +391,35 @@ auto PipelineGraphRepository::pipeline_handle(PipelineNodeHandle handle) const n
     }
 
     return node.live_handle;
+}
+
+auto PipelineGraphRepository::resolve_shader_objects(PipelineNodeHandle handle) const noexcept
+        -> ShaderObjectSet const * {
+    if (handle.index >= pipeline_nodes_.size()) {
+        return nullptr;
+    }
+
+    auto const &node = pipeline_nodes_[handle.index];
+
+    if (!node.occupied || node.generation != handle.generation || !node.register_info.use_shader_objects) {
+        return nullptr;
+    }
+
+    return shader_object_storage_.get(node.live_shader_object_handle);
+}
+
+auto PipelineGraphRepository::shader_object_handle(PipelineNodeHandle handle) const noexcept -> ShaderObjectHandle {
+    if (handle.index >= pipeline_nodes_.size()) {
+        return {};
+    }
+
+    auto const &node = pipeline_nodes_[handle.index];
+
+    if (!node.occupied || node.generation != handle.generation) {
+        return {};
+    }
+
+    return node.live_shader_object_handle;
 }
 
 auto PipelineGraphRepository::on_files_changed(std::span<std::filesystem::path const> changed_files) -> void {
@@ -425,16 +496,21 @@ auto PipelineGraphRepository::process_dirty(renderer::SlangCompiler const &compi
             continue;
         }
 
-        auto rebuilt = build_pipeline(node);
+        auto rebuilt = build_node(node);
 
         if (!rebuilt) {
             error("Pipeline rebuild failed for {} after successful shader compile(s)", node.register_info.debug_name);
             continue; // stays pending_rebuild; will retry next process_dirty() call
         }
 
-        retire(node.live_handle);
+        if (node.register_info.use_shader_objects) {
+            retire(node.live_shader_object_handle);
+        } else {
+            retire(node.live_handle);
+        }
 
-        node.live_handle = *rebuilt;
+        node.live_handle = rebuilt->handle;
+        node.live_shader_object_handle = rebuilt->shader_object_handle;
         node.pending_rebuild = false;
 
         debug("Recompiled {}", node.register_info.debug_name);
@@ -448,6 +524,21 @@ auto PipelineGraphRepository::retire(PipelineHandle handle) -> void {
 
     retiring_.push_back(RetiringPipeline{
             .handle = handle,
+            .shader_object_handle = {},
+            .is_shader_object = false,
+            .frames_remaining = frames_in_flight_,
+    });
+}
+
+auto PipelineGraphRepository::retire(ShaderObjectHandle handle) -> void {
+    if (!handle.valid()) {
+        return;
+    }
+
+    retiring_.push_back(RetiringPipeline{
+            .handle = {},
+            .shader_object_handle = handle,
+            .is_shader_object = true,
             .frames_remaining = frames_in_flight_,
     });
 }
@@ -464,10 +555,18 @@ auto PipelineGraphRepository::tick_retirement() -> void {
             return false;
         }
 
-        auto const result = storage_.destroy_pipeline(entry.handle);
+        if (entry.is_shader_object) {
+            auto const result = shader_object_storage_.destroy_shader_object(entry.shader_object_handle);
 
-        if (!result) {
-            error("Failed to destroy a retired pipeline");
+            if (!result) {
+                error("Failed to destroy a retired shader object set");
+            }
+        } else {
+            auto const result = storage_.destroy_pipeline(entry.handle);
+
+            if (!result) {
+                error("Failed to destroy a retired pipeline");
+            }
         }
 
         return true;
@@ -489,4 +588,5 @@ auto PipelineGraphRepository::destroy() noexcept -> void {
     change_generation_ = 0;
 
     storage_.destroy();
+    shader_object_storage_.destroy();
 }

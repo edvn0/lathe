@@ -99,9 +99,9 @@ constexpr auto default_bindings() -> VkPipelineVertexInputStateCreateInfo {
 auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInfo const &create_info,
                                VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError> {
     if (context.device == VK_NULL_HANDLE || create_info.shaders.empty()) {
-        return std::unexpected(make_error(PipelineErrorType::invalid_argument,
-                                          context.device == VK_NULL_HANDLE ? "device is VK_NULL_HANDLE"
-                                                                            : "no shader stages provided"));
+        return std::unexpected(make_error(PipelineErrorType::invalid_argument, context.device == VK_NULL_HANDLE
+                                                                                       ? "device is VK_NULL_HANDLE"
+                                                                                       : "no shader stages provided"));
     }
 
     std::vector<VkShaderModuleCreateInfo> shader_module_infos(create_info.shaders.size());
@@ -113,10 +113,9 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
 
         if (shader.spirv.empty() || shader.entry_point.empty() ||
             shader.spirv.size_bytes() % sizeof(std::uint32_t) != 0) {
-            return std::unexpected(make_error(
-                    PipelineErrorType::invalid_argument,
-                    std::format("shader stage {} has invalid SPIR-V or entry point '{}'", index,
-                               shader.entry_point.view())));
+            return std::unexpected(make_error(PipelineErrorType::invalid_argument,
+                                              std::format("shader stage {} has invalid SPIR-V or entry point '{}'",
+                                                          index, shader.entry_point.view())));
         }
 
         shader_module_infos[index] = VkShaderModuleCreateInfo{
@@ -289,6 +288,21 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
         vector.push_back(std::move(dynamic_states.extract(it++).value()));
     }
 
+    if (std::ranges::find_if(create_info.shaders, [](ShaderStageInfo const &shader) {
+            return shader.stage == VK_SHADER_STAGE_MESH_BIT_EXT || shader.stage == VK_SHADER_STAGE_TASK_BIT_EXT;
+        }) != create_info.shaders.end()) {
+
+        constexpr auto incompatible_states = std::array{
+                VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY,
+                VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE,
+                VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
+        };
+
+        std::erase_if(vector, [&](VkDynamicState state) {
+            return std::ranges::find(incompatible_states, state) != incompatible_states.end();
+        });
+    }
+
     VkPipelineDynamicStateCreateInfo const dynamic_state{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
             .pNext = nullptr,
@@ -357,9 +371,9 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
 auto Pipeline::create_compute(VulkanContext &context, ComputePipelineCreateInfo const &create_info,
                               VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError> {
     if (context.device == VK_NULL_HANDLE || create_info.shader.spirv.empty()) {
-        return std::unexpected(make_error(PipelineErrorType::invalid_argument,
-                                          context.device == VK_NULL_HANDLE ? "device is VK_NULL_HANDLE"
-                                                                            : "no shader stage provided"));
+        return std::unexpected(make_error(PipelineErrorType::invalid_argument, context.device == VK_NULL_HANDLE
+                                                                                       ? "device is VK_NULL_HANDLE"
+                                                                                       : "no shader stage provided"));
     }
 
     auto const &shader = create_info.shader;
@@ -428,8 +442,7 @@ auto Pipeline::create_compute(VulkanContext &context, ComputePipelineCreateInfo 
             .basePipelineIndex = -1,
     };
 
-    vk_result =
-            vkCreateComputePipelines(context.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &result.pipeline_);
+    vk_result = vkCreateComputePipelines(context.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &result.pipeline_);
 
     if (vk_result != VK_SUCCESS) {
         vkDestroyPipelineLayout(context.device, result.layout_, nullptr);

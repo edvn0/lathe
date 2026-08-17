@@ -233,6 +233,16 @@ CPMAddPackage(
 )
 
 CPMAddPackage(
+    NAME BS_thread_pool
+    GITHUB_REPOSITORY bshoshany/thread-pool
+    VERSION 5.1.0
+    EXCLUDE_FROM_ALL
+    SYSTEM
+)
+add_library(BS_thread_pool INTERFACE)
+target_include_directories(BS_thread_pool INTERFACE ${BS_thread_pool_SOURCE_DIR}/include)
+
+CPMAddPackage(
         NAME bullet3
         GITHUB_REPOSITORY bulletphysics/bullet3
         GIT_TAG 3.25
@@ -595,6 +605,7 @@ target_link_libraries(
         meshoptimizer
         efsw
         imgui
+        BS_thread_pool
 )
 
 include (${CMAKE_SOURCE_DIR}/cmake/renderdoc_config.cmake)

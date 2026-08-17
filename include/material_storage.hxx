@@ -20,66 +20,7 @@
 #include "image_storage.hxx"
 #include "sampler_storage.hxx"
 #include "shadow_cascades.hxx"
-
-struct MaterialHandle {
-    std::uint32_t index = 0;
-    std::uint32_t generation = 0;
-
-    [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return index != 0;
-    }
-
-    auto operator==(MaterialHandle const &) const -> bool = default;
-};
-
-enum class AlphaMode : std::uint32_t {
-    opaque,
-    mask,
-    blend,
-};
-
-struct alignas(16) GpuMaterial {
-    glm::vec4 base_colour_factor{1.0F};
-
-    glm::vec3 emissive_factor{0.0F};
-    float emissive_strength = 1.0F;
-
-    float metallic_factor = 1.0F;
-    float roughness_factor = 1.0F;
-    float normal_scale = 1.0F;
-    float occlusion_strength = 1.0F;
-
-    std::uint32_t base_colour_texture = 0;
-    std::uint32_t normal_texture = 0;
-    std::uint32_t metallic_roughness_texture = 0;
-    std::uint32_t occlusion_texture = 0;
-
-    std::uint32_t emissive_texture = 0;
-    std::uint32_t sampler_index = 0;
-    AlphaMode alpha_mode = AlphaMode::opaque;
-    float alpha_cutoff = 0.5F;
-
-    // Blade sway amplitude driven by UBO.time in the vertex shader; 0 for
-    // every ordinary (non-foliage) material -- see wind.slang.
-    float wind_strength = 0.0F;
-
-    // CPU-only shadow-caster policy, consumed by Renderer::prepare_frame's
-    // batch partition -- never read on the GPU (the mirror in
-    // scene_types.slang leaves this word as padding). Highest cascade index
-    // this material's geometry is drawn into; batches restricted to fewer
-    // cascades are prioritised so their indirect commands land in the
-    // draw-count prefix each farther cascade skips. See max_shadow_cascade
-    // on MaterialCreateInfo for why this exists (dense foliage that's
-    // pointless to shadow at cascade-3 texel density).
-    std::uint32_t max_shadow_cascade = shadow_cascade_count - 1;
-    float _pad1 = 0.0F;
-    float _pad2 = 0.0F;
-};
-
-static_assert(std::is_trivially_copyable_v<GpuMaterial>);
-static_assert(sizeof(GpuMaterial) % 16 == 0);
-static_assert(alignof(GpuMaterial) == 16);
+#include "material.hxx"
 
 
 struct MaterialCreateInfo {
@@ -108,7 +49,10 @@ struct MaterialCreateInfo {
     // See GpuMaterial::max_shadow_cascade -- defaults to casting into every
     // cascade. Lower this for foliage/detail geometry whose shadow contrib
     // is invisible past a certain cascade (sub-pixel at that texel density)
-    // to skip it in the shadow pass's farther cascades entirely.
+    // to skip it in the shadow pass's farther cascades entirely, or set it
+    // to GpuMaterial::no_shadow_cascade to make this material never cast a
+    // shadow at all (e.g. grass, decals, other geometry too thin/cheap to
+    // be worth shadowing).
     std::uint32_t max_shadow_cascade = shadow_cascade_count - 1;
 };
 

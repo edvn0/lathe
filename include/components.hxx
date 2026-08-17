@@ -20,4 +20,19 @@ namespace Components {
                    glm::scale(glm::mat4{1.0F}, scale);
         }
     };
+
+    struct PointLight {
+        glm::vec3 colour{1.0F};
+        float intensity = 1.0F;
+        float range = 10.0F;
+    };
+
+    struct SpotLight {
+        glm::vec3 colour{1.0F};
+        float intensity = 1.0F;
+        float range = 10.0F;
+        float inner_cone_degrees = 20.0F;
+        float outer_cone_degrees = 30.0F;
+    };
+
 } // namespace Components

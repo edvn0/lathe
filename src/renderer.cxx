@@ -576,6 +576,244 @@ namespace {
 
         vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
     }
+
+    // --- VK_EXT_shader_object dynamic-state additions --------------------
+    //
+    // Phase 3 of docs/pipeline_to_shader_objects.md: state that used to be
+    // baked into a VkGraphicsPipelineCreateInfo (vertex input, blend,
+    // rasterization samples/mask, polygon mode, depth clamp, logic op)
+    // becomes per-draw dynamic state once a pass binds a ShaderObjectSet
+    // instead of a Pipeline. These helpers compile against the
+    // extended-dynamic-state3 / vertex-input-dynamic-state function
+    // pointers ahead of time; none are called yet -- Phase 5 wires them
+    // into the per-pass call sites once each pass migrates off VkPipeline.
+
+    // Mirrors default_vertex_description() (load_model.hxx) in the
+    // VK_EXT_vertex_input_dynamic_state shape.
+    auto default_shader_object_vertex_input() noexcept
+            -> std::pair<std::array<VkVertexInputBindingDescription2EXT, 1>,
+                        std::array<VkVertexInputAttributeDescription2EXT, 4>> {
+        std::array<VkVertexInputBindingDescription2EXT, 1> bindings{};
+        bindings[0] = VkVertexInputBindingDescription2EXT{
+                .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT,
+                .pNext = nullptr,
+                .binding = 0,
+                .stride = sizeof(ModelVertex),
+                .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+                .divisor = 1,
+        };
+
+        std::array<VkVertexInputAttributeDescription2EXT, 4> attributes{};
+
+        attributes[0] = VkVertexInputAttributeDescription2EXT{
+                .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT,
+                .pNext = nullptr,
+                .location = 0,
+                .binding = 0,
+                .format = VK_FORMAT_R32G32B32_SFLOAT,
+                .offset = offsetof(ModelVertex, position),
+        };
+        attributes[1] = VkVertexInputAttributeDescription2EXT{
+                .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT,
+                .pNext = nullptr,
+                .location = 1,
+                .binding = 0,
+                .format = VK_FORMAT_R32G32B32_SFLOAT,
+                .offset = offsetof(ModelVertex, normal),
+        };
+        attributes[2] = VkVertexInputAttributeDescription2EXT{
+                .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT,
+                .pNext = nullptr,
+                .location = 2,
+                .binding = 0,
+                .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+                .offset = offsetof(ModelVertex, tangent),
+        };
+        attributes[3] = VkVertexInputAttributeDescription2EXT{
+                .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT,
+                .pNext = nullptr,
+                .location = 3,
+                .binding = 0,
+                .format = VK_FORMAT_R32G32_SFLOAT,
+                .offset = offsetof(ModelVertex, texcoord),
+        };
+
+        return {bindings, attributes};
+    }
+
+    // Pass an empty span for both when the draw has no vertex buffer (e.g.
+    // a fullscreen-triangle composite draw) or when binding a mesh-shader
+    // ShaderObjectSet, which has no vertex input stage at all.
+    auto set_shader_object_vertex_input(VkCommandBuffer command_buffer,
+                                        std::span<VkVertexInputBindingDescription2EXT const> bindings,
+                                        std::span<VkVertexInputAttributeDescription2EXT const> attributes) noexcept
+            -> void {
+        vkCmdSetVertexInputEXT(command_buffer, static_cast<std::uint32_t>(bindings.size()), bindings.data(),
+                               static_cast<std::uint32_t>(attributes.size()), attributes.data());
+    }
+
+    // Replaces the polygon-mode/samples/depth-clamp fields that used to live
+    // in GraphicsPipelineCreateInfo. Sample mask is left fully open and
+    // alpha-to-coverage disabled -- neither is used by any pass today.
+    auto set_shader_object_raster_state(VkCommandBuffer command_buffer, VkPolygonMode polygon_mode,
+                                        VkSampleCountFlagBits samples, bool depth_clamp_enable) noexcept -> void {
+        vkCmdSetPolygonModeEXT(command_buffer, polygon_mode);
+
+        vkCmdSetRasterizationSamplesEXT(command_buffer, samples);
+
+        VkSampleMask const sample_mask = 0xFFFFFFFFU;
+        vkCmdSetSampleMaskEXT(command_buffer, samples, &sample_mask);
+
+        vkCmdSetAlphaToCoverageEnableEXT(command_buffer, VK_FALSE);
+
+        vkCmdSetDepthClampEnableEXT(command_buffer, depth_clamp_enable ? VK_TRUE : VK_FALSE);
+
+        vkCmdSetLogicOpEnableEXT(command_buffer, VK_FALSE);
+    }
+
+    // Replaces GraphicsPipelineCreateInfo::blending. attachment_count must
+    // match VkPipelineRenderingCreateInfo::colorAttachmentCount for the
+    // current render pass -- pass 0 for the depth prepass and shadow pass
+    // (no color attachments), 1 for forward/composite (today's only
+    // multi-attachment case would need one entry per attachment here).
+    auto set_shader_object_color_blend_state(VkCommandBuffer command_buffer, std::uint32_t attachment_count,
+                                             bool blending) noexcept -> void {
+        if (attachment_count == 0) {
+            return;
+        }
+
+        std::vector<VkBool32> const blend_enable(attachment_count, blending ? VK_TRUE : VK_FALSE);
+
+        std::vector<VkColorBlendEquationEXT> const blend_equation(
+                attachment_count, VkColorBlendEquationEXT{
+                                           .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+                                           .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                                           .colorBlendOp = VK_BLEND_OP_ADD,
+                                           .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                                           .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                                           .alphaBlendOp = VK_BLEND_OP_ADD,
+                                   });
+
+        std::vector<VkColorComponentFlags> const write_mask(
+                attachment_count, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                                          VK_COLOR_COMPONENT_A_BIT);
+
+        vkCmdSetColorBlendEnableEXT(command_buffer, 0, attachment_count, blend_enable.data());
+
+        vkCmdSetColorBlendEquationEXT(command_buffer, 0, attachment_count, blend_equation.data());
+
+        vkCmdSetColorWriteMaskEXT(command_buffer, 0, attachment_count, write_mask.data());
+    }
+
+    // Task/mesh ShaderObjectSets have no vertex input stage, so this skips
+    // set_shader_object_vertex_input entirely rather than calling it with
+    // empty spans -- confirm against validation layer output during Phase 5
+    // whether omitting the call is actually required by spec or just
+    // equivalent to an empty VkVertexInputBindingDescription2EXT list.
+    auto set_mesh_shader_object_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent,
+                                              VkSampleCountFlagBits samples) noexcept -> void {
+        VkViewport const viewport{
+                .x = 0.0F,
+                .y = static_cast<float>(extent.height),
+                .width = static_cast<float>(extent.width),
+                .height = -static_cast<float>(extent.height),
+                .minDepth = 1.0F,
+                .maxDepth = 0.0F,
+        };
+
+        VkRect2D const scissor{
+                .offset = {0, 0},
+                .extent = extent,
+        };
+
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+        vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
+
+        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_BACK_BIT);
+
+        vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_CLOCKWISE);
+
+        vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
+
+        vkCmdSetDepthWriteEnable(command_buffer, VK_TRUE);
+
+        vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
+
+        vkCmdSetDepthBiasEnable(command_buffer, VK_FALSE);
+
+        vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
+
+        set_shader_object_raster_state(command_buffer, VK_POLYGON_MODE_FILL, samples, false);
+    }
+
+    // --- VkPipeline / ShaderObjectSet runtime dispatch --------------------
+    //
+    // VK_EXT_shader_object is optional (VulkanContext::shader_objects_supported):
+    // some target GPUs (e.g. certain Intel iGPUs) don't implement it, so
+    // PipelineRegisterInfo::use_shader_objects is set per-node from that
+    // capability flag rather than unconditionally. Every draw call site
+    // resolves through these two helpers instead of assuming one backend.
+
+    // Returns the pipeline layout regardless of which backend a node
+    // resolved to, or VK_NULL_HANDLE for an invalid/unbuilt handle. Used for
+    // both the upfront per-frame validity check and vkCmdPushConstants.
+    [[nodiscard]]
+    auto resolve_layout(PipelineGraphRepository const &graph, PipelineNodeHandle handle) noexcept
+            -> VkPipelineLayout {
+        if (auto const *shader_objects = graph.resolve_shader_objects(handle); shader_objects != nullptr) {
+            return shader_objects->layout();
+        }
+
+        if (auto const *pipeline = graph.resolve(handle); pipeline != nullptr) {
+            return pipeline->layout();
+        }
+
+        return VK_NULL_HANDLE;
+    }
+
+    // Binds a graphics node and, only for the ShaderObjectSet backend, sets
+    // the dynamic state a VkPipeline would already have baked in (vertex
+    // input, rasterization samples/polygon-mode, color blend). Pass
+    // has_vertex_input_stage = false for task/mesh shader nodes, which have
+    // no vertex input stage at all.
+    auto bind_graphics_node(PipelineGraphRepository const &graph, PipelineNodeHandle handle,
+                            VkCommandBuffer command_buffer, VkSampleCountFlagBits samples,
+                            std::uint32_t colour_attachment_count, bool blending,
+                            bool has_vertex_input_stage = true) noexcept -> void {
+        if (auto const *shader_objects = graph.resolve_shader_objects(handle); shader_objects != nullptr) {
+            shader_objects->bind(command_buffer);
+
+            if (has_vertex_input_stage) {
+                set_shader_object_vertex_input(command_buffer, {}, {});
+            }
+
+            set_shader_object_raster_state(command_buffer, VK_POLYGON_MODE_FILL, samples, false);
+            set_shader_object_color_blend_state(command_buffer, colour_attachment_count, blending);
+
+            return;
+        }
+
+        if (auto const *pipeline = graph.resolve(handle); pipeline != nullptr) {
+            vkCmdBindPipeline(command_buffer, pipeline->bind_point(), pipeline->pipeline());
+        }
+    }
+
+    // Compute nodes have no rasterization state to set either way.
+    auto bind_compute_node(PipelineGraphRepository const &graph, PipelineNodeHandle handle,
+                           VkCommandBuffer command_buffer) noexcept -> void {
+        if (auto const *shader_objects = graph.resolve_shader_objects(handle); shader_objects != nullptr) {
+            shader_objects->bind(command_buffer);
+
+            return;
+        }
+
+        if (auto const *pipeline = graph.resolve(handle); pipeline != nullptr) {
+            vkCmdBindPipeline(command_buffer, pipeline->bind_point(), pipeline->pipeline());
+        }
+    }
 } // namespace
 
 namespace {
@@ -668,6 +906,12 @@ namespace {
 } // namespace
 
 Renderer::Renderer(VulkanContext &context) noexcept : context_(context) {}
+
+auto Renderer::thread_pool() noexcept -> BS::priority_thread_pool & {
+    static std::unique_ptr<BS::priority_thread_pool> thread_pool_ =
+            std::make_unique<BS::priority_thread_pool>(std::thread::hardware_concurrency());
+    return *thread_pool_;
+}
 
 auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expected<void, RendererError> {
     if (initialized_ || create_info.extent.width == 0 || create_info.extent.height == 0 ||
@@ -794,6 +1038,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                   .depth_format = create_info.depth_format,
                                   .stencil_format = VK_FORMAT_UNDEFINED,
                                   .samples = create_info.samples,
+                                  .use_shader_objects = context_.shader_objects_supported,
                                   .debug_name = "renderer.forward_pipeline",
                           });
 
@@ -839,6 +1084,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                   .stencil_format = VK_FORMAT_UNDEFINED,
                                   .samples = create_info.samples,
                                   .blending = true,
+                                  .use_shader_objects = context_.shader_objects_supported,
                                   .debug_name = "renderer.forward_blend_pipeline",
                           });
 
@@ -889,6 +1135,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                   .stencil_format = VK_FORMAT_UNDEFINED,
                                   .samples = create_info.samples,
                                   .blending = true,
+                                  .use_shader_objects = context_.shader_objects_supported,
                                   .debug_name = "renderer.light_icon_pipeline",
                           });
 
@@ -952,6 +1199,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                   .depth_format = VK_FORMAT_D32_SFLOAT,
                                   .stencil_format = VK_FORMAT_UNDEFINED,
                                   .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .use_shader_objects = context_.shader_objects_supported,
                                   .debug_name = "renderer.shadow_pipeline",
                           });
 
@@ -996,6 +1244,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                   .depth_format = VK_FORMAT_D32_SFLOAT,
                                   .stencil_format = VK_FORMAT_UNDEFINED,
                                   .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .use_shader_objects = context_.shader_objects_supported,
                                   .debug_name = "renderer.shadow_mask_pipeline",
                           });
 
@@ -1030,6 +1279,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                   .depth_format = create_info.depth_format,
                                   .stencil_format = VK_FORMAT_UNDEFINED,
                                   .samples = create_info.samples,
+                                  .use_shader_objects = context_.shader_objects_supported,
                                   .debug_name = "renderer.depth_prepass_pipeline",
                           });
 
@@ -1074,6 +1324,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                   .depth_format = create_info.depth_format,
                                   .stencil_format = VK_FORMAT_UNDEFINED,
                                   .samples = create_info.samples,
+                                  .use_shader_objects = context_.shader_objects_supported,
                                   .debug_name = "renderer.depth_prepass_mask_pipeline",
                           });
 
@@ -1115,6 +1366,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                   .depth_format = VK_FORMAT_UNDEFINED,
                                   .stencil_format = VK_FORMAT_UNDEFINED,
                                   .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .use_shader_objects = context_.shader_objects_supported,
                                   .debug_name = "renderer.composite_pipeline",
                           });
 
@@ -1149,6 +1401,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                   .depth_format = VK_FORMAT_UNDEFINED,
                                   .stencil_format = VK_FORMAT_UNDEFINED,
                                   .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .use_shader_objects = context_.shader_objects_supported,
                                   .debug_name = "renderer.frustum_cull_pipeline",
                           });
 
@@ -2406,10 +2659,16 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     // used to shrink drawCount per cascade in the shadow pass, skipping
     // batches (e.g. grass) that opted out of the farther cascades entirely
     // instead of rasterizing them into every cascade regardless.
-    auto const batch_max_shadow_cascade = [this](batch_entry const *batch) noexcept -> std::uint32_t {
+    //
+    // GpuMaterial::no_shadow_cascade (opt out of the shadow pass entirely)
+    // is mapped to -1 here so it sorts behind even cascade 0 -- max_shadow_
+    // cascade is otherwise a small non-negative cascade index, so this is
+    // the one value that must compare lower than all of them.
+    auto const batch_max_shadow_cascade = [this](batch_entry const *batch) noexcept -> std::int32_t {
         auto const *material = material_storage_.get(batch->material);
+        auto const cascade = material != nullptr ? material->max_shadow_cascade : shadow_cascade_count - 1;
 
-        return material != nullptr ? material->max_shadow_cascade : shadow_cascade_count - 1;
+        return cascade == GpuMaterial::no_shadow_cascade ? -1 : static_cast<std::int32_t>(cascade);
     };
 
     std::sort(opaque_batches.begin(), opaque_batches.end(), [&](auto const *a, auto const *b) {
@@ -2425,7 +2684,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
         for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
             auto const it = std::find_if(sorted_batches.begin(), sorted_batches.end(), [&](batch_entry const *batch) {
-                return batch_max_shadow_cascade(batch) < cascade;
+                return batch_max_shadow_cascade(batch) < static_cast<std::int32_t>(cascade);
             });
 
             counts[cascade] = static_cast<std::uint32_t>(std::distance(sorted_batches.begin(), it));
@@ -2626,17 +2885,17 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
         }
 
-        auto const *frustum_cull_pipeline = pipeline_graph_.resolve(frustum_cull_pipeline_);
+        auto const frustum_cull_pipeline = resolve_layout(pipeline_graph_, frustum_cull_pipeline_);
 
-        if (frustum_cull_pipeline == nullptr) {
+        if (frustum_cull_pipeline == VK_NULL_HANDLE) {
             clear_submissions();
 
             return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
         }
 
-        vkCmdBindPipeline(command_buffer, frustum_cull_pipeline->bind_point(), frustum_cull_pipeline->pipeline());
+        bind_compute_node(pipeline_graph_, frustum_cull_pipeline_, command_buffer);
         gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                 frustum_cull_pipeline->layout());
+                                 frustum_cull_pipeline);
 
         CullPushConstants const cull_pc{
                 .src_draws_address = frame.draw_buffer.device_address,
@@ -2651,7 +2910,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                 .padding = 0,
         };
 
-        vkCmdPushConstants(command_buffer, frustum_cull_pipeline->layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0,
+        vkCmdPushConstants(command_buffer, frustum_cull_pipeline, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(CullPushConstants), &cull_pc);
 
         vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
@@ -2818,38 +3077,38 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         }
     }
 
-    auto const *forward_pipeline = pipeline_graph_.resolve(forward_pipeline_);
-    if (forward_pipeline == nullptr) {
+    auto const forward_pipeline = resolve_layout(pipeline_graph_, forward_pipeline_);
+    if (forward_pipeline == VK_NULL_HANDLE) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
-    auto const *forward_blend_pipeline = pipeline_graph_.resolve(forward_blend_pipeline_);
-    if (forward_blend_pipeline == nullptr) {
+    auto const forward_blend_pipeline = resolve_layout(pipeline_graph_, forward_blend_pipeline_);
+    if (forward_blend_pipeline == VK_NULL_HANDLE) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
-    auto const *depth_prepass_pipeline = pipeline_graph_.resolve(depth_prepass_pipeline_);
-    if (depth_prepass_pipeline == nullptr) {
+    auto const depth_prepass_pipeline = resolve_layout(pipeline_graph_, depth_prepass_pipeline_);
+    if (depth_prepass_pipeline == VK_NULL_HANDLE) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
-    auto const *depth_prepass_mask_pipeline = pipeline_graph_.resolve(depth_prepass_mask_pipeline_);
-    if (depth_prepass_mask_pipeline == nullptr) {
+    auto const depth_prepass_mask_pipeline = resolve_layout(pipeline_graph_, depth_prepass_mask_pipeline_);
+    if (depth_prepass_mask_pipeline == VK_NULL_HANDLE) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
-    auto const *composite_pipeline = pipeline_graph_.resolve(composite_pipeline_);
-    if (composite_pipeline == nullptr) {
+    auto const composite_pipeline = resolve_layout(pipeline_graph_, composite_pipeline_);
+    if (composite_pipeline == VK_NULL_HANDLE) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
-    auto const *shadow_pipeline = pipeline_graph_.resolve(shadow_pipeline_);
-    if (shadow_pipeline == nullptr) {
+    auto const shadow_pipeline = resolve_layout(pipeline_graph_, shadow_pipeline_);
+    if (shadow_pipeline == VK_NULL_HANDLE) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
-    auto const *shadow_mask_pipeline = pipeline_graph_.resolve(shadow_mask_pipeline_);
-    if (shadow_mask_pipeline == nullptr) {
+    auto const shadow_mask_pipeline = resolve_layout(pipeline_graph_, shadow_mask_pipeline_);
+    if (shadow_mask_pipeline == VK_NULL_HANDLE) {
         return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 
@@ -2914,9 +3173,9 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         // flip, so back-face culling would cull the wrong side regardless of
         // alpha mode), so no cull-mode override is needed between them.
         if (frame.opaque_indirect_count != 0) {
-            vkCmdBindPipeline(command_buffer, shadow_pipeline->bind_point(), shadow_pipeline->pipeline());
+            bind_graphics_node(pipeline_graph_, shadow_pipeline_, command_buffer, VK_SAMPLE_COUNT_1_BIT, 0, false);
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                     shadow_pipeline->layout());
+                                     shadow_pipeline);
             ShadowPushConstants pc{
                     .draw_buffer_address = frame.draw_buffer.device_address,
                     .transform_buffer_address = frame.transform_buffer.device_address,
@@ -2934,7 +3193,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                     .padding1 = 0,
             };
 
-            vkCmdPushConstants(command_buffer, shadow_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+            vkCmdPushConstants(command_buffer, shadow_pipeline, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                sizeof(ShadowPushConstants), &pc);
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
@@ -2947,7 +3206,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 set_shadow_dynamic_state(command_buffer, cascade, shadow_settings_.depth_bias_constant,
                                          shadow_settings_.depth_bias_slope);
 
-                vkCmdPushConstants(command_buffer, shadow_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT,
+                vkCmdPushConstants(command_buffer, shadow_pipeline, VK_SHADER_STAGE_VERTEX_BIT,
                                    offsetof(ShadowPushConstants, cascade_index), sizeof(std::uint32_t), &cascade);
 
                 vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0, cascade_draw_count,
@@ -2956,9 +3215,10 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         }
 
         if (frame.mask_indirect_count != 0) {
-            vkCmdBindPipeline(command_buffer, shadow_mask_pipeline->bind_point(), shadow_mask_pipeline->pipeline());
+            bind_graphics_node(pipeline_graph_, shadow_mask_pipeline_, command_buffer, VK_SAMPLE_COUNT_1_BIT, 0,
+                               false);
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                     shadow_mask_pipeline->layout());
+                                     shadow_mask_pipeline);
 
             ShadowPushConstants pc{
                     .draw_buffer_address = frame.draw_buffer.device_address,
@@ -2972,7 +3232,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                     .padding1 = 0,
             };
 
-            vkCmdPushConstants(command_buffer, shadow_mask_pipeline->layout(),
+            vkCmdPushConstants(command_buffer, shadow_mask_pipeline,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                sizeof(ShadowPushConstants), &pc);
 
@@ -2989,7 +3249,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 set_shadow_dynamic_state(command_buffer, cascade, shadow_settings_.depth_bias_constant,
                                          shadow_settings_.depth_bias_slope);
 
-                vkCmdPushConstants(command_buffer, shadow_mask_pipeline->layout(),
+                vkCmdPushConstants(command_buffer, shadow_mask_pipeline,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    offsetof(ShadowPushConstants, cascade_index), sizeof(std::uint32_t), &cascade);
 
@@ -3075,12 +3335,11 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         };
 
         if (frame.opaque_indirect_count != 0) {
-            vkCmdBindPipeline(command_buffer, depth_prepass_pipeline->bind_point(),
-                              depth_prepass_pipeline->pipeline());
+            bind_graphics_node(pipeline_graph_, depth_prepass_pipeline_, command_buffer, samples_, 0, false);
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                     depth_prepass_pipeline->layout());
+                                     depth_prepass_pipeline);
             set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::prepass);
-            vkCmdPushConstants(command_buffer, depth_prepass_pipeline->layout(), VK_SHADER_STAGE_VERTEX_BIT, 0,
+            vkCmdPushConstants(command_buffer, depth_prepass_pipeline, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                sizeof(ForwardPushConstants), &pc);
 
             vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0,
@@ -3088,13 +3347,12 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         }
 
         if (frame.mask_indirect_count != 0) {
-            vkCmdBindPipeline(command_buffer, depth_prepass_mask_pipeline->bind_point(),
-                              depth_prepass_mask_pipeline->pipeline());
+            bind_graphics_node(pipeline_graph_, depth_prepass_mask_pipeline_, command_buffer, samples_, 0, false);
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                     depth_prepass_mask_pipeline->layout());
+                                     depth_prepass_mask_pipeline);
             set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::prepass);
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
-            vkCmdPushConstants(command_buffer, depth_prepass_mask_pipeline->layout(),
+            vkCmdPushConstants(command_buffer, depth_prepass_mask_pipeline,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                sizeof(ForwardPushConstants), &pc);
 
@@ -3193,10 +3451,10 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 .padding = 0,
         };
 
-        vkCmdBindPipeline(command_buffer, forward_pipeline->bind_point(), forward_pipeline->pipeline());
+        bind_graphics_node(pipeline_graph_, forward_pipeline_, command_buffer, samples_, 1, false);
         gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 forward_pipeline->layout());
-        vkCmdPushConstants(command_buffer, forward_pipeline->layout(),
+                                 forward_pipeline);
+        vkCmdPushConstants(command_buffer, forward_pipeline,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ForwardPushConstants),
                            &pc);
 
@@ -3219,11 +3477,10 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         }
 
         if (frame.blend_indirect_count != 0) {
-            vkCmdBindPipeline(command_buffer, forward_blend_pipeline->bind_point(),
-                              forward_blend_pipeline->pipeline());
+            bind_graphics_node(pipeline_graph_, forward_blend_pipeline_, command_buffer, samples_, 1, true);
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                     forward_blend_pipeline->layout());
-            vkCmdPushConstants(command_buffer, forward_blend_pipeline->layout(),
+                                     forward_blend_pipeline);
+            vkCmdPushConstants(command_buffer, forward_blend_pipeline,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                sizeof(ForwardPushConstants), &pc);
             set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::blend);
@@ -3237,12 +3494,15 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         }
 
         if (debug_draw_light_icons_ && frame.light_count != 0) {
-            auto const *light_icon_pipeline = pipeline_graph_.resolve(light_icon_pipeline_);
+            auto const light_icon_pipeline = resolve_layout(pipeline_graph_, light_icon_pipeline_);
 
-            if (light_icon_pipeline != nullptr) {
-                vkCmdBindPipeline(command_buffer, light_icon_pipeline->bind_point(), light_icon_pipeline->pipeline());
+            if (light_icon_pipeline != VK_NULL_HANDLE) {
+                // has_vertex_input_stage = false: task/mesh shader objects
+                // have no vertex input stage at all. See
+                // set_mesh_shader_object_dynamic_state's doc comment.
+                bind_graphics_node(pipeline_graph_, light_icon_pipeline_, command_buffer, samples_, 1, true, false);
                 gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                         light_icon_pipeline->layout());
+                                         light_icon_pipeline);
 
                 vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
                 vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
@@ -3258,7 +3518,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                         .icon_world_size = light_icon_world_size_,
                 };
 
-                vkCmdPushConstants(command_buffer, light_icon_pipeline->layout(),
+                vkCmdPushConstants(command_buffer, light_icon_pipeline,
                                    VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT |
                                            VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(LightIconPushConstants), &light_pc);
@@ -3315,9 +3575,9 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         };
 
         vkCmdBeginRendering(command_buffer, &composite_rendering_info);
-        vkCmdBindPipeline(command_buffer, composite_pipeline->bind_point(), composite_pipeline->pipeline());
+        bind_graphics_node(pipeline_graph_, composite_pipeline_, command_buffer, VK_SAMPLE_COUNT_1_BIT, 1, false);
         gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 composite_pipeline->layout());
+                                 composite_pipeline);
         set_composite_dynamic_state(command_buffer, swapchain_image.extent);
 
         struct CompositePC {
@@ -3334,7 +3594,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 .padding = 0,
         };
 
-        vkCmdPushConstants(command_buffer, composite_pipeline->layout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+        vkCmdPushConstants(command_buffer, composite_pipeline, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(composite_pc), &composite_pc);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
 

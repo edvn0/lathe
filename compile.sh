@@ -4,7 +4,7 @@ set -euo pipefail
 readonly image="cross-build:latest"
 readonly project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly build_type="${CMAKE_BUILD_TYPE:-Debug}"
-readonly renderdoc_include_path=${RENDERDOC_INCLUDE_PATH}
+readonly renderdoc_include_path=${RENDERDOC_INCLUDE_PATH:-}
 readonly cpm_cache_dir="${HOME}/.cache/CPM"
 readonly container_cpm_cache="/cpm-cache"
 
@@ -92,6 +92,7 @@ configure() {
   fi
 
   run_container cmake "${cmake_args[@]}" 2>&1 | sed -u "s#/workspace#${project_dir}#g"
+  fixup_compile_commands
 }
 
 build() {
@@ -100,6 +101,19 @@ build() {
     --build "${build_dir}" \
     --parallel \
     2>&1 | sed -u "s#/workspace#${project_dir}#g"
+  fixup_compile_commands
+}
+
+fixup_compile_commands() {
+  local cc="${project_dir}/${build_dir}/compile_commands.json"
+  [[ -f "${cc}" ]] || return 0
+
+  sed -i \
+    -e "s#/workspace#${project_dir}#g" \
+    -e "s#/cpm-cache#${cpm_cache_dir}#g" \
+    "${cc}"
+
+  ln -sf "${build_dir}/compile_commands.json" "${project_dir}/compile_commands.json"
 }
 
 clean() {
@@ -191,3 +205,4 @@ main() {
 }
 
 main "$@"
+

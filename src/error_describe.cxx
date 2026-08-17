@@ -16,6 +16,8 @@
 #include "pipeline_storage.hxx"
 #include "renderer.hxx"
 #include "sampler_storage.hxx"
+#include "shader_object.hxx"
+#include "shader_object_storage.hxx"
 #include "slang_compiler.hxx"
 #include "slang_library.hxx"
 
@@ -131,6 +133,26 @@ auto describe(PipelineStorageError const &error) -> std::string {
 
 auto describe(PipelineGraphError const &error) -> std::string {
     auto head = std::format("PipelineGraphError({})", error.type);
+
+    if (error.cause.has_value()) {
+        return head + " -> " + describe(*error.cause);
+    }
+
+    return head;
+}
+
+auto describe(ShaderObjectError const &error) -> std::string {
+    auto head = std::format("ShaderObjectError({})", error.type);
+
+    if (error.context.has_value()) {
+        return head + " -> " + describe(*error.context);
+    }
+
+    return head;
+}
+
+auto describe(ShaderObjectStorageError const &error) -> std::string {
+    auto head = std::format("ShaderObjectStorageError({})", error.type);
 
     if (error.cause.has_value()) {
         return head + " -> " + describe(*error.cause);

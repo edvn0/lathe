@@ -36,7 +36,6 @@
 #include "error_describe.hxx"
 #include "imgui_renderer.hxx"
 #include "implot.h"
-#include "light.hxx"
 #include "logger.hxx"
 #include "physics.hxx"
 #include "physics_world.hxx"
@@ -63,7 +62,7 @@ namespace {
         return glm::angleAxis(std::acos(dot), axis);
     }
 
-    constexpr auto draw_point_light = [](PointLight &point_light) -> bool {
+    constexpr auto draw_point_light = [](Components::PointLight &point_light) -> bool {
         bool changed = false;
         changed |= ImGui::ColorEdit3("Colour", &point_light.colour.x);
         changed |= ImGui::SliderFloat("Intensity", &point_light.intensity, 0.0F, 200.0F);
@@ -71,7 +70,7 @@ namespace {
         return changed;
     };
 
-    constexpr auto draw_spot_light = [](SpotLight &spot_light) -> bool {
+    constexpr auto draw_spot_light = [](Components::SpotLight &spot_light) -> bool {
         bool changed = false;
         changed |= ImGui::ColorEdit3("Colour", &spot_light.colour.x);
         changed |= ImGui::SliderFloat("Intensity", &spot_light.intensity, 0.0F, 200.0F);
@@ -363,11 +362,11 @@ namespace {
                 ImGui::SeparatorText("Punctual lights");
                 auto &registry = active_scene->get_registry();
                 std::size_t index = 0;
-                draw_rows(index, registry, registry.view<Components::Transform, PointLight, GeneratedMeta>(),
+                draw_rows(index, registry, registry.view<Components::Transform, Components::PointLight, GeneratedMeta>(),
                           draw_point_light);
-                draw_rows(index, registry, registry.view<Components::Transform, PointLight, Meta>(), draw_point_light);
-                draw_rows(index, registry, registry.view<Components::Transform, SpotLight, Meta>(), draw_spot_light);
-                draw_rows(index, registry, registry.view<Components::Transform, SpotLight, GeneratedMeta>(),
+                draw_rows(index, registry, registry.view<Components::Transform, Components::PointLight, Meta>(), draw_point_light);
+                draw_rows(index, registry, registry.view<Components::Transform, Components::SpotLight, Meta>(), draw_spot_light);
+                draw_rows(index, registry, registry.view<Components::Transform, Components::SpotLight, GeneratedMeta>(),
                           draw_spot_light);
             });
         }
@@ -386,7 +385,7 @@ namespace {
         auto play() -> void {
             runtime_scene = std::make_unique<Scene>();
             runtime_scene->physics_settings = editor_scene->physics_settings;
-            clone_registry<Components::Transform, ModelHandle, RigidBody, MaterialOverride, PointLight, SpotLight>(
+            clone_registry<Components::Transform, ModelHandle, RigidBody, MaterialOverride, Components::PointLight, Components::SpotLight>(
                     editor_scene->get_registry(), runtime_scene->get_registry());
 
             active_scene = runtime_scene.get();
@@ -634,13 +633,13 @@ namespace {
                         });
 
                         if (light.type == ModelLightType::point) {
-                            light_entity.emplace<PointLight>(PointLight{
+                            light_entity.emplace<Components::PointLight>(Components::PointLight{
                                     .colour = light.colour,
                                     .intensity = light.intensity,
                                     .range = light.range,
                             });
                         } else {
-                            light_entity.emplace<SpotLight>(SpotLight{
+                            light_entity.emplace<Components::SpotLight>(Components::SpotLight{
                                     .colour = light.colour,
                                     .intensity = light.intensity,
                                     .range = light.range,
@@ -789,15 +788,15 @@ namespace {
                 };
 
                 for (std::size_t i = 0; i < point_light_colours.size(); ++i) {
-                    auto const angle = (static_cast<float>(i) / static_cast<float>(point_light_colours.size())) *
-                                       6.2831853F;
+                    auto const angle =
+                            (static_cast<float>(i) / static_cast<float>(point_light_colours.size())) * 6.2831853F;
                     auto const radius = spacing * static_cast<float>(physics_grid) * 0.5F;
 
                     auto const light_entity = GeneratedEntity{editor_scene.get(), "point_light_{}", i};
                     light_entity.emplace<Components::Transform>(Components::Transform{
                             .position = glm::vec3{radius * std::cos(angle), 12.0F, radius * std::sin(angle)},
                     });
-                    light_entity.emplace<PointLight>(PointLight{
+                    light_entity.emplace<Components::PointLight>(Components::PointLight{
                             .colour = point_light_colours[i],
                             .intensity = 25.0F,
                             .range = 20.0F,
@@ -809,7 +808,7 @@ namespace {
                         .position = glm::vec3{0.0F, 15.0F, 0.0F},
                         .rotation = glm::angleAxis(glm::radians(30.0F), glm::vec3{1.0F, 0.0F, 0.0F}),
                 });
-                spot_entity.emplace<SpotLight>(SpotLight{
+                spot_entity.emplace<Components::SpotLight>(Components::SpotLight{
                         .colour = glm::vec3{0.9F, 0.95F, 1.0F},
                         .intensity = 60.0F,
                         .range = 30.0F,
@@ -835,12 +834,12 @@ namespace {
                     .emissive_texture = images.emissive(),
                     .sampler = samplers.linear_repeat(),
                     .wind_strength = 0.28F,
-                    // Individual blades are sub-pixel by cascade 2 already
-                    // (see shadow_cascade_resolutions), so the ~40k-instance
-                    // grass batch is skipped entirely in the farthest two
-                    // cascades -- see Renderer::prepare_frame's shadow
-                    // batch partition.
-                    .max_shadow_cascade = 1,
+                    // Individual blades are sub-pixel even in cascade 0 and
+                    // too thin/cheap to be worth shadowing at all -- opt the
+                    // ~40k-instance grass batch out of the shadow pass
+                    // entirely rather than just the farther cascades. See
+                    // Renderer::prepare_frame's shadow batch partition.
+                    .max_shadow_cascade = GpuMaterial::no_shadow_cascade,
             });
 
             if (!grass_material_result) {
@@ -1391,6 +1390,45 @@ namespace {
 
         info("Selected physical device: {}", properties.deviceName);
 
+        // VK_EXT_shader_object is optional: not every target GPU implements
+        // it yet (e.g. some Intel iGPUs), so its absence must not disqualify
+        // an otherwise-suitable device. create_device() only enables the
+        // extension/features below when this is true, and the renderer
+        // falls back to VkPipeline per pipeline registration otherwise --
+        // see PipelineRegisterInfo::use_shader_objects.
+        VkPhysicalDeviceExtendedDynamicState3FeaturesEXT extended_dynamic_state3_features{};
+        extended_dynamic_state3_features.sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
+        extended_dynamic_state3_features.pNext = nullptr;
+
+        VkPhysicalDeviceShaderObjectFeaturesEXT shader_object_features{};
+        shader_object_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT;
+        shader_object_features.pNext = &extended_dynamic_state3_features;
+
+        VkPhysicalDeviceFeatures2 shader_object_query{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                .pNext = &shader_object_features,
+                .features = {},
+        };
+
+        vkGetPhysicalDeviceFeatures2(context.physical_device, &shader_object_query);
+
+        context.shader_objects_supported =
+                shader_object_features.shaderObject == VK_TRUE &&
+                extended_dynamic_state3_features.extendedDynamicState3ColorBlendEnable == VK_TRUE &&
+                extended_dynamic_state3_features.extendedDynamicState3ColorBlendEquation == VK_TRUE &&
+                extended_dynamic_state3_features.extendedDynamicState3ColorWriteMask == VK_TRUE &&
+                extended_dynamic_state3_features.extendedDynamicState3RasterizationSamples == VK_TRUE &&
+                extended_dynamic_state3_features.extendedDynamicState3SampleMask == VK_TRUE &&
+                extended_dynamic_state3_features.extendedDynamicState3AlphaToCoverageEnable == VK_TRUE &&
+                extended_dynamic_state3_features.extendedDynamicState3PolygonMode == VK_TRUE &&
+                extended_dynamic_state3_features.extendedDynamicState3LogicOpEnable == VK_TRUE &&
+                supports_device_extension(context.physical_device, VK_EXT_SHADER_OBJECT_EXTENSION_NAME) &&
+                supports_device_extension(context.physical_device, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME) &&
+                supports_device_extension(context.physical_device, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+
+        info("VK_EXT_shader_object support: {}", context.shader_objects_supported ? "yes" : "no (falling back to VkPipeline)");
+
         return true;
     }
 
@@ -1419,10 +1457,16 @@ namespace {
             };
         }
 
-        constexpr std::array device_extensions{
+        std::vector<char const *> device_extensions{
                 VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                 VK_EXT_MESH_SHADER_EXTENSION_NAME,
         };
+
+        if (context.shader_objects_supported) {
+            device_extensions.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
+            device_extensions.push_back(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+            device_extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+        }
 
         VkPhysicalDeviceVulkan11Features vulkan11_features{};
         vulkan11_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
@@ -1458,6 +1502,40 @@ namespace {
         mesh_shader_features.taskShader = VK_TRUE;
         mesh_shader_features.meshShader = VK_TRUE;
 
+        // Only chained in (and only enabled) when select_physical_device()
+        // found VK_EXT_shader_object support on the selected device -- see
+        // VulkanContext::shader_objects_supported. Left zero-initialized and
+        // unlinked otherwise, so an iGPU lacking the extension still gets a
+        // device with the mandatory Vulkan 1.1-1.4 / mesh-shader features
+        // above.
+        VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vertex_input_dynamic_state_features{};
+        vertex_input_dynamic_state_features.sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT;
+        vertex_input_dynamic_state_features.pNext = &mesh_shader_features;
+        vertex_input_dynamic_state_features.vertexInputDynamicState = VK_TRUE;
+
+        VkPhysicalDeviceExtendedDynamicState3FeaturesEXT extended_dynamic_state3_features{};
+        extended_dynamic_state3_features.sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
+        extended_dynamic_state3_features.pNext = &vertex_input_dynamic_state_features;
+        extended_dynamic_state3_features.extendedDynamicState3ColorBlendEnable = VK_TRUE;
+        extended_dynamic_state3_features.extendedDynamicState3ColorBlendEquation = VK_TRUE;
+        extended_dynamic_state3_features.extendedDynamicState3ColorWriteMask = VK_TRUE;
+        extended_dynamic_state3_features.extendedDynamicState3RasterizationSamples = VK_TRUE;
+        extended_dynamic_state3_features.extendedDynamicState3SampleMask = VK_TRUE;
+        extended_dynamic_state3_features.extendedDynamicState3AlphaToCoverageEnable = VK_TRUE;
+        extended_dynamic_state3_features.extendedDynamicState3PolygonMode = VK_TRUE;
+        extended_dynamic_state3_features.extendedDynamicState3LogicOpEnable = VK_TRUE;
+
+        VkPhysicalDeviceShaderObjectFeaturesEXT shader_object_features{};
+        shader_object_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT;
+        shader_object_features.pNext = &extended_dynamic_state3_features;
+        shader_object_features.shaderObject = VK_TRUE;
+
+        void const *feature_chain =
+                context.shader_objects_supported ? static_cast<void const *>(&shader_object_features)
+                                                 : static_cast<void const *>(&mesh_shader_features);
+
         VkPhysicalDeviceFeatures enabled_features{};
         enabled_features.multiDrawIndirect = VK_TRUE;
         enabled_features.samplerAnisotropy = VK_TRUE;
@@ -1468,7 +1546,7 @@ namespace {
 
         VkDeviceCreateInfo const create_info{
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                .pNext = &mesh_shader_features,
+                .pNext = feature_chain,
                 .flags = 0,
                 .queueCreateInfoCount = static_cast<std::uint32_t>(queue_count),
                 .pQueueCreateInfos = queue_create_infos.data(),
@@ -1622,7 +1700,7 @@ namespace {
             }
         }
 
-        auto point_light_view = registry.view<Components::Transform const, PointLight const>();
+        auto point_light_view = registry.view<Components::Transform const, Components::PointLight const>();
 
         for (auto [entity, transform, light]: point_light_view.each()) {
             auto result = application.renderer->submit_point_light(Renderer::PointLight{
@@ -1637,7 +1715,7 @@ namespace {
             }
         }
 
-        auto spot_light_view = registry.view<Components::Transform const, SpotLight const>();
+        auto spot_light_view = registry.view<Components::Transform const, Components::SpotLight const>();
 
         for (auto [entity, transform, light]: spot_light_view.each()) {
             auto const direction = transform.rotation * glm::vec3{0.0F, -1.0F, 0.0F};

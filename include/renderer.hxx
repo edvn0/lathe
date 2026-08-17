@@ -6,6 +6,8 @@
 
 #include <glm/glm.hpp>
 
+#include <BS_thread_pool.hpp>
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +36,7 @@
 #include "shader_change_queue.hxx"
 #include "shadow_cascades.hxx"
 #include "slang_compiler.hxx"
+
 
 enum class RenderStage : std::uint32_t {
     FullFrame = 0,
@@ -477,6 +480,8 @@ struct Renderer {
     auto request_screenshot() noexcept -> void { screenshot_.request(); }
     auto mark_lights_dirty() -> void { lights_dirty_mask_ = frames_.empty() ? 0U : ((1U << frames_.size()) - 1U); }
     auto wait_idle() -> std::expected<void, RendererError>;
+
+    static auto thread_pool() noexcept -> BS::priority_thread_pool &;
 
 private:
     struct Submesh {

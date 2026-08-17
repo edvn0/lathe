@@ -3,12 +3,9 @@
 #include <array>
 #include <cstdint>
 
+#include "config.hxx"
+
 #include <glm/glm.hpp>
-
-// Parallel-split shadow map cascade fitting. Pure math -- no Vulkan/GLFW
-// dependency -- so it can be exercised in isolation from the renderer.
-
-inline constexpr std::uint32_t shadow_cascade_count = 4;
 
 // Per-cascade shadow-map resolution. Far cascades (2, 3) cover huge
 // world-space areas -- their texel-snapped projection (see

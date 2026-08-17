@@ -1,7 +1,6 @@
 #include "scene.hxx"
 
 #include "components.hxx"
-#include "light.hxx"
 #include "physics_world.hxx"
 
 Scene::Scene() { connect_light_signals(); }
@@ -20,19 +19,19 @@ auto Scene::step(float delta_time) -> void { physics_world->step(get_registry(),
 auto Scene::mark_lights_dirty(entt::registry &, entt::entity) -> void { lights_dirty = true; }
 
 auto Scene::on_transform_changed(entt::registry &reg, entt::entity entity) -> void {
-    if (reg.any_of<PointLight, SpotLight>(entity)) {
+    if (reg.any_of<Components::PointLight, Components::SpotLight>(entity)) {
         lights_dirty = true;
     }
 }
 
 auto Scene::connect_light_signals() -> void {
-    registry.on_construct<PointLight>().connect<&Scene::mark_lights_dirty>(*this);
-    registry.on_update<PointLight>().connect<&Scene::mark_lights_dirty>(*this);
-    registry.on_destroy<PointLight>().connect<&Scene::mark_lights_dirty>(*this);
+    registry.on_construct<Components::PointLight>().connect<&Scene::mark_lights_dirty>(*this);
+    registry.on_update<Components::PointLight>().connect<&Scene::mark_lights_dirty>(*this);
+    registry.on_destroy<Components::PointLight>().connect<&Scene::mark_lights_dirty>(*this);
 
-    registry.on_construct<SpotLight>().connect<&Scene::mark_lights_dirty>(*this);
-    registry.on_update<SpotLight>().connect<&Scene::mark_lights_dirty>(*this);
-    registry.on_destroy<SpotLight>().connect<&Scene::mark_lights_dirty>(*this);
+    registry.on_construct<Components::SpotLight>().connect<&Scene::mark_lights_dirty>(*this);
+    registry.on_update<Components::SpotLight>().connect<&Scene::mark_lights_dirty>(*this);
+    registry.on_destroy<Components::SpotLight>().connect<&Scene::mark_lights_dirty>(*this);
 
     registry.on_update<Components::Transform>().connect<&Scene::on_transform_changed>(*this);
 }
