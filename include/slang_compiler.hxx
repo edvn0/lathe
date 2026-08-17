@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <mutex>
 #include <vector>
 
 namespace renderer {

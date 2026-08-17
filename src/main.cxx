@@ -362,10 +362,13 @@ namespace {
                 ImGui::SeparatorText("Punctual lights");
                 auto &registry = active_scene->get_registry();
                 std::size_t index = 0;
-                draw_rows(index, registry, registry.view<Components::Transform, Components::PointLight, GeneratedMeta>(),
+                draw_rows(index, registry,
+                          registry.view<Components::Transform, Components::PointLight, GeneratedMeta>(),
                           draw_point_light);
-                draw_rows(index, registry, registry.view<Components::Transform, Components::PointLight, Meta>(), draw_point_light);
-                draw_rows(index, registry, registry.view<Components::Transform, Components::SpotLight, Meta>(), draw_spot_light);
+                draw_rows(index, registry, registry.view<Components::Transform, Components::PointLight, Meta>(),
+                          draw_point_light);
+                draw_rows(index, registry, registry.view<Components::Transform, Components::SpotLight, Meta>(),
+                          draw_spot_light);
                 draw_rows(index, registry, registry.view<Components::Transform, Components::SpotLight, GeneratedMeta>(),
                           draw_spot_light);
             });
@@ -385,8 +388,8 @@ namespace {
         auto play() -> void {
             runtime_scene = std::make_unique<Scene>();
             runtime_scene->physics_settings = editor_scene->physics_settings;
-            clone_registry<Components::Transform, ModelHandle, RigidBody, MaterialOverride, Components::PointLight, Components::SpotLight>(
-                    editor_scene->get_registry(), runtime_scene->get_registry());
+            clone_registry<Components::Transform, ModelHandle, RigidBody, MaterialOverride, Components::PointLight,
+                           Components::SpotLight>(editor_scene->get_registry(), runtime_scene->get_registry());
 
             active_scene = runtime_scene.get();
             is_playing = true;
@@ -710,7 +713,7 @@ namespace {
             // assumed half-extent) so the collision shapes match what's
             // rendered, and neighbours start apart so they only overlap once
             // gravity pulls them into each other.
-            constexpr auto physics_grid = 12;
+            constexpr auto physics_grid = 3;
 
             auto const cube_bounds = renderer->model_bounds(cube_model);
             cube_half_extents =
@@ -847,7 +850,7 @@ namespace {
             } else {
                 grass_material = *grass_material_result;
 
-                constexpr auto grass_field_size = 100.0F;
+                constexpr auto grass_field_size = 10.0F;
                 constexpr auto grass_spacing = 0.5F;
                 constexpr auto grass_cells = static_cast<int>(grass_field_size / grass_spacing);
 
@@ -1427,7 +1430,8 @@ namespace {
                 supports_device_extension(context.physical_device, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME) &&
                 supports_device_extension(context.physical_device, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 
-        info("VK_EXT_shader_object support: {}", context.shader_objects_supported ? "yes" : "no (falling back to VkPipeline)");
+        info("VK_EXT_shader_object support: {}",
+             context.shader_objects_supported ? "yes" : "no (falling back to VkPipeline)");
 
         return true;
     }
@@ -1532,9 +1536,9 @@ namespace {
         shader_object_features.pNext = &extended_dynamic_state3_features;
         shader_object_features.shaderObject = VK_TRUE;
 
-        void const *feature_chain =
-                context.shader_objects_supported ? static_cast<void const *>(&shader_object_features)
-                                                 : static_cast<void const *>(&mesh_shader_features);
+        void const *feature_chain = context.shader_objects_supported
+                                            ? static_cast<void const *>(&shader_object_features)
+                                            : static_cast<void const *>(&mesh_shader_features);
 
         VkPhysicalDeviceFeatures enabled_features{};
         enabled_features.multiDrawIndirect = VK_TRUE;

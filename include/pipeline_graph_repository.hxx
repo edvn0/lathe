@@ -1,9 +1,12 @@
 #pragma once
 
+#include <BS_thread_pool.hpp>
+
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <future>
 #include <optional>
 #include <span>
 #include <string>
@@ -75,6 +78,10 @@ struct PipelineGraphCreateInfo {
 
     VkDescriptorSetLayout global_descriptor_set_layout = VK_NULL_HANDLE;
 
+    // Forwarded to PipelineStorageCreateInfo::cache_file_path. Empty means
+    // no disk persistence for the VkPipelineCache.
+    std::filesystem::path cache_file_path;
+
     std::string_view debug_name = "pipeline_graph";
 };
 
@@ -135,6 +142,23 @@ public:
     [[nodiscard]]
     auto register_pipeline(renderer::SlangCompiler const &compiler, PipelineRegisterInfo register_info)
             -> std::expected<PipelineNodeHandle, PipelineGraphError>;
+
+    // Batched equivalent of calling register_pipeline() once per entry, but
+    // shared dirty stages compile exactly once across the whole batch, all
+    // dirty stages compile concurrently on thread_pool, and all pipelines
+    // build concurrently once compiling finishes. See
+    // docs/parallel-pipeline.md Task 3. A compile failure anywhere in the
+    // batch fails every reserved entry (rare -- usually a broken shared
+    // shader file); a build failure only fails that one entry.
+    [[nodiscard]]
+    auto register_pipelines_parallel(renderer::SlangCompiler const &compiler,
+                                     std::span<PipelineRegisterInfo> register_infos)
+            -> std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>>;
+
+    // Persists the VkPipelineCache to disk (see
+    // PipelineGraphCreateInfo::cache_file_path). Logs and does nothing on
+    // failure -- never treat this as fatal on a shutdown path.
+    auto save_pipeline_cache() const -> void;
 
     [[nodiscard]]
     auto resolve(PipelineNodeHandle handle) const noexcept -> Pipeline const *;

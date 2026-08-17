@@ -5,6 +5,7 @@
 
 #include "error_describe.hxx"
 #include "logger.hxx"
+#include "renderer.hxx"
 
 namespace {
     auto to_lookup_key(std::filesystem::path const &path) -> std::string {
@@ -72,6 +73,7 @@ auto PipelineGraphRepository::create(VulkanContext &context, PipelineGraphCreate
             context, PipelineStorageCreateInfo{
                              .capacity = create_info.pipeline_capacity,
                              .global_descriptor_set_layout = create_info.global_descriptor_set_layout,
+                             .cache_file_path = create_info.cache_file_path,
                              .debug_name = create_info.debug_name,
                      });
 
@@ -363,6 +365,244 @@ auto PipelineGraphRepository::register_pipeline(renderer::SlangCompiler const &c
             .index = node_index,
             .generation = node.generation,
     };
+}
+
+auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompiler const &compiler,
+                                                           std::span<PipelineRegisterInfo> register_infos)
+        -> std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>> {
+    debug("[register_pipelines_parallel] enter: batch of {}", register_infos.size());
+
+    std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>> results(register_infos.size());
+
+    std::vector<std::uint32_t> node_indices(register_infos.size(), 0);
+    std::vector<std::vector<std::uint32_t>> stage_indices_per_entry(register_infos.size());
+    std::vector<bool> reserved(register_infos.size(), false);
+
+    // Phase 1 (sequential): find_or_create_stage/find_or_create_source_file
+    // mutate shared lookup maps (stage_lookup_, source_file_lookup_), so
+    // this whole phase must run single-threaded -- see
+    // docs/parallel-pipeline.md Task 3.
+    for (std::size_t i = 0; i < register_infos.size(); ++i) {
+        auto const &info = register_infos[i];
+
+        if (info.stages.empty()) {
+            results[i] = std::unexpected(PipelineGraphError{
+                    .type = PipelineGraphErrorType::invalid_argument,
+            });
+            continue;
+        }
+
+        if (pipeline_free_head_ == 0) {
+            results[i] = std::unexpected(PipelineGraphError{
+                    .type = PipelineGraphErrorType::capacity_exceeded,
+            });
+            continue;
+        }
+
+        auto const node_index = pipeline_free_head_;
+        auto &node = pipeline_nodes_[node_index];
+
+        pipeline_free_head_ = node.next_free;
+
+        std::vector<std::uint32_t> stage_indices;
+        stage_indices.reserve(info.stages.size());
+
+        for (auto const &request: info.stages) {
+            stage_indices.push_back(find_or_create_stage(request, node_index));
+        }
+
+        node_indices[i] = node_index;
+        stage_indices_per_entry[i] = std::move(stage_indices);
+        reserved[i] = true;
+
+        debug("[register_pipelines_parallel] phase1: entry {} '{}' -> node {}", i, info.debug_name, node_index);
+    }
+
+    // Phase 2 (parallel): every distinct dirty stage across the batch
+    // compiles exactly once, concurrently, on thread_pool.
+    std::vector<std::uint32_t> dirty_stage_indices;
+    {
+        std::vector<bool> seen(stage_nodes_.size(), false);
+
+        for (auto const &stage_indices: stage_indices_per_entry) {
+            for (auto const stage_index: stage_indices) {
+                if (seen[stage_index]) {
+                    continue;
+                }
+
+                seen[stage_index] = true;
+
+                if (stage_nodes_[stage_index].dirty) {
+                    dirty_stage_indices.push_back(stage_index);
+                }
+            }
+        }
+    }
+
+    debug("[register_pipelines_parallel] phase1 done: {} dirty stages to compile", dirty_stage_indices.size());
+
+    auto& thread_pool = Renderer::thread_pool();
+
+    if (!dirty_stage_indices.empty()) {
+        std::vector<std::future<std::expected<renderer::CompiledShader, renderer::ShaderCompileError>>> futures;
+        futures.reserve(dirty_stage_indices.size());
+
+        for (auto const stage_index: dirty_stage_indices) {
+            auto const &request = stage_nodes_[stage_index].request;
+
+            debug("[register_pipelines_parallel] phase2: submitting stage {} ({} entry={})", stage_index,
+                  request.source_path.string(), request.entry_point);
+
+            futures.push_back(thread_pool.submit_task([&compiler, &request] { return compiler.compile(request); }));
+        }
+
+        debug("[register_pipelines_parallel] phase2: {} compile tasks submitted, waiting", futures.size());
+
+        std::optional<PipelineGraphError> first_error;
+
+        for (std::size_t i = 0; i < dirty_stage_indices.size(); ++i) {
+            auto compiled = futures[i].get();
+            auto const stage_index = dirty_stage_indices[i];
+
+            debug("[register_pipelines_parallel] phase2: stage {} compile {}", stage_index,
+                  compiled ? "succeeded" : "FAILED");
+
+            if (!compiled) {
+                if (!first_error) {
+                    first_error = PipelineGraphError{
+                            .type = PipelineGraphErrorType::compiler_error,
+                            .cause = ErrorCause{Boxed<renderer::ShaderCompileError>{compiled.error()}},
+                    };
+                }
+
+                continue;
+            }
+
+            auto &stage = stage_nodes_[stage_index];
+
+            stage.spirv = std::move(compiled->spirv);
+            stage.entry_point = compiled->entry_point;
+            stage.dirty = false;
+            stage.has_compiled_once = true;
+        }
+
+        debug("[register_pipelines_parallel] phase2 done, first_error={}", first_error.has_value());
+
+        // A compile failure anywhere in the batch is all-or-nothing (unlike
+        // a Phase 3 build failure below): it usually means a shared shader
+        // file is broken, which affects every pipeline in the batch that
+        // depends on it, so free every node this batch reserved and bail
+        // before Phase 3.
+        if (first_error) {
+            for (std::size_t i = 0; i < register_infos.size(); ++i) {
+                if (!reserved[i]) {
+                    continue;
+                }
+
+                auto const node_index = node_indices[i];
+                auto &node = pipeline_nodes_[node_index];
+
+                node.next_free = pipeline_free_head_;
+                pipeline_free_head_ = node_index;
+                node.occupied = false;
+
+                results[i] = std::unexpected(*first_error);
+            }
+
+            debug("[register_pipelines_parallel] aborting batch after compile failure");
+
+            return results;
+        }
+    }
+
+    // Phase 3 (parallel): build every successfully-compiled node's
+    // VkPipeline/ShaderObjectSet concurrently. Safe now that
+    // PipelineStorage/ShaderObjectStorage synchronize their own free-list
+    // bookkeeping internally, and Pipeline::create_graphics/create_compute
+    // synchronize the shared VkPipelineCache internally (see pipeline.cxx).
+    for (std::size_t i = 0; i < register_infos.size(); ++i) {
+        if (!reserved[i]) {
+            continue;
+        }
+
+        auto const node_index = node_indices[i];
+        auto &node = pipeline_nodes_[node_index];
+
+        node.stage_indices = std::move(stage_indices_per_entry[i]);
+        node.register_info = std::move(register_infos[i]);
+        node.pending_rebuild = false;
+        node.occupied = true;
+    }
+
+    std::vector<std::size_t> build_order;
+    build_order.reserve(register_infos.size());
+
+    for (std::size_t i = 0; i < register_infos.size(); ++i) {
+        if (reserved[i]) {
+            build_order.push_back(i);
+        }
+    }
+
+    debug("[register_pipelines_parallel] phase3: submitting {} build tasks", build_order.size());
+
+    std::vector<std::future<std::expected<BuiltNode, PipelineGraphError>>> build_futures;
+    build_futures.reserve(build_order.size());
+
+    for (auto const i: build_order) {
+        auto const node_index = node_indices[i];
+
+        debug("[register_pipelines_parallel] phase3: submitting build for node {} ('{}')", node_index,
+              pipeline_nodes_[node_index].register_info.debug_name);
+
+        build_futures.push_back(thread_pool.submit_task([this, node_index] {
+            return build_node(pipeline_nodes_[node_index]);
+        }));
+    }
+
+    debug("[register_pipelines_parallel] phase3: {} build tasks submitted, waiting", build_futures.size());
+
+    for (std::size_t k = 0; k < build_order.size(); ++k) {
+        auto const i = build_order[k];
+        auto const node_index = node_indices[i];
+        auto &node = pipeline_nodes_[node_index];
+
+        auto built = build_futures[k].get();
+
+        debug("[register_pipelines_parallel] phase3: node {} build {}", node_index, built ? "succeeded" : "FAILED");
+
+        if (!built) {
+            node.occupied = false;
+            node.next_free = pipeline_free_head_;
+            pipeline_free_head_ = node_index;
+
+            results[i] = std::unexpected(built.error());
+            continue;
+        }
+
+        node.live_handle = built->handle;
+        node.live_shader_object_handle = built->shader_object_handle;
+
+        results[i] = PipelineNodeHandle{
+                .index = node_index,
+                .generation = node.generation,
+        };
+    }
+
+    debug("[register_pipelines_parallel] exit: returning {} results", results.size());
+
+    return results;
+}
+
+auto PipelineGraphRepository::save_pipeline_cache() const -> void {
+    debug("[save_pipeline_cache] enter");
+
+    auto const result = storage_.save_cache_to_disk();
+
+    debug("[save_pipeline_cache] exit: {}", result ? "ok" : "FAILED");
+
+    if (!result) {
+        error("Failed to save pipeline cache to disk");
+    }
 }
 
 auto PipelineGraphRepository::resolve(PipelineNodeHandle handle) const noexcept -> Pipeline const * {

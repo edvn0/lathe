@@ -914,6 +914,8 @@ auto Renderer::thread_pool() noexcept -> BS::priority_thread_pool & {
 }
 
 auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expected<void, RendererError> {
+    debug("[Renderer::initialize] enter");
+
     if (initialized_ || create_info.extent.width == 0 || create_info.extent.height == 0 ||
         create_info.frames_in_flight == 0 || create_info.material_capacity < 2 || create_info.mesh_capacity < 2 ||
         create_info.model_capacity < 2 || create_info.maximum_draw_count == 0 ||
@@ -992,6 +994,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                               .pipeline_capacity = create_info.pipeline_capacity,
                               .frames_in_flight = create_info.frames_in_flight,
                               .global_descriptor_set_layout = gpu_resource_table_.layout(),
+                              .cache_file_path = "cache/pipeline_cache.bin",
                               .debug_name = "renderer.pipelines",
                       });
 
@@ -1006,145 +1009,345 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     geometry_arena_ = std::move(*geometry_arena);
     material_storage_ = std::move(*material_storage);
 
-    {
-        VkPushConstantRange const forward_push_constant_range{
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                .offset = 0,
-                .size = sizeof(ForwardPushConstants),
-        };
+    // Registers every startup pipeline in one batched, parallel call rather
+    // than 9 sequential register_pipeline() calls -- see
+    // docs/parallel-pipeline.md. Indices below must stay in sync with the
+    // pipeline_infos.push_back() order.
+    std::vector<PipelineRegisterInfo> pipeline_infos;
+    pipeline_infos.reserve(9);
 
-        auto registered_forward = pipeline_graph_.register_pipeline(
-                compiler, PipelineRegisterInfo{
-                                  .stages =
-                                          {
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/forward_geom.slang",
-                                                          .entry_point = "mainVs",
-                                                          .stage = renderer::ShaderStage::vertex,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/forward_geom.slang",
-                                                          .entry_point = "mainFs",
-                                                          .stage = renderer::ShaderStage::fragment,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                          },
-                                  .additional_descriptor_set_layouts = {},
-                                  .push_constant_ranges = {forward_push_constant_range},
-                                  .colour_formats = {create_info.hdr_format},
-                                  .depth_format = create_info.depth_format,
-                                  .stencil_format = VK_FORMAT_UNDEFINED,
-                                  .samples = create_info.samples,
-                                  .use_shader_objects = context_.shader_objects_supported,
-                                  .debug_name = "renderer.forward_pipeline",
-                          });
+    VkPushConstantRange const forward_push_constant_range{
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            .offset = 0,
+            .size = sizeof(ForwardPushConstants),
+    };
 
-        if (!registered_forward) {
-            return std::unexpected(make_pipeline_graph_error(registered_forward.error()));
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/forward_geom.slang",
+                                    .entry_point = "mainVs",
+                                    .stage = renderer::ShaderStage::vertex,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/forward_geom.slang",
+                                    .entry_point = "mainFs",
+                                    .stage = renderer::ShaderStage::fragment,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {forward_push_constant_range},
+            .colour_formats = {create_info.hdr_format},
+            .depth_format = create_info.depth_format,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = create_info.samples,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.forward_pipeline",
+    }); // index 0: forward
+
+    // Same shaders/layout as forward, blending enabled -- see
+    // PipelineRegisterInfo::blending, which pipeline.cxx turns into
+    // standard alpha-over (SRC_ALPHA / ONE_MINUS_SRC_ALPHA) factors.
+    VkPushConstantRange const forward_blend_push_constant_range{
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            .offset = 0,
+            .size = sizeof(ForwardPushConstants),
+    };
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/forward_geom.slang",
+                                    .entry_point = "mainVs",
+                                    .stage = renderer::ShaderStage::vertex,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/forward_geom.slang",
+                                    .entry_point = "mainFs",
+                                    .stage = renderer::ShaderStage::fragment,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {forward_blend_push_constant_range},
+            .colour_formats = {create_info.hdr_format},
+            .depth_format = create_info.depth_format,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = create_info.samples,
+            .blending = true,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.forward_blend_pipeline",
+    }); // index 1: forward_blend
+
+    VkPushConstantRange const light_icon_pc{
+            .stageFlags =
+                    VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            .offset = 0,
+            .size = sizeof(LightIconPushConstants),
+    };
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/light_icons.slang",
+                                    .entry_point = "main_task",
+                                    .stage = renderer::ShaderStage::task,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/light_icons.slang",
+                                    .entry_point = "main_mesh",
+                                    .stage = renderer::ShaderStage::mesh,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/light_icons.slang",
+                                    .entry_point = "main_fs",
+                                    .stage = renderer::ShaderStage::fragment,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {light_icon_pc},
+            .colour_formats = {create_info.hdr_format},
+            .depth_format = create_info.depth_format,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = create_info.samples,
+            .blending = true,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.light_icon_pipeline",
+    }); // index 2: light_icon
+
+    VkPushConstantRange const shadow_pc{
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+            .offset = 0,
+            .size = sizeof(ShadowPushConstants),
+    };
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/shadow_depth.slang",
+                                    .entry_point = "mainVs",
+                                    .stage = renderer::ShaderStage::vertex,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {shadow_pc},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_D32_SFLOAT,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.shadow_pipeline",
+    }); // index 3: shadow
+
+    // Fragment stage added (vs shadow_pipeline_'s vertex-only layout) so
+    // the material buffer address is readable in mainFs for the
+    // alpha-cutoff test.
+    VkPushConstantRange const shadow_mask_pc{
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            .offset = 0,
+            .size = sizeof(ShadowPushConstants),
+    };
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/shadow_depth.slang",
+                                    .entry_point = "mainVs",
+                                    .stage = renderer::ShaderStage::vertex,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/shadow_depth.slang",
+                                    .entry_point = "mainFs",
+                                    .stage = renderer::ShaderStage::fragment,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {shadow_mask_pc},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_D32_SFLOAT,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.shadow_mask_pipeline",
+    }); // index 4: shadow_mask
+
+    VkPushConstantRange const depth_prepass_pc{
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+            .offset = 0,
+            .size = sizeof(ForwardPushConstants),
+    };
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/depth_prepass.slang",
+                                    .entry_point = "mainVs",
+                                    .stage = renderer::ShaderStage::vertex,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {depth_prepass_pc},
+            .colour_formats = {},
+            .depth_format = create_info.depth_format,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = create_info.samples,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.depth_prepass_pipeline",
+    }); // index 5: depth_prepass
+
+    // Fragment stage added (vs depth_prepass_pipeline_'s vertex-only
+    // layout) so the material buffer address is readable in mainFs for
+    // the alpha-cutoff test.
+    VkPushConstantRange const depth_prepass_mask_pc{
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            .offset = 0,
+            .size = sizeof(ForwardPushConstants),
+    };
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/depth_prepass.slang",
+                                    .entry_point = "mainVs",
+                                    .stage = renderer::ShaderStage::vertex,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/depth_prepass.slang",
+                                    .entry_point = "mainFs",
+                                    .stage = renderer::ShaderStage::fragment,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {depth_prepass_mask_pc},
+            .colour_formats = {},
+            .depth_format = create_info.depth_format,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = create_info.samples,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.depth_prepass_mask_pipeline",
+    }); // index 6: depth_prepass_mask
+
+    VkPushConstantRange const composite_push_constant_range{
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .offset = 0,
+            .size = sizeof(CompositePushConstants),
+    };
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/composite.slang",
+                                    .entry_point = "mainVs",
+                                    .stage = renderer::ShaderStage::vertex,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/composite.slang",
+                                    .entry_point = "mainFs",
+                                    .stage = renderer::ShaderStage::fragment,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {composite_push_constant_range},
+            .colour_formats = {create_info.swapchain_format},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.composite_pipeline",
+    }); // index 7: composite
+
+    VkPushConstantRange const frustum_cull_pc{
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            .offset = 0,
+            .size = sizeof(CullPushConstants),
+    };
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/frustum_cull.slang",
+                                    .entry_point = "mainCs",
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {frustum_cull_pc},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.frustum_cull_pipeline",
+    }); // index 8: frustum_cull
+
+    debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
+
+    auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(compiler, pipeline_infos);
+
+    debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
+
+    for (std::size_t i = 0; i < registered_pipelines.size(); ++i) {
+        auto const &registered = registered_pipelines[i];
+
+        if (!registered) {
+            error("[Renderer::initialize] pipeline index {} failed to register", i);
+            return std::unexpected(make_pipeline_graph_error(registered.error()));
         }
-
-        forward_pipeline_ = *registered_forward;
     }
+
+    debug("[Renderer::initialize] all pipelines registered, assigning handles");
+
+    forward_pipeline_ = *registered_pipelines[0];
+    forward_blend_pipeline_ = *registered_pipelines[1];
+    light_icon_pipeline_ = *registered_pipelines[2];
+    shadow_pipeline_ = *registered_pipelines[3];
+    shadow_mask_pipeline_ = *registered_pipelines[4];
+    depth_prepass_pipeline_ = *registered_pipelines[5];
+    depth_prepass_mask_pipeline_ = *registered_pipelines[6];
+    composite_pipeline_ = *registered_pipelines[7];
+    frustum_cull_pipeline_ = *registered_pipelines[8];
+
     {
-        // Same shaders/layout as forward_pipeline_, blending enabled -- see
-        // PipelineRegisterInfo::blending, which pipeline.cxx turns into
-        // standard alpha-over (SRC_ALPHA / ONE_MINUS_SRC_ALPHA) factors.
-        VkPushConstantRange const forward_blend_push_constant_range{
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                .offset = 0,
-                .size = sizeof(ForwardPushConstants),
-        };
-
-        auto registered_forward_blend = pipeline_graph_.register_pipeline(
-                compiler, PipelineRegisterInfo{
-                                  .stages =
-                                          {
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/forward_geom.slang",
-                                                          .entry_point = "mainVs",
-                                                          .stage = renderer::ShaderStage::vertex,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/forward_geom.slang",
-                                                          .entry_point = "mainFs",
-                                                          .stage = renderer::ShaderStage::fragment,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                          },
-                                  .additional_descriptor_set_layouts = {},
-                                  .push_constant_ranges = {forward_blend_push_constant_range},
-                                  .colour_formats = {create_info.hdr_format},
-                                  .depth_format = create_info.depth_format,
-                                  .stencil_format = VK_FORMAT_UNDEFINED,
-                                  .samples = create_info.samples,
-                                  .blending = true,
-                                  .use_shader_objects = context_.shader_objects_supported,
-                                  .debug_name = "renderer.forward_blend_pipeline",
-                          });
-
-        if (!registered_forward_blend) {
-            return std::unexpected(make_pipeline_graph_error(registered_forward_blend.error()));
-        }
-
-        forward_blend_pipeline_ = *registered_forward_blend;
-    }
-    {
-        VkPushConstantRange const light_icon_pc{
-                .stageFlags =
-                        VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                .offset = 0,
-                .size = sizeof(LightIconPushConstants),
-        };
-
-        auto registered_light_icons = pipeline_graph_.register_pipeline(
-                compiler, PipelineRegisterInfo{
-                                  .stages =
-                                          {
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/light_icons.slang",
-                                                          .entry_point = "main_task",
-                                                          .stage = renderer::ShaderStage::task,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/light_icons.slang",
-                                                          .entry_point = "main_mesh",
-                                                          .stage = renderer::ShaderStage::mesh,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/light_icons.slang",
-                                                          .entry_point = "main_fs",
-                                                          .stage = renderer::ShaderStage::fragment,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                          },
-                                  .additional_descriptor_set_layouts = {},
-                                  .push_constant_ranges = {light_icon_pc},
-                                  .colour_formats = {create_info.hdr_format},
-                                  .depth_format = create_info.depth_format,
-                                  .stencil_format = VK_FORMAT_UNDEFINED,
-                                  .samples = create_info.samples,
-                                  .blending = true,
-                                  .use_shader_objects = context_.shader_objects_supported,
-                                  .debug_name = "renderer.light_icon_pipeline",
-                          });
-
-        if (!registered_light_icons) {
-            return std::unexpected(make_pipeline_graph_error(registered_light_icons.error()));
-        }
-
-        light_icon_pipeline_ = *registered_light_icons;
-
         auto light_icon_image = DecodedImage::load_from_file("assets/textures/light_bulb.png");
         if (!light_icon_image) {
             return std::unexpected(make_error(RendererErrorType::device_error));
@@ -1173,243 +1376,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         light_icon_texture_ = *light_icon_texture;
-    }
-    {
-        VkPushConstantRange const shadow_pc{
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-                .offset = 0,
-                .size = sizeof(ShadowPushConstants),
-        };
-
-        auto registered_shadow = pipeline_graph_.register_pipeline(
-                compiler, PipelineRegisterInfo{
-                                  .stages =
-                                          {
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/shadow_depth.slang",
-                                                          .entry_point = "mainVs",
-                                                          .stage = renderer::ShaderStage::vertex,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                          },
-                                  .additional_descriptor_set_layouts = {},
-                                  .push_constant_ranges = {shadow_pc},
-                                  .colour_formats = {},
-                                  .depth_format = VK_FORMAT_D32_SFLOAT,
-                                  .stencil_format = VK_FORMAT_UNDEFINED,
-                                  .samples = VK_SAMPLE_COUNT_1_BIT,
-                                  .use_shader_objects = context_.shader_objects_supported,
-                                  .debug_name = "renderer.shadow_pipeline",
-                          });
-
-        if (!registered_shadow) {
-            return std::unexpected(make_pipeline_graph_error(registered_shadow.error()));
-        }
-
-        shadow_pipeline_ = *registered_shadow;
-    }
-    {
-        // Fragment stage added (vs shadow_pipeline_'s vertex-only layout) so
-        // the material buffer address is readable in mainFs for the
-        // alpha-cutoff test.
-        VkPushConstantRange const shadow_mask_pc{
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                .offset = 0,
-                .size = sizeof(ShadowPushConstants),
-        };
-
-        auto registered_shadow_mask = pipeline_graph_.register_pipeline(
-                compiler, PipelineRegisterInfo{
-                                  .stages =
-                                          {
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/shadow_depth.slang",
-                                                          .entry_point = "mainVs",
-                                                          .stage = renderer::ShaderStage::vertex,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/shadow_depth.slang",
-                                                          .entry_point = "mainFs",
-                                                          .stage = renderer::ShaderStage::fragment,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                          },
-                                  .additional_descriptor_set_layouts = {},
-                                  .push_constant_ranges = {shadow_mask_pc},
-                                  .colour_formats = {},
-                                  .depth_format = VK_FORMAT_D32_SFLOAT,
-                                  .stencil_format = VK_FORMAT_UNDEFINED,
-                                  .samples = VK_SAMPLE_COUNT_1_BIT,
-                                  .use_shader_objects = context_.shader_objects_supported,
-                                  .debug_name = "renderer.shadow_mask_pipeline",
-                          });
-
-        if (!registered_shadow_mask) {
-            return std::unexpected(make_pipeline_graph_error(registered_shadow_mask.error()));
-        }
-
-        shadow_mask_pipeline_ = *registered_shadow_mask;
-    }
-    {
-        VkPushConstantRange const depth_prepass_pc{
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-                .offset = 0,
-                .size = sizeof(ForwardPushConstants),
-        };
-
-        auto registered_predepth = pipeline_graph_.register_pipeline(
-                compiler, PipelineRegisterInfo{
-                                  .stages =
-                                          {
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/depth_prepass.slang",
-                                                          .entry_point = "mainVs",
-                                                          .stage = renderer::ShaderStage::vertex,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                          },
-                                  .additional_descriptor_set_layouts = {},
-                                  .push_constant_ranges = {depth_prepass_pc},
-                                  .colour_formats = {},
-                                  .depth_format = create_info.depth_format,
-                                  .stencil_format = VK_FORMAT_UNDEFINED,
-                                  .samples = create_info.samples,
-                                  .use_shader_objects = context_.shader_objects_supported,
-                                  .debug_name = "renderer.depth_prepass_pipeline",
-                          });
-
-        if (!registered_predepth) {
-            return std::unexpected(make_pipeline_graph_error(registered_predepth.error()));
-        }
-
-        depth_prepass_pipeline_ = *registered_predepth;
-    }
-    {
-        // Fragment stage added (vs depth_prepass_pipeline_'s vertex-only
-        // layout) so the material buffer address is readable in mainFs for
-        // the alpha-cutoff test.
-        VkPushConstantRange const depth_prepass_mask_pc{
-                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                .offset = 0,
-                .size = sizeof(ForwardPushConstants),
-        };
-
-        auto registered_predepth_mask = pipeline_graph_.register_pipeline(
-                compiler, PipelineRegisterInfo{
-                                  .stages =
-                                          {
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/depth_prepass.slang",
-                                                          .entry_point = "mainVs",
-                                                          .stage = renderer::ShaderStage::vertex,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/depth_prepass.slang",
-                                                          .entry_point = "mainFs",
-                                                          .stage = renderer::ShaderStage::fragment,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                          },
-                                  .additional_descriptor_set_layouts = {},
-                                  .push_constant_ranges = {depth_prepass_mask_pc},
-                                  .colour_formats = {},
-                                  .depth_format = create_info.depth_format,
-                                  .stencil_format = VK_FORMAT_UNDEFINED,
-                                  .samples = create_info.samples,
-                                  .use_shader_objects = context_.shader_objects_supported,
-                                  .debug_name = "renderer.depth_prepass_mask_pipeline",
-                          });
-
-        if (!registered_predepth_mask) {
-            return std::unexpected(make_pipeline_graph_error(registered_predepth_mask.error()));
-        }
-
-        depth_prepass_mask_pipeline_ = *registered_predepth_mask;
-    }
-    {
-        VkPushConstantRange const composite_push_constant_range{
-                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-                .offset = 0,
-                .size = sizeof(CompositePushConstants),
-        };
-
-        auto registered_composite = pipeline_graph_.register_pipeline(
-                compiler, PipelineRegisterInfo{
-                                  .stages =
-                                          {
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/composite.slang",
-                                                          .entry_point = "mainVs",
-                                                          .stage = renderer::ShaderStage::vertex,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/composite.slang",
-                                                          .entry_point = "mainFs",
-                                                          .stage = renderer::ShaderStage::fragment,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                          },
-                                  .additional_descriptor_set_layouts = {},
-                                  .push_constant_ranges = {composite_push_constant_range},
-                                  .colour_formats = {create_info.swapchain_format},
-                                  .depth_format = VK_FORMAT_UNDEFINED,
-                                  .stencil_format = VK_FORMAT_UNDEFINED,
-                                  .samples = VK_SAMPLE_COUNT_1_BIT,
-                                  .use_shader_objects = context_.shader_objects_supported,
-                                  .debug_name = "renderer.composite_pipeline",
-                          });
-
-        if (!registered_composite) {
-            return std::unexpected(make_pipeline_graph_error(registered_composite.error()));
-        }
-
-        composite_pipeline_ = *registered_composite;
-    }
-    {
-        VkPushConstantRange const frustum_cull_pc{
-                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-                .offset = 0,
-                .size = sizeof(CullPushConstants),
-        };
-
-        auto registered_frustum_cull = pipeline_graph_.register_pipeline(
-                compiler, PipelineRegisterInfo{
-                                  .stages =
-                                          {
-                                                  renderer::ShaderCompileRequest{
-                                                          .source_path = "assets/shaders/frustum_cull.slang",
-                                                          .entry_point = "mainCs",
-                                                          .stage = renderer::ShaderStage::compute,
-                                                          .include_directories = {},
-                                                          .defines = {},
-                                                  },
-                                          },
-                                  .additional_descriptor_set_layouts = {},
-                                  .push_constant_ranges = {frustum_cull_pc},
-                                  .colour_formats = {},
-                                  .depth_format = VK_FORMAT_UNDEFINED,
-                                  .stencil_format = VK_FORMAT_UNDEFINED,
-                                  .samples = VK_SAMPLE_COUNT_1_BIT,
-                                  .use_shader_objects = context_.shader_objects_supported,
-                                  .debug_name = "renderer.frustum_cull_pipeline",
-                          });
-
-        if (!registered_frustum_cull) {
-            return std::unexpected(make_pipeline_graph_error(registered_frustum_cull.error()));
-        }
-
-        frustum_cull_pipeline_ = *registered_frustum_cull;
     }
 
     auto const white = image_storage_.white();
@@ -1825,10 +1791,15 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     rollback_on_failure = false;
     initialized_ = true;
 
+    debug("[Renderer::initialize] exit: success");
+
     return {};
 }
 
 auto Renderer::destroy() noexcept -> void {
+    debug("[Renderer::destroy] enter");
+
+    pipeline_graph_.save_pipeline_cache();
     pipeline_graph_.destroy();
     gpu_resource_table_.destroy();
     sampler_storage_.destroy();

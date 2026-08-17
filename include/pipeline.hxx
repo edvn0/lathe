@@ -156,11 +156,20 @@ private:
 
     friend class PipelineStorage;
 
+    // pipeline_cache may be built concurrently from multiple threads (see
+    // PipelineGraphRepository::register_pipelines_parallel); per the Vulkan
+    // spec a VkPipelineCache used this way requires external
+    // synchronization. That's handled internally (a translation-unit-local
+    // mutex in pipeline.cxx guarding just the vkCreateGraphicsPipelines /
+    // vkCreateComputePipelines call) -- callers just pass the handle, or
+    // VK_NULL_HANDLE if they don't have a cache.
     [[nodiscard]]
     static auto create_graphics(VulkanContext &context, GraphicsPipelineCreateInfo const &create_info,
-                                VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError>;
+                                VkDescriptorSetLayout global_layout, VkPipelineCache pipeline_cache)
+            -> std::expected<Pipeline, PipelineError>;
 
     [[nodiscard]]
     static auto create_compute(VulkanContext &context, ComputePipelineCreateInfo const &create_info,
-                               VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError>;
+                               VkDescriptorSetLayout global_layout, VkPipelineCache pipeline_cache)
+            -> std::expected<Pipeline, PipelineError>;
 };

@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <format>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -64,6 +66,12 @@ struct PipelineStorageCreateInfo {
 
     VkDescriptorSetLayout global_descriptor_set_layout = VK_NULL_HANDLE;
 
+    // Where the VkPipelineCache is persisted across runs. Empty means "don't
+    // load or save a cache file" -- create() still creates an in-memory-only
+    // VkPipelineCache either way, since that's needed regardless of disk
+    // persistence to satisfy vkCreateGraphicsPipelines/vkCreateComputePipelines.
+    std::filesystem::path cache_file_path;
+
     std::string_view debug_name = "pipeline_storage";
 };
 
@@ -121,6 +129,14 @@ public:
         return global_descriptor_set_layout_;
     }
 
+    // Serializes the current VkPipelineCache contents to cache_file_path (see
+    // PipelineStorageCreateInfo). No-op (returns success) if this storage
+    // wasn't created with a cache_file_path. Called from
+    // PipelineGraphRepository::save_pipeline_cache(), which Renderer::destroy()
+    // calls on shutdown -- never treat a failure here as fatal.
+    [[nodiscard]]
+    auto save_cache_to_disk() const -> std::expected<void, PipelineStorageError>;
+
     auto destroy() noexcept -> void;
 
 private:
@@ -143,9 +159,22 @@ private:
 
     std::vector<Slot> slots_;
 
+    // Guards free_head_/slots_[*].next_free/occupied/size_ -- plain C++
+    // bookkeeping mutated by create_graphics/create_compute, which
+    // register_pipelines_parallel's build phase calls concurrently from
+    // multiple threads. Deliberately separate from Pipeline's own
+    // VkPipelineCache mutex (see pipeline.cxx): this one is cheap
+    // (index/pointer juggling only) and must not wrap the expensive
+    // vkCreateGraphicsPipelines/vkCreateComputePipelines call itself, or it
+    // would serialize away the benefit of building pipelines in parallel.
+    std::mutex slot_mutex_;
+
     std::uint32_t free_head_ = 0;
     std::uint32_t capacity_ = 0;
     std::uint32_t size_ = 0;
+
+    VkPipelineCache cache_ = VK_NULL_HANDLE;
+    std::filesystem::path cache_file_path_;
 
     VkDescriptorSetLayout global_descriptor_set_layout_ = VK_NULL_HANDLE;
     std::string debug_name_;

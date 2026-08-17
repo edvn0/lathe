@@ -92,14 +92,20 @@ auto ShaderObjectStorage::create_linked(ShaderObjectCreateInfo const &create_inf
         return std::unexpected(make_error(ShaderObjectStorageErrorType::invalid_argument));
     }
 
-    if (free_head_ >= capacity_) {
-        return std::unexpected(make_error(ShaderObjectStorageErrorType::capacity_exceeded));
-    }
-
+    // vkCreateShadersEXT (called inside ShaderObjectSet::create_linked) has
+    // no shared cache to synchronize -- see the comment on slot_mutex_ --
+    // so it runs unlocked; only the free-list bookkeeping below needs it.
     auto shader_object = ShaderObjectSet::create_linked(*context_, create_info, global_descriptor_set_layout());
 
     if (!shader_object) {
         return std::unexpected(make_shader_object_error(shader_object.error()));
+    }
+
+    std::lock_guard<std::mutex> const lock{slot_mutex_};
+
+    if (free_head_ >= capacity_) {
+        shader_object->destroy();
+        return std::unexpected(make_error(ShaderObjectStorageErrorType::capacity_exceeded));
     }
 
     auto const index = free_head_;
@@ -126,14 +132,17 @@ auto ShaderObjectStorage::create_compute(ComputeShaderCreateInfo const &create_i
         return std::unexpected(make_error(ShaderObjectStorageErrorType::invalid_argument));
     }
 
-    if (free_head_ >= capacity_) {
-        return std::unexpected(make_error(ShaderObjectStorageErrorType::capacity_exceeded));
-    }
-
     auto shader_object = ShaderObjectSet::create_compute(*context_, create_info, global_descriptor_set_layout());
 
     if (!shader_object) {
         return std::unexpected(make_shader_object_error(shader_object.error()));
+    }
+
+    std::lock_guard<std::mutex> const lock{slot_mutex_};
+
+    if (free_head_ >= capacity_) {
+        shader_object->destroy();
+        return std::unexpected(make_error(ShaderObjectStorageErrorType::capacity_exceeded));
     }
 
     auto const index = free_head_;

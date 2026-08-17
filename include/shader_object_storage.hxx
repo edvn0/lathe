@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -144,6 +145,14 @@ private:
     VulkanContext *context_ = nullptr;
 
     std::vector<Slot> slots_;
+
+    // Guards free_head_/slots_[*].next_free/occupied/size_ -- see the
+    // identical comment on PipelineStorage::slot_mutex_. ShaderObjectSet
+    // creation has no shared VkPipelineCache-equivalent (confirmed: neither
+    // create_linked nor create_compute touch anything but per-call state and
+    // the VkDevice itself), so this is the only synchronization
+    // ShaderObjectStorage needs for concurrent create_linked/create_compute.
+    std::mutex slot_mutex_;
 
     std::uint32_t free_head_ = 0;
     std::uint32_t capacity_ = 0;

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <format>
+#include <mutex>
 #include <source_location>
 #include <string>
 #include <string_view>
@@ -12,6 +13,7 @@
 
 #include "context.hxx"
 #include "load_model.hxx"
+#include "logger.hxx"
 #include "vk_object_name.hxx"
 
 namespace {
@@ -54,6 +56,13 @@ namespace {
                         },
         };
     }
+
+    // Guards vkCreateGraphicsPipelines / vkCreateComputePipelines when a
+    // non-null VkPipelineCache is passed in -- see the comment on
+    // Pipeline::create_graphics in pipeline.hxx. A single process-wide mutex
+    // is fine here: every VkPipelineCache in this codebase lives behind one
+    // PipelineStorage per Renderer, and there's only ever one Renderer.
+    std::mutex pipeline_cache_mutex;
 } // namespace
 
 Pipeline::~Pipeline() { destroy(); }
@@ -97,7 +106,8 @@ constexpr auto default_bindings() -> VkPipelineVertexInputStateCreateInfo {
 }
 
 auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInfo const &create_info,
-                               VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError> {
+                               VkDescriptorSetLayout global_layout, VkPipelineCache pipeline_cache)
+        -> std::expected<Pipeline, PipelineError> {
     if (context.device == VK_NULL_HANDLE || create_info.shaders.empty()) {
         return std::unexpected(make_error(PipelineErrorType::invalid_argument, context.device == VK_NULL_HANDLE
                                                                                        ? "device is VK_NULL_HANDLE"
@@ -343,8 +353,20 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
             .basePipelineIndex = -1,
     };
 
-    vk_result =
-            vkCreateGraphicsPipelines(context.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &result.pipeline_);
+    debug("[Pipeline::create_graphics] '{}': locking pipeline_cache_mutex", create_info.debug_name);
+
+    {
+        std::lock_guard<std::mutex> const cache_lock{pipeline_cache_mutex};
+
+        debug("[Pipeline::create_graphics] '{}': calling vkCreateGraphicsPipelines (cache={})",
+              create_info.debug_name, static_cast<void const *>(pipeline_cache));
+
+        vk_result = vkCreateGraphicsPipelines(context.device, pipeline_cache, 1, &pipeline_info, nullptr,
+                                              &result.pipeline_);
+
+        debug("[Pipeline::create_graphics] '{}': vkCreateGraphicsPipelines returned {}", create_info.debug_name,
+              static_cast<int>(vk_result));
+    }
 
     if (vk_result != VK_SUCCESS) {
         vkDestroyPipelineLayout(context.device, result.layout_, nullptr);
@@ -369,7 +391,8 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
 }
 
 auto Pipeline::create_compute(VulkanContext &context, ComputePipelineCreateInfo const &create_info,
-                              VkDescriptorSetLayout global_layout) -> std::expected<Pipeline, PipelineError> {
+                              VkDescriptorSetLayout global_layout, VkPipelineCache pipeline_cache)
+        -> std::expected<Pipeline, PipelineError> {
     if (context.device == VK_NULL_HANDLE || create_info.shader.spirv.empty()) {
         return std::unexpected(make_error(PipelineErrorType::invalid_argument, context.device == VK_NULL_HANDLE
                                                                                        ? "device is VK_NULL_HANDLE"
@@ -442,7 +465,20 @@ auto Pipeline::create_compute(VulkanContext &context, ComputePipelineCreateInfo 
             .basePipelineIndex = -1,
     };
 
-    vk_result = vkCreateComputePipelines(context.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &result.pipeline_);
+    debug("[Pipeline::create_compute] '{}': locking pipeline_cache_mutex", create_info.debug_name);
+
+    {
+        std::lock_guard<std::mutex> const cache_lock{pipeline_cache_mutex};
+
+        debug("[Pipeline::create_compute] '{}': calling vkCreateComputePipelines (cache={})", create_info.debug_name,
+              static_cast<void const *>(pipeline_cache));
+
+        vk_result = vkCreateComputePipelines(context.device, pipeline_cache, 1, &pipeline_info, nullptr,
+                                             &result.pipeline_);
+
+        debug("[Pipeline::create_compute] '{}': vkCreateComputePipelines returned {}", create_info.debug_name,
+              static_cast<int>(vk_result));
+    }
 
     if (vk_result != VK_SUCCESS) {
         vkDestroyPipelineLayout(context.device, result.layout_, nullptr);

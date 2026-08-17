@@ -3,6 +3,7 @@
 #include <slang-com-ptr.h>
 
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -10,8 +11,10 @@
 #include <span>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 
+#include "logger.hxx"
 #include "slang_library.hxx"
 
 namespace renderer {
@@ -173,6 +176,11 @@ namespace renderer {
     struct SlangCompiler::Impl {
         SlangLibrary library;
 
+        // Guards the whole per-call Slang pipeline (createSession through
+        // getEntryPointCode), not just createSession() -- see the comment in
+        // compile() for why this had to be widened from the original,
+        // narrower lock.
+        std::mutex compile_mutex;
         Slang::ComPtr<slang::IGlobalSession> global_session;
     };
 
@@ -226,6 +234,11 @@ namespace renderer {
 
     auto SlangCompiler::compile(ShaderCompileRequest const &request) const
             -> std::expected<CompiledShader, ShaderCompileError> {
+        auto const thread_tag = std::hash<std::thread::id>{}(std::this_thread::get_id());
+
+        debug("[compile][thread {}] enter: {} entry={}", thread_tag, request.source_path.string(),
+              request.entry_point);
+
         if (!valid()) {
             return std::unexpected{make_error(ShaderCompileErrorType::slang_global_session_failed,
                                               SLANG_E_NOT_AVAILABLE, "SlangCompiler is not initialized.")};
@@ -354,10 +367,34 @@ namespace renderer {
 
         auto session = Slang::ComPtr<slang::ISession>{};
 
-        auto result = impl_->global_session->createSession(session_description, session.writeRef());
+        debug("[compile][thread {}] locking compile_mutex (whole-compile lock)", thread_tag);
 
-        if (SLANG_FAILED(result) || session == nullptr) {
-            return std::unexpected{make_error(ShaderCompileErrorType::slang_session_failed, result,
+        // NOTE: this lock now spans the entire Slang pipeline below
+        // (createSession through getEntryPointCode), not just createSession()
+        // as originally planned. Observed in practice: concurrent
+        // loadModuleFromSourceString() calls against *different* ISessions
+        // that share one IGlobalSession returned null modules (and appear to
+        // have gone on to crash) even after giving each call a unique module
+        // name -- so Slang's per-ISession isolation claim doesn't hold for
+        // this build/version beyond session creation. Until that's root-caused
+        // upstream (or SlangCompiler is changed to use one IGlobalSession per
+        // compile() call instead of a shared one), compiles run one at a time.
+        // register_pipelines_parallel's Phase 2 still dedupes and dispatches
+        // every dirty stage to the thread pool -- it just no longer gets
+        // wall-clock parallelism *within* Slang itself, only overlap with
+        // Phase 1/3 bookkeeping and other threads' non-Slang work.
+        std::lock_guard<std::mutex> const compile_lock{impl_->compile_mutex};
+
+        debug("[compile][thread {}] locked, calling createSession()", thread_tag);
+
+        auto const session_result = impl_->global_session->createSession(session_description, session.writeRef());
+
+        debug("[compile][thread {}] createSession: returned, result={}", thread_tag,
+              static_cast<int>(session_result));
+
+        if (SLANG_FAILED(session_result) || session == nullptr) {
+            debug("[compile][thread {}] createSession failed", thread_tag);
+            return std::unexpected{make_error(ShaderCompileErrorType::slang_session_failed, session_result,
                                               "IGlobalSession::createSession() "
                                               "failed.")};
         }
@@ -369,14 +406,27 @@ namespace renderer {
          * filesystem path instead of requiring callers to convert paths
          * into Slang module names.
          *
-         * Sessions are currently per request, so a stem-based module name
-         * cannot collide with another module loaded by this compiler call.
+         * A stem-based module name is NOT safe here even though sessions
+         * are per-request: register_pipelines_parallel compiles distinct
+         * entry points of the same source file (e.g. forward_geom.slang's
+         * mainVs and mainFs) concurrently, each on its own ISession but
+         * against the same shared IGlobalSession. Slang appears to key some
+         * state by module name across sessions -- two concurrent
+         * loadModuleFromSourceString() calls sharing a name (same stem, or
+         * plain "shader" for an empty stem) race and return a null module
+         * (observed: loadModuleFromSourceString returned module=0x0). A
+         * process-wide atomic counter guarantees every call gets a unique
+         * name regardless of what compiles concurrently.
          */
+        static std::atomic<std::uint64_t> module_name_counter{0};
+
         auto module_name = request.source_path.stem().string();
 
         if (module_name.empty()) {
             module_name = "shader";
         }
+
+        module_name += "_" + std::to_string(module_name_counter.fetch_add(1, std::memory_order_relaxed));
 
         auto source_path = request.source_path.string();
 
@@ -387,6 +437,9 @@ namespace renderer {
 
         append_diagnostics(diagnostics, module_diagnostics);
 
+        debug("[compile][thread {}] loadModuleFromSourceString returned module={}", thread_tag,
+              static_cast<void const *>(module.get()));
+
         if (module == nullptr) {
             return std::unexpected{
                     make_error(ShaderCompileErrorType::module_load_failed, SLANG_FAIL, std::move(diagnostics))};
@@ -396,10 +449,14 @@ namespace renderer {
 
         auto entry_point_diagnostics = Slang::ComPtr<slang::IBlob>{};
 
-        result = module->findAndCheckEntryPoint(request.entry_point.c_str(), to_slang_stage(request.stage),
-                                                entry_point.writeRef(), entry_point_diagnostics.writeRef());
+        SlangResult result = module->findAndCheckEntryPoint(
+                request.entry_point.c_str(), to_slang_stage(request.stage), entry_point.writeRef(),
+                entry_point_diagnostics.writeRef());
 
         append_diagnostics(diagnostics, entry_point_diagnostics);
+
+        debug("[compile][thread {}] findAndCheckEntryPoint returned result={}", thread_tag,
+              static_cast<int>(result));
 
         if (SLANG_FAILED(result) || entry_point == nullptr) {
             if (diagnostics.empty()) {
@@ -426,6 +483,9 @@ namespace renderer {
 
         append_diagnostics(diagnostics, composition_diagnostics);
 
+        debug("[compile][thread {}] createCompositeComponentType returned result={}", thread_tag,
+              static_cast<int>(result));
+
         if (SLANG_FAILED(result) || composed_program == nullptr) {
             return std::unexpected{
                     make_error(ShaderCompileErrorType::composition_failed, result, std::move(diagnostics))};
@@ -439,6 +499,8 @@ namespace renderer {
 
         append_diagnostics(diagnostics, link_diagnostics);
 
+        debug("[compile][thread {}] link returned result={}", thread_tag, static_cast<int>(result));
+
         if (SLANG_FAILED(result) || linked_program == nullptr) {
             return std::unexpected{make_error(ShaderCompileErrorType::link_failed, result, std::move(diagnostics))};
         }
@@ -450,6 +512,8 @@ namespace renderer {
         result = linked_program->getEntryPointCode(0, 0, target_code.writeRef(), target_diagnostics.writeRef());
 
         append_diagnostics(diagnostics, target_diagnostics);
+
+        debug("[compile][thread {}] getEntryPointCode returned result={}", thread_tag, static_cast<int>(result));
 
         if (SLANG_FAILED(result) || target_code == nullptr) {
             return std::unexpected{
@@ -481,6 +545,9 @@ namespace renderer {
                                               "Slang output does not begin with "
                                               "the SPIR-V magic number.")};
         }
+
+        debug("[compile][thread {}] exit: {} entry={} spirv_words={}", thread_tag, request.source_path.string(),
+              request.entry_point, spirv.size());
 
         return CompiledShader{
                 .stage = request.stage,
