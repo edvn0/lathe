@@ -12,6 +12,13 @@
 
 class PhysicsWorld;
 
+namespace detail {
+    template<typename NameType>
+    class Entity;
+
+    class ReadOnlyEntity;
+} // namespace detail
+
 // Owns everything simulate/render iterate over. The editor keeps one Scene
 // alive for the whole app lifetime; play/simulate just points Application's
 // active_scene at whichever Scene should be ticked this frame.
@@ -21,16 +28,33 @@ class PhysicsWorld;
 // registry at that point) and on_scene_stop() tears it down. Kept behind a
 // unique_ptr, and PhysicsWorld only forward-declared here, so pulling in
 // Bullet's headers doesn't ripple out to every TU that includes scene.hxx.
-struct Scene {
-    entt::registry registry;
+class Scene {
+public:
     PhysicsWorldSettings physics_settings{};
     std::unique_ptr<PhysicsWorld> physics_world;
+    bool lights_dirty = true;
 
     Scene();
     ~Scene();
 
     auto on_scene_start() -> void;
     auto on_scene_stop() -> void;
+
+    auto step(float delta_time) -> void;
+
+    auto get_registry() noexcept -> entt::registry & { return registry; }
+    auto get_registry() const noexcept -> entt::registry const & { return registry; }
+
+private:
+    entt::registry registry;
+
+    auto mark_lights_dirty(entt::registry &, entt::entity) -> void;
+    auto on_transform_changed(entt::registry &reg, entt::entity entity) -> void;
+    auto connect_light_signals() -> void;
+
+    template<typename T>
+    friend class detail::Entity;
+    friend class detail::ReadOnlyEntity;
 };
 
 namespace detail {
@@ -77,3 +101,8 @@ auto clone_registry(entt::registry const &src, entt::registry &dst) -> void {
     loader.get<entt::entity>(in);
     (loader.get<Components>(in), ...);
 }
+
+
+namespace systems {
+    void lifetime(entt::registry &registry, PhysicsWorld &physics, float dt);
+} // namespace systems

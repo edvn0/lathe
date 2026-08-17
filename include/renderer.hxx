@@ -70,6 +70,33 @@ struct StageTimings {
     bool valid = false;
 };
 
+struct FrameStats {
+    std::uint32_t submitted_triangle_count = 0;
+    std::uint32_t submitted_instance_count = 0;
+
+    std::uint32_t indirect_command_count = 0;
+    std::uint32_t opaque_indirect_count = 0;
+    std::uint32_t mask_indirect_count = 0;
+    std::uint32_t blend_indirect_count = 0;
+
+    std::uint32_t model_submission_count = 0;
+    std::uint32_t mesh_submission_count = 0;
+
+    std::uint32_t point_light_count = 0;
+    std::uint32_t spot_light_count = 0;
+};
+
+inline constexpr std::uint32_t pipeline_stat_count = 4;
+
+struct PipelineStats {
+    std::uint64_t assembled_primitive_count = 0;
+    std::uint64_t clipped_primitive_count = 0;
+    std::uint64_t assembled_vertex_count = 0;
+    std::uint64_t fragment_shader_invocation_count = 0;
+
+    bool valid = false;
+};
+
 struct ModelHandle {
     std::uint32_t index = 0;
     std::uint32_t generation = 0;
@@ -271,6 +298,8 @@ struct Renderer {
     // geometry instead of guessing.
     [[nodiscard]]
     auto model_bounds(ModelHandle model) const -> std::optional<std::pair<glm::vec3, glm::vec3>>;
+    [[nodiscard]]
+    auto model_lights(ModelHandle model) const -> std::span<ModelCpuLight const>;
 
     [[nodiscard]]
     auto create_material(MaterialCreateInfo const &create_info) -> std::expected<MaterialHandle, RendererError>;
@@ -438,12 +467,15 @@ struct Renderer {
     }
 
     [[nodiscard]] auto last_frame_timings() const noexcept -> StageTimings const & { return last_frame_timings_; }
+    [[nodiscard]] auto last_frame_stats() const noexcept -> FrameStats const & { return last_frame_stats_; }
+    [[nodiscard]] auto last_frame_pipeline_stats() const noexcept -> PipelineStats const & {
+        return last_frame_pipeline_stats_;
+    }
+    [[nodiscard]] auto debug_draw_light_icons() const noexcept -> bool { return debug_draw_light_icons_; }
+    auto set_debug_draw_light_icons(bool enabled) noexcept -> void { debug_draw_light_icons_ = enabled; }
 
-    // Safe to call from any thread. Captures the swapchain image (scene +
-    // ImGui overlay) on the next recorded frame and writes it to
-    // screenshots/ as a PNG; see ScreenshotCapture for the sync model.
     auto request_screenshot() noexcept -> void { screenshot_.request(); }
-
+    auto mark_lights_dirty() -> void { lights_dirty_mask_ = frames_.empty() ? 0U : ((1U << frames_.size()) - 1U); }
     auto wait_idle() -> std::expected<void, RendererError>;
 
 private:
@@ -628,6 +660,8 @@ private:
         std::uint32_t generation = 1;
         std::uint32_t next_free = 0;
 
+        std::vector<ModelCpuLight> lights{};
+
         bool occupied = false;
     };
 
@@ -654,6 +688,7 @@ private:
 
     auto clear_submissions() noexcept -> void;
 
+
     VulkanContext &context_;
 
     VkFormat hdr_format_ = VK_FORMAT_UNDEFINED;
@@ -678,7 +713,12 @@ private:
     PipelineNodeHandle forward_blend_pipeline_;
     PipelineNodeHandle composite_pipeline_;
     PipelineNodeHandle frustum_cull_pipeline_;
+    PipelineNodeHandle light_icon_pipeline_;
     ShaderChangeQueue shader_change_queue_;
+
+    ImageHandle light_icon_texture_{};
+    bool debug_draw_light_icons_ = false;
+    float light_icon_world_size_ = 0.5F;
 
     DirectionalLight light_{};
     ShadowSettings shadow_settings_{};
@@ -707,6 +747,11 @@ private:
     std::uint32_t maximum_submission_count_ = 0;
 
     StageTimings last_frame_timings_{};
+    FrameStats last_frame_stats_{};
+
+    std::vector<GpuLight> light_staging_;
+    std::uint32_t lights_dirty_mask_ = 0;
+    std::uint32_t light_count_ = 0;
 
     std::queue<std::function<void()>> event_queue_;
     std::atomic_uint32_t queued_events_;
@@ -718,6 +763,13 @@ private:
     };
     std::vector<FrameTimestamps> timestamp_queries_;
     float timestamp_period_{1.0F};
+
+    struct FramePipelineQuery {
+        VkQueryPool query_pool{VK_NULL_HANDLE};
+        bool has_results{false};
+    };
+    std::vector<FramePipelineQuery> pipeline_stat_queries_;
+    PipelineStats last_frame_pipeline_stats_{};
 
     ScreenshotCapture screenshot_;
 

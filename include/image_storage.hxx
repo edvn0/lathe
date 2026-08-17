@@ -127,11 +127,8 @@ public:
     ~ImageStorage();
 
     ImageStorage(ImageStorage const &) = delete;
-
     auto operator=(ImageStorage const &) -> ImageStorage & = delete;
-
     ImageStorage(ImageStorage &&other) noexcept;
-
     auto operator=(ImageStorage &&other) noexcept -> ImageStorage &;
 
     [[nodiscard]]

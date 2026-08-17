@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdlib>
 #include <functional>
+#include <iostream>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -9,56 +11,32 @@
 
 class FlyString {
 public:
-    FlyString() noexcept = default;
-
-    explicit FlyString(std::string_view value) : value_(&pool().intern(value)) {}
-
-    [[nodiscard]]
-    auto view() const noexcept -> std::string_view {
-        return value_ != nullptr ? std::string_view{*value_} : std::string_view{};
-    }
+    FlyString() noexcept;
+    explicit FlyString(std::string_view);
 
     [[nodiscard]]
-    auto empty() const noexcept -> bool {
-        return value_ == nullptr || value_->empty();
-    }
-
+    auto view() const noexcept -> std::string_view;
     [[nodiscard]]
-    auto c_str() const noexcept -> char const * {
-        return value_ != nullptr ? value_->c_str() : "";
-    }
+    auto empty() const noexcept -> bool;
+    [[nodiscard]]
+    auto c_str() const noexcept -> char const *;
 
-    friend auto operator==(FlyString lhs, FlyString rhs) noexcept -> bool { return lhs.value_ == rhs.value_; }
+    auto operator==(FlyString rhs) const noexcept -> bool;
 
 private:
     class Pool {
     public:
-        auto intern(std::string_view value) -> std::string const & {
-            std::scoped_lock lock{mutex_};
+        auto intern(std::string_view value) -> std::string const &;
 
-            auto const [iterator, inserted] = strings_.emplace(value);
-
-            return *iterator;
-        }
+        void print_stats() const;
 
     private:
-        std::mutex mutex_;
+        mutable std::mutex mutex_;
         std::unordered_set<std::string> strings_;
+        std::size_t total_requests_ = 0;
+        std::size_t total_bytes_allocated_ = 0;
     };
 
-    static auto pool() -> Pool & {
-        // Deliberately retained until process termination. This avoids
-        // static-destruction ordering issues for global FlyString values.
-        static auto *instance = new Pool{};
-        return *instance;
-    }
-
+    static auto pool() -> Pool &;
     std::string const *value_ = nullptr;
-};
-
-template<>
-struct std::hash<FlyString> {
-    auto operator()(FlyString value) const noexcept -> std::size_t {
-        return std::hash<std::string_view>{}(value.view());
-    }
 };

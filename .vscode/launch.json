@@ -8,7 +8,7 @@
             "name": "Launch",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceRoot}/build/bin/Debug/mingw-vulkan",
+            "program": "${workspaceRoot}/build/bin/mingw-vulkan",
             "args": [],
             "cwd": "${workspaceRoot}"
         }

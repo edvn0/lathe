@@ -1,12 +1,11 @@
 #include "scene.hxx"
 
+#include "components.hxx"
+#include "light.hxx"
 #include "physics_world.hxx"
 
-Scene::Scene() = default;
+Scene::Scene() { connect_light_signals(); }
 
-// Out-of-line even though it's a plain default: physics_world's deleter
-// needs PhysicsWorld's complete definition, which scene.hxx deliberately
-// doesn't include.
 Scene::~Scene() = default;
 
 auto Scene::on_scene_start() -> void {
@@ -15,3 +14,45 @@ auto Scene::on_scene_start() -> void {
 }
 
 auto Scene::on_scene_stop() -> void { physics_world.reset(); }
+
+auto Scene::step(float delta_time) -> void { physics_world->step(get_registry(), std::min(delta_time, 0.25F)); }
+
+auto Scene::mark_lights_dirty(entt::registry &, entt::entity) -> void { lights_dirty = true; }
+
+auto Scene::on_transform_changed(entt::registry &reg, entt::entity entity) -> void {
+    if (reg.any_of<PointLight, SpotLight>(entity)) {
+        lights_dirty = true;
+    }
+}
+
+auto Scene::connect_light_signals() -> void {
+    registry.on_construct<PointLight>().connect<&Scene::mark_lights_dirty>(*this);
+    registry.on_update<PointLight>().connect<&Scene::mark_lights_dirty>(*this);
+    registry.on_destroy<PointLight>().connect<&Scene::mark_lights_dirty>(*this);
+
+    registry.on_construct<SpotLight>().connect<&Scene::mark_lights_dirty>(*this);
+    registry.on_update<SpotLight>().connect<&Scene::mark_lights_dirty>(*this);
+    registry.on_destroy<SpotLight>().connect<&Scene::mark_lights_dirty>(*this);
+
+    registry.on_update<Components::Transform>().connect<&Scene::on_transform_changed>(*this);
+}
+
+
+void systems::lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) {
+    auto view = registry.view<Components::Lifetime>();
+
+    std::vector<entt::entity> expired;
+
+    for (auto entity: view) {
+        auto &lifetime = view.get<Components::Lifetime>(entity);
+        lifetime.remaining_seconds -= dt;
+        if (lifetime.remaining_seconds <= 0.0f) {
+            expired.push_back(entity);
+        }
+    }
+
+    for (auto entity: expired) {
+        physics.remove_body(entity);
+        registry.destroy(entity);
+    }
+}

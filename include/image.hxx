@@ -237,3 +237,24 @@ struct std::formatter<ImageErrorType> : std::formatter<std::string_view> {
         return std::formatter<std::string_view>::format(name, context);
     }
 };
+
+class DecodedImage {
+    struct StbiDeleter {
+        auto operator()(unsigned char *pixels) const noexcept -> void;
+    };
+
+    std::unique_ptr<unsigned char, StbiDeleter> pixels_;
+    int width_ = 0;
+    int height_ = 0;
+
+    DecodedImage(std::unique_ptr<unsigned char, StbiDeleter> pixels, int width, int height) noexcept;
+
+public:
+    static auto load_from_file(std::string_view path) -> std::optional<DecodedImage>;
+
+    [[nodiscard]] auto span() const noexcept -> std::span<std::byte const>;
+    [[nodiscard]] constexpr auto width() const noexcept -> std::uint32_t { return static_cast<std::uint32_t>(width_); }
+    [[nodiscard]] constexpr auto height() const noexcept -> std::uint32_t {
+        return static_cast<std::uint32_t>(height_);
+    }
+};

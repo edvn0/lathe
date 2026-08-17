@@ -1,6 +1,7 @@
 #include <csignal>
 #include <memory>
 #include <random>
+#include <ranges>
 #include <volk.h>
 
 #include <GLFW/glfw3.h>
@@ -26,10 +27,12 @@
 #include <entt/entt.hpp>
 
 #include "allocator.hxx"
+#include "components.hxx"
 #include "config.hxx"
 #include "context.hxx"
 #include "editor_camera.hxx"
 #include "engine_models.hxx"
+#include "entity.hxx"
 #include "error_describe.hxx"
 #include "imgui_renderer.hxx"
 #include "implot.h"
@@ -42,10 +45,59 @@
 #include "scene.hxx"
 #include "shader_hot_reload_watcher.hxx"
 #include "swapchain.hxx"
-#include "transform.hxx"
 
 namespace {
 
+    auto direction_to_rotation(glm::vec3 const &direction) -> glm::quat {
+        constexpr auto local_forward = glm::vec3{0.0F, -1.0F, 0.0F};
+        auto const dot = glm::dot(local_forward, direction);
+
+        if (dot > 0.9999F) {
+            return glm::quat{1.0F, 0.0F, 0.0F, 0.0F};
+        }
+        if (dot < -0.9999F) {
+            return glm::angleAxis(glm::pi<float>(), glm::vec3{1.0F, 0.0F, 0.0F});
+        }
+
+        auto const axis = glm::normalize(glm::cross(local_forward, direction));
+        return glm::angleAxis(std::acos(dot), axis);
+    }
+
+    constexpr auto draw_point_light = [](PointLight &point_light) -> bool {
+        bool changed = false;
+        changed |= ImGui::ColorEdit3("Colour", &point_light.colour.x);
+        changed |= ImGui::SliderFloat("Intensity", &point_light.intensity, 0.0F, 200.0F);
+        changed |= ImGui::SliderFloat("Range", &point_light.range, 0.5F, 100.0F);
+        return changed;
+    };
+
+    constexpr auto draw_spot_light = [](SpotLight &spot_light) -> bool {
+        bool changed = false;
+        changed |= ImGui::ColorEdit3("Colour", &spot_light.colour.x);
+        changed |= ImGui::SliderFloat("Intensity", &spot_light.intensity, 0.0F, 200.0F);
+        changed |= ImGui::SliderFloat("Range", &spot_light.range, 0.5F, 100.0F);
+        changed |= ImGui::SliderFloat("Inner cone", &spot_light.inner_cone_degrees, 0.0F, 89.0F, "%.1f deg");
+        changed |= ImGui::SliderFloat("Outer cone", &spot_light.outer_cone_degrees, 0.0F, 89.0F, "%.1f deg");
+        return changed;
+    };
+
+    constexpr auto draw_rows = [](auto &index, entt::registry &registry, auto &&view, auto &&draw_light) {
+        for (auto [entity, transform, light, meta]: view.each()) {
+            ImGui::PushID(static_cast<int>(index++));
+            if (ImGui::TreeNode(meta.name.c_str())) {
+                bool changed = ImGui::DragFloat3("Position", &transform.position.x, 0.1F);
+                changed |= draw_light(light);
+
+                if (changed) {
+                    using LightT = std::decay_t<decltype(light)>;
+                    registry.patch<LightT>(entity);
+                }
+
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+    };
 
     template<typename T>
     concept HasDepth = requires(T t) {
@@ -167,11 +219,7 @@ namespace {
             context(ctx), renderer(std::make_unique<Renderer>(context)) {
             timing_buffers.fill(ScrollingBuffer{600});
         }
-        ~Application() {
-            info("~Application: stopping shader watcher");
-            shader_watcher_.stop();
-            info("~Application: shader watcher stopped");
-        }
+        ~Application() { shader_watcher_.stop(); }
 
         void on_ui() {
             widget("Simulation", [&] {
@@ -184,6 +232,34 @@ namespace {
                         play();
                     }
                 }
+            });
+
+            widget("Scene stats", [&] {
+                auto const &stats = renderer->last_frame_stats();
+                auto const &pipeline_stats = renderer->last_frame_pipeline_stats();
+
+                auto &&[assembled_vertex_count, assembled_primitive_count, clipped_primitive_count,
+                        fragment_shader_invocation_count, valid] = pipeline_stats;
+                if (valid) {
+                    ImGui::Text("Triangles assembled (post-cull): %llu",
+                                static_cast<unsigned long long>(pipeline_stats.assembled_primitive_count));
+                    ImGui::Text("Triangles rendered (post-clip): %llu",
+                                static_cast<unsigned long long>(pipeline_stats.clipped_primitive_count));
+                    ImGui::Text("Vertices assembled (post-cull): %llu",
+                                static_cast<unsigned long long>(pipeline_stats.assembled_vertex_count));
+                    ImGui::Text("Fragment shader invocations: %llu",
+                                static_cast<unsigned long long>(pipeline_stats.fragment_shader_invocation_count));
+                } else {
+                    ImGui::TextDisabled("Pipeline stats not yet available");
+                }
+
+                ImGui::Text("Triangles submitted (pre-cull): %u", stats.submitted_triangle_count);
+                ImGui::Text("Draw calls: %u  (opaque %u / mask %u / blend %u)", stats.indirect_command_count,
+                            stats.opaque_indirect_count, stats.mask_indirect_count, stats.blend_indirect_count);
+                ImGui::Text("Instances submitted: %u", stats.submitted_instance_count);
+                ImGui::Text("Model / mesh submissions: %u / %u", stats.model_submission_count,
+                            stats.mesh_submission_count);
+                ImGui::Text("Lights: %u point / %u spot", stats.point_light_count, stats.spot_light_count);
             });
 
             widget("Frame timings", [&] {
@@ -239,6 +315,12 @@ namespace {
             });
 
             widget("Lighting", [&] {
+                ImGui::SeparatorText("Debug");
+                bool draw_light_icons = renderer->debug_draw_light_icons();
+                if (ImGui::Checkbox("Draw light icons", &draw_light_icons)) {
+                    renderer->set_debug_draw_light_icons(draw_light_icons);
+                }
+
                 auto light = renderer->directional_light();
                 auto shadows = renderer->shadow_settings();
                 bool dirty = false;
@@ -279,34 +361,14 @@ namespace {
                 }
 
                 ImGui::SeparatorText("Punctual lights");
-                auto &registry = active_scene->registry;
-
+                auto &registry = active_scene->get_registry();
                 std::size_t index = 0;
-                for (auto [entity, transform, point_light]: registry.view<Transform, PointLight>().each()) {
-                    ImGui::PushID(static_cast<int>(index++));
-                    if (ImGui::TreeNode("Point light")) {
-                        ImGui::DragFloat3("Position", &transform.position.x, 0.1F);
-                        ImGui::ColorEdit3("Colour", &point_light.colour.x);
-                        ImGui::SliderFloat("Intensity", &point_light.intensity, 0.0F, 200.0F);
-                        ImGui::SliderFloat("Range", &point_light.range, 0.5F, 100.0F);
-                        ImGui::TreePop();
-                    }
-                    ImGui::PopID();
-                }
-
-                for (auto [entity, transform, spot_light]: registry.view<Transform, SpotLight>().each()) {
-                    ImGui::PushID(static_cast<int>(index++));
-                    if (ImGui::TreeNode("Spot light")) {
-                        ImGui::DragFloat3("Position", &transform.position.x, 0.1F);
-                        ImGui::ColorEdit3("Colour", &spot_light.colour.x);
-                        ImGui::SliderFloat("Intensity", &spot_light.intensity, 0.0F, 200.0F);
-                        ImGui::SliderFloat("Range", &spot_light.range, 0.5F, 100.0F);
-                        ImGui::SliderFloat("Inner cone", &spot_light.inner_cone_degrees, 0.0F, 89.0F, "%.1f deg");
-                        ImGui::SliderFloat("Outer cone", &spot_light.outer_cone_degrees, 0.0F, 89.0F, "%.1f deg");
-                        ImGui::TreePop();
-                    }
-                    ImGui::PopID();
-                }
+                draw_rows(index, registry, registry.view<Components::Transform, PointLight, GeneratedMeta>(),
+                          draw_point_light);
+                draw_rows(index, registry, registry.view<Components::Transform, PointLight, Meta>(), draw_point_light);
+                draw_rows(index, registry, registry.view<Components::Transform, SpotLight, Meta>(), draw_spot_light);
+                draw_rows(index, registry, registry.view<Components::Transform, SpotLight, GeneratedMeta>(),
+                          draw_spot_light);
             });
         }
 
@@ -320,11 +382,12 @@ namespace {
         Scene *active_scene = editor_scene.get();
         bool is_playing = false;
 
+
         auto play() -> void {
             runtime_scene = std::make_unique<Scene>();
             runtime_scene->physics_settings = editor_scene->physics_settings;
-            clone_registry<Transform, ModelHandle, RigidBody, MaterialOverride, PointLight, SpotLight>(
-                    editor_scene->registry, runtime_scene->registry);
+            clone_registry<Components::Transform, ModelHandle, RigidBody, MaterialOverride, PointLight, SpotLight>(
+                    editor_scene->get_registry(), runtime_scene->get_registry());
 
             active_scene = runtime_scene.get();
             is_playing = true;
@@ -345,6 +408,9 @@ namespace {
         // relationship as the grid cubes and floor.
         ModelHandle cube_model{};
         glm::vec3 cube_half_extents{0.5F};
+
+        ModelHandle house_model{};
+        ModelHandle tree_model{};
 
         // Wind-swaying grass material -- created once in recreate_entities()
         // and shared as a MaterialOverride across every grass clump entity.
@@ -368,16 +434,14 @@ namespace {
         double last_mouse_y = 0.0;
         bool has_last_mouse_position = false;
 
-        auto update_physics(float delta_time) -> void {
-            if (!is_playing) {
+        auto update(float delta_time) -> void {
+            if (!is_playing || !active_scene) {
                 return;
             }
 
-            // PhysicsWorld::step() delegates to btDiscreteDynamicsWorld::
-            // stepSimulation(), which already implements its own fixed-step
-            // accumulator (capped substeps, leftover time carried to the
-            // next call) -- no need to hand-roll one here.
-            active_scene->physics_world->step(active_scene->registry, std::min(delta_time, 0.25F));
+            active_scene->step(delta_time);
+
+            systems::lifetime(active_scene->get_registry(), *active_scene->physics_world, delta_time);
         }
 
         auto on_startup() -> void {
@@ -446,7 +510,11 @@ namespace {
             }
 
             if (ev.button == GLFW_MOUSE_BUTTON_LEFT) {
-                shoot_bullet();
+                if (ev.modifiers & GLFW_MOD_CONTROL) {
+                    shoot_bullet(12);
+                } else {
+                    shoot_bullet();
+                }
             }
 
             return true;
@@ -490,25 +558,20 @@ namespace {
             return {ray_origin, ray_direction};
         }
 
-        // Spawns a small dynamic cube along the cursor ray, moving at
-        // bullet_speed. Only meaningful while playing -- active_scene's
-        // PhysicsWorld only exists between on_scene_start()/on_scene_stop(),
-        // and (unlike recreate_entities(), which runs before a world
-        // exists) this entity is created after the world was already
-        // populated, so it must be registered with add_body() explicitly
-        // rather than picked up by populate_from().
-        auto shoot_bullet() -> void {
-            if (!is_playing) {
+
+        auto shoot_bullet(std::size_t n = 1) -> void {
+            if (!is_playing || !active_scene || !active_scene->physics_world) {
                 return;
             }
 
             constexpr auto bullet_half_extent = 0.15F;
             constexpr auto bullet_speed = 40.0F;
             constexpr auto bullet_mass = 0.2F;
+            constexpr auto bullet_lifetime_seconds = 3.0F; // Expire after 3 seconds
 
             auto const [ray_origin, ray_direction] = cursor_ray();
 
-            auto const transform = Transform{
+            auto const transform = Components::Transform{
                     .position = ray_origin + ray_direction * (bullet_half_extent + 0.2F),
                     .scale = glm::vec3{bullet_half_extent} / cube_half_extents,
             };
@@ -519,12 +582,16 @@ namespace {
                     .mass = bullet_mass,
             };
 
-            auto const entity = active_scene->registry.create();
-            active_scene->registry.emplace<Transform>(entity, transform);
-            active_scene->registry.emplace<ModelHandle>(entity, cube_model);
-            active_scene->registry.emplace<RigidBody>(entity, rigid_body);
+            for (auto i = 0U; i < n; ++i) {
+                auto const entity = GeneratedEntity{active_scene, "bullet_{}", static_cast<std::uint32_t>(i)};
+                entity.emplace<Components::Transform>(transform);
+                entity.emplace<ModelHandle>(cube_model);
+                entity.emplace<RigidBody>(rigid_body);
 
-            active_scene->physics_world->add_body(entity, transform, rigid_body);
+                entity.emplace<Components::Lifetime>(bullet_lifetime_seconds);
+
+                active_scene->physics_world->add_body(entity, transform, rigid_body);
+            }
         }
 
         auto on_event(MouseButtonReleasedEvent ev) -> bool {
@@ -542,24 +609,77 @@ namespace {
                 return;
             }
 
-            editor_scene->registry.clear();
+            editor_scene->get_registry().clear();
 
 
-            auto const load_or_fallback = [this](std::filesystem::path const &path) -> ModelHandle {
-                auto model = renderer->load_model(path);
+            auto const load_or_fallback = [&r = renderer, &default_model = engine_models.cube,
+                                           s = editor_scene.get()](std::filesystem::path const &path,
+                                                                   glm::mat4 const &instance_transform =
+                                                                           glm::mat4{1.0F}) -> ModelHandle {
+                auto model = r->load_model(path);
 
                 if (model) {
-                    return *model;
+                    auto const rotation_scale = glm::mat3{instance_transform};
+
+                    for (auto &&[index, light]: r->model_lights(model.value()) | std::views::enumerate) {
+                        auto const light_entity =
+                                GeneratedEntity{s, "model_light_{}", static_cast<std::uint32_t>(index)};
+
+                        auto const world_position = glm::vec3{instance_transform * glm::vec4{light.position, 1.0F}};
+                        auto const world_direction = glm::normalize(rotation_scale * light.direction);
+
+                        light_entity.emplace<Components::Transform>(Components::Transform{
+                                .position = world_position,
+                                .rotation = direction_to_rotation(world_direction),
+                        });
+
+                        if (light.type == ModelLightType::point) {
+                            light_entity.emplace<PointLight>(PointLight{
+                                    .colour = light.colour,
+                                    .intensity = light.intensity,
+                                    .range = light.range,
+                            });
+                        } else {
+                            light_entity.emplace<SpotLight>(SpotLight{
+                                    .colour = light.colour,
+                                    .intensity = light.intensity,
+                                    .range = light.range,
+                                    .inner_cone_degrees = light.inner_cone_degrees,
+                                    .outer_cone_degrees = light.outer_cone_degrees,
+                            });
+                        }
+                    }
+
+                    info("Loaded model '{}', with {} lights", path.string(), r->model_lights(model.value()).size());
+                    return model.value();
                 }
 
                 error("Could not load model '{}': {}", path.string(), describe(model.error()));
                 warn("Falling back to engine cube for '{}'", path.string());
-
-                return engine_models.cube;
+                return default_model;
             };
 
             auto const helmet_model = load_or_fallback("assets/models/damaged_helmet/DamagedHelmet.gltf");
             cube_model = load_or_fallback("assets/models/test_cube.glb");
+
+            info("BEFORE");
+            constexpr auto house_position = glm::vec3{40.0F, 10.0F, 10.0F};
+            auto const house_transform = glm::translate(glm::mat4{1.0F}, house_position);
+
+            house_model = load_or_fallback("assets/models/scene.glb", house_transform);
+
+            auto e = Entity{editor_scene.get(), "house"};
+            e.emplace<Components::Transform>(Components::Transform{.position = house_position});
+            e.emplace<ModelHandle>(house_model);
+            e.emplace<RigidBody>(RigidBody::from_model_bounds(renderer->model_bounds(house_model).value()));
+            info("AFTER");
+
+            tree_model = load_or_fallback("assets/models/tree.glb");
+
+            auto tree_entity = Entity{editor_scene.get(), "tree"};
+            tree_entity.emplace<Components::Transform>(
+                    Components::Transform{.position = glm::vec3{20.0F, 0.0F, 20.0F}});
+            tree_entity.emplace<ModelHandle>(tree_model);
 
             std::random_device r;
             std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
@@ -570,16 +690,16 @@ namespace {
             for (auto i = 0; i < count; i++) {
                 for (auto j = 0; j < count; j++) {
                     for (auto k = 0; k < count; k++) {
-                        auto const entity = editor_scene->registry.create();
-                        editor_scene->registry.emplace<Transform>(entity, Transform{
-                                                                                  .position =
-                                                                                          glm::vec3{
-                                                                                                  5 * urd(eng),
-                                                                                                  5 * urd(eng),
-                                                                                                  5 * urd(eng),
-                                                                                          },
-                                                                          });
-                        editor_scene->registry.emplace<ModelHandle>(entity, helmet_model);
+                        auto entity = GeneratedEntity{editor_scene.get(), "helmet_{}_{}_{}", i, j, k};
+                        entity.emplace<Components::Transform>(Components::Transform{
+                                .position =
+                                        glm::vec3{
+                                                5 * urd(eng),
+                                                5 * urd(eng),
+                                                5 * urd(eng),
+                                        },
+                        });
+                        entity.emplace<ModelHandle>(helmet_model);
                     }
                 }
             }
@@ -591,7 +711,7 @@ namespace {
             // assumed half-extent) so the collision shapes match what's
             // rendered, and neighbours start apart so they only overlap once
             // gravity pulls them into each other.
-            constexpr auto physics_grid = 6;
+            constexpr auto physics_grid = 12;
 
             auto const cube_bounds = renderer->model_bounds(cube_model);
             cube_half_extents =
@@ -602,15 +722,15 @@ namespace {
             for (auto i = 0; i < physics_grid; i++) {
                 for (auto j = 0; j < physics_grid; j++) {
                     for (auto k = 0; k < physics_grid; k++) {
-                        auto const entity = editor_scene->registry.create();
+                        auto const entity = GeneratedEntity{editor_scene.get(), "physics_cube_{}_{}_{}", i, j, k};
                         auto const position = glm::vec3{
                                 static_cast<float>(i - physics_grid / 2) * spacing,
                                 5.0F + static_cast<float>(j) * spacing,
                                 static_cast<float>(k - physics_grid / 2) * spacing,
                         };
-                        editor_scene->registry.emplace<Transform>(entity, Transform{.position = position});
-                        editor_scene->registry.emplace<ModelHandle>(entity, cube_model);
-                        editor_scene->registry.emplace<RigidBody>(entity, RigidBody{.half_extents = cube_half_extents});
+                        entity.emplace<Components::Transform>(Components::Transform{.position = position});
+                        entity.emplace<ModelHandle>(cube_model);
+                        entity.emplace<RigidBody>(RigidBody{.half_extents = cube_half_extents});
                     }
                 }
             }
@@ -623,17 +743,13 @@ namespace {
             // everything else.
             constexpr auto floor_half_extents = glm::vec3{40.0F, 0.5F, 40.0F};
 
-            auto const floor_entity = editor_scene->registry.create();
-            editor_scene->registry.emplace<Transform>(
-                    floor_entity,
-                    Transform{
-                            .position = glm::vec3{0.0F, editor_scene->physics_settings.ground_y - floor_half_extents.y,
-                                                  0.0F},
-                            .scale = floor_half_extents / cube_half_extents,
-                    });
-            editor_scene->registry.emplace<ModelHandle>(floor_entity, cube_model);
-            editor_scene->registry.emplace<RigidBody>(floor_entity,
-                                                      RigidBody{.half_extents = floor_half_extents, .is_static = true});
+            auto const floor_entity = GeneratedEntity{editor_scene.get(), "floor"};
+            floor_entity.emplace<Components::Transform>(Components::Transform{
+                    .position = glm::vec3{0.0F, editor_scene->physics_settings.ground_y - floor_half_extents.y, 0.0F},
+                    .scale = floor_half_extents / cube_half_extents,
+            });
+            floor_entity.emplace<ModelHandle>(cube_model);
+            floor_entity.emplace<RigidBody>(RigidBody{.half_extents = floor_half_extents, .is_static = true});
 
             // Texture fields must be filled with real dummy handles (not
             // left default) -- a default-constructed ImageHandle carries
@@ -655,7 +771,7 @@ namespace {
             });
 
             if (floor_material) {
-                editor_scene->registry.emplace<MaterialOverride>(floor_entity, MaterialOverride{*floor_material});
+                floor_entity.emplace<MaterialOverride>(MaterialOverride{*floor_material});
             } else {
                 error("Could not create floor material override: {}", describe(floor_material.error()));
             }
@@ -677,34 +793,29 @@ namespace {
                                        6.2831853F;
                     auto const radius = spacing * static_cast<float>(physics_grid) * 0.5F;
 
-                    auto const light_entity = editor_scene->registry.create();
-                    editor_scene->registry.emplace<Transform>(
-                            light_entity, Transform{
-                                                  .position = glm::vec3{radius * std::cos(angle), 12.0F,
-                                                                        radius * std::sin(angle)},
-                                          });
-                    editor_scene->registry.emplace<PointLight>(
-                            light_entity, PointLight{
-                                                  .colour = point_light_colours[i],
-                                                  .intensity = 25.0F,
-                                                  .range = 20.0F,
-                                          });
+                    auto const light_entity = GeneratedEntity{editor_scene.get(), "point_light_{}", i};
+                    light_entity.emplace<Components::Transform>(Components::Transform{
+                            .position = glm::vec3{radius * std::cos(angle), 12.0F, radius * std::sin(angle)},
+                    });
+                    light_entity.emplace<PointLight>(PointLight{
+                            .colour = point_light_colours[i],
+                            .intensity = 25.0F,
+                            .range = 20.0F,
+                    });
                 }
 
-                auto const spot_entity = editor_scene->registry.create();
-                editor_scene->registry.emplace<Transform>(
-                        spot_entity, Transform{
-                                            .position = glm::vec3{0.0F, 15.0F, 0.0F},
-                                            .rotation = glm::angleAxis(glm::radians(30.0F), glm::vec3{1.0F, 0.0F, 0.0F}),
-                                    });
-                editor_scene->registry.emplace<SpotLight>(
-                        spot_entity, SpotLight{
-                                            .colour = glm::vec3{0.9F, 0.95F, 1.0F},
-                                            .intensity = 60.0F,
-                                            .range = 30.0F,
-                                            .inner_cone_degrees = 15.0F,
-                                            .outer_cone_degrees = 25.0F,
-                                    });
+                auto const spot_entity = GeneratedEntity{editor_scene.get(), "spot_light"};
+                spot_entity.emplace<Components::Transform>(Components::Transform{
+                        .position = glm::vec3{0.0F, 15.0F, 0.0F},
+                        .rotation = glm::angleAxis(glm::radians(30.0F), glm::vec3{1.0F, 0.0F, 0.0F}),
+                });
+                spot_entity.emplace<SpotLight>(SpotLight{
+                        .colour = glm::vec3{0.9F, 0.95F, 1.0F},
+                        .intensity = 60.0F,
+                        .range = 30.0F,
+                        .inner_cone_degrees = 15.0F,
+                        .outer_cone_degrees = 25.0F,
+                });
             }
 
             // A dense field of wind-swaying grass clumps covering a 100x100
@@ -753,17 +864,14 @@ namespace {
                         auto const z = (static_cast<float>(cell_z) + 0.5F) * grass_spacing - grass_field_size * 0.5F +
                                        jitter(eng);
 
-                        auto const grass_entity = editor_scene->registry.create();
-                        editor_scene->registry.emplace<Transform>(
-                                grass_entity,
-                                Transform{
-                                        .position = glm::vec3{x, editor_scene->physics_settings.ground_y, z},
-                                        .rotation = glm::angleAxis(yaw(eng), glm::vec3{0.0F, 1.0F, 0.0F}),
-                                        .scale = glm::vec3{width_scale(eng), height_scale(eng), width_scale(eng)},
-                                });
-                        editor_scene->registry.emplace<ModelHandle>(grass_entity, engine_models.grass_clump);
-                        editor_scene->registry.emplace<MaterialOverride>(grass_entity,
-                                                                         MaterialOverride{grass_material});
+                        auto const grass_entity = GeneratedEntity{editor_scene.get(), "grass_{}_{}", cell_x, cell_z};
+                        grass_entity.emplace<Components::Transform>(Components::Transform{
+                                .position = glm::vec3{x, editor_scene->physics_settings.ground_y, z},
+                                .rotation = glm::angleAxis(yaw(eng), glm::vec3{0.0F, 1.0F, 0.0F}),
+                                .scale = glm::vec3{width_scale(eng), height_scale(eng), width_scale(eng)},
+                        });
+                        grass_entity.emplace<ModelHandle>(engine_models.grass_clump);
+                        grass_entity.emplace<MaterialOverride>(MaterialOverride{grass_material});
                     }
                 }
             }
@@ -1313,6 +1421,7 @@ namespace {
 
         constexpr std::array device_extensions{
                 VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                VK_EXT_MESH_SHADER_EXTENSION_NAME,
         };
 
         VkPhysicalDeviceVulkan11Features vulkan11_features{};
@@ -1328,25 +1437,38 @@ namespace {
         vulkan12_features.runtimeDescriptorArray = VK_TRUE;
         vulkan12_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
         vulkan12_features.hostQueryReset = VK_TRUE;
+        vulkan12_features.shaderFloat16 = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features vulkan13_features{};
         vulkan13_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         vulkan13_features.pNext = &vulkan12_features;
         vulkan13_features.synchronization2 = VK_TRUE;
         vulkan13_features.dynamicRendering = VK_TRUE;
+        vulkan13_features.maintenance4 = VK_TRUE;
+        vulkan13_features.shaderDemoteToHelperInvocation = VK_TRUE;
 
         VkPhysicalDeviceVulkan14Features vulkan14_features{};
         vulkan14_features.pNext = &vulkan13_features;
         vulkan14_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
         vulkan14_features.maintenance5 = VK_TRUE;
 
+        VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features{};
+        mesh_shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+        mesh_shader_features.pNext = &vulkan14_features;
+        mesh_shader_features.taskShader = VK_TRUE;
+        mesh_shader_features.meshShader = VK_TRUE;
+
         VkPhysicalDeviceFeatures enabled_features{};
         enabled_features.multiDrawIndirect = VK_TRUE;
         enabled_features.samplerAnisotropy = VK_TRUE;
+        enabled_features.fillModeNonSolid = VK_TRUE;
+        enabled_features.wideLines = VK_TRUE;
+        enabled_features.pipelineStatisticsQuery = VK_TRUE;
+        enabled_features.shaderInt16 = VK_TRUE;
 
         VkDeviceCreateInfo const create_info{
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                .pNext = &vulkan14_features,
+                .pNext = &mesh_shader_features,
                 .flags = 0,
                 .queueCreateInfoCount = static_cast<std::uint32_t>(queue_count),
                 .pQueueCreateInfos = queue_create_infos.data(),
@@ -1366,9 +1488,7 @@ namespace {
         }
 
         volkLoadDevice(context.device);
-
         vkGetDeviceQueue(context.device, context.queue_families.graphics, 0, &context.graphics_queue);
-
         vkGetDeviceQueue(context.device, context.queue_families.present, 0, &context.present_queue);
 
         if (context.graphics_queue == VK_NULL_HANDLE || context.present_queue == VK_NULL_HANDLE) {
@@ -1406,6 +1526,7 @@ namespace {
 
     auto create_allocator(VulkanContext &context) noexcept -> bool {
         VmaAllocatorCreateInfo create_info{
+
                 .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
                          VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT |
                          VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT | VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT,
@@ -1485,8 +1606,9 @@ namespace {
     }
 
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
-        auto &registry = application.active_scene->registry;
-        auto view = registry.view<Transform const, ModelHandle const>();
+        auto &registry = application.active_scene->get_registry();
+        auto view = registry.view<Components::Transform const, ModelHandle const>();
+
 
         for (auto [entity, transform, model]: view.each()) {
             auto const *override_component = registry.try_get<MaterialOverride const>(entity);
@@ -1500,7 +1622,7 @@ namespace {
             }
         }
 
-        auto point_light_view = registry.view<Transform const, PointLight const>();
+        auto point_light_view = registry.view<Components::Transform const, PointLight const>();
 
         for (auto [entity, transform, light]: point_light_view.each()) {
             auto result = application.renderer->submit_point_light(Renderer::PointLight{
@@ -1515,9 +1637,7 @@ namespace {
             }
         }
 
-        // A spot light "points down" (-Y) before Transform::rotation is
-        // applied, matching glTF KHR_lights_punctual's convention.
-        auto spot_light_view = registry.view<Transform const, SpotLight const>();
+        auto spot_light_view = registry.view<Components::Transform const, SpotLight const>();
 
         for (auto [entity, transform, light]: spot_light_view.each()) {
             auto const direction = transform.rotation * glm::vec3{0.0F, -1.0F, 0.0F};
@@ -1535,6 +1655,11 @@ namespace {
             if (!result) {
                 error("Could not submit spot light: {}", describe(result.error()));
             }
+        }
+
+        if (application.active_scene->lights_dirty) {
+            application.renderer->mark_lights_dirty();
+            application.active_scene->lights_dirty = false;
         }
 
         return {};
@@ -1899,24 +2024,17 @@ namespace {
 
     auto destroy_application(VulkanContext &context, Application &application) noexcept -> void {
         if (context.device != VK_NULL_HANDLE) {
-            info("destroy_application: vkDeviceWaitIdle");
             auto const result = wait_idle_bounded(context.device, "destroy_application");
-            info("destroy_application: vkDeviceWaitIdle returned");
 
             if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
                 report_vk_error("vkDeviceWaitIdle(application destroy)", result);
             }
         }
 
-        info("destroy_application: resetting imgui_renderer");
         application.imgui_renderer.reset();
-        info("destroy_application: destroying renderer");
         application.renderer->destroy();
-        info("destroy_application: renderer destroyed");
 
-        info("destroy_application: destroy_context");
         destroy_context(context);
-        info("destroy_application: destroy_context done");
     }
 } // namespace
 
@@ -1997,7 +2115,7 @@ auto main() -> int {
         application.elapsed_time += delta_time;
 
         application.camera.update(std::min(delta_time, 0.1F));
-        application.update_physics(delta_time);
+        application.update(delta_time);
 
         request_resize_if_needed(context, current_width, current_height);
 
@@ -2024,9 +2142,7 @@ auto main() -> int {
 
     context.running.store(false, std::memory_order_release);
 
-    info("Shutdown: destroying application");
     destroy_application(context, application);
-    info("Shutdown: application destroyed");
 
     if (exit_code == EXIT_SUCCESS) {
         info("Application exited successfully");

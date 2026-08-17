@@ -428,7 +428,7 @@ auto Swapchain::create_swapchain(VkSwapchainKHR old_swapchain) noexcept -> bool 
         return false;
     }
 
-    constexpr auto requested = 5u;
+    constexpr auto requested = 3u;
     std::uint32_t image_count = std::max(requested, capabilities.minImageCount + 1);
 
     if (capabilities.maxImageCount != 0) {

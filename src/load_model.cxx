@@ -6,6 +6,7 @@
 #include <fastgltf/tools.hpp>
 
 #include <future>
+#include <glm/gtc/packing.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
 #include <future>
@@ -29,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+
 #include "image.hxx"
 #include "image_storage.hxx"
 #include "logger.hxx"
@@ -42,6 +44,30 @@ namespace {
     }
 } // namespace
 
+auto encode_octahedral(glm::vec3 direction) -> glm::vec2 {
+    auto const l1_norm = std::abs(direction.x) + std::abs(direction.y) + std::abs(direction.z);
+    auto encoded = glm::vec2{direction.x, direction.y} / l1_norm;
+
+    if (direction.z < 0.0F) {
+        auto const wrapped = glm::vec2{1.0F} - glm::abs(glm::vec2{encoded.y, encoded.x});
+        encoded = glm::vec2{
+                encoded.x >= 0.0F ? wrapped.x : -wrapped.x,
+                encoded.y >= 0.0F ? wrapped.y : -wrapped.y,
+        };
+    }
+
+    return encoded;
+}
+
+auto decode_octahedral(glm::vec2 encoded) -> glm::vec3 {
+    auto direction = glm::vec3{encoded.x, encoded.y, 1.0F - std::abs(encoded.x) - std::abs(encoded.y)};
+    auto const t = std::max(-direction.z, 0.0F);
+
+    direction.x += direction.x >= 0.0F ? -t : t;
+    direction.y += direction.y >= 0.0F ? -t : t;
+
+    return glm::normalize(direction);
+}
 auto compress_vertex(ModelVertex const &vertex) -> CompressedModelVertex {
     CompressedModelVertex compressed{};
 
@@ -71,6 +97,49 @@ auto compress_vertices(std::span<ModelVertex const> vertices) -> std::vector<Com
 }
 
 namespace {
+
+    auto accumulate_node_lights(fastgltf::Asset const &asset, ModelCpuData const &cpu_data, std::uint32_t node_index,
+                                glm::mat4 const &parent_transform, std::vector<ModelCpuLight> &out_lights) -> void {
+        auto const &gltf_node = asset.nodes[node_index];
+        auto const local_to_model = parent_transform * cpu_data.nodes[node_index].local_transform;
+
+        debug("accumulate_node_lights: visiting node {} ('{}'), lightIndex={}", node_index,
+              gltf_node.name.empty() ? "<unnamed>" : std::string{gltf_node.name},
+              gltf_node.lightIndex.has_value() ? static_cast<int>(*gltf_node.lightIndex) : -1);
+
+
+        if (gltf_node.lightIndex.has_value()) {
+            auto const &gltf_light = asset.lights[*gltf_node.lightIndex];
+
+            if (gltf_light.type != fastgltf::LightType::Directional) {
+                ModelCpuLight light{};
+
+                light.type =
+                        gltf_light.type == fastgltf::LightType::Spot ? ModelLightType::spot : ModelLightType::point;
+
+                light.position = glm::vec3{local_to_model[3]};
+                light.direction = glm::normalize(glm::mat3{local_to_model} * glm::vec3{0.0F, 0.0F, -1.0F});
+
+                light.colour = glm::vec3{gltf_light.color[0], gltf_light.color[1], gltf_light.color[2]};
+                light.intensity =
+                        glm::clamp(gltf_light.intensity, 0.0F, 10.0F); // Clamp to avoid absurdly bright lights
+                light.range = gltf_light.range.value_or(light.range);
+
+                if (gltf_light.type == fastgltf::LightType::Spot) {
+                    light.inner_cone_degrees = glm::degrees(gltf_light.innerConeAngle.value_or(0.0F));
+                    light.outer_cone_degrees =
+                            glm::degrees(gltf_light.outerConeAngle.value_or(glm::quarter_pi<float>()));
+                }
+
+                out_lights.push_back(light);
+            }
+        }
+
+        for (auto const child: cpu_data.nodes[node_index].children) {
+            accumulate_node_lights(asset, cpu_data, child, local_to_model, out_lights);
+        }
+    }
+
     auto accumulate_node_bounds(ModelCpuData const &cpu_data, std::uint32_t node_index,
                                 glm::mat4 const &parent_transform, glm::vec3 &bounds_min, glm::vec3 &bounds_max)
             -> void {
@@ -594,6 +663,7 @@ namespace {
     // quirk is preserved rather than fixed here.
     template<typename TextureInfoT>
     auto resolve_texture_cpu(fastgltf::Asset const &asset, std::optional<TextureInfoT> const &info, bool is_srgb,
+                             std::string_view slot_name, std::string_view material_name,
                              std::filesystem::path const &base_directory,
                              std::unordered_map<std::size_t, std::size_t> &image_cache,
                              std::vector<ModelCpuImage> &cpu_images)
@@ -626,12 +696,20 @@ namespace {
             return std::unexpected(decoded.error());
         }
 
+        auto const &gltf_image = asset.images[image_index];
+
+        auto image_name = !gltf_image.name.empty()
+                                  ? std::string{gltf_image.name}
+                                  : (material_name.empty() ? std::format("image_{}", image_index)
+                                                           : std::format("{}_{}", material_name, slot_name));
+
         auto const cpu_index = cpu_images.size();
 
         cpu_images.push_back(ModelCpuImage{
                 .width = decoded->width,
                 .height = decoded->height,
                 .is_srgb = is_srgb,
+                .name = std::move(image_name),
                 .pixels = std::move(decoded->pixels),
         });
 
@@ -675,8 +753,10 @@ namespace {
 
         material.sampler = select_material_sampler(asset, gltf_material, sampler_storage);
 
-        auto base_colour_image = resolve_texture_cpu(asset, gltf_material.pbrData.baseColorTexture, true,
-                                                     base_directory, image_cache, cpu_images);
+        auto const material_name = std::string{gltf_material.name};
+
+        auto base_colour_image = resolve_texture_cpu(asset, gltf_material.pbrData.baseColorTexture, true, "basecolor",
+                                                     material_name, base_directory, image_cache, cpu_images);
 
         if (!base_colour_image) {
             return std::unexpected(base_colour_image.error());
@@ -684,8 +764,9 @@ namespace {
 
         material.base_colour_image = *base_colour_image;
 
-        auto metallic_roughness_image = resolve_texture_cpu(asset, gltf_material.pbrData.metallicRoughnessTexture,
-                                                            false, base_directory, image_cache, cpu_images);
+        auto metallic_roughness_image =
+                resolve_texture_cpu(asset, gltf_material.pbrData.metallicRoughnessTexture, false, "metallic_roughness",
+                                    material_name, base_directory, image_cache, cpu_images);
 
         if (!metallic_roughness_image) {
             return std::unexpected(metallic_roughness_image.error());
@@ -697,8 +778,8 @@ namespace {
             material.normal_scale = gltf_material.normalTexture->scale;
         }
 
-        auto normal_image =
-                resolve_texture_cpu(asset, gltf_material.normalTexture, false, base_directory, image_cache, cpu_images);
+        auto normal_image = resolve_texture_cpu(asset, gltf_material.normalTexture, false, "normal", material_name,
+                                                base_directory, image_cache, cpu_images);
 
         if (!normal_image) {
             return std::unexpected(normal_image.error());
@@ -710,8 +791,8 @@ namespace {
             material.occlusion_strength = gltf_material.occlusionTexture->strength;
         }
 
-        auto occlusion_image = resolve_texture_cpu(asset, gltf_material.occlusionTexture, false, base_directory,
-                                                   image_cache, cpu_images);
+        auto occlusion_image = resolve_texture_cpu(asset, gltf_material.occlusionTexture, false, "occlusion",
+                                                   material_name, base_directory, image_cache, cpu_images);
 
         if (!occlusion_image) {
             return std::unexpected(occlusion_image.error());
@@ -719,8 +800,8 @@ namespace {
 
         material.occlusion_image = *occlusion_image;
 
-        auto emissive_image = resolve_texture_cpu(asset, gltf_material.emissiveTexture, true, base_directory,
-                                                  image_cache, cpu_images);
+        auto emissive_image = resolve_texture_cpu(asset, gltf_material.emissiveTexture, true, "emissive", material_name,
+                                                  base_directory, image_cache, cpu_images);
 
         if (!emissive_image) {
             return std::unexpected(emissive_image.error());
@@ -748,7 +829,9 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
         });
     }
 
-    static thread_local fastgltf::Parser parser{fastgltf::Extensions::KHR_materials_emissive_strength};
+    static thread_local fastgltf::Parser parser{
+            fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_lights_punctual,
+    };
 
     constexpr auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices |
                              fastgltf::Options::LoadExternalImages;
@@ -767,6 +850,9 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
     }
 
     auto asset = std::move(asset_result.get());
+
+    debug("load_model_cpu: parsed {} nodes, {} lights, {} scenes", asset.nodes.size(), asset.lights.size(),
+          asset.scenes.size());
 
     ModelCpuData cpu_data;
     cpu_data.meshes.reserve(asset.meshes.size());
@@ -842,6 +928,14 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
         }
     }
 
+    cpu_data.lights.reserve(asset.lights.size());
+
+    for (auto const root: cpu_data.scene_roots) {
+        accumulate_node_lights(asset, cpu_data, root, glm::mat4{1.0F}, cpu_data.lights);
+    }
+    debug("load_model_cpu: extracted {} lights from {} scene roots", cpu_data.lights.size(),
+          cpu_data.scene_roots.size());
+
     return cpu_data;
 }
 
@@ -880,7 +974,7 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                         .mip_levels =
                                 static_cast<std::uint32_t>(std::bit_width(std::max(cpu_image.width, cpu_image.height))),
                         .array_layers = 1,
-                        .debug_name = "model_texture",
+                        .debug_name = cpu_image.name,
                 },
                 std::span<std::byte const>{cpu_image.pixels}, command_buffer);
 
@@ -1006,6 +1100,7 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
     model.nodes = cpu_data.nodes;
     model.scene_roots = cpu_data.scene_roots;
     std::tie(model.bounds_min, model.bounds_max) = compute_model_bounds(cpu_data);
+    model.lights = cpu_data.lights;
 
     return model;
 }

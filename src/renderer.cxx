@@ -69,6 +69,17 @@ namespace {
 
     static_assert(sizeof(CompositePushConstants) == 16);
 
+    struct LightIconPushConstants {
+        VkDeviceAddress lights_buffer_address;
+        VkDeviceAddress ubo_buffer_address;
+        std::uint32_t light_count;
+        std::uint32_t icon_texture_index;
+        std::uint32_t sampler_index;
+        float icon_world_size;
+    };
+
+    static_assert(sizeof(LightIconPushConstants) == 32);
+
     // Mirrors CullPC in assets/shaders/frustum_cull.slang. One compute
     // workgroup handles one batch: it reads that batch's un-culled
     // indirect command to learn [firstInstance, firstInstance +
@@ -838,6 +849,85 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         forward_blend_pipeline_ = *registered_forward_blend;
     }
     {
+        VkPushConstantRange const light_icon_pc{
+                .stageFlags =
+                        VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                .offset = 0,
+                .size = sizeof(LightIconPushConstants),
+        };
+
+        auto registered_light_icons = pipeline_graph_.register_pipeline(
+                compiler, PipelineRegisterInfo{
+                                  .stages =
+                                          {
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/light_icons.slang",
+                                                          .entry_point = "main_task",
+                                                          .stage = renderer::ShaderStage::task,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/light_icons.slang",
+                                                          .entry_point = "main_mesh",
+                                                          .stage = renderer::ShaderStage::mesh,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                                  renderer::ShaderCompileRequest{
+                                                          .source_path = "assets/shaders/light_icons.slang",
+                                                          .entry_point = "main_fs",
+                                                          .stage = renderer::ShaderStage::fragment,
+                                                          .include_directories = {},
+                                                          .defines = {},
+                                                  },
+                                          },
+                                  .additional_descriptor_set_layouts = {},
+                                  .push_constant_ranges = {light_icon_pc},
+                                  .colour_formats = {create_info.hdr_format},
+                                  .depth_format = create_info.depth_format,
+                                  .stencil_format = VK_FORMAT_UNDEFINED,
+                                  .samples = create_info.samples,
+                                  .blending = true,
+                                  .debug_name = "renderer.light_icon_pipeline",
+                          });
+
+        if (!registered_light_icons) {
+            return std::unexpected(make_pipeline_graph_error(registered_light_icons.error()));
+        }
+
+        light_icon_pipeline_ = *registered_light_icons;
+
+        auto light_icon_image = DecodedImage::load_from_file("assets/textures/light_bulb.png");
+        if (!light_icon_image) {
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+        auto light_icon_texture = image_storage_.create_image(
+                ImageCreateInfo{
+                        .extent = VkExtent3D{.width = light_icon_image->width(),
+                                             .height = light_icon_image->height(),
+                                             .depth = 1},
+                        .format = VK_FORMAT_R8G8B8A8_UNORM,
+                        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .image_type = VK_IMAGE_TYPE_2D,
+                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                        .samples = VK_SAMPLE_COUNT_1_BIT,
+                        .tiling = VK_IMAGE_TILING_OPTIMAL,
+                        .mip_levels = 1,
+                        .array_layers = 1,
+                        .debug_name = "renderer.light_icon_texture",
+                },
+                light_icon_image->span());
+
+        if (!light_icon_texture) {
+            return std::unexpected(make_image_error(light_icon_texture.error()));
+        }
+
+        light_icon_texture_ = *light_icon_texture;
+    }
+    {
         VkPushConstantRange const shadow_pc{
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
                 .offset = 0,
@@ -1070,13 +1160,9 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     }
 
     auto const white = image_storage_.white();
-
     auto const flat_normal = image_storage_.flat_normal();
-
     auto const metallic_roughness = image_storage_.metallic_roughness();
-
     auto const occlusion = image_storage_.occlusion();
-
     auto const emissive = image_storage_.emissive();
 
     constexpr auto def_mat = MaterialHandle{0, 1};
@@ -1437,6 +1523,32 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         vkResetQueryPool(context_.device, query_pool, 0, query_count);
     }
 
+    pipeline_stat_queries_.resize(create_info.frames_in_flight);
+    VkQueryPoolCreateInfo const pipeline_stat_pool_info{
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS,
+            .queryCount = 1,
+            .pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT |
+                                  VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT |
+                                  VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
+                                  VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT,
+    };
+
+    for (std::uint32_t frame_index = 0; frame_index < create_info.frames_in_flight; ++frame_index) {
+        VkQueryPool query_pool = VK_NULL_HANDLE;
+        VkResult const result = vkCreateQueryPool(context_.device, &pipeline_stat_pool_info, nullptr, &query_pool);
+
+        if (result != VK_SUCCESS) {
+            error("Failed to create pipeline statistics query pool for frame index {}", frame_index);
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+
+        pipeline_stat_queries_[frame_index] = FramePipelineQuery{.query_pool = query_pool, .has_results = false};
+        vkResetQueryPool(context_.device, query_pool, 0, 1);
+    }
+
     constexpr auto size = sizeof(UBO);
     ubos_.resize(create_info.frames_in_flight);
     for (auto &ubo: ubos_) {
@@ -1455,6 +1567,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         ubo = std::move(*maybe_ubo);
     }
 
+    mark_lights_dirty();
+
     rollback_on_failure = false;
     initialized_ = true;
 
@@ -1472,6 +1586,16 @@ auto Renderer::destroy() noexcept -> void {
             query.query_pool = VK_NULL_HANDLE;
         }
     }
+
+    for (auto &query: pipeline_stat_queries_) {
+        if (query.query_pool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(context_.device, query.query_pool, nullptr);
+            query.query_pool = VK_NULL_HANDLE;
+        }
+    }
+
+    pipeline_stat_queries_.clear();
+    last_frame_pipeline_stats_ = {};
 
     for (auto &ubo: ubos_) {
         ubo.destroy();
@@ -1744,6 +1868,8 @@ auto Renderer::create_model(Model const &model, MaterialHandle fallback_material
     destination.next_free = 0;
     destination.occupied = true;
 
+    destination.lights = model.lights;
+
     return ModelHandle{
             .index = model_index,
             .generation = destination.generation,
@@ -1758,6 +1884,16 @@ auto Renderer::model_bounds(ModelHandle model) const -> std::optional<std::pair<
     }
 
     return std::make_pair(slot->bounds_min, slot->bounds_max);
+}
+
+auto Renderer::model_lights(ModelHandle model) const -> std::span<ModelCpuLight const> {
+    auto const *slot = model_slot(model);
+
+    if (slot == nullptr) {
+        return {};
+    }
+
+    return slot->lights;
 }
 
 auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override)
@@ -1967,6 +2103,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
+    std::uint32_t submitted_triangle_count = 0;
+
     // The frustum-culling compute dispatch below is recorded into this same
     // command buffer before record_frame() runs, so the query pool must be
     // reset and the FullFrame timer started here rather than at the top of
@@ -1974,6 +2112,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     // Culling timestamps written below.
     auto &frame_query = timestamp_queries_[frame_index];
     vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, query_count);
+    auto &frame_pipeline_query = pipeline_stat_queries_[frame_index];
+    vkCmdResetQueryPool(command_buffer, frame_pipeline_query.query_pool, 0, 1);
 
     vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
                          static_cast<std::uint32_t>(RenderStage::FullFrame) * 2);
@@ -2127,7 +2267,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     // inline, now shared by the three-way partition below so opaque, mask
     // and blend batches land in three contiguous ranges (opaque, then mask,
     // then blend) within frame.indirect_commands.
-    auto const emit_batch = [this, &frame](batch_entry const &batch) -> std::expected<void, RendererError> {
+    auto const emit_batch =
+            [this, &frame, &submitted_triangle_count](batch_entry const &batch) -> std::expected<void, RendererError> {
         auto const *mesh = mesh_slot(batch.mesh);
 
         if (mesh == nullptr) {
@@ -2139,6 +2280,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         auto const &submesh = mesh->submeshes[batch.submesh_index];
 
         auto const instance_count = static_cast<std::uint32_t>(batch.transforms.size());
+        submitted_triangle_count += (submesh.geometry.indices.index_count / 3) * instance_count;
 
         if (frame.transforms.size() + instance_count > maximum_submission_count_ ||
             frame.draws.size() + instance_count > maximum_draw_count_) {
@@ -2409,15 +2551,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
-    // Pack this frame's point/spot light submissions into lights_buffer.
-    // submit_point_light/submit_spot_light already cap the combined count
-    // at maximum_light_count, so no further clamping is needed here.
-    {
-        std::vector<GpuLight> gpu_lights;
-        gpu_lights.reserve(point_light_submissions_.size() + spot_light_submissions_.size());
+    if ((lights_dirty_mask_ & (1u << frame_index)) != 0) {
+        light_staging_.clear();
+        light_staging_.reserve(point_light_submissions_.size() + spot_light_submissions_.size());
 
         for (auto const &point: point_light_submissions_) {
-            gpu_lights.push_back(GpuLight{
+            light_staging_.push_back(GpuLight{
                     .position = point.position,
                     .range = point.range,
                     .colour = point.colour,
@@ -2431,14 +2570,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             auto const outer = glm::radians(std::max(spot.inner_cone_degrees, spot.outer_cone_degrees));
             auto const cos_inner = std::cos(inner);
             auto const cos_outer = std::cos(outer);
-
-            // glTF KHR_lights_punctual cone-falloff terms: angular_attenuation
-            // = saturate(cos_angle * spot_scale + spot_offset), precomputed
-            // here so the shader avoids acos()/per-pixel trig.
             auto const spot_scale = 1.0F / std::max(cos_inner - cos_outer, 1e-4F);
             auto const spot_offset = -cos_outer * spot_scale;
 
-            gpu_lights.push_back(GpuLight{
+            light_staging_.push_back(GpuLight{
                     .position = spot.position,
                     .range = spot.range,
                     .colour = spot.colour,
@@ -2450,13 +2585,17 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             });
         }
 
-        frame.light_count = static_cast<std::uint32_t>(gpu_lights.size());
+        light_count_ = static_cast<std::uint32_t>(light_staging_.size());
+        frame.light_count = light_count_;
 
-        if (!gpu_lights.empty() && !frame.lights_buffer.write(0, std::as_bytes(std::span{gpu_lights}))) {
+        if (!light_staging_.empty() && !frame.lights_buffer.write(0, std::as_bytes(std::span{light_staging_}))) {
             clear_submissions();
-
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
+
+        lights_dirty_mask_ &= ~(1u << frame_index);
+    } else {
+        frame.light_count = light_count_;
     }
 
     // GPU frustum culling: one dispatch, one workgroup per batch, main view
@@ -2584,6 +2723,19 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                              (static_cast<std::uint32_t>(RenderStage::Culling) * 2) + 1);
     }
 
+    last_frame_stats_ = FrameStats{
+            .submitted_triangle_count = submitted_triangle_count,
+            .submitted_instance_count = static_cast<std::uint32_t>(frame.transforms.size()),
+            .indirect_command_count = frame.indirect_command_count,
+            .opaque_indirect_count = frame.opaque_indirect_count,
+            .mask_indirect_count = frame.mask_indirect_count,
+            .blend_indirect_count = frame.blend_indirect_count,
+            .model_submission_count = static_cast<std::uint32_t>(model_submissions_.size()),
+            .mesh_submission_count = static_cast<std::uint32_t>(submissions_.size()),
+            .point_light_count = static_cast<std::uint32_t>(point_light_submissions_.size()),
+            .spot_light_count = static_cast<std::uint32_t>(spot_light_submissions_.size()),
+    };
+
     clear_submissions();
 
     if (frame_query.has_results) {
@@ -2606,6 +2758,24 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         }
 
         frame_query.has_results = false;
+    }
+
+    if (frame_pipeline_query.has_results) {
+        std::array<std::uint64_t, pipeline_stat_count> results{};
+
+        VkResult const query_res =
+                vkGetQueryPoolResults(context_.device, frame_pipeline_query.query_pool, 0, 1, sizeof(results),
+                                      results.data(), sizeof(results), VK_QUERY_RESULT_64_BIT);
+
+        if (query_res == VK_SUCCESS) {
+            last_frame_pipeline_stats_.assembled_primitive_count = results[0];
+            last_frame_pipeline_stats_.clipped_primitive_count = results[1];
+            last_frame_pipeline_stats_.assembled_vertex_count = results[2];
+            last_frame_pipeline_stats_.fragment_shader_invocation_count = results[3];
+            last_frame_pipeline_stats_.valid = true;
+        }
+
+        frame_pipeline_query.has_results = false;
     }
 
     return {};
@@ -3009,6 +3179,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 .pStencilAttachment = nullptr,
         };
 
+        vkCmdBeginQuery(command_buffer, pipeline_stat_queries_[frame_index].query_pool, 0, 0);
         vkCmdBeginRendering(command_buffer, &forward_rendering_info);
         vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
@@ -3022,10 +3193,6 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 .padding = 0,
         };
 
-        // Opaque and mask share forward_pipeline_ -- only the cull mode
-        // differs between them (mask needs VK_CULL_MODE_NONE) -- while blend
-        // needs a dedicated PSO (forward_blend_pipeline_, blending enabled,
-        // depth write off). See docs/alpha-mode-support.md.
         vkCmdBindPipeline(command_buffer, forward_pipeline->bind_point(), forward_pipeline->pipeline());
         gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                  forward_pipeline->layout());
@@ -3069,7 +3236,40 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                                      frame.blend_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
         }
 
+        if (debug_draw_light_icons_ && frame.light_count != 0) {
+            auto const *light_icon_pipeline = pipeline_graph_.resolve(light_icon_pipeline_);
+
+            if (light_icon_pipeline != nullptr) {
+                vkCmdBindPipeline(command_buffer, light_icon_pipeline->bind_point(), light_icon_pipeline->pipeline());
+                gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                         light_icon_pipeline->layout());
+
+                vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
+                vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
+                vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
+                vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+
+                LightIconPushConstants const light_pc{
+                        .lights_buffer_address = frame.lights_buffer.device_address,
+                        .ubo_buffer_address = ubos_[frame_index].device_address,
+                        .light_count = frame.light_count,
+                        .icon_texture_index = light_icon_texture_.index,
+                        .sampler_index = sampler_storage_.linear_clamp().index,
+                        .icon_world_size = light_icon_world_size_,
+                };
+
+                vkCmdPushConstants(command_buffer, light_icon_pipeline->layout(),
+                                   VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT |
+                                           VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(LightIconPushConstants), &light_pc);
+
+                auto const group_count = (frame.light_count + 31) / 32;
+                vkCmdDrawMeshTasksEXT(command_buffer, group_count, 1, 1);
+            }
+        }
+
         vkCmdEndRendering(command_buffer);
+        vkCmdEndQuery(command_buffer, pipeline_stat_queries_[frame_index].query_pool, 0);
 
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, frame_query.query_pool,
                              (static_cast<std::uint32_t>(RenderStage::ForwardPass) * 2) + 1);
@@ -3161,6 +3361,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                          (static_cast<std::uint32_t>(RenderStage::FullFrame) * 2) + 1);
 
     frame_query.has_results = true;
+    pipeline_stat_queries_[frame_index].has_results = true;
     return {};
 }
 

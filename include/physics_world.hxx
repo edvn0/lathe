@@ -1,9 +1,10 @@
 #pragma once
 
 #include <entt/entt.hpp>
-#include <memory>
 #include <unordered_map>
 
+#include "arena_allocator.hxx"
+#include "components.hxx"
 #include "physics.hxx"
 
 class btBroadphaseInterface;
@@ -15,13 +16,13 @@ class btDiscreteDynamicsWorld;
 class btCollisionDispatcher;
 class btRigidBody;
 
-struct Transform;
+struct RaycastHit {
+    entt::entity entity{entt::null};
+    glm::vec3 point{0.0f};
+    glm::vec3 normal{0.0f};
+    float distance{0.0f};
+};
 
-// Owns a Bullet dynamics world and every btRigidBody/btCollisionShape
-// created from it. Deliberately separate from the (copyable, cloned)
-// RigidBody component -- Scene::play() deep-copies components via
-// clone_registry(), which can't carry Bullet's non-copyable objects, so
-// those live here instead, keyed by the entity they were built from.
 class PhysicsWorld {
 public:
     explicit PhysicsWorld(PhysicsWorldSettings const &settings);
@@ -32,30 +33,26 @@ public:
     PhysicsWorld(PhysicsWorld &&) = delete;
     auto operator=(PhysicsWorld &&) -> PhysicsWorld & = delete;
 
-    // Creates a btRigidBody for every entity with a Transform + RigidBody in
-    // the registry. Call once, after construction.
     auto populate_from(entt::registry &registry) -> void;
-
-    auto add_body(entt::entity entity, Transform const &transform, RigidBody const &body) -> void;
+    auto add_body(entt::entity entity, Components::Transform const &transform, RigidBody const &body) -> void;
     auto remove_body(entt::entity entity) -> void;
-
-    // Advances the simulation by delta_time (internally substepped at a
-    // fixed 1/120s step, capped at 8 substeps/frame) and writes the result
-    // back into each simulated entity's Transform (position + rotation
-    // only -- Transform::scale is renderer-only and is left untouched).
     auto step(entt::registry &registry, float delta_time) -> void;
+
+    [[nodiscard]] auto raycast(glm::vec3 const &from, glm::vec3 const &to) const -> std::optional<RaycastHit>;
 
 private:
     struct Body {
-        std::unique_ptr<btRigidBody> rigid_body;
-        std::unique_ptr<btCollisionShape> shape;
+        btRigidBody *rigid_body;
+        btCollisionShape *shape;
     };
 
-    std::unique_ptr<btCollisionConfiguration> collision_configuration_;
-    std::unique_ptr<btCollisionDispatcher> dispatcher_;
-    std::unique_ptr<btBroadphaseInterface> broadphase_;
-    std::unique_ptr<btConstraintSolver> solver_;
-    std::unique_ptr<btDiscreteDynamicsWorld> world_;
+    ArenaAllocator arena_{128 * 1024}; // 128KB chunks
+
+    btDefaultCollisionConfiguration *collision_configuration_{nullptr};
+    btCollisionDispatcher *dispatcher_{nullptr};
+    btBroadphaseInterface *broadphase_{nullptr};
+    btConstraintSolver *solver_{nullptr};
+    btDiscreteDynamicsWorld *world_{nullptr};
 
     std::unordered_map<entt::entity, Body> bodies_;
 };

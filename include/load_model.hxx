@@ -59,34 +59,10 @@ constexpr auto default_vertex_description() {
     return std::pair{attributes, bindings};
 }
 
-#include <glm/gtc/packing.hpp>
 
-// Encodes a normalized direction into the octahedral mapping used for
-// compact normal/tangent storage.
-inline auto encode_octahedral(glm::vec3 direction) -> glm::vec2 {
-    auto const l1_norm = std::abs(direction.x) + std::abs(direction.y) + std::abs(direction.z);
-    auto encoded = glm::vec2{direction.x, direction.y} / l1_norm;
+auto encode_octahedral(glm::vec3 direction) -> glm::vec2;
+auto decode_octahedral(glm::vec2 encoded) -> glm::vec3;
 
-    if (direction.z < 0.0F) {
-        auto const wrapped = glm::vec2{1.0F} - glm::abs(glm::vec2{encoded.y, encoded.x});
-        encoded = glm::vec2{
-                encoded.x >= 0.0F ? wrapped.x : -wrapped.x,
-                encoded.y >= 0.0F ? wrapped.y : -wrapped.y,
-        };
-    }
-
-    return encoded;
-}
-
-inline auto decode_octahedral(glm::vec2 encoded) -> glm::vec3 {
-    auto direction = glm::vec3{encoded.x, encoded.y, 1.0F - std::abs(encoded.x) - std::abs(encoded.y)};
-    auto const t = std::max(-direction.z, 0.0F);
-
-    direction.x += direction.x >= 0.0F ? -t : t;
-    direction.y += direction.y >= 0.0F ? -t : t;
-
-    return glm::normalize(direction);
-}
 
 #pragma pack(push, 1)
 struct CompressedModelVertex {
@@ -121,6 +97,25 @@ struct ModelNode {
     std::vector<std::uint32_t> children{};
 };
 
+enum class ModelLightType : std::uint8_t {
+    point,
+    spot,
+};
+
+struct ModelCpuLight {
+    ModelLightType type = ModelLightType::point;
+
+    glm::vec3 position{0.0F};
+    glm::vec3 direction{0.0F, -1.0F, 0.0F}; // world-space, only meaningful for spot
+
+    glm::vec3 colour{1.0F};
+    float intensity = 1.0F;
+    float range = 10.0F;
+
+    float inner_cone_degrees = 20.0F;
+    float outer_cone_degrees = 30.0F;
+};
+
 struct Model {
     std::vector<ModelMesh> meshes;
     std::vector<ModelNode> nodes;
@@ -129,6 +124,8 @@ struct Model {
 
     glm::vec3 bounds_min{-0.5F};
     glm::vec3 bounds_max{0.5F};
+
+    std::vector<ModelCpuLight> lights{};
 };
 
 enum class ModelLoadErrorType : std::uint8_t {
@@ -156,6 +153,7 @@ struct ModelCpuImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     bool is_srgb = false;
+    std::string name;
     std::vector<std::byte> pixels;
 };
 
@@ -188,12 +186,14 @@ struct ModelCpuMesh {
     std::vector<ModelCpuPrimitive> primitives;
 };
 
+
 struct ModelCpuData {
     std::vector<ModelCpuMesh> meshes;
     std::vector<ModelCpuMaterial> materials;
     std::vector<ModelCpuImage> images;
     std::vector<ModelNode> nodes;
     std::vector<std::uint32_t> scene_roots;
+    std::vector<ModelCpuLight> lights;
 };
 
 auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices)

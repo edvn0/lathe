@@ -13,6 +13,11 @@ struct RigidBody {
     float restitution = 0.4F;
     float mass = 1.0F; // ignored (treated as immovable) when is_static
     bool is_static = false;
+
+    static auto from_model_bounds(auto &&bounds) -> RigidBody {
+        auto &&[min, max] = std::tuple(std::get<0>(bounds), std::get<1>(bounds));
+        return RigidBody{.half_extents = (max - min) * 0.5F};
+    }
 };
 
 struct PhysicsWorldSettings {

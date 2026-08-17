@@ -8,8 +8,11 @@
 #include <type_traits>
 #include <utility>
 
+#include <stb_image.h>
+
 #include "buffer.hxx"
 #include "context.hxx"
+#include "logger.hxx"
 #include "vk_object_name.hxx"
 
 namespace {
@@ -472,4 +475,32 @@ auto Image::destroy() noexcept -> void {
     array_layers_ = 0;
 
     context_ = nullptr;
+}
+
+auto DecodedImage::StbiDeleter::operator()(unsigned char *pixels) const noexcept -> void { stbi_image_free(pixels); }
+
+DecodedImage::DecodedImage(std::unique_ptr<unsigned char, StbiDeleter> pixels, int width, int height) noexcept :
+    pixels_(std::move(pixels)), width_(width), height_(height) {}
+
+auto DecodedImage::load_from_file(std::string_view path) -> std::optional<DecodedImage> {
+    int width = 0;
+    int height = 0;
+    int source_channels = 0;
+
+    // Force 4 channels (STBI_rgb_alpha) regardless of the source PNG's
+    // actual channel count -- create_image below is hardcoded to
+    // VK_FORMAT_R8G8B8A8_UNORM, so the decoded buffer must always be
+    // RGBA8 even if the file is e.g. greyscale or RGB.
+    auto *decoded = stbi_load(std::string{path}.c_str(), &width, &height, &source_channels, STBI_rgb_alpha);
+
+    if (decoded == nullptr) {
+        error("Could not decode image '{}': {}", path, stbi_failure_reason());
+        return std::nullopt;
+    }
+
+    return DecodedImage{std::unique_ptr<unsigned char, StbiDeleter>{decoded}, width, height};
+}
+
+[[nodiscard]] auto DecodedImage::span() const noexcept -> std::span<std::byte const> {
+    return std::as_bytes(std::span{pixels_.get(), static_cast<std::size_t>(width_) * height_ * 4});
 }
