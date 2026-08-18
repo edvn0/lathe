@@ -292,10 +292,9 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
         dynamic_states.insert(state);
     }
 
-    std::vector<VkDynamicState> vector;
-    vector.reserve(dynamic_states.size());
-    for (auto it = dynamic_states.begin(); it != dynamic_states.end();) {
-        vector.push_back(std::move(dynamic_states.extract(it++).value()));
+    std::vector<VkDynamicState> vector(dynamic_states.begin(), dynamic_states.end());
+    for (auto s: vector) {
+        debug("[Pipeline '{}'] Dynamic State: {}", create_info.debug_name, static_cast<int>(s));
     }
 
     if (std::ranges::find_if(create_info.shaders, [](ShaderStageInfo const &shader) {

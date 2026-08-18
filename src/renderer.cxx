@@ -199,9 +199,8 @@ namespace {
                     .pNext = nullptr,
                     .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
                     .srcAccessMask = VK_ACCESS_2_NONE,
-                    .dstStageMask =
-                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                    .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                     .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -641,9 +640,6 @@ namespace {
         return {bindings, attributes};
     }
 
-    // Pass an empty span for both when the draw has no vertex buffer (e.g.
-    // a fullscreen-triangle composite draw) or when binding a mesh-shader
-    // ShaderObjectSet, which has no vertex input stage at all.
     auto set_shader_object_vertex_input(VkCommandBuffer command_buffer,
                                         std::span<VkVertexInputBindingDescription2EXT const> bindings,
                                         std::span<VkVertexInputAttributeDescription2EXT const> attributes) noexcept
@@ -652,9 +648,6 @@ namespace {
                                static_cast<std::uint32_t>(attributes.size()), attributes.data());
     }
 
-    // Replaces the polygon-mode/samples/depth-clamp fields that used to live
-    // in GraphicsPipelineCreateInfo. Sample mask is left fully open and
-    // alpha-to-coverage disabled -- neither is used by any pass today.
     auto set_shader_object_raster_state(VkCommandBuffer command_buffer, VkPolygonMode polygon_mode,
                                         VkSampleCountFlagBits samples, bool depth_clamp_enable) noexcept -> void {
         vkCmdSetPolygonModeEXT(command_buffer, polygon_mode);
