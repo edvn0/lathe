@@ -5,6 +5,8 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
+#include "material.hxx"
+
 namespace Components {
     struct Lifetime {
         float remaining_seconds{0.0F};
@@ -33,6 +35,11 @@ namespace Components {
         float range = 10.0F;
         float inner_cone_degrees = 20.0F;
         float outer_cone_degrees = 30.0F;
+    };
+
+    
+    struct MaterialOverride {
+        MaterialHandle material{};
     };
 
 } // namespace Components

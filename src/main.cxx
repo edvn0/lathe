@@ -207,11 +207,6 @@ namespace {
         return false;
     };
 
-    // Attach to an entity to force its render material regardless of what
-    // its ModelHandle's submeshes normally use -- e.g. making the floor red.
-    struct MaterialOverride {
-        MaterialHandle material{};
-    };
 
     struct Application {
         explicit Application(VulkanContext &ctx) noexcept :
@@ -388,7 +383,7 @@ namespace {
         auto play() -> void {
             runtime_scene = std::make_unique<Scene>();
             runtime_scene->physics_settings = editor_scene->physics_settings;
-            clone_registry<Components::Transform, ModelHandle, RigidBody, MaterialOverride, Components::PointLight,
+            clone_registry<Components::Transform, ModelHandle, RigidBody, Components::MaterialOverride, Components::PointLight,
                            Components::SpotLight>(editor_scene->get_registry(), runtime_scene->get_registry());
 
             active_scene = runtime_scene.get();
@@ -773,7 +768,7 @@ namespace {
             });
 
             if (floor_material) {
-                floor_entity.emplace<MaterialOverride>(MaterialOverride{*floor_material});
+                floor_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{*floor_material});
             } else {
                 error("Could not create floor material override: {}", describe(floor_material.error()));
             }
@@ -873,7 +868,7 @@ namespace {
                                 .scale = glm::vec3{width_scale(eng), height_scale(eng), width_scale(eng)},
                         });
                         grass_entity.emplace<ModelHandle>(engine_models.grass_clump);
-                        grass_entity.emplace<MaterialOverride>(MaterialOverride{grass_material});
+                        grass_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{grass_material});
                     }
                 }
             }
@@ -1694,7 +1689,7 @@ namespace {
 
 
         for (auto [entity, transform, model]: view.each()) {
-            auto const *override_component = registry.try_get<MaterialOverride const>(entity);
+            auto const *override_component = registry.try_get<Components::MaterialOverride const>(entity);
             auto const material_override =
                     override_component != nullptr ? override_component->material : MaterialHandle{};
 
