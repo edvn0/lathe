@@ -1547,6 +1547,7 @@ namespace {
         enabled_features.wideLines = VK_TRUE;
         enabled_features.pipelineStatisticsQuery = VK_TRUE;
         enabled_features.shaderInt16 = VK_TRUE;
+        enabled_features.drawIndirectFirstInstance = VK_TRUE;
 
         VkDeviceCreateInfo const create_info{
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,

@@ -73,13 +73,13 @@ FragmentOutput mainFs(VertexOutput input, uniform CompositePC pc)
     uint texture_index =
         NonUniformResourceIndex(pc.hdr_texture_index);
 
-    uint sampler_index =
-        NonUniformResourceIndex(pc.sampler_index);
+    uint sampler_index = 0;
+        // NonUniformResourceIndex(pc.sampler_index);
 
     float3 hdr_colour =
         sampled_2d[texture_index]
             .Sample(
-                get_sampler(sampler_index),
+                samplers[sampler_index],
                 input.uv
             )
             .rgb;

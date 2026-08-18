@@ -3485,7 +3485,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                         .ubo_buffer_address = ubos_[frame_index].device_address,
                         .light_count = frame.light_count,
                         .icon_texture_index = light_icon_texture_.index,
-                        .sampler_index = sampler_storage_.linear_clamp().index,
+                        .sampler_index = 0, // sampler_storage_.linear_clamp().index,
                         .icon_world_size = light_icon_world_size_,
                 };
 

@@ -132,8 +132,11 @@ bool instance_visible(CullPC pc, GpuCullBounds bounds, uint instance_index)
     return true;
 }
 
-groupshared uint s_scan[WG_SIZE];
-groupshared uint s_running;
+
+// Separate the read phase and write phase into distinct arrays
+groupshared uint s_wave_totals[WG_SIZE];
+groupshared uint s_wave_offsets[WG_SIZE];
+groupshared uint s_chunk_total;
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -141,11 +144,6 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
 {
     uint batch = group_id.x;
 
-    // Workgroup-uniform early-out (every thread in the workgroup takes the
-    // same branch, since it depends only on group_id, not lane index) --
-    // safe to return here, before any GroupMemoryBarrierWithGroupSync below.
-    // A per-thread early-out on a per-lane condition would instead leave
-    // some lanes never reaching the barrier, deadlocking the workgroup.
     if (batch >= pc.batch_count) {
         return;
     }
@@ -154,11 +152,7 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
     GpuCullBounds bounds = pc.batch_bounds[batch];
     uint lane = group_thread_id.x;
 
-    if (lane == 0) {
-        s_running = 0;
-    }
-
-    GroupMemoryBarrierWithGroupSync();
+    uint running_survivors = 0;
 
     for (uint base = 0; base < source_command.instanceCount; base += WG_SIZE) {
         uint local_index = base + lane;
@@ -168,57 +162,55 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
             visible = instance_visible(pc, bounds, source_command.firstInstance + local_index);
         }
 
-        // Hillis-Steele inclusive scan over this chunk's visibility flags.
-        // Each step reads a neighbour lane's current running total into a
-        // local before writing -- reading s_scan[lane - offset] while other
-        // lanes are simultaneously writing s_scan[lane] needs the read and
-        // the write on opposite sides of a barrier, hence two syncs per step
-        // rather than one.
-        s_scan[lane] = visible ? 1u : 0u;
+        // 1. Subgroup-level scan (hardware accelerated, 0 barriers)
+        uint wave_exclusive = WavePrefixCountBits(visible);
+        uint wave_total = WaveActiveCountBits(visible);
+
+        uint lane_in_wave = WaveGetLaneIndex();
+        uint wave_id = lane / WaveGetLaneCount();
+
+        // Phase A: Write totals (distinct array)
+        if (lane_in_wave == 0) {
+            s_wave_totals[wave_id] = wave_total;
+        }
 
         GroupMemoryBarrierWithGroupSync();
 
-        for (uint offset = 1; offset < WG_SIZE; offset <<= 1) {
-            uint addend = (lane >= offset) ? s_scan[lane - offset] : 0u;
-
-            GroupMemoryBarrierWithGroupSync();
-
-            s_scan[lane] += addend;
-
-            GroupMemoryBarrierWithGroupSync();
+        // Phase B: Thread 0 computes offsets and chunk total
+        if (lane == 0) {
+            uint num_waves = (WG_SIZE + WaveGetLaneCount() - 1) / WaveGetLaneCount();
+            uint running_wave_total = 0;
+            for (uint i = 0; i < num_waves; ++i) {
+                // Strictly separated: Read from totals, Write to offsets
+                s_wave_offsets[i] = running_wave_total;
+                running_wave_total += s_wave_totals[i];
+            }
+            s_chunk_total = running_wave_total;
         }
 
-        uint exclusive_scan = s_scan[lane] - (visible ? 1u : 0u);
-        uint chunk_survivor_count = s_scan[WG_SIZE - 1];
+        GroupMemoryBarrierWithGroupSync();
+
+        // Phase C: All threads read offsets
+        uint exclusive_scan = s_wave_offsets[wave_id] + wave_exclusive;
+        uint chunk_survivor_count = s_chunk_total;
 
         if (visible) {
             uint source_index = source_command.firstInstance + local_index;
-            uint destination_index = source_command.firstInstance + s_running + exclusive_scan;
+            uint destination_index = source_command.firstInstance + running_survivors + exclusive_scan;
 
-            // transform_index is stale in the compacted copy (it still
-            // points at this instance's original slot in src_transforms,
-            // not destination_index) -- harmless, since every consumer of
-            // dst_draws (forward_geom.slang, depth_prepass.slang) indexes
-            // transforms by SV_VulkanInstanceID, never by
-            // GpuDraw::transform_index.
             pc.dst_draws[destination_index] = pc.src_draws[source_index];
             pc.dst_transforms[destination_index] = pc.src_transforms[source_index];
         }
 
-        GroupMemoryBarrierWithGroupSync();
+        running_survivors += chunk_survivor_count;
 
-        if (lane == 0) {
-            s_running += chunk_survivor_count;
-        }
-
+        // Prevent next iteration from overwriting shared memory before all threads finish Phase C
         GroupMemoryBarrierWithGroupSync();
     }
 
     if (lane == 0) {
         IndirectCommand out_command = source_command;
-
-        out_command.instanceCount = s_running;
-
+        out_command.instanceCount = running_survivors;
         pc.dst_indirect[batch] = out_command;
     }
 }

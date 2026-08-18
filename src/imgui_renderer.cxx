@@ -41,8 +41,7 @@ namespace gui {
             VkDeviceAddress vb;
             std::uint32_t base_vertex;
             std::uint32_t texture_id;
-            std::uint32_t sampler_id;
-            std::uint32_t _pad = 0;
+            std::uint32_t sampler_id{0};
         };
 
         auto apply_dark_theme() -> void {

@@ -282,6 +282,36 @@ auto ShaderObjectSet::bind(VkCommandBuffer command_buffer) const noexcept -> voi
         return;
     }
 
+    if (bind_point_ == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+        static constexpr std::array<VkShaderStageFlagBits, 6> conflicting_stages{
+                VK_SHADER_STAGE_VERTEX_BIT,
+                VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+                VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+                VK_SHADER_STAGE_GEOMETRY_BIT,
+                VK_SHADER_STAGE_TASK_BIT_EXT,
+                VK_SHADER_STAGE_MESH_BIT_EXT,
+        };
+
+        std::array<VkShaderStageFlagBits, conflicting_stages.size()> stages_to_clear{};
+        std::array<VkShaderEXT, conflicting_stages.size()> null_shaders{};
+        std::uint32_t clear_count = 0;
+
+        for (auto const stage: conflicting_stages) {
+            auto const owned = std::any_of(stages_.begin(), stages_.begin() + count_,
+                                           [stage](VkShaderStageFlagBits owned_stage) { return owned_stage == stage; });
+
+            if (!owned) {
+                stages_to_clear[clear_count] = stage;
+                null_shaders[clear_count] = VK_NULL_HANDLE;
+                ++clear_count;
+            }
+        }
+
+        if (clear_count != 0) {
+            vkCmdBindShadersEXT(command_buffer, clear_count, stages_to_clear.data(), null_shaders.data());
+        }
+    }
+
     vkCmdBindShadersEXT(command_buffer, count_, stages_.data(), shaders_.data());
 }
 
