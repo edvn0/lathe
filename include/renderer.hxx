@@ -18,6 +18,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <vulkan/vulkan_core.h>
 
 #include "buffer.hxx"
 #include "config.hxx"
@@ -29,6 +30,7 @@
 #include "image_storage.hxx"
 #include "load_model.hxx"
 #include "material_storage.hxx" // TextureHandle, MaterialCreateInfo now live here
+#include "model.hxx"
 #include "pipeline_graph_repository.hxx"
 #include "pipeline_storage.hxx"
 #include "sampler_storage.hxx"
@@ -36,6 +38,14 @@
 #include "shader_change_queue.hxx"
 #include "shadow_cascades.hxx"
 #include "slang_compiler.hxx"
+
+struct BloomSettings {
+    bool enabled = true;
+    float threshold = 1.0F;
+    float knee = 0.5F;
+    float filter_radius = 0.005F;
+    float intensity = 0.04F;
+};
 
 
 enum class RenderStage : std::uint32_t {
@@ -45,8 +55,10 @@ enum class RenderStage : std::uint32_t {
     DepthPrepass,
     ForwardPass,
     Composition,
+    BloomPass,
     Count
 };
+
 constexpr auto to_string(RenderStage stage) -> std::string_view {
     switch (stage) {
         case RenderStage::FullFrame:
@@ -98,30 +110,6 @@ struct PipelineStats {
     std::uint64_t fragment_shader_invocation_count = 0;
 
     bool valid = false;
-};
-
-struct ModelHandle {
-    std::uint32_t index = 0;
-    std::uint32_t generation = 0;
-
-    [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return index != 0;
-    }
-
-    auto operator==(ModelHandle const &) const -> bool = default;
-};
-
-struct MeshHandle {
-    std::uint32_t index = 0;
-    std::uint32_t generation = 0;
-
-    [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return index != 0;
-    }
-
-    auto operator==(MeshHandle const &) const -> bool = default;
 };
 
 struct SubmeshCreateInfo {
@@ -608,6 +596,11 @@ private:
 
         ForwardTarget forward_target{};
 
+        struct BloomTarget {
+            ImageHandle image;
+            std::array<ImageHandle, 4> mip_slots;
+        };
+        BloomTarget bloom_target{};
         ImageHandle shadow_atlas{};
 
         VkDeviceSize draw_upload_offset = 0;
@@ -691,6 +684,8 @@ private:
     [[nodiscard]]
     auto upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame) -> std::expected<void, RendererError>;
 
+    auto record_bloom_pass(VkCommandBuffer, std::uint32_t, ImageHandle, VkExtent2D) -> void;
+
     auto clear_submissions() noexcept -> void;
 
 
@@ -719,7 +714,11 @@ private:
     PipelineNodeHandle composite_pipeline_;
     PipelineNodeHandle frustum_cull_pipeline_;
     PipelineNodeHandle light_icon_pipeline_;
+    PipelineNodeHandle bloom_downsample_pipeline_;
+    PipelineNodeHandle bloom_upsample_pipeline_;
     ShaderChangeQueue shader_change_queue_;
+
+    BloomSettings bloom_settings_;
 
     ImageHandle light_icon_texture_{};
     bool debug_draw_light_icons_ = false;

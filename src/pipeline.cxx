@@ -293,10 +293,6 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
     }
 
     std::vector<VkDynamicState> vector(dynamic_states.begin(), dynamic_states.end());
-    for (auto s: vector) {
-        debug("[Pipeline '{}'] Dynamic State: {}", create_info.debug_name, static_cast<int>(s));
-    }
-
     if (std::ranges::find_if(create_info.shaders, [](ShaderStageInfo const &shader) {
             return shader.stage == VK_SHADER_STAGE_MESH_BIT_EXT || shader.stage == VK_SHADER_STAGE_TASK_BIT_EXT;
         }) != create_info.shaders.end()) {
@@ -352,19 +348,12 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
             .basePipelineIndex = -1,
     };
 
-    debug("[Pipeline::create_graphics] '{}': locking pipeline_cache_mutex", create_info.debug_name);
 
     {
         std::lock_guard<std::mutex> const cache_lock{pipeline_cache_mutex};
 
-        debug("[Pipeline::create_graphics] '{}': calling vkCreateGraphicsPipelines (cache={})",
-              create_info.debug_name, static_cast<void const *>(pipeline_cache));
-
         vk_result = vkCreateGraphicsPipelines(context.device, pipeline_cache, 1, &pipeline_info, nullptr,
                                               &result.pipeline_);
-
-        debug("[Pipeline::create_graphics] '{}': vkCreateGraphicsPipelines returned {}", create_info.debug_name,
-              static_cast<int>(vk_result));
     }
 
     if (vk_result != VK_SUCCESS) {

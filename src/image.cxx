@@ -107,6 +107,7 @@ Image::~Image() { destroy(); }
 Image::Image(Image &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), image_(std::exchange(other.image_, VK_NULL_HANDLE)),
     view_(std::exchange(other.view_, VK_NULL_HANDLE)), descriptor_views_(std::exchange(other.descriptor_views_, {})),
+    mip_layer_views_(std::exchange(other.mip_layer_views_, {})),
     allocation_(std::exchange(other.allocation_, VK_NULL_HANDLE)),
     allocation_info_(std::exchange(other.allocation_info_, VmaAllocationInfo{})),
     format_(std::exchange(other.format_, VK_FORMAT_UNDEFINED)), extent_(std::exchange(other.extent_, VkExtent3D{})),
@@ -123,29 +124,18 @@ auto Image::operator=(Image &&other) noexcept -> Image & {
     destroy();
 
     context_ = std::exchange(other.context_, nullptr);
-
     image_ = std::exchange(other.image_, VK_NULL_HANDLE);
-
     view_ = std::exchange(other.view_, VK_NULL_HANDLE);
-
     descriptor_views_ = std::exchange(other.descriptor_views_, {});
-
+    mip_layer_views_ = std::exchange(other.mip_layer_views_, {});
     allocation_ = std::exchange(other.allocation_, VK_NULL_HANDLE);
-
     allocation_info_ = std::exchange(other.allocation_info_, VmaAllocationInfo{});
-
     format_ = std::exchange(other.format_, VK_FORMAT_UNDEFINED);
-
     extent_ = std::exchange(other.extent_, VkExtent3D{});
-
     usage_ = std::exchange(other.usage_, VkImageUsageFlags{0});
-
     aspect_ = std::exchange(other.aspect_, VkImageAspectFlags{0});
-
     samples_ = std::exchange(other.samples_, VK_SAMPLE_COUNT_1_BIT);
-
     mip_levels_ = std::exchange(other.mip_levels_, 0);
-
     array_layers_ = std::exchange(other.array_layers_, 0);
 
     return *this;
@@ -317,6 +307,60 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
     image.mip_levels_ = create_info.mip_levels;
     image.array_layers_ = create_info.array_layers;
 
+    if (create_info.create_mip_layer_views) {
+        image.mip_layer_views_.assign(static_cast<std::size_t>(create_info.mip_levels) * create_info.array_layers,
+                                      VK_NULL_HANDLE);
+
+        for (std::uint32_t mip = 0; mip < create_info.mip_levels; ++mip) {
+            for (std::uint32_t layer = 0; layer < create_info.array_layers; ++layer) {
+                VkImageViewCreateInfo const slice_view_info{
+                        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                        .pNext = nullptr,
+                        .flags = 0,
+                        .image = image.image_,
+                        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                        .format = create_info.format,
+                        .components =
+                                VkComponentMapping{
+                                        .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                                        .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                                        .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                                        .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+                                },
+                        .subresourceRange =
+                                VkImageSubresourceRange{
+                                        .aspectMask = aspect,
+                                        .baseMipLevel = mip,
+                                        .levelCount = 1,
+                                        .baseArrayLayer = layer,
+                                        .layerCount = 1,
+                                },
+                };
+
+                auto const slice_index = image.mip_layer_view_index(mip, layer);
+
+                result = vkCreateImageView(context.device, &slice_view_info, nullptr,
+                                           &image.mip_layer_views_[slice_index]);
+
+                if (result != VK_SUCCESS) {
+                    image.destroy();
+
+                    return std::unexpected(
+                            make_error(ImageErrorType::view_creation_failed,
+                                       std::format("vkCreateImageView (mip {} layer {}) failed for image '{}'", mip,
+                                                   layer, create_info.debug_name),
+                                       result));
+                }
+
+                auto const slice_name = std::string{create_info.debug_name} + ".mip_layer_view." + std::to_string(mip) +
+                                        "." + std::to_string(layer);
+
+                vk::set_object_name(context.device, VK_OBJECT_TYPE_IMAGE_VIEW,
+                                    vk::object_handle(image.mip_layer_views_[slice_index]), slice_name);
+            }
+        }
+    }
+
     vk::set_object_name(context.device, VK_OBJECT_TYPE_IMAGE, vk::object_handle(image.image_), create_info.debug_name);
     auto const view_name = std::string{create_info.debug_name} + ".view";
     vk::set_object_name(context.device, VK_OBJECT_TYPE_IMAGE_VIEW, vk::object_handle(image.view_), view_name);
@@ -461,6 +505,14 @@ auto Image::destroy() noexcept -> void {
     if (image_ != VK_NULL_HANDLE && allocation_ != VK_NULL_HANDLE && context_->allocator != VK_NULL_HANDLE) {
         vmaDestroyImage(context_->allocator, image_, allocation_);
     }
+
+    for (auto &slice_view: mip_layer_views_) {
+        if (slice_view != VK_NULL_HANDLE && context_->device != VK_NULL_HANDLE) {
+            vkDestroyImageView(context_->device, slice_view, nullptr);
+        }
+    }
+
+    mip_layer_views_.clear();
 
     image_ = VK_NULL_HANDLE;
     allocation_ = VK_NULL_HANDLE;

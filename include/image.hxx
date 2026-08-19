@@ -8,6 +8,7 @@
 #include <expected>
 #include <format>
 #include <string_view>
+#include <vector>
 
 #include <vk_mem_alloc.h>
 
@@ -77,13 +78,13 @@ struct ImageCreateInfo {
     ImageDescriptorViewFlags descriptor_views = 0;
 
     VkImageCreateFlags flags = 0;
-
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
-
     VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
 
     std::uint32_t mip_levels = 1;
     std::uint32_t array_layers = 1;
+
+    bool create_mip_layer_views = false;
 
     std::string_view debug_name = "image";
 };
@@ -146,6 +147,20 @@ public:
     }
 
     [[nodiscard]]
+    auto mip_layer_view(std::uint32_t mip, std::uint32_t layer) const noexcept -> VkImageView {
+        if (mip >= mip_levels_ || layer >= array_layers_ || mip_layer_views_.empty()) {
+            return VK_NULL_HANDLE;
+        }
+
+        return mip_layer_views_[mip_layer_view_index(mip, layer)];
+    }
+
+    [[nodiscard]]
+    auto has_mip_layer_views() const noexcept -> bool {
+        return !mip_layer_views_.empty();
+    }
+
+    [[nodiscard]]
     auto allocation() const noexcept -> VmaAllocation {
         return allocation_;
     }
@@ -166,6 +181,19 @@ public:
                 .width = extent_.width,
                 .height = extent_.height,
         };
+    }
+
+    [[nodiscard]]
+    auto mip_extent(std::uint32_t mip) const noexcept -> VkExtent2D {
+        auto width = extent_.width;
+        auto height = extent_.height;
+
+        for (std::uint32_t i = 0; i < mip; ++i) {
+            width = width > 1 ? width / 2 : 1;
+            height = height > 1 ? height / 2 : 1;
+        }
+
+        return VkExtent2D{.width = width, .height = height};
     }
 
     [[nodiscard]]
@@ -200,7 +228,12 @@ private:
     VkImageView view_ = VK_NULL_HANDLE;
 
     std::array<VkImageView, static_cast<std::size_t>(ImageDescriptorView::count)> descriptor_views_{};
+    [[nodiscard]]
+    auto mip_layer_view_index(std::uint32_t mip, std::uint32_t layer) const noexcept -> std::size_t {
+        return static_cast<std::size_t>(mip) * array_layers_ + layer;
+    }
 
+    std::vector<VkImageView> mip_layer_views_;
     VmaAllocation allocation_ = VK_NULL_HANDLE;
 
     VmaAllocationInfo allocation_info_{};

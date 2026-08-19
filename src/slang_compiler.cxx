@@ -234,11 +234,6 @@ namespace renderer {
 
     auto SlangCompiler::compile(ShaderCompileRequest const &request) const
             -> std::expected<CompiledShader, ShaderCompileError> {
-        auto const thread_tag = std::hash<std::thread::id>{}(std::this_thread::get_id());
-
-        debug("[compile][thread {}] enter: {} entry={}", thread_tag, request.source_path.string(),
-              request.entry_point);
-
         if (!valid()) {
             return std::unexpected{make_error(ShaderCompileErrorType::slang_global_session_failed,
                                               SLANG_E_NOT_AVAILABLE, "SlangCompiler is not initialized.")};
@@ -367,8 +362,6 @@ namespace renderer {
 
         auto session = Slang::ComPtr<slang::ISession>{};
 
-        debug("[compile][thread {}] locking compile_mutex (whole-compile lock)", thread_tag);
-
         // NOTE: this lock now spans the entire Slang pipeline below
         // (createSession through getEntryPointCode), not just createSession()
         // as originally planned. Observed in practice: concurrent
@@ -385,15 +378,10 @@ namespace renderer {
         // Phase 1/3 bookkeeping and other threads' non-Slang work.
         std::lock_guard<std::mutex> const compile_lock{impl_->compile_mutex};
 
-        debug("[compile][thread {}] locked, calling createSession()", thread_tag);
-
         auto const session_result = impl_->global_session->createSession(session_description, session.writeRef());
 
-        debug("[compile][thread {}] createSession: returned, result={}", thread_tag,
-              static_cast<int>(session_result));
 
         if (SLANG_FAILED(session_result) || session == nullptr) {
-            debug("[compile][thread {}] createSession failed", thread_tag);
             return std::unexpected{make_error(ShaderCompileErrorType::slang_session_failed, session_result,
                                               "IGlobalSession::createSession() "
                                               "failed.")};
@@ -437,8 +425,6 @@ namespace renderer {
 
         append_diagnostics(diagnostics, module_diagnostics);
 
-        debug("[compile][thread {}] loadModuleFromSourceString returned module={}", thread_tag,
-              static_cast<void const *>(module.get()));
 
         if (module == nullptr) {
             return std::unexpected{
@@ -455,8 +441,6 @@ namespace renderer {
 
         append_diagnostics(diagnostics, entry_point_diagnostics);
 
-        debug("[compile][thread {}] findAndCheckEntryPoint returned result={}", thread_tag,
-              static_cast<int>(result));
 
         if (SLANG_FAILED(result) || entry_point == nullptr) {
             if (diagnostics.empty()) {
@@ -483,8 +467,6 @@ namespace renderer {
 
         append_diagnostics(diagnostics, composition_diagnostics);
 
-        debug("[compile][thread {}] createCompositeComponentType returned result={}", thread_tag,
-              static_cast<int>(result));
 
         if (SLANG_FAILED(result) || composed_program == nullptr) {
             return std::unexpected{
@@ -499,7 +481,6 @@ namespace renderer {
 
         append_diagnostics(diagnostics, link_diagnostics);
 
-        debug("[compile][thread {}] link returned result={}", thread_tag, static_cast<int>(result));
 
         if (SLANG_FAILED(result) || linked_program == nullptr) {
             return std::unexpected{make_error(ShaderCompileErrorType::link_failed, result, std::move(diagnostics))};
@@ -513,7 +494,6 @@ namespace renderer {
 
         append_diagnostics(diagnostics, target_diagnostics);
 
-        debug("[compile][thread {}] getEntryPointCode returned result={}", thread_tag, static_cast<int>(result));
 
         if (SLANG_FAILED(result) || target_code == nullptr) {
             return std::unexpected{
@@ -546,8 +526,6 @@ namespace renderer {
                                               "the SPIR-V magic number.")};
         }
 
-        debug("[compile][thread {}] exit: {} entry={} spirv_words={}", thread_tag, request.source_path.string(),
-              request.entry_point, spirv.size());
 
         return CompiledShader{
                 .stage = request.stage,

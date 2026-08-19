@@ -117,8 +117,12 @@ struct std::formatter<ImageStorageErrorType> : std::formatter<std::string_view> 
 
 struct ImageStorageCreateInfo {
     std::uint32_t capacity = 0;
-
     std::string_view debug_name = "image_storage";
+};
+
+struct ImageViewRegistration {
+    VkImageView sampled_2d = VK_NULL_HANDLE;
+    VkImageView storage_2d = VK_NULL_HANDLE;
 };
 
 class ImageStorage {
@@ -135,6 +139,16 @@ public:
     static auto create(VulkanContext &context, ImageStorageCreateInfo const &create_info)
             -> std::expected<ImageStorage, ImageStorageError>;
 
+    /*
+     * Reserves a bindless slot backed by a view the caller already
+     * owns (e.g. Image::mip_layer_view() of some other slot's
+     * image), rather than creating a new VkImage. The caller is
+     * responsible for keeping the source image alive at least as
+     * long as this handle, and must destroy_image() this handle
+     * before (or without ever) destroying the source image.
+     */
+    [[nodiscard]]
+    auto register_view(ImageViewRegistration const &registration) -> std::expected<ImageHandle, ImageStorageError>;
     [[nodiscard]]
     auto create_image(ImageCreateInfo const &create_info) -> std::expected<ImageHandle, ImageStorageError>;
     [[nodiscard]]
@@ -222,6 +236,10 @@ public:
 private:
     struct Slot {
         Image image{};
+
+        VkImageView alias_sampled_2d = VK_NULL_HANDLE;
+        VkImageView alias_storage_2d = VK_NULL_HANDLE;
+        bool is_alias = false;
 
         std::uint32_t generation = 1;
         std::uint32_t next_free = 0;

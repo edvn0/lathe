@@ -24,6 +24,7 @@
 #include "material_storage.hxx"
 #include "sampler_storage.hxx"
 #include "slang_compiler.hxx"
+#include "vk_barrier.hxx"
 
 namespace {
     template<typename Action>
@@ -62,12 +63,13 @@ namespace {
 
     struct CompositePushConstants {
         std::uint32_t hdr_texture_index;
+        std::uint32_t bloom_texture_index; // <-- Added
         std::uint32_t sampler_index;
         float exposure;
-        std::uint32_t padding;
+        float bloom_intensity; // <-- Added
     };
 
-    static_assert(sizeof(CompositePushConstants) == 16);
+    static_assert(sizeof(CompositePushConstants) == 20);
 
     struct LightIconPushConstants {
         VkDeviceAddress lights_buffer_address;
@@ -101,6 +103,36 @@ namespace {
     };
 
     static_assert(sizeof(CullPushConstants) == 72);
+
+    struct DownsamplePushConstants {
+        std::uint32_t src_texture_index;
+        std::uint32_t linear_sampler_index;
+        std::uint32_t dst_mip0_storage_index;
+        std::uint32_t dst_mip1_storage_index;
+        std::uint32_t dst_mip2_storage_index;
+        std::uint32_t dst_mip3_storage_index;
+        float src_texel_size_x;
+        float src_texel_size_y;
+        std::int32_t mip0_size_x;
+        std::int32_t mip0_size_y;
+        float threshold;
+        float knee;
+    };
+    static_assert(sizeof(DownsamplePushConstants) == 48);
+
+    struct UpsamplePushConstants {
+        uint lower_mip_texture_index;
+        uint target_mip_storage_index;
+        uint linear_sampler_index;
+        float lower_texel_size_x;
+        float lower_texel_size_y;
+        int target_size_x;
+        int target_size_y;
+        float filter_radius;
+    };
+
+    static_assert(sizeof(UpsamplePushConstants) == 32);
+
 
     // Pins VkDrawIndexedIndirectCommand's ABI layout against IndirectCommand
     // in assets/shaders/frustum_cull.slang, which mirrors it field-for-field
@@ -451,8 +483,9 @@ namespace {
         };
 
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-
+        vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
 
         vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
@@ -502,10 +535,12 @@ namespace {
         };
 
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+        vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
 
         // Mandatory, not decorative: without it rasterization bleeds into
         // neighbouring cascade tiles in the shared atlas.
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
 
         vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
@@ -552,8 +587,9 @@ namespace {
         };
 
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-
+        vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
 
         vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
@@ -720,8 +756,9 @@ namespace {
         };
 
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-
+        vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
 
         vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
 
@@ -1313,10 +1350,61 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.frustum_cull_pipeline",
     }); // index 8: frustum_cull
 
+
+    VkPushConstantRange const bloom_downsample_pc{
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            .offset = 0,
+            .size = sizeof(DownsamplePushConstants),
+    };
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/bloom_downsample.slang",
+                                    .entry_point = "mainCs",
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {bloom_downsample_pc},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.bloom_downsample_pipeline",
+    });
+
+    VkPushConstantRange const bloom_upsample_pc{
+            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+            .offset = 0,
+            .size = sizeof(UpsamplePushConstants),
+    };
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/bloom_upsample.slang",
+                                    .entry_point = "mainCs",
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {bloom_upsample_pc},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.bloom_downsample_pipeline",
+    });
+
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
-
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(compiler, pipeline_infos);
-
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
 
     for (std::size_t i = 0; i < registered_pipelines.size(); ++i) {
@@ -1339,6 +1427,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     depth_prepass_mask_pipeline_ = *registered_pipelines[6];
     composite_pipeline_ = *registered_pipelines[7];
     frustum_cull_pipeline_ = *registered_pipelines[8];
+    bloom_downsample_pipeline_ = *registered_pipelines[9];
+    bloom_upsample_pipeline_ = *registered_pipelines[10];
 
     {
         auto light_icon_image = DecodedImage::load_from_file("assets/textures/light_bulb.png");
@@ -1431,21 +1521,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     }
 
     model_free_head_ = 1;
-
     maximum_draw_count_ = create_info.maximum_draw_count;
-
     maximum_submission_count_ = create_info.maximum_submission_count;
-
     submissions_.reserve(maximum_submission_count_);
-
     model_submissions_.reserve(maximum_submission_count_);
-
     auto draw_size_result = checked_multiply(sizeof(GpuDraw), maximum_draw_count_);
-
     auto transform_size_result = checked_multiply(sizeof(glm::mat4), maximum_submission_count_);
-
     auto indirect_size_result = checked_multiply(sizeof(VkDrawIndexedIndirectCommand), maximum_draw_count_);
-
     auto batch_bounds_size_result = checked_multiply(sizeof(GpuCullBounds), maximum_draw_count_);
 
     if (!draw_size_result || !transform_size_result || !indirect_size_result || !batch_bounds_size_result) {
@@ -1453,20 +1535,11 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     }
 
     auto const draw_size = *draw_size_result;
-
     auto const transform_size = *transform_size_result;
-
     auto const indirect_size = *indirect_size_result;
-
-    // The culled indirect buffer mirrors indirect_commands 1:1 (same batch
-    // count, same capacity), so it reuses indirect_size rather than a fresh
-    // checked_multiply.
     auto const culled_indirect_size = indirect_size;
-
     auto const batch_bounds_size = *batch_bounds_size_result;
-
     auto const transform_offset = align_up(draw_size, 16);
-
     auto const indirect_offset = align_up(transform_offset + transform_size, 16);
 
     if (indirect_offset > std::numeric_limits<VkDeviceSize>::max() - indirect_size) {
@@ -1529,9 +1602,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.transform_buffer = std::move(*transforms);
 
-        // SHADER_DEVICE_ADDRESS_BIT: mainCs reads this batch's un-culled
-        // command (firstInstance/instanceCount) through a Ptr<>, same as
-        // culled_indirect_buffer below.
         auto indirect = Buffer::create(context_, BufferCreateInfo{
                                                          .size = indirect_size,
                                                          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -1690,6 +1760,57 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         if (!shadow_atlas) {
             return std::unexpected(make_image_error(shadow_atlas.error()));
         }
+
+        auto const bloom_target_name = std::format("renderer.bloom_target_{}", frame_index);
+
+        auto bloom_image = image_storage_.create_image(ImageCreateInfo{
+                .extent =
+                        VkExtent3D{
+                                .width = create_info.extent.width / 2,
+                                .height = create_info.extent.height / 2,
+                                .depth = 1,
+                        },
+                .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                .image_type = VK_IMAGE_TYPE_2D,
+                .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                .flags = 0,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .mip_levels = 4,
+                .array_layers = 1,
+                .create_mip_layer_views = true,
+                .debug_name = bloom_target_name,
+        });
+
+        if (!bloom_image) {
+            return std::unexpected(make_image_error(bloom_image.error()));
+        }
+
+        RendererFrame::BloomTarget bloom_target{.image = *bloom_image};
+
+        auto const *bloom_image_ptr = image_storage_.get(*bloom_image);
+
+        for (std::uint32_t mip = 0; mip < 4; ++mip) {
+            auto const view = bloom_image_ptr->mip_layer_view(mip, 0);
+
+            auto mip_slot = image_storage_.register_view(ImageViewRegistration{
+                    .sampled_2d = view,
+                    .storage_2d = view,
+            });
+
+            if (!mip_slot) {
+                return std::unexpected(make_image_error(mip_slot.error()));
+            }
+
+            bloom_target.mip_slots[mip] = *mip_slot;
+        }
+
+        frame.shadow_atlas = *shadow_atlas;
+        frame.bloom_target = bloom_target;
 
         frame.shadow_atlas = *shadow_atlas;
         frame.draw_upload_offset = 0;
@@ -2548,11 +2669,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
         frame.indirect_commands.push_back(indirect_command);
 
-        // wind_padding conservatively grows this batch's world-space AABB
-        // (in transform_aabb, frustum_cull.slang) so swaying foliage
-        // doesn't pop at the frustum edge before it's actually offscreen --
-        // see the comment on GpuCullBounds and on wind_offset() in
-        // wind.slang for the padding derivation.
         auto const *material = material_storage_.get(batch.material);
         auto const wind_padding = material != nullptr ? material->wind_strength : 0.0F;
 
@@ -3401,8 +3517,8 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 .pStencilAttachment = nullptr,
         };
 
-        vkCmdBeginQuery(command_buffer, pipeline_stat_queries_[frame_index].query_pool, 0, 0);
         vkCmdBeginRendering(command_buffer, &forward_rendering_info);
+        vkCmdBeginQuery(command_buffer, pipeline_stat_queries_[frame_index].query_pool, 0, 0);
         vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
         ForwardPushConstants const pc{
@@ -3457,13 +3573,10 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                                      frame.blend_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
         }
 
-        if (debug_draw_light_icons_ && frame.light_count != 0) {
-            auto const light_icon_pipeline = resolve_layout(pipeline_graph_, light_icon_pipeline_);
-
+        vkCmdEndQuery(command_buffer, pipeline_stat_queries_[frame_index].query_pool, 0);
+        if (auto const light_icon_pipeline = resolve_layout(pipeline_graph_, light_icon_pipeline_);
+            light_icon_pipeline != nullptr && debug_draw_light_icons_ && frame.light_count != 0) {
             if (light_icon_pipeline != VK_NULL_HANDLE) {
-                // has_vertex_input_stage = false: task/mesh shader objects
-                // have no vertex input stage at all. See
-                // set_mesh_shader_object_dynamic_state's doc comment.
                 bind_graphics_node(pipeline_graph_, light_icon_pipeline_, command_buffer, samples_, 1, true, false);
                 gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                          light_icon_pipeline);
@@ -3478,7 +3591,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                         .ubo_buffer_address = ubos_[frame_index].device_address,
                         .light_count = frame.light_count,
                         .icon_texture_index = light_icon_texture_.index,
-                        .sampler_index = 0, // sampler_storage_.linear_clamp().index,
+                        .sampler_index = sampler_storage_.linear_clamp().index,
                         .icon_world_size = light_icon_world_size_,
                 };
 
@@ -3493,7 +3606,6 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         }
 
         vkCmdEndRendering(command_buffer);
-        vkCmdEndQuery(command_buffer, pipeline_stat_queries_[frame_index].query_pool, 0);
 
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, frame_query.query_pool,
                              (static_cast<std::uint32_t>(RenderStage::ForwardPass) * 2) + 1);
@@ -3501,6 +3613,30 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
 #pragma endregion
 
     transition_hdr_to_shader_read(command_buffer, *resolved_hdr);
+
+#pragma region Bloom pass
+    std::uint32_t bloom_texture_index = 0;
+    {
+
+        if (bloom_settings_.enabled) {
+            vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
+                                 static_cast<std::uint32_t>(RenderStage::BloomPass) * 2);
+
+            // Record downsample/upsample compute pyramid using resolved_hdr as input
+            record_bloom_pass(command_buffer, frame_index, frame.forward_target.resolved_hdr(), target_extent);
+
+            // Retrieve the descriptor table index for the final upscaled bloom target
+            auto const *bloom_image = image_storage_.get(frame.bloom_target.image);
+            if (bloom_image != nullptr && bloom_image->valid()) {
+                bloom_texture_index = frame.bloom_target.mip_slots[0].index;
+            }
+
+            vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
+                                 (static_cast<std::uint32_t>(RenderStage::BloomPass) * 2) + 1);
+        }
+    }
+#pragma endregion
+
     transition_swapchain_to_attachment(command_buffer, swapchain_image.image);
 
 #pragma region Composition for swapchain
@@ -3544,18 +3680,12 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                                  composite_pipeline);
         set_composite_dynamic_state(command_buffer, swapchain_image.extent);
 
-        struct CompositePC {
-            std::uint32_t hdr_texture_index;
-            std::uint32_t sampler_index;
-            float exposure;
-            std::uint32_t padding;
-        };
-
-        CompositePC const composite_pc{
+        CompositePushConstants const composite_pc{
                 .hdr_texture_index = frame.forward_target.resolved_hdr().index,
+                .bloom_texture_index = bloom_texture_index,
                 .sampler_index = sampler_storage_.linear_clamp().index,
-                .exposure = 1.0F,
-                .padding = 0,
+                .exposure = 1.0F, // exposure
+                .bloom_intensity = bloom_settings_.enabled ? bloom_settings_.intensity : 0.0f,
         };
 
         vkCmdPushConstants(command_buffer, composite_pipeline, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -3714,6 +3844,106 @@ auto Renderer::model_slot(ModelHandle handle) const noexcept -> ModelSlot const 
     }
 
     return &slot;
+}
+
+void Renderer::record_bloom_pass(VkCommandBuffer command_buffer, std::uint32_t frame_index, ImageHandle input_hdr,
+                                 VkExtent2D target_extent) {
+    auto const &bloom = frames_[frame_index].bloom_target;
+
+    auto const *bloom_image = image_storage_.get(bloom.image);
+    if (bloom_image == nullptr || !bloom_image->valid()) {
+        return;
+    }
+
+    auto const bloom_downsample_pipeline = resolve_layout(pipeline_graph_, bloom_downsample_pipeline_);
+    auto const bloom_upsample_pipeline = resolve_layout(pipeline_graph_, bloom_upsample_pipeline_);
+
+    if (bloom_downsample_pipeline == VK_NULL_HANDLE || bloom_upsample_pipeline == VK_NULL_HANDLE) {
+        return;
+    }
+
+    auto const linear_clamp_sampler = sampler_storage_.linear_clamp().index;
+
+    // 1. Transition all 4 mips to GENERAL for storage writes
+    transition_image_layout(command_buffer, bloom_image->image(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
+                            VK_ACCESS_2_SHADER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 4);
+
+    // 2. Downsample pass
+    bind_compute_node(pipeline_graph_, bloom_downsample_pipeline_, command_buffer);
+    gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_downsample_pipeline);
+
+    VkExtent2D const mip0_extent = bloom_image->mip_extent(0);
+
+
+    DownsamplePushConstants const downsample_pc{
+            .src_texture_index = input_hdr.index,
+            .linear_sampler_index = linear_clamp_sampler,
+            .dst_mip0_storage_index = bloom.mip_slots[0].index,
+            .dst_mip1_storage_index = bloom.mip_slots[1].index,
+            .dst_mip2_storage_index = bloom.mip_slots[2].index,
+            .dst_mip3_storage_index = bloom.mip_slots[3].index,
+            .src_texel_size_x = 1.0F / static_cast<float>(target_extent.width),
+            .src_texel_size_y = 1.0F / static_cast<float>(target_extent.height),
+            .mip0_size_x = static_cast<std::int32_t>(mip0_extent.width),
+            .mip0_size_y = static_cast<std::int32_t>(mip0_extent.height),
+            .threshold = bloom_settings_.threshold,
+            .knee = bloom_settings_.knee,
+    };
+
+    vkCmdPushConstants(command_buffer, bloom_downsample_pipeline, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(DownsamplePushConstants), &downsample_pc);
+
+    std::uint32_t const downsample_groups_x = (mip0_extent.width + 15U) / 16U;
+    std::uint32_t const downsample_groups_y = (mip0_extent.height + 15U) / 16U;
+    vkCmdDispatch(command_buffer, downsample_groups_x, downsample_groups_y, 1);
+
+    transition_image_layout(command_buffer, bloom_image->image(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+                            VK_IMAGE_ASPECT_COLOR_BIT, 0, 4);
+
+    // 3. Upsample chain (Mip 3 -> 2 -> 1 -> 0)
+    bind_compute_node(pipeline_graph_, bloom_upsample_pipeline_, command_buffer);
+    gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_upsample_pipeline);
+
+    for (std::int32_t i = 2; i >= 0; --i) {
+        auto const target_mip = static_cast<std::uint32_t>(i);
+        auto const lower_mip = target_mip + 1U;
+
+        VkExtent2D const lower_extent = bloom_image->mip_extent(lower_mip);
+        VkExtent2D const target_extent_mip = bloom_image->mip_extent(target_mip);
+
+        UpsamplePushConstants const upsample_pc{
+                .lower_mip_texture_index = bloom.mip_slots[lower_mip].index,
+                .target_mip_storage_index = bloom.mip_slots[target_mip].index,
+                .linear_sampler_index = linear_clamp_sampler,
+                .lower_texel_size_x = 1.0F / static_cast<float>(lower_extent.width),
+                .lower_texel_size_y = 1.0F / static_cast<float>(lower_extent.height),
+                .target_size_x = static_cast<std::int32_t>(target_extent_mip.width),
+                .target_size_y = static_cast<std::int32_t>(target_extent_mip.height),
+                .filter_radius = bloom_settings_.filter_radius,
+        };
+
+        vkCmdPushConstants(command_buffer, bloom_upsample_pipeline, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(UpsamplePushConstants), &upsample_pc);
+
+        std::uint32_t const upsample_groups_x = (target_extent_mip.width + 15U) / 16U;
+        std::uint32_t const upsample_groups_y = (target_extent_mip.height + 15U) / 16U;
+        vkCmdDispatch(command_buffer, upsample_groups_x, upsample_groups_y, 1);
+
+        transition_image_layout(command_buffer, bloom_image->image(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_SHADER_WRITE_BIT,
+                                VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                                target_mip, 1);
+    }
+
+    // 4. Final mip 0 -> SHADER_READ_ONLY for composition
+    transition_image_layout(command_buffer, bloom_image->image(), VK_IMAGE_LAYOUT_GENERAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                            VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
 }
 
 auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame)

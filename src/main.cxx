@@ -39,6 +39,8 @@
 #include "logger.hxx"
 #include "physics.hxx"
 #include "physics_world.hxx"
+#include "player_camera.hxx"
+#include "player_controller.hxx"
 #include "renderdoc.hxx"
 #include "renderer.hxx"
 #include "scene.hxx"
@@ -232,25 +234,46 @@ namespace {
                 auto const &stats = renderer->last_frame_stats();
                 auto const &pipeline_stats = renderer->last_frame_pipeline_stats();
 
+                // Helper lambda to get a formatted string in-line
+                constexpr auto fmt = [](std::uint64_t count) {
+                    static thread_local std::array<char, 64> buf{};
+                    if (count >= 1'000'000'000) {
+                        std::snprintf(buf.data(), buf.size(), "%.2fB", static_cast<double>(count) / 1e9F);
+                    } else if (count >= 1'000'000) {
+                        std::snprintf(buf.data(), buf.size(), "%.2fM", static_cast<double>(count) / 1e6F);
+                    } else if (count >= 1'000) {
+                        std::snprintf(buf.data(), buf.size(), "%.2fK", static_cast<double>(count) / 1e3F);
+                    } else {
+                        std::snprintf(buf.data(), buf.size(), "%llu", static_cast<unsigned long long>(count));
+                    }
+                    return buf.data();
+                };
+
                 auto &&[assembled_vertex_count, assembled_primitive_count, clipped_primitive_count,
                         fragment_shader_invocation_count, valid] = pipeline_stats;
+
                 if (valid) {
-                    ImGui::Text("Triangles assembled (post-cull): %llu",
+                    ImGui::Text("Triangles assembled (post-cull): %s (%llu)",
+                                fmt(pipeline_stats.assembled_primitive_count),
                                 static_cast<unsigned long long>(pipeline_stats.assembled_primitive_count));
-                    ImGui::Text("Triangles rendered (post-clip): %llu",
+                    ImGui::Text("Triangles rendered (post-clip): %s (%llu)",
+                                fmt(pipeline_stats.clipped_primitive_count),
                                 static_cast<unsigned long long>(pipeline_stats.clipped_primitive_count));
-                    ImGui::Text("Vertices assembled (post-cull): %llu",
+                    ImGui::Text("Vertices assembled (post-cull): %s (%llu)", fmt(pipeline_stats.assembled_vertex_count),
                                 static_cast<unsigned long long>(pipeline_stats.assembled_vertex_count));
-                    ImGui::Text("Fragment shader invocations: %llu",
+                    ImGui::Text("Fragment shader invocations: %s (%llu)",
+                                fmt(pipeline_stats.fragment_shader_invocation_count),
                                 static_cast<unsigned long long>(pipeline_stats.fragment_shader_invocation_count));
                 } else {
                     ImGui::TextDisabled("Pipeline stats not yet available");
                 }
 
-                ImGui::Text("Triangles submitted (pre-cull): %u", stats.submitted_triangle_count);
+                ImGui::Text("Triangles submitted (pre-cull): %s (%u)", fmt(stats.submitted_triangle_count),
+                            stats.submitted_triangle_count);
                 ImGui::Text("Draw calls: %u  (opaque %u / mask %u / blend %u)", stats.indirect_command_count,
                             stats.opaque_indirect_count, stats.mask_indirect_count, stats.blend_indirect_count);
-                ImGui::Text("Instances submitted: %u", stats.submitted_instance_count);
+                ImGui::Text("Instances submitted: %s (%u)", fmt(stats.submitted_instance_count),
+                            stats.submitted_instance_count);
                 ImGui::Text("Model / mesh submissions: %u / %u", stats.model_submission_count,
                             stats.mesh_submission_count);
                 ImGui::Text("Lights: %u point / %u spot", stats.point_light_count, stats.spot_light_count);
@@ -358,13 +381,16 @@ namespace {
                 auto &registry = active_scene->get_registry();
                 std::size_t index = 0;
                 draw_rows(index, registry,
-                          registry.view<Components::Transform, Components::PointLight, GeneratedMeta>(),
+                          registry.view<Components::Transform, Components::PointLight, Components::GeneratedMeta>(),
                           draw_point_light);
-                draw_rows(index, registry, registry.view<Components::Transform, Components::PointLight, Meta>(),
+                draw_rows(index, registry,
+                          registry.view<Components::Transform, Components::PointLight, Components::Meta>(),
                           draw_point_light);
-                draw_rows(index, registry, registry.view<Components::Transform, Components::SpotLight, Meta>(),
+                draw_rows(index, registry,
+                          registry.view<Components::Transform, Components::SpotLight, Components::Meta>(),
                           draw_spot_light);
-                draw_rows(index, registry, registry.view<Components::Transform, Components::SpotLight, GeneratedMeta>(),
+                draw_rows(index, registry,
+                          registry.view<Components::Transform, Components::SpotLight, Components::GeneratedMeta>(),
                           draw_spot_light);
             });
         }
@@ -379,16 +405,25 @@ namespace {
         Scene *active_scene = editor_scene.get();
         bool is_playing = false;
 
+        entt::entity player_entity{entt::null};
+        PlayerController player_controller;
+        PlayerCamera player_camera;
+
 
         auto play() -> void {
             runtime_scene = std::make_unique<Scene>();
             runtime_scene->physics_settings = editor_scene->physics_settings;
-            clone_registry<Components::Transform, ModelHandle, RigidBody, Components::MaterialOverride, Components::PointLight,
-                           Components::SpotLight>(editor_scene->get_registry(), runtime_scene->get_registry());
+            clone_registry<Components::Transform, Components::Model, Components::RigidBody,
+                           Components::MaterialOverride, Components::PlayerTag, Components::Lifetime,
+                           Components::PointLight, Components::SpotLight, Components::GeneratedMeta, Components::Meta>(
+                    editor_scene->get_registry(), runtime_scene->get_registry());
 
             active_scene = runtime_scene.get();
             is_playing = true;
             active_scene->on_scene_start();
+
+            glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            has_last_mouse_position = false; // avoid a jump from wherever the cursor was
         }
 
         auto stop() -> void {
@@ -396,6 +431,8 @@ namespace {
             is_playing = false;
             active_scene = editor_scene.get();
             runtime_scene.reset();
+
+            glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         }
 
         EngineModels engine_models{};
@@ -438,6 +475,8 @@ namespace {
 
             active_scene->step(delta_time);
 
+            systems::player_movement(active_scene->get_registry(), *active_scene->physics_world, player_entity,
+                                     player_controller, player_camera, delta_time);
             systems::lifetime(active_scene->get_registry(), *active_scene->physics_world, delta_time);
         }
 
@@ -479,18 +518,33 @@ namespace {
             if (ev.key == GLFW_KEY_F12) {
                 renderer->request_screenshot();
             }
-            camera.on_key_pressed(ev.key);
+
+            if (is_playing) {
+                player_controller.on_key_pressed(ev.key);
+            } else {
+                camera.on_key_pressed(ev.key);
+            }
+
             return true;
         }
 
         auto on_event(KeyReleasedEvent ev) -> bool {
-            camera.on_key_released(ev.key);
+            if (is_playing) {
+                player_controller.on_key_released(ev.key);
+            } else {
+                camera.on_key_released(ev.key);
+            }
 
             return true;
         }
 
         auto on_event(MouseMovedEvent ev) -> bool {
-            camera.on_mouse_moved(static_cast<float>(ev.delta_x), static_cast<float>(ev.delta_y), mouse_dragging);
+            if (is_playing) {
+                player_controller.on_mouse_moved(static_cast<float>(ev.delta_x), static_cast<float>(ev.delta_y),
+                                                 /*look_enabled=*/true);
+            } else {
+                camera.on_mouse_moved(static_cast<float>(ev.delta_x), static_cast<float>(ev.delta_y), mouse_dragging);
+            }
 
             return true;
         }
@@ -542,7 +596,9 @@ namespace {
             auto const ndc_y = 1.0F - (2.0F * static_cast<float>(last_mouse_y)) / static_cast<float>(window_height);
             auto const aspect_ratio = static_cast<float>(framebuffer_width) / static_cast<float>(framebuffer_height);
 
-            auto const inverse_view_projection = glm::inverse(camera.view_projection(aspect_ratio));
+            auto view_projection = is_playing ? player_camera.view_projection(aspect_ratio)
+                                              : this->camera.view_projection(aspect_ratio);
+            auto const inverse_view_projection = glm::inverse(std::move(view_projection));
 
             auto const unproject = [&](float ndc_z) {
                 auto const clip_space_point = inverse_view_projection * glm::vec4{ndc_x, ndc_y, ndc_z, 1.0F};
@@ -564,16 +620,34 @@ namespace {
             constexpr auto bullet_half_extent = 0.15F;
             constexpr auto bullet_speed = 40.0F;
             constexpr auto bullet_mass = 0.2F;
-            constexpr auto bullet_lifetime_seconds = 3.0F; // Expire after 3 seconds
+            constexpr auto bullet_lifetime_seconds = 3.0F;
+            constexpr auto max_aim_distance = 1000.0F;
+            constexpr auto player_eye_height = 1.5F; // Height offset from player base position
 
-            auto const [ray_origin, ray_direction] = cursor_ray();
+            // 1. Determine spawn origin at player height
+            auto const &position =
+                    ReadOnlyEntity{active_scene, this->player_entity}.get<Components::Transform>().position;
+            auto const player_position = position; // Replace with your player position accessor
+            auto const muzzle_position = player_position + glm::vec3{0.0F, player_eye_height, 0.0F};
+
+            // 2. Query physics world along camera forward vector to find target point
+            auto const cam_origin = player_camera.position();
+            auto const cam_forward = player_camera.forward();
+
+            glm::vec3 target_point = cam_origin + (cam_forward * max_aim_distance);
+
+            if (auto const hit = active_scene->physics_world->raycast(cam_origin, cam_forward, max_aim_distance)) {
+                target_point = hit->point;
+            }
+
+            auto const bullet_direction = glm::normalize(target_point - muzzle_position);
 
             auto const transform = Components::Transform{
-                    .position = ray_origin + ray_direction * (bullet_half_extent + 0.2F),
+                    .position = muzzle_position + bullet_direction * (bullet_half_extent + 0.2F),
                     .scale = glm::vec3{bullet_half_extent} / cube_half_extents,
             };
-            auto const rigid_body = RigidBody{
-                    .velocity = ray_direction * bullet_speed,
+            auto const rigid_body = Components::RigidBody{
+                    .velocity = bullet_direction * bullet_speed,
                     .half_extents = glm::vec3{bullet_half_extent},
                     .restitution = 0.3F,
                     .mass = bullet_mass,
@@ -582,9 +656,8 @@ namespace {
             for (auto i = 0U; i < n; ++i) {
                 auto const entity = GeneratedEntity{active_scene, "bullet_{}", static_cast<std::uint32_t>(i)};
                 entity.emplace<Components::Transform>(transform);
-                entity.emplace<ModelHandle>(cube_model);
-                entity.emplace<RigidBody>(rigid_body);
-
+                entity.emplace<Components::Model>(Components::Model{.model = cube_model});
+                entity.emplace<Components::RigidBody>(rigid_body);
                 entity.emplace<Components::Lifetime>(bullet_lifetime_seconds);
 
                 active_scene->physics_world->add_body(entity, transform, rigid_body);
@@ -656,6 +729,27 @@ namespace {
                 return default_model;
             };
 
+            constexpr float physics_radius = 0.35F;
+            constexpr float physics_height = 1.0F;
+
+            constexpr float mesh_base_radius = 0.5F;
+            constexpr float mesh_base_height = 1.0F;
+
+            constexpr glm::vec3 const capsule_scale{
+                    physics_radius / mesh_base_radius, // 0.35 / 0.5 = 0.7
+                    physics_height / mesh_base_height, // 1.0 / 1.0  = 1.0
+                    physics_radius / mesh_base_radius // 0.35 / 0.5 = 0.7
+            };
+
+            auto player = Entity{editor_scene.get(), "player"};
+            player.emplace<Components::Transform>(
+                    Components::Transform{.position = glm::vec3{0.0F, 3.0F, 0.0F}, .scale = capsule_scale});
+            player.emplace<Components::RigidBody>(
+                    Components::RigidBody::make_capsule(physics_radius, physics_height, /*mass=*/80.0F));
+            player.emplace<Components::PlayerTag>();
+            player.emplace<Components::Model>(Components::Model{.model = engine_models.capsule});
+            player_entity = player;
+
             auto const helmet_model = load_or_fallback("assets/models/damaged_helmet/DamagedHelmet.gltf");
             cube_model = load_or_fallback("assets/models/test_cube.glb");
 
@@ -667,8 +761,9 @@ namespace {
 
             auto e = Entity{editor_scene.get(), "house"};
             e.emplace<Components::Transform>(Components::Transform{.position = house_position});
-            e.emplace<ModelHandle>(house_model);
-            e.emplace<RigidBody>(RigidBody::from_model_bounds(renderer->model_bounds(house_model).value()));
+            e.emplace<Components::Model>(Components::Model{.model = house_model});
+            e.emplace<Components::RigidBody>(
+                    Components::RigidBody::from_model_bounds(renderer->model_bounds(house_model).value()));
             info("AFTER");
 
             tree_model = load_or_fallback("assets/models/tree.glb");
@@ -676,7 +771,7 @@ namespace {
             auto tree_entity = Entity{editor_scene.get(), "tree"};
             tree_entity.emplace<Components::Transform>(
                     Components::Transform{.position = glm::vec3{20.0F, 0.0F, 20.0F}});
-            tree_entity.emplace<ModelHandle>(tree_model);
+            tree_entity.emplace<Components::Model>(Components::Model{.model = tree_model});
 
             std::random_device r;
             std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
@@ -684,30 +779,27 @@ namespace {
             std::uniform_real_distribution<float> urd(-20, 20);
 
             const auto count = 10;
-            for (auto i = 0; i < count; i++) {
-                for (auto j = 0; j < count; j++) {
-                    for (auto k = 0; k < count; k++) {
-                        auto entity = GeneratedEntity{editor_scene.get(), "helmet_{}_{}_{}", i, j, k};
-                        entity.emplace<Components::Transform>(Components::Transform{
-                                .position =
-                                        glm::vec3{
-                                                5 * urd(eng),
-                                                5 * urd(eng),
-                                                5 * urd(eng),
-                                        },
-                        });
-                        entity.emplace<ModelHandle>(helmet_model);
-                    }
+            auto const bounds = renderer->model_bounds(helmet_model);
+
+            for (auto i = 0; i < count * count * count; i++) {
+                auto entity = GeneratedEntity{editor_scene.get(), "helmet_{}_{}_{}", i, i % 3, i / 3};
+                entity.emplace<Components::Transform>(Components::Transform{
+                        .position =
+                                glm::vec3{
+                                        5 * urd(eng),
+                                        5 * urd(eng),
+                                        5 * urd(eng),
+                                },
+                });
+                entity.emplace<Components::Model>(Components::Model{.model = helmet_model});
+                if (bounds.has_value()) {
+                    auto const [min, max] = *bounds;
+                    auto const half_extents = (max - min) * 0.5F;
+                    entity.emplace<Components::RigidBody>(Components::RigidBody{.half_extents = half_extents});
                 }
             }
 
-            // A grid of physics-driven cubes dropped from above the ground
-            // plane -- gravity, then Bullet collision against each other and
-            // the floor, is stepped in update_physics() every frame. Spacing
-            // is derived from the model's actual bounds (rather than an
-            // assumed half-extent) so the collision shapes match what's
-            // rendered, and neighbours start apart so they only overlap once
-            // gravity pulls them into each other.
+
             constexpr auto physics_grid = 3;
 
             auto const cube_bounds = renderer->model_bounds(cube_model);
@@ -726,18 +818,13 @@ namespace {
                                 static_cast<float>(k - physics_grid / 2) * spacing,
                         };
                         entity.emplace<Components::Transform>(Components::Transform{.position = position});
-                        entity.emplace<ModelHandle>(cube_model);
-                        entity.emplace<RigidBody>(RigidBody{.half_extents = cube_half_extents});
+                        entity.emplace<Components::Model>(Components::Model{.model = cube_model});
+                        entity.emplace<Components::RigidBody>(Components::RigidBody{.half_extents = cube_half_extents});
                     }
                 }
             }
 
-            // A visible floor slab, sized/scaled from the same cube model so
-            // its rendered surface matches its collider exactly -- reusing
-            // an ordinary static RigidBody rather than a bespoke ground
-            // plane means PhysicsWorld needs no special-case handling for
-            // it, and it renders through the same submit_scene() path as
-            // everything else.
+
             constexpr auto floor_half_extents = glm::vec3{40.0F, 0.5F, 40.0F};
 
             auto const floor_entity = GeneratedEntity{editor_scene.get(), "floor"};
@@ -745,15 +832,10 @@ namespace {
                     .position = glm::vec3{0.0F, editor_scene->physics_settings.ground_y - floor_half_extents.y, 0.0F},
                     .scale = floor_half_extents / cube_half_extents,
             });
-            floor_entity.emplace<ModelHandle>(cube_model);
-            floor_entity.emplace<RigidBody>(RigidBody{.half_extents = floor_half_extents, .is_static = true});
+            floor_entity.emplace<Components::Model>(Components::Model{.model = cube_model});
+            floor_entity.emplace<Components::RigidBody>(
+                    Components::RigidBody{.half_extents = floor_half_extents, .is_static = true});
 
-            // Texture fields must be filled with real dummy handles (not
-            // left default) -- a default-constructed ImageHandle carries
-            // invalid_image_index (UINT32_MAX), and to_gpu_material() copies
-            // that straight into the bindless texture index with no
-            // validity check, so leaving it unset means an out-of-bounds
-            // descriptor read on the GPU (device lost).
             auto &images = renderer->image_storage();
             auto &samplers = renderer->sampler_storage();
 
@@ -773,10 +855,7 @@ namespace {
                 error("Could not create floor material override: {}", describe(floor_material.error()));
             }
 
-            // A handful of coloured point lights hovering over the physics
-            // cube grid, and one spot light angled down at it -- demo
-            // content exercising the punctual-light path end to end
-            // (ECS component -> submit_scene -> lights SSBO -> BRDF).
+
             {
                 constexpr std::array<glm::vec3, 4> point_light_colours{
                         glm::vec3{1.0F, 0.35F, 0.25F},
@@ -867,7 +946,7 @@ namespace {
                                 .rotation = glm::angleAxis(yaw(eng), glm::vec3{0.0F, 1.0F, 0.0F}),
                                 .scale = glm::vec3{width_scale(eng), height_scale(eng), width_scale(eng)},
                         });
-                        grass_entity.emplace<ModelHandle>(engine_models.grass_clump);
+                        grass_entity.emplace<Components::Model>(Components::Model{.model = engine_models.grass_clump});
                         grass_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{grass_material});
                     }
                 }
@@ -1013,7 +1092,6 @@ namespace {
 
     auto initialize_glfw(VulkanContext &context) noexcept -> bool {
         glfwSetErrorCallback(glfw_error_callback);
-
 
         auto renderdoc = renderdoc_init();
 
@@ -1685,18 +1763,18 @@ namespace {
 
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
         auto &registry = application.active_scene->get_registry();
-        auto view = registry.view<Components::Transform const, ModelHandle const>();
-
+        auto view = registry.view<Components::Transform const, Components::Model const>();
 
         for (auto [entity, transform, model]: view.each()) {
             auto const *override_component = registry.try_get<Components::MaterialOverride const>(entity);
             auto const material_override =
                     override_component != nullptr ? override_component->material : MaterialHandle{};
 
-            auto result = application.renderer->submit_model(model, transform.matrix(), material_override);
+            auto result = application.renderer->submit_model(model.model, transform.matrix(), material_override);
 
             if (!result) {
-                error("Could not submit scene object (model index {}): {}", model.index, describe(result.error()));
+                error("Could not submit scene object (model index {}): {}", model.model.index,
+                      describe(result.error()));
             }
         }
 
@@ -1735,10 +1813,6 @@ namespace {
             }
         }
 
-        if (application.active_scene->lights_dirty) {
-            application.renderer->mark_lights_dirty();
-            application.active_scene->lights_dirty = false;
-        }
 
         return {};
     }
@@ -1824,16 +1898,21 @@ namespace {
 
             application.imgui_renderer->end_frame();
 
-            auto aspect = application.renderer->aspect(frame->frame_index);
+            auto const &active_view =
+                    application.is_playing ? application.player_camera.view() : application.camera.view();
+            auto const active_aspect = application.renderer->aspect(frame->frame_index);
+            auto const &active_projection = application.is_playing ? application.player_camera.projection(active_aspect)
+                                                                   : application.camera.projection(active_aspect);
+
             auto prepare_result = application.renderer->prepare_frame(
                     frame->command_buffer,
                     {
-                            .view = application.camera.view(),
-                            .projection = application.camera.projection(aspect),
+                            .view = active_view,
+                            .projection = active_projection,
                             .near_clip = application.camera.near_clip(),
                             .far_clip = application.camera.far_clip(),
                             .vertical_fov_radians = glm::radians(application.camera.field_of_view_degrees()),
-                            .aspect_ratio = aspect,
+                            .aspect_ratio = active_aspect,
                             .time = application.elapsed_time,
                     },
                     frame->frame_index);
@@ -1960,16 +2039,15 @@ namespace {
             return;
         }
 
-        // Capture + hide the cursor for the duration of a right-drag so it
-        // can't leave the window mid-look; GLFW_CURSOR_DISABLED also
-        // switches to unbounded virtual cursor movement, which is what we
-        // want for a free-look camera rather than clamping at the screen
-        // edge. This is specific to the right button; every button's
-        // press/release still gets forwarded to on_event() below.
-        if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT) {
-            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-        } else if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_RIGHT) {
-            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        // Play mode owns cursor capture for its whole duration (see
+        // Application::play()/stop()) -- right-drag-to-look only applies to
+        // the editor camera.
+        if (!app->is_playing) {
+            if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT) {
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            } else if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_RIGHT) {
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            }
         }
 
         if (action == GLFW_PRESS) {
@@ -2015,6 +2093,24 @@ namespace {
         }
     }
 
+    auto focus_callback(GLFWwindow *window, int focused) noexcept -> void {
+        auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
+
+        if (app == nullptr) {
+            return;
+        }
+
+        // Alt-tabbing (or any focus loss) while captured would otherwise leave
+        // the cursor disabled and player_controller still integrating whatever
+        // stray deltas the OS/compositor delivers to an unfocused window --
+        // behaviour that varies between X11 and Wayland (see the platform
+        // hint in initialize_glfw). Exiting play mode on focus loss sidesteps
+        // that entirely rather than trying to special-case each platform.
+        if (focused == GLFW_FALSE && app->is_playing) {
+            app->stop();
+        }
+    }
+
 
     auto install_window_callbacks(VulkanContext &context, Application &app) noexcept -> void {
         static WindowData wd{};
@@ -2027,6 +2123,7 @@ namespace {
         glfwSetMouseButtonCallback(context.window, mouse_button_callback);
         glfwSetCursorPosCallback(context.window, cursor_position_callback);
         glfwSetScrollCallback(context.window, scroll_callback);
+        glfwSetWindowFocusCallback(context.window, focus_callback);
     }
 
     auto destroy_context(VulkanContext &context) noexcept -> void {
@@ -2194,6 +2291,11 @@ auto main() -> int {
 
         application.camera.update(std::min(delta_time, 0.1F));
         application.update(delta_time);
+
+        if (application.active_scene->lights_dirty) {
+            application.renderer->mark_lights_dirty();
+            application.active_scene->lights_dirty = false;
+        }
 
         request_resize_if_needed(context, current_width, current_height);
 

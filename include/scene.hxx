@@ -1,5 +1,6 @@
 #pragma once
 
+#include "forward.hxx"
 #include "physics.hxx"
 
 #include <entt/entt.hpp>
@@ -105,4 +106,6 @@ auto clone_registry(entt::registry const &src, entt::registry &dst) -> void {
 
 namespace systems {
     void lifetime(entt::registry &registry, PhysicsWorld &physics, float dt);
+    auto player_movement(entt::registry &registry, PhysicsWorld &physics_world, entt::entity player_entity,
+                         PlayerController &controller, PlayerCamera &camera, float delta_time) -> void;
 } // namespace systems

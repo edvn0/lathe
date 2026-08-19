@@ -2,12 +2,12 @@ module composite;
 
 import bindless;
 
-struct CompositePC
-{
+struct CompositePC {
     uint hdr_texture_index;
+    uint bloom_texture_index;
     uint sampler_index;
     float exposure;
-    uint padding;
+    float bloom_intensity;
 };
 
 struct VertexOutput
@@ -70,25 +70,21 @@ struct FragmentOutput
 [shader("fragment")]
 FragmentOutput mainFs(VertexOutput input, uniform CompositePC pc)
 {
-    uint texture_index =
-        NonUniformResourceIndex(pc.hdr_texture_index);
+    uint hdr_index = NonUniformResourceIndex(pc.hdr_texture_index);
+    uint bloom_index = NonUniformResourceIndex(pc.bloom_texture_index);
+    uint sampler_index = NonUniformResourceIndex(pc.sampler_index);
 
-    uint sampler_index = 0;
-        // NonUniformResourceIndex(pc.sampler_index);
+    // 1. Sample main HDR texture and Bloom texture via bindless arrays
+    float3 hdr_colour = sampled_2d[hdr_index].Sample(samplers[sampler_index], input.uv).rgb;
+    float3 bloom_colour = sampled_2d[bloom_index].Sample(samplers[sampler_index], input.uv).rgb;
 
-    float3 hdr_colour =
-        sampled_2d[texture_index]
-            .Sample(
-                samplers[sampler_index],
-                input.uv
-            )
-            .rgb;
+    // 2. Add weighted bloom to the raw scene color in linear space
+    float3 combined_hdr = hdr_colour + (bloom_colour * 30*pc.bloom_intensity);
 
-    float3 mapped =
-        aces_fitted(hdr_colour * pc.exposure);
+    // 3. Apply exposure and tonemapping to the combined linear color
+    float3 mapped = aces_fitted(combined_hdr * pc.exposure);
 
     FragmentOutput output;
     output.colour = float4(mapped, 1.0);
-
     return output;
 }

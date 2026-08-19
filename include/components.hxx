@@ -6,6 +6,7 @@
 #include <glm/vec3.hpp>
 
 #include "material.hxx"
+#include "renderer.hxx"
 
 namespace Components {
     struct Lifetime {
@@ -42,4 +43,40 @@ namespace Components {
         MaterialHandle material{};
     };
 
+    struct Model {
+        ModelHandle model{};
+    };
+
+    enum class BodyShape : std::uint8_t {
+        box,
+        capsule,
+    };
+
+    struct PlayerTag {};
+
+    struct RigidBody {
+        glm::vec3 velocity{0.0F}; // initial velocity, applied when the body is created
+        glm::vec3 half_extents{0.5F}; // btBoxShape half-extents (shape == box)
+        float capsule_radius = 0.4F; // btCapsuleShape radius (shape == capsule)
+        float capsule_height = 1.0F; // btCapsuleShape cylinder height, excludes end caps (shape == capsule)
+        float restitution = 0.4F;
+        float mass = 1.0F; // ignored (treated as immovable) when is_static
+        bool is_static = false;
+        bool lock_rotation = false; // zero angular factor -- for player capsules, so collisions don't tip them
+        BodyShape shape = BodyShape::box;
+
+        static auto from_model_bounds(auto &&bounds) -> RigidBody {
+            auto &&[min, max] = std::tuple(std::get<0>(bounds), std::get<1>(bounds));
+            return RigidBody{.half_extents = (max - min) * 0.5F};
+        }
+
+        static auto make_capsule(float radius, float height, float mass = 1.0F) -> RigidBody {
+            return RigidBody{
+                    .capsule_radius = radius,
+                    .capsule_height = height,
+                    .mass = mass,
+                    .lock_rotation = true,
+            };
+        }
+    };
 } // namespace Components

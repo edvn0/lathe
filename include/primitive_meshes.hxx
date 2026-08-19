@@ -27,3 +27,6 @@ struct PrimitiveMeshData {
 // quad so blades stay visible under the forward pass's back-face culling
 // from any viewing angle, without needing a dedicated no-cull pipeline.
 [[nodiscard]] auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>;
+
+[[nodiscard]] auto make_capsule_mesh(std::uint32_t segments = 16, std::uint32_t rings = 8)
+        -> std::expected<PrimitiveMeshData, ModelLoadError>;

@@ -10,19 +10,22 @@ namespace detail {
     };
 } // namespace detail
 
-using Meta = detail::Meta<FlyString>;
-using GeneratedMeta = detail::Meta<std::string>;
+namespace Components {
+    using Meta = detail::Meta<FlyString>;
+    using GeneratedMeta = detail::Meta<std::string>;
+} // namespace Components
 
 namespace detail {
     template<typename NameType = FlyString>
     class Entity {
     public:
         Entity(Scene *s, entt::entity e) noexcept :
-            scene(s), entity(e), name(scene->registry.get_or_emplace<Meta<NameType>>(entity).name) {}
+            scene(s), entity(e), name(scene->registry.get_or_emplace<detail::Meta<NameType>>(entity).name) {}
 
         Entity(Scene *s, std::string_view n) noexcept :
             scene(s), entity(s->registry.create()),
-            name(scene->registry.emplace<Meta<NameType>>(entity, Meta<NameType>{.name = NameType(n)}).name) {}
+            name(scene->registry.emplace<detail::Meta<NameType>>(entity, detail::Meta<NameType>{.name = NameType(n)})
+                         .name) {}
 
         template<typename... Args>
         Entity(Scene *s, std::format_string<Args...> fmt, Args &&...args) noexcept :
@@ -31,7 +34,7 @@ namespace detail {
         ~Entity() = default;
 
         template<typename T, typename... Args>
-        auto emplace(Args &&...args) const -> T & {
+        auto emplace(Args &&...args) const -> decltype(auto) {
             return scene->registry.emplace<T>(entity, std::forward<Args>(args)...);
         }
 

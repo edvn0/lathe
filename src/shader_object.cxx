@@ -283,7 +283,8 @@ auto ShaderObjectSet::bind(VkCommandBuffer command_buffer) const noexcept -> voi
     }
 
     if (bind_point_ == VK_PIPELINE_BIND_POINT_GRAPHICS) {
-        static constexpr std::array<VkShaderStageFlagBits, 6> conflicting_stages{
+        static constexpr std::array<VkShaderStageFlagBits, 7> conflicting_stages{
+                VK_SHADER_STAGE_FRAGMENT_BIT,
                 VK_SHADER_STAGE_VERTEX_BIT,
                 VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
                 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,

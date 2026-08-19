@@ -5,6 +5,7 @@
 #include <source_location>
 #include <string_view>
 #include <utility>
+#include <vulkan/vulkan_core.h>
 
 #include "context.hxx"
 
@@ -39,16 +40,12 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     }
 
     GpuResourceTable table;
-
     table.context_ = &context;
-
     table.image_capacity_ = create_info.image_capacity;
-
     table.sampler_capacity_ = create_info.sampler_capacity;
-
     table.debug_name_ = std::string{create_info.debug_name};
 
-    std::array<VkDescriptorSetLayoutBinding, 4> bindings{
+    std::array<VkDescriptorSetLayoutBinding, 5> bindings{
             VkDescriptorSetLayoutBinding{
                     .binding = binding_index(GpuResourceBinding::sampled_2d),
                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
@@ -82,15 +79,15 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
                     .stageFlags = VK_SHADER_STAGE_ALL,
                     .pImmutableSamplers = nullptr,
             },
+            VkDescriptorSetLayoutBinding{
+                    .binding = binding_index(GpuResourceBinding::storage_2d),
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                    .descriptorCount = table.image_capacity_,
+                    .stageFlags = VK_SHADER_STAGE_ALL,
+                    .pImmutableSamplers = nullptr,
+            },
     };
 
-    /*
-     * Descriptor arrays are fixed-capacity but can be
-     * sparsely populated. We fill missing entries with
-     * defaults, so PARTIALLY_BOUND is not required for
-     * correctness, but remains useful while bringing the
-     * table online.
-     */
     VkDescriptorSetLayoutCreateInfo const layout_info{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .pNext = nullptr,
@@ -171,9 +168,7 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
         auto &frame = table.frames_[index];
 
         frame.descriptor_set = descriptor_sets[index];
-
         frame.image_revisions.resize(table.image_capacity_, 0);
-
         frame.sampler_revisions.resize(table.sampler_capacity_, 0);
     }
 
@@ -190,17 +185,10 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
     }
 
     auto &frame = frames_[frame_index];
-
     auto image_infos = std::vector<VkDescriptorImageInfo>{};
-
     auto writes = std::vector<VkWriteDescriptorSet>{};
 
-    /*
-     * Reserve enough that pImageInfo pointers remain
-     * stable until vkUpdateDescriptorSets().
-     */
     image_infos.reserve(images.capacity() * 5 + samplers.capacity() * 2);
-
     writes.reserve(images.capacity() * 5 + samplers.capacity() * 2);
 
     auto append_image_write = [&](std::uint32_t binding, std::uint32_t array_index, VkDescriptorType descriptor_type,
@@ -251,6 +239,11 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
          * which a valid view exists.
          */
 
+        if (record.storage_2d != VK_NULL_HANDLE) {
+            append_image_write(binding_index(GpuResourceBinding::storage_2d), index, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               record.storage_2d, VK_IMAGE_LAYOUT_GENERAL);
+        }
+
         /*
           if (record.sampled_cube != VK_NULL_HANDLE) {
             append_image_write(binding_index(GpuResourceBinding::sampled_cube),
@@ -265,11 +258,7 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
           }
 
-          if (record.storage_2d != VK_NULL_HANDLE) {
-            append_image_write(binding_index(GpuResourceBinding::storage_2d), index,
-                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, record.storage_2d,
-                               VK_IMAGE_LAYOUT_GENERAL);
-          }
+
 
           if (record.storage_2d_array != VK_NULL_HANDLE) {
             append_image_write(binding_index(GpuResourceBinding::storage_2d_array),
@@ -320,9 +309,7 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
                                                 : comparison_fallback;
 
         append_sampler_write(binding_index(GpuResourceBinding::samplers), index, regular_sampler);
-
         append_sampler_write(binding_index(GpuResourceBinding::comparison_samplers), index, comparison_sampler);
-
         frame.sampler_revisions[index] = record.revision;
     }
 
@@ -358,17 +345,11 @@ auto GpuResourceTable::operator=(GpuResourceTable &&other) noexcept -> GpuResour
     destroy();
 
     context_ = std::exchange(other.context_, nullptr);
-
     layout_ = std::exchange(other.layout_, VK_NULL_HANDLE);
-
     pool_ = std::exchange(other.pool_, VK_NULL_HANDLE);
-
     frames_ = std::move(other.frames_);
-
     image_capacity_ = std::exchange(other.image_capacity_, 0);
-
     sampler_capacity_ = std::exchange(other.sampler_capacity_, 0);
-
     debug_name_ = std::move(other.debug_name_);
 
     return *this;

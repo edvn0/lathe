@@ -190,3 +190,83 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
 
     return PrimitiveMeshData{.vertices = std::move(vertices), .indices = std::move(indices)};
 }
+
+auto make_capsule_mesh(std::uint32_t segments, std::uint32_t rings)
+        -> std::expected<PrimitiveMeshData, ModelLoadError> {
+    segments = std::max(segments, 3U);
+    rings = std::max(rings, 1U); // Rings per hemisphere
+
+    constexpr float radius = 0.5F;
+    constexpr float half_cylinder_height = 0.5F; // Total cylinder height = 1.0F, total capsule height = 2.0F
+
+    auto const row_stride = segments + 1;
+    // Total rings = top hemisphere (rings + 1) + bottom hemisphere (rings + 1)
+    auto const total_rings = rings * 2 + 1;
+
+    std::vector<ModelVertex> vertices;
+    vertices.reserve(static_cast<std::size_t>(total_rings + 1) * row_stride);
+
+    for (std::uint32_t ring = 0; ring <= total_rings; ++ring) {
+        float theta = 0.0F;
+        float y_offset = 0.0F;
+
+        if (ring <= rings) {
+            // Top hemisphere: theta ranges from 0 (top pole) to PI/2 (equator)
+            auto const v_hemi = static_cast<float>(ring) / static_cast<float>(rings);
+            theta = v_hemi * (std::numbers::pi_v<float> * 0.5F);
+            y_offset = half_cylinder_height;
+        } else {
+            // Bottom hemisphere: theta ranges from PI/2 (equator) to PI (bottom pole)
+            // Subtract (rings + 1) to start v_hemi correctly at 0.0F
+            auto const v_hemi = static_cast<float>(ring - (rings + 1)) / static_cast<float>(rings);
+            theta = (std::numbers::pi_v<float> * 0.5F) + v_hemi * (std::numbers::pi_v<float> * 0.5F);
+            y_offset = -half_cylinder_height;
+        }
+
+        auto const v = static_cast<float>(ring) / static_cast<float>(total_rings);
+        auto const sin_theta = std::sin(theta);
+        auto const cos_theta = std::cos(theta);
+
+        for (std::uint32_t segment = 0; segment <= segments; ++segment) {
+            auto const u = static_cast<float>(segment) / static_cast<float>(segments);
+            auto const phi = u * 2.0F * std::numbers::pi_v<float>;
+
+            // Sphere normal at theta/phi
+            glm::vec3 const normal{sin_theta * std::cos(phi), cos_theta, sin_theta * std::sin(phi)};
+
+            // Capsule position = normal * radius + cylindrical height offset
+            glm::vec3 const position = normal * radius + glm::vec3{0.0F, y_offset, 0.0F};
+
+            vertices.push_back(ModelVertex{
+                    .position = position,
+                    .normal = normal,
+                    .tangent = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F},
+                    .texcoord = glm::vec2{u, v},
+            });
+        }
+    }
+
+    std::vector<std::uint32_t> indices;
+    indices.reserve(static_cast<std::size_t>(total_rings) * segments * 6);
+
+    for (std::uint32_t ring = 0; ring < total_rings; ++ring) {
+        for (std::uint32_t segment = 0; segment < segments; ++segment) {
+            auto const a = ring * row_stride + segment;
+            auto const b = a + row_stride;
+
+            indices.push_back(a);
+            indices.push_back(a + 1);
+            indices.push_back(b + 1);
+
+            indices.push_back(a);
+            indices.push_back(b + 1);
+            indices.push_back(b);
+        }
+    }
+
+    if (auto tangents = generate_tangents(vertices, indices); !tangents) {
+        return std::unexpected(tangents.error());
+    }
+
+    return PrimitiveMeshData{.vertices = std::move(vertices), .indices = std::move(indices)};
+}

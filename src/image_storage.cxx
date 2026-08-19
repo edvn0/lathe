@@ -533,7 +533,14 @@ auto ImageStorage::destroy_image(ImageHandle handle) -> std::expected<void, Imag
         return std::unexpected(make_error(ImageStorageErrorType::protected_default));
     }
 
-    slot->image.destroy();
+    if (slot->is_alias) {
+        slot->alias_sampled_2d = VK_NULL_HANDLE;
+        slot->alias_storage_2d = VK_NULL_HANDLE;
+        slot->is_alias = false;
+    } else {
+        slot->image.destroy();
+    }
+
     slot->occupied = false;
 
     bump_revision(*slot);
@@ -708,8 +715,12 @@ auto ImageStorage::destroy() noexcept -> void {
             continue;
         }
 
-        slot.image.destroy();
+        if (!slot.is_alias) {
+            slot.image.destroy();
+        }
+
         slot.occupied = false;
+        slot.is_alias = false;
     }
 
     slots_.clear();
@@ -767,6 +778,15 @@ auto ImageStorage::descriptor_record(std::uint32_t index) const noexcept -> Imag
         };
     }
 
+    if (slot.is_alias) {
+        return ImageDescriptorRecord{
+                .sampled_2d = slot.alias_sampled_2d,
+                .storage_2d = slot.alias_storage_2d,
+                .revision = slot.revision,
+                .occupied = true,
+        };
+    }
+
     return ImageDescriptorRecord{
             .sampled_2d = slot.image.descriptor_view(ImageDescriptorView::sampled_2d),
             .sampled_cube = slot.image.descriptor_view(ImageDescriptorView::sampled_cube),
@@ -788,4 +808,37 @@ auto ImageStorage::descriptor_revision(std::uint32_t index) const noexcept -> st
 
 auto ImageStorage::occupied(std::uint32_t index) const noexcept -> bool {
     return index < slots_.size() && slots_[index].occupied;
+}
+
+auto ImageStorage::register_view(ImageViewRegistration const &registration)
+        -> std::expected<ImageHandle, ImageStorageError> {
+    if (context_ == nullptr ||
+        (registration.sampled_2d == VK_NULL_HANDLE && registration.storage_2d == VK_NULL_HANDLE)) {
+        return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
+    }
+
+    if (free_head_ == 0) {
+        return std::unexpected(make_error(ImageStorageErrorType::capacity_exceeded));
+    }
+
+    auto const index = free_head_;
+    auto &slot = slots_[index];
+
+    free_head_ = slot.next_free;
+
+    slot.alias_sampled_2d = registration.sampled_2d;
+    slot.alias_storage_2d = registration.storage_2d;
+    slot.is_alias = true;
+    slot.next_free = 0;
+    slot.occupied = true;
+    slot.protected_default = false;
+
+    bump_revision(slot);
+
+    ++size_;
+
+    return ImageHandle{
+            .index = index,
+            .generation = slot.generation,
+    };
 }

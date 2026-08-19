@@ -40,16 +40,19 @@ PhysicsWorld::~PhysicsWorld() {
 }
 
 auto PhysicsWorld::populate_from(entt::registry &registry) -> void {
-    auto view = registry.view<Components::Transform const, RigidBody const>();
+    auto view = registry.view<Components::Transform const, Components::RigidBody const>();
 
     for (auto entity: view) {
-        add_body(entity, view.get<Components::Transform const>(entity), view.get<RigidBody const>(entity));
+        add_body(entity, view.get<Components::Transform const>(entity), view.get<Components::RigidBody const>(entity));
     }
 }
 
-auto PhysicsWorld::add_body(entt::entity entity, Components::Transform const &transform, RigidBody const &body)
-        -> void {
-    auto *shape = arena_.construct<btBoxShape>(to_bt(body.half_extents));
+auto PhysicsWorld::add_body(entt::entity entity, Components::Transform const &transform,
+                            Components::RigidBody const &body) -> void {
+    auto *shape = body.shape == Components::BodyShape::capsule
+                          ? static_cast<btCollisionShape *>(
+                                    arena_.construct<btCapsuleShape>(body.capsule_radius, body.capsule_height))
+                          : static_cast<btCollisionShape *>(arena_.construct<btBoxShape>(to_bt(body.half_extents)));
 
     btTransform start_transform;
     start_transform.setIdentity();
@@ -74,12 +77,61 @@ auto PhysicsWorld::add_body(entt::entity entity, Components::Transform const &tr
         rigid_body->setLinearVelocity(to_bt(body.velocity));
     }
 
+    if (body.lock_rotation) {
+        // Prevents collision torque from tipping a capsule controller over --
+        // yaw is driven visually by PlayerController, not by Bullet.
+        rigid_body->setAngularFactor(btVector3{0.0F, 0.0F, 0.0F});
+        rigid_body->setActivationState(DISABLE_DEACTIVATION);
+    }
+
     rigid_body->setSleepingThresholds(/*linear=*/0.8f, /*angular=*/1.0f);
     rigid_body->setDeactivationTime(0.8f); // Sleep faster (default is 2.0s)
 
     world_->addRigidBody(rigid_body);
 
     bodies_.emplace(entity, Body{rigid_body, shape});
+}
+
+auto PhysicsWorld::set_velocity(entt::entity entity, glm::vec3 const &linear_velocity) -> void {
+    auto it = bodies_.find(entity);
+
+    if (it == bodies_.end()) {
+        return;
+    }
+
+    auto current = it->second.rigid_body->getLinearVelocity();
+    it->second.rigid_body->setLinearVelocity(btVector3{linear_velocity.x, current.y(), linear_velocity.z});
+    it->second.rigid_body->activate(true);
+}
+
+auto PhysicsWorld::jump(entt::entity entity, float jump_velocity) -> void {
+    auto it = bodies_.find(entity);
+    if (it == bodies_.end()) {
+        return;
+    }
+
+    auto *body = it->second.rigid_body;
+    auto velocity = body->getLinearVelocity();
+    velocity.setY(jump_velocity);
+
+    body->setLinearVelocity(velocity);
+    body->activate(true);
+}
+
+auto PhysicsWorld::is_grounded(entt::entity entity, float capsule_half_height, float capsule_radius) const -> bool {
+    auto it = bodies_.find(entity);
+    if (it == bodies_.end()) {
+        return false;
+    }
+
+    auto const &origin = it->second.rigid_body->getWorldTransform().getOrigin();
+    glm::vec3 const start = to_glm(origin);
+
+    float const ray_length = capsule_half_height + capsule_radius + 0.1f;
+    glm::vec3 const end = start - glm::vec3{0.0f, ray_length, 0.0f};
+
+    auto hit = raycast(start, end);
+    return hit.has_value() && hit->entity != entity;
 }
 
 auto PhysicsWorld::remove_body(entt::entity entity) -> void {
@@ -138,5 +190,37 @@ auto PhysicsWorld::raycast(glm::vec3 const &from, glm::vec3 const &to) const -> 
             .point = to_glm(ray_callback.m_hitPointWorld),
             .normal = to_glm(ray_callback.m_hitNormalWorld),
             .distance = glm::distance(from, to_glm(ray_callback.m_hitPointWorld)),
+    };
+}
+
+auto PhysicsWorld::raycast(glm::vec3 const &origin, glm::vec3 const &direction, float max_distance) const
+        -> std::optional<RaycastHit> {
+    glm::vec3 const to = origin + (glm::normalize(direction) * max_distance);
+
+    btVector3 const bt_from = to_bt(origin);
+    btVector3 const bt_to = to_bt(to);
+
+    btCollisionWorld::ClosestRayResultCallback ray_callback(bt_from, bt_to);
+    world_->rayTest(bt_from, bt_to, ray_callback);
+
+    if (!ray_callback.hasHit()) {
+        return std::nullopt;
+    }
+
+    auto const *hit_body = btRigidBody::upcast(ray_callback.m_collisionObject);
+    entt::entity hit_entity = entt::null;
+
+    if (hit_body && hit_body->getUserPointer()) {
+        hit_entity = static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(hit_body->getUserPointer()));
+    }
+
+    auto const hit_point = to_glm(ray_callback.m_hitPointWorld);
+
+    return RaycastHit{
+            .entity = hit_entity,
+            .point = hit_point,
+            .normal = to_glm(ray_callback.m_hitNormalWorld),
+            // Bullet's m_closestHitFraction represents [0.0, 1.0] along the segment (from -> to)
+            .distance = ray_callback.m_closestHitFraction * max_distance,
     };
 }

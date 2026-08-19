@@ -368,9 +368,8 @@ auto PipelineGraphRepository::register_pipeline(renderer::SlangCompiler const &c
 }
 
 auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompiler const &compiler,
-                                                           std::span<PipelineRegisterInfo> register_infos)
+                                                          std::span<PipelineRegisterInfo> register_infos)
         -> std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>> {
-    debug("[register_pipelines_parallel] enter: batch of {}", register_infos.size());
 
     std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>> results(register_infos.size());
 
@@ -414,8 +413,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
         node_indices[i] = node_index;
         stage_indices_per_entry[i] = std::move(stage_indices);
         reserved[i] = true;
-
-        debug("[register_pipelines_parallel] phase1: entry {} '{}' -> node {}", i, info.debug_name, node_index);
     }
 
     // Phase 2 (parallel): every distinct dirty stage across the batch
@@ -439,7 +436,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
         }
     }
 
-    debug("[register_pipelines_parallel] phase1 done: {} dirty stages to compile", dirty_stage_indices.size());
 
     auto& thread_pool = Renderer::thread_pool();
 
@@ -450,13 +446,10 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
         for (auto const stage_index: dirty_stage_indices) {
             auto const &request = stage_nodes_[stage_index].request;
 
-            debug("[register_pipelines_parallel] phase2: submitting stage {} ({} entry={})", stage_index,
-                  request.source_path.string(), request.entry_point);
 
             futures.push_back(thread_pool.submit_task([&compiler, &request] { return compiler.compile(request); }));
         }
 
-        debug("[register_pipelines_parallel] phase2: {} compile tasks submitted, waiting", futures.size());
 
         std::optional<PipelineGraphError> first_error;
 
@@ -464,8 +457,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
             auto compiled = futures[i].get();
             auto const stage_index = dirty_stage_indices[i];
 
-            debug("[register_pipelines_parallel] phase2: stage {} compile {}", stage_index,
-                  compiled ? "succeeded" : "FAILED");
 
             if (!compiled) {
                 if (!first_error) {
@@ -486,7 +477,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
             stage.has_compiled_once = true;
         }
 
-        debug("[register_pipelines_parallel] phase2 done, first_error={}", first_error.has_value());
 
         // A compile failure anywhere in the batch is all-or-nothing (unlike
         // a Phase 3 build failure below): it usually means a shared shader
@@ -509,7 +499,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
                 results[i] = std::unexpected(*first_error);
             }
 
-            debug("[register_pipelines_parallel] aborting batch after compile failure");
 
             return results;
         }
@@ -543,7 +532,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
         }
     }
 
-    debug("[register_pipelines_parallel] phase3: submitting {} build tasks", build_order.size());
 
     std::vector<std::future<std::expected<BuiltNode, PipelineGraphError>>> build_futures;
     build_futures.reserve(build_order.size());
@@ -551,15 +539,11 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
     for (auto const i: build_order) {
         auto const node_index = node_indices[i];
 
-        debug("[register_pipelines_parallel] phase3: submitting build for node {} ('{}')", node_index,
-              pipeline_nodes_[node_index].register_info.debug_name);
 
         build_futures.push_back(thread_pool.submit_task([this, node_index] {
             return build_node(pipeline_nodes_[node_index]);
         }));
     }
-
-    debug("[register_pipelines_parallel] phase3: {} build tasks submitted, waiting", build_futures.size());
 
     for (std::size_t k = 0; k < build_order.size(); ++k) {
         auto const i = build_order[k];
@@ -568,7 +552,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
 
         auto built = build_futures[k].get();
 
-        debug("[register_pipelines_parallel] phase3: node {} build {}", node_index, built ? "succeeded" : "FAILED");
 
         if (!built) {
             node.occupied = false;
@@ -588,7 +571,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
         };
     }
 
-    debug("[register_pipelines_parallel] exit: returning {} results", results.size());
 
     return results;
 }

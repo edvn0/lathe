@@ -3,6 +3,9 @@
 #include "components.hxx"
 #include "physics_world.hxx"
 
+#include "player_camera.hxx"
+#include "player_controller.hxx"
+
 Scene::Scene() { connect_light_signals(); }
 
 Scene::~Scene() = default;
@@ -54,4 +57,31 @@ void systems::lifetime(entt::registry &registry, PhysicsWorld &physics, float dt
         physics.remove_body(entity);
         registry.destroy(entity);
     }
+}
+
+auto systems::player_movement(entt::registry &registry, PhysicsWorld &physics_world, entt::entity player_entity,
+                              PlayerController &controller, PlayerCamera &camera, float delta_time) -> void {
+    if (!registry.valid(player_entity) ||
+        !registry.all_of<Components::Transform, Components::RigidBody>(player_entity)) {
+        return;
+    }
+
+    auto const &transform = registry.get<Components::Transform>(player_entity);
+    auto const &body = registry.get<Components::RigidBody>(player_entity);
+
+    auto const capsule_half_height = body.capsule_height * 0.5F;
+    auto const is_grounded = physics_world.is_grounded(player_entity, capsule_half_height, body.capsule_radius);
+
+    if (controller.consumes_jump() && is_grounded) {
+        constexpr float jump_velocity = 6.5F; // Adjust to match gravity
+        physics_world.jump(player_entity, jump_velocity);
+    }
+
+    auto const desired_velocity = controller.desired_horizontal_velocity();
+    physics_world.set_velocity(player_entity, desired_velocity);
+
+    auto const speed_factor =
+            controller.move_speed() > 0.0F ? glm::length(desired_velocity) / controller.move_speed() : 0.0F;
+
+    camera.update(transform.position, controller.yaw_degrees(), controller.pitch_degrees(), speed_factor, delta_time);
 }

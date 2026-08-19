@@ -6,3 +6,6 @@ struct GeometryArena;
 class ImageStorage;
 class SamplerStorage;
 struct MaterialStorage;
+
+class PlayerController;
+class PlayerCamera;

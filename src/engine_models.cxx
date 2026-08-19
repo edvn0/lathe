@@ -62,9 +62,16 @@ auto create_engine_models(Renderer &renderer) -> std::expected<EngineModels, Ren
         return std::unexpected(grass_clump.error());
     }
 
+    auto capsule = create_primitive_model(renderer, make_capsule_mesh());
+
+    if (!capsule) {
+        return std::unexpected(capsule.error());
+    }
+
     return EngineModels{
             .cube = *cube,
             .sphere = *sphere,
             .grass_clump = *grass_clump,
+            .capsule = *capsule,
     };
 }

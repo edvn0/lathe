@@ -192,7 +192,6 @@ auto PipelineStorage::create(VulkanContext &context, PipelineStorageCreateInfo c
 
     auto const cache_result = vkCreatePipelineCache(context.device, &cache_create_info, nullptr, &storage.cache_);
 
-    debug("[PipelineStorage::create] vkCreatePipelineCache result={}", static_cast<int>(cache_result));
 
     if (cache_result != VK_SUCCESS) {
         return std::unexpected(make_error(PipelineStorageErrorType::pipeline_error));
@@ -211,7 +210,6 @@ auto PipelineStorage::create_graphics(GraphicsPipelineCreateInfo const &create_i
         return std::unexpected(make_error(PipelineStorageErrorType::invalid_argument));
     }
 
-    debug("[PipelineStorage::create_graphics] '{}': calling Pipeline::create_graphics", create_info.debug_name);
 
     // Pipeline::create_graphics (including the expensive driver-side
     // compile) is called unlocked so concurrent callers from
@@ -219,8 +217,6 @@ auto PipelineStorage::create_graphics(GraphicsPipelineCreateInfo const &create_i
     // only the cheap free-list bookkeeping below is serialized.
     auto pipeline = Pipeline::create_graphics(*context_, create_info, global_descriptor_set_layout(), cache_);
 
-    debug("[PipelineStorage::create_graphics] '{}': Pipeline::create_graphics {}", create_info.debug_name,
-          pipeline ? "succeeded" : "FAILED");
 
     if (!pipeline) {
         return std::unexpected(make_pipeline_error(pipeline.error()));
@@ -245,7 +241,6 @@ auto PipelineStorage::create_graphics(GraphicsPipelineCreateInfo const &create_i
 
     ++size_;
 
-    debug("[PipelineStorage::create_graphics] '{}': assigned slot {}", create_info.debug_name, index);
 
     return PipelineHandle{
             .index = index,
@@ -259,12 +254,9 @@ auto PipelineStorage::create_compute(ComputePipelineCreateInfo const &create_inf
         return std::unexpected(make_error(PipelineStorageErrorType::invalid_argument));
     }
 
-    debug("[PipelineStorage::create_compute] '{}': calling Pipeline::create_compute", create_info.debug_name);
 
     auto pipeline = Pipeline::create_compute(*context_, create_info, global_descriptor_set_layout(), cache_);
 
-    debug("[PipelineStorage::create_compute] '{}': Pipeline::create_compute {}", create_info.debug_name,
-          pipeline ? "succeeded" : "FAILED");
 
     if (!pipeline) {
         return std::unexpected(make_pipeline_error(pipeline.error()));
