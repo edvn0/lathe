@@ -10,23 +10,16 @@
 
 namespace {
     constexpr std::array<std::array<std::uint8_t, 4>, default_image_count> default_pixels{{
-            // 0: white
             {255, 255, 255, 255},
 
-            // 1: black
             {0, 0, 0, 255},
 
-            // 2: flat tangent-space normal
             {128, 128, 255, 255},
 
-            // 3: glTF metallic-roughness
-            // R unused, G roughness=1, B metallic=0
             {0, 255, 0, 255},
 
-            // 4: full occlusion contribution
             {255, 255, 255, 255},
 
-            // 5: no emissive contribution
             {0, 0, 0, 255},
     }};
 

@@ -624,13 +624,11 @@ namespace {
             constexpr auto max_aim_distance = 1000.0F;
             constexpr auto player_eye_height = 1.5F; // Height offset from player base position
 
-            // 1. Determine spawn origin at player height
             auto const &position =
                     ReadOnlyEntity{active_scene, this->player_entity}.get<Components::Transform>().position;
             auto const player_position = position; // Replace with your player position accessor
             auto const muzzle_position = player_position + glm::vec3{0.0F, player_eye_height, 0.0F};
 
-            // 2. Query physics world along camera forward vector to find target point
             auto const cam_origin = player_camera.position();
             auto const cam_forward = player_camera.forward();
 
@@ -735,11 +733,9 @@ namespace {
             constexpr float mesh_base_radius = 0.5F;
             constexpr float mesh_base_height = 1.0F;
 
-            constexpr glm::vec3 const capsule_scale{
-                    physics_radius / mesh_base_radius, // 0.35 / 0.5 = 0.7
-                    physics_height / mesh_base_height, // 1.0 / 1.0  = 1.0
-                    physics_radius / mesh_base_radius // 0.35 / 0.5 = 0.7
-            };
+            constexpr glm::vec3 const capsule_scale{physics_radius / mesh_base_radius,
+                                                    physics_height / mesh_base_height,
+                                                    physics_radius / mesh_base_radius};
 
             auto player = Entity{editor_scene.get(), "player"};
             player.emplace<Components::Transform>(

@@ -3864,12 +3864,10 @@ void Renderer::record_bloom_pass(VkCommandBuffer command_buffer, std::uint32_t f
 
     auto const linear_clamp_sampler = sampler_storage_.linear_clamp().index;
 
-    // 1. Transition all 4 mips to GENERAL for storage writes
     transition_image_layout(command_buffer, bloom_image->image(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                             VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0,
                             VK_ACCESS_2_SHADER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 4);
 
-    // 2. Downsample pass
     bind_compute_node(pipeline_graph_, bloom_downsample_pipeline_, command_buffer);
     gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_downsample_pipeline);
 
@@ -3903,7 +3901,6 @@ void Renderer::record_bloom_pass(VkCommandBuffer command_buffer, std::uint32_t f
                             VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
                             VK_IMAGE_ASPECT_COLOR_BIT, 0, 4);
 
-    // 3. Upsample chain (Mip 3 -> 2 -> 1 -> 0)
     bind_compute_node(pipeline_graph_, bloom_upsample_pipeline_, command_buffer);
     gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_upsample_pipeline);
 
@@ -3939,7 +3936,6 @@ void Renderer::record_bloom_pass(VkCommandBuffer command_buffer, std::uint32_t f
                                 target_mip, 1);
     }
 
-    // 4. Final mip 0 -> SHADER_READ_ONLY for composition
     transition_image_layout(command_buffer, bloom_image->image(), VK_IMAGE_LAYOUT_GENERAL,
                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,

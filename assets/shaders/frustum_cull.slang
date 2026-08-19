@@ -162,26 +162,22 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
             visible = instance_visible(pc, bounds, source_command.firstInstance + local_index);
         }
 
-        // 1. Subgroup-level scan (hardware accelerated, 0 barriers)
         uint wave_exclusive = WavePrefixCountBits(visible);
         uint wave_total = WaveActiveCountBits(visible);
 
         uint lane_in_wave = WaveGetLaneIndex();
         uint wave_id = lane / WaveGetLaneCount();
 
-        // Phase A: Write totals (distinct array)
         if (lane_in_wave == 0) {
             s_wave_totals[wave_id] = wave_total;
         }
 
         GroupMemoryBarrierWithGroupSync();
 
-        // Phase B: Thread 0 computes offsets and chunk total
         if (lane == 0) {
             uint num_waves = (WG_SIZE + WaveGetLaneCount() - 1) / WaveGetLaneCount();
             uint running_wave_total = 0;
             for (uint i = 0; i < num_waves; ++i) {
-                // Strictly separated: Read from totals, Write to offsets
                 s_wave_offsets[i] = running_wave_total;
                 running_wave_total += s_wave_totals[i];
             }
@@ -190,7 +186,6 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
 
         GroupMemoryBarrierWithGroupSync();
 
-        // Phase C: All threads read offsets
         uint exclusive_scan = s_wave_offsets[wave_id] + wave_exclusive;
         uint chunk_survivor_count = s_chunk_total;
 
@@ -204,7 +199,6 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
 
         running_survivors += chunk_survivor_count;
 
-        // Prevent next iteration from overwriting shared memory before all threads finish Phase C
         GroupMemoryBarrierWithGroupSync();
     }
 

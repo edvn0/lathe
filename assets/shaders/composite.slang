@@ -74,14 +74,11 @@ FragmentOutput mainFs(VertexOutput input, uniform CompositePC pc)
     uint bloom_index = NonUniformResourceIndex(pc.bloom_texture_index);
     uint sampler_index = NonUniformResourceIndex(pc.sampler_index);
 
-    // 1. Sample main HDR texture and Bloom texture via bindless arrays
     float3 hdr_colour = sampled_2d[hdr_index].Sample(samplers[sampler_index], input.uv).rgb;
     float3 bloom_colour = sampled_2d[bloom_index].Sample(samplers[sampler_index], input.uv).rgb;
 
-    // 2. Add weighted bloom to the raw scene color in linear space
     float3 combined_hdr = hdr_colour + (bloom_colour * 30*pc.bloom_intensity);
 
-    // 3. Apply exposure and tonemapping to the combined linear color
     float3 mapped = aces_fitted(combined_hdr * pc.exposure);
 
     FragmentOutput output;

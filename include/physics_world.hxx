@@ -53,7 +53,7 @@ private:
         btCollisionShape *shape;
     };
 
-    ArenaAllocator arena_{128 * 1024}; // 128KB chunks
+    ArenaAllocator arena_{512 * 1024};
 
     btDefaultCollisionConfiguration *collision_configuration_{nullptr};
     btCollisionDispatcher *dispatcher_{nullptr};
