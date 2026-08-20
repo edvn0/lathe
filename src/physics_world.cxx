@@ -4,6 +4,8 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "components.hxx"
+#include "debug_renderer.hxx"
+#include "logger.hxx"
 
 namespace {
     auto to_bt(glm::vec3 const &v) -> btVector3 { return btVector3{v.x, v.y, v.z}; }
@@ -50,9 +52,9 @@ auto PhysicsWorld::populate_from(entt::registry &registry) -> void {
 auto PhysicsWorld::add_body(entt::entity entity, Components::Transform const &transform,
                             Components::RigidBody const &body) -> void {
     auto *shape = body.shape == Components::BodyShape::capsule
-                          ? static_cast<btCollisionShape *>(
-                                    arena_.construct<btCapsuleShape>(body.capsule_radius, body.capsule_height))
-                          : static_cast<btCollisionShape *>(arena_.construct<btBoxShape>(to_bt(body.half_extents)));
+                          ? arena_.construct_with_base<btCapsuleShape, btCollisionShape>(body.capsule_radius,
+                                                                                         body.capsule_height)
+                          : arena_.construct_with_base<btBoxShape, btCollisionShape>(to_bt(body.half_extents));
 
     btTransform start_transform;
     start_transform.setIdentity();
@@ -149,6 +151,13 @@ auto PhysicsWorld::remove_body(entt::entity entity) -> void {
     bodies_.erase(it);
 }
 
+auto PhysicsWorld::set_debug_drawer(debug_draw::DebugRenderer *renderer) -> void {
+    if (renderer == nullptr) {
+        world_->getDebugDrawer()->clearLines();
+    }
+    world_->setDebugDrawer(renderer);
+}
+
 auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
     constexpr float fixed_dt = 1.0F / 60.0F;
     constexpr int max_substeps = 2;
@@ -164,6 +173,11 @@ auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
 
         transform.position = to_glm(world_transform.getOrigin());
         transform.rotation = to_glm(world_transform.getRotation());
+    }
+
+    if (auto *debug_renderer = static_cast<debug_draw::DebugRenderer *>(world_->getDebugDrawer())) {
+        debug_renderer->begin_frame();
+        world_->debugDrawWorld();
     }
 }
 

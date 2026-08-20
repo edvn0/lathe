@@ -21,6 +21,8 @@ auto Scene::step(float delta_time) -> void { physics_world->step(get_registry(),
 
 auto Scene::mark_lights_dirty(entt::registry &, entt::entity) -> void { lights_dirty = true; }
 
+auto Scene::set_debug_renderer(debug_draw::DebugRenderer *r) -> void { physics_world->set_debug_drawer(r); }
+
 auto Scene::on_transform_changed(entt::registry &reg, entt::entity entity) -> void {
     if (reg.any_of<Components::PointLight, Components::SpotLight>(entity)) {
         lights_dirty = true;
@@ -38,7 +40,6 @@ auto Scene::connect_light_signals() -> void {
 
     registry.on_update<Components::Transform>().connect<&Scene::on_transform_changed>(*this);
 }
-
 
 void systems::lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) {
     auto view = registry.view<Components::Lifetime>();
@@ -84,4 +85,26 @@ auto systems::player_movement(entt::registry &registry, PhysicsWorld &physics_wo
             controller.move_speed() > 0.0F ? glm::length(desired_velocity) / controller.move_speed() : 0.0F;
 
     camera.update(transform.position, controller.yaw_degrees(), controller.pitch_degrees(), speed_factor, delta_time);
+}
+
+auto systems::get_world_transform(entt::registry const &registry, entt::entity entity) -> glm::mat4 {
+    auto world_matrix = glm::mat4{1.0F};
+    auto current = entity;
+
+    // Bounded so a misconfigured cyclic Parent chain can't hang here.
+    for (auto depth = 0; depth < 64 && registry.valid(current); ++depth) {
+        if (auto const *transform = registry.try_get<Components::Transform const>(current)) {
+            world_matrix = transform->matrix() * world_matrix;
+        }
+
+        auto const *parent = registry.try_get<Components::Parent const>(current);
+
+        if (parent == nullptr) {
+            break;
+        }
+
+        current = parent->entity;
+    }
+
+    return world_matrix;
 }

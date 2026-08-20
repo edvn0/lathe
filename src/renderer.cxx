@@ -22,6 +22,7 @@
 #include "gpu_resource_table.hxx"
 #include "logger.hxx"
 #include "material_storage.hxx"
+#include "renderer_application_policy.hxx"
 #include "sampler_storage.hxx"
 #include "slang_compiler.hxx"
 #include "vk_barrier.hxx"
@@ -945,10 +946,9 @@ auto Renderer::thread_pool() noexcept -> BS::priority_thread_pool & {
 auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expected<void, RendererError> {
     debug("[Renderer::initialize] enter");
 
-    if (initialized_ || create_info.extent.width == 0 || create_info.extent.height == 0 ||
-        create_info.frames_in_flight == 0 || create_info.material_capacity < 2 || create_info.mesh_capacity < 2 ||
-        create_info.model_capacity < 2 || create_info.maximum_draw_count == 0 ||
-        create_info.maximum_submission_count == 0) {
+    if (initialized_ || create_info.extent.width == 0 || create_info.extent.height == 0 || frames_in_flight == 0 ||
+        create_info.material_capacity < 2 || create_info.mesh_capacity < 2 || create_info.model_capacity < 2 ||
+        create_info.maximum_draw_count == 0 || create_info.maximum_submission_count == 0) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
@@ -1006,7 +1006,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     auto gpu_resource_table =
             GpuResourceTable::create(context_, GpuResourceTableCreateInfo{
-                                                       .frames_in_flight = create_info.frames_in_flight,
+                                                       .frames_in_flight = frames_in_flight,
                                                        .image_capacity = create_info.image_capacity,
                                                        .sampler_capacity = create_info.sampler_capacity,
                                                        .debug_name = "renderer.resources",
@@ -1021,7 +1021,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     auto pipeline_graph = PipelineGraphRepository::create(
             context_, PipelineGraphCreateInfo{
                               .pipeline_capacity = create_info.pipeline_capacity,
-                              .frames_in_flight = create_info.frames_in_flight,
+                              .frames_in_flight = frames_in_flight,
                               .global_descriptor_set_layout = gpu_resource_table_.layout(),
                               .cache_file_path = "cache/pipeline_cache.bin",
                               .debug_name = "renderer.pipelines",
@@ -1552,7 +1552,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     auto const upload_size = batch_bounds_offset + batch_bounds_size;
 
-    frames_.resize(create_info.frames_in_flight);
+    frames_.resize(frames_in_flight);
 
     for (std::uint32_t frame_index = 0; frame_index < static_cast<std::uint32_t>(frames_.size()); ++frame_index) {
         auto &frame = frames_[frame_index];
@@ -1831,7 +1831,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     this->timestamp_period_ = properties.limits.timestampPeriod;
 
-    timestamp_queries_.resize(create_info.frames_in_flight);
+    timestamp_queries_.resize(frames_in_flight);
 
     VkQueryPoolCreateInfo query_pool_info{
             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
@@ -1842,7 +1842,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .pipelineStatistics = 0,
     };
 
-    for (std::uint32_t frame_index = 0; frame_index < create_info.frames_in_flight; ++frame_index) {
+    for (std::uint32_t frame_index = 0; frame_index < frames_in_flight; ++frame_index) {
         VkQueryPool query_pool = VK_NULL_HANDLE;
         VkResult result = vkCreateQueryPool(context_.device, &query_pool_info, nullptr, &query_pool);
 
@@ -1855,7 +1855,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         vkResetQueryPool(context_.device, query_pool, 0, query_count);
     }
 
-    pipeline_stat_queries_.resize(create_info.frames_in_flight);
+    pipeline_stat_queries_.resize(frames_in_flight);
     VkQueryPoolCreateInfo const pipeline_stat_pool_info{
             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
             .pNext = nullptr,
@@ -1868,7 +1868,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                   VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT,
     };
 
-    for (std::uint32_t frame_index = 0; frame_index < create_info.frames_in_flight; ++frame_index) {
+    for (std::uint32_t frame_index = 0; frame_index < frames_in_flight; ++frame_index) {
         VkQueryPool query_pool = VK_NULL_HANDLE;
         VkResult const result = vkCreateQueryPool(context_.device, &pipeline_stat_pool_info, nullptr, &query_pool);
 
@@ -1882,7 +1882,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     }
 
     constexpr auto size = sizeof(UBO);
-    ubos_.resize(create_info.frames_in_flight);
+    ubos_.resize(frames_in_flight);
     for (auto &ubo: ubos_) {
         auto maybe_ubo = Buffer::create(context_, BufferCreateInfo{
                                                           .size = size,
@@ -2836,7 +2836,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     auto const view_projection = projection * view;
     auto const frustum_planes = extract_frustum_planes(view_projection);
 
-    UBO ubo{
+    UBO const ubo{
             .view_projection = view_projection,
             .view = view,
             .projection = projection,
@@ -2876,13 +2876,13 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             .time = matrices.time,
             .ambient_intensity = ambient_intensity_,
     };
-    if (!ubos_[frame_index].write(0, std::as_bytes(std::span{&ubo, 1}))) {
+    if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {
         clear_submissions();
 
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
-    if (!frame.frustum_planes_buffer.write(0, std::as_bytes(std::span{frustum_planes}))) {
+    if (!frame.frustum_planes_buffer.write(0, std::span{frustum_planes})) {
         clear_submissions();
 
         return std::unexpected(make_error(RendererErrorType::device_error));
@@ -2935,24 +2935,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         frame.light_count = light_count_;
     }
 
-    // GPU frustum culling: one dispatch, one workgroup per batch, main view
-    // only (see frustum_cull.slang for why the shadow pass is excluded).
-    // Recorded here -- after the buffer uploads/barriers above, before
-    // record_frame's rendering commands -- so its output
-    // (visible_draw_buffer, visible_transform_buffer, culled_indirect_buffer)
-    // is ready by the time the depth prepass and forward pass read it. The
-    // UBO write above is a host-visible memcpy that completes before this
-    // command buffer is submitted, so it doesn't matter that this dispatch
-    // is recorded before or after it -- the compute shader only ever runs
-    // post-submission.
-    //
-    // Dispatch size is frame.indirect_command_count (the batch count), and
-    // *never* depends on total instance count -- each workgroup internally
-    // loops its own batch's instances in WG_SIZE-wide chunks. This also
-    // means the batch count must stay under the device's guaranteed-minimum
-    // vkCmdDispatch groupCountX limit (65535); maximum_draw_count_ can
-    // exceed that, so it's checked explicitly rather than left to fail
-    // inside the driver.
     vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
                          static_cast<std::uint32_t>(RenderStage::Culling) * 2);
 
@@ -2995,10 +2977,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
                              (static_cast<std::uint32_t>(RenderStage::Culling) * 2) + 1);
 
-        // Single barrier covering everything this one dispatch wrote:
-        // visible_draw_buffer/visible_transform_buffer (compute write ->
-        // vertex-shader read by the depth prepass and forward pass below)
-        // and culled_indirect_buffer (compute write -> indirect-draw read).
         std::array<VkBufferMemoryBarrier2, 3> const post_cull_barriers{
                 VkBufferMemoryBarrier2{
                         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -3116,9 +3094,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     return {};
 }
 
-auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
-                            std::uint32_t frame_index, std::function<void(VkCommandBuffer)> const &overlay)
+
+template<typename OverlayPolicy>
+[[nodiscard]] auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
+                                          std::uint32_t frame_index, Application const &app, glm::mat4 const &vp)
         -> std::expected<void, RendererError> {
+
     if (!initialized_ || command_buffer == VK_NULL_HANDLE || swapchain_image.image == VK_NULL_HANDLE ||
         swapchain_image.view == VK_NULL_HANDLE || swapchain_image.format == VK_FORMAT_UNDEFINED ||
         swapchain_image.extent.width == 0 || swapchain_image.extent.height == 0 || frame_index >= frames_.size()) {
@@ -3219,7 +3200,14 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                 // Reverse-Z far value -- "nothing occludes" until a caster writes into it.
-                .clearValue = {.depthStencil = {.depth = 0.0F, .stencil = 0}},
+                .clearValue =
+                        {
+                                .depthStencil =
+                                        {
+                                                .depth = 0.0F,
+                                                .stencil = 0,
+                                        },
+                        },
         };
 
         VkRenderingInfo const shadow_rendering_info{
@@ -3242,12 +3230,6 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         vkCmdBeginRendering(command_buffer, &shadow_rendering_info);
         vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-        // Blend never casts shadows (see docs/alpha-mode-support.md) -- only
-        // the opaque and mask ranges of frame.indirect_buffer are drawn
-        // here. Both ranges use VK_CULL_MODE_NONE already (set inside
-        // set_shadow_dynamic_state, unconditionally -- this pass has no Y
-        // flip, so back-face culling would cull the wrong side regardless of
-        // alpha mode), so no cull-mode override is needed between them.
         if (frame.opaque_indirect_count != 0) {
             bind_graphics_node(pipeline_graph_, shadow_pipeline_, command_buffer, VK_SAMPLE_COUNT_1_BIT, 0, false);
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline);
@@ -3256,11 +3238,6 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                     .transform_buffer_address = frame.transform_buffer.device_address,
                     .material_buffer_address = material_storage_.device_address(),
                     .ubo_buffer_address = ubos_[frame_index].device_address,
-                    // The shadow pass never shades punctual lights (only the
-                    // directional light casts shadows), but the vertex shader's
-                    // PC still declares these fields since ShadowPC.base is PC
-                    // -- left zeroed/unused rather than plumbing a second,
-                    // lights-less push constant type.
                     .lights_buffer_address = frame.lights_buffer.device_address,
                     .light_count = 0,
                     .padding0 = 0,
@@ -3343,16 +3320,9 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
     transition_forward_target_to_attachments(command_buffer, *hdr, *depth, is_msaa ? resolved_hdr : nullptr,
                                              is_msaa ? resolved_depth : nullptr);
 
-    // Depth prepass and forward read the frustum-culled buffers by default;
-    // the shadow pass above never does (see prepare_frame). The toggle lets
-    // this be disabled at runtime as an A/B check against the un-culled
-    // buffers -- same indirect_command_count either way, since culling only
-    // zeroes/refills instanceCount per batch, never changes the batch count.
-    auto const &main_view_draw_buffer = frustum_culling_enabled_ ? frame.visible_draw_buffer : frame.draw_buffer;
-    auto const &main_view_transform_buffer =
-            frustum_culling_enabled_ ? frame.visible_transform_buffer : frame.transform_buffer;
-    auto const &main_view_indirect_buffer =
-            frustum_culling_enabled_ ? frame.culled_indirect_buffer : frame.indirect_buffer;
+    auto const &main_view_draw_buffer = frame.visible_draw_buffer;
+    auto const &main_view_transform_buffer = frame.visible_transform_buffer;
+    auto const &main_view_indirect_buffer = frame.culled_indirect_buffer;
 
 #pragma region Predepth pass
     {
@@ -3532,7 +3502,6 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
 
         if (frame.opaque_indirect_count != 0) {
             set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::main);
-
             vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0, frame.opaque_indirect_count,
                                      sizeof(VkDrawIndexedIndirectCommand));
         }
@@ -3569,34 +3538,33 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         vkCmdEndQuery(command_buffer, pipeline_stat_queries_[frame_index].query_pool, 0);
         if (auto const light_icon_pipeline = resolve_layout(pipeline_graph_, light_icon_pipeline_);
             light_icon_pipeline != nullptr && debug_draw_light_icons_ && frame.light_count != 0) {
-            if (light_icon_pipeline != VK_NULL_HANDLE) {
-                bind_graphics_node(pipeline_graph_, light_icon_pipeline_, command_buffer, samples_, 1, true, false);
-                gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                         light_icon_pipeline);
+            bind_graphics_node(pipeline_graph_, light_icon_pipeline_, command_buffer, samples_, 1, true, false);
+            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, light_icon_pipeline);
 
-                vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
-                vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
-                vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
-                vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+            vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
+            vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
+            vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
+            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
 
-                LightIconPushConstants const light_pc{
-                        .lights_buffer_address = frame.lights_buffer.device_address,
-                        .ubo_buffer_address = ubos_[frame_index].device_address,
-                        .light_count = frame.light_count,
-                        .icon_texture_index = light_icon_texture_.index,
-                        .sampler_index = sampler_storage_.linear_clamp().index,
-                        .icon_world_size = light_icon_world_size_,
-                };
+            LightIconPushConstants const light_pc{
+                    .lights_buffer_address = frame.lights_buffer.device_address,
+                    .ubo_buffer_address = ubos_[frame_index].device_address,
+                    .light_count = frame.light_count,
+                    .icon_texture_index = light_icon_texture_.index,
+                    .sampler_index = sampler_storage_.linear_clamp().index,
+                    .icon_world_size = light_icon_world_size_,
+            };
 
-                vkCmdPushConstants(command_buffer, light_icon_pipeline,
-                                   VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT |
-                                           VK_SHADER_STAGE_FRAGMENT_BIT,
-                                   0, sizeof(LightIconPushConstants), &light_pc);
+            vkCmdPushConstants(command_buffer, light_icon_pipeline,
+                               VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT |
+                                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(LightIconPushConstants), &light_pc);
 
-                auto const group_count = (frame.light_count + 31) / 32;
-                vkCmdDrawMeshTasksEXT(command_buffer, group_count, 1, 1);
-            }
+            auto const group_count = (frame.light_count + 31) / 32;
+            vkCmdDrawMeshTasksEXT(command_buffer, group_count, 1, 1);
         }
+
+        OverlayPolicy::render_debug(app, command_buffer, vp, frame_index);
 
         vkCmdEndRendering(command_buffer);
 
@@ -3608,22 +3576,12 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
     transition_hdr_to_shader_read(command_buffer, *resolved_hdr);
 
 #pragma region Bloom pass
-    std::uint32_t bloom_texture_index = 0;
+    auto bloom_texture_index = bloom_settings_.enabled ? frame.bloom_target.mip_slots[0].index : 0;
     {
-
         if (bloom_settings_.enabled) {
             vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
                                  static_cast<std::uint32_t>(RenderStage::BloomPass) * 2);
-
-            // Record downsample/upsample compute pyramid using resolved_hdr as input
             record_bloom_pass(command_buffer, frame_index, frame.forward_target.resolved_hdr(), target_extent);
-
-            // Retrieve the descriptor table index for the final upscaled bloom target
-            auto const *bloom_image = image_storage_.get(frame.bloom_target.image);
-            if (bloom_image != nullptr && bloom_image->valid()) {
-                bloom_texture_index = frame.bloom_target.mip_slots[0].index;
-            }
-
             vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
                                  (static_cast<std::uint32_t>(RenderStage::BloomPass) * 2) + 1);
         }
@@ -3684,9 +3642,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                            &composite_pc);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
 
-        if (overlay) {
-            overlay(command_buffer);
-        }
+        OverlayPolicy::render_ui(app, command_buffer, frame_index);
 
         vkCmdEndRendering(command_buffer);
 
@@ -3708,8 +3664,14 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
 
     frame_query.has_results = true;
     pipeline_stat_queries_[frame_index].has_results = true;
+
     return {};
 }
+
+template auto Renderer::record_frame<ApplicationOverlayPolicy>(VkCommandBuffer, SwapchainImage const &, std::uint32_t,
+                                                               Application const &, glm::mat4 const &)
+        -> std::expected<void, RendererError>;
+
 
 auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
     if (extent.width == 0 || extent.height == 0) {
@@ -3759,13 +3721,30 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
     return {};
 }
 
-void Renderer::queue_render_thread_event(std::function<void()> &&task) {
+void Renderer::queue_render_thread_event(std::move_only_function<void()> &&task) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     event_queue_.push(std::move(task));
     queued_events_.fetch_add(1);
-
-    context_.render_wake_condition.notify_one();
 }
+
+void Renderer::drain_event_queue() {
+    if (queued_events_.load(std::memory_order_relaxed) == 0) [[likely]] {
+        return;
+    }
+
+    std::queue<std::move_only_function<void()>> local_queue;
+
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        std::swap(event_queue_, local_queue);
+    }
+
+    while (!local_queue.empty()) {
+        local_queue.front()();
+        local_queue.pop();
+    }
+}
+
 
 auto Renderer::wait_idle() -> std::expected<void, RendererError> {
     auto result = vkDeviceWaitIdle(context_.device);

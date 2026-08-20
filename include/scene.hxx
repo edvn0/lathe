@@ -6,6 +6,8 @@
 #include <entt/entt.hpp>
 #include <entt/entity/snapshot.hpp>
 
+#include <glm/mat4x4.hpp>
+
 #include <any>
 #include <memory>
 #include <utility>
@@ -20,15 +22,6 @@ namespace detail {
     class ReadOnlyEntity;
 } // namespace detail
 
-// Owns everything simulate/render iterate over. The editor keeps one Scene
-// alive for the whole app lifetime; play/simulate just points Application's
-// active_scene at whichever Scene should be ticked this frame.
-//
-// physics_world only exists while the scene is playing: on_scene_start()
-// builds it (from whatever Transform+RigidBody entities are in the
-// registry at that point) and on_scene_stop() tears it down. Kept behind a
-// unique_ptr, and PhysicsWorld only forward-declared here, so pulling in
-// Bullet's headers doesn't ripple out to every TU that includes scene.hxx.
 class Scene {
 public:
     PhysicsWorldSettings physics_settings{};
@@ -45,6 +38,8 @@ public:
 
     auto get_registry() noexcept -> entt::registry & { return registry; }
     auto get_registry() const noexcept -> entt::registry const & { return registry; }
+
+    auto set_debug_renderer(debug_draw::DebugRenderer * = nullptr) -> void;
 
 private:
     entt::registry registry;
@@ -105,7 +100,8 @@ auto clone_registry(entt::registry const &src, entt::registry &dst) -> void {
 
 
 namespace systems {
-    void lifetime(entt::registry &registry, PhysicsWorld &physics, float dt);
+    [[nodiscard]] auto get_world_transform(entt::registry const &registry, entt::entity entity) -> glm::mat4;
+    auto lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) -> void;
     auto player_movement(entt::registry &registry, PhysicsWorld &physics_world, entt::entity player_entity,
                          PlayerController &controller, PlayerCamera &camera, float delta_time) -> void;
 } // namespace systems

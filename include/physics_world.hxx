@@ -3,6 +3,8 @@
 #include <entt/entt.hpp>
 #include <unordered_map>
 
+#include "forward.hxx"
+
 #include "arena_allocator.hxx"
 #include "components.hxx"
 #include "physics.hxx"
@@ -38,6 +40,8 @@ public:
             -> void;
     auto remove_body(entt::entity entity) -> void;
     auto step(entt::registry &registry, float delta_time) -> void;
+
+    auto set_debug_drawer(debug_draw::DebugRenderer *) -> void;
 
     auto set_velocity(entt::entity entity, glm::vec3 const &linear_velocity) -> void;
     auto jump(entt::entity entity, float jump_velocity) -> void;

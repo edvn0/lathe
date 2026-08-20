@@ -18,7 +18,6 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include <vulkan/vulkan_core.h>
 
 #include "buffer.hxx"
 #include "config.hxx"
@@ -61,18 +60,21 @@ enum class RenderStage : std::uint32_t {
 
 constexpr auto to_string(RenderStage stage) -> std::string_view {
     switch (stage) {
-        case RenderStage::FullFrame:
+        using enum RenderStage;
+        case FullFrame:
             return "Full Frame";
-        case RenderStage::Culling:
+        case Culling:
             return "GPU Culling";
-        case RenderStage::ShadowPass:
+        case ShadowPass:
             return "Shadow Pass";
-        case RenderStage::DepthPrepass:
+        case DepthPrepass:
             return "Depth prepass";
-        case RenderStage::ForwardPass:
+        case ForwardPass:
             return "Forward Pass";
-        case RenderStage::Composition:
+        case Composition:
             return "Composition Pass";
+        case BloomPass:
+            return "Bloom pass";
         default:
             return "Unknown";
     }
@@ -212,7 +214,7 @@ static_assert(offsetof(UBO, light_direction) == 576);
 struct RendererError {
     RendererErrorType type = RendererErrorType::invalid_argument;
 
-    std::optional<ErrorCause> cause;
+    std::optional<ErrorCause> cause{std::nullopt};
 };
 
 static_assert(std::is_copy_constructible_v<RendererError>,
@@ -220,8 +222,6 @@ static_assert(std::is_copy_constructible_v<RendererError>,
 
 struct RendererCreateInfo {
     VkExtent2D extent{};
-
-    std::uint32_t frames_in_flight = 0;
 
     VkDeviceSize geometry_capacity = 256UZ * 1024UZ * 1024UZ;
 
@@ -239,8 +239,8 @@ struct RendererCreateInfo {
 
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 
-    std::uint32_t maximum_draw_count = 65536;
-    std::uint32_t maximum_submission_count = 65536;
+    std::uint32_t maximum_draw_count = 1'000'000;
+    std::uint32_t maximum_submission_count = 1'000'000;
 };
 
 struct Renderer {
@@ -376,22 +376,18 @@ struct Renderer {
     auto set_shadow_settings(ShadowSettings const &settings) noexcept -> void { shadow_settings_ = settings; }
     [[nodiscard]] auto shadow_settings() const noexcept -> ShadowSettings const & { return shadow_settings_; }
 
-    // Debug toggle: when true (default), the depth prepass and forward pass
-    // read the GPU-frustum-culled draw/transform/indirect buffers. When
-    // false, they fall back to the un-culled buffers -- the A/B switch used
-    // to verify culling produces a pixel-identical image. The shadow pass is
-    // never affected by this flag; it always reads the un-culled buffers
-    // (see prepare_frame / frustum_cull.slang for why).
-    auto set_frustum_culling_enabled(bool enabled) noexcept -> void { frustum_culling_enabled_ = enabled; }
-    [[nodiscard]] auto frustum_culling_enabled() const noexcept -> bool { return frustum_culling_enabled_; }
-
     [[nodiscard]]
     auto prepare_frame(VkCommandBuffer command_buffer, const CameraMatrices &, std::uint32_t frame_index)
             -> std::expected<void, RendererError>;
 
-    [[nodiscard]]
     auto record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, std::uint32_t frame_index,
-                      std::function<void(VkCommandBuffer)> const &overlay = {}) -> std::expected<void, RendererError>;
+                      std::function<void(VkCommandBuffer)> const &debug_overlay,
+                      std::function<void(VkCommandBuffer)> const &ui_overlay) -> std::expected<void, RendererError>;
+
+    template<typename OverlayPolicy>
+    [[nodiscard]] auto record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
+                                    std::uint32_t frame_index, Application const &app, glm::mat4 const &vp)
+            -> std::expected<void, RendererError>;
 
     [[nodiscard]]
     auto resize(VkExtent2D extent) -> std::expected<void, RendererError>;
@@ -414,26 +410,13 @@ struct Renderer {
                static_cast<float>(frames_[index].forward_target.extent().height);
     }
 
-    void queue_render_thread_event(std::function<void()> &&);
-    void drain_event_queue() {
-        if (queued_events_.load(std::memory_order_relaxed) == 0) [[likely]] {
-            return;
-        }
-
-        std::queue<std::function<void()>> local_queue;
-
-        {
-            std::lock_guard<std::mutex> lock(queue_mutex_);
-            std::swap(event_queue_, local_queue);
-        }
-
-        while (!local_queue.empty()) {
-            local_queue.front()();
-            local_queue.pop();
-        }
-    }
+    void queue_render_thread_event(std::move_only_function<void()> &&);
+    void drain_event_queue();
 
     [[nodiscard]] auto context() noexcept -> VulkanContext & { return context_; }
+    [[nodiscard]] auto depth_format() const noexcept { return frames_[0].forward_target.depth_format(); }
+    [[nodiscard]] auto hdr_format() const noexcept { return frames_[0].forward_target.hdr_format(); }
+    [[nodiscard]] auto samples() const noexcept { return frames_[0].forward_target.samples(); }
 
     [[nodiscard]] auto image_storage() noexcept -> ImageStorage & { return image_storage_; }
     [[nodiscard]] auto sampler_storage() noexcept -> SamplerStorage & { return sampler_storage_; }
@@ -726,7 +709,6 @@ private:
 
     DirectionalLight light_{};
     ShadowSettings shadow_settings_{};
-    bool frustum_culling_enabled_ = true;
     float ambient_intensity_ = 0.15F;
 
     std::vector<PointLight> point_light_submissions_;
@@ -757,7 +739,7 @@ private:
     std::uint32_t lights_dirty_mask_ = 0;
     std::uint32_t light_count_ = 0;
 
-    std::queue<std::function<void()>> event_queue_;
+    std::queue<std::move_only_function<void()>> event_queue_;
     std::atomic_uint32_t queued_events_;
     std::mutex queue_mutex_;
 

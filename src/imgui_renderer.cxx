@@ -287,6 +287,7 @@ namespace gui {
         vkCmdSetDepthBounds(cmd, 0.0F, 1.0F);
         vkCmdSetDepthTestEnable(cmd, VK_FALSE);
         vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
+        vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
         vkCmdSetViewport(cmd, 0, 1, &vp);
 
@@ -419,8 +420,7 @@ namespace gui {
                 };
                 vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-                vkCmdDrawIndexed(cmd, imgui_cmd.ElemCount, 1, index_offset + imgui_cmd.IdxOffset,
-                                 static_cast<std::int32_t>(vertex_offset + imgui_cmd.VtxOffset), 0);
+                vkCmdDrawIndexed(cmd, imgui_cmd.ElemCount, 1, index_offset + imgui_cmd.IdxOffset, 0, 0);
             }
 
             index_offset += static_cast<std::uint32_t>(command_list->IdxBuffer.Size);

@@ -5,7 +5,6 @@
 #include <source_location>
 #include <string_view>
 #include <utility>
-#include <vulkan/vulkan_core.h>
 
 #include "context.hxx"
 

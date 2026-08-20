@@ -16,16 +16,10 @@
 
 namespace {
 
-    // Used by the bool-returning setup helpers below (create_swapchain,
-    // create_image_views, ...), which have no SwapchainBeginFrameError to
-    // carry a VkResult in -- this is just a log line at the call site.
     auto report_vk_error(const char *operation, VkResult result) noexcept -> void {
         error("{} failed with VkResult {}", operation, static_cast<int>(result));
     }
 
-    // Builds the error value AND logs it -- used by begin_frame(), which DOES
-    // return a SwapchainBeginFrameError, so the VkResult that used to only
-    // reach the log line now also survives in the returned value.
     auto make_vk_error(SwapchainBeginFrameError::Kind kind, std::string_view operation, VkResult result) noexcept
             -> SwapchainBeginFrameError {
         error("{} failed with VkResult {}", operation, static_cast<int>(result));

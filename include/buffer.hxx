@@ -76,10 +76,16 @@ struct Buffer {
     [[nodiscard]]
     auto write(VkDeviceSize offset, std::span<const std::byte> data) -> std::expected<void, DeviceError>;
 
-    template<typename T>
+    template<typename T, std::size_t Extent = std::dynamic_extent>
     [[nodiscard]]
-    auto write(VkDeviceSize offset, std::span<const T> data) -> std::expected<void, DeviceError> {
-        return write(offset, std::as_bytes(data));
+    auto write(VkDeviceSize offset, std::span<const T, Extent> data) -> std::expected<void, DeviceError> {
+        return write(offset, std::span<const std::byte>{std::as_bytes(data)});
+    }
+
+    template<typename T, std::size_t Extent = std::dynamic_extent>
+    [[nodiscard]]
+    auto write(VkDeviceSize offset, std::span<T, Extent> data) -> std::expected<void, DeviceError> {
+        return write(offset, std::span<const std::byte>{std::as_bytes(data)});
     }
 
     [[nodiscard]]

@@ -21,6 +21,14 @@ public:
         return ::new (ptr) T(std::forward<Args>(args)...);
     }
 
+    template<typename T, typename Base, typename... Args>
+        requires std::is_base_of_v<Base, T>
+    Base *construct_with_base(Args &&...args) {
+        void *ptr = allocate(sizeof(T), alignof(T));
+        Base *allocated = ::new (ptr) T(std::forward<Args>(args)...);
+        return allocated;
+    }
+
     void clear() {
         chunks_.clear();
         current_chunk_ = nullptr;

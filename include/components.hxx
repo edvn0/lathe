@@ -1,5 +1,6 @@
 #pragma once
 
+#include <entt/entt.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/mat4x4.hpp>
@@ -53,6 +54,10 @@ namespace Components {
     };
 
     struct PlayerTag {};
+
+    struct Parent {
+        entt::entity entity{entt::null};
+    };
 
     struct RigidBody {
         glm::vec3 velocity{0.0F}; // initial velocity, applied when the body is created
