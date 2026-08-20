@@ -248,6 +248,7 @@ CPMAddPackage(
         GIT_TAG 3.25
         GIT_SHALLOW YES
         OPTIONS
+        "BT_THREADSAFE" "OFF"
         "BUILD_SHARED_LIBS OFF"
         "BUILD_BULLET2_DEMOS OFF"
         "BUILD_CPU_DEMOS OFF"

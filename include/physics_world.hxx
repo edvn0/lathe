@@ -1,22 +1,14 @@
 #pragma once
 
 #include <entt/entt.hpp>
-#include <unordered_map>
+#include <memory>
+#include <optional>
 
-#include "forward.hxx"
+#include <BS_thread_pool.hpp>
 
-#include "arena_allocator.hxx"
 #include "components.hxx"
+#include "forward.hxx"
 #include "physics.hxx"
-
-class btBroadphaseInterface;
-class btCollisionConfiguration;
-class btCollisionShape;
-class btConstraintSolver;
-class btDefaultCollisionConfiguration;
-class btDiscreteDynamicsWorld;
-class btCollisionDispatcher;
-class btRigidBody;
 
 struct RaycastHit {
     entt::entity entity{entt::null};
@@ -27,7 +19,7 @@ struct RaycastHit {
 
 class PhysicsWorld {
 public:
-    explicit PhysicsWorld(PhysicsWorldSettings const &settings);
+    PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool);
     ~PhysicsWorld();
 
     PhysicsWorld(PhysicsWorld const &) = delete;
@@ -52,18 +44,6 @@ public:
             -> std::optional<RaycastHit>;
 
 private:
-    struct Body {
-        btRigidBody *rigid_body;
-        btCollisionShape *shape;
-    };
-
-    ArenaAllocator arena_{512 * 1024};
-
-    btDefaultCollisionConfiguration *collision_configuration_{nullptr};
-    btCollisionDispatcher *dispatcher_{nullptr};
-    btBroadphaseInterface *broadphase_{nullptr};
-    btConstraintSolver *solver_{nullptr};
-    btDiscreteDynamicsWorld *world_{nullptr};
-
-    std::unordered_map<entt::entity, Body> bodies_;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };

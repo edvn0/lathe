@@ -11,7 +11,7 @@ Scene::Scene() { connect_light_signals(); }
 Scene::~Scene() = default;
 
 auto Scene::on_scene_start() -> void {
-    physics_world = std::make_unique<PhysicsWorld>(physics_settings);
+    physics_world = std::make_unique<PhysicsWorld>(physics_settings, Renderer::thread_pool());
     physics_world->populate_from(registry);
 }
 

@@ -1,8 +1,16 @@
+// physics_world.cxx
 #include "physics_world.hxx"
 
 #include <btBulletDynamicsCommon.h>
 #include <glm/gtc/quaternion.hpp>
 
+#include <BS_thread_pool.hpp>
+#include <BulletCollision/CollisionDispatch/btCollisionDispatcherMt.h>
+#include <BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolverMt.h>
+#include <BulletDynamics/Dynamics/btDiscreteDynamicsWorldMt.h>
+#include <LinearMath/btThreads.h>
+
+#include "arena_allocator.hxx"
 #include "components.hxx"
 #include "debug_renderer.hxx"
 #include "logger.hxx"
@@ -12,34 +20,101 @@ namespace {
     auto to_glm(btVector3 const &v) -> glm::vec3 { return glm::vec3{v.x(), v.y(), v.z()}; }
     auto to_bt(glm::quat const &q) -> btQuaternion { return btQuaternion{q.x, q.y, q.z, q.w}; }
     auto to_glm(btQuaternion const &q) -> glm::quat { return glm::quat{q.w(), q.x(), q.y(), q.z()}; }
+
+    class ThreadPoolTaskScheduler final : public btITaskScheduler {
+    public:
+        explicit ThreadPoolTaskScheduler(BS::priority_thread_pool &pool) :
+            btITaskScheduler{"bs_thread_pool"}, pool_{pool} {}
+
+        auto getMaxNumThreads() const -> int override { return static_cast<int>(pool_.get_thread_count()); }
+        auto getNumThreads() const -> int override { return static_cast<int>(pool_.get_thread_count()); }
+        auto setNumThreads(int /*num_threads*/) -> void override {} // pool size is fixed at construction
+
+        auto parallelFor(int i_begin, int i_end, int grain_size, btIParallelForBody const &body) -> void override {
+            if (i_end - i_begin <= grain_size) {
+                body.forLoop(i_begin, i_end);
+                return;
+            }
+
+            auto const num_chunks = std::max(1, (i_end - i_begin) / grain_size);
+
+            auto future = pool_.submit_blocks(
+                    i_begin, i_end,
+                    [&body](int const chunk_begin, int const chunk_end) { body.forLoop(chunk_begin, chunk_end); },
+                    num_chunks);
+
+            future.wait();
+        }
+
+        auto parallelSum(int i_begin, int i_end, int /*grain_size*/, btIParallelSumBody const &body)
+                -> btScalar override {
+            return body.sumLoop(i_begin, i_end); // Bullet rarely hits this path — serial fallback is fine
+        }
+
+    private:
+        BS::priority_thread_pool &pool_;
+    };
 } // namespace
 
-PhysicsWorld::PhysicsWorld(PhysicsWorldSettings const &settings) {
-    collision_configuration_ = arena_.construct<btDefaultCollisionConfiguration>();
-    dispatcher_ = arena_.construct<btCollisionDispatcher>(collision_configuration_);
-    broadphase_ = arena_.construct<btDbvtBroadphase>();
-    solver_ = arena_.construct<btSequentialImpulseConstraintSolver>();
-    world_ = arena_.construct<btDiscreteDynamicsWorld>(dispatcher_, broadphase_, solver_, collision_configuration_);
+struct PhysicsWorld::Impl {
+    struct Body {
+        btRigidBody *rigid_body;
+        btCollisionShape *shape;
+    };
 
-    world_->setGravity(to_bt(settings.gravity));
-    world_->getSolverInfo().m_numIterations = 6;
-    world_->getSolverInfo().m_solverMode |= SOLVER_USE_WARMSTARTING | SOLVER_SIMD | SOLVER_CACHE_FRIENDLY;
-}
+    Impl(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool) : task_scheduler{thread_pool} {
+        btSetTaskScheduler(&task_scheduler);
 
-PhysicsWorld::~PhysicsWorld() {
-    for (auto &[entity, body]: bodies_) {
-        world_->removeRigidBody(body.rigid_body);
-        body.rigid_body->~btRigidBody();
-        body.shape->~btCollisionShape();
+        collision_configuration = arena.construct<btDefaultCollisionConfiguration>();
+        dispatcher = arena.construct<btCollisionDispatcherMt>(collision_configuration);
+        broadphase = arena.construct<btDbvtBroadphase>();
+
+        auto const solver_count = static_cast<int>(thread_pool.get_thread_count());
+        solver_pool = arena.construct<btConstraintSolverPoolMt>(solver_count);
+        solver_mt = arena.construct<btSequentialImpulseConstraintSolverMt>();
+
+        world = arena.construct<btDiscreteDynamicsWorldMt>(dispatcher, broadphase, solver_pool, solver_mt,
+                                                           collision_configuration);
+
+        world->setGravity(to_bt(settings.gravity));
+        world->getSolverInfo().m_numIterations = 6;
+        world->getSolverInfo().m_solverMode |= SOLVER_USE_WARMSTARTING | SOLVER_SIMD | SOLVER_CACHE_FRIENDLY;
     }
 
-    world_->~btDiscreteDynamicsWorld();
+    ~Impl() {
+        for (auto &[entity, body]: bodies) {
+            world->removeRigidBody(body.rigid_body);
+            body.rigid_body->~btRigidBody();
+            body.shape->~btCollisionShape();
+        }
 
-    solver_->~btConstraintSolver();
-    broadphase_->~btBroadphaseInterface();
-    dispatcher_->~btCollisionDispatcher();
-    collision_configuration_->~btDefaultCollisionConfiguration();
-}
+        world->~btDiscreteDynamicsWorldMt();
+
+        solver_pool->~btConstraintSolverPoolMt();
+        solver_mt->~btSequentialImpulseConstraintSolverMt();
+        broadphase->~btBroadphaseInterface();
+        dispatcher->~btCollisionDispatcherMt();
+        collision_configuration->~btDefaultCollisionConfiguration();
+    }
+
+    ArenaAllocator arena{512 * 1024};
+
+    ThreadPoolTaskScheduler task_scheduler; // must outlive world; declared before it, constructed first
+
+    btDefaultCollisionConfiguration *collision_configuration{nullptr};
+    btCollisionDispatcherMt *dispatcher{nullptr};
+    btBroadphaseInterface *broadphase{nullptr};
+    btConstraintSolverPoolMt *solver_pool{nullptr};
+    btSequentialImpulseConstraintSolverMt *solver_mt{nullptr};
+    btDiscreteDynamicsWorldMt *world{nullptr};
+
+    std::unordered_map<entt::entity, Body> bodies;
+};
+
+PhysicsWorld::PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool) :
+    impl_{std::make_unique<Impl>(settings, thread_pool)} {}
+
+PhysicsWorld::~PhysicsWorld() = default; // Impl is complete here, so the default destructor is fine
 
 auto PhysicsWorld::populate_from(entt::registry &registry) -> void {
     auto view = registry.view<Components::Transform const, Components::RigidBody const>();
@@ -52,9 +127,9 @@ auto PhysicsWorld::populate_from(entt::registry &registry) -> void {
 auto PhysicsWorld::add_body(entt::entity entity, Components::Transform const &transform,
                             Components::RigidBody const &body) -> void {
     auto *shape = body.shape == Components::BodyShape::capsule
-                          ? arena_.construct_with_base<btCapsuleShape, btCollisionShape>(body.capsule_radius,
-                                                                                         body.capsule_height)
-                          : arena_.construct_with_base<btBoxShape, btCollisionShape>(to_bt(body.half_extents));
+                          ? impl_->arena.construct_with_base<btCapsuleShape, btCollisionShape>(body.capsule_radius,
+                                                                                               body.capsule_height)
+                          : impl_->arena.construct_with_base<btBoxShape, btCollisionShape>(to_bt(body.half_extents));
 
     btTransform start_transform;
     start_transform.setIdentity();
@@ -72,7 +147,7 @@ auto PhysicsWorld::add_body(entt::entity entity, Components::Transform const &tr
     construction_info.m_startWorldTransform = start_transform;
     construction_info.m_restitution = body.restitution;
 
-    auto *rigid_body = arena_.construct<btRigidBody>(construction_info);
+    auto *rigid_body = impl_->arena.construct<btRigidBody>(construction_info);
     rigid_body->setUserPointer(std::bit_cast<void *>(static_cast<std::uintptr_t>(entity)));
 
     if (!body.is_static) {
@@ -80,24 +155,21 @@ auto PhysicsWorld::add_body(entt::entity entity, Components::Transform const &tr
     }
 
     if (body.lock_rotation) {
-        // Prevents collision torque from tipping a capsule controller over --
-        // yaw is driven visually by PlayerController, not by Bullet.
         rigid_body->setAngularFactor(btVector3{0.0F, 0.0F, 0.0F});
         rigid_body->setActivationState(DISABLE_DEACTIVATION);
     }
 
     rigid_body->setSleepingThresholds(/*linear=*/0.8f, /*angular=*/1.0f);
-    rigid_body->setDeactivationTime(0.8f); // Sleep faster (default is 2.0s)
+    rigid_body->setDeactivationTime(0.8f);
 
-    world_->addRigidBody(rigid_body);
+    impl_->world->addRigidBody(rigid_body);
 
-    bodies_.emplace(entity, Body{rigid_body, shape});
+    impl_->bodies.emplace(entity, Impl::Body{rigid_body, shape});
 }
 
 auto PhysicsWorld::set_velocity(entt::entity entity, glm::vec3 const &linear_velocity) -> void {
-    auto it = bodies_.find(entity);
-
-    if (it == bodies_.end()) {
+    auto it = impl_->bodies.find(entity);
+    if (it == impl_->bodies.end()) {
         return;
     }
 
@@ -107,8 +179,8 @@ auto PhysicsWorld::set_velocity(entt::entity entity, glm::vec3 const &linear_vel
 }
 
 auto PhysicsWorld::jump(entt::entity entity, float jump_velocity) -> void {
-    auto it = bodies_.find(entity);
-    if (it == bodies_.end()) {
+    auto it = impl_->bodies.find(entity);
+    if (it == impl_->bodies.end()) {
         return;
     }
 
@@ -121,8 +193,8 @@ auto PhysicsWorld::jump(entt::entity entity, float jump_velocity) -> void {
 }
 
 auto PhysicsWorld::is_grounded(entt::entity entity, float capsule_half_height, float capsule_radius) const -> bool {
-    auto it = bodies_.find(entity);
-    if (it == bodies_.end()) {
+    auto it = impl_->bodies.find(entity);
+    if (it == impl_->bodies.end()) {
         return false;
     }
 
@@ -137,33 +209,32 @@ auto PhysicsWorld::is_grounded(entt::entity entity, float capsule_half_height, f
 }
 
 auto PhysicsWorld::remove_body(entt::entity entity) -> void {
-    auto it = bodies_.find(entity);
-
-    if (it == bodies_.end()) {
+    auto it = impl_->bodies.find(entity);
+    if (it == impl_->bodies.end()) {
         return;
     }
 
-    world_->removeRigidBody(it->second.rigid_body);
+    impl_->world->removeRigidBody(it->second.rigid_body);
 
     it->second.rigid_body->~btRigidBody();
     it->second.shape->~btCollisionShape();
 
-    bodies_.erase(it);
+    impl_->bodies.erase(it);
 }
 
 auto PhysicsWorld::set_debug_drawer(debug_draw::DebugRenderer *renderer) -> void {
     if (renderer == nullptr) {
-        world_->getDebugDrawer()->clearLines();
+        impl_->world->getDebugDrawer()->clearLines();
     }
-    world_->setDebugDrawer(renderer);
+    impl_->world->setDebugDrawer(renderer);
 }
 
 auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
     constexpr float fixed_dt = 1.0F / 60.0F;
     constexpr int max_substeps = 2;
-    world_->stepSimulation(delta_time, max_substeps, fixed_dt);
+    impl_->world->stepSimulation(delta_time, max_substeps, fixed_dt);
 
-    for (auto &[entity, body]: bodies_) {
+    for (auto &[entity, body]: impl_->bodies) {
         if (!registry.valid(entity) || !registry.all_of<Components::Transform>(entity)) {
             continue;
         }
@@ -175,9 +246,9 @@ auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
         transform.rotation = to_glm(world_transform.getRotation());
     }
 
-    if (auto *debug_renderer = static_cast<debug_draw::DebugRenderer *>(world_->getDebugDrawer())) {
+    if (auto *debug_renderer = static_cast<debug_draw::DebugRenderer *>(impl_->world->getDebugDrawer())) {
         debug_renderer->begin_frame();
-        world_->debugDrawWorld();
+        impl_->world->debugDrawWorld();
     }
 }
 
@@ -186,7 +257,7 @@ auto PhysicsWorld::raycast(glm::vec3 const &from, glm::vec3 const &to) const -> 
     btVector3 const bt_to = to_bt(to);
 
     btCollisionWorld::ClosestRayResultCallback ray_callback(bt_from, bt_to);
-    world_->rayTest(bt_from, bt_to, ray_callback);
+    impl_->world->rayTest(bt_from, bt_to, ray_callback);
 
     if (!ray_callback.hasHit()) {
         return std::nullopt;
@@ -215,7 +286,7 @@ auto PhysicsWorld::raycast(glm::vec3 const &origin, glm::vec3 const &direction, 
     btVector3 const bt_to = to_bt(to);
 
     btCollisionWorld::ClosestRayResultCallback ray_callback(bt_from, bt_to);
-    world_->rayTest(bt_from, bt_to, ray_callback);
+    impl_->world->rayTest(bt_from, bt_to, ray_callback);
 
     if (!ray_callback.hasHit()) {
         return std::nullopt;
@@ -234,7 +305,6 @@ auto PhysicsWorld::raycast(glm::vec3 const &origin, glm::vec3 const &direction, 
             .entity = hit_entity,
             .point = hit_point,
             .normal = to_glm(ray_callback.m_hitNormalWorld),
-            // Bullet's m_closestHitFraction represents [0.0, 1.0] along the segment (from -> to)
             .distance = ray_callback.m_closestHitFraction * max_distance,
     };
 }

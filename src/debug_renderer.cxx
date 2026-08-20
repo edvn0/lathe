@@ -9,7 +9,6 @@
 #include "renderer.hxx"
 
 #include <cstring>
-#include <vulkan/vulkan_core.h>
 
 namespace debug_draw {
 
