@@ -121,9 +121,9 @@ namespace {
     static_assert(sizeof(DownsamplePushConstants) == 48);
 
     struct UpsamplePushConstants {
-        uint lower_mip_texture_index;
-        uint target_mip_storage_index;
-        uint linear_sampler_index;
+        std::uint32_t lower_mip_texture_index;
+        std::uint32_t target_mip_storage_index;
+        std::uint32_t linear_sampler_index;
         float lower_texel_size_x;
         float lower_texel_size_y;
         int target_size_x;
@@ -627,7 +627,7 @@ namespace {
     // VK_EXT_vertex_input_dynamic_state shape.
     auto default_shader_object_vertex_input() noexcept
             -> std::pair<std::array<VkVertexInputBindingDescription2EXT, 1>,
-                        std::array<VkVertexInputAttributeDescription2EXT, 4>> {
+                         std::array<VkVertexInputAttributeDescription2EXT, 4>> {
         std::array<VkVertexInputBindingDescription2EXT, 1> bindings{};
         bindings[0] = VkVertexInputBindingDescription2EXT{
                 .sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT,
@@ -715,13 +715,13 @@ namespace {
 
         std::vector<VkColorBlendEquationEXT> const blend_equation(
                 attachment_count, VkColorBlendEquationEXT{
-                                           .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-                                           .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                                           .colorBlendOp = VK_BLEND_OP_ADD,
-                                           .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-                                           .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                                           .alphaBlendOp = VK_BLEND_OP_ADD,
-                                   });
+                                          .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+                                          .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                                          .colorBlendOp = VK_BLEND_OP_ADD,
+                                          .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                                          .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                                          .alphaBlendOp = VK_BLEND_OP_ADD,
+                                  });
 
         std::vector<VkColorComponentFlags> const write_mask(
                 attachment_count, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
@@ -791,8 +791,7 @@ namespace {
     // resolved to, or VK_NULL_HANDLE for an invalid/unbuilt handle. Used for
     // both the upfront per-frame validity check and vkCmdPushConstants.
     [[nodiscard]]
-    auto resolve_layout(PipelineGraphRepository const &graph, PipelineNodeHandle handle) noexcept
-            -> VkPipelineLayout {
+    auto resolve_layout(PipelineGraphRepository const &graph, PipelineNodeHandle handle) noexcept -> VkPipelineLayout {
         if (auto const *shader_objects = graph.resolve_shader_objects(handle); shader_objects != nullptr) {
             return shader_objects->layout();
         }
@@ -1119,8 +1118,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     }); // index 1: forward_blend
 
     VkPushConstantRange const light_icon_pc{
-            .stageFlags =
-                    VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            .stageFlags = VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
             .offset = 0,
             .size = sizeof(LightIconPushConstants),
     };
@@ -1468,7 +1466,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     auto const emissive = image_storage_.emissive();
 
     constexpr auto def_mat = MaterialHandle{0, 1};
-    const GpuMaterial mat {
+    const GpuMaterial mat{
             .base_colour_factor =
                     {
                             1.0F,
@@ -1602,15 +1600,15 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.transform_buffer = std::move(*transforms);
 
-        auto indirect = Buffer::create(context_, BufferCreateInfo{
-                                                         .size = indirect_size,
-                                                         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                  VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                         .memory = BufferMemory::device,
-                                                         .debug_name = "renderer.frame_indirect",
-                                                 });
+        auto indirect = Buffer::create(
+                context_,
+                BufferCreateInfo{
+                        .size = indirect_size,
+                        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                        .memory = BufferMemory::device,
+                        .debug_name = "renderer.frame_indirect",
+                });
 
         if (!indirect) {
             return std::unexpected(make_device_error(indirect.error()));
@@ -1619,13 +1617,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.indirect_buffer = std::move(*indirect);
 
         auto batch_bounds = Buffer::create(context_, BufferCreateInfo{
-                                                              .size = batch_bounds_size,
-                                                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                              .memory = BufferMemory::device,
-                                                              .debug_name = "renderer.frame_batch_bounds",
-                                                      });
+                                                             .size = batch_bounds_size,
+                                                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                             .memory = BufferMemory::device,
+                                                             .debug_name = "renderer.frame_batch_bounds",
+                                                     });
 
         if (!batch_bounds) {
             return std::unexpected(make_device_error(batch_bounds.error()));
@@ -1637,13 +1635,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         // host-seeded -- mainCs is its sole writer, one thread (lane 0)
         // per batch, no atomics needed.
         auto culled_indirect = Buffer::create(context_, BufferCreateInfo{
-                                                                 .size = culled_indirect_size,
-                                                                 .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                 .memory = BufferMemory::device,
-                                                                 .debug_name = "renderer.frame_culled_indirect",
-                                                         });
+                                                                .size = culled_indirect_size,
+                                                                .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                .memory = BufferMemory::device,
+                                                                .debug_name = "renderer.frame_culled_indirect",
+                                                        });
 
         if (!culled_indirect) {
             return std::unexpected(make_device_error(culled_indirect.error()));
@@ -1652,12 +1650,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.culled_indirect_buffer = std::move(*culled_indirect);
 
         auto visible_draws = Buffer::create(context_, BufferCreateInfo{
-                                                               .size = draw_size,
-                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                               .memory = BufferMemory::device,
-                                                               .debug_name = "renderer.frame_visible_draws",
-                                                       });
+                                                              .size = draw_size,
+                                                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                              .memory = BufferMemory::device,
+                                                              .debug_name = "renderer.frame_visible_draws",
+                                                      });
 
         if (!visible_draws) {
             return std::unexpected(make_device_error(visible_draws.error()));
@@ -1666,12 +1664,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.visible_draw_buffer = std::move(*visible_draws);
 
         auto visible_transforms = Buffer::create(context_, BufferCreateInfo{
-                                                                    .size = transform_size,
-                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                    .memory = BufferMemory::device,
-                                                                    .debug_name = "renderer.frame_visible_transforms",
-                                                            });
+                                                                   .size = transform_size,
+                                                                   .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                   .memory = BufferMemory::device,
+                                                                   .debug_name = "renderer.frame_visible_transforms",
+                                                           });
 
         if (!visible_transforms) {
             return std::unexpected(make_device_error(visible_transforms.error()));
@@ -1686,13 +1684,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         // class here requests VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT (see
         // make_allocation_create_info in buffer.cxx) -- but that's an
         // accident of this allocator's current policy, not a guarantee.
-        auto frustum_planes_buffer = Buffer::create(context_, BufferCreateInfo{
-                                                                       .size = sizeof(glm::vec4) * 6,
-                                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                       .memory = BufferMemory::upload,
-                                                                       .debug_name = "renderer.frame_frustum_planes",
-                                                               });
+        auto frustum_planes_buffer =
+                Buffer::create(context_, BufferCreateInfo{
+                                                 .size = sizeof(glm::vec4) * 6,
+                                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                 .memory = BufferMemory::upload,
+                                                 .debug_name = "renderer.frame_frustum_planes",
+                                         });
 
         if (!frustum_planes_buffer) {
             return std::unexpected(make_device_error(frustum_planes_buffer.error()));
@@ -1704,12 +1703,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         // above -- rebuilt and host-written every frame in prepare_frame,
         // never written by the GPU.
         auto lights_buffer = Buffer::create(context_, BufferCreateInfo{
-                                                                .size = sizeof(GpuLight) * maximum_light_count,
-                                                                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                .memory = BufferMemory::upload,
-                                                                .debug_name = "renderer.frame_lights",
-                                                        });
+                                                              .size = sizeof(GpuLight) * maximum_light_count,
+                                                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                              .memory = BufferMemory::upload,
+                                                              .debug_name = "renderer.frame_lights",
+                                                      });
 
         if (!lights_buffer) {
             return std::unexpected(make_device_error(lights_buffer.error()));
@@ -2505,8 +2504,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
     struct batch_key_hash {
         auto operator()(batch_key const &key) const noexcept -> std::size_t {
-            auto const mesh_hash = std::hash<std::uint64_t>{}((static_cast<std::uint64_t>(key.mesh_index) << 32) |
-                                                                key.submesh_index);
+            auto const mesh_hash =
+                    std::hash<std::uint64_t>{}((static_cast<std::uint64_t>(key.mesh_index) << 32) | key.submesh_index);
 
             return mesh_hash ^ (std::hash<std::uint32_t>{}(key.material_index) << 1);
         }
@@ -2546,7 +2545,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                 auto const &submesh = mesh->submeshes[submesh_index];
 
                 auto const material = model_submission.material_override.valid() ? model_submission.material_override
-                                                                                   : submesh.material;
+                                                                                 : submesh.material;
 
                 auto const key = batch_key{
                         .mesh_index = model_draw.mesh.index,
@@ -2719,8 +2718,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                 auto const &submesh = mesh->submeshes[batch.submesh_index];
                 auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
 
-                auto const world_centre =
-                        glm::vec3(batch.transforms.front() * glm::vec4(local_centre, 1.0F));
+                auto const world_centre = glm::vec3(batch.transforms.front() * glm::vec4(local_centre, 1.0F));
                 auto const distance = world_centre - camera_position;
 
                 blend_batches.push_back({&batch, glm::dot(distance, distance)});
@@ -2751,15 +2749,14 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         return cascade == GpuMaterial::no_shadow_cascade ? -1 : static_cast<std::int32_t>(cascade);
     };
 
-    std::sort(opaque_batches.begin(), opaque_batches.end(), [&](auto const *a, auto const *b) {
-        return batch_max_shadow_cascade(a) > batch_max_shadow_cascade(b);
-    });
+    std::sort(opaque_batches.begin(), opaque_batches.end(),
+              [&](auto const *a, auto const *b) { return batch_max_shadow_cascade(a) > batch_max_shadow_cascade(b); });
 
-    std::sort(mask_batches.begin(), mask_batches.end(), [&](auto const *a, auto const *b) {
-        return batch_max_shadow_cascade(a) > batch_max_shadow_cascade(b);
-    });
+    std::sort(mask_batches.begin(), mask_batches.end(),
+              [&](auto const *a, auto const *b) { return batch_max_shadow_cascade(a) > batch_max_shadow_cascade(b); });
 
-    auto const shadow_prefix_counts = [&batch_max_shadow_cascade](std::vector<batch_entry const *> const &sorted_batches) {
+    auto const shadow_prefix_counts = [&batch_max_shadow_cascade](
+                                              std::vector<batch_entry const *> const &sorted_batches) {
         std::array<std::uint32_t, shadow_cascade_count> counts{};
 
         for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
@@ -2790,7 +2787,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         }
     }
 
-    frame.mask_indirect_count = static_cast<std::uint32_t>(frame.indirect_commands.size()) - frame.opaque_indirect_count;
+    frame.mask_indirect_count =
+            static_cast<std::uint32_t>(frame.indirect_commands.size()) - frame.opaque_indirect_count;
 
     for (auto const &pending: blend_batches) {
         if (auto result = emit_batch(*pending.entry); !result) {
@@ -2799,7 +2797,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
     }
 
     frame.blend_indirect_count = static_cast<std::uint32_t>(frame.indirect_commands.size()) -
-                                  frame.opaque_indirect_count - frame.mask_indirect_count;
+                                 frame.opaque_indirect_count - frame.mask_indirect_count;
 
     frame.indirect_command_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
 
@@ -2974,8 +2972,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         }
 
         bind_compute_node(pipeline_graph_, frustum_cull_pipeline_, command_buffer);
-        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                 frustum_cull_pipeline);
+        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, frustum_cull_pipeline);
 
         CullPushConstants const cull_pc{
                 .src_draws_address = frame.draw_buffer.device_address,
@@ -3089,8 +3086,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                 std::uint64_t const start = results[i * 2];
                 std::uint64_t const end = results[i * 2 + 1];
 
-                last_frame_timings_.milliseconds[i] =
-                        static_cast<float>(end - start) * timestamp_period_ / 1000000.0f;
+                last_frame_timings_.milliseconds[i] = static_cast<float>(end - start) * timestamp_period_ / 1000000.0f;
             }
 
             last_frame_timings_.valid = true;
@@ -3254,8 +3250,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         // alpha mode), so no cull-mode override is needed between them.
         if (frame.opaque_indirect_count != 0) {
             bind_graphics_node(pipeline_graph_, shadow_pipeline_, command_buffer, VK_SAMPLE_COUNT_1_BIT, 0, false);
-            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                     shadow_pipeline);
+            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline);
             ShadowPushConstants pc{
                     .draw_buffer_address = frame.draw_buffer.device_address,
                     .transform_buffer_address = frame.transform_buffer.device_address,
@@ -3295,8 +3290,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         }
 
         if (frame.mask_indirect_count != 0) {
-            bind_graphics_node(pipeline_graph_, shadow_mask_pipeline_, command_buffer, VK_SAMPLE_COUNT_1_BIT, 0,
-                               false);
+            bind_graphics_node(pipeline_graph_, shadow_mask_pipeline_, command_buffer, VK_SAMPLE_COUNT_1_BIT, 0, false);
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                      shadow_mask_pipeline);
 
@@ -3422,8 +3416,8 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
             vkCmdPushConstants(command_buffer, depth_prepass_pipeline, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                sizeof(ForwardPushConstants), &pc);
 
-            vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0,
-                                     frame.opaque_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
+            vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0, frame.opaque_indirect_count,
+                                     sizeof(VkDrawIndexedIndirectCommand));
         }
 
         if (frame.mask_indirect_count != 0) {
@@ -3532,17 +3526,15 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
         };
 
         bind_graphics_node(pipeline_graph_, forward_pipeline_, command_buffer, samples_, 1, false);
-        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 forward_pipeline);
-        vkCmdPushConstants(command_buffer, forward_pipeline,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ForwardPushConstants),
-                           &pc);
+        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, forward_pipeline);
+        vkCmdPushConstants(command_buffer, forward_pipeline, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(ForwardPushConstants), &pc);
 
         if (frame.opaque_indirect_count != 0) {
             set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::main);
 
-            vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0,
-                                     frame.opaque_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
+            vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0, frame.opaque_indirect_count,
+                                     sizeof(VkDrawIndexedIndirectCommand));
         }
 
         if (frame.mask_indirect_count != 0) {
@@ -3566,8 +3558,9 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
             set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::blend);
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
 
-            auto const blend_offset = static_cast<VkDeviceSize>(frame.opaque_indirect_count + frame.mask_indirect_count) *
-                                       sizeof(VkDrawIndexedIndirectCommand);
+            auto const blend_offset =
+                    static_cast<VkDeviceSize>(frame.opaque_indirect_count + frame.mask_indirect_count) *
+                    sizeof(VkDrawIndexedIndirectCommand);
 
             vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, blend_offset,
                                      frame.blend_indirect_count, sizeof(VkDrawIndexedIndirectCommand));
@@ -3676,8 +3669,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
 
         vkCmdBeginRendering(command_buffer, &composite_rendering_info);
         bind_graphics_node(pipeline_graph_, composite_pipeline_, command_buffer, VK_SAMPLE_COUNT_1_BIT, 1, false);
-        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 composite_pipeline);
+        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, composite_pipeline);
         set_composite_dynamic_state(command_buffer, swapchain_image.extent);
 
         CompositePushConstants const composite_pc{
@@ -3688,8 +3680,8 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
                 .bloom_intensity = bloom_settings_.enabled ? bloom_settings_.intensity : 0.0f,
         };
 
-        vkCmdPushConstants(command_buffer, composite_pipeline, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           sizeof(composite_pc), &composite_pc);
+        vkCmdPushConstants(command_buffer, composite_pipeline, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(composite_pc),
+                           &composite_pc);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
 
         if (overlay) {
@@ -3704,7 +3696,7 @@ auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const
 #pragma endregion
 
     bool const screenshot_recorded = screenshot_.record(context_, command_buffer, swapchain_image.image,
-                                                         swapchain_image.format, swapchain_image.extent, frame_index);
+                                                        swapchain_image.format, swapchain_image.extent, frame_index);
 
     if (!screenshot_recorded) {
         transition_swapchain_to_present(command_buffer, swapchain_image.image);
@@ -3777,17 +3769,15 @@ void Renderer::queue_render_thread_event(std::function<void()> &&task) {
 
 auto Renderer::wait_idle() -> std::expected<void, RendererError> {
     auto result = vkDeviceWaitIdle(context_.device);
-    return result == VK_SUCCESS
-                 ? std::expected<void, RendererError>{}
-                 : std::unexpected<RendererError>(RendererError{
-                           .type = RendererErrorType::device_error,
-                           .cause =
-                                   ErrorCause{Boxed<DeviceError>{DeviceError{
-                                           .type = DeviceError::Type::Unknown,
-                                           .message = FlyString{"Could not wait"},
-                                           .vk_result = result,
-                                   }}},
-                   });
+    return result == VK_SUCCESS ? std::expected<void, RendererError>{}
+                                : std::unexpected<RendererError>(RendererError{
+                                          .type = RendererErrorType::device_error,
+                                          .cause = ErrorCause{Boxed<DeviceError>{DeviceError{
+                                                  .type = DeviceError::Type::Unknown,
+                                                  .message = FlyString{"Could not wait"},
+                                                  .vk_result = result,
+                                          }}},
+                                  });
 }
 
 auto Renderer::mesh_slot(MeshHandle handle) noexcept -> MeshSlot * {

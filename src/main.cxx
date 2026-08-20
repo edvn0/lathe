@@ -1086,7 +1086,41 @@ namespace {
         error("GLFW error {}: {}", error_code, description != nullptr ? description : "<no description>");
     }
 
-    auto initialize_glfw(VulkanContext &context) noexcept -> bool {
+    enum class ScreenType {
+        windowed,
+        fullscreen,
+        borderless,
+    };
+
+    auto parse_screen_type(int argc, char **argv) noexcept -> ScreenType {
+        constexpr std::string_view prefix = "--screen-type=";
+
+        for (auto i = 1; i < argc; ++i) {
+            std::string_view const arg = argv[i];
+
+            if (!arg.starts_with(prefix)) {
+                continue;
+            }
+
+            auto const value = arg.substr(prefix.size());
+
+            if (value == "windowed") {
+                return ScreenType::windowed;
+            }
+            if (value == "fullscreen") {
+                return ScreenType::fullscreen;
+            }
+            if (value == "borderless") {
+                return ScreenType::borderless;
+            }
+
+            warn("Unknown --screen-type value '{}'; falling back to fullscreen", value);
+        }
+
+        return ScreenType::fullscreen;
+    }
+
+    auto initialize_glfw(VulkanContext &context, ScreenType screen_type) noexcept -> bool {
         glfwSetErrorCallback(glfw_error_callback);
 
         auto renderdoc = renderdoc_init();
@@ -1123,6 +1157,7 @@ namespace {
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+        glfwWindowHint(GLFW_DECORATED, screen_type == ScreenType::borderless ? GLFW_FALSE : GLFW_TRUE);
 
         std::int32_t monitor_count{};
         glfwGetMonitors(&monitor_count);
@@ -1154,7 +1189,32 @@ namespace {
         glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
         glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
         glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
-        context.window = glfwCreateWindow(mode->width, mode->height, "VK", monitor, NULL);
+
+        switch (screen_type) {
+            case ScreenType::fullscreen:
+                context.window = glfwCreateWindow(mode->width, mode->height, "VK", monitor, NULL);
+                break;
+
+            case ScreenType::borderless:
+                // Undecorated windowed window sized/positioned to cover the
+                // selected monitor -- no monitor handle passed, so this is a
+                // regular window rather than an exclusive-fullscreen surface.
+                context.window = glfwCreateWindow(mode->width, mode->height, "VK", nullptr, NULL);
+
+                if (context.window != nullptr) {
+                    std::int32_t monitor_x = 0;
+                    std::int32_t monitor_y = 0;
+                    glfwGetMonitorPos(monitor, &monitor_x, &monitor_y);
+                    glfwSetWindowPos(context.window, monitor_x, monitor_y);
+                }
+                break;
+
+            case ScreenType::windowed:
+                constexpr std::int32_t default_width = 1280;
+                constexpr std::int32_t default_height = 720;
+                context.window = glfwCreateWindow(default_width, default_height, "VK", nullptr, NULL);
+                break;
+        }
 
         if (context.window == nullptr) {
             error("glfwCreateWindow failed");
@@ -1751,8 +1811,8 @@ namespace {
         });
     }
 
-    auto initialize_vulkan(VulkanContext &context) noexcept -> bool {
-        return initialize_glfw(context) && create_instance(context) && create_surface(context) &&
+    auto initialize_vulkan(VulkanContext &context, ScreenType screen_type) noexcept -> bool {
+        return initialize_glfw(context, screen_type) && create_instance(context) && create_surface(context) &&
                select_physical_device(context) && create_device(context) && create_allocator(context) &&
                create_swapchain(context);
     }
@@ -2216,14 +2276,16 @@ static auto ctrl_c_handler(int) -> void {
 }
 
 
-auto main() -> int {
+auto main(int argc, char **argv) -> int {
     info("Starting GLFW Vulkan test at {}", std::filesystem::current_path().string());
 
     std::signal(SIGINT, ctrl_c_handler);
 
+    auto const screen_type = parse_screen_type(argc, argv);
+
     VulkanContext context{};
 
-    if (!initialize_vulkan(context)) {
+    if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
 
         destroy_context(context);
