@@ -219,10 +219,13 @@ CPMAddPackage(
         "BUILD_SHARED_LIBS OFF"
 )
 
+set(USE_CCACHE YES)
+CPMAddPackage("gh:TheLartians/Ccache.cmake@1.2.5")
+
 CPMAddPackage(
         NAME freetype
         GITHUB_REPOSITORY freetype/freetype
-        GIT_TAG VER-2-13-3
+        GIT_TAG master
         OPTIONS
         "BUILD_SHARED_LIBS OFF"
         "FT_DISABLE_ZLIB ON"
@@ -245,7 +248,7 @@ target_include_directories(BS_thread_pool INTERFACE ${BS_thread_pool_SOURCE_DIR}
 CPMAddPackage(
         NAME bullet3
         GITHUB_REPOSITORY bulletphysics/bullet3
-        GIT_TAG 3.25
+        GIT_TAG master
         GIT_SHALLOW YES
         OPTIONS
         "BT_THREADSAFE" "OFF"

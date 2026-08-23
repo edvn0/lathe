@@ -119,8 +119,8 @@ PhysicsWorld::~PhysicsWorld() = default; // Impl is complete here, so the defaul
 auto PhysicsWorld::populate_from(entt::registry &registry) -> void {
     auto view = registry.view<Components::Transform const, Components::RigidBody const>();
 
-    for (auto entity: view) {
-        add_body(entity, view.get<Components::Transform const>(entity), view.get<Components::RigidBody const>(entity));
+    for (auto &&[entity, transform, rigid]: view.each()) {
+        add_body(entity, transform, rigid);
     }
 }
 
@@ -222,12 +222,11 @@ auto PhysicsWorld::remove_body(entt::entity entity) -> void {
     impl_->bodies.erase(it);
 }
 
-auto PhysicsWorld::set_debug_drawer(debug_draw::DebugRenderer *renderer) -> void {
-    if (renderer == nullptr) {
-        impl_->world->getDebugDrawer()->clearLines();
-    }
-    impl_->world->setDebugDrawer(renderer);
+auto PhysicsWorld::attach_debug_drawer(debug_draw::DebugRenderer &renderer) -> void {
+    impl_->world->setDebugDrawer(&renderer);
 }
+
+auto PhysicsWorld::detach_debug_drawer() -> void { impl_->world->setDebugDrawer(nullptr); }
 
 auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
     constexpr float fixed_dt = 1.0F / 60.0F;

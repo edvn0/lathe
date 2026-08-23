@@ -26,9 +26,8 @@ class Scene {
 public:
     PhysicsWorldSettings physics_settings{};
     std::unique_ptr<PhysicsWorld> physics_world;
-    bool lights_dirty = true;
 
-    Scene();
+    explicit Scene(Renderer &);
     ~Scene();
 
     auto on_scene_start() -> void;
@@ -39,10 +38,12 @@ public:
     auto get_registry() noexcept -> entt::registry & { return registry; }
     auto get_registry() const noexcept -> entt::registry const & { return registry; }
 
-    auto set_debug_renderer(debug_draw::DebugRenderer * = nullptr) -> void;
+    auto attach_debug_renderer(debug_draw::DebugRenderer &renderer) -> void;
+    auto detach_debug_renderer() -> void;
 
 private:
     entt::registry registry;
+    entt::sigh<void()> lights_changed_signal_;
 
     auto mark_lights_dirty(entt::registry &, entt::entity) -> void;
     auto on_transform_changed(entt::registry &reg, entt::entity entity) -> void;

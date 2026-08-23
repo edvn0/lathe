@@ -15,3 +15,5 @@ namespace debug_draw {
 }
 
 struct Application;
+
+struct Renderer;

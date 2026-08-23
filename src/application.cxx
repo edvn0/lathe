@@ -125,6 +125,7 @@ Application::Application(VulkanContext &ctx) noexcept :
     debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)) {
     timing_buffers.fill(ScrollingBuffer{600});
 }
+
 Application::~Application() { shader_watcher_.stop(); }
 auto Application::on_ui() -> void {
     widget("Simulation", [&] {
@@ -286,8 +287,9 @@ auto Application::on_ui() -> void {
                   draw_spot_light);
     });
 }
+
 auto Application::play() -> void {
-    runtime_scene = std::make_unique<Scene>();
+    runtime_scene = std::make_unique<Scene>(*renderer);
     runtime_scene->physics_settings = editor_scene->physics_settings;
     clone_registry<Components::Transform, Components::Model, Components::RigidBody, Components::MaterialOverride,
                    Components::PlayerTag, Components::Lifetime, Components::PointLight, Components::SpotLight,
@@ -297,13 +299,14 @@ auto Application::play() -> void {
     active_scene = runtime_scene.get();
     is_playing = true;
     active_scene->on_scene_start();
-    active_scene->set_debug_renderer(debug_renderer.get());
+    active_scene->attach_debug_renderer(*debug_renderer);
 
     glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     has_last_mouse_position = false; // avoid a jump from wherever the cursor was
 }
 auto Application::stop() -> void {
-    active_scene->set_debug_renderer(nullptr);
+    active_scene->detach_debug_renderer();
+    debug_renderer->clearLines();
     active_scene->on_scene_stop();
     is_playing = false;
     active_scene = editor_scene.get();

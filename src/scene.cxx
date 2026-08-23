@@ -6,7 +6,10 @@
 #include "player_camera.hxx"
 #include "player_controller.hxx"
 
-Scene::Scene() { connect_light_signals(); }
+Scene::Scene(Renderer &renderer) {
+    connect_light_signals();
+    entt::sink{lights_changed_signal_}.connect<&Renderer::mark_lights_dirty>(renderer);
+}
 
 Scene::~Scene() = default;
 
@@ -19,13 +22,23 @@ auto Scene::on_scene_stop() -> void { physics_world.reset(); }
 
 auto Scene::step(float delta_time) -> void { physics_world->step(get_registry(), std::min(delta_time, 0.25F)); }
 
-auto Scene::mark_lights_dirty(entt::registry &, entt::entity) -> void { lights_dirty = true; }
-
-auto Scene::set_debug_renderer(debug_draw::DebugRenderer *r) -> void { physics_world->set_debug_drawer(r); }
+auto Scene::mark_lights_dirty(entt::registry &, entt::entity) -> void { lights_changed_signal_.publish(); }
 
 auto Scene::on_transform_changed(entt::registry &reg, entt::entity entity) -> void {
     if (reg.any_of<Components::PointLight, Components::SpotLight>(entity)) {
-        lights_dirty = true;
+        lights_changed_signal_.publish();
+    }
+}
+
+auto Scene::attach_debug_renderer(debug_draw::DebugRenderer &renderer) -> void {
+    if (physics_world) {
+        physics_world->attach_debug_drawer(renderer);
+    }
+}
+
+auto Scene::detach_debug_renderer() -> void {
+    if (physics_world) {
+        physics_world->detach_debug_drawer();
     }
 }
 

@@ -81,7 +81,7 @@ struct Application {
     std::unique_ptr<gui::ImGuiRenderer> imgui_renderer;
     ShaderHotReloadWatcher shader_watcher_;
 
-    std::unique_ptr<Scene> editor_scene = std::make_unique<Scene>();
+    std::unique_ptr<Scene> editor_scene = std::make_unique<Scene>(*renderer);
     std::unique_ptr<Scene> runtime_scene;
     Scene *active_scene = editor_scene.get();
     bool is_playing = false;

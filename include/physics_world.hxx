@@ -33,7 +33,8 @@ public:
     auto remove_body(entt::entity entity) -> void;
     auto step(entt::registry &registry, float delta_time) -> void;
 
-    auto set_debug_drawer(debug_draw::DebugRenderer *) -> void;
+    auto attach_debug_drawer(debug_draw::DebugRenderer &renderer) -> void;
+    auto detach_debug_drawer() -> void;
 
     auto set_velocity(entt::entity entity, glm::vec3 const &linear_velocity) -> void;
     auto jump(entt::entity entity, float jump_velocity) -> void;

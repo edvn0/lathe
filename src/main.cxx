@@ -1546,11 +1546,6 @@ auto main(int argc, char **argv) -> int {
         application.camera.update(std::min(delta_time, 0.1F));
         application.update(delta_time);
 
-        if (application.active_scene->lights_dirty) {
-            application.renderer->mark_lights_dirty();
-            application.active_scene->lights_dirty = false;
-        }
-
         request_resize_if_needed(context, current_width, current_height);
 
         if (!draw(context, application)) {
