@@ -3,8 +3,8 @@
 #include "forward.hxx"
 #include "physics.hxx"
 
-#include <entt/entt.hpp>
 #include <entt/entity/snapshot.hpp>
+#include <entt/entt.hpp>
 
 #include <glm/mat4x4.hpp>
 
@@ -56,28 +56,28 @@ private:
 
 namespace detail {
 
-// entt::basic_snapshot and entt::basic_snapshot_loader call their archive
-// with the exact same sequence of types (both are templated on the same
-// registry type), so a type-erased queue is enough to move data between them
-// without clone_registry having to hand-roll per-component copy code.
-struct SnapshotOutputArchive {
-    std::vector<std::any> *values;
+    // entt::basic_snapshot and entt::basic_snapshot_loader call their archive
+    // with the exact same sequence of types (both are templated on the same
+    // registry type), so a type-erased queue is enough to move data between them
+    // without clone_registry having to hand-roll per-component copy code.
+    struct SnapshotOutputArchive {
+        std::vector<std::any> *values;
 
-    template<typename T>
-    auto operator()(T &&value) -> void {
-        values->emplace_back(std::in_place_type<std::decay_t<T>>, std::forward<T>(value));
-    }
-};
+        template<typename T>
+        auto operator()(T &&value) -> void {
+            values->emplace_back(std::in_place_type<std::decay_t<T>>, std::forward<T>(value));
+        }
+    };
 
-struct SnapshotInputArchive {
-    std::vector<std::any> const *values;
-    std::size_t read_pos = 0;
+    struct SnapshotInputArchive {
+        std::vector<std::any> const *values;
+        std::size_t read_pos = 0;
 
-    template<typename T>
-    auto operator()(T &value) -> void {
-        value = std::any_cast<T>((*values)[read_pos++]);
-    }
-};
+        template<typename T>
+        auto operator()(T &value) -> void {
+            value = std::any_cast<T>((*values)[read_pos++]);
+        }
+    };
 
 } // namespace detail
 
@@ -101,7 +101,8 @@ auto clone_registry(entt::registry const &src, entt::registry &dst) -> void {
 
 
 namespace systems {
-    [[nodiscard]] auto get_world_transform(entt::registry const &registry, entt::entity entity) -> glm::mat4;
+    [[nodiscard]] auto get_world_transform(entt::registry const &registry, entt::entity, const Components::Transform &)
+            -> glm::mat4;
     auto lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) -> void;
     auto player_movement(entt::registry &registry, PhysicsWorld &physics_world, entt::entity player_entity,
                          PlayerController &controller, PlayerCamera &camera, float delta_time) -> void;

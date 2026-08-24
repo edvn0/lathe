@@ -53,21 +53,6 @@
 
 namespace {
 
-    auto direction_to_rotation(glm::vec3 const &direction) -> glm::quat {
-        constexpr auto local_forward = glm::vec3{0.0F, -1.0F, 0.0F};
-        auto const dot = glm::dot(local_forward, direction);
-
-        if (dot > 0.9999F) {
-            return glm::quat{1.0F, 0.0F, 0.0F, 0.0F};
-        }
-        if (dot < -0.9999F) {
-            return glm::angleAxis(glm::pi<float>(), glm::vec3{1.0F, 0.0F, 0.0F});
-        }
-
-        auto const axis = glm::normalize(glm::cross(local_forward, direction));
-        return glm::angleAxis(std::acos(dot), axis);
-    }
-
     constexpr auto draw_point_light = [](Components::PointLight &point_light) -> bool {
         bool changed = false;
         changed |= ImGui::ColorEdit3("Colour", &point_light.colour.x);
@@ -552,15 +537,11 @@ namespace {
 
     auto find_queue_families(VkPhysicalDevice physical_device, VkSurfaceKHR surface) noexcept -> QueueFamilies {
         std::uint32_t queue_family_count = 0;
-
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr);
-
         std::vector<VkQueueFamilyProperties> properties(queue_family_count);
-
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, properties.data());
 
         QueueFamilies result{};
-
         for (std::uint32_t index = 0; index < queue_family_count; ++index) {
             auto const supports_graphics = (properties[index].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
 
@@ -594,9 +575,7 @@ namespace {
     auto supports_device_extension(VkPhysicalDevice physical_device, std::string_view required_extension) noexcept
             -> bool {
         std::uint32_t extension_count = 0;
-
         auto result = vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr);
-
         if (result != VK_SUCCESS) {
             report_vk_error("vkEnumerateDeviceExtensionProperties(count)", result);
 
@@ -604,7 +583,6 @@ namespace {
         }
 
         std::vector<VkExtensionProperties> extensions(extension_count);
-
         result = vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, extensions.data());
 
         if (result != VK_SUCCESS) {
@@ -639,28 +617,22 @@ namespace {
 
     auto select_physical_device(VulkanContext &context) noexcept -> bool {
         std::uint32_t physical_device_count = 0;
-
         auto result = vkEnumeratePhysicalDevices(context.instance, &physical_device_count, nullptr);
-
         if (result != VK_SUCCESS) {
             report_vk_error("vkEnumeratePhysicalDevices(count)", result);
-
             return false;
         }
 
         if (physical_device_count == 0) {
             error("No Vulkan physical devices found");
-
             return false;
         }
 
         std::vector<VkPhysicalDevice> physical_devices(physical_device_count);
-
         result = vkEnumeratePhysicalDevices(context.instance, &physical_device_count, physical_devices.data());
 
         if (result != VK_SUCCESS) {
             report_vk_error("vkEnumeratePhysicalDevices(list)", result);
-
             return false;
         }
 
@@ -710,9 +682,7 @@ namespace {
 
             if (score > best_score) {
                 best_score = score;
-
                 context.physical_device = physical_device;
-
                 context.queue_families = queue_families;
             }
         }
@@ -720,14 +690,11 @@ namespace {
         if (context.physical_device == VK_NULL_HANDLE) {
             error("No suitable Vulkan physical "
                   "device found");
-
             return false;
         }
 
         VkPhysicalDeviceProperties properties{};
-
         vkGetPhysicalDeviceProperties(context.physical_device, &properties);
-
         info("Selected physical device: {}", properties.deviceName);
 
         // VK_EXT_shader_object is optional: not every target GPU implements
@@ -769,7 +736,6 @@ namespace {
 
         info("VK_EXT_shader_object support: {}",
              context.shader_objects_supported ? "yes" : "no (falling back to VkPipeline)");
-
         return true;
     }
 
@@ -782,11 +748,9 @@ namespace {
         };
 
         auto const unique_end = std::unique(queue_family_indices.begin(), queue_family_indices.end());
-
         auto const queue_count = static_cast<std::size_t>(unique_end - queue_family_indices.begin());
 
         std::array<VkDeviceQueueCreateInfo, 2> queue_create_infos{};
-
         for (std::size_t index = 0; index < queue_count; ++index) {
             queue_create_infos[index] = VkDeviceQueueCreateInfo{
                     .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -844,12 +808,6 @@ namespace {
         mesh_shader_features.taskShader = VK_TRUE;
         mesh_shader_features.meshShader = VK_TRUE;
 
-        // Only chained in (and only enabled) when select_physical_device()
-        // found VK_EXT_shader_object support on the selected device -- see
-        // VulkanContext::shader_objects_supported. Left zero-initialized and
-        // unlinked otherwise, so an iGPU lacking the extension still gets a
-        // device with the mandatory Vulkan 1.1-1.4 / mesh-shader features
-        // above.
         VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vertex_input_dynamic_state_features{};
         vertex_input_dynamic_state_features.sType =
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT;
@@ -904,7 +862,6 @@ namespace {
 
         if (result != VK_SUCCESS) {
             report_vk_error("vkCreateDevice", result);
-
             return false;
         }
 
@@ -914,7 +871,6 @@ namespace {
 
         if (context.graphics_queue == VK_NULL_HANDLE || context.present_queue == VK_NULL_HANDLE) {
             error("One or more Vulkan queues are null");
-
             return false;
         }
 
@@ -964,22 +920,17 @@ namespace {
         };
 
         VmaVulkanFunctions allocator_functions{};
-
         auto const import_result = vmaImportVulkanFunctionsFromVolk(&create_info, &allocator_functions);
-
         if (import_result != VK_SUCCESS) {
             error("Could not initialise VMA");
-
             return false;
         }
 
         create_info.pVulkanFunctions = &allocator_functions;
-
         auto const result = vmaCreateAllocator(&create_info, &context.allocator);
 
         if (result != VK_SUCCESS) {
             error("Could not create Vulkan allocator");
-
             return false;
         }
 
@@ -991,7 +942,6 @@ namespace {
         int framebuffer_height = 0;
 
         glfwGetFramebufferSize(context.window, &framebuffer_width, &framebuffer_height);
-
         if (framebuffer_width <= 0 || framebuffer_height <= 0) {
             error("Cannot create a swapchain for "
                   "a zero-sized framebuffer");
@@ -1000,7 +950,6 @@ namespace {
         }
 
         context.framebuffer_width.store(framebuffer_width, std::memory_order_relaxed);
-
         context.framebuffer_height.store(framebuffer_height, std::memory_order_relaxed);
 
         return context.swapchain.initialize(SwapchainCreateInfo{
@@ -1036,8 +985,7 @@ namespace {
             auto const material_override =
                     override_component != nullptr ? override_component->material : MaterialHandle{};
 
-            auto const world_transform = systems::get_world_transform(registry, entity);
-
+            auto const world_transform = systems::get_world_transform(registry, entity, transform);
             auto result = application.renderer->submit_model(model.model, world_transform, material_override);
 
             if (!result) {
@@ -1049,7 +997,7 @@ namespace {
         auto point_light_view = registry.view<Components::Transform const, Components::PointLight const>();
 
         for (auto [entity, transform, light]: point_light_view.each()) {
-            auto const world_transform = systems::get_world_transform(registry, entity);
+            auto const world_transform = systems::get_world_transform(registry, entity, transform);
 
             auto result = application.renderer->submit_point_light(Renderer::PointLight{
                     .position = glm::vec3{world_transform[3]},
@@ -1066,7 +1014,7 @@ namespace {
         auto spot_light_view = registry.view<Components::Transform const, Components::SpotLight const>();
 
         for (auto [entity, transform, light]: spot_light_view.each()) {
-            auto const world_transform = systems::get_world_transform(registry, entity);
+            auto const world_transform = systems::get_world_transform(registry, entity, transform);
             auto const direction = glm::normalize(glm::mat3{world_transform} * glm::vec3{0.0F, -1.0F, 0.0F});
 
             auto result = application.renderer->submit_spot_light(Renderer::SpotLight{

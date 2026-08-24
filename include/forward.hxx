@@ -17,3 +17,7 @@ namespace debug_draw {
 struct Application;
 
 struct Renderer;
+
+namespace Components {
+    struct Transform;
+}

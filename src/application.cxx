@@ -602,29 +602,59 @@ auto Application::recreate_entities() -> void {
     std::random_device r;
     std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
     std::mt19937 eng(seed);
-    std::uniform_real_distribution<float> urd(-20, 20);
+
+
+    std::uniform_real_distribution<float> position_dist(-20.0F, 20.0F);
+    std::uniform_real_distribution<float> rotation_dist(0.0F, 1.0F);
+
+    auto random_quat = [&]() -> glm::quat {
+        const float u1 = rotation_dist(eng);
+        const float u2 = rotation_dist(eng);
+        const float u3 = rotation_dist(eng);
+
+        const float a = std::sqrt(1.0F - u1);
+
+        const float b = std::sqrt(u1);
+
+        const float theta1 = 2.0F * std::numbers::pi_v<float> * u2;
+        const float theta2 = 2.0F * std::numbers::pi_v<float> * u3;
+
+
+        return glm::quat{
+                b * std::cos(theta2), // w
+                a * std::sin(theta1), // x
+                a * std::cos(theta1), // y
+                b * std::sin(theta2), // z
+        };
+    };
+
 
     const auto count = 10;
     auto const bounds = renderer->model_bounds(helmet_model);
 
-    for (auto i = 0; i < count * count * count; i++) {
+    for (auto i = 0; i < count * count * count; ++i) {
         auto entity = GeneratedEntity{editor_scene.get(), "helmet_{}_{}_{}", i, i % 3, i / 3};
+
         entity.emplace<Components::Transform>(Components::Transform{
                 .position =
                         glm::vec3{
-                                5 * urd(eng),
-                                5 * urd(eng),
-                                5 * urd(eng),
+                                5.0F * position_dist(eng),
+                                5.0F * position_dist(eng),
+
+                                5.0F * position_dist(eng),
                         },
+                .rotation = random_quat(),
         });
+
         entity.emplace<Components::Model>(Components::Model{.model = helmet_model});
+
         if (bounds.has_value()) {
             auto const [min, max] = *bounds;
             auto const half_extents = (max - min) * 0.5F;
+
             entity.emplace<Components::RigidBody>(Components::RigidBody{.half_extents = half_extents});
         }
     }
-
 
     constexpr auto physics_grid = 5;
 

@@ -100,23 +100,24 @@ auto systems::player_movement(entt::registry &registry, PhysicsWorld &physics_wo
     camera.update(transform.position, controller.yaw_degrees(), controller.pitch_degrees(), speed_factor, delta_time);
 }
 
-auto systems::get_world_transform(entt::registry const &registry, entt::entity entity) -> glm::mat4 {
-    auto world_matrix = glm::mat4{1.0F};
-    auto current = entity;
+auto systems::get_world_transform(entt::registry const &registry, entt::entity entity,
+                                  Components::Transform const &transform) -> glm::mat4 {
+    auto world_matrix = transform.matrix();
 
-    // Bounded so a misconfigured cyclic Parent chain can't hang here.
-    for (auto depth = 0; depth < 64 && registry.valid(current); ++depth) {
-        if (auto const *transform = registry.try_get<Components::Transform const>(current)) {
-            world_matrix = transform->matrix() * world_matrix;
-        }
+    auto const *parent = registry.try_get<Components::Parent const>(entity);
 
-        auto const *parent = registry.try_get<Components::Parent const>(current);
+    for (auto depth = 0; depth < 64 && parent != nullptr; ++depth) {
+        auto const parent_entity = parent->entity;
 
-        if (parent == nullptr) {
+        if (!registry.valid(parent_entity)) {
             break;
         }
 
-        current = parent->entity;
+        if (auto const *parent_transform = registry.try_get<Components::Transform const>(parent_entity)) {
+            world_matrix = parent_transform->matrix() * world_matrix;
+        }
+
+        parent = registry.try_get<Components::Parent const>(parent_entity);
     }
 
     return world_matrix;
