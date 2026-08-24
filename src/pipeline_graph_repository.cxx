@@ -277,7 +277,7 @@ auto PipelineGraphRepository::build_node(PipelineNode const &node) -> std::expec
                       .shaders = stage_infos,
                       .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
                       .push_constant_ranges = node.register_info.push_constant_ranges,
-                      .dynamic_states = {},
+                      .dynamic_states = node.register_info.dynamic_states,
                       .colour_formats = node.register_info.colour_formats,
                       .depth_format = node.register_info.depth_format,
                       .stencil_format = node.register_info.stencil_format,

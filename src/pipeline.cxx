@@ -18,8 +18,8 @@
 
 namespace {
     inline constexpr std::array forward_dynamic_states{
-            VK_DYNAMIC_STATE_VIEWPORT,
-            VK_DYNAMIC_STATE_SCISSOR,
+            VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT,
+            VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT,
 
             VK_DYNAMIC_STATE_LINE_WIDTH,
             VK_DYNAMIC_STATE_DEPTH_BIAS,
@@ -202,9 +202,9 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
             .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
-            .viewportCount = 1,
+            .viewportCount = 0,
             .pViewports = nullptr,
-            .scissorCount = 1,
+            .scissorCount = 0,
             .pScissors = nullptr,
     };
 
@@ -354,6 +354,9 @@ auto Pipeline::create_graphics(VulkanContext &context, GraphicsPipelineCreateInf
 
         vk_result = vkCreateGraphicsPipelines(context.device, pipeline_cache, 1, &pipeline_info, nullptr,
                                               &result.pipeline_);
+
+        debug("[Pipeline::create_graphics] '{}': vkCreateGraphicsPipelines returned {}", create_info.debug_name,
+              static_cast<int>(vk_result));
     }
 
     if (vk_result != VK_SUCCESS) {
@@ -453,17 +456,11 @@ auto Pipeline::create_compute(VulkanContext &context, ComputePipelineCreateInfo 
             .basePipelineIndex = -1,
     };
 
-    debug("[Pipeline::create_compute] '{}': locking pipeline_cache_mutex", create_info.debug_name);
-
     {
         std::lock_guard<std::mutex> const cache_lock{pipeline_cache_mutex};
 
-        debug("[Pipeline::create_compute] '{}': calling vkCreateComputePipelines (cache={})", create_info.debug_name,
-              static_cast<void const *>(pipeline_cache));
-
-        vk_result = vkCreateComputePipelines(context.device, pipeline_cache, 1, &pipeline_info, nullptr,
-                                             &result.pipeline_);
-
+        vk_result =
+                vkCreateComputePipelines(context.device, pipeline_cache, 1, &pipeline_info, nullptr, &result.pipeline_);
         debug("[Pipeline::create_compute] '{}': vkCreateComputePipelines returned {}", create_info.debug_name,
               static_cast<int>(vk_result));
     }

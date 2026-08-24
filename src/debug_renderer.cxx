@@ -36,12 +36,6 @@ namespace debug_draw {
 
         auto create_pipeline(Renderer &r, VkFormat fb, VkFormat depth)
                 -> std::expected<PipelineNodeHandle, RendererError> {
-            VkPushConstantRange const pc_range{
-                    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                    .offset = 0,
-                    .size = sizeof(PC),
-            };
-
             return r.register_pipeline(PipelineRegisterInfo{
                     .stages =
                             {
@@ -56,8 +50,9 @@ namespace debug_draw {
                                             .stage = renderer::ShaderStage::fragment,
                                     },
                             },
-                    .push_constant_ranges = {pc_range},
+                    .push_constant_ranges = {global_push_constant_range},
                     .colour_formats = {fb},
+                    .dynamic_states = {},
                     .depth_format = depth,
                     .stencil_format = VK_FORMAT_UNDEFINED,
                     .samples = r.samples(),
@@ -79,10 +74,14 @@ namespace debug_draw {
         pending_lines.push_back(Vertex{to.x(), to.y(), to.z(), rgba});
     }
 
-    void DebugRenderer::drawContactPoint(const btVector3 &point_on_b, const btVector3 &normal_on_b, btScalar distance,
-                                         int /*life_time*/, const btVector3 &color) {
-        constexpr btScalar length = 0.5;
-        drawLine(point_on_b, point_on_b + normal_on_b * length, color);
+    void DebugRenderer::drawContactPoint(const btVector3 &point_on_b, const btVector3 &normal_on_b,
+                                         btScalar distance, int /*life_time*/, const btVector3 &color) {
+        drawLine(point_on_b, point_on_b + normal_on_b * distance, color);
+
+        constexpr btScalar marker_radius = 0.05;
+        drawLine(point_on_b - btVector3(marker_radius, 0, 0), point_on_b + btVector3(marker_radius, 0, 0), color);
+        drawLine(point_on_b - btVector3(0, marker_radius, 0), point_on_b + btVector3(0, marker_radius, 0), color);
+        drawLine(point_on_b - btVector3(0, 0, marker_radius), point_on_b + btVector3(0, 0, marker_radius), color);
     }
 
     void DebugRenderer::reportErrorWarning(const char *warning_string) { warn("(Bullet) {}", warning_string); }
@@ -95,7 +94,7 @@ namespace debug_draw {
             return;
 
         const auto size = next_power_of_two(static_cast<std::size_t>(vertex_count) * sizeof(Vertex));
-        info("(DebugDraw) Reallocating line buffer to {} bytes", size);
+        info("[DebugDraw] Reallocating line buffer to {} bytes", size);
 
         auto created = Buffer::create(renderer.context(), BufferCreateInfo{
                                                                   .size = size,
@@ -106,7 +105,7 @@ namespace debug_draw {
                                                           });
 
         if (!created) {
-            error("(DebugDraw) Failed to allocate line buffer");
+            error("[DebugDraw] Failed to allocate line buffer");
             return;
         }
 
@@ -125,7 +124,7 @@ namespace debug_draw {
         if (force_recompile || !pipeline.valid()) {
             auto created = create_pipeline(renderer, renderer.hdr_format(), renderer.depth_format());
             if (!created) {
-                error("(DebugDraw) Failed to create pipeline");
+                error("[DebugDraw] Failed to create pipeline");
                 return;
             }
             pipeline = *created;
@@ -135,7 +134,7 @@ namespace debug_draw {
         ensure_capacity(frame_index, static_cast<std::uint32_t>(pending_lines.size()));
         FrameBuffer &fb = frame_buffers[frame_index];
         if (!fb.vertex->write(0, std::span<const Vertex>(pending_lines))) {
-            error("(DebugDraw) Failed to write line buffer");
+            error("[DebugDraw] Failed to write line buffer");
             return;
         }
 
@@ -144,6 +143,24 @@ namespace debug_draw {
             return;
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipeline());
+
+        const auto& extent = renderer.context().swapchain.extent();
+
+        VkViewport viewport{
+                .x = 0.0F,
+                .y = 0.0F,
+                .width = static_cast<float>(extent.width),
+                .height = static_cast<float>(extent.height),
+                .minDepth = 0.0F,
+                .maxDepth = 1.0F,
+        };
+        VkRect2D scissor{
+                .offset = {0, 0},
+                .extent = {static_cast<std::uint32_t>(extent.width),
+                           static_cast<std::uint32_t>(extent.height)},
+        };
+        vkCmdSetViewportWithCount(cmd,  1, &viewport);
+        vkCmdSetScissorWithCount(cmd,  1, &scissor);
 
         vkCmdSetDepthTestEnable(cmd, VK_TRUE);
         vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
@@ -159,8 +176,7 @@ namespace debug_draw {
         std::memcpy(pc.view_proj, vp.data(), vp.size_bytes());
         pc.vertices = fb.vertex->device_address;
 
-        vkCmdPushConstants(cmd, p->layout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc),
-                           &pc);
+        vkCmdPushConstants(cmd, p->layout(), VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
         vkCmdDraw(cmd, static_cast<std::uint32_t>(pending_lines.size()), 1, 0, 0);
     }
 

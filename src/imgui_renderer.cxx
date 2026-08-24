@@ -130,12 +130,6 @@ namespace gui {
         }
 
         auto create_pipeline(Renderer &r, VkFormat fb) -> std::expected<PipelineNodeHandle, RendererError> {
-            VkPushConstantRange const pc_range{
-                    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                    .offset = 0,
-                    .size = sizeof(PC),
-            };
-
             return r.register_pipeline(PipelineRegisterInfo{
                     .stages =
                             {
@@ -150,8 +144,9 @@ namespace gui {
                                             .stage = renderer::ShaderStage::fragment,
                                     },
                             },
-                    .push_constant_ranges = {pc_range},
+                    .push_constant_ranges = {global_push_constant_range},
                     .colour_formats = {fb},
+                    .dynamic_states = {},
                     .depth_format = VK_FORMAT_UNDEFINED,
                     .stencil_format = VK_FORMAT_UNDEFINED,
                     .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -216,7 +211,7 @@ namespace gui {
             auto created = create_pipeline(renderer, std::get<1>(fb));
 
             if (!created) {
-                error("(ImGui) Failed to create UI pipeline");
+                error("[ImGui] Failed to create UI pipeline");
             } else {
                 main_pipeline = *created;
                 force_recompile_primary = false;
@@ -288,8 +283,7 @@ namespace gui {
         vkCmdSetDepthTestEnable(cmd, VK_FALSE);
         vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
         vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-
-        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetViewportWithCount(cmd,  1, &vp);
 
         const float L = dd->DisplayPos.x;
         const float R = dd->DisplayPos.x + dd->DisplaySize.x;
@@ -303,7 +297,7 @@ namespace gui {
         if (std::cmp_less(drawable.index_count, dd->TotalIdxCount)) {
             const auto size = static_cast<std::size_t>(dd->TotalIdxCount * 4) * sizeof(ImDrawIdx);
             const auto actual_size = next_power_of_two(size);
-            info("(ImGui) Reallocating index buffer to {} bytes", actual_size);
+            info("[ImGui] Reallocating index buffer to {} bytes", actual_size);
 
             auto created = Buffer::create(renderer.context(), BufferCreateInfo{
                                                                       .size = actual_size,
@@ -313,7 +307,7 @@ namespace gui {
                                                               });
 
             if (!created) {
-                error("(ImGui) Failed to allocate index buffer");
+                error("[ImGui] Failed to allocate index buffer");
                 return;
             }
 
@@ -324,7 +318,7 @@ namespace gui {
         if (static_cast<std::int32_t>(drawable.vertex_count) < dd->TotalVtxCount) {
             const auto size = static_cast<std::size_t>(dd->TotalVtxCount * 4) * sizeof(ImDrawVert);
             const auto actual_size = next_power_of_two(size);
-            info("(ImGui) Reallocating vertex buffer to {} bytes", actual_size);
+            info("[ImGui] Reallocating vertex buffer to {} bytes", actual_size);
 
             auto created =
                     Buffer::create(renderer.context(), BufferCreateInfo{
@@ -336,7 +330,7 @@ namespace gui {
                                                        });
 
             if (!created) {
-                error("(ImGui) Failed to allocate vertex buffer");
+                error("[ImGui] Failed to allocate vertex buffer");
                 return;
             }
 
@@ -360,10 +354,10 @@ namespace gui {
             }
 
             if (!drawable.vertex->write(0, std::span<const ImDrawVert>(all_vtx))) {
-                error("(ImGui) Failed to write vertex buffer");
+                error("[ImGui] Failed to write vertex buffer");
             }
             if (!drawable.index->write(0, std::span<const ImDrawIdx>(all_itx))) {
-                error("(ImGui) Failed to write index buffer");
+                error("[ImGui] Failed to write index buffer");
             }
         }
 
@@ -403,8 +397,7 @@ namespace gui {
                         .sampler_id = sampler.index,
                 };
 
-                vkCmdPushConstants(cmd, pipeline.layout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                                   sizeof(pc), &pc);
+                vkCmdPushConstants(cmd, pipeline.layout(), VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
 
                 VkRect2D scissor{
                         .offset =
@@ -418,7 +411,7 @@ namespace gui {
                                         .height = static_cast<std::uint32_t>(clip_max.y - clip_min.y),
                                 },
                 };
-                vkCmdSetScissor(cmd, 0, 1, &scissor);
+                vkCmdSetScissorWithCount(cmd,  1, &scissor);
 
                 vkCmdDrawIndexed(cmd, imgui_cmd.ElemCount, 1, index_offset + imgui_cmd.IdxOffset, 0, 0);
             }
@@ -479,7 +472,7 @@ namespace gui {
                                            static_cast<std::size_t>(height) * static_cast<std::size_t>(width) * 4));
 
         if (!created_image) {
-            error("(ImGui) Failed to create font atlas image: {}", describe(created_image.error()));
+            error("[ImGui] Failed to create font atlas image: {}", describe(created_image.error()));
             return;
         }
 
@@ -501,7 +494,7 @@ namespace gui {
         });
 
         if (!created_sampler) {
-            error("(ImGui) Failed to create font sampler");
+            error("[ImGui] Failed to create font sampler");
             return;
         }
 

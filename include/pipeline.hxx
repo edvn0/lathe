@@ -48,6 +48,17 @@ struct std::formatter<PipelineErrorType> : std::formatter<std::string_view> {
     }
 };
 
+// A single push-constant range covering every stage, used by every
+// pipeline layout in this codebase. 256 bytes is not the Vulkan-spec
+// guaranteed minimum (that's 128), but every desktop GPU this project
+// targets (NVIDIA/AMD/Intel) supports it, so pipelines never need to
+// compute or specify a bespoke VkPushConstantRange.
+inline constexpr VkPushConstantRange global_push_constant_range{
+        .stageFlags = VK_SHADER_STAGE_ALL,
+        .offset = 0,
+        .size = 256,
+};
+
 struct ShaderStageInfo {
     VkShaderStageFlagBits stage{};
     std::span<const std::uint32_t> spirv;

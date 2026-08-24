@@ -61,7 +61,6 @@ auto PlayerController::on_mouse_moved(float delta_x, float delta_y, bool look_en
         return;
     }
 
-    // FIX 1: Subtract delta_x to match EditorCamera look behavior
     yaw_degrees_ -= delta_x * look_sensitivity_;
     pitch_degrees_ = std::clamp(pitch_degrees_ - delta_y * look_sensitivity_, min_pitch_degrees_, max_pitch_degrees_);
 }
@@ -69,7 +68,6 @@ auto PlayerController::on_mouse_moved(float delta_x, float delta_y, bool look_en
 auto PlayerController::set_sprinting(bool sprinting) noexcept -> void { sprinting_ = sprinting; }
 
 auto PlayerController::forward() const noexcept -> glm::vec3 {
-    // Horizontal-only forward -- pitch affects the camera, not movement.
     auto const yaw = glm::radians(yaw_degrees_);
     return glm::normalize(glm::vec3{std::cos(yaw), 0.0F, std::sin(yaw)});
 }
@@ -85,7 +83,6 @@ auto PlayerController::desired_horizontal_velocity() const noexcept -> glm::vec3
 
     auto const fwd = forward();
 
-    // FIX 2: Compute right vector as cross(world_up, fwd) for Left-Handed alignment
     constexpr glm::vec3 world_up{0.0F, 1.0F, 0.0F};
     auto const right = glm::normalize(glm::cross(world_up, fwd));
 

@@ -612,6 +612,12 @@ target_link_libraries(
         BS_thread_pool
 )
 
+target_precompile_headers(
+    mingw-vulkan
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/pch.hxx"
+)
+
 include (${CMAKE_SOURCE_DIR}/cmake/renderdoc_config.cmake)
 configure_renderdoc(mingw-vulkan
         REAL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/renderdoc/renderdoc.cxx"

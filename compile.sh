@@ -99,7 +99,7 @@ build() {
   run_container \
     cmake \
     --build "${build_dir}" \
-    --parallel \
+    -j20 \
     2>&1 | sed -u "s#/workspace#${project_dir}#g"
   fixup_compile_commands
 }
@@ -205,4 +205,3 @@ main() {
 }
 
 main "$@"
-

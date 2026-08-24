@@ -483,9 +483,7 @@ namespace {
                 .extent = extent,
         };
 
-        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
-        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
         vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
 
         vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
@@ -535,12 +533,7 @@ namespace {
                 .extent = {resolution, resolution},
         };
 
-        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
-
-        // Mandatory, not decorative: without it rasterization bleeds into
-        // neighbouring cascade tiles in the shared atlas.
-        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
         vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
 
         vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
@@ -587,9 +580,7 @@ namespace {
                 .extent = extent,
         };
 
-        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
-        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
         vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
 
         vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
@@ -756,9 +747,7 @@ namespace {
                 .extent = extent,
         };
 
-        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
-        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
         vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
 
         vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
@@ -1045,12 +1034,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     std::vector<PipelineRegisterInfo> pipeline_infos;
     pipeline_infos.reserve(9);
 
-    VkPushConstantRange const forward_push_constant_range{
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            .offset = 0,
-            .size = sizeof(ForwardPushConstants),
-    };
-
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -1070,7 +1053,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {forward_push_constant_range},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {create_info.hdr_format},
             .depth_format = create_info.depth_format,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -1082,12 +1065,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     // Same shaders/layout as forward, blending enabled -- see
     // PipelineRegisterInfo::blending, which pipeline.cxx turns into
     // standard alpha-over (SRC_ALPHA / ONE_MINUS_SRC_ALPHA) factors.
-    VkPushConstantRange const forward_blend_push_constant_range{
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            .offset = 0,
-            .size = sizeof(ForwardPushConstants),
-    };
-
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -1107,7 +1084,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {forward_blend_push_constant_range},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {create_info.hdr_format},
             .depth_format = create_info.depth_format,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -1116,12 +1093,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.forward_blend_pipeline",
     }); // index 1: forward_blend
-
-    VkPushConstantRange const light_icon_pc{
-            .stageFlags = VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            .offset = 0,
-            .size = sizeof(LightIconPushConstants),
-    };
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -1149,7 +1120,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {light_icon_pc},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {create_info.hdr_format},
             .depth_format = create_info.depth_format,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -1159,12 +1130,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.light_icon_pipeline",
     }); // index 2: light_icon
 
-    VkPushConstantRange const shadow_pc{
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-            .offset = 0,
-            .size = sizeof(ShadowPushConstants),
-    };
-
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -1177,7 +1142,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {shadow_pc},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {},
             .depth_format = VK_FORMAT_D32_SFLOAT,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -1186,15 +1151,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.shadow_pipeline",
     }); // index 3: shadow
 
-    // Fragment stage added (vs shadow_pipeline_'s vertex-only layout) so
-    // the material buffer address is readable in mainFs for the
-    // alpha-cutoff test.
-    VkPushConstantRange const shadow_mask_pc{
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            .offset = 0,
-            .size = sizeof(ShadowPushConstants),
-    };
-
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -1214,7 +1170,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {shadow_mask_pc},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {},
             .depth_format = VK_FORMAT_D32_SFLOAT,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -1223,12 +1179,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.shadow_mask_pipeline",
     }); // index 4: shadow_mask
 
-    VkPushConstantRange const depth_prepass_pc{
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-            .offset = 0,
-            .size = sizeof(ForwardPushConstants),
-    };
-
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -1241,7 +1191,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {depth_prepass_pc},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {},
             .depth_format = create_info.depth_format,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -1250,15 +1200,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.depth_prepass_pipeline",
     }); // index 5: depth_prepass
 
-    // Fragment stage added (vs depth_prepass_pipeline_'s vertex-only
-    // layout) so the material buffer address is readable in mainFs for
-    // the alpha-cutoff test.
-    VkPushConstantRange const depth_prepass_mask_pc{
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            .offset = 0,
-            .size = sizeof(ForwardPushConstants),
-    };
-
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -1278,7 +1219,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {depth_prepass_mask_pc},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {},
             .depth_format = create_info.depth_format,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -1287,12 +1228,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.depth_prepass_mask_pipeline",
     }); // index 6: depth_prepass_mask
 
-    VkPushConstantRange const composite_push_constant_range{
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .offset = 0,
-            .size = sizeof(CompositePushConstants),
-    };
-
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -1312,7 +1247,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {composite_push_constant_range},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {create_info.swapchain_format},
             .depth_format = VK_FORMAT_UNDEFINED,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -1320,12 +1255,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.composite_pipeline",
     }); // index 7: composite
-
-    VkPushConstantRange const frustum_cull_pc{
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .offset = 0,
-            .size = sizeof(CullPushConstants),
-    };
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -1339,7 +1268,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {frustum_cull_pc},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {},
             .depth_format = VK_FORMAT_UNDEFINED,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -1349,11 +1278,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     }); // index 8: frustum_cull
 
 
-    VkPushConstantRange const bloom_downsample_pc{
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .offset = 0,
-            .size = sizeof(DownsamplePushConstants),
-    };
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -1366,7 +1290,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {bloom_downsample_pc},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {},
             .depth_format = VK_FORMAT_UNDEFINED,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -1375,11 +1299,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.bloom_downsample_pipeline",
     });
 
-    VkPushConstantRange const bloom_upsample_pc{
-            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-            .offset = 0,
-            .size = sizeof(UpsamplePushConstants),
-    };
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -1392,7 +1311,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                     },
             .additional_descriptor_set_layouts = {},
-            .push_constant_ranges = {bloom_upsample_pc},
+            .push_constant_ranges = {global_push_constant_range},
             .colour_formats = {},
             .depth_format = VK_FORMAT_UNDEFINED,
             .stencil_format = VK_FORMAT_UNDEFINED,
@@ -2969,8 +2888,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                 .padding = 0,
         };
 
-        vkCmdPushConstants(command_buffer, frustum_cull_pipeline, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(CullPushConstants), &cull_pc);
+        vkCmdPushConstants(command_buffer, frustum_cull_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(CullPushConstants),
+                           &cull_pc);
 
         vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
 
@@ -3245,8 +3164,8 @@ template<typename OverlayPolicy>
                     .padding1 = 0,
             };
 
-            vkCmdPushConstants(command_buffer, shadow_pipeline, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                               sizeof(ShadowPushConstants), &pc);
+            vkCmdPushConstants(command_buffer, shadow_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(ShadowPushConstants),
+                               &pc);
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
                 auto const cascade_draw_count = frame.shadow_opaque_indirect_count[cascade];
@@ -3258,7 +3177,7 @@ template<typename OverlayPolicy>
                 set_shadow_dynamic_state(command_buffer, cascade, shadow_settings_.depth_bias_constant,
                                          shadow_settings_.depth_bias_slope);
 
-                vkCmdPushConstants(command_buffer, shadow_pipeline, VK_SHADER_STAGE_VERTEX_BIT,
+                vkCmdPushConstants(command_buffer, shadow_pipeline, VK_SHADER_STAGE_ALL,
                                    offsetof(ShadowPushConstants, cascade_index), sizeof(std::uint32_t), &cascade);
 
                 vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, 0, cascade_draw_count,
@@ -3283,8 +3202,7 @@ template<typename OverlayPolicy>
                     .padding1 = 0,
             };
 
-            vkCmdPushConstants(command_buffer, shadow_mask_pipeline,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+            vkCmdPushConstants(command_buffer, shadow_mask_pipeline, VK_SHADER_STAGE_ALL, 0,
                                sizeof(ShadowPushConstants), &pc);
 
             auto const mask_offset =
@@ -3300,8 +3218,7 @@ template<typename OverlayPolicy>
                 set_shadow_dynamic_state(command_buffer, cascade, shadow_settings_.depth_bias_constant,
                                          shadow_settings_.depth_bias_slope);
 
-                vkCmdPushConstants(command_buffer, shadow_mask_pipeline,
-                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                vkCmdPushConstants(command_buffer, shadow_mask_pipeline, VK_SHADER_STAGE_ALL,
                                    offsetof(ShadowPushConstants, cascade_index), sizeof(std::uint32_t), &cascade);
 
                 vkCmdDrawIndexedIndirect(command_buffer, frame.indirect_buffer.buffer, mask_offset, cascade_draw_count,
@@ -3383,7 +3300,7 @@ template<typename OverlayPolicy>
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                      depth_prepass_pipeline);
             set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::prepass);
-            vkCmdPushConstants(command_buffer, depth_prepass_pipeline, VK_SHADER_STAGE_VERTEX_BIT, 0,
+            vkCmdPushConstants(command_buffer, depth_prepass_pipeline, VK_SHADER_STAGE_ALL, 0,
                                sizeof(ForwardPushConstants), &pc);
 
             vkCmdDrawIndexedIndirect(command_buffer, main_view_indirect_buffer.buffer, 0, frame.opaque_indirect_count,
@@ -3396,8 +3313,7 @@ template<typename OverlayPolicy>
                                      depth_prepass_mask_pipeline);
             set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::prepass);
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
-            vkCmdPushConstants(command_buffer, depth_prepass_mask_pipeline,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+            vkCmdPushConstants(command_buffer, depth_prepass_mask_pipeline, VK_SHADER_STAGE_ALL, 0,
                                sizeof(ForwardPushConstants), &pc);
 
             auto const mask_offset =
@@ -3497,8 +3413,7 @@ template<typename OverlayPolicy>
 
         bind_graphics_node(pipeline_graph_, forward_pipeline_, command_buffer, samples_, 1, false);
         gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, forward_pipeline);
-        vkCmdPushConstants(command_buffer, forward_pipeline, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(ForwardPushConstants), &pc);
+        vkCmdPushConstants(command_buffer, forward_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(ForwardPushConstants), &pc);
 
         if (frame.opaque_indirect_count != 0) {
             set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::main);
@@ -3521,8 +3436,7 @@ template<typename OverlayPolicy>
             bind_graphics_node(pipeline_graph_, forward_blend_pipeline_, command_buffer, samples_, 1, true);
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                      forward_blend_pipeline);
-            vkCmdPushConstants(command_buffer, forward_blend_pipeline,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+            vkCmdPushConstants(command_buffer, forward_blend_pipeline, VK_SHADER_STAGE_ALL, 0,
                                sizeof(ForwardPushConstants), &pc);
             set_forward_dynamic_state(command_buffer, target_extent, ForwardDynamicStateMode::blend);
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
@@ -3555,10 +3469,8 @@ template<typename OverlayPolicy>
                     .icon_world_size = light_icon_world_size_,
             };
 
-            vkCmdPushConstants(command_buffer, light_icon_pipeline,
-                               VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT |
-                                       VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(LightIconPushConstants), &light_pc);
+            vkCmdPushConstants(command_buffer, light_icon_pipeline, VK_SHADER_STAGE_ALL, 0,
+                               sizeof(LightIconPushConstants), &light_pc);
 
             auto const group_count = (frame.light_count + 31) / 32;
             vkCmdDrawMeshTasksEXT(command_buffer, group_count, 1, 1);
@@ -3638,7 +3550,7 @@ template<typename OverlayPolicy>
                 .bloom_intensity = bloom_settings_.enabled ? bloom_settings_.intensity : 0.0f,
         };
 
-        vkCmdPushConstants(command_buffer, composite_pipeline, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(composite_pc),
+        vkCmdPushConstants(command_buffer, composite_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(composite_pc),
                            &composite_pc);
         vkCmdDraw(command_buffer, 3, 1, 0, 0);
 
@@ -3858,7 +3770,7 @@ void Renderer::record_bloom_pass(VkCommandBuffer command_buffer, std::uint32_t f
             .knee = bloom_settings_.knee,
     };
 
-    vkCmdPushConstants(command_buffer, bloom_downsample_pipeline, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+    vkCmdPushConstants(command_buffer, bloom_downsample_pipeline, VK_SHADER_STAGE_ALL, 0,
                        sizeof(DownsamplePushConstants), &downsample_pc);
 
     std::uint32_t const downsample_groups_x = (mip0_extent.width + 15U) / 16U;
@@ -3891,7 +3803,7 @@ void Renderer::record_bloom_pass(VkCommandBuffer command_buffer, std::uint32_t f
                 .filter_radius = bloom_settings_.filter_radius,
         };
 
-        vkCmdPushConstants(command_buffer, bloom_upsample_pipeline, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+        vkCmdPushConstants(command_buffer, bloom_upsample_pipeline, VK_SHADER_STAGE_ALL, 0,
                            sizeof(UpsamplePushConstants), &upsample_pc);
 
         std::uint32_t const upsample_groups_x = (target_extent_mip.width + 15U) / 16U;

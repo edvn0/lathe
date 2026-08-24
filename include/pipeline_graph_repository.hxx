@@ -90,6 +90,7 @@ struct PipelineRegisterInfo {
     std::vector<VkDescriptorSetLayout> additional_descriptor_set_layouts{};
     std::vector<VkPushConstantRange> push_constant_ranges;
     std::vector<VkFormat> colour_formats;
+    std::vector<VkDynamicState> dynamic_states{};
 
     VkFormat depth_format = VK_FORMAT_UNDEFINED;
     VkFormat stencil_format = VK_FORMAT_UNDEFINED;
