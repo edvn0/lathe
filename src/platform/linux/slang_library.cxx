@@ -132,7 +132,7 @@ auto SlangLibrary::create(std::filesystem::path const &library_path) -> std::exp
 
     auto resolved_path = library_path;
 
-    debug("Path passed to dlopen: {}", resolved_path.string());
+    debug("[Slang Library] Path passed to dlopen: {}", resolved_path.string());
 
     std::error_code status_error;
 
@@ -230,9 +230,9 @@ auto SlangLibrary::create_from_executable_directory(std::filesystem::path const 
 
     auto const library_path = directory / library_name;
 
-    debug("Executable path: {}", executable_path_result->string());
+    debug("[Slang Library] Executable path: {}", executable_path_result->string());
 
-    debug("Slang runtime path: {}", library_path.string());
+    debug("[Slang Library] Slang runtime path: {}", library_path.string());
 
     return create(library_path);
 }

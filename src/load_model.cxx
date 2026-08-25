@@ -857,7 +857,7 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
 
     auto asset = std::move(asset_result.get());
 
-    debug("load_model_cpu: parsed {} nodes, {} lights, {} scenes", asset.nodes.size(), asset.lights.size(),
+    debug("[load_model_cpu]: parsed {} nodes, {} lights, {} scenes", asset.nodes.size(), asset.lights.size(),
           asset.scenes.size());
 
     ModelCpuData cpu_data;
@@ -939,7 +939,7 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
     for (auto const root: cpu_data.scene_roots) {
         accumulate_node_lights(asset, cpu_data, root, glm::mat4{1.0F}, cpu_data.lights);
     }
-    debug("load_model_cpu: extracted {} lights from {} scene roots", cpu_data.lights.size(),
+    debug("[load_model_cpu]: extracted {} lights from {} scene roots", cpu_data.lights.size(),
           cpu_data.scene_roots.size());
 
     return cpu_data;

@@ -4,19 +4,21 @@ set -euo pipefail
 readonly image="cross-build:latest"
 readonly project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly build_type="${CMAKE_BUILD_TYPE:-Debug}"
-readonly renderdoc_include_path=${RENDERDOC_INCLUDE_PATH:-}
+readonly renderdoc_include_path="${RENDERDOC_INCLUDE_PATH:-}"
 readonly cpm_cache_dir="${HOME}/.cache/CPM"
-readonly container_cpm_cache="/cpm-cache"
 
-# windows-mingw: cross-compile to Windows via mingw-w64 (toolchain file lives in-repo)
-# linux-native:  build natively inside the container with its own gcc/g++
+# windows-mingw: cross-compile to Windows via mingw-w64.
+# linux-native:  build natively inside the container with its gcc/g++.
 readonly target="${TARGET:-windows-mingw}"
 
-# perf: perf stat/record (needs to match host kernel, so it always runs on the host)
-# callgrind: valgrind --tool=callgrind (also runs on the host, kernel-independent)
+# perf:      perf stat
+# perf-record: perf record
+# callgrind: valgrind --tool=callgrind
+#
+# Profiling always runs on the host.
 readonly profiler="${PROFILER:-perf}"
 
-# fill in your actual binary name/path relative to build_dir
+# Binary name/path relative to ${build_dir}/bin.
 readonly executable_name="${EXECUTABLE_NAME:-mingw-vulkan}"
 
 toolchain_file=""
@@ -24,7 +26,7 @@ build_dir=""
 
 case "${target}" in
 windows-mingw)
-  toolchain_file="/workspace/cmake/toolchains/windows-mingw-x64.cmake"
+  toolchain_file="${project_dir}/cmake/toolchains/windows-mingw-x64.cmake"
   build_dir="build/windows-mingw-${build_type,,}"
   ;;
 linux-native)
@@ -39,91 +41,164 @@ esac
 usage() {
   cat <<EOF
 Usage:
-  TARGET=windows-mingw ./build.sh --configure   (default)
-  TARGET=linux-native  ./build.sh --configure
-  ./build.sh --build
-  ./build.sh --rebuild
-  ./build.sh --clean
-  ./build.sh --shell
-  TARGET=linux-native ./build.sh --profile [-- extra args to the binary]
+  TARGET=windows-mingw ./compile.sh --configure
+  TARGET=linux-native  ./compile.sh --configure
+
+  ./compile.sh --build
+  ./compile.sh --rebuild
+  ./compile.sh --clean
+  ./compile.sh --shell
+
+  TARGET=linux-native ./compile.sh --test
+  TARGET=linux-native ./compile.sh --profile [-- extra args to the binary]
+
 Options:
-  --configure  Configure the build with CMake
-  --build      Build the existing configuration
-  --rebuild    Remove, configure, and build
-  --clean      Remove the current target's build directory
-  --shell      Open an interactive shell inside the build container
-  --profile    Run the linux-native RelWithDebInfo binary under a profiler on
-               the host (perf by default; PROFILER=perf-record or
-               PROFILER=callgrind for the others)
+  --configure
+      Configure the selected build with CMake.
+
+  --build
+      Build the existing configuration.
+
+  --rebuild
+      Remove the selected build directory, configure, and build.
+
+  --clean
+      Remove the selected target's build directory.
+
+  --shell
+      Open an interactive shell inside the build container.
+
+  --test
+      Run CTest for a linux-native build.
+
+  --profile
+      Run the linux-native binary under a profiler on the host.
+      PROFILER=perf        uses perf stat.
+      PROFILER=perf-record uses perf record.
+      PROFILER=callgrind   uses Valgrind/Callgrind.
 
 TARGET selects the build:
-  windows-mingw  Cross-compile to Windows via mingw-w64 (toolchain file at cmake/toolchains/)
-  linux-native   Build natively inside the container
+  windows-mingw
+      Cross-compile to Windows using mingw-w64 and the toolchain file
+      under cmake/toolchains/.
 
-PROFILE_BUILD=1 adds -fno-omit-frame-pointer to a linux-native configure,
-for cheaper 'perf record --call-graph fp' unwinding instead of dwarf.
+  linux-native
+      Build natively for Linux inside the container.
+
+CMAKE_BUILD_TYPE selects the configuration:
+  Debug
+  Release
+  RelWithDebInfo
+  MinSizeRel
+
+PROFILE_BUILD=1 adds -fno-omit-frame-pointer to a linux-native configure
+for cheaper 'perf record --call-graph fp' unwinding instead of DWARF.
+
+Examples:
+  TARGET=linux-native CMAKE_BUILD_TYPE=Debug ./compile.sh --rebuild
+
+  TARGET=linux-native CMAKE_BUILD_TYPE=Release ./compile.sh --rebuild
+
+  TARGET=windows-mingw CMAKE_BUILD_TYPE=Release ./compile.sh --rebuild
+
+  TARGET=linux-native \
+    CMAKE_BUILD_TYPE=RelWithDebInfo \
+    PROFILE_BUILD=1 \
+    ./compile.sh --rebuild
 EOF
 }
 
 run_container() {
+  mkdir -p "${cpm_cache_dir}"
+
   docker run --rm \
-    --mount "type=bind,source=${project_dir},target=/workspace" \
-    --mount "type=bind,source=${cpm_cache_dir},target=${container_cpm_cache}" \
-    --env "CPM_SOURCE_CACHE=${container_cpm_cache}" \
-    --workdir /workspace \
+    --mount "type=bind,source=${project_dir},target=${project_dir}" \
+    --mount "type=bind,source=${cpm_cache_dir},target=${cpm_cache_dir}" \
+    --env "CPM_SOURCE_CACHE=${cpm_cache_dir}" \
+    --workdir "${project_dir}" \
     "${image}" \
     "$@"
+}
+
+update_compile_commands_link() {
+  local compile_commands="${project_dir}/${build_dir}/compile_commands.json"
+
+  [[ -f "${compile_commands}" ]] || return 0
+
+  ln -sfn \
+    "${build_dir}/compile_commands.json" \
+    "${project_dir}/compile_commands.json"
 }
 
 configure() {
   mkdir -p "${cpm_cache_dir}"
 
-  local cmake_args=(-S . -B "${build_dir}" -G Ninja -DCMAKE_BUILD_TYPE="${build_type}")
+  local cmake_args=(
+    -S "${project_dir}"
+    -B "${project_dir}/${build_dir}"
+    -G Ninja
+    -DCMAKE_BUILD_TYPE="${build_type}"
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+  )
+
   if [[ -n "${toolchain_file}" ]]; then
-    cmake_args+=(--toolchain "${toolchain_file}")
+    cmake_args+=(
+      --toolchain "${toolchain_file}"
+    )
   fi
 
   if [[ -n "${renderdoc_include_path}" ]]; then
-    cmake_args+=("-DRENDERDOC_INCLUDE_PATH=${renderdoc_include_path}")
+    cmake_args+=(
+      "-DRENDERDOC_INCLUDE_PATH=${renderdoc_include_path}"
+    )
   fi
 
   if [[ "${PROFILE_BUILD:-0}" == "1" ]]; then
-    cmake_args+=(-DCMAKE_CXX_FLAGS="-fno-omit-frame-pointer" -DCMAKE_C_FLAGS="-fno-omit-frame-pointer")
+    if [[ "${target}" != "linux-native" ]]; then
+      echo "PROFILE_BUILD=1 requires TARGET=linux-native" >&2
+      exit 1
+    fi
+
+    cmake_args+=(
+      -DCMAKE_CXX_FLAGS="-fno-omit-frame-pointer"
+      -DCMAKE_C_FLAGS="-fno-omit-frame-pointer"
+    )
   fi
 
-  run_container cmake "${cmake_args[@]}" 2>&1 | sed -u "s#/workspace#${project_dir}#g"
-  fixup_compile_commands
+  run_container cmake "${cmake_args[@]}"
+  update_compile_commands_link
 }
 
 build() {
   run_container \
     cmake \
-    --build "${build_dir}" \
-    -j20 \
-    2>&1 | sed -u "s#/workspace#${project_dir}#g"
-  fixup_compile_commands
-}
+    --build "${project_dir}/${build_dir}" \
+    -j20
 
-fixup_compile_commands() {
-  local cc="${project_dir}/${build_dir}/compile_commands.json"
-  [[ -f "${cc}" ]] || return 0
-
-  sed -i \
-    -e "s#/workspace#${project_dir}#g" \
-    -e "s#/cpm-cache#${cpm_cache_dir}#g" \
-    "${cc}"
-
-  ln -sf "${build_dir}/compile_commands.json" "${project_dir}/compile_commands.json"
+  update_compile_commands_link
 }
 
 clean() {
   rm -rf "${project_dir:?}/${build_dir}"
+
+  if [[ -L "${project_dir}/compile_commands.json" ]]; then
+    local current_target
+    current_target="$(readlink "${project_dir}/compile_commands.json")"
+
+    if [[ "${current_target}" == "${build_dir}/compile_commands.json" ]]; then
+      rm "${project_dir}/compile_commands.json"
+    fi
+  fi
 }
 
 shell() {
+  mkdir -p "${cpm_cache_dir}"
+
   docker run --rm -it \
-    --mount "type=bind,source=${project_dir},target=/workspace" \
-    --workdir /workspace \
+    --mount "type=bind,source=${project_dir},target=${project_dir}" \
+    --mount "type=bind,source=${cpm_cache_dir},target=${cpm_cache_dir}" \
+    --env "CPM_SOURCE_CACHE=${cpm_cache_dir}" \
+    --workdir "${project_dir}" \
     "${image}" \
     bash
 }
@@ -136,20 +211,23 @@ run_test() {
 
   run_container \
     ctest \
-    --test-dir "${build_dir}" \
+    --test-dir "${project_dir}/${build_dir}" \
     --output-on-failure \
-    $@
+    "$@"
 }
 
 profile() {
   if [[ "${target}" != "linux-native" ]]; then
-    echo "--profile requires TARGET=linux-native (perf/valgrind need to match the host)" >&2
+    echo "--profile requires TARGET=linux-native (perf/valgrind run on the host)" >&2
     exit 1
   fi
 
   local exe="${project_dir}/${build_dir}/bin/${executable_name}"
+
   if [[ ! -x "${exe}" ]]; then
-    echo "Executable not found: ${exe} (build it first: TARGET=linux-native ./build.sh --build)" >&2
+    echo "Executable not found: ${exe}" >&2
+    echo "Build it first with:" >&2
+    echo "  TARGET=linux-native CMAKE_BUILD_TYPE=${build_type} ./compile.sh --build" >&2
     exit 1
   fi
 
@@ -157,20 +235,39 @@ profile() {
   perf)
     perf stat -d -- "${exe}" "$@"
     ;;
+
   perf-record)
     local out="${project_dir}/${build_dir}/perf.data"
     local graph_mode="dwarf"
-    [[ "${PROFILE_BUILD:-0}" == "1" ]] && graph_mode="fp"
-    perf record -g --call-graph "${graph_mode}" -o "${out}" -- "${exe}" "$@"
-    echo "Report with: perf report -i ${out}"
+
+    if [[ "${PROFILE_BUILD:-0}" == "1" ]]; then
+      graph_mode="fp"
+    fi
+
+    perf record \
+      -g \
+      --call-graph "${graph_mode}" \
+      -o "${out}" \
+      -- "${exe}" "$@"
+
+    echo "Report with:"
+    echo "  perf report -i ${out}"
     ;;
+
   callgrind)
     local out="${project_dir}/${build_dir}/callgrind.out.%p"
-    valgrind --tool=callgrind --callgrind-out-file="${out}" -- "${exe}" "$@"
+
+    valgrind \
+      --tool=callgrind \
+      --callgrind-out-file="${out}" \
+      -- "${exe}" "$@"
+
     echo "Open the resulting callgrind.out.<pid> file with kcachegrind"
     ;;
+
   *)
-    echo "Unknown PROFILER: ${profiler} (expected perf, perf-record, or callgrind)" >&2
+    echo "Unknown PROFILER: ${profiler}" >&2
+    echo "Expected: perf, perf-record, or callgrind" >&2
     exit 1
     ;;
   esac
@@ -189,29 +286,37 @@ main() {
   --configure)
     configure
     ;;
+
   --build)
     build
     ;;
+
   --test)
-    run_test
+    run_test "$@"
     ;;
+
   --rebuild)
     clean
     configure
     build
     ;;
+
   --clean)
     clean
     ;;
+
   --shell)
     shell
     ;;
+
   --profile)
     profile "$@"
     ;;
+
   --help | -h)
     usage
     ;;
+
   *)
     echo "Unknown option: ${cmd}" >&2
     usage >&2

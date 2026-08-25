@@ -311,11 +311,11 @@ auto SlangLibrary::create_from_executable_directory(std::filesystem::path const 
 
     executable_native.append(library_native.data(), library_native.size());
 
-    debug("Executable path: {}", wide_to_utf8(executable_path_result->native()));
+    debug("[Slang Library] Executable path: {}", wide_to_utf8(executable_path_result->native()));
 
-    debug("Slang runtime path: {}", wide_to_utf8(executable_native));
+    debug("[Slang Library] Slang runtime path: {}", wide_to_utf8(executable_native));
 
-    debug("Slang path starts with UNC prefix: {}",
+    debug("[Slang Library] Slang path starts with UNC prefix: {}",
           executable_native.size() >= 2 && executable_native[0] == L'\\' && executable_native[1] == L'\\');
 
     return create(std::filesystem::path{std::move(executable_native)});

@@ -554,8 +554,8 @@ auto Application::recreate_entities() -> void {
             return model.value();
         }
 
-        error("Could not load model '{}': {}", path.string(), describe(model.error()));
-        warn("Falling back to engine cube for '{}'", path.string());
+        error("[recreate_entities::load_or_fallback] Could not load model '{}': {}", path.string(), describe(model.error()));
+        warn("[recreate_entities::load_or_fallback] Falling back to engine cube for '{}'", path.string());
         return default_model;
     };
 
@@ -580,7 +580,6 @@ auto Application::recreate_entities() -> void {
     auto const helmet_model = load_or_fallback("assets/models/damaged_helmet/DamagedHelmet.gltf");
     cube_model = load_or_fallback("assets/models/test_cube.glb");
 
-    info("BEFORE");
     constexpr auto house_position = glm::vec3{40.0F, 10.0F, 10.0F};
     auto const house_transform = glm::translate(glm::mat4{1.0F}, house_position);
 
@@ -591,7 +590,6 @@ auto Application::recreate_entities() -> void {
     house_entity.emplace<Components::Model>(Components::Model{.model = house_model});
     house_entity.emplace<Components::RigidBody>(
             Components::RigidBody::from_model_bounds(renderer->model_bounds(house_model).value()));
-    info("AFTER");
 
     tree_model = load_or_fallback("assets/models/tree.glb");
 
