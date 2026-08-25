@@ -68,6 +68,22 @@ jobs:
             cross-build:latest \
             cmake --build "${build_dir}" --parallel
 
+      - name: Test
+        if: matrix.target == 'linux-native'
+        run: |
+          build_dir="build/${{ matrix.target }}-${build_type,,}"
+          docker run --rm \
+            --mount type=bind,source="$PWD",target=/workspace \
+            --mount type=bind,source="$HOME/.cache/CPM",target=/cpm-cache \
+            --env CPM_SOURCE_CACHE=/cpm-cache \
+            --workdir /workspace \
+            cross-build:latest \
+            ctest \
+              --test-dir "${build_dir}" \
+              --output-on-failure \
+              --parallel 4 \
+              --no-tests=error
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

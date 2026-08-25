@@ -8,6 +8,8 @@ project(
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+include(CTest)
+
 set(
     BUILD_SHARED_LIBS
     OFF
@@ -31,7 +33,7 @@ function(mark_target_includes_system target_name)
         aliased_target
         "${target_name}"
         ALIASED_TARGET
-    )
+  )
 
   if(aliased_target)
     set(real_target "${aliased_target}")
@@ -43,12 +45,12 @@ function(mark_target_includes_system target_name)
         target_include_dirs
         "${real_target}"
         INTERFACE_INCLUDE_DIRECTORIES
-    )
+  )
 
   if(
         NOT target_include_dirs
         OR target_include_dirs MATCHES "-NOTFOUND$"
-    )
+  )
     return()
   endif()
 
@@ -58,7 +60,7 @@ function(mark_target_includes_system target_name)
         PROPERTY
             INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
             "${target_include_dirs}"
-    )
+  )
 endfunction()
 
 # ------------------------------------------------------------------------------
@@ -113,6 +115,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
+
+if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
+  CPMAddPackage(
+      NAME doctest
+      GITHUB_REPOSITORY doctest/doctest
+      VERSION 2.5.3
+  )
+endif()
 
 cpmaddpackage(
     NAME VulkanHeaders
@@ -204,11 +214,11 @@ cpmaddpackage(
 )
 
 cpmaddpackage(
-        NAME stb
-        GITHUB_REPOSITORY nothings/stb
-        GIT_TAG master
-        GIT_SHALLOW YES
-        DOWNLOAD_ONLY YES
+    NAME stb
+    GITHUB_REPOSITORY nothings/stb
+    GIT_TAG master
+    GIT_SHALLOW YES
+    DOWNLOAD_ONLY YES
 )
 
 CPMAddPackage(
@@ -220,13 +230,16 @@ CPMAddPackage(
 )
 
 set(USE_CCACHE YES)
-CPMAddPackage("gh:TheLartians/Ccache.cmake@1.2.5")
 
 CPMAddPackage(
-        NAME freetype
-        GITHUB_REPOSITORY freetype/freetype
-        GIT_TAG master
-        OPTIONS
+    "gh:TheLartians/Ccache.cmake@1.2.5"
+)
+
+CPMAddPackage(
+    NAME freetype
+    GITHUB_REPOSITORY freetype/freetype
+    GIT_TAG master
+    OPTIONS
         "BUILD_SHARED_LIBS OFF"
         "FT_DISABLE_ZLIB ON"
         "FT_DISABLE_BZIP2 ON"
@@ -242,16 +255,22 @@ CPMAddPackage(
     EXCLUDE_FROM_ALL
     SYSTEM
 )
+
 add_library(BS_thread_pool INTERFACE)
-target_include_directories(BS_thread_pool INTERFACE ${BS_thread_pool_SOURCE_DIR}/include)
+
+target_include_directories(
+    BS_thread_pool
+    INTERFACE
+        "${BS_thread_pool_SOURCE_DIR}/include"
+)
 
 CPMAddPackage(
-        NAME bullet3
-        GITHUB_REPOSITORY bulletphysics/bullet3
-        GIT_TAG master
-        GIT_SHALLOW YES
-        OPTIONS
-        "BT_THREADSAFE" "OFF"
+    NAME bullet3
+    GITHUB_REPOSITORY bulletphysics/bullet3
+    GIT_TAG master
+    GIT_SHALLOW YES
+    OPTIONS
+        "BT_THREADSAFE OFF"
         "BUILD_SHARED_LIBS OFF"
         "BUILD_BULLET2_DEMOS OFF"
         "BUILD_CPU_DEMOS OFF"
@@ -264,49 +283,52 @@ CPMAddPackage(
         "INSTALL_LIBS OFF"
 )
 
-if (bullet3_SOURCE_DIR)
+if(bullet3_SOURCE_DIR)
   # Bullet is old code that never sets its own C++ standard, and the
   # directory-scoped CMAKE_CXX_STANDARD 23 / CMAKE_CXX_EXTENSIONS OFF above
   # would otherwise leak into it -- pin it back to a standard it's actually
-  # written against (see cmake/add_mikktspace.cmake for the same pattern
-  # applied to mikktspace's C standard).
+  # written against.
   foreach(bullet_target IN ITEMS BulletDynamics BulletCollision LinearMath)
-    if (TARGET ${bullet_target})
-      set_target_properties(${bullet_target} PROPERTIES
+    if(TARGET ${bullet_target})
+      set_target_properties(
+          ${bullet_target}
+          PROPERTIES
               CXX_STANDARD 17
               CXX_STANDARD_REQUIRED ON
               CXX_EXTENSIONS OFF
       )
-    endif ()
+    endif()
   endforeach()
-endif ()
+endif()
 
 CPMAddPackage(
-        NAME ImGui
-        GITHUB_REPOSITORY ocornut/imgui
-        GIT_TAG v1.92.5-docking
-        GIT_SHALLOW YES
-        DOWNLOAD_ONLY YES
+    NAME ImGui
+    GITHUB_REPOSITORY ocornut/imgui
+    GIT_TAG v1.92.5-docking
+    GIT_SHALLOW YES
+    DOWNLOAD_ONLY YES
 )
 
 CPMAddPackage(
-        NAME ImPlot
-        GITHUB_REPOSITORY epezent/implot
-        GIT_TAG bd99f8d8b9a80c493782ab8cb3335af102f61304
-        GIT_SHALLOW NO
-        DOWNLOAD_ONLY YES
+    NAME ImPlot
+    GITHUB_REPOSITORY epezent/implot
+    GIT_TAG bd99f8d8b9a80c493782ab8cb3335af102f61304
+    GIT_SHALLOW NO
+    DOWNLOAD_ONLY YES
 )
 
 CPMAddPackage(
-        NAME ImGuizmo
-        GITHUB_REPOSITORY CedricGuillemet/ImGuizmo
-        GIT_TAG a15acd87a3f3241a29ea1363ceafc680dca3a96b
-        GIT_SHALLOW NO
-        DOWNLOAD_ONLY YES
+    NAME ImGuizmo
+    GITHUB_REPOSITORY CedricGuillemet/ImGuizmo
+    GIT_TAG a15acd87a3f3241a29ea1363ceafc680dca3a96b
+    GIT_SHALLOW NO
+    DOWNLOAD_ONLY YES
 )
 
-if (ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
-  add_library(imgui STATIC
+if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
+  add_library(
+      imgui
+      STATIC
           ${ImGui_SOURCE_DIR}/imgui.cpp
           ${ImGui_SOURCE_DIR}/imgui_demo.cpp
           ${ImGui_SOURCE_DIR}/imgui_draw.cpp
@@ -319,14 +341,28 @@ if (ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
           ${ImPlot_SOURCE_DIR}/implot_items.cpp
           ${ImGuizmo_SOURCE_DIR}/ImGuizmo.cpp
   )
-  target_include_directories(imgui PUBLIC
+
+  target_include_directories(
+      imgui
+      PUBLIC
           ${ImGui_SOURCE_DIR}
           ${ImGui_SOURCE_DIR}/backends
           ${ImPlot_SOURCE_DIR}
           ${ImGuizmo_SOURCE_DIR}
   )
-  target_link_libraries(imgui PUBLIC glfw volk volk::volk_headers freetype)
-  target_compile_definitions(imgui PUBLIC
+
+  target_link_libraries(
+      imgui
+      PUBLIC
+          glfw
+          volk
+          volk::volk_headers
+          freetype
+  )
+
+  target_compile_definitions(
+      imgui
+      PUBLIC
           GLFW_INCLUDE_NONE
           IMGUI_IMPL_VULKAN_USE_VOLK
           IMGUI_ENABLE_FREETYPE
@@ -334,11 +370,14 @@ if (ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
 
   find_package(X11 REQUIRED)
 
-  if (UNIX AND NOT APPLE)
-    target_link_libraries(imgui PUBLIC X11::X11)
-  endif ()
-endif ()
-
+  if(UNIX AND NOT APPLE)
+    target_link_libraries(
+        imgui
+        PUBLIC
+            X11::X11
+    )
+  endif()
+endif()
 
 mark_target_includes_system(meshoptimizer)
 mark_target_includes_system(efsw)
@@ -362,48 +401,48 @@ mark_target_includes_system(mikktspace::mikktspace)
 function(validate_slang_root root_path)
   if(NOT IS_DIRECTORY "${root_path}")
     message(
-            FATAL_ERROR
-            "Slang root is not a directory: ${root_path}"
-        )
+        FATAL_ERROR
+        "Slang root is not a directory: ${root_path}"
+    )
   endif()
 
   if(NOT EXISTS "${root_path}/include/slang.h")
     message(
-            FATAL_ERROR
-            "Slang installation does not contain include/slang.h: "
-            "${root_path}"
-        )
+        FATAL_ERROR
+        "Slang installation does not contain include/slang.h: "
+        "${root_path}"
+    )
   endif()
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     if(NOT EXISTS "${root_path}/bin/slang.dll")
       message(
-                FATAL_ERROR
-                "Windows Slang installation does not contain bin/slang.dll: "
-                "${root_path}"
-            )
+          FATAL_ERROR
+          "Windows Slang installation does not contain bin/slang.dll: "
+          "${root_path}"
+      )
     endif()
   elseif(APPLE)
     if(
-            NOT EXISTS "${root_path}/lib/libslang.dylib"
-            AND NOT EXISTS "${root_path}/bin/libslang.dylib"
-        )
+        NOT EXISTS "${root_path}/lib/libslang.dylib"
+        AND NOT EXISTS "${root_path}/bin/libslang.dylib"
+    )
       message(
-                FATAL_ERROR
-                "macOS Slang installation does not contain libslang.dylib: "
-                "${root_path}"
-            )
+          FATAL_ERROR
+          "macOS Slang installation does not contain libslang.dylib: "
+          "${root_path}"
+      )
     endif()
   else()
     if(
-            NOT EXISTS "${root_path}/lib/libslang.so"
-            AND NOT EXISTS "${root_path}/bin/libslang.so"
-        )
+        NOT EXISTS "${root_path}/lib/libslang.so"
+        AND NOT EXISTS "${root_path}/bin/libslang.so"
+    )
       message(
-                FATAL_ERROR
-                "Linux Slang installation does not contain libslang.so: "
-                "${root_path}"
-            )
+          FATAL_ERROR
+          "Linux Slang installation does not contain libslang.so: "
+          "${root_path}"
+      )
     endif()
   endif()
 endfunction()
@@ -412,95 +451,95 @@ set(slang_root "")
 
 if(SLANG_ROOT)
   cmake_path(
-        ABSOLUTE_PATH SLANG_ROOT
-        BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        NORMALIZE
-        OUTPUT_VARIABLE slang_root
-    )
+      ABSOLUTE_PATH SLANG_ROOT
+      BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      NORMALIZE
+      OUTPUT_VARIABLE slang_root
+  )
 
   message(
-        STATUS
-        "Using extracted local Slang installation: ${slang_root}"
-    )
+      STATUS
+      "Using extracted local Slang installation: ${slang_root}"
+  )
 
 elseif(SLANG_ARCHIVE)
   cmake_path(
-        ABSOLUTE_PATH SLANG_ARCHIVE
-        BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        NORMALIZE
-        OUTPUT_VARIABLE slang_archive
-    )
+      ABSOLUTE_PATH SLANG_ARCHIVE
+      BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      NORMALIZE
+      OUTPUT_VARIABLE slang_archive
+  )
 
   if(NOT EXISTS "${slang_archive}")
     message(
-            FATAL_ERROR
-            "SLANG_ARCHIVE does not exist: ${slang_archive}"
-        )
+        FATAL_ERROR
+        "SLANG_ARCHIVE does not exist: ${slang_archive}"
+    )
   endif()
 
   message(
-        STATUS
-        "Using local Slang archive: ${slang_archive}"
-    )
+      STATUS
+      "Using local Slang archive: ${slang_archive}"
+  )
 
   cpmaddpackage(
-        NAME slang_binary
-        URL "${slang_archive}"
-        DOWNLOAD_ONLY YES
-    )
+      NAME slang_binary
+      URL "${slang_archive}"
+      DOWNLOAD_ONLY YES
+  )
 
   set(slang_root "${slang_binary_SOURCE_DIR}")
 
 else()
   if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(
-            slang_archive_name
-            "slang-${SLANG_VERSION}-windows-x86_64.tar.gz"
-        )
+        slang_archive_name
+        "slang-${SLANG_VERSION}-windows-x86_64.tar.gz"
+    )
   elseif(APPLE)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
       set(
-                slang_archive_name
-                "slang-${SLANG_VERSION}-macos-aarch64.tar.gz"
-            )
+          slang_archive_name
+          "slang-${SLANG_VERSION}-macos-aarch64.tar.gz"
+      )
     else()
       set(
-                slang_archive_name
-                "slang-${SLANG_VERSION}-macos-x86_64.tar.gz"
-            )
+          slang_archive_name
+          "slang-${SLANG_VERSION}-macos-x86_64.tar.gz"
+      )
     endif()
   else()
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
       set(
-                slang_archive_name
-                "slang-${SLANG_VERSION}-linux-aarch64.tar.gz"
-            )
+          slang_archive_name
+          "slang-${SLANG_VERSION}-linux-aarch64.tar.gz"
+      )
     else()
       set(
-                slang_archive_name
-                "slang-${SLANG_VERSION}-linux-x86_64.tar.gz"
-            )
+          slang_archive_name
+          "slang-${SLANG_VERSION}-linux-x86_64.tar.gz"
+      )
     endif()
   endif()
 
   string(
-        CONCAT
-        slang_download_url
-        "https://github.com/shader-slang/slang/releases/download/"
-        "v${SLANG_VERSION}/"
-        "${slang_archive_name}"
-    )
+      CONCAT
+      slang_download_url
+      "https://github.com/shader-slang/slang/releases/download/"
+      "v${SLANG_VERSION}/"
+      "${slang_archive_name}"
+  )
 
   message(
-        STATUS
-        "Downloading Slang ${SLANG_VERSION}: ${slang_archive_name}"
-    )
+      STATUS
+      "Downloading Slang ${SLANG_VERSION}: ${slang_archive_name}"
+  )
 
   cpmaddpackage(
-        NAME slang_binary
-        URL "${slang_download_url}"
-        DOWNLOAD_ONLY YES
-    )
+      NAME slang_binary
+      URL "${slang_download_url}"
+      DOWNLOAD_ONLY YES
+  )
 
   set(slang_root "${slang_binary_SOURCE_DIR}")
 endif()
@@ -520,6 +559,7 @@ target_include_directories(
     INTERFACE
         "${slang_include_dir}"
 )
+
 mark_target_includes_system(Vulkan::Headers)
 mark_target_includes_system(volk::volk)
 mark_target_includes_system(glfw)
@@ -532,33 +572,66 @@ mark_target_includes_system(EnTT::EnTT)
 # slang_binary_headers already uses SYSTEM above.
 
 # ------------------------------------------------------------------------------
-# Application sources
+# Project sources
 # ------------------------------------------------------------------------------
 
 file(
-    GLOB_RECURSE mingw_vulkan_sources
+    GLOB_RECURSE mingw_vulkan_core_sources
     CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cxx"
 )
-list(FILTER mingw_vulkan_sources EXCLUDE REGEX "/platform/")
-list(FILTER mingw_vulkan_sources EXCLUDE REGEX "/renderdoc/")
+
+list(
+    FILTER mingw_vulkan_core_sources
+    EXCLUDE REGEX "/platform/"
+)
+
+list(
+    FILTER mingw_vulkan_core_sources
+    EXCLUDE REGEX "/renderdoc/"
+)
+
+set(
+    mingw_vulkan_main_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cxx"
+)
+
+if(NOT EXISTS "${mingw_vulkan_main_source}")
+  message(
+      FATAL_ERROR
+      "Expected application entry point at "
+      "${mingw_vulkan_main_source}"
+  )
+endif()
+
+list(
+    REMOVE_ITEM
+    mingw_vulkan_core_sources
+    "${mingw_vulkan_main_source}"
+)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   file(
-        GLOB_RECURSE platform_sources
-        CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows/*.cxx"
-    )
+      GLOB_RECURSE platform_sources
+      CONFIGURE_DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows/*.cxx"
+  )
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   file(
-        GLOB_RECURSE platform_sources
-        CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux/*.cxx"
-    )
+      GLOB_RECURSE platform_sources
+      CONFIGURE_DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/linux/*.cxx"
+  )
+else()
+  set(platform_sources "")
 endif()
 
-list(APPEND mingw_vulkan_sources ${platform_sources})
+list(
+    APPEND
+    mingw_vulkan_core_sources
+    ${platform_sources}
+)
 
 file(
     GLOB_RECURSE mingw_vulkan_headers
@@ -567,16 +640,28 @@ file(
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hxx"
 )
 
-add_executable(
-    mingw-vulkan
-    ${mingw_vulkan_sources}
-    ${mingw_vulkan_headers}
+# ------------------------------------------------------------------------------
+# Core library
+# ------------------------------------------------------------------------------
+
+add_library(
+    mingw-vulkan-core
+    STATIC
+        ${mingw_vulkan_core_sources}
+        ${mingw_vulkan_headers}
+)
+
+add_library(
+    mingw-vulkan::core
+    ALIAS
+    mingw-vulkan-core
 )
 
 target_include_directories(
-    mingw-vulkan
-    PRIVATE
+    mingw-vulkan-core
+    PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    PRIVATE
         "${stb_SOURCE_DIR}"
 )
 
@@ -584,15 +669,25 @@ target_include_directories(
 # than target_include_directories(), so its include path never reaches
 # downstream targets via target_link_libraries() -- add it explicitly.
 target_include_directories(
-    mingw-vulkan
+    mingw-vulkan-core
     SYSTEM
     PRIVATE
         "${bullet3_SOURCE_DIR}/src"
 )
 
+#
+# These are intentionally PUBLIC for the initial core-library refactor.
+#
+# The old executable target received this entire dependency environment
+# directly. Making it PUBLIC here preserves that behaviour for consumers of
+# mingw-vulkan-core, including mingw-vulkan itself and the test targets.
+#
+# Individual libraries can later be tightened to PRIVATE where no public
+# project header exposes them.
+#
 target_link_libraries(
-    mingw-vulkan
-    PRIVATE
+    mingw-vulkan-core
+    PUBLIC
         Vulkan::Headers
         volk::volk
         glfw
@@ -613,21 +708,14 @@ target_link_libraries(
 )
 
 target_precompile_headers(
-    mingw-vulkan
+    mingw-vulkan-core
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/pch.hxx"
 )
 
-include (${CMAKE_SOURCE_DIR}/cmake/renderdoc_config.cmake)
-configure_renderdoc(mingw-vulkan
-        REAL_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/renderdoc/renderdoc.cxx"
-        STUB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/renderdoc/stub.cxx"
-        INCLUDE_CACHE_VARIABLE RENDERDOC_INCLUDE_PATH
-)
-
 target_compile_definitions(
-    mingw-vulkan
-    PRIVATE
+    mingw-vulkan-core
+    PUBLIC
         VK_NO_PROTOTYPES
         GLFW_INCLUDE_NONE
         GLM_FORCE_RADIANS
@@ -636,69 +724,156 @@ target_compile_definitions(
         SLANG_ROOT_PATH="${slang_root}"
 )
 
+if(MINGW_VULKAN_ENABLE_VALIDATION)
+  target_compile_definitions(
+      mingw-vulkan-core
+      PUBLIC
+          MINGW_VULKAN_ENABLE_VALIDATION=1
+  )
+else()
+  target_compile_definitions(
+      mingw-vulkan-core
+      PUBLIC
+          MINGW_VULKAN_ENABLE_VALIDATION=0
+  )
+endif()
 
 # The error-context types (ErrorContext and the *Error aggregates' `.cause`/
 # `.context` fields) are deliberately optional trailing members with defaults
 # -- callers only ever fill in what's relevant to that failure. GCC's
 # -Wmissing-field-initializers fires on every designated-init that omits them
 # even though a default member initializer exists, which isn't a real bug.
-target_compile_options(mingw-vulkan PRIVATE -Wno-missing-field-initializers)
-target_compile_options(mingw-vulkan PRIVATE -Wno-old-style-cast)
-
-
-if(MINGW_VULKAN_ENABLE_VALIDATION)
-  target_compile_definitions(
-        mingw-vulkan
-        PRIVATE
-            MINGW_VULKAN_ENABLE_VALIDATION=1
-    )
-else()
-  target_compile_definitions(
-        mingw-vulkan
-        PRIVATE
-            MINGW_VULKAN_ENABLE_VALIDATION=0
-    )
-endif()
+target_compile_options(
+    mingw-vulkan-core
+    PRIVATE
+        -Wno-missing-field-initializers
+        -Wno-old-style-cast
+)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/compiler_options.cmake")
 
+configure_compiler_options(mingw-vulkan-core)
+
+# ------------------------------------------------------------------------------
+# RenderDoc
+#
+# RenderDoc implementation belongs to the core library, since the executable
+# itself now contains only main.cxx.
+# ------------------------------------------------------------------------------
+
+include(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/renderdoc_config.cmake"
+)
+
+configure_renderdoc(
+    mingw-vulkan-core
+    REAL_SOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/renderdoc/renderdoc.cxx"
+    STUB_SOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/renderdoc/stub.cxx"
+    INCLUDE_CACHE_VARIABLE
+        RENDERDOC_INCLUDE_PATH
+)
+
+# ------------------------------------------------------------------------------
+# Application
+# ------------------------------------------------------------------------------
+
+add_executable(
+    mingw-vulkan
+    "${mingw_vulkan_main_source}"
+)
+
+target_link_libraries(
+    mingw-vulkan
+    PRIVATE
+        mingw-vulkan::core
+)
+
+#
+# Keep the same project compiler options on main.cxx as well. The majority of
+# the source tree is compiled by mingw-vulkan-core, but the executable should
+# not silently use a different warning/exception/RTTI configuration.
+#
 configure_compiler_options(mingw-vulkan)
 
+# If main.cxx relies on the project PCH, retain the same behaviour it had when
+# all sources belonged to the executable target.
+target_precompile_headers(
+    mingw-vulkan
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/pch.hxx"
+)
+
+# ------------------------------------------------------------------------------
+# Platform configuration
+#
+# Keep final executable/link/runtime deployment configuration on the executable.
+#
+# Platform source files themselves are compiled into mingw-vulkan-core above.
+# ------------------------------------------------------------------------------
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/platform_windows.cmake")
-  configure_windows_target(mingw-vulkan "${slang_bin_dir}")
+  include(
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/platform_windows.cmake"
+  )
+
+  configure_windows_target(
+      mingw-vulkan
+      "${slang_bin_dir}"
+  )
+
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/platform_linux.cmake")
-  configure_linux_target(mingw-vulkan "${slang_lib_dir}" "${slang_bin_dir}")
+  include(
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/platform_linux.cmake"
+  )
+
+  configure_linux_target(
+      mingw-vulkan
+      "${slang_lib_dir}"
+      "${slang_bin_dir}"
+  )
+
 else()
   message(
-        WARNING
-        "No platform-specific target configuration for "
-        "${CMAKE_SYSTEM_NAME}; Slang runtime will not be deployed "
-        "automatically."
-    )
+      WARNING
+      "No platform-specific target configuration for "
+      "${CMAKE_SYSTEM_NAME}; Slang runtime will not be deployed "
+      "automatically."
+  )
 endif()
 
-set(vma_source "${CMAKE_CURRENT_SOURCE_DIR}/src/vma.cxx")
+# ------------------------------------------------------------------------------
+# VMA warning suppression
+# ------------------------------------------------------------------------------
+
+set(
+    vma_source
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vma.cxx"
+)
 
 if(EXISTS "${vma_source}")
   if(MSVC)
     set_source_files_properties(
-            "${vma_source}"
-            PROPERTIES
-                COMPILE_OPTIONS "/W0"
-        )
-  elseif(
-        CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
-        OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"
+        "${vma_source}"
+        PROPERTIES
+            COMPILE_OPTIONS "/W0"
     )
+  elseif(
+      CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+      OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"
+  )
     set_source_files_properties(
-            "${vma_source}"
-            PROPERTIES
-                COMPILE_OPTIONS "-w"
-        )
+        "${vma_source}"
+        PROPERTIES
+            COMPILE_OPTIONS "-w"
+    )
   endif()
 endif()
+
+# ------------------------------------------------------------------------------
+# Assets
+# ------------------------------------------------------------------------------
 
 set(
     project_asset_directories
@@ -708,16 +883,20 @@ set(
 foreach(asset_directory IN LISTS project_asset_directories)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${asset_directory}")
     add_custom_command(
-            TARGET mingw-vulkan
-            POST_BUILD
-            COMMAND
-                "${CMAKE_COMMAND}" -E copy_directory_if_different
-                "${CMAKE_CURRENT_SOURCE_DIR}/${asset_directory}"
-                "$<TARGET_FILE_DIR:mingw-vulkan>/${asset_directory}"
-            VERBATIM
-        )
+        TARGET mingw-vulkan
+        POST_BUILD
+        COMMAND
+            "${CMAKE_COMMAND}" -E copy_directory_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/${asset_directory}"
+            "$<TARGET_FILE_DIR:mingw-vulkan>/${asset_directory}"
+        VERBATIM
+    )
   endif()
 endforeach()
+
+# ------------------------------------------------------------------------------
+# Output directories
+# ------------------------------------------------------------------------------
 
 set_target_properties(
     mingw-vulkan
@@ -725,18 +904,69 @@ set_target_properties(
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
-message(STATUS "Slang root: ${slang_root}")
-message(STATUS "Slang include directory: ${slang_include_dir}")
-message(STATUS "Slang binary directory: ${slang_bin_dir}")
+set_target_properties(
+    mingw-vulkan-core
+    PROPERTIES
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+)
+
+# ------------------------------------------------------------------------------
+# Tests
+#
+# doctest_discover_tests executes the resulting test binary to enumerate
+# TEST_CASEs. For now, only enable automatic discovery for native builds.
+# ------------------------------------------------------------------------------
+
+if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
+  include(
+      "${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake"
+  )
+
+  add_subdirectory(test)
+elseif(BUILD_TESTING AND CMAKE_CROSSCOMPILING)
+  message(
+      STATUS
+      "Skipping native unit tests while cross-compiling"
+  )
+endif()
+
+# ------------------------------------------------------------------------------
+# Configuration summary
+# ------------------------------------------------------------------------------
+
+message(
+    STATUS
+    "Slang root: ${slang_root}"
+)
+
+message(
+    STATUS
+    "Slang include directory: ${slang_include_dir}"
+)
+
+message(
+    STATUS
+    "Slang binary directory: ${slang_bin_dir}"
+)
+
 message(
     STATUS
     "C++ exceptions enabled: ${MINGW_VULKAN_ENABLE_EXCEPTIONS}"
 )
 
 if(SLANG_ROOT)
-  message(STATUS "Slang source: extracted local installation")
+  message(
+      STATUS
+      "Slang source: extracted local installation"
+  )
 elseif(SLANG_ARCHIVE)
-  message(STATUS "Slang source: local archive")
+  message(
+      STATUS
+      "Slang source: local archive"
+  )
 else()
-  message(STATUS "Slang source: CPM download")
+  message(
+      STATUS
+      "Slang source: CPM download"
+  )
 endif()

@@ -99,6 +99,8 @@ struct PhysicsWorld::Impl {
 
     ArenaAllocator arena{512 * 1024};
 
+debug_draw::DebugRenderer *debug_renderer = nullptr;
+
     ThreadPoolTaskScheduler task_scheduler; // must outlive world; declared before it, constructed first
 
     btDefaultCollisionConfiguration *collision_configuration{nullptr};
@@ -222,11 +224,17 @@ auto PhysicsWorld::remove_body(entt::entity entity) -> void {
     impl_->bodies.erase(it);
 }
 
-auto PhysicsWorld::attach_debug_drawer(debug_draw::DebugRenderer &renderer) -> void {
-    impl_->world->setDebugDrawer(&renderer);
+auto PhysicsWorld::attach_debug_drawer(
+    debug_draw::DebugRenderer &renderer
+) -> void {
+    impl_->debug_renderer = &renderer;
+    impl_->world->setDebugDrawer(renderer.bullet_debug_draw());
 }
 
-auto PhysicsWorld::detach_debug_drawer() -> void { impl_->world->setDebugDrawer(nullptr); }
+auto PhysicsWorld::detach_debug_drawer() -> void {
+    impl_->world->setDebugDrawer(nullptr);
+    impl_->debug_renderer = nullptr;
+}
 
 auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
     constexpr float fixed_dt = 1.0F / 60.0F;
@@ -245,8 +253,8 @@ auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
         transform.rotation = to_glm(world_transform.getRotation());
     }
 
-    if (auto *debug_renderer = static_cast<debug_draw::DebugRenderer *>(impl_->world->getDebugDrawer())) {
-        debug_renderer->begin_frame();
+    if (impl_->debug_renderer != nullptr) {
+        impl_->debug_renderer->begin_frame();
         impl_->world->debugDrawWorld();
     }
 }

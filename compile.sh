@@ -128,6 +128,19 @@ shell() {
     bash
 }
 
+run_test() {
+  if [[ "${target}" != "linux-native" ]]; then
+    echo "--test requires TARGET=linux-native" >&2
+    exit 1
+  fi
+
+  run_container \
+    ctest \
+    --test-dir "${build_dir}" \
+    --output-on-failure \
+    $@
+}
+
 profile() {
   if [[ "${target}" != "linux-native" ]]; then
     echo "--profile requires TARGET=linux-native (perf/valgrind need to match the host)" >&2
@@ -178,6 +191,9 @@ main() {
     ;;
   --build)
     build
+    ;;
+  --test)
+    run_test
     ;;
   --rebuild)
     clean

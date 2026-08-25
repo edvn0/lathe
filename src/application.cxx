@@ -306,7 +306,7 @@ auto Application::play() -> void {
 }
 auto Application::stop() -> void {
     active_scene->detach_debug_renderer();
-    debug_renderer->clearLines();
+    debug_renderer->clear_lines();
     active_scene->on_scene_stop();
     is_playing = false;
     active_scene = editor_scene.get();
