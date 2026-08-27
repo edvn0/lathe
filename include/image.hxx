@@ -286,23 +286,55 @@ struct std::formatter<ImageErrorType> : std::formatter<std::string_view> {
     }
 };
 
+enum class ImageColourSpace : std::uint8_t {
+    linear,
+    srgb,
+};
+
 class DecodedImage {
-    struct StbiDeleter {
-        auto operator()(unsigned char *pixels) const noexcept -> void;
-    };
-
-    std::unique_ptr<unsigned char, StbiDeleter> pixels_;
-    int width_ = 0;
-    int height_ = 0;
-
-    DecodedImage(std::unique_ptr<unsigned char, StbiDeleter> pixels, int width, int height) noexcept;
-
 public:
-    static auto load_from_file(std::string_view path) -> std::optional<DecodedImage>;
+    [[nodiscard]]
+    static auto load_from_file(std::string_view path, ImageColourSpace colour_space = ImageColourSpace::linear)
+            -> std::optional<DecodedImage>;
 
-    [[nodiscard]] auto span() const noexcept -> std::span<std::byte const>;
-    [[nodiscard]] constexpr auto width() const noexcept -> std::uint32_t { return static_cast<std::uint32_t>(width_); }
-    [[nodiscard]] constexpr auto height() const noexcept -> std::uint32_t {
-        return static_cast<std::uint32_t>(height_);
+    [[nodiscard]]
+    static auto load_from_memory(std::span<std::byte const> encoded,
+                                 ImageColourSpace colour_space = ImageColourSpace::linear)
+            -> std::optional<DecodedImage>;
+
+    [[nodiscard]]
+    auto width() const noexcept -> std::uint32_t {
+        return width_;
     }
+
+    [[nodiscard]]
+    auto height() const noexcept -> std::uint32_t {
+        return height_;
+    }
+
+    [[nodiscard]]
+    auto format() const noexcept -> VkFormat {
+        return format_;
+    }
+
+    [[nodiscard]]
+    auto span() const noexcept -> std::span<std::byte const>;
+
+    [[nodiscard]]
+    auto release_pixels() && noexcept -> std::vector<std::byte> {
+        return std::move(pixels_);
+    }
+
+private:
+    DecodedImage(std::vector<std::byte> pixels, std::uint32_t width, std::uint32_t height, VkFormat format) noexcept;
+
+    [[nodiscard]]
+    static auto decode_stbi(std::string_view path, ImageColourSpace colour_space) -> std::optional<DecodedImage>;
+    [[nodiscard]]
+    static auto decode_exr(std::string_view path) -> std::optional<DecodedImage>;
+
+    std::vector<std::byte> pixels_;
+    std::uint32_t width_ = 0;
+    std::uint32_t height_ = 0;
+    VkFormat format_ = VK_FORMAT_UNDEFINED;
 };

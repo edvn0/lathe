@@ -15,8 +15,6 @@
 #include <mutex>
 #include <vector>
 
-#include <stb_image.h>
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -568,42 +566,6 @@ namespace {
         });
     }
 
-    struct DecodedImage {
-        std::uint32_t width = 0;
-        std::uint32_t height = 0;
-        std::vector<std::byte> pixels; // RGBA8
-    };
-
-    auto decode_image(std::span<std::byte const> encoded) -> std::expected<DecodedImage, ModelLoadError> {
-        int width = 0;
-        int height = 0;
-        int source_channels = 0;
-
-        auto *pixels = stbi_load_from_memory(reinterpret_cast<stbi_uc const *>(encoded.data()),
-                                             static_cast<int>(encoded.size()), &width, &height, &source_channels, 4);
-
-        if (pixels == nullptr) {
-            return std::unexpected(ModelLoadError{
-                    .type = ModelLoadErrorType::image_decode_failed,
-            });
-        }
-
-        DecodedImage result{
-                .width = static_cast<std::uint32_t>(width),
-                .height = static_cast<std::uint32_t>(height),
-                .pixels = {},
-        };
-
-        auto const byte_count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4;
-
-        result.pixels.assign(reinterpret_cast<std::byte const *>(pixels),
-                             reinterpret_cast<std::byte const *>(pixels) + byte_count);
-
-        stbi_image_free(pixels);
-
-        return result;
-    }
-
     // Picks one of the renderer's small fixed set of samplers to best match
     // a glTF sampler's filter/wrap settings. Just reads pre-created handles
     // out of SamplerStorage, so this is safe to call during the CPU pass.
@@ -693,10 +655,13 @@ namespace {
             return std::unexpected(encoded.error());
         }
 
-        auto decoded = decode_image(std::span<std::byte const>{*encoded});
+        auto decoded = DecodedImage::load_from_memory(std::span<std::byte const>{*encoded},
+                                                      is_srgb ? ImageColourSpace::srgb : ImageColourSpace::linear);
 
         if (!decoded) {
-            return std::unexpected(decoded.error());
+            return std::unexpected(ModelLoadError{
+                    .type = ModelLoadErrorType::image_decode_failed,
+            });
         }
 
         auto const &gltf_image = asset.images[image_index];
@@ -708,12 +673,16 @@ namespace {
 
         auto const cpu_index = cpu_images.size();
 
+        auto const decoded_width = decoded->width();
+        auto const decoded_height = decoded->height();
+        auto decoded_pixels = std::move(*decoded).release_pixels();
+
         cpu_images.push_back(ModelCpuImage{
-                .width = decoded->width,
-                .height = decoded->height,
+                .width = decoded_width,
+                .height = decoded_height,
                 .is_srgb = is_srgb,
                 .name = std::move(image_name),
-                .pixels = std::move(decoded->pixels),
+                .pixels = std::move(decoded_pixels),
         });
 
         image_cache.emplace(image_index, cpu_index);

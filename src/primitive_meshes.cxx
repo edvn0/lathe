@@ -1,11 +1,13 @@
 #include "primitive_meshes.hxx"
 
 #include <glm/geometric.hpp>
+#include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <random>
 
 namespace {
 
@@ -124,70 +126,260 @@ auto make_sphere_mesh(std::uint32_t rings, std::uint32_t segments) -> std::expec
 }
 
 auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError> {
-    constexpr auto blade_count = 3U;
-    constexpr auto half_width = 0.22F;
-    constexpr auto tip_half_width = 0.03F;
+    constexpr auto blade_count = 12U;
+    constexpr auto row_count = 4U;
+
+    // Roughly matches your current ~0.8 m spacing between clump instances.
+    // The outer blades reach ~0.30 m from the clump origin.
+    constexpr auto clump_radius = 0.30F;
+
+    constexpr auto min_height = 0.48F;
+    constexpr auto max_height = 0.90F;
+
+    // Full blade width is twice these values.
+    constexpr auto min_half_width = 0.012F;
+    constexpr auto max_half_width = 0.028F;
+
+    // Horizontal permanent curvature before wind deformation.
+    constexpr auto min_lean = 0.015F;
+    constexpr auto max_lean = 0.090F;
+
+    constexpr auto min_curve = 0.015F;
+    constexpr auto max_curve = 0.075F;
+
+    // Tiny non-zero tip avoids degenerate triangles and works nicely with
+    // tangent generation.
+    constexpr auto tip_width_factor = 0.035F;
+
+    constexpr auto pi = std::numbers::pi_v<float>;
+    constexpr auto two_pi = 2.0F * pi;
+
+    // Golden angle gives much better coverage than independently sampling
+    // every blade position from a uniform random distribution.
+    constexpr auto golden_angle = pi * (3.0F - 2.2360679774997896964F);
+
+    constexpr std::array<float, row_count> row_heights{
+            0.0F,
+            0.32F,
+            0.68F,
+            1.0F,
+    };
 
     std::vector<ModelVertex> vertices;
     std::vector<std::uint32_t> indices;
 
-    vertices.reserve(blade_count * 2ULL * 4ULL);
-    indices.reserve(blade_count * 2ULL * 6ULL);
+    // 4 rows * 2 vertices, duplicated for front/back.
+    constexpr auto vertices_per_side = row_count * 2U;
+    constexpr auto vertices_per_blade = vertices_per_side * 2U;
+
+    // Three rectangular sections = 6 triangles per side.
+    constexpr auto triangles_per_side = (row_count - 1U) * 2U;
+    constexpr auto triangles_per_blade = triangles_per_side * 2U;
+
+    vertices.reserve(static_cast<std::size_t>(blade_count) * vertices_per_blade);
+
+    indices.reserve(static_cast<std::size_t>(blade_count) * triangles_per_blade * 3U);
+
+    // Fixed seed: this function builds a reusable mesh, so the mesh should be
+    // deterministic. Instance rotation/scale/placement can provide the
+    // large-scale variation.
+    std::mt19937 random_engine{0x47524153U}; // "GRAS"
+
+    std::uniform_real_distribution<float> unit_distribution{0.0F, 1.0F};
+    std::uniform_real_distribution<float> signed_distribution{-1.0F, 1.0F};
+
+    auto random_range = [&](float min_value, float max_value) {
+        return std::lerp(min_value, max_value, unit_distribution(random_engine));
+    };
+
+    auto emit_blade_side =
+            [&](std::array<glm::vec3, row_count> const &centres, std::array<float, row_count> const &half_widths,
+                std::array<glm::vec3, row_count> const &normals, glm::vec3 const &across, bool front_face) {
+                auto const base_index = static_cast<std::uint32_t>(vertices.size());
+
+                for (std::uint32_t row = 0; row < row_count; ++row) {
+                    auto const t = row_heights[row];
+                    auto const normal = front_face ? normals[row] : -normals[row];
+
+                    // Keep UV.y semantically useful:
+                    //
+                    //   root -> 0
+                    //   tip  -> 1
+                    //
+                    // This can later directly drive wind, colour gradients,
+                    // translucency, etc.
+                    vertices.push_back(ModelVertex{
+                            .position = centres[row] - across * half_widths[row],
+                            .normal = normal,
+                            .tangent = glm::vec4{across, 1.0F},
+                            .texcoord = glm::vec2{0.0F, t},
+                    });
+
+                    vertices.push_back(ModelVertex{
+                            .position = centres[row] + across * half_widths[row],
+                            .normal = normal,
+                            .tangent = glm::vec4{across, 1.0F},
+                            .texcoord = glm::vec2{1.0F, t},
+                    });
+                }
+
+                for (std::uint32_t row = 0; row + 1U < row_count; ++row) {
+                    auto const lower_left = base_index + row * 2U + 0U;
+                    auto const lower_right = base_index + row * 2U + 1U;
+                    auto const upper_left = base_index + (row + 1U) * 2U + 0U;
+                    auto const upper_right = base_index + (row + 1U) * 2U + 1U;
+
+                    if (front_face) {
+                        indices.push_back(lower_left);
+                        indices.push_back(lower_right);
+                        indices.push_back(upper_right);
+
+                        indices.push_back(lower_left);
+                        indices.push_back(upper_right);
+                        indices.push_back(upper_left);
+                    } else {
+                        indices.push_back(upper_right);
+                        indices.push_back(lower_right);
+                        indices.push_back(lower_left);
+
+                        indices.push_back(upper_left);
+                        indices.push_back(upper_right);
+                        indices.push_back(lower_left);
+                    }
+                }
+            };
 
     for (std::uint32_t blade = 0; blade < blade_count; ++blade) {
-        auto const angle = static_cast<float>(blade) * std::numbers::pi_v<float> / static_cast<float>(blade_count);
+        //
+        // Position blades using a sunflower/golden-angle distribution.
+        //
+        // Compared with:
+        //
+        //     x = random(...)
+        //     z = random(...)
+        //
+        // this avoids accidentally creating empty patches or dense clusters
+        // inside this very small reusable mesh.
+        //
+        auto const radial_fraction = (static_cast<float>(blade) + 0.35F) / static_cast<float>(blade_count);
 
-        auto const across = glm::vec3{std::cos(angle), 0.0F, std::sin(angle)};
-        auto const face_normal = glm::vec3{-std::sin(angle), 0.0F, std::cos(angle)};
+        auto const radius = clump_radius * std::sqrt(radial_fraction);
 
-        std::array<glm::vec3, 4> const corners{{
-                across * -half_width,
-                across * half_width,
-                across * tip_half_width + glm::vec3{0.0F, 1.0F, 0.0F},
-                across * -tip_half_width + glm::vec3{0.0F, 1.0F, 0.0F},
-        }};
+        auto const position_angle =
+                static_cast<float>(blade) * golden_angle + signed_distribution(random_engine) * 0.20F;
 
-        // Emit the quad with both winding orders (front normal, then back
-        // normal with reversed index order) so the blade stays lit and
-        // visible under back-face culling regardless of which side the
-        // camera ends up on.
-        for (auto const winding_forward: {true, false}) {
-            auto const normal = winding_forward ? face_normal : -face_normal;
-            auto const tangent = glm::vec4{across, 1.0F};
-            auto const base_index = static_cast<std::uint32_t>(vertices.size());
+        auto const root_position = glm::vec3{
+                std::cos(position_angle) * radius,
+                0.0F,
+                std::sin(position_angle) * radius,
+        };
 
-            for (std::size_t corner = 0; corner < corners.size(); ++corner) {
-                vertices.push_back(ModelVertex{
-                        .position = corners[corner],
-                        .normal = normal,
-                        .tangent = tangent,
-                        .texcoord = glm::vec2{corner == 0 || corner == 3 ? 0.0F : 1.0F, corner < 2 ? 1.0F : 0.0F},
-                });
-            }
+        //
+        // Don't correlate blade facing with its radial position. If we did,
+        // the clump would acquire an obvious flower/star appearance.
+        //
+        auto const yaw = unit_distribution(random_engine) * two_pi;
 
-            if (winding_forward) {
-                indices.push_back(base_index + 0);
-                indices.push_back(base_index + 1);
-                indices.push_back(base_index + 2);
-                indices.push_back(base_index + 0);
-                indices.push_back(base_index + 2);
-                indices.push_back(base_index + 3);
-            } else {
-                indices.push_back(base_index + 2);
-                indices.push_back(base_index + 1);
-                indices.push_back(base_index + 0);
-                indices.push_back(base_index + 3);
-                indices.push_back(base_index + 2);
-                indices.push_back(base_index + 0);
-            }
+        auto const across = glm::normalize(glm::vec3{
+                std::cos(yaw),
+                0.0F,
+                std::sin(yaw),
+        });
+
+        auto const face_normal = glm::normalize(glm::vec3{
+                -across.z,
+                0.0F,
+                across.x,
+        });
+
+        //
+        // Slightly shorter blades near the edge help give the clump a
+        // natural bunch shape rather than a cylindrical silhouette.
+        //
+        auto const edge_factor = radius / clump_radius;
+
+        auto height = random_range(min_height, max_height);
+
+        height *= std::lerp(1.0F, 0.82F, edge_factor * edge_factor);
+
+        auto const half_width = random_range(min_half_width, max_half_width);
+
+        //
+        // Lean mostly normal to the ribbon plane, with some sideways
+        // variation. This creates curved silhouettes without making every
+        // blade bend in exactly the same direction.
+        //
+        auto const bend_angle = random_range(-0.65F, 0.65F);
+
+        auto bend_direction = face_normal * std::cos(bend_angle) + across * std::sin(bend_angle);
+
+        if (signed_distribution(random_engine) < 0.0F) {
+            bend_direction = -bend_direction;
         }
+
+        bend_direction = glm::normalize(bend_direction);
+
+        auto const lean_amount = random_range(min_lean, max_lean);
+
+        auto const curve_amount = random_range(min_curve, max_curve);
+
+        std::array<glm::vec3, row_count> centres{};
+        std::array<float, row_count> half_widths{};
+        std::array<glm::vec3, row_count> normals{};
+
+        for (std::uint32_t row = 0; row < row_count; ++row) {
+            auto const t = row_heights[row];
+
+            //
+            // Centerline:
+            //
+            // linear term      -> general lean
+            // quadratic term   -> visible curvature towards tip
+            //
+            auto const horizontal_offset = bend_direction * (lean_amount * t + curve_amount * t * t);
+
+            centres[row] = root_position + glm::vec3{0.0F, height * t, 0.0F} + horizontal_offset;
+
+            //
+            // Taper non-linearly. Keeping some width through the lower
+            // two-thirds reads better than linearly shrinking the entire
+            // blade.
+            //
+            auto const taper = std::pow(std::max(0.0F, 1.0F - t), 0.72F);
+
+            half_widths[row] = half_width * std::lerp(tip_width_factor, 1.0F, taper);
+
+            //
+            // Derivative of the blade centerline:
+            //
+            // center(t) =
+            //     y * t +
+            //     dir * (lean*t + curve*t^2)
+            //
+            auto const centerline_tangent = glm::normalize(glm::vec3{0.0F, height, 0.0F} +
+                                                           bend_direction * (lean_amount + 2.0F * curve_amount * t));
+
+            //
+            // across x vertical_tangent gives our front-facing geometric
+            // normal. Because width changes only along `across`, taper does
+            // not alter this surface normal.
+            //
+            normals[row] = glm::normalize(glm::cross(across, centerline_tangent));
+        }
+
+        emit_blade_side(centres, half_widths, normals, across, true);
+
+        emit_blade_side(centres, half_widths, normals, across, false);
     }
 
     if (auto tangents = generate_tangents(vertices, indices); !tangents) {
         return std::unexpected(tangents.error());
     }
 
-    return PrimitiveMeshData{.vertices = std::move(vertices), .indices = std::move(indices)};
+    return PrimitiveMeshData{
+            .vertices = std::move(vertices),
+            .indices = std::move(indices),
+    };
 }
 
 auto make_capsule_mesh(std::uint32_t segments, std::uint32_t rings)

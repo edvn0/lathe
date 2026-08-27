@@ -698,11 +698,102 @@ auto Application::recreate_entities() -> void {
     auto &images = renderer->image_storage();
     auto &samplers = renderer->sampler_storage();
 
+
+    ImageHandle dirt_albedo_index;
+    ImageHandle dirt_normal_index;
+    ImageHandle dirt_roughness_index;
+    if (auto dirt_normal = DecodedImage::load_from_file("assets/textures/dirt/dirt_nor_gl_1k_zip.exr"); dirt_normal) {
+        auto dirt_normal_texture = images.create_image(
+                ImageCreateInfo{
+                        .extent =
+                                VkExtent3D{
+                                        .width = dirt_normal->width(),
+                                        .height = dirt_normal->height(),
+                                        .depth = 1,
+                                },
+                        .format = dirt_normal->format(),
+                        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .image_type = VK_IMAGE_TYPE_2D,
+                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                        .samples = VK_SAMPLE_COUNT_1_BIT,
+                        .tiling = VK_IMAGE_TILING_OPTIMAL,
+                        .mip_levels = static_cast<std::uint32_t>(
+                                std::bit_width(std::max(dirt_normal->width(), dirt_normal->height()))),
+                        .array_layers = 1,
+                        .debug_name = "dirt.normal",
+                },
+                dirt_normal->span());
+        dirt_normal_index = *dirt_normal_texture;
+    }
+
+
+    if (auto dirt_albedo =
+                DecodedImage::load_from_file("assets/textures/dirt/dirt_diff_1k.jpg", ImageColourSpace::srgb);
+        dirt_albedo) {
+        auto dirt_albedo_texture = images.create_image(
+                ImageCreateInfo{
+                        .extent =
+                                VkExtent3D{
+                                        .width = dirt_albedo->width(),
+                                        .height = dirt_albedo->height(),
+                                        .depth = 1,
+                                },
+                        .format = dirt_albedo->format(),
+                        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .image_type = VK_IMAGE_TYPE_2D,
+                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                        .samples = VK_SAMPLE_COUNT_1_BIT,
+                        .tiling = VK_IMAGE_TILING_OPTIMAL,
+                        .mip_levels = static_cast<std::uint32_t>(
+                                std::bit_width(std::max(dirt_albedo->width(), dirt_albedo->height()))),
+                        .array_layers = 1,
+                        .debug_name = "dirt.albedo",
+                },
+                dirt_albedo->span());
+
+        dirt_albedo_index = *dirt_albedo_texture;
+    }
+
+    if (auto dirt_roughness = DecodedImage::load_from_file("assets/textures/dirt/dirt_rough_1k.exr"); dirt_roughness) {
+        auto dirt_roughness_texture = images.create_image(
+                ImageCreateInfo{
+                        .extent =
+                                VkExtent3D{
+                                        .width = dirt_roughness->width(),
+                                        .height = dirt_roughness->height(),
+                                        .depth = 1,
+                                },
+                        .format = dirt_roughness->format(),
+                        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .image_type = VK_IMAGE_TYPE_2D,
+                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                        .samples = VK_SAMPLE_COUNT_1_BIT,
+                        .tiling = VK_IMAGE_TILING_OPTIMAL,
+                        .mip_levels = static_cast<std::uint32_t>(
+                                std::bit_width(std::max(dirt_roughness->width(), dirt_roughness->height()))),
+                        .array_layers = 1,
+                        .debug_name = "dirt.roughness",
+                },
+                dirt_roughness->span());
+
+        dirt_roughness_index = *dirt_roughness_texture;
+    }
+
+
     auto const floor_material = renderer->create_material(MaterialCreateInfo{
-            .base_colour_factor = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F},
-            .base_colour_texture = images.white(),
-            .normal_texture = images.flat_normal(),
-            .metallic_roughness_texture = images.metallic_roughness(),
+            .base_colour_factor = glm::vec4{1.0F, 1.0F, 1.0F, 1.0F},
+            .base_colour_texture = dirt_albedo_index,
+            .normal_texture = dirt_normal_index,
+            .metallic_roughness_texture = dirt_roughness_index,
             .occlusion_texture = images.occlusion(),
             .emissive_texture = images.emissive(),
             .sampler = samplers.linear_repeat(),
@@ -776,8 +867,8 @@ auto Application::recreate_entities() -> void {
 
         std::uniform_real_distribution<float> jitter(-grass_spacing * 0.4F, grass_spacing * 0.4F);
         std::uniform_real_distribution<float> yaw(0.0F, 6.2831853F);
-        std::uniform_real_distribution<float> height_scale(0.7F, 1.3F);
-        std::uniform_real_distribution<float> width_scale(0.8F, 1.2F);
+        std::uniform_real_distribution<float> scale{0.85F, 1.15F};
+
 
         for (auto cell_x = 0; cell_x < grass_cells; ++cell_x) {
             for (auto cell_z = 0; cell_z < grass_cells; ++cell_z) {
@@ -787,10 +878,13 @@ auto Application::recreate_entities() -> void {
                         (static_cast<float>(cell_z) + 0.5F) * grass_spacing - grass_field_size * 0.5F + jitter(eng);
 
                 auto const grass_entity = GeneratedEntity{editor_scene.get(), "grass_{}_{}", cell_x, cell_z};
+                auto const grass_scale = scale(eng);
+
                 grass_entity.emplace<Components::Transform>(Components::Transform{
                         .position = glm::vec3{x, editor_scene->physics_settings.ground_y, z},
                         .rotation = glm::angleAxis(yaw(eng), glm::vec3{0.0F, 1.0F, 0.0F}),
-                        .scale = glm::vec3{width_scale(eng), height_scale(eng), width_scale(eng)},
+                        .scale = glm::vec3{grass_scale},
+
                 });
                 grass_entity.emplace<Components::Model>(Components::Model{.model = engine_models.grass_clump});
                 grass_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{grass_material});

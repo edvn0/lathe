@@ -1618,9 +1618,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.frustum_planes_buffer = std::move(*frustum_planes_buffer);
 
-        // BufferMemory::upload for the same reason as frustum_planes_buffer
-        // above -- rebuilt and host-written every frame in prepare_frame,
-        // never written by the GPU.
         auto lights_buffer = Buffer::create(context_, BufferCreateInfo{
                                                               .size = sizeof(GpuLight) * maximum_light_count,
                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |

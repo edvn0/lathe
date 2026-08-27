@@ -8,6 +8,8 @@
 #include <type_traits>
 #include <utility>
 
+#include <exr.h>
+#include <glm/gtc/packing.hpp>
 #include <stb_image.h>
 
 #include "buffer.hxx"
@@ -527,30 +529,410 @@ auto Image::destroy() noexcept -> void {
     context_ = nullptr;
 }
 
-auto DecodedImage::StbiDeleter::operator()(unsigned char *pixels) const noexcept -> void { stbi_image_free(pixels); }
+namespace {
 
-DecodedImage::DecodedImage(std::unique_ptr<unsigned char, StbiDeleter> pixels, int width, int height) noexcept :
-    pixels_(std::move(pixels)), width_(width), height_(height) {}
+    [[nodiscard]]
+    auto lowercase_extension(std::string_view path) -> std::string {
+        auto extension = std::filesystem::path{std::string{path}}.extension().string();
 
-auto DecodedImage::load_from_file(std::string_view path) -> std::optional<DecodedImage> {
+        std::ranges::transform(extension, extension.begin(),
+                               [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+
+        return extension;
+    }
+
+    [[nodiscard]]
+    auto exr_channel_leaf_name(char const *name) noexcept -> std::string_view {
+        auto const full_name = std::string_view{name};
+
+        auto const separator = full_name.find_last_of('.');
+
+        if (separator == std::string_view::npos) {
+            return full_name;
+        }
+
+        return full_name.substr(separator + 1);
+    }
+
+    [[nodiscard]]
+    auto exr_channel_index(exr_header const &header, std::string_view wanted_name) noexcept
+            -> std::optional<std::size_t> {
+        for (std::int32_t index = 0; index < header.num_channels; ++index) {
+            auto const channel_name = exr_channel_leaf_name(header.channels[index].name);
+
+            if (channel_name == wanted_name) {
+                return static_cast<std::size_t>(index);
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    [[nodiscard]]
+    auto exr_channel_value(exr_part const &part, std::size_t channel_index, std::size_t pixel_index) noexcept
+            -> std::optional<float> {
+        if (channel_index >= static_cast<std::size_t>(part.header.num_channels)) {
+            return std::nullopt;
+        }
+
+        auto const &channel = part.header.channels[channel_index];
+
+        if (channel.x_sampling != 1 || channel.y_sampling != 1) {
+            return std::nullopt;
+        }
+
+        auto const *channel_data = part.images[channel_index];
+
+        if (channel_data == nullptr) {
+            return std::nullopt;
+        }
+
+        switch (channel.pixel_type) {
+            case EXR_PIXEL_HALF: {
+                auto const *values = static_cast<std::uint16_t const *>(channel_data);
+
+                return glm::unpackHalf1x16(values[pixel_index]);
+            }
+
+            case EXR_PIXEL_FLOAT: {
+                auto const *values = static_cast<float const *>(channel_data);
+
+                return values[pixel_index];
+            }
+
+            case EXR_PIXEL_UINT: {
+                // UINT in OpenEXR is an actual integer channel, not a
+                // normalized colour component. We don't silently reinterpret
+                // it as UNORM.
+                return std::nullopt;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+
+} // namespace
+
+[[nodiscard]]
+auto DecodedImage::decode_exr(std::string_view path) -> std::optional<DecodedImage> {
+    auto const path_string = std::string{path};
+
+    exr_image image{};
+
+    auto const result = exr_load_from_file(path_string.c_str(), nullptr, &image);
+
+    if (result != EXR_SUCCESS) {
+        error("Could not decode EXR '{}': {}", path, exr_result_string(result));
+
+        return std::nullopt;
+    }
+
+    struct ImageCleanup {
+        exr_image *image = nullptr;
+
+        ~ImageCleanup() {
+            if (image != nullptr) {
+                exr_image_free(image);
+            }
+        }
+    };
+
+    auto const cleanup = ImageCleanup{&image};
+
+    if (image.num_parts != 1 || image.parts == nullptr) {
+        error("EXR '{}' has {} parts; texture loading currently requires exactly one", path, image.num_parts);
+
+        return std::nullopt;
+    }
+
+    auto const &part = image.parts[0];
+
+    if (part.is_deep != 0) {
+        error("EXR '{}' is a deep image, which is not supported as a 2D texture", path);
+
+        return std::nullopt;
+    }
+
+    if (part.images == nullptr || part.width <= 0 || part.height <= 0) {
+        error("EXR '{}' contains no usable pixel data", path);
+        return std::nullopt;
+    }
+
+    auto const width = static_cast<std::uint32_t>(part.width);
+    auto const height = static_cast<std::uint32_t>(part.height);
+    auto const width_size = static_cast<std::size_t>(width);
+    auto const height_size = static_cast<std::size_t>(height);
+
+    if (height_size != 0 && width_size > std::numeric_limits<std::size_t>::max() / height_size) {
+        error("EXR '{}' dimensions overflow size_t", path);
+        return std::nullopt;
+    }
+
+    auto const pixel_count = width_size * height_size;
+    auto const &header = part.header;
+    auto const red_channel = exr_channel_index(header, "R");
+    auto const green_channel = exr_channel_index(header, "G");
+    auto const blue_channel = exr_channel_index(header, "B");
+    auto const alpha_channel = exr_channel_index(header, "A");
+    auto const luminance_channel = exr_channel_index(header, "Y");
+
+    std::optional<std::size_t> scalar_channel;
+    if (luminance_channel.has_value()) {
+        scalar_channel = luminance_channel;
+    } else if (header.num_channels == 1) {
+        scalar_channel = 0;
+    }
+
+    auto const has_rgb = red_channel.has_value() || green_channel.has_value() || blue_channel.has_value();
+
+    if (!has_rgb && !scalar_channel.has_value()) {
+        error("EXR '{}' does not contain RGB, Y, or a single scalar channel", path);
+
+        return std::nullopt;
+    }
+
+    std::vector<std::uint16_t> half_pixels;
+    half_pixels.resize(pixel_count * 4);
+
+    auto sample = [&](std::optional<std::size_t> channel, std::size_t pixel, float fallback) -> std::optional<float> {
+        if (!channel.has_value()) {
+            return fallback;
+        }
+
+        return exr_channel_value(part, *channel, pixel);
+    };
+
+    for (std::size_t pixel = 0; pixel < pixel_count; ++pixel) {
+        float scalar = 0.0F;
+
+        if (scalar_channel.has_value()) {
+            auto const value = exr_channel_value(part, *scalar_channel, pixel);
+
+            if (!value.has_value()) {
+                error("EXR '{}' contains an unsupported scalar channel format", path);
+
+                return std::nullopt;
+            }
+
+            scalar = *value;
+        }
+
+        auto red = sample(red_channel, pixel, scalar);
+
+        auto green = sample(green_channel, pixel, scalar);
+
+        auto blue = sample(blue_channel, pixel, scalar);
+
+        auto alpha = sample(alpha_channel, pixel, 1.0F);
+
+        if (!red || !green || !blue || !alpha) {
+            error("EXR '{}' contains an unsupported channel format", path);
+
+            return std::nullopt;
+        }
+
+        auto const destination = pixel * 4;
+
+        half_pixels[destination + 0] = glm::packHalf1x16(*red);
+
+        half_pixels[destination + 1] = glm::packHalf1x16(*green);
+
+        half_pixels[destination + 2] = glm::packHalf1x16(*blue);
+
+        half_pixels[destination + 3] = glm::packHalf1x16(*alpha);
+    }
+
+    auto const half_bytes = std::as_bytes(std::span<std::uint16_t const>{half_pixels});
+
+    std::vector<std::byte> pixels{
+            half_bytes.begin(),
+            half_bytes.end(),
+    };
+
+    debug("Decoded EXR '{}' as {}x{} RGBA16F, {} source channels", path, width, height, header.num_channels);
+
+    return DecodedImage{
+            std::move(pixels),
+            width,
+            height,
+            VK_FORMAT_R16G16B16A16_SFLOAT,
+    };
+}
+
+[[nodiscard]]
+auto DecodedImage::decode_stbi(std::string_view path, ImageColourSpace colour_space) -> std::optional<DecodedImage> {
+    auto const path_string = std::string{path};
+
     int width = 0;
     int height = 0;
     int source_channels = 0;
 
-    // Force 4 channels (STBI_rgb_alpha) regardless of the source PNG's
-    // actual channel count -- create_image below is hardcoded to
-    // VK_FORMAT_R8G8B8A8_UNORM, so the decoded buffer must always be
-    // RGBA8 even if the file is e.g. greyscale or RGB.
-    auto *decoded = stbi_load(std::string{path}.c_str(), &width, &height, &source_channels, STBI_rgb_alpha);
+    auto *decoded = stbi_load(path_string.c_str(), &width, &height, &source_channels, STBI_rgb_alpha);
 
     if (decoded == nullptr) {
         error("Could not decode image '{}': {}", path, stbi_failure_reason());
+
         return std::nullopt;
     }
 
-    return DecodedImage{std::unique_ptr<unsigned char, StbiDeleter>{decoded}, width, height};
+    struct StbiCleanup {
+        unsigned char *pixels = nullptr;
+
+        ~StbiCleanup() {
+            if (pixels != nullptr) {
+                stbi_image_free(pixels);
+            }
+        }
+    };
+
+    auto const cleanup = StbiCleanup{decoded};
+
+    if (width <= 0 || height <= 0) {
+        error("Decoded image '{}' has invalid dimensions {}x{}", path, width, height);
+
+        return std::nullopt;
+    }
+
+    auto const width_size = static_cast<std::size_t>(width);
+
+    auto const height_size = static_cast<std::size_t>(height);
+
+    if (height_size != 0 && width_size > std::numeric_limits<std::size_t>::max() / height_size) {
+        error("Decoded image '{}' dimensions overflow size_t", path);
+
+        return std::nullopt;
+    }
+
+    auto const pixel_count = width_size * height_size;
+
+    if (pixel_count > std::numeric_limits<std::size_t>::max() / 4) {
+        error("Decoded image '{}' byte count overflows size_t", path);
+
+        return std::nullopt;
+    }
+
+    auto const byte_count = pixel_count * 4;
+
+    auto const *begin = reinterpret_cast<std::byte const *>(decoded);
+
+    std::vector<std::byte> pixels{
+            begin,
+            begin + byte_count,
+    };
+
+    auto const format = colour_space == ImageColourSpace::srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+
+    return DecodedImage{
+            std::move(pixels),
+            static_cast<std::uint32_t>(width),
+            static_cast<std::uint32_t>(height),
+            format,
+    };
 }
 
-[[nodiscard]] auto DecodedImage::span() const noexcept -> std::span<std::byte const> {
-    return std::as_bytes(std::span{pixels_.get(), static_cast<std::size_t>(width_) * height_ * 4});
+DecodedImage::DecodedImage(std::vector<std::byte> pixels, std::uint32_t width, std::uint32_t height,
+                           VkFormat format) noexcept :
+    pixels_(std::move(pixels)), width_(width), height_(height), format_(format) {}
+
+auto DecodedImage::load_from_file(std::string_view path, ImageColourSpace colour_space) -> std::optional<DecodedImage> {
+    auto const extension = lowercase_extension(path);
+
+    if (extension == ".exr") {
+        //
+        // OpenEXR data is linear. Do not apply an sRGB Vulkan format to it.
+        //
+        if (colour_space == ImageColourSpace::srgb) {
+            warn("EXR '{}' requested as sRGB; EXR texture data is loaded as linear", path);
+        }
+
+        return decode_exr(path);
+    }
+
+    return decode_stbi(path, colour_space);
+}
+
+auto DecodedImage::span() const noexcept -> std::span<std::byte const> { return pixels_; }
+
+auto DecodedImage::load_from_memory(std::span<std::byte const> encoded, ImageColourSpace colour_space)
+        -> std::optional<DecodedImage> {
+    if (encoded.empty()) {
+        error("Could not decode image from empty memory buffer");
+        return std::nullopt;
+    }
+
+    if (encoded.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        error("Could not decode image from memory: {} byte buffer exceeds stb_image limit", encoded.size());
+
+        return std::nullopt;
+    }
+
+    int width = 0;
+    int height = 0;
+    int source_channels = 0;
+
+    auto *decoded =
+            stbi_load_from_memory(reinterpret_cast<stbi_uc const *>(encoded.data()), static_cast<int>(encoded.size()),
+                                  &width, &height, &source_channels, STBI_rgb_alpha);
+
+    if (decoded == nullptr) {
+        error("Could not decode image from memory: {}", stbi_failure_reason());
+
+        return std::nullopt;
+    }
+
+    struct StbiCleanup {
+        unsigned char *pixels = nullptr;
+
+        ~StbiCleanup() {
+            if (pixels != nullptr) {
+                stbi_image_free(pixels);
+            }
+        }
+    };
+
+    auto const cleanup = StbiCleanup{
+            .pixels = decoded,
+    };
+
+    if (width <= 0 || height <= 0) {
+        error("Decoded image has invalid dimensions {}x{}", width, height);
+
+        return std::nullopt;
+    }
+
+    auto const width_size = static_cast<std::size_t>(width);
+
+    auto const height_size = static_cast<std::size_t>(height);
+
+    if (height_size != 0 && width_size > std::numeric_limits<std::size_t>::max() / height_size) {
+        error("Decoded image dimensions overflow size_t: {}x{}", width, height);
+
+        return std::nullopt;
+    }
+
+    auto const pixel_count = width_size * height_size;
+
+    if (pixel_count > std::numeric_limits<std::size_t>::max() / 4U) {
+        error("Decoded image byte count overflows size_t");
+        return std::nullopt;
+    }
+
+    auto const byte_count = pixel_count * 4U;
+
+    auto const *begin = reinterpret_cast<std::byte const *>(decoded);
+
+    std::vector<std::byte> pixels{
+            begin,
+            begin + byte_count,
+    };
+
+    auto const format = colour_space == ImageColourSpace::srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+
+    return DecodedImage{
+            std::move(pixels),
+            static_cast<std::uint32_t>(width),
+            static_cast<std::uint32_t>(height),
+            format,
+    };
 }

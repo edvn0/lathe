@@ -325,6 +325,47 @@ CPMAddPackage(
     DOWNLOAD_ONLY YES
 )
 
+CPMAddPackage(
+    NAME tinyexr
+    GITHUB_REPOSITORY syoyo/tinyexr
+    GIT_TAG v3.2.0
+    DOWNLOAD_ONLY YES
+)
+
+file(
+    GLOB TINYEXR_SOURCES
+    CONFIGURE_DEPENDS
+    "${tinyexr_SOURCE_DIR}/src/*.c"
+)
+
+add_library(
+    tinyexr
+    STATIC
+    ${TINYEXR_SOURCES}
+    "${tinyexr_SOURCE_DIR}/deps/zstd/tinyexr_zstd.c"
+)
+
+target_include_directories(
+    tinyexr
+    PUBLIC
+        "${tinyexr_SOURCE_DIR}/include"
+    PRIVATE
+        "${tinyexr_SOURCE_DIR}/src"
+        "${tinyexr_SOURCE_DIR}/deps/zstd"
+)
+
+set_target_properties(
+    tinyexr
+    PROPERTIES
+        C_STANDARD 11
+        C_STANDARD_REQUIRED YES
+        C_EXTENSIONS NO
+)
+
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(tinyexr PRIVATE -w)
+endif()
+
 if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
   add_library(
       imgui
@@ -704,6 +745,7 @@ target_link_libraries(
         meshoptimizer
         efsw
         imgui
+        tinyexr
         BS_thread_pool
 )
 
