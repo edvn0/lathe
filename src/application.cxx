@@ -360,6 +360,7 @@ auto Application::on_startup() -> void {
         this->recreate_entities();
     });
 }
+
 auto Application::on_event(KeyPressedEvent ev) -> bool {
     if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL) {
         renderer->queue_render_thread_event([this] { this->recreate_entities(); });

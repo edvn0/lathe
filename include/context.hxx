@@ -64,4 +64,6 @@ struct VulkanContext {
     std::array<VkCommandBuffer, 4> one_time_command_buffers;
     std::uint32_t one_time_buffer_index{0};
     auto one_time_submit(std::function<void(VkCommandBuffer)> &&) -> void;
+
+    auto destroy() -> void;
 };

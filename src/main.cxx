@@ -37,6 +37,7 @@
 #include "entity.hxx"
 #include "error_describe.hxx"
 #include "glm/gtc/type_ptr.hpp"
+#include "imgui.h"
 #include "imgui_renderer.hxx"
 #include "implot.h"
 #include "logger.hxx"
@@ -1222,13 +1223,18 @@ namespace {
         context->framebuffer_dirty.store(true, std::memory_order_relaxed);
     }
 
-    auto event_callback(GLFWwindow *window, int key, int, int action, int mods) -> void {
+    auto key_callback(GLFWwindow *window, int key, int, int action, int mods) -> void {
         auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
-        if (action == GLFW_PRESS && app->on_event(KeyPressedEvent{key, mods})) {
+        if (ImGui::GetIO().WantCaptureKeyboard) {
+            return;
         }
 
-        if (action == GLFW_RELEASE && app->on_event(KeyReleasedEvent{key, mods})) {
+        if (action == GLFW_PRESS) {
+            app->on_event(KeyPressedEvent{key, mods});
+        }
+        if (action == GLFW_RELEASE) {
+            app->on_event(KeyReleasedEvent{key, mods});
         }
     }
 
@@ -1239,9 +1245,10 @@ namespace {
             return;
         }
 
-        // Play mode owns cursor capture for its whole duration (see
-        // Application::play()/stop()) -- right-drag-to-look only applies to
-        // the editor camera.
+        if (ImGui::GetIO().WantCaptureMouse) {
+            return;
+        }
+
         if (!app->is_playing) {
             if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT) {
                 glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -1288,9 +1295,11 @@ namespace {
     auto scroll_callback(GLFWwindow *window, double x_offset, double y_offset) -> void {
         auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
-        if (app != nullptr) {
-            app->on_event(MouseScrolledEvent{x_offset, y_offset});
+        if (app == nullptr || ImGui::GetIO().WantCaptureMouse) {
+            return;
         }
+
+        app->on_event(MouseScrolledEvent{x_offset, y_offset});
     }
 
     auto focus_callback(GLFWwindow *window, int focused) noexcept -> void {
@@ -1319,60 +1328,11 @@ namespace {
         glfwSetWindowUserPointer(context.window, &wd);
 
         glfwSetFramebufferSizeCallback(context.window, framebuffer_size_callback);
-        glfwSetKeyCallback(context.window, event_callback);
+        glfwSetKeyCallback(context.window, key_callback);
         glfwSetMouseButtonCallback(context.window, mouse_button_callback);
         glfwSetCursorPosCallback(context.window, cursor_position_callback);
         glfwSetScrollCallback(context.window, scroll_callback);
         glfwSetWindowFocusCallback(context.window, focus_callback);
-    }
-
-    auto destroy_context(VulkanContext &context) noexcept -> void {
-        context.swapchain.destroy();
-
-        if (context.one_time_pool != VK_NULL_HANDLE) {
-            vkDestroyCommandPool(context.device, context.one_time_pool, nullptr);
-
-            context.one_time_pool = VK_NULL_HANDLE;
-            context.one_time_command_buffers.fill(VK_NULL_HANDLE);
-        }
-
-        if (context.allocator != VK_NULL_HANDLE) {
-            vmaDestroyAllocator(context.allocator);
-
-            context.allocator = VK_NULL_HANDLE;
-        }
-
-        if (context.device != VK_NULL_HANDLE) {
-            vkDestroyDevice(context.device, nullptr);
-
-            context.device = VK_NULL_HANDLE;
-        }
-
-        if (context.surface != VK_NULL_HANDLE) {
-            vkDestroySurfaceKHR(context.instance, context.surface, nullptr);
-
-            context.surface = VK_NULL_HANDLE;
-        }
-
-        if (context.debug_messenger != VK_NULL_HANDLE) {
-            vkDestroyDebugUtilsMessengerEXT(context.instance, context.debug_messenger, nullptr);
-
-            context.debug_messenger = VK_NULL_HANDLE;
-        }
-
-        if (context.instance != VK_NULL_HANDLE) {
-            vkDestroyInstance(context.instance, nullptr);
-
-            context.instance = VK_NULL_HANDLE;
-        }
-
-        if (context.window != nullptr) {
-            glfwDestroyWindow(context.window);
-
-            context.window = nullptr;
-        }
-
-        glfwTerminate();
     }
 
     // vkDeviceWaitIdle has no timeout parameter -- a genuinely non-responding
@@ -1409,7 +1369,7 @@ namespace {
         application.imgui_renderer.reset();
         application.renderer->destroy();
 
-        destroy_context(context);
+        context.destroy();
     }
 } // namespace
 
@@ -1432,7 +1392,7 @@ auto main(int argc, char **argv) -> int {
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
 
-        destroy_context(context);
+        context.destroy();
 
         return EXIT_FAILURE;
     }

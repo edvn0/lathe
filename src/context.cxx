@@ -1,5 +1,55 @@
 #include "context.hxx"
 
+auto VulkanContext::destroy() -> void {
+    auto &context = *this;
+
+    context.swapchain.destroy();
+
+    if (context.one_time_pool != VK_NULL_HANDLE) {
+        vkDestroyCommandPool(context.device, context.one_time_pool, nullptr);
+
+        context.one_time_pool = VK_NULL_HANDLE;
+        context.one_time_command_buffers.fill(VK_NULL_HANDLE);
+    }
+
+    if (context.allocator != VK_NULL_HANDLE) {
+        vmaDestroyAllocator(context.allocator);
+
+        context.allocator = VK_NULL_HANDLE;
+    }
+
+    if (context.device != VK_NULL_HANDLE) {
+        vkDestroyDevice(context.device, nullptr);
+
+        context.device = VK_NULL_HANDLE;
+    }
+
+    if (context.surface != VK_NULL_HANDLE) {
+        vkDestroySurfaceKHR(context.instance, context.surface, nullptr);
+
+        context.surface = VK_NULL_HANDLE;
+    }
+
+    if (context.debug_messenger != VK_NULL_HANDLE) {
+        vkDestroyDebugUtilsMessengerEXT(context.instance, context.debug_messenger, nullptr);
+
+        context.debug_messenger = VK_NULL_HANDLE;
+    }
+
+    if (context.instance != VK_NULL_HANDLE) {
+        vkDestroyInstance(context.instance, nullptr);
+
+        context.instance = VK_NULL_HANDLE;
+    }
+
+    if (context.window != nullptr) {
+        glfwDestroyWindow(context.window);
+
+        context.window = nullptr;
+    }
+
+    glfwTerminate();
+}
 
 auto VulkanContext::one_time_submit(std::function<void(VkCommandBuffer)> &&func) -> void {
     auto &buf = one_time_command_buffers.at(one_time_buffer_index);
