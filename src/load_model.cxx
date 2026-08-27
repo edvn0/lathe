@@ -20,7 +20,6 @@
 #include <cstdint>
 #include <execution>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <optional>
 #include <ranges>
@@ -485,17 +484,24 @@ namespace {
         };
     }
 
-    // ------------------------------------------------------------------------
-    // CPU pass — material / texture import. Everything here decodes bytes
-    // into memory; nothing touches ImageStorage or MaterialStorage.
-    // ------------------------------------------------------------------------
+    struct ImageSource {
+        std::filesystem::path path; // external file; empty if embedded
+        std::vector<std::byte> encoded; // embedded bytes; empty if `path` is set
+    };
 
-    // Returns owned bytes rather than a span: the URI branch below has to
-    // read a file off disk, so every branch needs to hand back memory it
-    // actually owns rather than a view into someone else's buffer.
-    auto image_bytes(fastgltf::Asset const &asset, fastgltf::Image const &image,
-                     std::filesystem::path const &base_directory)
-            -> std::expected<std::vector<std::byte>, ModelLoadError> {
+    auto resolve_image_source(fastgltf::Asset const &asset, fastgltf::Image const &image,
+                              std::filesystem::path const &base_directory)
+            -> std::expected<ImageSource, ModelLoadError> {
+        if (auto const *uri_source = std::get_if<fastgltf::sources::URI>(&image.data)) {
+            if (uri_source->uri.isLocalPath() && uri_source->fileByteOffset == 0) {
+                return ImageSource{.path = base_directory / uri_source->uri.fspath()};
+            }
+
+            return std::unexpected(ModelLoadError{
+                    .type = ModelLoadErrorType::unsupported_image_source,
+            });
+        }
+
         if (auto const *buffer_view_source = std::get_if<fastgltf::sources::BufferView>(&image.data)) {
             auto const &buffer_view = asset.bufferViews[buffer_view_source->bufferViewIndex];
             auto const &buffer = asset.buffers[buffer_view.bufferIndex];
@@ -510,73 +516,34 @@ namespace {
 
             auto const *bytes = reinterpret_cast<std::byte const *>(array_source->bytes.data());
 
-            return std::vector<std::byte>{bytes + buffer_view.byteOffset,
-                                          bytes + buffer_view.byteOffset + buffer_view.byteLength};
+            return ImageSource{
+                    .encoded = std::vector<std::byte>{bytes + buffer_view.byteOffset,
+                                                      bytes + buffer_view.byteOffset + buffer_view.byteLength},
+            };
         }
 
         if (auto const *array_source = std::get_if<fastgltf::sources::Array>(&image.data)) {
             auto const *bytes = reinterpret_cast<std::byte const *>(array_source->bytes.data());
 
-            return std::vector<std::byte>{bytes, bytes + array_source->bytes.size()};
+            return ImageSource{.encoded = std::vector<std::byte>{bytes, bytes + array_source->bytes.size()}};
         }
 
         if (auto const *vector_source = std::get_if<fastgltf::sources::Vector>(&image.data)) {
             auto const *bytes = reinterpret_cast<std::byte const *>(vector_source->bytes.data());
 
-            return std::vector<std::byte>{bytes, bytes + vector_source->bytes.size()};
+            return ImageSource{.encoded = std::vector<std::byte>{bytes, bytes + vector_source->bytes.size()}};
         }
 
-        // External image referenced by a relative/absolute file path in a
-        // .gltf (JSON) document — e.g. "textures/albedo.png". Data URIs are
-        // already decoded into sources::Array/Vector by fastgltf itself, so
-        // by the time we get here a URI source is always a real file on
-        // disk that we resolve relative to the glTF's own directory.
-        if (auto const *uri_source = std::get_if<fastgltf::sources::URI>(&image.data)) {
-            if (uri_source->uri.isLocalPath() && uri_source->fileByteOffset == 0) {
-                auto const image_path = base_directory / uri_source->uri.fspath();
-
-                std::ifstream file_stream{image_path, std::ios::binary | std::ios::ate};
-
-                if (!file_stream.is_open()) {
-                    return std::unexpected(ModelLoadError{
-                            .type = ModelLoadErrorType::unsupported_image_source,
-                    });
-                }
-
-                auto const file_size = static_cast<std::size_t>(file_stream.tellg());
-                file_stream.seekg(0);
-
-                std::vector<std::byte> bytes(file_size);
-                file_stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(file_size));
-
-                if (!file_stream) {
-                    return std::unexpected(ModelLoadError{
-                            .type = ModelLoadErrorType::unsupported_image_source,
-                    });
-                }
-
-                return bytes;
-            }
-        }
-
-        // A non-local URI (e.g. http/https), a byte-offset URI, or an
-        // unsupported source (basisu/dds/webp extension images) lands here.
         return std::unexpected(ModelLoadError{
                 .type = ModelLoadErrorType::unsupported_image_source,
         });
     }
 
-    // Picks one of the renderer's small fixed set of samplers to best match
-    // a glTF sampler's filter/wrap settings. Just reads pre-created handles
-    // out of SamplerStorage, so this is safe to call during the CPU pass.
     auto is_nearest_filter(fastgltf::Filter filter) -> bool {
         return filter == fastgltf::Filter::Nearest || filter == fastgltf::Filter::NearestMipMapNearest ||
                filter == fastgltf::Filter::NearestMipMapLinear;
     }
 
-    // minFilter governs minification/mipmap quality, which is what actually
-    // matters for how the texture looks at a distance, so it takes priority
-    // over magFilter when both are present.
     auto select_sampler(SamplerStorage &sampler_storage, fastgltf::Sampler const *gltf_sampler) -> SamplerHandle {
         bool const nearest =
                 gltf_sampler != nullptr &&
@@ -619,19 +586,12 @@ namespace {
         return select_sampler(sampler_storage, &asset.samplers[*gltf_texture.samplerIndex]);
     }
 
-    // Decodes the image behind a glTF texture reference into `cpu_images`
-    // and returns its index there, or nullopt if `info` is empty (caller
-    // substitutes the appropriate ImageStorage default at record time).
-    // Cache is keyed by glTF image index only, so — same as before the
-    // split — if one raw image is reused across an srgb and a non-srgb
-    // slot, whichever texture type hits it first wins the format; that
-    // quirk is preserved rather than fixed here.
     template<typename TextureInfoT>
-    auto resolve_texture_cpu(fastgltf::Asset const &asset, std::optional<TextureInfoT> const &info, bool is_srgb,
-                             std::string_view slot_name, std::string_view material_name,
-                             std::filesystem::path const &base_directory,
+    auto resolve_texture_cpu(fastgltf::Asset const &asset, std::optional<TextureInfoT> const &info,
+                             ModelTextureSlot slot, std::string_view slot_name, std::string_view material_name,
+                             std::filesystem::path const &gltf_path, std::filesystem::path const &base_directory,
                              std::unordered_map<std::size_t, std::size_t> &image_cache,
-                             std::vector<ModelCpuImage> &cpu_images)
+                             std::vector<ModelCpuImageSource> &image_sources)
             -> std::expected<std::optional<std::size_t>, ModelLoadError> {
         if (!info.has_value()) {
             return std::nullopt;
@@ -649,19 +609,10 @@ namespace {
             return cached->second;
         }
 
-        auto encoded = image_bytes(asset, asset.images[image_index], base_directory);
+        auto source = resolve_image_source(asset, asset.images[image_index], base_directory);
 
-        if (!encoded) {
-            return std::unexpected(encoded.error());
-        }
-
-        auto decoded = DecodedImage::load_from_memory(std::span<std::byte const>{*encoded},
-                                                      is_srgb ? ImageColourSpace::srgb : ImageColourSpace::linear);
-
-        if (!decoded) {
-            return std::unexpected(ModelLoadError{
-                    .type = ModelLoadErrorType::image_decode_failed,
-            });
+        if (!source) {
+            return std::unexpected(source.error());
         }
 
         auto const &gltf_image = asset.images[image_index];
@@ -671,18 +622,18 @@ namespace {
                                   : (material_name.empty() ? std::format("image_{}", image_index)
                                                            : std::format("{}_{}", material_name, slot_name));
 
-        auto const cpu_index = cpu_images.size();
+        auto const cpu_index = image_sources.size();
 
-        auto const decoded_width = decoded->width();
-        auto const decoded_height = decoded->height();
-        auto decoded_pixels = std::move(*decoded).release_pixels();
+        auto const embedded_size = source->encoded.size();
 
-        cpu_images.push_back(ModelCpuImage{
-                .width = decoded_width,
-                .height = decoded_height,
-                .is_srgb = is_srgb,
-                .name = std::move(image_name),
-                .pixels = std::move(decoded_pixels),
+        image_sources.push_back(ModelCpuImageSource{
+                .path = std::move(source->path),
+                .encoded = std::move(source->encoded),
+                .cache_key = source->path.empty()
+                                     ? std::format("{}#{}#{}", gltf_path.string(), image_index, embedded_size)
+                                     : std::string{},
+                .slot = slot,
+                .debug_name = std::move(image_name),
         });
 
         image_cache.emplace(image_index, cpu_index);
@@ -691,9 +642,11 @@ namespace {
     }
 
     auto load_material_cpu(fastgltf::Asset const &asset, fastgltf::Material const &gltf_material,
-                           SamplerStorage &sampler_storage, std::filesystem::path const &base_directory,
+                           SamplerStorage &sampler_storage, std::filesystem::path const &gltf_path,
+                           std::filesystem::path const &base_directory,
                            std::unordered_map<std::size_t, std::size_t> &image_cache,
-                           std::vector<ModelCpuImage> &cpu_images) -> std::expected<ModelCpuMaterial, ModelLoadError> {
+                           std::vector<ModelCpuImageSource> &image_sources)
+            -> std::expected<ModelCpuMaterial, ModelLoadError> {
         ModelCpuMaterial material{};
 
         auto const &base_colour = gltf_material.pbrData.baseColorFactor;
@@ -702,9 +655,6 @@ namespace {
         auto const &emissive = gltf_material.emissiveFactor;
         material.emissive_factor = glm::vec3{emissive[0], emissive[1], emissive[2]};
 
-        // ASSUMPTION: emissiveStrength requires KHR_materials_emissive_strength
-        // to have been parsed by fastgltf; drop this line if it fails to compile
-        // against your fastgltf version.
         material.emissive_strength = gltf_material.emissiveStrength;
 
         material.metallic_factor = gltf_material.pbrData.metallicFactor;
@@ -727,8 +677,9 @@ namespace {
 
         auto const material_name = std::string{gltf_material.name};
 
-        auto base_colour_image = resolve_texture_cpu(asset, gltf_material.pbrData.baseColorTexture, true, "basecolor",
-                                                     material_name, base_directory, image_cache, cpu_images);
+        auto base_colour_image =
+                resolve_texture_cpu(asset, gltf_material.pbrData.baseColorTexture, ModelTextureSlot::base_colour,
+                                    "basecolor", material_name, gltf_path, base_directory, image_cache, image_sources);
 
         if (!base_colour_image) {
             return std::unexpected(base_colour_image.error());
@@ -736,9 +687,9 @@ namespace {
 
         material.base_colour_image = *base_colour_image;
 
-        auto metallic_roughness_image =
-                resolve_texture_cpu(asset, gltf_material.pbrData.metallicRoughnessTexture, false, "metallic_roughness",
-                                    material_name, base_directory, image_cache, cpu_images);
+        auto metallic_roughness_image = resolve_texture_cpu(
+                asset, gltf_material.pbrData.metallicRoughnessTexture, ModelTextureSlot::metallic_roughness,
+                "metallic_roughness", material_name, gltf_path, base_directory, image_cache, image_sources);
 
         if (!metallic_roughness_image) {
             return std::unexpected(metallic_roughness_image.error());
@@ -750,8 +701,8 @@ namespace {
             material.normal_scale = gltf_material.normalTexture->scale;
         }
 
-        auto normal_image = resolve_texture_cpu(asset, gltf_material.normalTexture, false, "normal", material_name,
-                                                base_directory, image_cache, cpu_images);
+        auto normal_image = resolve_texture_cpu(asset, gltf_material.normalTexture, ModelTextureSlot::normal, "normal",
+                                                material_name, gltf_path, base_directory, image_cache, image_sources);
 
         if (!normal_image) {
             return std::unexpected(normal_image.error());
@@ -763,8 +714,9 @@ namespace {
             material.occlusion_strength = gltf_material.occlusionTexture->strength;
         }
 
-        auto occlusion_image = resolve_texture_cpu(asset, gltf_material.occlusionTexture, false, "occlusion",
-                                                   material_name, base_directory, image_cache, cpu_images);
+        auto occlusion_image =
+                resolve_texture_cpu(asset, gltf_material.occlusionTexture, ModelTextureSlot::occlusion, "occlusion",
+                                    material_name, gltf_path, base_directory, image_cache, image_sources);
 
         if (!occlusion_image) {
             return std::unexpected(occlusion_image.error());
@@ -772,8 +724,9 @@ namespace {
 
         material.occlusion_image = *occlusion_image;
 
-        auto emissive_image = resolve_texture_cpu(asset, gltf_material.emissiveTexture, true, "emissive", material_name,
-                                                  base_directory, image_cache, cpu_images);
+        auto emissive_image =
+                resolve_texture_cpu(asset, gltf_material.emissiveTexture, ModelTextureSlot::emissive, "emissive",
+                                    material_name, gltf_path, base_directory, image_cache, image_sources);
 
         if (!emissive_image) {
             return std::unexpected(emissive_image.error());
@@ -831,14 +784,11 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
     cpu_data.nodes.reserve(asset.nodes.size());
     cpu_data.materials.reserve(asset.materials.size());
 
-    // Dedup textures within this asset: several materials commonly share
-    // one atlas/texture, and we only want to decode it once. Keyed by
-    // glTF image index -> index into cpu_data.images.
     std::unordered_map<std::size_t, std::size_t> image_cache;
 
     for (auto const &gltf_material: asset.materials) {
-        auto material =
-                load_material_cpu(asset, gltf_material, sampler_storage, base_directory, image_cache, cpu_data.images);
+        auto material = load_material_cpu(asset, gltf_material, sampler_storage, path, base_directory, image_cache,
+                                          cpu_data.image_sources);
 
         if (!material) {
             return std::unexpected(material.error());
@@ -912,9 +862,50 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
 }
 
 
+namespace {
+
+    [[nodiscard]]
+    auto texture_role_for_slot(ModelTextureSlot slot) noexcept -> TextureRole {
+        switch (slot) {
+            case ModelTextureSlot::base_colour:
+            case ModelTextureSlot::emissive:
+                return TextureRole::colour;
+
+            case ModelTextureSlot::normal:
+                return TextureRole::normal_map;
+
+            case ModelTextureSlot::metallic_roughness:
+            case ModelTextureSlot::occlusion:
+                return TextureRole::generic;
+        }
+
+        return TextureRole::generic;
+    }
+
+    [[nodiscard]]
+    auto default_fallback_for_slot(ImageStorage const &image_storage, ModelTextureSlot slot) noexcept -> ImageHandle {
+        switch (slot) {
+            case ModelTextureSlot::base_colour:
+                return image_storage.white();
+            case ModelTextureSlot::normal:
+                return image_storage.flat_normal();
+            case ModelTextureSlot::metallic_roughness:
+                return image_storage.metallic_roughness();
+            case ModelTextureSlot::occlusion:
+                return image_storage.occlusion();
+            case ModelTextureSlot::emissive:
+                return image_storage.emissive();
+        }
+
+        return image_storage.white();
+    }
+
+} // namespace
+
 auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer command_buffer,
                              GeometryArena &geometry_arena, ImageStorage &image_storage,
-                             MaterialStorage &material_storage) -> std::expected<Model, ModelLoadError> {
+                             TextureStreamer &texture_streamer, MaterialStorage &material_storage)
+        -> std::expected<Model, ModelLoadError> {
     if (command_buffer == VK_NULL_HANDLE) {
         return std::unexpected(ModelLoadError{
                 .type = ModelLoadErrorType::invalid_argument,
@@ -922,41 +913,19 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
     }
 
     std::vector<ImageHandle> image_handles;
-    image_handles.reserve(cpu_data.images.size());
+    image_handles.reserve(cpu_data.image_sources.size());
 
-    for (auto const &cpu_image: cpu_data.images) {
-        auto uploaded = image_storage.create_image(
-                ImageCreateInfo{
-                        .extent =
-                                VkExtent3D{
-                                        .width = cpu_image.width,
-                                        .height = cpu_image.height,
-                                        .depth = 1,
-                                },
-                        .format = cpu_image.is_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM,
-                        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .image_type = VK_IMAGE_TYPE_2D,
-                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                        .flags = 0,
-                        .samples = VK_SAMPLE_COUNT_1_BIT,
-                        .tiling = VK_IMAGE_TILING_OPTIMAL,
-                        .mip_levels =
-                                static_cast<std::uint32_t>(std::bit_width(std::max(cpu_image.width, cpu_image.height))),
-                        .array_layers = 1,
-                        .debug_name = cpu_image.name,
-                },
-                std::span<std::byte const>{cpu_image.pixels}, command_buffer);
+    for (auto const &source: cpu_data.image_sources) {
+        auto const role = texture_role_for_slot(source.slot);
+        auto const fallback = default_fallback_for_slot(image_storage, source.slot);
 
-        if (!uploaded || !uploaded->valid()) {
-            return std::unexpected(ModelLoadError{
-                    .type = ModelLoadErrorType::texture_upload_failed,
-            });
-        }
+        auto const handle =
+                source.path.empty()
+                        ? texture_streamer.request_from_memory(image_storage, source.encoded, role, source.cache_key,
+                                                               fallback, source.debug_name)
+                        : texture_streamer.request(image_storage, source.path, role, fallback, source.debug_name);
 
-        image_handles.push_back(*uploaded);
+        image_handles.push_back(handle);
     }
 
     auto const resolve_image = [&](std::optional<std::size_t> cpu_index, ImageHandle fallback) {
@@ -1079,13 +1048,14 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
 }
 
 auto load_model(std::filesystem::path const &path, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
-                ImageStorage &image_storage, SamplerStorage &sampler_storage, MaterialStorage &material_storage)
-        -> std::expected<Model, ModelLoadError> {
+                ImageStorage &image_storage, TextureStreamer &texture_streamer, SamplerStorage &sampler_storage,
+                MaterialStorage &material_storage) -> std::expected<Model, ModelLoadError> {
     auto cpu_data = load_model_cpu(path, sampler_storage);
 
     if (!cpu_data) {
         return std::unexpected(cpu_data.error());
     }
 
-    return record_model_gpu_upload(*cpu_data, command_buffer, geometry_arena, image_storage, material_storage);
+    return record_model_gpu_upload(*cpu_data, command_buffer, geometry_arena, image_storage, texture_streamer,
+                                   material_storage);
 }

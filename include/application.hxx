@@ -114,6 +114,9 @@ struct Application {
     // Seconds since startup -- forwarded to UBO.time each frame so the
     // wind shader (wind.slang) has something to animate against.
     float elapsed_time = 0.0F;
+    static constexpr auto stats_record_start_time = 5.0F;
+    [[nodiscard]] constexpr auto can_start_recording_statistics() { return elapsed_time > stats_record_start_time; }
+
 
     std::array<ScrollingBuffer, stage_count> timing_buffers;
     float timing_x = 0.0F;

@@ -507,6 +507,250 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<co
     };
 }
 
+auto ImageStorage::upgrade_pending_image(ImageHandle handle, CompressedTexture const &texture,
+                                         VkCommandBuffer command_buffer) -> std::expected<Buffer, ImageStorageError> {
+    if (context_ == nullptr || command_buffer == VK_NULL_HANDLE || texture.mips.empty() ||
+        texture.format == VK_FORMAT_UNDEFINED) {
+        return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
+    }
+
+    auto *slot = slot_for(handle);
+
+    if (slot == nullptr) {
+        return std::unexpected(make_error(ImageStorageErrorType::invalid_handle));
+    }
+
+    if (slot->protected_default) {
+        return std::unexpected(make_error(ImageStorageErrorType::protected_default));
+    }
+
+    auto const upload_size = static_cast<VkDeviceSize>(texture.data.size());
+
+    auto staging = Buffer::create(*context_, BufferCreateInfo{
+                                                     .size = upload_size,
+                                                     .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                     .memory = BufferMemory::upload,
+                                                     .debug_name = "image_storage.pending_upload",
+                                             });
+
+    if (!staging) {
+        return std::unexpected(make_device_error(staging.error()));
+    }
+
+    auto *mapped = static_cast<std::byte *>(staging->allocation_info.pMappedData);
+
+    if (mapped == nullptr) {
+        staging->destroy();
+
+        return std::unexpected(make_error(ImageStorageErrorType::device_error));
+    }
+
+    std::memcpy(mapped, texture.data.data(), texture.data.size());
+
+    auto const flush_result = vmaFlushAllocation(context_->allocator, staging->allocation, 0, upload_size);
+
+    if (flush_result != VK_SUCCESS) {
+        staging->destroy();
+
+        return std::unexpected(make_error(ImageStorageErrorType::device_error));
+    }
+
+    auto const mip_levels = static_cast<std::uint32_t>(texture.mips.size());
+
+    auto image = Image::create(*context_,
+                               ImageCreateInfo{
+                                       .extent =
+                                               VkExtent3D{
+                                                       .width = texture.width,
+                                                       .height = texture.height,
+                                                       .depth = 1,
+                                               },
+                                       .format = texture.format,
+                                       .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                       .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                                       .image_type = VK_IMAGE_TYPE_2D,
+                                       .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                                       .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                                       .samples = VK_SAMPLE_COUNT_1_BIT,
+                                       .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                       .mip_levels = mip_levels,
+                                       .array_layers = 1,
+                                       .debug_name = texture.debug_name,
+                               });
+
+    if (!image) {
+        staging->destroy();
+
+        return std::unexpected(make_image_error(image.error()));
+    }
+
+    VkImageMemoryBarrier2 const to_transfer{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = VK_ACCESS_2_NONE,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image->image(),
+            .subresourceRange =
+                    VkImageSubresourceRange{
+                            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .baseMipLevel = 0,
+                            .levelCount = mip_levels,
+                            .baseArrayLayer = 0,
+                            .layerCount = 1,
+                    },
+    };
+
+    VkDependencyInfo const to_transfer_info{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers = nullptr,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &to_transfer,
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &to_transfer_info);
+
+    std::vector<VkBufferImageCopy2> regions;
+    regions.reserve(mip_levels);
+
+    for (std::uint32_t level = 0; level < mip_levels; ++level) {
+        auto const &mip = texture.mips[level];
+
+        regions.push_back(VkBufferImageCopy2{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+                .pNext = nullptr,
+                .bufferOffset = mip.byte_offset,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageSubresource =
+                        VkImageSubresourceLayers{
+                                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                .mipLevel = level,
+                                .baseArrayLayer = 0,
+                                .layerCount = 1,
+                        },
+                .imageOffset = {0, 0, 0},
+                .imageExtent = {mip.width, mip.height, 1},
+        });
+    }
+
+    VkCopyBufferToImageInfo2 const copy_info{
+            .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+            .pNext = nullptr,
+            .srcBuffer = staging->buffer,
+            .dstImage = image->image(),
+            .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .regionCount = mip_levels,
+            .pRegions = regions.data(),
+    };
+
+    vkCmdCopyBufferToImage2(command_buffer, &copy_info);
+
+    VkImageMemoryBarrier2 const to_shader_read{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image->image(),
+            .subresourceRange =
+                    VkImageSubresourceRange{
+                            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .baseMipLevel = 0,
+                            .levelCount = mip_levels,
+                            .baseArrayLayer = 0,
+                            .layerCount = 1,
+                    },
+    };
+
+    VkDependencyInfo const to_shader_read_info{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers = nullptr,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &to_shader_read,
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &to_shader_read_info);
+
+    if (slot->is_alias) {
+        slot->alias_sampled_2d = VK_NULL_HANDLE;
+        slot->alias_storage_2d = VK_NULL_HANDLE;
+        slot->is_alias = false;
+    } else {
+        slot->image.destroy();
+    }
+
+    slot->image = std::move(*image);
+
+    bump_revision(*slot);
+
+    return std::move(*staging);
+}
+
+auto ImageStorage::create_pending_image(ImageHandle fallback) -> std::expected<ImageHandle, ImageStorageError> {
+    if (context_ == nullptr) {
+        return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
+    }
+
+    auto const *fallback_slot = slot_for(fallback);
+
+    if (fallback_slot == nullptr) {
+        return std::unexpected(make_error(ImageStorageErrorType::invalid_handle));
+    }
+
+    if (free_head_ == 0) {
+        return std::unexpected(make_error(ImageStorageErrorType::capacity_exceeded));
+    }
+
+    auto const index = free_head_;
+    auto &slot = slots_[index];
+
+    free_head_ = slot.next_free;
+
+    if (fallback_slot->is_alias) {
+        slot.alias_sampled_2d = fallback_slot->alias_sampled_2d;
+        slot.alias_storage_2d = fallback_slot->alias_storage_2d;
+    } else {
+        slot.alias_sampled_2d = fallback_slot->image.descriptor_view(ImageDescriptorView::sampled_2d);
+        slot.alias_storage_2d = fallback_slot->image.descriptor_view(ImageDescriptorView::storage_2d);
+    }
+
+    slot.is_alias = true;
+    slot.next_free = 0;
+    slot.occupied = true;
+    slot.protected_default = false;
+
+    bump_revision(slot);
+
+    ++size_;
+
+    return ImageHandle{
+            .index = index,
+            .generation = slot.generation,
+    };
+}
+
 auto ImageStorage::release_completed_uploads() -> void {
     for (auto &buffer: pending_uploads_) {
         buffer.destroy();

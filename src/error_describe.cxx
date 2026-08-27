@@ -20,6 +20,7 @@
 #include "shader_object_storage.hxx"
 #include "slang_compiler.hxx"
 #include "slang_library.hxx"
+#include "texture_pipeline.hxx"
 
 // Phase 0 of the error-context redesign: these describe() overloads read the
 // *current* struct layouts (a `.type` tag plus always-present nested error
@@ -193,6 +194,16 @@ auto describe(SamplerStorageError const &error) -> std::string {
 
 auto describe(ModelLoadError const &error) -> std::string {
     auto head = std::format("ModelLoadError({})", error.type);
+
+    if (error.cause.has_value()) {
+        return head + " -> " + describe(*error.cause);
+    }
+
+    return head;
+}
+
+auto describe(TexturePipelineError const &error) -> std::string {
+    auto head = std::format("TexturePipelineError({})", error.type);
 
     if (error.cause.has_value()) {
         return head + " -> " + describe(*error.cause);

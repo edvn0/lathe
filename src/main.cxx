@@ -1122,10 +1122,9 @@ namespace {
             }
         }
 
-        constexpr auto add_frame_timings_limit = 30.0F;
         if (frame_ok) {
             if (auto const &timings = application.renderer->last_frame_timings();
-                timings.valid && application.elapsed_time > add_frame_timings_limit) {
+                timings.valid && application.can_start_recording_statistics()) {
                 application.timing_x += 1.0F;
 
                 float running_total = 0.0F;

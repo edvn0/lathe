@@ -81,8 +81,18 @@ function(configure_renderdoc target)
             "${DY_RENDERDOC_REAL_SOURCE}"
         )
 
-        target_include_directories(${target} PRIVATE
-            "${renderdoc_include_path}"
+        set(renderdoc_isolated_dir "${CMAKE_BINARY_DIR}/renderdoc_isolated")
+
+        file(MAKE_DIRECTORY "${renderdoc_isolated_dir}")
+
+        configure_file(
+            "${renderdoc_include_path}/renderdoc_app.h"
+            "${renderdoc_isolated_dir}/renderdoc_app.h"
+            COPYONLY
+        )
+
+        target_include_directories(${target} SYSTEM PRIVATE
+            "${renderdoc_isolated_dir}"
         )
 
         target_compile_definitions(${target} PRIVATE

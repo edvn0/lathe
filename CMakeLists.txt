@@ -366,6 +366,39 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(tinyexr PRIVATE -w)
 endif()
 
+# ------------------------------------------------------------------------------
+# KTX-Software (libktx): KTX2 container read/write plus the Basis Universal
+# UASTC encoder/transcoder used to bake BC5/BC7 textures. Tools, loadtests,
+# and its own GL/Vulkan upload paths are all disabled -- we only need the
+# library, and we do our own Vulkan uploads.
+# ------------------------------------------------------------------------------
+
+set(KTX_FEATURE_TESTS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_TOOLS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_TOOLS_CTS OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_DOC OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_LOADTEST_APPS OFF CACHE STRING "" FORCE)
+set(KTX_FEATURE_JNI OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_PY OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_GL_UPLOAD OFF CACHE BOOL "" FORCE)
+set(KTX_FEATURE_VK_UPLOAD OFF CACHE BOOL "" FORCE)
+
+# KTX-Software vendors large LFS-tracked test/reference images that are
+# irrelevant with KTX_FEATURE_TESTS/TOOLS_CTS off; skip fetching their real
+# contents (LFS pointer files are fine -- nothing in the ktx target reads
+# them), and skip the tests/cts submodule entirely, since it exists only for
+# KTX_FEATURE_TOOLS_CTS.
+set(ENV{GIT_LFS_SKIP_SMUDGE} "1")
+
+CPMAddPackage(
+    NAME ktx
+    GITHUB_REPOSITORY KhronosGroup/KTX-Software
+    GIT_TAG v4.4.1
+    GIT_SUBMODULES ""
+)
+
+mark_target_includes_system(ktx)
+
 if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
   add_library(
       imgui
@@ -746,6 +779,7 @@ target_link_libraries(
         efsw
         imgui
         tinyexr
+        ktx
         BS_thread_pool
 )
 

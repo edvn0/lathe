@@ -39,6 +39,7 @@
 #include "shader_change_queue.hxx"
 #include "shadow_cascades.hxx"
 #include "slang_compiler.hxx"
+#include "texture_streamer.hxx"
 
 struct BloomSettings {
     bool enabled = true;
@@ -361,6 +362,7 @@ struct Renderer {
 
     [[nodiscard]] auto image_storage() noexcept -> ImageStorage & { return image_storage_; }
     [[nodiscard]] auto sampler_storage() noexcept -> SamplerStorage & { return sampler_storage_; }
+    [[nodiscard]] auto texture_streamer() noexcept -> TextureStreamer & { return texture_streamer_; }
     [[nodiscard]] auto resource_table() noexcept -> GpuResourceTable & { return gpu_resource_table_; }
 
     [[nodiscard]] auto resolve_pipeline(PipelineNodeHandle handle) const noexcept -> Pipeline const * {
@@ -624,6 +626,7 @@ private:
     MaterialStorage material_storage_{};
     ImageStorage image_storage_{};
     SamplerStorage sampler_storage_{};
+    TextureStreamer texture_streamer_{};
     GpuResourceTable gpu_resource_table_{};
 
     std::vector<Buffer> ubos_;

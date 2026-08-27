@@ -1882,6 +1882,7 @@ auto Renderer::destroy() noexcept -> void {
 
     frames_.clear();
     material_storage_.destroy();
+    texture_streamer_.wait_all();
     image_storage_.destroy();
     geometry_arena_.destroy(context_);
     compiler.destroy();
@@ -1971,8 +1972,8 @@ auto Renderer::create_model_from_cpu_data(ModelCpuData const &cpu_data) -> std::
     };
 
     context_.one_time_submit([&](VkCommandBuffer command_buffer) {
-        imported_model =
-                record_model_gpu_upload(cpu_data, command_buffer, geometry_arena_, image_storage_, material_storage_);
+        imported_model = record_model_gpu_upload(cpu_data, command_buffer, geometry_arena_, image_storage_,
+                                                 texture_streamer_, material_storage_);
     });
 
     if (!imported_model) {
@@ -2387,6 +2388,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
+
+    texture_streamer_.process_ready(image_storage_, command_buffer, frame_index);
 
     auto resource_result = gpu_resource_table_.prepare_frame(frame_index, image_storage_, sampler_storage_);
 

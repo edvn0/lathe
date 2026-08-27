@@ -5,11 +5,13 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <format>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "error_context.hxx"
@@ -17,6 +19,7 @@
 #include "geometry.hxx"
 #include "material.hxx"
 #include "sampler.hxx"
+#include "texture_streamer.hxx"
 
 struct ModelVertex {
     glm::vec3 position{};
@@ -149,12 +152,31 @@ struct ModelLoadError {
     std::optional<ErrorCause> cause{std::nullopt};
 };
 
-struct ModelCpuImage {
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    bool is_srgb = false;
-    std::string name;
-    std::vector<std::byte> pixels;
+// Which material slot a glTF texture was first resolved into. Determines
+// both the TextureRole it streams in as (colour/generic -> BC7, normal ->
+// BC5) and which ImageStorage default it renders as while pending -- same
+// "whichever slot hits an image index first wins" dedup quirk load_material_cpu
+// already had for is_srgb, just extended to cover this too.
+enum class ModelTextureSlot : std::uint8_t {
+    base_colour,
+    normal,
+    metallic_roughness,
+    occlusion,
+    emissive,
+};
+
+// A texture an image_sources entry hasn't been decoded, compressed, or
+// uploaded yet -- only its source is known. Exactly one of `path`/`encoded`
+// is populated: `path` for an external file (streamed straight off disk by
+// TextureStreamer, no bytes read on the CPU pass), `encoded` for an image
+// embedded in the glTF itself (bufferView/data URI, no file to stream from,
+// so its still-compressed bytes are captured here instead).
+struct ModelCpuImageSource {
+    std::filesystem::path path;
+    std::vector<std::byte> encoded;
+    std::string cache_key; // only meaningful when `encoded` is populated
+    ModelTextureSlot slot = ModelTextureSlot::base_colour;
+    std::string debug_name;
 };
 
 struct ModelCpuMaterial {
@@ -190,7 +212,7 @@ struct ModelCpuMesh {
 struct ModelCpuData {
     std::vector<ModelCpuMesh> meshes;
     std::vector<ModelCpuMaterial> materials;
-    std::vector<ModelCpuImage> images;
+    std::vector<ModelCpuImageSource> image_sources;
     std::vector<ModelNode> nodes;
     std::vector<std::uint32_t> scene_roots;
     std::vector<ModelCpuLight> lights;
@@ -202,13 +224,19 @@ auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint
 auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage)
         -> std::expected<ModelCpuData, ModelLoadError>;
 
+// Creates geometry/materials synchronously (needs command_buffer for the
+// former), but textures merely get requested from `texture_streamer` --
+// every material comes back wearing its default textures immediately, with
+// the real BC5/BC7 ones swapping in over the following frames as their
+// background jobs complete, same as any other TextureStreamer consumer.
 auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer command_buffer,
                              GeometryArena &geometry_arena, ImageStorage &image_storage,
-                             MaterialStorage &material_storage) -> std::expected<Model, ModelLoadError>;
+                             TextureStreamer &texture_streamer, MaterialStorage &material_storage)
+        -> std::expected<Model, ModelLoadError>;
 
 auto load_model(std::filesystem::path const &path, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
-                ImageStorage &image_storage, SamplerStorage &sampler_storage, MaterialStorage &material_storage)
-        -> std::expected<Model, ModelLoadError>;
+                ImageStorage &image_storage, TextureStreamer &texture_streamer, SamplerStorage &sampler_storage,
+                MaterialStorage &material_storage) -> std::expected<Model, ModelLoadError>;
 
 template<>
 struct std::formatter<ModelLoadErrorType> : std::formatter<std::string_view> {

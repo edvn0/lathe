@@ -15,6 +15,7 @@
 #include "buffer.hxx"
 #include "forward.hxx"
 #include "image.hxx"
+#include "texture_pipeline.hxx"
 
 enum class ImageDescriptorClass : std::uint8_t {
     sampled_2d,
@@ -137,6 +138,33 @@ public:
 
     [[nodiscard]] auto create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
                                     VkCommandBuffer command_buffer) -> std::expected<ImageHandle, ImageStorageError>;
+
+    /*
+     * Reserves a slot immediately, aliased onto `fallback`'s own descriptor
+     * views (normally one of this storage's default images), and returns a
+     * handle the caller can bind into materials right away. The real GPU
+     * image is installed later via upgrade_pending_image() -- every
+     * consumer holding this handle transparently starts sampling the real
+     * texture once that happens, with no handle churn.
+     */
+    [[nodiscard]]
+    auto create_pending_image(ImageHandle fallback) -> std::expected<ImageHandle, ImageStorageError>;
+
+    /*
+     * Uploads a fully block-compressed, pre-mipped texture (see
+     * texture_pipeline.hxx) and installs it into `handle`'s slot, replacing
+     * whatever occupied it before (typically the fallback alias from
+     * create_pending_image()). The handle's index/generation are unchanged.
+     *
+     * Returns the staging buffer the upload commands reference. It must be
+     * kept alive (and eventually destroy()ed) by the caller until the GPU
+     * has finished executing `command_buffer` -- this call only records
+     * commands, it does not know when they complete.
+     */
+    [[nodiscard]]
+    auto upgrade_pending_image(ImageHandle handle, CompressedTexture const &texture, VkCommandBuffer command_buffer)
+            -> std::expected<Buffer, ImageStorageError>;
+
     auto release_completed_uploads() -> void;
 
     [[nodiscard]]

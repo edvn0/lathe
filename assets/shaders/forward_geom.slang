@@ -129,9 +129,12 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
 
     float2 uv = float2(input.texture_coordinate.x, input.texture_coordinate.y);
 
-    float3 tangent_normal = normal_texture.Sample(sampler, uv).xyz * 2.0 - 1.0;
-    tangent_normal.xy *= material.normal_scale;
-    tangent_normal = normalize(tangent_normal);
+    // Normal maps are stored BC5 (2 channels, X/Y only) -- Z is reconstructed
+    // here rather than sampled, since BC5 has nowhere to store it.
+    float2 tangent_normal_xy = normal_texture.Sample(sampler, uv).xy * 2.0 - 1.0;
+    tangent_normal_xy *= material.normal_scale;
+    float tangent_normal_z = sqrt(saturate(1.0 - dot(tangent_normal_xy, tangent_normal_xy)));
+    float3 tangent_normal = normalize(float3(tangent_normal_xy, tangent_normal_z));
 
     float3 shading_normal = normalize(mul(tangent_normal, tbn));
 

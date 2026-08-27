@@ -697,97 +697,21 @@ auto Application::recreate_entities() -> void {
 
     auto &images = renderer->image_storage();
     auto &samplers = renderer->sampler_storage();
+    auto &streamer = renderer->texture_streamer();
 
+    // Handles come back immediately, sampling their fallback default
+    // texture; the real BC5/BC7 KTX2 texture streams in asynchronously (see
+    // texture_pipeline.hxx / TextureStreamer) and swaps in in place once
+    // decoded, cached, and uploaded.
+    auto const dirt_normal_index = streamer.request(images, "assets/textures/dirt/dirt_nor_gl_1k_zip.exr",
+                                                     TextureRole::normal_map, images.flat_normal(), "dirt.normal");
 
-    ImageHandle dirt_albedo_index;
-    ImageHandle dirt_normal_index;
-    ImageHandle dirt_roughness_index;
-    if (auto dirt_normal = DecodedImage::load_from_file("assets/textures/dirt/dirt_nor_gl_1k_zip.exr"); dirt_normal) {
-        auto dirt_normal_texture = images.create_image(
-                ImageCreateInfo{
-                        .extent =
-                                VkExtent3D{
-                                        .width = dirt_normal->width(),
-                                        .height = dirt_normal->height(),
-                                        .depth = 1,
-                                },
-                        .format = dirt_normal->format(),
-                        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .image_type = VK_IMAGE_TYPE_2D,
-                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                        .samples = VK_SAMPLE_COUNT_1_BIT,
-                        .tiling = VK_IMAGE_TILING_OPTIMAL,
-                        .mip_levels = static_cast<std::uint32_t>(
-                                std::bit_width(std::max(dirt_normal->width(), dirt_normal->height()))),
-                        .array_layers = 1,
-                        .debug_name = "dirt.normal",
-                },
-                dirt_normal->span());
-        dirt_normal_index = *dirt_normal_texture;
-    }
+    auto const dirt_albedo_index = streamer.request(images, "assets/textures/dirt/dirt_diff_1k.jpg",
+                                                     TextureRole::colour, images.white(), "dirt.albedo");
 
-
-    if (auto dirt_albedo =
-                DecodedImage::load_from_file("assets/textures/dirt/dirt_diff_1k.jpg", ImageColourSpace::srgb);
-        dirt_albedo) {
-        auto dirt_albedo_texture = images.create_image(
-                ImageCreateInfo{
-                        .extent =
-                                VkExtent3D{
-                                        .width = dirt_albedo->width(),
-                                        .height = dirt_albedo->height(),
-                                        .depth = 1,
-                                },
-                        .format = dirt_albedo->format(),
-                        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .image_type = VK_IMAGE_TYPE_2D,
-                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                        .samples = VK_SAMPLE_COUNT_1_BIT,
-                        .tiling = VK_IMAGE_TILING_OPTIMAL,
-                        .mip_levels = static_cast<std::uint32_t>(
-                                std::bit_width(std::max(dirt_albedo->width(), dirt_albedo->height()))),
-                        .array_layers = 1,
-                        .debug_name = "dirt.albedo",
-                },
-                dirt_albedo->span());
-
-        dirt_albedo_index = *dirt_albedo_texture;
-    }
-
-    if (auto dirt_roughness = DecodedImage::load_from_file("assets/textures/dirt/dirt_rough_1k.exr"); dirt_roughness) {
-        auto dirt_roughness_texture = images.create_image(
-                ImageCreateInfo{
-                        .extent =
-                                VkExtent3D{
-                                        .width = dirt_roughness->width(),
-                                        .height = dirt_roughness->height(),
-                                        .depth = 1,
-                                },
-                        .format = dirt_roughness->format(),
-                        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .image_type = VK_IMAGE_TYPE_2D,
-                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                        .samples = VK_SAMPLE_COUNT_1_BIT,
-                        .tiling = VK_IMAGE_TILING_OPTIMAL,
-                        .mip_levels = static_cast<std::uint32_t>(
-                                std::bit_width(std::max(dirt_roughness->width(), dirt_roughness->height()))),
-                        .array_layers = 1,
-                        .debug_name = "dirt.roughness",
-                },
-                dirt_roughness->span());
-
-        dirt_roughness_index = *dirt_roughness_texture;
-    }
-
+    auto const dirt_roughness_index = streamer.request(images, "assets/textures/dirt/dirt_rough_1k.exr",
+                                                        TextureRole::generic, images.metallic_roughness(),
+                                                        "dirt.roughness");
 
     auto const floor_material = renderer->create_material(MaterialCreateInfo{
             .base_colour_factor = glm::vec4{1.0F, 1.0F, 1.0F, 1.0F},
