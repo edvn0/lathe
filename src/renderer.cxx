@@ -3147,7 +3147,7 @@ template<typename OverlayPolicy>
         };
 
         vkCmdBeginRendering(command_buffer, &shadow_rendering_info);
-        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.bindable_buffer(), 0, VK_INDEX_TYPE_UINT32);
 
         if (frame.opaque_indirect_count != 0) {
             bind_graphics_node(pipeline_graph_, shadow_pipeline_, command_buffer, VK_SAMPLE_COUNT_1_BIT, 0, false);
@@ -3283,7 +3283,7 @@ template<typename OverlayPolicy>
         };
 
         vkCmdBeginRendering(command_buffer, &depth_prepass_info);
-        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.bindable_buffer(), 0, VK_INDEX_TYPE_UINT32);
 
         ForwardPushConstants pc{
                 .draw_buffer_address = main_view_draw_buffer.device_address,
@@ -3399,7 +3399,7 @@ template<typename OverlayPolicy>
 
         vkCmdBeginRendering(command_buffer, &forward_rendering_info);
         vkCmdBeginQuery(command_buffer, pipeline_stat_queries_[frame_index].query_pool, 0, 0);
-        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindIndexBuffer(command_buffer, geometry_arena_.bindable_buffer(), 0, VK_INDEX_TYPE_UINT32);
 
         ForwardPushConstants const pc{
                 .draw_buffer_address = main_view_draw_buffer.device_address,

@@ -170,33 +170,18 @@ struct GeometryArena {
         return capacity - next_offset;
     }
 
-    //
-    // Actual GPU geometry storage.
-    //
-    // This is DEVICE_LOCAL and normally not CPU-visible.
-    //
-    Buffer buffer{};
+    auto bindable_buffer() const -> VkBuffer { return buffer.buffer; }
 
 private:
     [[nodiscard]]
     auto allocate_bytes(VkDeviceSize size, VkDeviceSize alignment) -> std::expected<GeometrySlice, GeometryArenaError>;
 
-    //
-    // Writes data into the persistently mapped upload buffer and records
-    // an upload-buffer -> device-buffer copy.
-    //
     [[nodiscard]]
     auto write(VkCommandBuffer command_buffer, GeometrySlice const &slice, std::span<const std::byte> data)
             -> std::expected<void, GeometryArenaError>;
 
-    //
-    // Persistent CPU-visible mirror used only as transfer source.
-    //
-    // Each geometry allocation uses the same offset in upload_buffer and
-    // buffer. Geometry allocations are monotonic, so staging bytes aren't
-    // overwritten while recorded copies are still pending.
-    //
     Buffer upload_buffer{};
+    Buffer buffer{};
 
     VkDeviceSize capacity = 0;
     VkDeviceSize next_offset = 0;

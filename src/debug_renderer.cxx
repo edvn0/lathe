@@ -268,9 +268,9 @@ namespace debug_draw {
 
         auto const viewport = VkViewport{
                 .x = 0.0F,
-                .y = 0.0F,
+                .y = static_cast<float>(extent.height),
                 .width = static_cast<float>(extent.width),
-                .height = static_cast<float>(extent.height),
+                .height = -static_cast<float>(extent.height),
                 .minDepth = 0.0F,
                 .maxDepth = 1.0F,
         };
@@ -285,15 +285,12 @@ namespace debug_draw {
         };
 
         vkCmdSetViewportWithCount(cmd, 1, &viewport);
-
         vkCmdSetScissorWithCount(cmd, 1, &scissor);
 
         vkCmdSetDepthTestEnable(cmd, VK_TRUE);
-
         vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
 
         vkCmdSetDepthCompareOp(cmd, VK_COMPARE_OP_GREATER_OR_EQUAL);
-
         vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
 
         vkCmdSetLineWidth(cmd, 1.0F);
@@ -306,9 +303,7 @@ namespace debug_draw {
         };
 
         std::memcpy(push_constants.view_proj, view_projection.data(), view_projection.size_bytes());
-
         vkCmdPushConstants(cmd, pipeline->layout(), VK_SHADER_STAGE_ALL, 0, sizeof(push_constants), &push_constants);
-
         vkCmdDraw(cmd, vertex_count, 1, 0, 0);
     }
 
