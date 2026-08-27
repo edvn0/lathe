@@ -5,6 +5,7 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -14,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "config.hxx"
 #include "error_context.hxx"
 #include "forward.hxx"
 #include "geometry.hxx"
@@ -84,7 +86,7 @@ auto compress_vertex(ModelVertex const &vertex) -> CompressedModelVertex;
 auto compress_vertices(std::span<ModelVertex const> vertices) -> std::vector<CompressedModelVertex>;
 
 struct ModelPrimitive {
-    MeshGeometry geometry{};
+    std::array<MeshGeometry, lod_count> lods{};
     std::optional<std::uint32_t> material_index{std::nullopt};
     glm::vec3 bounds_min{-0.5F};
     glm::vec3 bounds_max{0.5F};
@@ -200,7 +202,15 @@ struct ModelCpuMaterial {
 
 struct ModelCpuPrimitive {
     std::vector<ModelVertex> vertices;
-    std::vector<std::uint32_t> indices;
+    std::vector<std::uint32_t> indices; // LOD0, full detail
+
+    // Simplified index buffers for LOD1..LOD(lod_count-1), sharing
+    // `vertices` above. nullopt means "no distinct simplification
+    // available for this level" (procedural meshes never populate this,
+    // and meshopt_simplify may fail to reduce a level at all) -- the
+    // upload step falls back to reusing the previous LOD's index buffer.
+    std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1> reduced_indices{};
+
     std::optional<std::uint32_t> material_index;
 };
 
@@ -220,6 +230,13 @@ struct ModelCpuData {
 
 auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices)
         -> std::expected<void, ModelLoadError>;
+
+// Generates simplified index-buffer variants for LOD1..LOD(lod_count-1)
+// from `vertices`/`indices` (expected to already be the final, welded and
+// optimized LOD0 buffers). Entries stay nullopt when meshopt_simplify
+// can't reduce that level's index count at all.
+auto generate_mesh_lods(std::vector<ModelVertex> const &vertices, std::vector<std::uint32_t> const &indices)
+        -> std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1>;
 
 auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage)
         -> std::expected<ModelCpuData, ModelLoadError>;

@@ -2038,7 +2038,7 @@ auto Renderer::create_model(Model const &model, MaterialHandle fallback_material
             auto material = index.has_value() ? model.materials[index.value()] : fallback_material;
 
             submesh_infos.push_back(SubmeshCreateInfo{
-                    .geometry = source_submesh.geometry,
+                    .lods = source_submesh.lods,
                     .material = material,
                     .bounds_min = source_submesh.bounds_min,
                     .bounds_max = source_submesh.bounds_max,
@@ -2241,8 +2241,10 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
     }
 
     for (auto const &submesh_info: create_info.submeshes) {
-        if (!submesh_info.geometry.vertices.bytes.valid() || !submesh_info.geometry.indices.bytes.valid() ||
-            submesh_info.geometry.vertices.vertex_count == 0 || submesh_info.geometry.indices.index_count == 0) {
+        auto const &lod0 = submesh_info.lods[0];
+
+        if (!lod0.vertices.bytes.valid() || !lod0.indices.bytes.valid() || lod0.vertices.vertex_count == 0 ||
+            lod0.indices.index_count == 0) {
             return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
 
@@ -2250,13 +2252,13 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
             return std::unexpected(make_error(RendererErrorType::invalid_material));
         }
 
-        auto stride = index_stride(submesh_info.geometry.indices.index_type);
+        auto stride = index_stride(lod0.indices.index_type);
 
         if (!stride) {
             return std::unexpected(stride.error());
         }
 
-        if (submesh_info.geometry.indices.bytes.offset % *stride != 0) {
+        if (lod0.indices.bytes.offset % *stride != 0) {
             return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
     }
@@ -2272,7 +2274,7 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
 
     for (auto const &submesh_info: create_info.submeshes) {
         slot.submeshes.push_back(Submesh{
-                .geometry = submesh_info.geometry,
+                .lods = submesh_info.lods,
                 .material = submesh_info.material,
                 .bounds_min = submesh_info.bounds_min,
                 .bounds_max = submesh_info.bounds_max,
@@ -2417,6 +2419,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         std::uint32_t mesh_index;
         std::uint32_t submesh_index;
         std::uint32_t material_index;
+        std::uint32_t lod_index;
 
         auto operator==(batch_key const &) const noexcept -> bool = default;
     };
@@ -2426,7 +2429,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             auto const mesh_hash =
                     std::hash<std::uint64_t>{}((static_cast<std::uint64_t>(key.mesh_index) << 32) | key.submesh_index);
 
-            return mesh_hash ^ (std::hash<std::uint32_t>{}(key.material_index) << 1);
+            return mesh_hash ^ (std::hash<std::uint32_t>{}(key.material_index) << 1) ^
+                   (std::hash<std::uint32_t>{}(key.lod_index) << 2);
         }
     };
 
@@ -2434,7 +2438,25 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         MeshHandle mesh{};
         std::uint32_t submesh_index = 0;
         MaterialHandle material{};
+        std::uint32_t lod_index = 0;
         std::vector<glm::mat4> transforms;
+    };
+
+    // Selects a LOD level for one instance from its distance to the camera.
+    // Shared by both submission loops below so a direct submit_mesh() call
+    // and a submit_model() draw pick LODs the same way.
+    auto const select_lod_index = [&camera_position](glm::vec3 const &instance_position) -> std::uint32_t {
+        auto const distance_sq = glm::dot(instance_position - camera_position, instance_position - camera_position);
+
+        std::uint32_t lod_index = 0;
+
+        for (; lod_index < lod_distances.size(); ++lod_index) {
+            if (distance_sq < lod_distances[lod_index] * lod_distances[lod_index]) {
+                break;
+            }
+        }
+
+        return lod_index;
     };
 
     std::unordered_map<batch_key, batch_entry, batch_key_hash> batches;
@@ -2460,6 +2482,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
             auto const instance_transform = model_submission.transform * model_draw.local_transform;
 
+            auto const lod_index = select_lod_index(glm::vec3(instance_transform[3]));
+
             for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
                 auto const &submesh = mesh->submeshes[submesh_index];
 
@@ -2470,6 +2494,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                         .mesh_index = model_draw.mesh.index,
                         .submesh_index = submesh_index,
                         .material_index = material_storage_.gpu_index(material),
+                        .lod_index = lod_index,
                 };
 
                 auto [entry, inserted] = batches.try_emplace(key);
@@ -2478,6 +2503,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                     entry->second.mesh = model_draw.mesh;
                     entry->second.submesh_index = submesh_index;
                     entry->second.material = material;
+                    entry->second.lod_index = lod_index;
                 }
 
                 entry->second.transforms.push_back(instance_transform);
@@ -2494,6 +2520,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             return std::unexpected(make_error(RendererErrorType::invalid_mesh));
         }
 
+        auto const lod_index = select_lod_index(glm::vec3(submission.transform[3]));
+
         for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
             auto const &submesh = mesh->submeshes[submesh_index];
 
@@ -2504,6 +2532,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                     .mesh_index = submission.mesh.index,
                     .submesh_index = submesh_index,
                     .material_index = material_storage_.gpu_index(material),
+                    .lod_index = lod_index,
             };
 
             auto [entry, inserted] = batches.try_emplace(key);
@@ -2512,6 +2541,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
                 entry->second.mesh = submission.mesh;
                 entry->second.submesh_index = submesh_index;
                 entry->second.material = material;
+                entry->second.lod_index = lod_index;
             }
 
             entry->second.transforms.push_back(submission.transform);
@@ -2534,9 +2564,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         }
 
         auto const &submesh = mesh->submeshes[batch.submesh_index];
+        auto const &geometry = submesh.lods[batch.lod_index];
 
         auto const instance_count = static_cast<std::uint32_t>(batch.transforms.size());
-        submitted_triangle_count += (submesh.geometry.indices.index_count / 3) * instance_count;
+        submitted_triangle_count += (geometry.indices.index_count / 3) * instance_count;
 
         if (frame.transforms.size() + instance_count > maximum_submission_count_ ||
             frame.draws.size() + instance_count > maximum_draw_count_) {
@@ -2551,7 +2582,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             frame.transforms.push_back(transform);
         }
 
-        auto const stride = index_stride(submesh.geometry.indices.index_type);
+        auto const stride = index_stride(geometry.indices.index_type);
 
         if (!stride) {
             clear_submissions();
@@ -2559,7 +2590,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
             return std::unexpected(stride.error());
         }
 
-        auto const first_index_u64 = submesh.geometry.indices.bytes.offset / *stride;
+        auto const first_index_u64 = geometry.indices.bytes.offset / *stride;
 
         if (first_index_u64 > std::numeric_limits<std::uint32_t>::max()) {
             clear_submissions();
@@ -2571,14 +2602,14 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
 
         for (std::uint32_t instance = 0; instance < instance_count; ++instance) {
             frame.draws.push_back(GpuDraw{
-                    .vertex_address = geometry_arena_.vertex_address(submesh.geometry.vertices),
+                    .vertex_address = geometry_arena_.vertex_address(geometry.vertices),
                     .material_index = material_storage_.gpu_index(batch.material),
                     .transform_index = base_transform_index + instance,
             });
         }
 
         auto const indirect_command = VkDrawIndexedIndirectCommand{
-                .indexCount = submesh.geometry.indices.index_count,
+                .indexCount = geometry.indices.index_count,
                 .instanceCount = instance_count,
                 .firstIndex = static_cast<std::uint32_t>(first_index_u64),
                 .vertexOffset = 0,

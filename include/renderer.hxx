@@ -83,11 +83,15 @@ struct PipelineStats {
 };
 
 struct SubmeshCreateInfo {
-    MeshGeometry geometry{};
+    // One MeshGeometry per LOD level (lods[0] is full detail, always
+    // required). Levels without a distinct simplification may alias an
+    // earlier level's geometry.
+    std::array<MeshGeometry, lod_count> lods{};
     MaterialHandle material{};
 
     // Local-space (untransformed) AABB over this submesh's own vertices,
-    // used as the culling volume for GPU frustum culling.
+    // used as the culling volume for GPU frustum culling. Shared across all
+    // LODs.
     glm::vec3 bounds_min{-0.5F};
     glm::vec3 bounds_max{0.5F};
 };
@@ -399,7 +403,7 @@ struct Renderer {
 
 private:
     struct Submesh {
-        MeshGeometry geometry{};
+        std::array<MeshGeometry, lod_count> lods{};
         MaterialHandle material{};
 
         glm::vec3 bounds_min{-0.5F};

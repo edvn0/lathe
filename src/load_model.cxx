@@ -378,6 +378,40 @@ auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint
     return {};
 }
 
+auto generate_mesh_lods(std::vector<ModelVertex> const &vertices, std::vector<std::uint32_t> const &indices)
+        -> std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1> {
+    std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1> reduced{};
+
+    for (std::size_t level = 0; level < lod_simplification_ratios.size(); ++level) {
+        auto target_index_count =
+                static_cast<std::size_t>(static_cast<float>(indices.size()) * lod_simplification_ratios[level]);
+        target_index_count -= target_index_count % 3;
+
+        if (target_index_count == 0 || target_index_count >= indices.size()) {
+            continue; // nothing meaningful to simplify to at this ratio
+        }
+
+        std::vector<std::uint32_t> simplified(indices.size());
+
+        auto const result_count =
+                meshopt_simplify(simplified.data(), indices.data(), indices.size(), &vertices[0].position.x,
+                                 vertices.size(), sizeof(ModelVertex), target_index_count, /*target_error=*/1e-2F,
+                                 meshopt_SimplifyLockBorder, nullptr);
+
+        if (result_count == 0 || result_count >= indices.size()) {
+            continue; // simplifier couldn't reduce this level at all
+        }
+
+        simplified.resize(result_count);
+
+        meshopt_optimizeVertexCache(simplified.data(), simplified.data(), simplified.size(), vertices.size());
+
+        reduced[level] = std::move(simplified);
+    }
+
+    return reduced;
+}
+
 namespace {
 
     // ------------------------------------------------------------------------
@@ -475,9 +509,12 @@ namespace {
             }
         }
 
+        auto reduced_indices = generate_mesh_lods(vertices, indices);
+
         return ModelCpuPrimitive{
                 .vertices = std::move(vertices),
                 .indices = std::move(indices),
+                .reduced_indices = std::move(reduced_indices),
                 .material_index = primitive.materialIndex.has_value()
                                           ? std::optional(static_cast<std::uint32_t>(*primitive.materialIndex))
                                           : std::nullopt,
@@ -996,18 +1033,60 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
             mesh.primitives.reserve(cpu_mesh.primitives.size());
             for (auto const &cpu_primitive: cpu_mesh.primitives) {
                 auto const compressed_vertices = compress_vertices(cpu_primitive.vertices);
-                auto geometry = [&]() {
+
+                auto vertex_slice = [&]() {
                     std::lock_guard<std::mutex> lock(sync_mutex);
-                    return geometry_arena.allocate_mesh(command_buffer,
-                                                        std::span<CompressedModelVertex const>{compressed_vertices},
-                                                        std::span<std::uint32_t const>{cpu_primitive.indices});
+                    return geometry_arena.allocate_vertices(
+                            command_buffer, std::span<CompressedModelVertex const>{compressed_vertices});
                 }();
 
-                if (!geometry) {
+                if (!vertex_slice) {
                     return std::unexpected(ModelLoadError{
                             .type = ModelLoadErrorType::geometry_upload_failed,
-                            .cause = ErrorCause{Boxed<GeometryArenaError>{geometry.error()}},
+                            .cause = ErrorCause{Boxed<GeometryArenaError>{vertex_slice.error()}},
                     });
+                }
+
+                // LOD0 is the full-detail index buffer; LOD1..LOD(lod_count-1)
+                // are meshopt_simplify'd variants (see generate_mesh_lods),
+                // all sharing this same vertex buffer. A level without a
+                // distinct simplification (procedural meshes, or a level
+                // meshopt_simplify couldn't reduce) reuses the previous
+                // level's already-allocated index buffer instead of
+                // re-uploading a duplicate.
+                std::array<MeshGeometry, lod_count> lods{};
+
+                for (std::uint32_t level = 0; level < lod_count; ++level) {
+                    lods[level].vertices = *vertex_slice;
+
+                    auto const *source_indices = [&]() -> std::vector<std::uint32_t> const * {
+                        if (level == 0) {
+                            return &cpu_primitive.indices;
+                        }
+
+                        auto const &reduced = cpu_primitive.reduced_indices[level - 1];
+                        return reduced.has_value() ? &*reduced : nullptr;
+                    }();
+
+                    if (source_indices == nullptr) {
+                        lods[level].indices = lods[level - 1].indices;
+                        continue;
+                    }
+
+                    auto index_slice = [&]() {
+                        std::lock_guard<std::mutex> lock(sync_mutex);
+                        return geometry_arena.allocate_indices(command_buffer,
+                                                               std::span<std::uint32_t const>{*source_indices});
+                    }();
+
+                    if (!index_slice) {
+                        return std::unexpected(ModelLoadError{
+                                .type = ModelLoadErrorType::geometry_upload_failed,
+                                .cause = ErrorCause{Boxed<GeometryArenaError>{index_slice.error()}},
+                        });
+                    }
+
+                    lods[level].indices = *index_slice;
                 }
 
                 if (cpu_primitive.material_index.has_value() &&
@@ -1021,7 +1100,7 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                         compute_primitive_bounds(std::span<ModelVertex const>{cpu_primitive.vertices});
 
                 mesh.primitives.push_back(ModelPrimitive{
-                        .geometry = *geometry,
+                        .lods = lods,
                         .material_index = cpu_primitive.material_index,
                         .bounds_min = primitive_bounds_min,
                         .bounds_max = primitive_bounds_max,
