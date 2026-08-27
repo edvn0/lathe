@@ -4,9 +4,11 @@
 #include <memory>
 #include <span>
 
-#include <efsw/efsw.hpp>
+#include "forward.hxx"
 
-struct Renderer;
+namespace efsw {
+    class FileWatcher;
+}
 
 class ShaderHotReloadWatcher {
 public:

@@ -553,7 +553,7 @@ auto ImageStorage::destroy_image(ImageHandle handle) -> std::expected<void, Imag
 }
 
 auto ImageStorage::prepare_frame(VkCommandBuffer command_buffer) -> std::expected<void, ImageStorageError> {
-    if (defaults_uploaded_) {
+    if (defaults_uploaded_) [[likely]] {
         return {};
     }
 

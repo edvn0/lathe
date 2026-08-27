@@ -18,6 +18,21 @@
 #include "error_context.hxx"
 #include "forward.hxx"
 
+inline constexpr auto invalid_image_index = std::numeric_limits<std::uint32_t>::max();
+
+struct ImageHandle {
+    std::uint32_t index = invalid_image_index;
+
+    std::uint32_t generation = 0;
+
+    [[nodiscard]]
+    auto valid() const noexcept -> bool {
+        return generation != 0 && index != invalid_image_index;
+    }
+
+    auto operator==(ImageHandle const &) const -> bool = default;
+};
+
 enum class ImageDescriptorView : std::uint8_t {
     sampled_2d = 0,
     sampled_cube,

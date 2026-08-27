@@ -35,21 +35,21 @@ struct DeviceError {
 template<>
 struct std::formatter<DeviceError::Type> : std::formatter<std::string_view> {
     constexpr auto format(DeviceError::Type error, std::format_context &context) const {
-        auto const name = [&]() constexpr -> std::string_view {
+        auto const name = [&]() constexpr -> FlyString {
             switch (error) {
                 case DeviceError::Type::Unknown:
-                    return "Unknown";
+                    return FlyString("Unknown");
                 case DeviceError::Type::BufferCreation:
-                    return "BufferCreation";
+                    return FlyString("BufferCreation");
                 case DeviceError::Type::AllocationFailure:
-                    return "AllocationFailure";
+                    return FlyString("AllocationFailure");
                 case DeviceError::Type::AddressRetrieval:
-                    return "AddressRetrieval";
+                    return FlyString("AddressRetrieval");
             }
 
-            return "UnknownDeviceError";
+            return FlyString("UnknownDeviceError");
         }();
 
-        return std::formatter<std::string_view>::format(name, context);
+        return std::formatter<std::string_view>::format(name.view(), context);
     }
 };

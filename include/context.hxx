@@ -2,12 +2,12 @@
 
 #include <volk.h>
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <limits>
-#include <array>
 
 #include <GLFW/glfw3.h>
 

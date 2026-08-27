@@ -32,9 +32,9 @@ struct ErrorContext {
 // lives in a single .cxx that includes every error header. Generated from
 // error_types.def -- add a new subsystem there, not here.
 #define X(T) struct T;
-#define NX(ns, T) \
-    namespace ns { \
-        struct T; \
+#define NX(ns, T)                                                                                                      \
+    namespace ns {                                                                                                     \
+        struct T;                                                                                                      \
     }
 #include "error_types.def"
 #undef X
@@ -72,6 +72,6 @@ struct Boxed {
 #define NX(ns, T) , Boxed<ns::T>
 using ErrorCause = std::variant<ErrorContext
 #include "error_types.def"
-        >;
+                                >;
 #undef X
 #undef NX

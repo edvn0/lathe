@@ -127,7 +127,10 @@ Application::Application(VulkanContext &ctx) noexcept :
 }
 
 Application::~Application() { shader_watcher_.stop(); }
+
 auto Application::on_ui() -> void {
+    widget("Console", [&] { terminal_widget.draw(); });
+
     widget("Simulation", [&] {
         if (is_playing) {
             if (ImGui::Button("Stop")) {
@@ -302,8 +305,9 @@ auto Application::play() -> void {
     active_scene->attach_debug_renderer(*debug_renderer);
 
     glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    has_last_mouse_position = false; // avoid a jump from wherever the cursor was
+    has_last_mouse_position = false;
 }
+
 auto Application::stop() -> void {
     active_scene->detach_debug_renderer();
     debug_renderer->clear_lines();
@@ -314,6 +318,7 @@ auto Application::stop() -> void {
 
     glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 }
+
 auto Application::update(float delta_time) -> void {
     if (!is_playing || !active_scene) {
         return;
@@ -554,7 +559,8 @@ auto Application::recreate_entities() -> void {
             return model.value();
         }
 
-        error("[recreate_entities::load_or_fallback] Could not load model '{}': {}", path.string(), describe(model.error()));
+        error("[recreate_entities::load_or_fallback] Could not load model '{}': {}", path.string(),
+              describe(model.error()));
         warn("[recreate_entities::load_or_fallback] Falling back to engine cube for '{}'", path.string());
         return default_model;
     };
@@ -638,7 +644,6 @@ auto Application::recreate_entities() -> void {
                         glm::vec3{
                                 5.0F * position_dist(eng),
                                 5.0F * position_dist(eng),
-
                                 5.0F * position_dist(eng),
                         },
                 .rotation = random_quat(),

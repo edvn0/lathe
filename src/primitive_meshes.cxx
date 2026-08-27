@@ -42,8 +42,8 @@ auto make_cube_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError> {
         auto const base_index = static_cast<std::uint32_t>(vertices.size());
 
         for (std::size_t corner = 0; corner < corner_signs.size(); ++corner) {
-            auto const position = face.normal * 0.5F + face.tangent * corner_signs[corner].x +
-                                  bitangent * corner_signs[corner].y;
+            auto const position =
+                    face.normal * 0.5F + face.tangent * corner_signs[corner].x + bitangent * corner_signs[corner].y;
 
             vertices.push_back(ModelVertex{
                     .position = position,
@@ -135,8 +135,7 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
     indices.reserve(blade_count * 2ULL * 6ULL);
 
     for (std::uint32_t blade = 0; blade < blade_count; ++blade) {
-        auto const angle =
-                static_cast<float>(blade) * std::numbers::pi_v<float> / static_cast<float>(blade_count);
+        auto const angle = static_cast<float>(blade) * std::numbers::pi_v<float> / static_cast<float>(blade_count);
 
         auto const across = glm::vec3{std::cos(angle), 0.0F, std::sin(angle)};
         auto const face_normal = glm::vec3{-std::sin(angle), 0.0F, std::cos(angle)};

@@ -125,58 +125,51 @@ TEST_SUITE("smoke") {
         CHECK(original.view() == "persistent value");
         CHECK(original.c_str() == storage);
     }
-TEST_CASE("FlyString: concurrent interning is stable") {
-    constexpr auto thread_count = 16;
-    constexpr auto iterations = 100'000;
+    TEST_CASE("FlyString: concurrent interning is stable") {
+        constexpr auto thread_count = 16;
+        constexpr auto iterations = 100'000;
 
-    BS::thread_pool pool{thread_count};
+        BS::thread_pool pool{thread_count};
 
-    std::vector<char const *> shared_pointers(thread_count);
-    std::atomic_bool failed = false;
+        std::vector<char const *> shared_pointers(thread_count);
+        std::atomic_bool failed = false;
 
-    auto futures = pool.submit_loop(
-        std::size_t{0},
-        std::size_t{thread_count},
-        [&](std::size_t thread_index) {
-            char const *expected_shared = nullptr;
+        auto futures = pool.submit_loop(
+                std::size_t{0}, std::size_t{thread_count},
+                [&](std::size_t thread_index) {
+                    char const *expected_shared = nullptr;
 
-            for (auto i = 0; i < iterations; ++i) {
-                auto const shared =
-                    FlyString{"concurrently interned string"};
+                    for (auto i = 0; i < iterations; ++i) {
+                        auto const shared = FlyString{"concurrently interned string"};
 
-                auto const unique = FlyString{
-                    "thread_" +
-                    std::to_string(thread_index) +
-                    "_value_" +
-                    std::to_string(i)
-                };
+                        auto const unique =
+                                FlyString{"thread_" + std::to_string(thread_index) + "_value_" + std::to_string(i)};
 
-                if (expected_shared == nullptr) {
-                    expected_shared = shared.c_str();
-                } else if (shared.c_str() != expected_shared) {
-                    failed.store(true, std::memory_order_relaxed);
-                }
+                        if (expected_shared == nullptr) {
+                            expected_shared = shared.c_str();
+                        } else if (shared.c_str() != expected_shared) {
+                            failed.store(true, std::memory_order_relaxed);
+                        }
 
-                if (unique.empty()) {
-                    failed.store(true, std::memory_order_relaxed);
-                }
-            }
+                        if (unique.empty()) {
+                            failed.store(true, std::memory_order_relaxed);
+                        }
+                    }
 
-            shared_pointers[thread_index] = expected_shared;
-        },
-        thread_count
-    );
+                    shared_pointers[thread_index] = expected_shared;
+                },
+                thread_count);
 
-    futures.wait();
+        futures.wait();
 
-    CHECK_FALSE(failed.load(std::memory_order_relaxed));
+        CHECK_FALSE(failed.load(std::memory_order_relaxed));
 
-    REQUIRE_FALSE(shared_pointers.empty());
+        REQUIRE_FALSE(shared_pointers.empty());
 
-    for (auto const *pointer : shared_pointers) {
-        CHECK(pointer == shared_pointers.front());
+        for (auto const *pointer: shared_pointers) {
+            CHECK(pointer == shared_pointers.front());
+        }
     }
-}
 
     TEST_CASE("FlyString: large number of duplicate strings are deduplicated") {
         constexpr auto unique_count = 100'000;

@@ -283,7 +283,7 @@ namespace gui {
         vkCmdSetDepthTestEnable(cmd, VK_FALSE);
         vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
         vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-        vkCmdSetViewportWithCount(cmd,  1, &vp);
+        vkCmdSetViewportWithCount(cmd, 1, &vp);
 
         const float L = dd->DisplayPos.x;
         const float R = dd->DisplayPos.x + dd->DisplaySize.x;
@@ -411,7 +411,7 @@ namespace gui {
                                         .height = static_cast<std::uint32_t>(clip_max.y - clip_min.y),
                                 },
                 };
-                vkCmdSetScissorWithCount(cmd,  1, &scissor);
+                vkCmdSetScissorWithCount(cmd, 1, &scissor);
 
                 vkCmdDrawIndexed(cmd, imgui_cmd.ElemCount, 1, index_offset + imgui_cmd.IdxOffset, 0, 0);
             }

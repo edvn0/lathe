@@ -39,7 +39,7 @@ namespace Components {
         float outer_cone_degrees = 30.0F;
     };
 
-    
+
     struct MaterialOverride {
         MaterialHandle material{};
     };

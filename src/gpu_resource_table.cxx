@@ -135,9 +135,8 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     if (result != VK_SUCCESS) {
         table.destroy();
 
-        return std::unexpected(
-                make_error(GpuResourceTableErrorType::descriptor_pool_creation_failed, "vkCreateDescriptorPool failed",
-                          result));
+        return std::unexpected(make_error(GpuResourceTableErrorType::descriptor_pool_creation_failed,
+                                          "vkCreateDescriptorPool failed", result));
     }
 
     auto layouts = std::vector<VkDescriptorSetLayout>(frame_count, table.layout_);
@@ -228,8 +227,8 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
 
         // Same image, same view -- just declared with a scalar element type
         // for SampleCmpLevelZero. See bindless.slang / sampled_2d_depth.
-        append_image_write(binding_index(GpuResourceBinding::sampled_2d_depth), index,
-                           VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sampled_2d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        append_image_write(binding_index(GpuResourceBinding::sampled_2d_depth), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                           sampled_2d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         /*
          * A production implementation should use dedicated

@@ -93,9 +93,9 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
                                     VkDescriptorSetLayout global_layout)
         -> std::expected<ShaderObjectSet, ShaderObjectError> {
     if (context.device == VK_NULL_HANDLE || create_info.shaders.empty()) {
-        return std::unexpected(make_error(ShaderObjectErrorType::invalid_argument, context.device == VK_NULL_HANDLE
-                                                                                            ? "device is VK_NULL_HANDLE"
-                                                                                            : "no shader stages provided"));
+        return std::unexpected(make_error(ShaderObjectErrorType::invalid_argument,
+                                          context.device == VK_NULL_HANDLE ? "device is VK_NULL_HANDLE"
+                                                                           : "no shader stages provided"));
     }
 
     if (create_info.shaders.size() > ShaderObjectSet::max_stages) {
@@ -118,9 +118,9 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
     ShaderObjectSet result;
     result.context_ = &context;
 
-    if (auto layout_error = create_layout(context, create_info.additional_descriptor_set_layouts,
-                                          create_info.push_constant_ranges, global_layout, create_info.debug_name,
-                                          result.layout_)) {
+    if (auto layout_error =
+                create_layout(context, create_info.additional_descriptor_set_layouts, create_info.push_constant_ranges,
+                              global_layout, create_info.debug_name, result.layout_)) {
         result.context_ = nullptr;
 
         return std::unexpected(*layout_error);
@@ -173,10 +173,10 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
         result.layout_ = VK_NULL_HANDLE;
         result.context_ = nullptr;
 
-        return std::unexpected(make_error(
-                ShaderObjectErrorType::shader_creation_failed,
-                std::format("vkCreateShadersEXT failed for shader object set '{}'", create_info.debug_name),
-                vk_result));
+        return std::unexpected(
+                make_error(ShaderObjectErrorType::shader_creation_failed,
+                           std::format("vkCreateShadersEXT failed for shader object set '{}'", create_info.debug_name),
+                           vk_result));
     }
 
     for (std::size_t index = 0; index < create_info.shaders.size(); ++index) {
@@ -192,8 +192,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
     result.bind_point_ = VK_PIPELINE_BIND_POINT_GRAPHICS;
 
     auto const layout_name = std::string{create_info.debug_name} + ".layout";
-    vk::set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, vk::object_handle(result.layout_),
-                        layout_name);
+    vk::set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, vk::object_handle(result.layout_), layout_name);
 
     return result;
 }
@@ -202,9 +201,9 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
                                      VkDescriptorSetLayout global_layout)
         -> std::expected<ShaderObjectSet, ShaderObjectError> {
     if (context.device == VK_NULL_HANDLE || create_info.shader.spirv.empty()) {
-        return std::unexpected(make_error(ShaderObjectErrorType::invalid_argument, context.device == VK_NULL_HANDLE
-                                                                                            ? "device is VK_NULL_HANDLE"
-                                                                                            : "no shader stage provided"));
+        return std::unexpected(
+                make_error(ShaderObjectErrorType::invalid_argument,
+                           context.device == VK_NULL_HANDLE ? "device is VK_NULL_HANDLE" : "no shader stage provided"));
     }
 
     auto const &shader = create_info.shader;
@@ -218,9 +217,9 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
     ShaderObjectSet result;
     result.context_ = &context;
 
-    if (auto layout_error = create_layout(context, create_info.additional_descriptor_set_layouts,
-                                          create_info.push_constant_ranges, global_layout, create_info.debug_name,
-                                          result.layout_)) {
+    if (auto layout_error =
+                create_layout(context, create_info.additional_descriptor_set_layouts, create_info.push_constant_ranges,
+                              global_layout, create_info.debug_name, result.layout_)) {
         result.context_ = nullptr;
 
         return std::unexpected(*layout_error);
@@ -271,8 +270,7 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
     vk::set_object_name(context.device, VK_OBJECT_TYPE_SHADER_EXT, vk::object_handle(created_shader),
                         create_info.debug_name);
     auto const layout_name = std::string{create_info.debug_name} + ".layout";
-    vk::set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, vk::object_handle(result.layout_),
-                        layout_name);
+    vk::set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, vk::object_handle(result.layout_), layout_name);
 
     return result;
 }

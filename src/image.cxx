@@ -72,12 +72,11 @@ namespace {
                     std::source_location location = std::source_location::current()) noexcept -> ImageError {
         return ImageError{
                 .type = type,
-                .cause =
-                        ErrorCause{ErrorContext{
-                                .message = FlyString{message},
-                                .vk_result = result != VK_SUCCESS ? std::optional{result} : std::nullopt,
-                                .location = location,
-                        }},
+                .cause = ErrorCause{ErrorContext{
+                        .message = FlyString{message},
+                        .vk_result = result != VK_SUCCESS ? std::optional{result} : std::nullopt,
+                        .location = location,
+                }},
         };
     }
 
@@ -227,9 +226,9 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
         image.image_ = VK_NULL_HANDLE;
         image.allocation_ = VK_NULL_HANDLE;
 
-        return std::unexpected(make_error(
-                ImageErrorType::view_creation_failed,
-                std::format("vkCreateImageView failed for image '{}'", create_info.debug_name), result));
+        return std::unexpected(
+                make_error(ImageErrorType::view_creation_failed,
+                           std::format("vkCreateImageView failed for image '{}'", create_info.debug_name), result));
     }
 
     for (std::uint32_t raw_type = 0; raw_type < static_cast<std::uint32_t>(ImageDescriptorView::count); ++raw_type) {
@@ -285,11 +284,11 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
         if (result != VK_SUCCESS) {
             image.destroy();
 
-            return std::unexpected(make_error(
-                    ImageErrorType::view_creation_failed,
-                    std::format("vkCreateImageView (descriptor view {}) failed for image '{}'", raw_type,
-                               create_info.debug_name),
-                    result));
+            return std::unexpected(
+                    make_error(ImageErrorType::view_creation_failed,
+                               std::format("vkCreateImageView (descriptor view {}) failed for image '{}'", raw_type,
+                                           create_info.debug_name),
+                               result));
         }
 
         auto const descriptor_view_name =
@@ -392,11 +391,10 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
     if (!staging.write(0, pixels)) {
         return std::unexpected(ImageError{
                 .type = ImageErrorType::image_creation_failed,
-                .cause =
-                        ErrorCause{ErrorContext{
-                                .message = FlyString{"staging buffer write failed"},
-                                .vk_result = VK_ERROR_DEVICE_LOST,
-                        }},
+                .cause = ErrorCause{ErrorContext{
+                        .message = FlyString{"staging buffer write failed"},
+                        .vk_result = VK_ERROR_DEVICE_LOST,
+                }},
         });
     }
 

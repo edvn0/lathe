@@ -238,23 +238,24 @@ auto PipelineGraphRepository::build_node(PipelineNode const &node) -> std::expec
         });
     }
 
-    auto const is_compute =
-            node.stage_indices.size() == 1 && stage_nodes_[node.stage_indices[0]].request.stage == renderer::ShaderStage::compute;
+    auto const is_compute = node.stage_indices.size() == 1 &&
+                            stage_nodes_[node.stage_indices[0]].request.stage == renderer::ShaderStage::compute;
 
     if (node.register_info.use_shader_objects) {
-        auto created = is_compute
-                ? shader_object_storage_.create_compute(ComputeShaderCreateInfo{
-                          .shader = stage_infos[0],
-                          .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
-                          .push_constant_ranges = node.register_info.push_constant_ranges,
-                          .debug_name = node.register_info.debug_name,
-                  })
-                : shader_object_storage_.create_linked(ShaderObjectCreateInfo{
-                          .shaders = stage_infos,
-                          .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
-                          .push_constant_ranges = node.register_info.push_constant_ranges,
-                          .debug_name = node.register_info.debug_name,
-                  });
+        auto created = is_compute ? shader_object_storage_.create_compute(ComputeShaderCreateInfo{
+                                            .shader = stage_infos[0],
+                                            .additional_descriptor_set_layouts =
+                                                    node.register_info.additional_descriptor_set_layouts,
+                                            .push_constant_ranges = node.register_info.push_constant_ranges,
+                                            .debug_name = node.register_info.debug_name,
+                                    })
+                                  : shader_object_storage_.create_linked(ShaderObjectCreateInfo{
+                                            .shaders = stage_infos,
+                                            .additional_descriptor_set_layouts =
+                                                    node.register_info.additional_descriptor_set_layouts,
+                                            .push_constant_ranges = node.register_info.push_constant_ranges,
+                                            .debug_name = node.register_info.debug_name,
+                                    });
 
         if (!created) {
             return std::unexpected(PipelineGraphError{
@@ -266,25 +267,26 @@ auto PipelineGraphRepository::build_node(PipelineNode const &node) -> std::expec
         return BuiltNode{.handle = {}, .shader_object_handle = *created};
     }
 
-    auto created = is_compute
-            ? storage_.create_compute(ComputePipelineCreateInfo{
-                      .shader = stage_infos[0],
-                      .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
-                      .push_constant_ranges = node.register_info.push_constant_ranges,
-                      .debug_name = node.register_info.debug_name,
-              })
-            : storage_.create_graphics(GraphicsPipelineCreateInfo{
-                      .shaders = stage_infos,
-                      .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
-                      .push_constant_ranges = node.register_info.push_constant_ranges,
-                      .dynamic_states = node.register_info.dynamic_states,
-                      .colour_formats = node.register_info.colour_formats,
-                      .depth_format = node.register_info.depth_format,
-                      .stencil_format = node.register_info.stencil_format,
-                      .samples = node.register_info.samples,
-                      .blending = node.register_info.blending,
-                      .debug_name = node.register_info.debug_name,
-              });
+    auto created =
+            is_compute
+                    ? storage_.create_compute(ComputePipelineCreateInfo{
+                              .shader = stage_infos[0],
+                              .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
+                              .push_constant_ranges = node.register_info.push_constant_ranges,
+                              .debug_name = node.register_info.debug_name,
+                      })
+                    : storage_.create_graphics(GraphicsPipelineCreateInfo{
+                              .shaders = stage_infos,
+                              .additional_descriptor_set_layouts = node.register_info.additional_descriptor_set_layouts,
+                              .push_constant_ranges = node.register_info.push_constant_ranges,
+                              .dynamic_states = node.register_info.dynamic_states,
+                              .colour_formats = node.register_info.colour_formats,
+                              .depth_format = node.register_info.depth_format,
+                              .stencil_format = node.register_info.stencil_format,
+                              .samples = node.register_info.samples,
+                              .blending = node.register_info.blending,
+                              .debug_name = node.register_info.debug_name,
+                      });
 
     if (!created) {
         return std::unexpected(PipelineGraphError{
@@ -437,7 +439,7 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
     }
 
 
-    auto& thread_pool = Renderer::thread_pool();
+    auto &thread_pool = Renderer::thread_pool();
 
     if (!dirty_stage_indices.empty()) {
         std::vector<std::future<std::expected<renderer::CompiledShader, renderer::ShaderCompileError>>> futures;
@@ -540,9 +542,8 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
         auto const node_index = node_indices[i];
 
 
-        build_futures.push_back(thread_pool.submit_task([this, node_index] {
-            return build_node(pipeline_nodes_[node_index]);
-        }));
+        build_futures.push_back(
+                thread_pool.submit_task([this, node_index] { return build_node(pipeline_nodes_[node_index]); }));
     }
 
     for (std::size_t k = 0; k < build_order.size(); ++k) {

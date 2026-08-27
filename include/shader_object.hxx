@@ -25,7 +25,7 @@ struct ShaderObjectError {
 
     // Carries the debug_name / rejected-argument reason plus, when
     // applicable, the failing VkResult (see ErrorContext::vk_result).
-    std::optional<ErrorContext> context {std::nullopt};
+    std::optional<ErrorContext> context{std::nullopt};
 };
 
 template<>
@@ -86,11 +86,8 @@ public:
     ~ShaderObjectSet();
 
     ShaderObjectSet(ShaderObjectSet const &) = delete;
-
     auto operator=(ShaderObjectSet const &) -> ShaderObjectSet & = delete;
-
     ShaderObjectSet(ShaderObjectSet &&other) noexcept;
-
     auto operator=(ShaderObjectSet &&other) noexcept -> ShaderObjectSet &;
 
     auto destroy() noexcept -> void;
@@ -110,12 +107,6 @@ public:
         return bind_point_;
     }
 
-    // Binds every VkShaderEXT in this set via vkCmdBindShadersEXT. Does NOT
-    // unbind stages outside this set -- callers switching between shader
-    // objects with different stage sets (e.g. vertex-pipeline draws
-    // interleaved with mesh-pipeline draws) must explicitly bind
-    // VK_NULL_HANDLE for stages absent from the incoming set. See the risk
-    // register entry in docs/pipeline_to_shader_objects.md for this gap.
     auto bind(VkCommandBuffer command_buffer) const noexcept -> void;
 
 private:
@@ -133,8 +124,7 @@ private:
 
     [[nodiscard]]
     static auto create_linked(VulkanContext &context, ShaderObjectCreateInfo const &create_info,
-                              VkDescriptorSetLayout global_layout)
-            -> std::expected<ShaderObjectSet, ShaderObjectError>;
+                              VkDescriptorSetLayout global_layout) -> std::expected<ShaderObjectSet, ShaderObjectError>;
 
     [[nodiscard]]
     static auto create_compute(VulkanContext &context, ComputeShaderCreateInfo const &create_info,

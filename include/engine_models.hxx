@@ -2,7 +2,10 @@
 
 #include <expected>
 
-#include "renderer.hxx"
+#include "forward.hxx"
+
+#include "model.hxx"
+#include "renderer_error.hxx"
 
 // Built-in primitive models the engine always has available (e.g. as a
 // fallback when a real asset fails to load). Created once at startup via

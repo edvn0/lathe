@@ -11,9 +11,13 @@ readonly cpm_cache_dir="${HOME}/.cache/CPM"
 # linux-native:  build natively inside the container with its gcc/g++.
 readonly target="${TARGET:-windows-mingw}"
 
-# perf:      perf stat
+# default: use the compiler/toolchain default linker.
+# mold:    use mold for native Linux builds.
+readonly linker="${LINKER:-default}"
+
+# perf:        perf stat
 # perf-record: perf record
-# callgrind: valgrind --tool=callgrind
+# callgrind:   valgrind --tool=callgrind
 #
 # Profiling always runs on the host.
 readonly profiler="${PROFILER:-perf}"
@@ -29,11 +33,30 @@ windows-mingw)
   toolchain_file="${project_dir}/cmake/toolchains/windows-mingw-x64.cmake"
   build_dir="build/windows-mingw-${build_type,,}"
   ;;
+
 linux-native)
   build_dir="build/linux-native-${build_type,,}"
   ;;
+
 *)
   echo "Unknown TARGET: ${target} (expected windows-mingw or linux-native)" >&2
+  exit 1
+  ;;
+esac
+
+case "${linker}" in
+default)
+  ;;
+
+mold)
+  if [[ "${target}" != "linux-native" ]]; then
+    echo "LINKER=mold requires TARGET=linux-native" >&2
+    exit 1
+  fi
+  ;;
+
+*)
+  echo "Unknown LINKER: ${linker} (expected default or mold)" >&2
   exit 1
   ;;
 esac
@@ -73,9 +96,15 @@ Options:
 
   --profile
       Run the linux-native binary under a profiler on the host.
-      PROFILER=perf        uses perf stat.
-      PROFILER=perf-record uses perf record.
-      PROFILER=callgrind   uses Valgrind/Callgrind.
+
+      PROFILER=perf
+          Uses perf stat.
+
+      PROFILER=perf-record
+          Uses perf record.
+
+      PROFILER=callgrind
+          Uses Valgrind/Callgrind.
 
 TARGET selects the build:
   windows-mingw
@@ -85,37 +114,105 @@ TARGET selects the build:
   linux-native
       Build natively for Linux inside the container.
 
+LINKER selects the linker:
+  default
+      Use the compiler/toolchain default linker.
+
+  mold
+      Use mold via CMAKE_LINKER_TYPE=MOLD.
+      Requires TARGET=linux-native and mold installed in the container.
+
 CMAKE_BUILD_TYPE selects the configuration:
   Debug
   Release
   RelWithDebInfo
   MinSizeRel
 
+RENDERDOC_INCLUDE_PATH optionally points to the host directory containing:
+
+  renderdoc_app.h
+
+For example:
+
+  /home/edwin/git/renderdoc/renderdoc/api/app
+
+When set, that directory is mounted read-only into the build container at
+the same absolute path and passed to CMake as RENDERDOC_INCLUDE_PATH.
+
 PROFILE_BUILD=1 adds -fno-omit-frame-pointer to a linux-native configure
-for cheaper 'perf record --call-graph fp' unwinding instead of DWARF.
+for cheaper:
+
+  perf record --call-graph fp
+
+unwinding instead of DWARF.
 
 Examples:
-  TARGET=linux-native CMAKE_BUILD_TYPE=Debug ./compile.sh --rebuild
 
-  TARGET=linux-native CMAKE_BUILD_TYPE=Release ./compile.sh --rebuild
-
-  TARGET=windows-mingw CMAKE_BUILD_TYPE=Release ./compile.sh --rebuild
+  TARGET=linux-native \
+    CMAKE_BUILD_TYPE=Debug \
+    ./compile.sh --rebuild
 
   TARGET=linux-native \
     CMAKE_BUILD_TYPE=RelWithDebInfo \
+    LINKER=mold \
+    ./compile.sh --rebuild
+
+  TARGET=linux-native \
+    CMAKE_BUILD_TYPE=RelWithDebInfo \
+    LINKER=mold \
+    RENDERDOC_INCLUDE_PATH=/home/edwin/git/renderdoc/renderdoc/api/app \
+    ./compile.sh --rebuild
+
+  TARGET=linux-native \
+    CMAKE_BUILD_TYPE=RelWithDebInfo \
+    LINKER=mold \
     PROFILE_BUILD=1 \
     ./compile.sh --rebuild
+
+  TARGET=windows-mingw \
+    CMAKE_BUILD_TYPE=Release \
+    ./compile.sh --rebuild
 EOF
+}
+
+validate_renderdoc_path() {
+  [[ -n "${renderdoc_include_path}" ]] || return 0
+
+  if [[ ! -d "${renderdoc_include_path}" ]]; then
+    echo "RENDERDOC_INCLUDE_PATH is not a directory:" >&2
+    echo "  ${renderdoc_include_path}" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "${renderdoc_include_path}/renderdoc_app.h" ]]; then
+    echo "renderdoc_app.h was not found:" >&2
+    echo "  ${renderdoc_include_path}/renderdoc_app.h" >&2
+    exit 1
+  fi
 }
 
 run_container() {
   mkdir -p "${cpm_cache_dir}"
 
-  docker run --rm \
-    --mount "type=bind,source=${project_dir},target=${project_dir}" \
-    --mount "type=bind,source=${cpm_cache_dir},target=${cpm_cache_dir}" \
-    --env "CPM_SOURCE_CACHE=${cpm_cache_dir}" \
-    --workdir "${project_dir}" \
+  validate_renderdoc_path
+
+  local docker_args=(
+    run
+    --rm
+    --mount "type=bind,source=${project_dir},target=${project_dir}"
+    --mount "type=bind,source=${cpm_cache_dir},target=${cpm_cache_dir}"
+    --env "CPM_SOURCE_CACHE=${cpm_cache_dir}"
+    --workdir "${project_dir}"
+  )
+
+  if [[ -n "${renderdoc_include_path}" ]]; then
+    docker_args+=(
+      --mount "type=bind,source=${renderdoc_include_path},target=${renderdoc_include_path},readonly"
+    )
+  fi
+
+  docker \
+    "${docker_args[@]}" \
     "${image}" \
     "$@"
 }
@@ -133,6 +230,8 @@ update_compile_commands_link() {
 configure() {
   mkdir -p "${cpm_cache_dir}"
 
+  validate_renderdoc_path
+
   local cmake_args=(
     -S "${project_dir}"
     -B "${project_dir}/${build_dir}"
@@ -144,6 +243,17 @@ configure() {
   if [[ -n "${toolchain_file}" ]]; then
     cmake_args+=(
       --toolchain "${toolchain_file}"
+    )
+  fi
+
+  if [[ "${linker}" == "mold" ]]; then
+    if ! run_container sh -c 'command -v mold >/dev/null 2>&1'; then
+      echo "LINKER=mold requested, but mold is not installed in ${image}" >&2
+      exit 1
+    fi
+
+    cmake_args+=(
+      -DCMAKE_LINKER_TYPE=MOLD
     )
   fi
 
@@ -194,11 +304,26 @@ clean() {
 shell() {
   mkdir -p "${cpm_cache_dir}"
 
-  docker run --rm -it \
-    --mount "type=bind,source=${project_dir},target=${project_dir}" \
-    --mount "type=bind,source=${cpm_cache_dir},target=${cpm_cache_dir}" \
-    --env "CPM_SOURCE_CACHE=${cpm_cache_dir}" \
-    --workdir "${project_dir}" \
+  validate_renderdoc_path
+
+  local docker_args=(
+    run
+    --rm
+    -it
+    --mount "type=bind,source=${project_dir},target=${project_dir}"
+    --mount "type=bind,source=${cpm_cache_dir},target=${cpm_cache_dir}"
+    --env "CPM_SOURCE_CACHE=${cpm_cache_dir}"
+    --workdir "${project_dir}"
+  )
+
+  if [[ -n "${renderdoc_include_path}" ]]; then
+    docker_args+=(
+      --mount "type=bind,source=${renderdoc_include_path},target=${renderdoc_include_path},readonly"
+    )
+  fi
+
+  docker \
+    "${docker_args[@]}" \
     "${image}" \
     bash
 }
@@ -233,7 +358,9 @@ profile() {
 
   case "${profiler}" in
   perf)
-    perf stat -d -- "${exe}" "$@"
+    perf stat \
+      -d \
+      -- "${exe}" "$@"
     ;;
 
   perf-record)

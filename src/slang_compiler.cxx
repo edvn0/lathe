@@ -435,9 +435,8 @@ namespace renderer {
 
         auto entry_point_diagnostics = Slang::ComPtr<slang::IBlob>{};
 
-        SlangResult result = module->findAndCheckEntryPoint(
-                request.entry_point.c_str(), to_slang_stage(request.stage), entry_point.writeRef(),
-                entry_point_diagnostics.writeRef());
+        SlangResult result = module->findAndCheckEntryPoint(request.entry_point.c_str(), to_slang_stage(request.stage),
+                                                            entry_point.writeRef(), entry_point_diagnostics.writeRef());
 
         append_diagnostics(diagnostics, entry_point_diagnostics);
 

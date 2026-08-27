@@ -9,9 +9,9 @@
 #include <vector>
 
 #include "buffer.hxx"
-#include "image_storage.hxx"
+#include "image.hxx"
 #include "pipeline_graph_repository.hxx"
-#include "sampler_storage.hxx"
+#include "sampler.hxx"
 
 #include <imgui.h>
 

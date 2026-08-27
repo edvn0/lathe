@@ -2,6 +2,8 @@
 
 #include <utility>
 
+#include <efsw/efsw.hpp>
+
 #include "logger.hxx"
 #include "renderer.hxx"
 
@@ -33,7 +35,6 @@ struct ShaderHotReloadWatcher::Listener final : efsw::FileWatchListener {
 };
 
 ShaderHotReloadWatcher::ShaderHotReloadWatcher() = default;
-
 ShaderHotReloadWatcher::~ShaderHotReloadWatcher() { stop(); }
 
 ShaderHotReloadWatcher::ShaderHotReloadWatcher(ShaderHotReloadWatcher &&other) noexcept :

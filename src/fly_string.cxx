@@ -28,7 +28,6 @@ auto FlyString::Pool::intern(std::string_view value) -> std::string const & {
 
     auto const [iterator, inserted] = strings_.emplace(value);
 
-    // Track allocation metrics
     ++total_requests_;
     if (inserted) {
         total_bytes_allocated_ += iterator->capacity();

@@ -176,9 +176,9 @@ namespace {
         auto const result = vkCreateSampler(context.device, &sampler_info, nullptr, &sampler);
 
         if (result != VK_SUCCESS) {
-            return std::unexpected(make_error(
-                    SamplerStorageErrorType::sampler_creation_failed,
-                    std::format("vkCreateSampler failed for sampler '{}'", create_info.debug_name), result));
+            return std::unexpected(
+                    make_error(SamplerStorageErrorType::sampler_creation_failed,
+                               std::format("vkCreateSampler failed for sampler '{}'", create_info.debug_name), result));
         }
 
         vk::set_object_name(context.device, VK_OBJECT_TYPE_SAMPLER, vk::object_handle(sampler), create_info.debug_name);

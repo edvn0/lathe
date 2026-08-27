@@ -46,7 +46,6 @@ namespace {
 
         while (true) {
             errno = 0;
-
             auto const length = readlink("/proc/self/exe", buffer.data(), buffer.size());
 
             if (length < 0) {
@@ -105,11 +104,8 @@ struct SlangLibrary::Impl {
 };
 
 SlangLibrary::SlangLibrary() noexcept = default;
-
 SlangLibrary::SlangLibrary(std::unique_ptr<Impl> impl) noexcept : impl_{std::move(impl)} {}
-
 SlangLibrary::~SlangLibrary() { destroy(); }
-
 SlangLibrary::SlangLibrary(SlangLibrary &&other) noexcept : impl_{std::move(other.impl_)} {}
 
 auto SlangLibrary::operator=(SlangLibrary &&other) noexcept -> SlangLibrary & {
@@ -134,7 +130,7 @@ auto SlangLibrary::create(std::filesystem::path const &library_path) -> std::exp
 
     debug("[Slang Library] Path passed to dlopen: {}", resolved_path.string());
 
-    std::error_code status_error;
+    std::error_code status_error{};
 
     auto const status = std::filesystem::status(resolved_path, status_error);
 
@@ -159,14 +155,7 @@ auto SlangLibrary::create(std::filesystem::path const &library_path) -> std::exp
 
     auto impl = std::make_unique<Impl>();
 
-    /*
-     * Resolve to an absolute path before calling dlopen(). A bare relative
-     * filename would otherwise be subject to dlopen()'s own search rules
-     * (LD_LIBRARY_PATH, rpath, ld.so.cache, etc.) instead of loading exactly
-     * the file we just verified.
-     */
     auto absolute_result = absolute_path(resolved_path);
-
     if (!absolute_result) {
         return std::unexpected{std::move(absolute_result.error())};
     }
@@ -277,16 +266,7 @@ auto SlangLibrary::destroy() noexcept -> void {
         return;
     }
 
-    /*
-     * All Slang objects created through this shared object must already have
-     * been released before dlclose() is called.
-     *
-     * SlangCompiler should therefore declare SlangLibrary before its
-     * global-session ComPtr, or explicitly reset the global session before
-     * calling SlangLibrary::destroy().
-     */
     impl_->create_global_session = nullptr;
-
     if (impl_->handle != nullptr) {
         dlclose(impl_->handle);
         impl_->handle = nullptr;

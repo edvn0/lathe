@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <execution>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -29,7 +30,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <execution>
 
 #include "image.hxx"
 #include "image_storage.hxx"
@@ -90,14 +90,13 @@ auto compress_vertex(ModelVertex const &vertex) -> CompressedModelVertex {
 auto compress_vertices(std::span<ModelVertex const> vertices) -> std::vector<CompressedModelVertex> {
     std::vector<CompressedModelVertex> compressed(vertices.size());
 
-    auto& thread_pool = Renderer::thread_pool();
+    auto &thread_pool = Renderer::thread_pool();
 
-    auto blocks = thread_pool.submit_blocks(std::size_t{0}, vertices.size(),
-        [&](std::size_t begin, std::size_t end) {
-            for (std::size_t i = begin; i < end; ++i) {
-                compressed[i] = compress_vertex(vertices[i]);
-            }
-        });
+    auto blocks = thread_pool.submit_blocks(std::size_t{0}, vertices.size(), [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) {
+            compressed[i] = compress_vertex(vertices[i]);
+        }
+    });
     blocks.wait();
 
     return compressed;
@@ -215,9 +214,7 @@ namespace {
     // Shared helpers — pure CPU, unchanged from before.
     // ------------------------------------------------------------------------
 
-    auto to_glm(fastgltf::math::fmat4x4 const &matrix) noexcept -> glm::mat4 {
-        return glm::make_mat4(matrix.data());
-    }
+    auto to_glm(fastgltf::math::fmat4x4 const &matrix) noexcept -> glm::mat4 { return glm::make_mat4(matrix.data()); }
 
     auto find_attribute(fastgltf::Primitive const &primitive, std::string_view name) -> std::optional<std::size_t> {
         auto const iterator = primitive.findAttribute(name);
@@ -356,8 +353,8 @@ auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint
 
     std::vector<unsigned int> remap(expanded.size());
 
-    auto const unique_vertex_count = meshopt_generateVertexRemap(
-            remap.data(), nullptr, expanded.size(), expanded.data(), expanded.size(), sizeof(ModelVertex));
+    auto const unique_vertex_count = meshopt_generateVertexRemap(remap.data(), nullptr, expanded.size(),
+                                                                 expanded.data(), expanded.size(), sizeof(ModelVertex));
 
     std::vector<ModelVertex> welded_vertices(unique_vertex_count);
     meshopt_remapVertexBuffer(welded_vertices.data(), expanded.data(), expanded.size(), sizeof(ModelVertex),
@@ -619,11 +616,11 @@ namespace {
     // matters for how the texture looks at a distance, so it takes priority
     // over magFilter when both are present.
     auto select_sampler(SamplerStorage &sampler_storage, fastgltf::Sampler const *gltf_sampler) -> SamplerHandle {
-        bool const nearest = gltf_sampler != nullptr &&
-                             (gltf_sampler->minFilter.has_value()
-                                      ? is_nearest_filter(*gltf_sampler->minFilter)
-                                      : (gltf_sampler->magFilter.has_value() &&
-                                         *gltf_sampler->magFilter == fastgltf::Filter::Nearest));
+        bool const nearest =
+                gltf_sampler != nullptr &&
+                (gltf_sampler->minFilter.has_value() ? is_nearest_filter(*gltf_sampler->minFilter)
+                                                     : (gltf_sampler->magFilter.has_value() &&
+                                                        *gltf_sampler->magFilter == fastgltf::Filter::Nearest));
 
         bool const clamp = gltf_sampler != nullptr && (gltf_sampler->wrapS == fastgltf::Wrap::ClampToEdge ||
                                                        gltf_sampler->wrapT == fastgltf::Wrap::ClampToEdge);
@@ -1063,7 +1060,8 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                 auto const compressed_vertices = compress_vertices(cpu_primitive.vertices);
                 auto geometry = [&]() {
                     std::lock_guard<std::mutex> lock(sync_mutex);
-                    return geometry_arena.allocate_mesh(std::span<CompressedModelVertex const>{compressed_vertices},
+                    return geometry_arena.allocate_mesh(command_buffer,
+                                                        std::span<CompressedModelVertex const>{compressed_vertices},
                                                         std::span<std::uint32_t const>{cpu_primitive.indices});
                 }();
 

@@ -25,7 +25,7 @@ struct PipelineError {
 
     // Carries the pipeline's debug_name / rejected-argument reason plus, when
     // applicable, the failing VkResult (see ErrorContext::vk_result).
-    std::optional<ErrorContext> context {std::nullopt};
+    std::optional<ErrorContext> context{std::nullopt};
 };
 
 template<>

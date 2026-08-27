@@ -32,6 +32,8 @@
 #include "model.hxx"
 #include "pipeline_graph_repository.hxx"
 #include "pipeline_storage.hxx"
+#include "render_stage.hxx"
+#include "renderer_error.hxx"
 #include "sampler_storage.hxx"
 #include "screenshot.hxx"
 #include "shader_change_queue.hxx"
@@ -46,41 +48,6 @@ struct BloomSettings {
     float intensity = 0.04F;
 };
 
-
-enum class RenderStage : std::uint32_t {
-    FullFrame = 0,
-    Culling,
-    ShadowPass,
-    DepthPrepass,
-    ForwardPass,
-    Composition,
-    BloomPass,
-    Count
-};
-
-constexpr auto to_string(RenderStage stage) -> std::string_view {
-    switch (stage) {
-        using enum RenderStage;
-        case FullFrame:
-            return "Full Frame";
-        case Culling:
-            return "GPU Culling";
-        case ShadowPass:
-            return "Shadow Pass";
-        case DepthPrepass:
-            return "Depth prepass";
-        case ForwardPass:
-            return "Forward Pass";
-        case Composition:
-            return "Composition Pass";
-        case BloomPass:
-            return "Bloom pass";
-        default:
-            return "Unknown";
-    }
-}
-inline constexpr std::uint32_t stage_count = static_cast<std::uint32_t>(RenderStage::Count);
-inline constexpr std::uint32_t query_count = stage_count * 2;
 
 struct StageTimings {
     std::array<float, stage_count> milliseconds{};
@@ -135,27 +102,6 @@ struct SwapchainImage {
     VkExtent2D extent{};
 };
 
-enum class RendererErrorType : std::uint8_t {
-    invalid_argument,
-    invalid_mesh,
-    invalid_model,
-    invalid_material,
-    unsupported_index_type,
-    capacity_exceeded,
-    size_overflow,
-    model_load_error,
-    geometry_error,
-    material_error,
-    image_error,
-    forward_target_error,
-    device_error,
-    pipeline_error,
-    compiler_error,
-    pipeline_storage_error,
-    gpu_resource_table_error,
-    pipeline_graph_error,
-    invalid_pipeline,
-};
 
 struct UBO {
     glm::mat4 view_projection;
@@ -211,11 +157,6 @@ static_assert(offsetof(UBO, cascade_view_projection) == 224);
 static_assert(offsetof(UBO, cascade_atlas_offset_u) == 528);
 static_assert(offsetof(UBO, light_direction) == 576);
 
-struct RendererError {
-    RendererErrorType type = RendererErrorType::invalid_argument;
-
-    std::optional<ErrorCause> cause{std::nullopt};
-};
 
 static_assert(std::is_copy_constructible_v<RendererError>,
               "RendererError must stay copyable -- std::expected<T, RendererError> copies it throughout this codebase");

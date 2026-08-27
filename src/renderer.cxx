@@ -1800,17 +1800,16 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         vkResetQueryPool(context_.device, query_pool, 0, 1);
     }
 
-    constexpr auto size = sizeof(UBO);
     ubos_.resize(frames_in_flight);
     for (auto &ubo: ubos_) {
         auto maybe_ubo = Buffer::create(context_, BufferCreateInfo{
-                                                          .size = size,
+                                                          .size = sizeof(UBO),
                                                           .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                                                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                          .memory = BufferMemory::device,
+                                                          .memory = BufferMemory::upload,
                                                           .debug_name = "renderer.ubo",
                                                   });
-        if (!maybe_ubo || !maybe_ubo->zero()) {
+        if (!maybe_ubo) {
             error("Failed to create ubo");
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
@@ -1887,7 +1886,7 @@ auto Renderer::destroy() noexcept -> void {
     frames_.clear();
     material_storage_.destroy();
     image_storage_.destroy();
-    geometry_arena_.buffer.destroy();
+    geometry_arena_.destroy(context_);
     compiler.destroy();
 
     clear_submissions();
@@ -1971,7 +1970,8 @@ auto Renderer::create_model_from_cpu_data(ModelCpuData const &cpu_data) -> std::
     }
 
     std::expected<Model, ModelLoadError> imported_model{
-            std::unexpected(ModelLoadError{.type = ModelLoadErrorType::invalid_argument})};
+            std::unexpected(ModelLoadError{.type = ModelLoadErrorType::invalid_argument}),
+    };
 
     context_.one_time_submit([&](VkCommandBuffer command_buffer) {
         imported_model =

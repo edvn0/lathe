@@ -7,60 +7,61 @@
 
 namespace {
 
-// Bounding sphere of the view-frustum slice [near_distance, far_distance],
-// expressed in view space (centre offset along the forward axis, radius).
-// Using a sphere rather than the exact frustum box makes the cascade
-// rotation-invariant, which is what lets us snap the light-space origin to
-// texel increments without shimmer.
-struct FrustumSliceSphere {
-    float centre_distance = 0.0F;
-    float radius = 0.0F;
-};
+    // Bounding sphere of the view-frustum slice [near_distance, far_distance],
+    // expressed in view space (centre offset along the forward axis, radius).
+    // Using a sphere rather than the exact frustum box makes the cascade
+    // rotation-invariant, which is what lets us snap the light-space origin to
+    // texel increments without shimmer.
+    struct FrustumSliceSphere {
+        float centre_distance = 0.0F;
+        float radius = 0.0F;
+    };
 
-[[nodiscard]] auto fit_slice_sphere(float near_distance, float far_distance, float vertical_fov_radians,
-                                    float aspect_ratio) noexcept -> FrustumSliceSphere {
-    auto const tan_v = std::tan(vertical_fov_radians * 0.5F);
-    auto const tan_h = tan_v * aspect_ratio;
-    auto const k2 = (tan_h * tan_h) + (tan_v * tan_v);
+    [[nodiscard]] auto fit_slice_sphere(float near_distance, float far_distance, float vertical_fov_radians,
+                                        float aspect_ratio) noexcept -> FrustumSliceSphere {
+        auto const tan_v = std::tan(vertical_fov_radians * 0.5F);
+        auto const tan_h = tan_v * aspect_ratio;
+        auto const k2 = (tan_h * tan_h) + (tan_v * tan_v);
 
-    auto const a = near_distance;
-    auto const b = far_distance;
+        auto const a = near_distance;
+        auto const b = far_distance;
 
-    auto centre = (a + b) * (1.0F + k2) * 0.5F;
-    float radius = 0.0F;
+        auto centre = (a + b) * (1.0F + k2) * 0.5F;
+        float radius = 0.0F;
 
-    if (centre >= b) {
-        centre = b;
-        radius = b * std::sqrt(k2);
-    } else {
-        auto const dc = a - centre;
-        radius = std::sqrt((dc * dc) + (a * a * k2));
+        if (centre >= b) {
+            centre = b;
+            radius = b * std::sqrt(k2);
+        } else {
+            auto const dc = a - centre;
+            radius = std::sqrt((dc * dc) + (a * a * k2));
+        }
+
+        return FrustumSliceSphere{.centre_distance = centre, .radius = radius};
     }
 
-    return FrustumSliceSphere{.centre_distance = centre, .radius = radius};
-}
+    [[nodiscard]] auto normalize_plane(glm::vec4 const &plane) noexcept -> glm::vec4 {
+        auto const length = glm::length(glm::vec3{plane});
 
-[[nodiscard]] auto normalize_plane(glm::vec4 const &plane) noexcept -> glm::vec4 {
-    auto const length = glm::length(glm::vec3{plane});
-
-    return length > 0.0F ? plane / length : plane;
-}
-
-[[nodiscard]] auto practical_split_scheme(float near_distance, float far_distance, float lambda,
-                                          std::uint32_t cascade_count) noexcept -> std::array<float, shadow_cascade_count> {
-    std::array<float, shadow_cascade_count> bounds{};
-
-    for (std::uint32_t i = 1; i <= cascade_count; ++i) {
-        auto const fraction = static_cast<float>(i) / static_cast<float>(cascade_count);
-
-        auto const logarithmic = near_distance * std::pow(far_distance / near_distance, fraction);
-        auto const uniform = near_distance + ((far_distance - near_distance) * fraction);
-
-        bounds[i - 1] = (lambda * logarithmic) + ((1.0F - lambda) * uniform);
+        return length > 0.0F ? plane / length : plane;
     }
 
-    return bounds;
-}
+    [[nodiscard]] auto practical_split_scheme(float near_distance, float far_distance, float lambda,
+                                              std::uint32_t cascade_count) noexcept
+            -> std::array<float, shadow_cascade_count> {
+        std::array<float, shadow_cascade_count> bounds{};
+
+        for (std::uint32_t i = 1; i <= cascade_count; ++i) {
+            auto const fraction = static_cast<float>(i) / static_cast<float>(cascade_count);
+
+            auto const logarithmic = near_distance * std::pow(far_distance / near_distance, fraction);
+            auto const uniform = near_distance + ((far_distance - near_distance) * fraction);
+
+            bounds[i - 1] = (lambda * logarithmic) + ((1.0F - lambda) * uniform);
+        }
+
+        return bounds;
+    }
 
 } // namespace
 
@@ -78,7 +79,8 @@ auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowC
     auto const camera_forward = glm::normalize(glm::vec3(inverse_view[2]));
 
     auto const light_direction = glm::normalize(input.light_direction);
-    auto const light_up = std::abs(light_direction.y) > 0.99F ? glm::vec3{0.0F, 0.0F, 1.0F} : glm::vec3{0.0F, 1.0F, 0.0F};
+    auto const light_up =
+            std::abs(light_direction.y) > 0.99F ? glm::vec3{0.0F, 0.0F, 1.0F} : glm::vec3{0.0F, 1.0F, 0.0F};
     auto const light_view = glm::lookAtLH(glm::vec3{0.0F}, -light_direction, light_up);
 
     float slice_near = near_distance;
@@ -94,9 +96,7 @@ auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowC
         auto const resolution = static_cast<float>(shadow_cascade_resolutions[cascade]);
         auto const texel_size = (2.0F * sphere.radius) / resolution;
 
-        auto const snap = [texel_size](float value) noexcept {
-            return std::floor(value / texel_size) * texel_size;
-        };
+        auto const snap = [texel_size](float value) noexcept { return std::floor(value / texel_size) * texel_size; };
 
         auto const snapped_x = snap(centre_light.x);
         auto const snapped_y = snap(centre_light.y);

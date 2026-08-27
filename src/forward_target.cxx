@@ -5,6 +5,8 @@
 #include <utility>
 #include "logger.hxx"
 
+#include "image_storage.hxx"
+
 namespace {
 
     auto make_error(ForwardTargetErrorType type) noexcept -> ForwardTargetError {

@@ -56,10 +56,6 @@ private:
 
 namespace detail {
 
-    // entt::basic_snapshot and entt::basic_snapshot_loader call their archive
-    // with the exact same sequence of types (both are templated on the same
-    // registry type), so a type-erased queue is enough to move data between them
-    // without clone_registry having to hand-roll per-component copy code.
     struct SnapshotOutputArchive {
         std::vector<std::any> *values;
 
@@ -81,9 +77,6 @@ namespace detail {
 
 } // namespace detail
 
-// Deep-copies every entity and its Components... from src into dst,
-// preserving entity identity. dst must be an empty registry (a requirement
-// of entt::basic_snapshot_loader).
 template<typename... Components>
 auto clone_registry(entt::registry const &src, entt::registry &dst) -> void {
     std::vector<std::any> values;

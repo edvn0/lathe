@@ -56,15 +56,11 @@ struct std::formatter<SlangLibraryErrorType> : std::formatter<std::string_view> 
 class SlangLibrary {
 public:
     SlangLibrary() noexcept;
-
     ~SlangLibrary();
 
     SlangLibrary(SlangLibrary const &) = delete;
-
     auto operator=(SlangLibrary const &) -> SlangLibrary & = delete;
-
     SlangLibrary(SlangLibrary &&other) noexcept;
-
     auto operator=(SlangLibrary &&other) noexcept -> SlangLibrary &;
 
     [[nodiscard]]
@@ -88,7 +84,6 @@ public:
 
     [[nodiscard]]
     auto valid() const noexcept -> bool;
-
     [[nodiscard]]
     auto path() const noexcept -> std::filesystem::path const &;
 
@@ -96,8 +91,7 @@ public:
 
 private:
     struct Impl;
+    std::unique_ptr<Impl> impl_;
 
     explicit SlangLibrary(std::unique_ptr<Impl> impl) noexcept;
-
-    std::unique_ptr<Impl> impl_;
 };

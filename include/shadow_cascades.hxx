@@ -13,45 +13,44 @@
 // 2048, so halving their resolution costs no visible detail while cutting
 // their fill-rate/bandwidth 4x. Packed side-by-side into one atlas row
 // (variable-width tiles), not a uniform grid -- see shadow_cascade_offset_x.
-inline constexpr std::array<std::uint32_t, shadow_cascade_count> shadow_cascade_resolutions = {2048, 2048, 1024,
-                                                                                                1024};
+inline constexpr std::array<std::uint32_t, shadow_cascade_count> shadow_cascade_resolutions = {2048, 2048, 1024, 1024};
 
 namespace shadow_atlas_detail {
 
-[[nodiscard]] constexpr auto sum(std::array<std::uint32_t, shadow_cascade_count> const &values) noexcept
-        -> std::uint32_t {
-    std::uint32_t total = 0;
+    [[nodiscard]] constexpr auto sum(std::array<std::uint32_t, shadow_cascade_count> const &values) noexcept
+            -> std::uint32_t {
+        std::uint32_t total = 0;
 
-    for (auto const value: values) {
-        total += value;
+        for (auto const value: values) {
+            total += value;
+        }
+
+        return total;
     }
 
-    return total;
-}
+    [[nodiscard]] constexpr auto max_value(std::array<std::uint32_t, shadow_cascade_count> const &values) noexcept
+            -> std::uint32_t {
+        std::uint32_t result = 0;
 
-[[nodiscard]] constexpr auto max_value(std::array<std::uint32_t, shadow_cascade_count> const &values) noexcept
-        -> std::uint32_t {
-    std::uint32_t result = 0;
+        for (auto const value: values) {
+            result = value > result ? value : result;
+        }
 
-    for (auto const value: values) {
-        result = value > result ? value : result;
+        return result;
     }
 
-    return result;
-}
+    [[nodiscard]] constexpr auto prefix_offsets(std::array<std::uint32_t, shadow_cascade_count> const &values) noexcept
+            -> std::array<std::uint32_t, shadow_cascade_count> {
+        std::array<std::uint32_t, shadow_cascade_count> offsets{};
+        std::uint32_t running = 0;
 
-[[nodiscard]] constexpr auto prefix_offsets(std::array<std::uint32_t, shadow_cascade_count> const &values) noexcept
-        -> std::array<std::uint32_t, shadow_cascade_count> {
-    std::array<std::uint32_t, shadow_cascade_count> offsets{};
-    std::uint32_t running = 0;
+        for (std::uint32_t i = 0; i < shadow_cascade_count; ++i) {
+            offsets[i] = running;
+            running += values[i];
+        }
 
-    for (std::uint32_t i = 0; i < shadow_cascade_count; ++i) {
-        offsets[i] = running;
-        running += values[i];
+        return offsets;
     }
-
-    return offsets;
-}
 
 } // namespace shadow_atlas_detail
 

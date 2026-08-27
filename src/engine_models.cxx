@@ -2,6 +2,8 @@
 
 #include "primitive_meshes.hxx"
 
+#include "renderer.hxx"
+
 namespace {
 
     auto to_renderer_error(ModelLoadError error) -> RendererError {

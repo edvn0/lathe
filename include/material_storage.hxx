@@ -14,13 +14,12 @@
 #include <optional>
 
 #include "buffer.hxx"
-#include "device_error.hxx"
 #include "error_context.hxx"
 #include "forward.hxx"
-#include "image_storage.hxx"
-#include "sampler_storage.hxx"
-#include "shadow_cascades.hxx"
 #include "material.hxx"
+
+#include "image.hxx"
+#include "sampler.hxx"
 
 
 struct MaterialCreateInfo {

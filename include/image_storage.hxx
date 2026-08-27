@@ -16,21 +16,6 @@
 #include "forward.hxx"
 #include "image.hxx"
 
-inline constexpr auto invalid_image_index = std::numeric_limits<std::uint32_t>::max();
-
-struct ImageHandle {
-    std::uint32_t index = invalid_image_index;
-
-    std::uint32_t generation = 0;
-
-    [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return generation != 0 && index != invalid_image_index;
-    }
-
-    auto operator==(ImageHandle const &) const -> bool = default;
-};
-
 enum class ImageDescriptorClass : std::uint8_t {
     sampled_2d,
     sampled_cube,
@@ -41,17 +26,12 @@ enum class ImageDescriptorClass : std::uint8_t {
 
 struct ImageDescriptorRecord {
     VkImageView sampled_2d = VK_NULL_HANDLE;
-
     VkImageView sampled_cube = VK_NULL_HANDLE;
-
     VkImageView sampled_2d_array = VK_NULL_HANDLE;
-
     VkImageView storage_2d = VK_NULL_HANDLE;
-
     VkImageView storage_2d_array = VK_NULL_HANDLE;
 
     std::uint64_t revision = 0;
-
     bool occupied = false;
 };
 

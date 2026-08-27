@@ -42,10 +42,7 @@ struct SwapchainBeginFrameError {
 
     Kind kind = Kind::fatal_error;
 
-    // Populated for Vulkan-call failures (report_vk_error in swapchain.cxx);
-    // left empty for control-flow cases like `recreated` that aren't really
-    // failures.
-    std::optional<ErrorContext> context;
+    std::optional<ErrorContext> context{std::nullopt};
 };
 
 template<>

@@ -12,11 +12,11 @@
 #include <optional>
 #include <vector>
 
-#include "geometry.hxx"
-#include "sampler.hxx"
-#include "material.hxx"
 #include "error_context.hxx"
 #include "forward.hxx"
+#include "geometry.hxx"
+#include "material.hxx"
+#include "sampler.hxx"
 
 struct ModelVertex {
     glm::vec3 position{};

@@ -6,15 +6,29 @@
 #include "device_error.hxx"
 #include "forward.hxx"
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <span>
 #include <string_view>
+#include <type_traits>
 
 enum class BufferMemory : std::uint8_t {
+    // GPU-local memory.
+    //
+    // Not required to be HOST_VISIBLE and normally not CPU mapped.
+    // Populate using transfers from an upload buffer.
     device,
+
+    // CPU -> GPU memory.
+    //
+    // Persistently mapped and optimized for sequential CPU writes.
     upload,
+
+    // GPU -> CPU memory.
+    //
+    // Persistently mapped and preferably HOST_CACHED for efficient CPU reads.
     readback,
 };
 
@@ -35,6 +49,16 @@ struct Buffer {
 
     Buffer(Buffer &&other) noexcept;
     auto operator=(Buffer &&other) noexcept -> Buffer &;
+
+    [[nodiscard]]
+    auto valid() const noexcept -> bool {
+        return buffer != VK_NULL_HANDLE;
+    }
+
+    [[nodiscard]]
+    auto mapped() const noexcept -> bool {
+        return allocation_info.pMappedData != nullptr;
+    }
 
     [[nodiscard]]
     auto mapped_data() noexcept -> std::byte * {
@@ -59,16 +83,6 @@ struct Buffer {
     }
 
     [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return buffer != VK_NULL_HANDLE;
-    }
-
-    [[nodiscard]]
-    auto mapped() const noexcept -> bool {
-        return allocation_info.pMappedData != nullptr;
-    }
-
-    [[nodiscard]]
     auto size() const noexcept -> VkDeviceSize {
         return buffer_size;
     }
@@ -77,24 +91,43 @@ struct Buffer {
     auto write(VkDeviceSize offset, std::span<const std::byte> data) -> std::expected<void, DeviceError>;
 
     template<typename T, std::size_t Extent = std::dynamic_extent>
+        requires(!std::same_as<std::remove_cv_t<T>, std::byte>)
     [[nodiscard]]
     auto write(VkDeviceSize offset, std::span<const T, Extent> data) -> std::expected<void, DeviceError> {
-        return write(offset, std::span<const std::byte>{std::as_bytes(data)});
+
+        auto const bytes = std::as_bytes(data);
+
+        return write(offset, std::span<const std::byte>{
+                                     bytes.data(),
+                                     bytes.size(),
+                             });
     }
 
     template<typename T, std::size_t Extent = std::dynamic_extent>
+        requires(!std::same_as<std::remove_cv_t<T>, std::byte>)
     [[nodiscard]]
     auto write(VkDeviceSize offset, std::span<T, Extent> data) -> std::expected<void, DeviceError> {
-        return write(offset, std::span<const std::byte>{std::as_bytes(data)});
+
+        return write(offset, std::span<const T, Extent>{
+                                     data.data(),
+                                     data.size(),
+                             });
     }
 
     [[nodiscard]]
     auto read(VkDeviceSize offset, std::span<std::byte> destination) -> std::expected<void, DeviceError>;
 
-    template<typename T>
+    template<typename T, std::size_t Extent = std::dynamic_extent>
+        requires(!std::same_as<std::remove_cv_t<T>, std::byte>)
     [[nodiscard]]
-    auto read(VkDeviceSize offset, std::span<T> destination) -> std::expected<void, DeviceError> {
-        return read(offset, std::as_writable_bytes(destination));
+    auto read(VkDeviceSize offset, std::span<T, Extent> destination) -> std::expected<void, DeviceError> {
+
+        auto const bytes = std::as_writable_bytes(destination);
+
+        return read(offset, std::span<std::byte>{
+                                    bytes.data(),
+                                    bytes.size(),
+                            });
     }
 
     [[nodiscard]]
@@ -103,6 +136,7 @@ struct Buffer {
     [[nodiscard]]
     auto invalidate(VkDeviceSize offset = 0, VkDeviceSize size = VK_WHOLE_SIZE) -> std::expected<void, DeviceError>;
 
+    [[nodiscard]]
     auto zero() -> std::expected<void, DeviceError>;
 
     auto destroy() noexcept -> void;
@@ -117,7 +151,7 @@ struct Buffer {
 
 private:
     [[nodiscard]]
-    auto validate_range(VkDeviceSize offset, VkDeviceSize size) const noexcept -> bool;
+    auto validate_range(VkDeviceSize offset, VkDeviceSize range_size) const noexcept -> bool;
 
     VmaAllocator allocator = VK_NULL_HANDLE;
     VkDeviceSize buffer_size = 0;

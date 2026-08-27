@@ -9,8 +9,10 @@
 #include "model.hxx"
 #include "player_camera.hxx"
 #include "player_controller.hxx"
+#include "render_stage.hxx"
 #include "scene.hxx"
 #include "shader_hot_reload_watcher.hxx"
+#include "terminal_widget.hxx"
 
 struct KeyPressedEvent {
     std::int32_t key{};
@@ -126,6 +128,8 @@ struct Application {
     double last_mouse_x = 0.0;
     double last_mouse_y = 0.0;
     bool has_last_mouse_position = false;
+
+    gui::TerminalWidget terminal_widget;
 
     auto update(float delta_time) -> void;
 

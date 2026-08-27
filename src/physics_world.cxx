@@ -99,7 +99,7 @@ struct PhysicsWorld::Impl {
 
     ArenaAllocator arena{512 * 1024};
 
-debug_draw::DebugRenderer *debug_renderer = nullptr;
+    debug_draw::DebugRenderer *debug_renderer = nullptr;
 
     ThreadPoolTaskScheduler task_scheduler; // must outlive world; declared before it, constructed first
 
@@ -224,9 +224,7 @@ auto PhysicsWorld::remove_body(entt::entity entity) -> void {
     impl_->bodies.erase(it);
 }
 
-auto PhysicsWorld::attach_debug_drawer(
-    debug_draw::DebugRenderer &renderer
-) -> void {
+auto PhysicsWorld::attach_debug_drawer(debug_draw::DebugRenderer &renderer) -> void {
     impl_->debug_renderer = &renderer;
     impl_->world->setDebugDrawer(renderer.bullet_debug_draw());
 }

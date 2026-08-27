@@ -9,7 +9,7 @@
 #include <volk.h>
 
 #include "error_context.hxx"
-#include "image_storage.hxx"
+#include "image.hxx"
 
 enum class ForwardTargetErrorType : std::uint8_t {
     invalid_argument,

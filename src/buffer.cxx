@@ -1,21 +1,40 @@
 #include "buffer.hxx"
 
 #include "context.hxx"
+#include "logger.hxx"
+#include "vk_object_name.hxx"
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace {
 
     [[nodiscard]]
+    auto requires_mapping(BufferMemory memory) noexcept -> bool {
+
+        switch (memory) {
+            case BufferMemory::device:
+                return false;
+
+            case BufferMemory::upload:
+            case BufferMemory::readback:
+                return true;
+        }
+
+        return false;
+    }
+
+    [[nodiscard]]
     auto make_allocation_create_info(BufferMemory memory) -> VmaAllocationCreateInfo {
+
         VmaAllocationCreateInfo create_info{
-                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                .flags = 0,
                 .usage = VMA_MEMORY_USAGE_AUTO,
-                .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                .requiredFlags = 0,
                 .preferredFlags = 0,
                 .memoryTypeBits = 0,
                 .pool = VK_NULL_HANDLE,
@@ -26,27 +45,61 @@ namespace {
 
         switch (memory) {
             case BufferMemory::device:
+                //
+                // Proper device-local memory.
+                //
+                // There is deliberately no HOST_VISIBLE requirement and no
+                // persistent mapping request here.
+                //
+                // A buffer can still have a valid VkDeviceAddress while residing
+                // entirely in GPU-local, non-host-visible memory.
+                //
                 create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
-                create_info.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
                 create_info.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
                 break;
 
             case BufferMemory::upload:
+                //
+                // CPU -> GPU.
+                //
+                // Persistent mapping avoids map/unmap overhead for transient and
+                // streaming uploads.
+                //
+                // SEQUENTIAL_WRITE tells VMA that CPU access primarily consists of
+                // sequential writes, allowing it to pick an appropriate memory
+                // type such as write-combined memory where applicable.
+                //
                 create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
 
-                create_info.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+                create_info.flags =
+                        VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+                create_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 
                 create_info.preferredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
                 break;
 
             case BufferMemory::readback:
+                //
+                // GPU -> CPU.
+                //
+                // RANDOM is the appropriate VMA host-access mode for memory that
+                // the CPU genuinely reads.
+                //
+                // HOST_CACHED is particularly useful for large readbacks such as
+                // screenshots.
+                //
+                // HOST_COHERENT is not required. invalidate() handles
+                // non-coherent allocations correctly.
+                //
                 create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
 
-                create_info.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+                create_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+
+                create_info.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 
                 create_info.preferredFlags = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
@@ -57,24 +110,8 @@ namespace {
     }
 
     [[nodiscard]]
-    auto set_buffer_debug_name(VulkanContext const &ctx, VkBuffer buffer, char const *debug_name) -> VkResult {
-        if (vkSetDebugUtilsObjectNameEXT == nullptr) {
-            return VK_SUCCESS;
-        }
-
-        auto const name_info = VkDebugUtilsObjectNameInfoEXT{
-                .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
-                .pNext = nullptr,
-                .objectType = VK_OBJECT_TYPE_BUFFER,
-                .objectHandle = reinterpret_cast<std::uint64_t>(buffer),
-                .pObjectName = debug_name,
-        };
-
-        return vkSetDebugUtilsObjectNameEXT(ctx.device, &name_info);
-    }
-
-    [[nodiscard]]
     auto make_buffer_error(std::string_view message, VkResult result) -> DeviceError {
+
         return DeviceError::buffer_creation(message, result);
     }
 
@@ -89,6 +126,7 @@ Buffer::Buffer(Buffer &&other) noexcept :
     buffer_size(std::exchange(other.buffer_size, 0)) {}
 
 auto Buffer::operator=(Buffer &&other) noexcept -> Buffer & {
+
     if (this == &other) {
         return *this;
     }
@@ -111,6 +149,7 @@ auto Buffer::operator=(Buffer &&other) noexcept -> Buffer & {
 }
 
 auto Buffer::validate_range(VkDeviceSize offset, VkDeviceSize range_size) const noexcept -> bool {
+
     if (!valid() || !mapped()) {
         return false;
     }
@@ -127,6 +166,7 @@ auto Buffer::validate_range(VkDeviceSize offset, VkDeviceSize range_size) const 
 }
 
 auto Buffer::write(VkDeviceSize offset, std::span<const std::byte> data) -> std::expected<void, DeviceError> {
+
     if (data.empty()) {
         return {};
     }
@@ -134,7 +174,9 @@ auto Buffer::write(VkDeviceSize offset, std::span<const std::byte> data) -> std:
     auto const write_size = static_cast<VkDeviceSize>(data.size_bytes());
 
     if (!validate_range(offset, write_size)) {
-        return std::unexpected{make_buffer_error("Buffer write range is invalid", VK_ERROR_MEMORY_MAP_FAILED)};
+
+        return std::unexpected{
+                make_buffer_error("Buffer write range is invalid or buffer is not mapped", VK_ERROR_MEMORY_MAP_FAILED)};
     }
 
     std::memcpy(mapped_data() + offset, data.data(), data.size_bytes());
@@ -143,6 +185,7 @@ auto Buffer::write(VkDeviceSize offset, std::span<const std::byte> data) -> std:
 }
 
 auto Buffer::read(VkDeviceSize offset, std::span<std::byte> destination) -> std::expected<void, DeviceError> {
+
     if (destination.empty()) {
         return {};
     }
@@ -150,13 +193,14 @@ auto Buffer::read(VkDeviceSize offset, std::span<std::byte> destination) -> std:
     auto const read_size = static_cast<VkDeviceSize>(destination.size_bytes());
 
     if (!validate_range(offset, read_size)) {
-        return std::unexpected{make_buffer_error("Buffer read range is invalid", VK_ERROR_MEMORY_MAP_FAILED)};
+
+        return std::unexpected{
+                make_buffer_error("Buffer read range is invalid or buffer is not mapped", VK_ERROR_MEMORY_MAP_FAILED)};
     }
 
-    auto invalidated = invalidate(offset, read_size);
+    if (auto invalidated = invalidate(offset, read_size); !invalidated) {
 
-    if (!invalidated) {
-        return std::unexpected(std::move(invalidated.error()));
+        return std::unexpected{std::move(invalidated.error())};
     }
 
     std::memcpy(destination.data(), mapped_data() + offset, destination.size_bytes());
@@ -165,8 +209,11 @@ auto Buffer::read(VkDeviceSize offset, std::span<std::byte> destination) -> std:
 }
 
 auto Buffer::flush(VkDeviceSize offset, VkDeviceSize flush_size) -> std::expected<void, DeviceError> {
+
     if (!validate_range(offset, flush_size)) {
-        return std::unexpected{make_buffer_error("Buffer flush range is invalid", VK_ERROR_MEMORY_MAP_FAILED)};
+
+        return std::unexpected{
+                make_buffer_error("Buffer flush range is invalid or buffer is not mapped", VK_ERROR_MEMORY_MAP_FAILED)};
     }
 
     auto const result = vmaFlushAllocation(allocator, allocation, offset, flush_size);
@@ -178,15 +225,12 @@ auto Buffer::flush(VkDeviceSize offset, VkDeviceSize flush_size) -> std::expecte
     return {};
 }
 
-auto Buffer::zero() -> std::expected<void, DeviceError> {
-    std::memset(mapped_data(), 0, size());
-
-    return flush(0, size());
-}
-
 auto Buffer::invalidate(VkDeviceSize offset, VkDeviceSize invalidate_size) -> std::expected<void, DeviceError> {
+
     if (!validate_range(offset, invalidate_size)) {
-        return std::unexpected{make_buffer_error("Buffer invalidate range is invalid", VK_ERROR_MEMORY_MAP_FAILED)};
+
+        return std::unexpected{make_buffer_error("Buffer invalidate range is invalid or buffer is not mapped",
+                                                 VK_ERROR_MEMORY_MAP_FAILED)};
     }
 
     auto const result = vmaInvalidateAllocation(allocator, allocation, offset, invalidate_size);
@@ -198,20 +242,39 @@ auto Buffer::invalidate(VkDeviceSize offset, VkDeviceSize invalidate_size) -> st
     return {};
 }
 
+auto Buffer::zero() -> std::expected<void, DeviceError> {
+
+    if (!valid() || !mapped()) {
+        return std::unexpected{
+                make_buffer_error("Cannot zero an invalid or unmapped buffer", VK_ERROR_MEMORY_MAP_FAILED)};
+    }
+
+    std::memset(mapped_data(), 0, static_cast<std::size_t>(buffer_size));
+
+    return flush(0, buffer_size);
+}
+
 auto Buffer::destroy() noexcept -> void {
     if (allocator != VK_NULL_HANDLE && buffer != VK_NULL_HANDLE) {
+
         vmaDestroyBuffer(allocator, buffer, allocation);
     }
 
     buffer = VK_NULL_HANDLE;
+
     allocation = VK_NULL_HANDLE;
+
     allocation_info = {};
+
     device_address = 0;
+
     allocator = VK_NULL_HANDLE;
+
     buffer_size = 0;
 }
 
 auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> std::expected<Buffer, DeviceError> {
+
     if (create_info.size == 0) {
         return std::unexpected{
                 make_buffer_error("Buffer size must be greater than zero", VK_ERROR_INITIALIZATION_FAILED)};
@@ -221,7 +284,7 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
         return std::unexpected{make_buffer_error("Buffer usage must not be zero", VK_ERROR_INITIALIZATION_FAILED)};
     }
 
-    auto const vk_create_info = VkBufferCreateInfo{
+    VkBufferCreateInfo const vk_create_info{
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .pNext = nullptr,
             .flags = create_info.flags,
@@ -235,6 +298,7 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
     auto allocation_create_info = make_allocation_create_info(create_info.memory);
 
     Buffer result{};
+
     result.allocator = ctx.allocator;
     result.buffer_size = create_info.size;
 
@@ -244,27 +308,38 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
     if (vk_result != VK_SUCCESS) {
         result.allocator = VK_NULL_HANDLE;
         result.buffer_size = 0;
-
         return std::unexpected{make_buffer_error("vmaCreateBuffer failed", vk_result)};
     }
 
-    if (result.allocation_info.pMappedData == nullptr) {
+    //
+    // upload/readback explicitly requested persistent mappings.
+    //
+    // device buffers deliberately do not.
+    //
+    if (requires_mapping(create_info.memory) && result.allocation_info.pMappedData == nullptr) {
         result.destroy();
-
-        return std::unexpected{
-                make_buffer_error("VMA returned an unmapped buffer allocation", VK_ERROR_MEMORY_MAP_FAILED)};
+        return std::unexpected{make_buffer_error("VMA returned an unmapped host-visible buffer allocation",
+                                                 VK_ERROR_MEMORY_MAP_FAILED)};
     }
+
+    assert(!create_info.debug_name.empty() && "Creating a buffer requires a name");
 
     if (!create_info.debug_name.empty()) {
         auto const debug_name = std::string{create_info.debug_name};
-
         vmaSetAllocationName(ctx.allocator, result.allocation, debug_name.c_str());
-
-        static_cast<void>(set_buffer_debug_name(ctx, result.buffer, debug_name.c_str()));
+        static_cast<void>(vk::set_object_name(ctx.device, VK_OBJECT_TYPE_BUFFER, vk::object_handle(result.buffer),
+                                              debug_name.c_str()));
     }
 
-    if (create_info.usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
-        auto const address_info = VkBufferDeviceAddressInfo{
+    //
+    // Buffer Device Address is independent of CPU visibility/mapping.
+    //
+    // A fully device-local allocation can and normally should still expose a
+    // VkDeviceAddress when SHADER_DEVICE_ADDRESS usage was requested.
+    //
+    if ((create_info.usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
+
+        VkBufferDeviceAddressInfo const address_info{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
                 .pNext = nullptr,
                 .buffer = result.buffer,
@@ -273,15 +348,15 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
         result.device_address = vkGetBufferDeviceAddress(ctx.device, &address_info);
 
         if (result.device_address == 0) {
+            error("We requested BDA for buffer '{}' but "
+                  "vkGetBufferDeviceAddress returned zero",
+                  create_info.debug_name);
+
             result.destroy();
 
             return std::unexpected{
                     make_buffer_error("vkGetBufferDeviceAddress returned zero", VK_ERROR_INITIALIZATION_FAILED)};
         }
-    }
-
-    if (!result.zero()) {
-        return std::unexpected(make_buffer_error("Could not memset to zero", VK_ERROR_MEMORY_MAP_FAILED));
     }
 
     return std::expected<Buffer, DeviceError>{std::in_place, std::move(result)};
