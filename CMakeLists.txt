@@ -647,16 +647,6 @@ mark_target_includes_system(EnTT::EnTT)
 
 # ------------------------------------------------------------------------------
 # Shader push-constant reflection
-#
-# Push constants are the one place a Slang shader and this codebase's C++
-# must agree byte-for-byte on layout -- buffer-device-address indices plus a
-# handful of plain scalars; everything else goes through bindless descriptor
-# indices instead. Rather than hand-syncing that layout on both sides, each
-# push-constant-bearing shader entry point is compiled to SPIR-V at build
-# time and its push_constant block is read back with SPIRV-Reflect to
-# generate the matching C++ struct (generated/include/shader_push_constants.hxx),
-# so a shader-side field that changes without a corresponding update fails
-# the build instead of corrupting a GPU read at runtime.
 # ------------------------------------------------------------------------------
 
 CPMAddPackage(
@@ -666,151 +656,284 @@ CPMAddPackage(
     DOWNLOAD_ONLY YES
 )
 
-# The reflection tool always runs on the machine driving the build (the
-# Docker container), never on the cross-compilation target. When
-# TARGET=windows-mingw, CMAKE_CXX_COMPILER is the mingw cross compiler and
-# produces a .exe the container can't execute, so this looks up a native
-# compiler explicitly instead.
+# The reflection tool is always a host executable.
 find_program(
     shader_reflect_host_compiler
     NAMES g++ c++ clang++
     REQUIRED
 )
 
-# slangc likewise has to be one the build machine can execute. When
-# TARGET=windows-mingw, slang_bin_dir (above) holds the *Windows* Slang
-# distribution -- its slangc.exe can't run inside the Linux container -- so
-# a Linux slangc is fetched separately here whenever cross-compiling,
-# independent of how slang_root was resolved for the target itself.
+# slangc must likewise execute on the host.
 if(CMAKE_CROSSCOMPILING)
-  if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
-    set(
-        shader_reflect_host_slang_archive_name
-        "slang-${SLANG_VERSION}-linux-aarch64.tar.gz"
+    if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+        set(
+            shader_reflect_host_slang_archive_name
+            "slang-${SLANG_VERSION}-linux-aarch64.tar.gz"
+        )
+    else()
+        set(
+            shader_reflect_host_slang_archive_name
+            "slang-${SLANG_VERSION}-linux-x86_64.tar.gz"
+        )
+    endif()
+
+    string(
+        CONCAT
+        shader_reflect_host_slang_url
+        "https://github.com/shader-slang/slang/releases/download/"
+        "v${SLANG_VERSION}/"
+        "${shader_reflect_host_slang_archive_name}"
     )
-  else()
-    set(
-        shader_reflect_host_slang_archive_name
-        "slang-${SLANG_VERSION}-linux-x86_64.tar.gz"
+
+    CPMAddPackage(
+        NAME slang_binary_host
+        URL "${shader_reflect_host_slang_url}"
+        DOWNLOAD_ONLY YES
     )
-  endif()
 
-  string(
-      CONCAT
-      shader_reflect_host_slang_url
-      "https://github.com/shader-slang/slang/releases/download/"
-      "v${SLANG_VERSION}/"
-      "${shader_reflect_host_slang_archive_name}"
-  )
-
-  CPMAddPackage(
-      NAME slang_binary_host
-      URL "${shader_reflect_host_slang_url}"
-      DOWNLOAD_ONLY YES
-  )
-
-  set(shader_reflect_slangc "${slang_binary_host_SOURCE_DIR}/bin/slangc")
+    set(
+        shader_reflect_slangc
+        "${slang_binary_host_SOURCE_DIR}/bin/slangc"
+    )
 else()
-  set(shader_reflect_slangc "${slang_bin_dir}/slangc")
+    set(
+        shader_reflect_slangc
+        "${slang_bin_dir}/slangc"
+    )
 endif()
 
-set(shader_reflect_generated_dir "${CMAKE_BINARY_DIR}/generated")
-set(shader_reflect_tool "${shader_reflect_generated_dir}/tools/reflect_push_constants")
+set(
+    shader_reflect_generated_dir
+    "${CMAKE_BINARY_DIR}/generated"
+)
+
+set(
+    shader_reflect_tool
+    "${shader_reflect_generated_dir}/tools/reflect_push_constants"
+)
+
+set(
+    shader_reflect_tool_thread_flags
+)
+
+if(CMAKE_HOST_SYSTEM_NAME MATCHES "Linux|Darwin")
+    list(
+        APPEND
+        shader_reflect_tool_thread_flags
+        -pthread
+    )
+endif()
 
 add_custom_command(
-    OUTPUT "${shader_reflect_tool}"
+    OUTPUT
+        "${shader_reflect_tool}"
+
     COMMAND
-        "${CMAKE_COMMAND}" -E make_directory "${shader_reflect_generated_dir}/tools"
+        "${CMAKE_COMMAND}"
+        -E
+        make_directory
+        "${shader_reflect_generated_dir}/tools"
+
     COMMAND
         "${shader_reflect_host_compiler}"
-        -std=c++20 -O2
+        -std=c++23
+        -O2
+        ${shader_reflect_tool_thread_flags}
         "-I${SPIRV-Reflect_SOURCE_DIR}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/shader_reflect/reflect_push_constants.cpp"
+        "-I${BS_thread_pool_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/shader_reflect/reflect_push_constants.cxx"
         "${SPIRV-Reflect_SOURCE_DIR}/spirv_reflect.c"
-        -o "${shader_reflect_tool}"
+        -o
+        "${shader_reflect_tool}"
+
     DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/tools/shader_reflect/reflect_push_constants.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/shader_reflect/reflect_push_constants.cxx"
         "${SPIRV-Reflect_SOURCE_DIR}/spirv_reflect.c"
         "${SPIRV-Reflect_SOURCE_DIR}/spirv_reflect.h"
+
     VERBATIM
 )
 
-file(
-    GLOB_RECURSE shader_reflect_slang_sources
-    CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/*.slang"
+set(
+    shader_reflect_spv_outputs
 )
 
-set(shader_reflect_fragments "")
+set(
+    shader_reflect_arguments
+)
 
-# add_shader_push_constant(<slang file> <entry point> <stage> <generated struct name>)
 #
-# Compiles one shader entry point to SPIR-V and reflects its push_constant
-# block into a C++ struct fragment, appended to shader_reflect_fragments for
-# later concatenation into shader_push_constants.hxx.
-macro(add_shader_push_constant slang_file entry_point stage struct_name)
-    set(spv_path "${shader_reflect_generated_dir}/spv/${struct_name}.spv")
-    set(fragment_path "${shader_reflect_generated_dir}/push_constants/${struct_name}.inc")
+# add_shader_push_constant(
+#     <slang file>
+#     <entry point>
+#     <stage>
+#     <generated struct name>
+# )
+#
+# Each shader is compiled independently, allowing Ninja to parallelise Slang
+# compilation. The resulting SPIR-V files are reflected together in one host
+# process below.
+#
+macro(
+    add_shader_push_constant
+    slang_file
+    entry_point
+    stage
+    struct_name
+)
+    set(
+        shader_source
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/${slang_file}"
+    )
+
+    set(
+        spv_path
+        "${shader_reflect_generated_dir}/spv/${struct_name}.spv"
+    )
+
+    set(
+        depfile_path
+        "${shader_reflect_generated_dir}/spv/${struct_name}.d"
+    )
 
     add_custom_command(
-        OUTPUT "${spv_path}"
+        OUTPUT
+            "${spv_path}"
+
         COMMAND
-            "${CMAKE_COMMAND}" -E make_directory "${shader_reflect_generated_dir}/spv"
+            "${CMAKE_COMMAND}"
+            -E
+            make_directory
+            "${shader_reflect_generated_dir}/spv"
+
         COMMAND
             "${shader_reflect_slangc}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/${slang_file}"
-            -entry "${entry_point}"
-            -stage "${stage}"
-            -target spirv
-            -profile spirv_1_6
+            "${shader_source}"
+            -entry
+            "${entry_point}"
+            -stage
+            "${stage}"
+            -target
+            spirv
+            -profile
+            spirv_1_6
             -matrix-layout-column-major
             -force-glsl-scalar-layout
-            -I "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders"
-            -o "${spv_path}"
-        DEPENDS ${shader_reflect_slang_sources}
+            -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders"
+            -depfile
+            "${depfile_path}"
+            -o
+            "${spv_path}"
+
+        DEPENDS
+            "${shader_source}"
+
+        DEPFILE
+            "${depfile_path}"
+
         VERBATIM
     )
 
-    add_custom_command(
-        OUTPUT "${fragment_path}"
-        COMMAND
-            "${CMAKE_COMMAND}" -E make_directory "${shader_reflect_generated_dir}/push_constants"
-        COMMAND
-            "${shader_reflect_tool}" "${spv_path}" "${struct_name}" "${fragment_path}"
-        DEPENDS "${spv_path}" "${shader_reflect_tool}"
-        VERBATIM
+    list(
+        APPEND
+        shader_reflect_spv_outputs
+        "${spv_path}"
     )
 
-    list(APPEND shader_reflect_fragments "${fragment_path}")
+    list(
+        APPEND
+        shader_reflect_arguments
+        --shader
+        "${struct_name}"
+        "${spv_path}"
+    )
 endmacro()
 
-add_shader_push_constant(forward_geom.slang     mainVs    vertex        ForwardPushConstants)
-add_shader_push_constant(shadow_depth.slang     mainVs    vertex        ShadowPushConstants)
-add_shader_push_constant(composite.slang        mainFs    fragment      CompositePushConstants)
-add_shader_push_constant(light_icons.slang      main_task amplification LightIconPushConstants)
-add_shader_push_constant(frustum_cull.slang     mainCs    compute       CullPushConstants)
-add_shader_push_constant(bloom_downsample.slang mainCs    compute       DownsamplePushConstants)
-add_shader_push_constant(bloom_upsample.slang   mainCs    compute       UpsamplePushConstants)
+add_shader_push_constant(
+    forward_geom.slang
+    mainVs
+    vertex
+    ForwardPushConstants
+)
 
-list(JOIN shader_reflect_fragments " " shader_reflect_fragments_joined)
+add_shader_push_constant(
+    shadow_depth.slang
+    mainVs
+    vertex
+    ShadowPushConstants
+)
 
-set(shader_push_constants_header "${shader_reflect_generated_dir}/include/shader_push_constants.hxx")
+add_shader_push_constant(
+    composite.slang
+    mainFs
+    fragment
+    CompositePushConstants
+)
+
+add_shader_push_constant(
+    light_icons.slang
+    main_task
+    amplification
+    LightIconPushConstants
+)
+
+add_shader_push_constant(
+    frustum_cull.slang
+    mainCs
+    compute
+    CullPushConstants
+)
+
+add_shader_push_constant(
+    bloom_downsample.slang
+    mainCs
+    compute
+    DownsamplePushConstants
+)
+
+add_shader_push_constant(
+    bloom_upsample.slang
+    mainCs
+    compute
+    UpsamplePushConstants
+)
+
+set(
+    shader_push_constants_header
+    "${shader_reflect_generated_dir}/include/shader_push_constants.hxx"
+)
+
+set(
+    shader_push_constants_preamble
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/shader_push_constants_preamble.hxx"
+)
 
 add_custom_command(
-    OUTPUT "${shader_push_constants_header}"
+    OUTPUT
+        "${shader_push_constants_header}"
+
     COMMAND
-        "${CMAKE_COMMAND}" -E make_directory "${shader_reflect_generated_dir}/include"
-    COMMAND
-        bash -c "cat '${CMAKE_CURRENT_SOURCE_DIR}/cmake/shader_push_constants_preamble.hxx' ${shader_reflect_fragments_joined} > '${shader_push_constants_header}'"
+        "${shader_reflect_tool}"
+        --output
+        "${shader_push_constants_header}"
+        --preamble
+        "${shader_push_constants_preamble}"
+        ${shader_reflect_arguments}
+
     DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/shader_push_constants_preamble.hxx"
-        ${shader_reflect_fragments}
+        "${shader_reflect_tool}"
+        "${shader_push_constants_preamble}"
+        ${shader_reflect_spv_outputs}
+
+    COMMAND_EXPAND_LISTS
     VERBATIM
 )
 
 add_custom_target(
     generate_shader_push_constants
-    DEPENDS "${shader_push_constants_header}"
+    DEPENDS
+        "${shader_push_constants_header}"
 )
 
 # ------------------------------------------------------------------------------
