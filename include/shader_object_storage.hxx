@@ -11,19 +11,13 @@
 
 #include "error_context.hxx"
 #include "forward.hxx"
+#include "object_pool.hxx"
 #include "shader_object.hxx"
 
-struct ShaderObjectHandle {
-    std::uint32_t index = 0;
-    std::uint32_t generation = 0;
-
-    [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return generation != 0;
-    }
-
-    auto operator==(ShaderObjectHandle const &) const -> bool = default;
-};
+// Sentinel stays the default (u32 max): index 0 is a legitimate slot here
+// (unlike MaterialHandle), so validity is effectively generation != 0
+// alone -- see PipelineHandle's identical reasoning.
+using ShaderObjectHandle = Handle<ShaderObjectSet>;
 
 enum class ShaderObjectStorageErrorType : std::uint8_t {
     invalid_argument,
@@ -111,12 +105,12 @@ public:
 
     [[nodiscard]]
     auto size() const noexcept -> std::uint32_t {
-        return size_;
+        return slots_.size();
     }
 
     [[nodiscard]]
     auto capacity() const noexcept -> std::uint32_t {
-        return capacity_;
+        return slots_.capacity();
     }
 
     [[nodiscard]]
@@ -127,36 +121,17 @@ public:
     auto destroy() noexcept -> void;
 
 private:
-    struct Slot {
-        ShaderObjectSet shader_object{};
-
-        std::uint32_t generation = 1;
-        std::uint32_t next_free = 0;
-
-        bool occupied = false;
-    };
-
-    [[nodiscard]]
-    auto slot_for(ShaderObjectHandle handle) noexcept -> Slot *;
-
-    [[nodiscard]]
-    auto slot_for(ShaderObjectHandle handle) const noexcept -> Slot const *;
-
     VulkanContext *context_ = nullptr;
 
-    std::vector<Slot> slots_;
+    ObjectPool<ShaderObjectSet> slots_;
 
-    // Guards free_head_/slots_[*].next_free/occupied/size_ -- see the
-    // identical comment on PipelineStorage::slot_mutex_. ShaderObjectSet
-    // creation has no shared VkPipelineCache-equivalent (confirmed: neither
-    // create_linked nor create_compute touch anything but per-call state and
-    // the VkDevice itself), so this is the only synchronization
-    // ShaderObjectStorage needs for concurrent create_linked/create_compute.
+    // Guards slots_.allocate()/release() -- see the identical comment on
+    // PipelineStorage::slot_mutex_. ShaderObjectSet creation has no shared
+    // VkPipelineCache-equivalent (confirmed: neither create_linked nor
+    // create_compute touch anything but per-call state and the VkDevice
+    // itself), so this is the only synchronization ShaderObjectStorage needs
+    // for concurrent create_linked/create_compute.
     std::mutex slot_mutex_;
-
-    std::uint32_t free_head_ = 0;
-    std::uint32_t capacity_ = 0;
-    std::uint32_t size_ = 0;
 
     VkDescriptorSetLayout global_descriptor_set_layout_ = VK_NULL_HANDLE;
     std::string debug_name_;

@@ -29,7 +29,9 @@
 #include "image_storage.hxx"
 #include "load_model.hxx"
 #include "material_storage.hxx" // TextureHandle, MaterialCreateInfo now live here
+#include "mesh_storage.hxx"
 #include "model.hxx"
+#include "model_storage.hxx"
 #include "pipeline_graph_repository.hxx"
 #include "pipeline_storage.hxx"
 #include "render_stage.hxx"
@@ -402,23 +404,6 @@ struct Renderer {
     static auto thread_pool() noexcept -> BS::priority_thread_pool &;
 
 private:
-    struct Submesh {
-        std::array<MeshGeometry, lod_count> lods{};
-        MaterialHandle material{};
-
-        glm::vec3 bounds_min{-0.5F};
-        glm::vec3 bounds_max{0.5F};
-    };
-
-    struct MeshSlot {
-        std::vector<Submesh> submeshes;
-
-        std::uint32_t generation = 1;
-        std::uint32_t next_free = 0;
-
-        bool occupied = false;
-    };
-
     struct Submission {
         MeshHandle mesh{};
         glm::mat4 transform{1.0F};
@@ -574,25 +559,6 @@ private:
         std::array<std::uint32_t, shadow_cascade_count> shadow_mask_indirect_count{};
     };
 
-    struct ModelDraw {
-        MeshHandle mesh{};
-        glm::mat4 local_transform{1.0F};
-    };
-
-    struct ModelSlot {
-        std::vector<ModelDraw> draws;
-
-        glm::vec3 bounds_min{-0.5F};
-        glm::vec3 bounds_max{0.5F};
-
-        std::uint32_t generation = 1;
-        std::uint32_t next_free = 0;
-
-        std::vector<ModelCpuLight> lights{};
-
-        bool occupied = false;
-    };
-
     struct ModelSubmission {
         ModelHandle model{};
         glm::mat4 transform{1.0F};
@@ -600,16 +566,16 @@ private:
     };
 
     [[nodiscard]]
-    auto mesh_slot(MeshHandle handle) noexcept -> MeshSlot *;
+    auto mesh_slot(MeshHandle handle) noexcept -> MeshSlotData *;
 
     [[nodiscard]]
-    auto mesh_slot(MeshHandle handle) const noexcept -> MeshSlot const *;
+    auto mesh_slot(MeshHandle handle) const noexcept -> MeshSlotData const *;
 
     [[nodiscard]]
-    auto model_slot(ModelHandle handle) noexcept -> ModelSlot *;
+    auto model_slot(ModelHandle handle) noexcept -> ModelSlotData *;
 
     [[nodiscard]]
-    auto model_slot(ModelHandle handle) const noexcept -> ModelSlot const *;
+    auto model_slot(ModelHandle handle) const noexcept -> ModelSlotData const *;
 
     [[nodiscard]]
     auto upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame) -> std::expected<void, RendererError>;
@@ -662,11 +628,8 @@ private:
     std::vector<PointLight> point_light_submissions_;
     std::vector<SpotLight> spot_light_submissions_;
 
-    std::vector<MeshSlot> meshes_;
-    std::uint32_t mesh_free_head_ = 0;
-
-    std::vector<ModelSlot> models_;
-    std::uint32_t model_free_head_ = 0;
+    MeshStorage mesh_storage_;
+    ModelStorage model_storage_;
 
     std::unordered_map<std::size_t, ModelHandle> model_cache_;
 

@@ -114,9 +114,7 @@ PipelineStorage::~PipelineStorage() { destroy(); }
 
 PipelineStorage::PipelineStorage(PipelineStorage &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), slots_(std::move(other.slots_)),
-    free_head_(std::exchange(other.free_head_, 0)), capacity_(std::exchange(other.capacity_, 0)),
-    size_(std::exchange(other.size_, 0)), cache_(std::exchange(other.cache_, VK_NULL_HANDLE)),
-    cache_file_path_(std::move(other.cache_file_path_)),
+    cache_(std::exchange(other.cache_, VK_NULL_HANDLE)), cache_file_path_(std::move(other.cache_file_path_)),
     global_descriptor_set_layout_(std::exchange(other.global_descriptor_set_layout_, nullptr)),
     debug_name_(std::move(other.debug_name_)) {}
 
@@ -130,12 +128,6 @@ auto PipelineStorage::operator=(PipelineStorage &&other) noexcept -> PipelineSto
     context_ = std::exchange(other.context_, nullptr);
 
     slots_ = std::move(other.slots_);
-
-    free_head_ = std::exchange(other.free_head_, 0);
-
-    capacity_ = std::exchange(other.capacity_, 0);
-
-    size_ = std::exchange(other.size_, 0);
 
     cache_ = std::exchange(other.cache_, VK_NULL_HANDLE);
 
@@ -158,23 +150,12 @@ auto PipelineStorage::create(VulkanContext &context, PipelineStorageCreateInfo c
     PipelineStorage storage;
 
     storage.context_ = &context;
-    storage.capacity_ = create_info.capacity;
 
     storage.debug_name_ = std::string{create_info.debug_name};
 
-    storage.slots_.resize(create_info.capacity);
+    storage.slots_ = ObjectPool<Pipeline>::create(create_info.capacity);
     storage.global_descriptor_set_layout_ = create_info.global_descriptor_set_layout;
     storage.cache_file_path_ = create_info.cache_file_path;
-
-    /*
-     * Index zero is allowed because generation zero is
-     * the invalid handle sentinel.
-     */
-    storage.free_head_ = 0;
-
-    for (std::uint32_t index = 0; index < create_info.capacity; ++index) {
-        storage.slots_[index].next_free = index + 1 < create_info.capacity ? index + 1 : create_info.capacity;
-    }
 
     debug("[PipelineStorage::create] loading cache from '{}'", create_info.cache_file_path.string());
 
@@ -197,10 +178,6 @@ auto PipelineStorage::create(VulkanContext &context, PipelineStorageCreateInfo c
         return std::unexpected(make_error(PipelineStorageErrorType::pipeline_error));
     }
 
-    /*
-     * capacity_ is used as the end-of-list sentinel,
-     * because zero is a valid slot.
-     */
     return storage;
 }
 
@@ -224,28 +201,18 @@ auto PipelineStorage::create_graphics(GraphicsPipelineCreateInfo const &create_i
 
     std::lock_guard<std::mutex> const lock{slot_mutex_};
 
-    if (free_head_ >= capacity_) {
+    auto allocation = slots_.allocate();
+
+    if (!allocation) {
         pipeline->destroy();
         return std::unexpected(make_error(PipelineStorageErrorType::capacity_exceeded));
     }
 
-    auto const index = free_head_;
-    auto &slot = slots_[index];
+    auto &[handle, slot] = *allocation;
 
-    free_head_ = slot.next_free;
+    slot = std::move(*pipeline);
 
-    slot.pipeline = std::move(*pipeline);
-
-    slot.next_free = capacity_;
-    slot.occupied = true;
-
-    ++size_;
-
-
-    return PipelineHandle{
-            .index = index,
-            .generation = slot.generation,
-    };
+    return handle;
 }
 
 auto PipelineStorage::create_compute(ComputePipelineCreateInfo const &create_info)
@@ -264,27 +231,18 @@ auto PipelineStorage::create_compute(ComputePipelineCreateInfo const &create_inf
 
     std::lock_guard<std::mutex> const lock{slot_mutex_};
 
-    if (free_head_ >= capacity_) {
+    auto allocation = slots_.allocate();
+
+    if (!allocation) {
         pipeline->destroy();
         return std::unexpected(make_error(PipelineStorageErrorType::capacity_exceeded));
     }
 
-    auto const index = free_head_;
-    auto &slot = slots_[index];
+    auto &[handle, slot] = *allocation;
 
-    free_head_ = slot.next_free;
+    slot = std::move(*pipeline);
 
-    slot.pipeline = std::move(*pipeline);
-
-    slot.next_free = capacity_;
-    slot.occupied = true;
-
-    ++size_;
-
-    return PipelineHandle{
-            .index = index,
-            .generation = slot.generation,
-    };
+    return handle;
 }
 
 auto PipelineStorage::save_cache_to_disk() const -> std::expected<void, PipelineStorageError> {
@@ -318,52 +276,33 @@ auto PipelineStorage::save_cache_to_disk() const -> std::expected<void, Pipeline
 }
 
 auto PipelineStorage::destroy_pipeline(PipelineHandle handle) -> std::expected<void, PipelineStorageError> {
-    auto *slot = slot_for(handle);
+    auto *slot = slots_.get(handle);
 
     if (slot == nullptr) {
         return std::unexpected(make_error(PipelineStorageErrorType::invalid_handle));
     }
 
-    slot->pipeline.destroy();
-    slot->occupied = false;
+    slot->destroy();
 
-    ++slot->generation;
-
-    if (slot->generation == 0) {
-        slot->generation = 1;
-    }
-
-    slot->next_free = free_head_;
-    free_head_ = handle.index;
-
-    --size_;
+    static_cast<void>(slots_.release(handle));
 
     return {};
 }
 
-auto PipelineStorage::get(PipelineHandle handle) noexcept -> Pipeline * {
-    auto *slot = slot_for(handle);
+auto PipelineStorage::get(PipelineHandle handle) noexcept -> Pipeline * { return slots_.get(handle); }
 
-    return slot != nullptr ? &slot->pipeline : nullptr;
-}
-
-auto PipelineStorage::get(PipelineHandle handle) const noexcept -> Pipeline const * {
-    auto const *slot = slot_for(handle);
-
-    return slot != nullptr ? &slot->pipeline : nullptr;
-}
+auto PipelineStorage::get(PipelineHandle handle) const noexcept -> Pipeline const * { return slots_.get(handle); }
 
 auto PipelineStorage::destroy() noexcept -> void {
-    for (auto &slot: slots_) {
-        if (!slot.occupied) {
+    for (std::uint32_t index = 0; index < slots_.capacity(); ++index) {
+        if (!slots_.occupied_at(index)) {
             continue;
         }
 
-        slot.pipeline.destroy();
-        slot.occupied = false;
+        slots_.get_at(index)->destroy();
     }
 
-    slots_.clear();
+    slots_ = ObjectPool<Pipeline>{};
 
     if (context_ != nullptr && cache_ != VK_NULL_HANDLE) {
         vkDestroyPipelineCache(context_->device, cache_, nullptr);
@@ -373,37 +312,6 @@ auto PipelineStorage::destroy() noexcept -> void {
     cache_file_path_.clear();
 
     context_ = nullptr;
-    free_head_ = 0;
-    capacity_ = 0;
-    size_ = 0;
 
     debug_name_.clear();
-}
-
-auto PipelineStorage::slot_for(PipelineHandle handle) noexcept -> Slot * {
-    if (!handle.valid() || handle.index >= slots_.size()) {
-        return nullptr;
-    }
-
-    auto &slot = slots_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return nullptr;
-    }
-
-    return &slot;
-}
-
-auto PipelineStorage::slot_for(PipelineHandle handle) const noexcept -> Slot const * {
-    if (!handle.valid() || handle.index >= slots_.size()) {
-        return nullptr;
-    }
-
-    auto const &slot = slots_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return nullptr;
-    }
-
-    return &slot;
 }

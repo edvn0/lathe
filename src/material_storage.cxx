@@ -39,7 +39,6 @@ namespace {
 
 MaterialStorage::MaterialStorage(MaterialStorage &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), slots_(std::move(other.slots_)),
-    free_head_(std::exchange(other.free_head_, 0)), capacity_(std::exchange(other.capacity_, 0)),
     gpu_buffer_(std::move(other.gpu_buffer_)), upload_buffer_(std::move(other.upload_buffer_)) {}
 
 auto MaterialStorage::operator=(MaterialStorage &&other) noexcept -> MaterialStorage & {
@@ -51,8 +50,6 @@ auto MaterialStorage::operator=(MaterialStorage &&other) noexcept -> MaterialSto
 
     context_ = std::exchange(other.context_, nullptr);
     slots_ = std::move(other.slots_);
-    free_head_ = std::exchange(other.free_head_, 0);
-    capacity_ = std::exchange(other.capacity_, 0);
     gpu_buffer_ = std::move(other.gpu_buffer_);
     upload_buffer_ = std::move(other.upload_buffer_);
 
@@ -107,53 +104,42 @@ auto MaterialStorage::create(VulkanContext &context, MaterialStorageCreateInfo c
     MaterialStorage storage;
 
     storage.context_ = &context;
-    storage.capacity_ = create_info.capacity;
     storage.gpu_buffer_ = std::move(*gpu_buffer);
     storage.upload_buffer_ = std::move(*upload_buffer);
-    storage.slots_.resize(create_info.capacity);
+    storage.slots_ = ObjectPool<MaterialSlotData, 0>::create(create_info.capacity);
 
-    auto &default_slot = storage.slots_[0];
+    // Slot zero is permanently reserved as the default material: it's the
+    // very first allocation out of a freshly-created pool, so it always
+    // lands on index 0 with generation 1, and this is the only allocate()
+    // call MaterialStorage ever makes without exposing a way to release it
+    // (see the explicit handle.index == 0 guard in destroy_material below).
+    auto &default_slot = storage.slots_.allocate()->second;
+
     default_slot.material = GpuMaterial{};
-    default_slot.occupied = true;
     default_slot.dirty = true;
-    default_slot.generation = 1;
-
-    for (std::uint32_t index = 1; index < create_info.capacity; ++index) {
-        auto &slot = storage.slots_[index];
-
-        slot.next_free = index + 1 < create_info.capacity ? index + 1 : 0;
-    }
-
-    storage.free_head_ = 1;
 
     return storage;
 }
 
 auto MaterialStorage::create_material(GpuMaterial const &material)
         -> std::expected<MaterialHandle, MaterialStorageError> {
-    if (free_head_ == 0) {
+    auto allocation = slots_.allocate();
+
+    if (!allocation) {
         return std::unexpected(make_error(MaterialStorageErrorType::capacity_exceeded));
     }
 
-    auto const index = free_head_;
-    auto &slot = slots_[index];
-
-    free_head_ = slot.next_free;
+    auto &[handle, slot] = *allocation;
 
     slot.material = material;
-    slot.next_free = 0;
-    slot.occupied = true;
     slot.dirty = true;
 
-    return MaterialHandle{
-            .index = index,
-            .generation = slot.generation,
-    };
+    return handle;
 }
 
 auto MaterialStorage::update_material(MaterialHandle handle, GpuMaterial const &material)
         -> std::expected<void, MaterialStorageError> {
-    auto *slot = slot_for(handle);
+    auto *slot = slots_.get(handle);
 
     if (slot == nullptr) {
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
@@ -171,36 +157,32 @@ auto MaterialStorage::destroy_material(MaterialHandle handle) -> std::expected<v
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
     }
 
-    auto *slot = slot_for(handle);
+    auto *slot = slots_.get(handle);
 
     if (slot == nullptr) {
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
     }
 
+    // ObjectPool::release() deliberately leaves the payload as-is (see its
+    // doc comment), so zero the published GPU data ourselves before freeing
+    // the slot, matching the pre-refactor behavior of never leaving a freed
+    // slot's last material contents sitting in the GPU buffer.
     slot->material = GpuMaterial{};
-    slot->occupied = false;
     slot->dirty = true;
 
-    ++slot->generation;
-
-    if (slot->generation == 0) {
-        slot->generation = 1;
-    }
-
-    slot->next_free = free_head_;
-    free_head_ = handle.index;
+    static_cast<void>(slots_.release(handle));
 
     return {};
 }
 
 auto MaterialStorage::get(MaterialHandle handle) const noexcept -> GpuMaterial const * {
-    auto const *slot = slot_for(handle);
+    auto const *slot = slots_.get(handle);
 
     return slot != nullptr ? &slot->material : nullptr;
 }
 
 auto MaterialStorage::gpu_index(MaterialHandle handle) const noexcept -> std::uint32_t {
-    return slot_for(handle) != nullptr ? handle.index : 0;
+    return slots_.contains(handle) ? handle.index : 0;
 }
 
 auto MaterialStorage::prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame_index)
@@ -224,8 +206,8 @@ auto MaterialStorage::prepare_frame(VkCommandBuffer command_buffer, std::uint32_
     bool range_open = false;
     DirtyRange current_range{};
 
-    for (std::uint32_t index = 0; index < capacity_; ++index) {
-        auto &slot = slots_[index];
+    for (std::uint32_t index = 0; index < slots_.capacity(); ++index) {
+        auto &slot = *slots_.get_at(index);
 
         if (!slot.dirty) {
             if (range_open) {
@@ -322,7 +304,7 @@ auto MaterialStorage::prepare_frame(VkCommandBuffer command_buffer, std::uint32_
         auto const end = range.first + range.count;
 
         for (auto index = range.first; index < end; ++index) {
-            slots_[index].dirty = false;
+            slots_.get_at(index)->dirty = false;
         }
     }
 
@@ -333,39 +315,9 @@ auto MaterialStorage::destroy() noexcept -> void {
     upload_buffer_.destroy();
     gpu_buffer_.destroy();
 
-    slots_.clear();
+    slots_ = ObjectPool<MaterialSlotData, 0>{};
 
     context_ = nullptr;
-    free_head_ = 0;
-    capacity_ = 0;
-}
-
-auto MaterialStorage::slot_for(MaterialHandle handle) noexcept -> Slot * {
-    if (handle.index >= slots_.size()) {
-        return nullptr;
-    }
-
-    auto &slot = slots_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return nullptr;
-    }
-
-    return &slot;
-}
-
-auto MaterialStorage::slot_for(MaterialHandle handle) const noexcept -> Slot const * {
-    if (handle.index >= slots_.size()) {
-        return nullptr;
-    }
-
-    auto const &slot = slots_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return nullptr;
-    }
-
-    return &slot;
 }
 
 auto to_gpu_material(MaterialCreateInfo const &create_info) noexcept -> GpuMaterial {

@@ -52,8 +52,7 @@ ImageStorage::~ImageStorage() { destroy(); }
 
 ImageStorage::ImageStorage(ImageStorage &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), slots_(std::move(other.slots_)),
-    default_upload_buffer_(std::move(other.default_upload_buffer_)), free_head_(std::exchange(other.free_head_, 0)),
-    capacity_(std::exchange(other.capacity_, 0)), size_(std::exchange(other.size_, 0)),
+    default_upload_buffer_(std::move(other.default_upload_buffer_)),
     defaults_uploaded_(std::exchange(other.defaults_uploaded_, false)),
     pending_uploads_(std::move(other.pending_uploads_)), debug_name_(std::move(other.debug_name_)) {}
 
@@ -69,12 +68,6 @@ auto ImageStorage::operator=(ImageStorage &&other) noexcept -> ImageStorage & {
     slots_ = std::move(other.slots_);
 
     default_upload_buffer_ = std::move(other.default_upload_buffer_);
-
-    free_head_ = std::exchange(other.free_head_, 0);
-
-    capacity_ = std::exchange(other.capacity_, 0);
-
-    size_ = std::exchange(other.size_, 0);
 
     defaults_uploaded_ = std::exchange(other.defaults_uploaded_, false);
 
@@ -93,30 +86,20 @@ auto ImageStorage::create(VulkanContext &context, ImageStorageCreateInfo const &
     ImageStorage storage;
 
     storage.context_ = &context;
-    storage.capacity_ = create_info.capacity;
 
     storage.debug_name_ = std::string{create_info.debug_name};
 
-    storage.slots_.resize(create_info.capacity);
+    storage.slots_ = ObjectPool<ImageSlotData>::create(create_info.capacity);
 
+    // The six default images are allocated first, in order, out of a
+    // freshly-created pool, so they always land on indices 0-5 -- matching
+    // default_image_handle()'s hard-coded indices.
     auto defaults = storage.create_default_images();
 
     if (!defaults) {
         storage.destroy();
 
         return std::unexpected(defaults.error());
-    }
-
-    /*
-     * Slots 0 through 5 are occupied by defaults.
-     * The ordinary free list begins at slot 6.
-     */
-    if (create_info.capacity > default_image_count) {
-        storage.free_head_ = default_image_count;
-
-        for (std::uint32_t index = default_image_count; index < create_info.capacity; ++index) {
-            storage.slots_[index].next_free = index + 1 < create_info.capacity ? index + 1 : 0;
-        }
     }
 
     return storage;
@@ -187,15 +170,10 @@ auto ImageStorage::create_default_images() -> std::expected<void, ImageStorageEr
             return std::unexpected(make_image_error(image.error()));
         }
 
-        auto &slot = slots_[index];
+        auto &slot = slots_.allocate()->second;
 
         slot.image = std::move(*image);
-        slot.generation = 1;
-        slot.next_free = 0;
-        slot.occupied = true;
         slot.protected_default = true;
-
-        ++size_;
     }
 
     return {};
@@ -206,12 +184,9 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info) -> std::expe
         return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
     }
 
-    if (free_head_ == 0) {
+    if (slots_.size() >= slots_.capacity()) {
         return std::unexpected(make_error(ImageStorageErrorType::capacity_exceeded));
     }
-
-    auto const index = free_head_;
-    auto &slot = slots_[index];
 
     auto image = Image::create(*context_, create_info);
 
@@ -219,21 +194,14 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info) -> std::expe
         return std::unexpected(make_image_error(image.error()));
     }
 
-    free_head_ = slot.next_free;
+    auto [handle, slot] = *slots_.allocate();
 
     slot.image = std::move(*image);
-    slot.next_free = 0;
-    slot.occupied = true;
     slot.protected_default = false;
 
     bump_revision(slot);
 
-    ++size_;
-
-    return ImageHandle{
-            .index = index,
-            .generation = slot.generation,
-    };
+    return handle;
 }
 
 auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels)
@@ -242,12 +210,9 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<co
         return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
     }
 
-    if (free_head_ == 0) {
+    if (slots_.size() >= slots_.capacity()) {
         return std::unexpected(make_error(ImageStorageErrorType::capacity_exceeded));
     }
-
-    auto const index = free_head_;
-    auto &slot = slots_[index];
 
     auto image = Image::create(*context_, create_info, pixels);
 
@@ -255,21 +220,14 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<co
         return std::unexpected(make_image_error(image.error()));
     }
 
-    free_head_ = slot.next_free;
+    auto [handle, slot] = *slots_.allocate();
 
     slot.image = std::move(*image);
-    slot.next_free = 0;
-    slot.occupied = true;
     slot.protected_default = false;
 
     bump_revision(slot);
 
-    ++size_;
-
-    return ImageHandle{
-            .index = index,
-            .generation = slot.generation,
-    };
+    return handle;
 }
 
 auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
@@ -278,7 +236,7 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<co
         return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
     }
 
-    if (free_head_ == 0) {
+    if (slots_.size() >= slots_.capacity()) {
         return std::unexpected(make_error(ImageStorageErrorType::capacity_exceeded));
     }
 
@@ -321,19 +279,12 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<co
         return std::unexpected(make_image_error(image.error()));
     }
 
-    auto const index = free_head_;
-    auto &slot = slots_[index];
-
-    free_head_ = slot.next_free;
+    auto [handle, slot] = *slots_.allocate();
 
     slot.image = std::move(*image);
-    slot.next_free = 0;
-    slot.occupied = true;
     slot.protected_default = false;
 
     bump_revision(slot);
-
-    ++size_;
 
     auto const mip_levels = create_info.mip_levels;
 
@@ -501,10 +452,7 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<co
 
     pending_uploads_.push_back(std::move(*staging));
 
-    return ImageHandle{
-            .index = index,
-            .generation = slot.generation,
-    };
+    return handle;
 }
 
 auto ImageStorage::upgrade_pending_image(ImageHandle handle, CompressedTexture const &texture,
@@ -514,7 +462,7 @@ auto ImageStorage::upgrade_pending_image(ImageHandle handle, CompressedTexture c
         return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
     }
 
-    auto *slot = slot_for(handle);
+    auto *slot = slots_.get(handle);
 
     if (slot == nullptr) {
         return std::unexpected(make_error(ImageStorageErrorType::invalid_handle));
@@ -713,20 +661,19 @@ auto ImageStorage::create_pending_image(ImageHandle fallback) -> std::expected<I
         return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
     }
 
-    auto const *fallback_slot = slot_for(fallback);
+    auto const *fallback_slot = slots_.get(fallback);
 
     if (fallback_slot == nullptr) {
         return std::unexpected(make_error(ImageStorageErrorType::invalid_handle));
     }
 
-    if (free_head_ == 0) {
+    if (slots_.size() >= slots_.capacity()) {
         return std::unexpected(make_error(ImageStorageErrorType::capacity_exceeded));
     }
 
-    auto const index = free_head_;
-    auto &slot = slots_[index];
-
-    free_head_ = slot.next_free;
+    // slots_'s backing storage is sized once at create() and never resized
+    // by allocate()/release(), so fallback_slot stays valid across this call.
+    auto [handle, slot] = *slots_.allocate();
 
     if (fallback_slot->is_alias) {
         slot.alias_sampled_2d = fallback_slot->alias_sampled_2d;
@@ -737,18 +684,11 @@ auto ImageStorage::create_pending_image(ImageHandle fallback) -> std::expected<I
     }
 
     slot.is_alias = true;
-    slot.next_free = 0;
-    slot.occupied = true;
     slot.protected_default = false;
 
     bump_revision(slot);
 
-    ++size_;
-
-    return ImageHandle{
-            .index = index,
-            .generation = slot.generation,
-    };
+    return handle;
 }
 
 auto ImageStorage::release_completed_uploads() -> void {
@@ -760,7 +700,7 @@ auto ImageStorage::release_completed_uploads() -> void {
 }
 
 auto ImageStorage::destroy_image(ImageHandle handle) -> std::expected<void, ImageStorageError> {
-    auto *slot = slot_for(handle);
+    auto *slot = slots_.get(handle);
 
     if (slot == nullptr) {
         return std::unexpected(make_error(ImageStorageErrorType::invalid_handle));
@@ -778,20 +718,9 @@ auto ImageStorage::destroy_image(ImageHandle handle) -> std::expected<void, Imag
         slot->image.destroy();
     }
 
-    slot->occupied = false;
-
     bump_revision(*slot);
 
-    ++slot->generation;
-
-    if (slot->generation == 0) {
-        slot->generation = 1;
-    }
-
-    slot->next_free = free_head_;
-    free_head_ = handle.index;
-
-    --size_;
+    static_cast<void>(slots_.release(handle));
 
     return {};
 }
@@ -819,7 +748,7 @@ auto ImageStorage::prepare_frame(VkCommandBuffer command_buffer) -> std::expecte
                 .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = slots_[index].image.image(),
+                .image = slots_.get_at(index)->image.image(),
                 .subresourceRange =
                         VkImageSubresourceRange{
                                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -872,7 +801,7 @@ auto ImageStorage::prepare_frame(VkCommandBuffer command_buffer) -> std::expecte
                 .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
                 .pNext = nullptr,
                 .srcBuffer = default_upload_buffer_.buffer,
-                .dstImage = slots_[index].image.image(),
+                .dstImage = slots_.get_at(index)->image.image(),
                 .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 .regionCount = 1,
                 .pRegions = &region,
@@ -896,7 +825,7 @@ auto ImageStorage::prepare_frame(VkCommandBuffer command_buffer) -> std::expecte
                 .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = slots_[index].image.image(),
+                .image = slots_.get_at(index)->image.image(),
                 .subresourceRange =
                         VkImageSubresourceRange{
                                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -928,13 +857,13 @@ auto ImageStorage::prepare_frame(VkCommandBuffer command_buffer) -> std::expecte
 }
 
 auto ImageStorage::get(ImageHandle handle) noexcept -> Image * {
-    auto *slot = slot_for(handle);
+    auto *slot = slots_.get(handle);
 
     return slot != nullptr ? &slot->image : nullptr;
 }
 
 auto ImageStorage::get(ImageHandle handle) const noexcept -> Image const * {
-    auto const *slot = slot_for(handle);
+    auto const *slot = slots_.get(handle);
 
     return slot != nullptr ? &slot->image : nullptr;
 }
@@ -947,105 +876,70 @@ auto ImageStorage::destroy() noexcept -> void {
     }
     pending_uploads_.clear();
 
-    for (auto &slot: slots_) {
-        if (!slot.occupied) {
+    for (std::uint32_t index = 0; index < slots_.capacity(); ++index) {
+        if (!slots_.occupied_at(index)) {
             continue;
         }
 
-        if (!slot.is_alias) {
-            slot.image.destroy();
-        }
+        auto *slot = slots_.get_at(index);
 
-        slot.occupied = false;
-        slot.is_alias = false;
+        if (!slot->is_alias) {
+            slot->image.destroy();
+        }
     }
 
-    slots_.clear();
+    slots_ = ObjectPool<ImageSlotData>{};
 
     context_ = nullptr;
-
-    free_head_ = 0;
-    capacity_ = 0;
-    size_ = 0;
 
     defaults_uploaded_ = false;
 
     debug_name_.clear();
 }
 
-auto ImageStorage::slot_for(ImageHandle handle) noexcept -> Slot * {
-    if (!handle.valid() || handle.index >= slots_.size()) {
-        return nullptr;
-    }
-
-    auto &slot = slots_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return nullptr;
-    }
-
-    return &slot;
-}
-
-auto ImageStorage::slot_for(ImageHandle handle) const noexcept -> Slot const * {
-    if (!handle.valid() || handle.index >= slots_.size()) {
-        return nullptr;
-    }
-
-    auto const &slot = slots_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return nullptr;
-    }
-
-    return &slot;
-}
-
 auto ImageStorage::descriptor_record(std::uint32_t index) const noexcept -> ImageDescriptorRecord {
-    if (index >= slots_.size()) {
+    auto const *slot = slots_.get_at(index);
+
+    if (slot == nullptr) {
         return {};
     }
 
-    auto const &slot = slots_[index];
+    auto const occupied = slots_.occupied_at(index);
 
-    if (!slot.occupied) {
+    if (!occupied) {
         return ImageDescriptorRecord{
-                .revision = slot.revision,
+                .revision = slot->revision,
                 .occupied = false,
         };
     }
 
-    if (slot.is_alias) {
+    if (slot->is_alias) {
         return ImageDescriptorRecord{
-                .sampled_2d = slot.alias_sampled_2d,
-                .storage_2d = slot.alias_storage_2d,
-                .revision = slot.revision,
+                .sampled_2d = slot->alias_sampled_2d,
+                .storage_2d = slot->alias_storage_2d,
+                .revision = slot->revision,
                 .occupied = true,
         };
     }
 
     return ImageDescriptorRecord{
-            .sampled_2d = slot.image.descriptor_view(ImageDescriptorView::sampled_2d),
-            .sampled_cube = slot.image.descriptor_view(ImageDescriptorView::sampled_cube),
-            .sampled_2d_array = slot.image.descriptor_view(ImageDescriptorView::sampled_2d_array),
-            .storage_2d = slot.image.descriptor_view(ImageDescriptorView::storage_2d),
-            .storage_2d_array = slot.image.descriptor_view(ImageDescriptorView::storage_2d_array),
-            .revision = slot.revision,
+            .sampled_2d = slot->image.descriptor_view(ImageDescriptorView::sampled_2d),
+            .sampled_cube = slot->image.descriptor_view(ImageDescriptorView::sampled_cube),
+            .sampled_2d_array = slot->image.descriptor_view(ImageDescriptorView::sampled_2d_array),
+            .storage_2d = slot->image.descriptor_view(ImageDescriptorView::storage_2d),
+            .storage_2d_array = slot->image.descriptor_view(ImageDescriptorView::storage_2d_array),
+            .revision = slot->revision,
             .occupied = true,
     };
 }
 
 auto ImageStorage::descriptor_revision(std::uint32_t index) const noexcept -> std::uint64_t {
-    if (index >= slots_.size()) {
-        return 0;
-    }
+    auto const *slot = slots_.get_at(index);
 
-    return slots_[index].revision;
+    return slot != nullptr ? slot->revision : 0;
 }
 
-auto ImageStorage::occupied(std::uint32_t index) const noexcept -> bool {
-    return index < slots_.size() && slots_[index].occupied;
-}
+auto ImageStorage::occupied(std::uint32_t index) const noexcept -> bool { return slots_.occupied_at(index); }
 
 auto ImageStorage::register_view(ImageViewRegistration const &registration)
         -> std::expected<ImageHandle, ImageStorageError> {
@@ -1054,28 +948,20 @@ auto ImageStorage::register_view(ImageViewRegistration const &registration)
         return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
     }
 
-    if (free_head_ == 0) {
+    auto allocation = slots_.allocate();
+
+    if (!allocation) {
         return std::unexpected(make_error(ImageStorageErrorType::capacity_exceeded));
     }
 
-    auto const index = free_head_;
-    auto &slot = slots_[index];
-
-    free_head_ = slot.next_free;
+    auto &[handle, slot] = *allocation;
 
     slot.alias_sampled_2d = registration.sampled_2d;
     slot.alias_storage_2d = registration.storage_2d;
     slot.is_alias = true;
-    slot.next_free = 0;
-    slot.occupied = true;
     slot.protected_default = false;
 
     bump_revision(slot);
 
-    ++size_;
-
-    return ImageHandle{
-            .index = index,
-            .generation = slot.generation,
-    };
+    return handle;
 }

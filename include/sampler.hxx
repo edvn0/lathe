@@ -3,20 +3,18 @@
 #include <cstdint>
 #include <limits>
 
+#include "handle.hxx"
+
 inline constexpr auto invalid_sampler_index = std::numeric_limits<std::uint32_t>::max();
 
-struct SamplerHandle {
-    std::uint32_t index = invalid_sampler_index;
+// Full definition lives in sampler_storage.hxx, where SamplerStorage's
+// ObjectPool<SamplerSlotData> is actually instantiated. Handle<T> never
+// stores or otherwise needs a complete T, so an incomplete forward
+// declaration here is enough to name SamplerHandle without pulling Vulkan
+// headers into every file that just needs the handle type.
+struct SamplerSlotData;
 
-    std::uint32_t generation = 0;
-
-    [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return generation != 0 && index != invalid_sampler_index;
-    }
-
-    auto operator==(SamplerHandle const &) const -> bool = default;
-};
+using SamplerHandle = Handle<SamplerSlotData>;
 
 enum class DefaultSampler : std::uint32_t {
     linear_repeat = 0,

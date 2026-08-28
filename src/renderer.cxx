@@ -1423,21 +1423,24 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     default_material_handle_ = def_mat;
 
-    meshes_.resize(create_info.mesh_capacity);
+    auto mesh_storage = MeshStorage::create(MeshStorageCreateInfo{.capacity = create_info.mesh_capacity});
 
-    for (std::uint32_t index = 1; index < create_info.mesh_capacity; ++index) {
-        meshes_[index].next_free = index + 1 < create_info.mesh_capacity ? index + 1 : 0;
+    if (!mesh_storage) {
+        error("Could not create mesh storage");
+        return std::unexpected(RendererError{.type = RendererErrorType::invalid_argument});
     }
 
-    mesh_free_head_ = 1;
+    mesh_storage_ = std::move(*mesh_storage);
 
-    models_.resize(create_info.model_capacity);
+    auto model_storage = ModelStorage::create(ModelStorageCreateInfo{.capacity = create_info.model_capacity});
 
-    for (std::uint32_t index = 1; index < create_info.model_capacity; ++index) {
-        models_[index].next_free = index + 1 < create_info.model_capacity ? index + 1 : 0;
+    if (!model_storage) {
+        error("Could not create model storage");
+        return std::unexpected(RendererError{.type = RendererErrorType::invalid_argument});
     }
 
-    model_free_head_ = 1;
+    model_storage_ = std::move(*model_storage);
+
     maximum_draw_count_ = create_info.maximum_draw_count;
     maximum_submission_count_ = create_info.maximum_submission_count;
     submissions_.reserve(maximum_submission_count_);
@@ -1889,27 +1892,13 @@ auto Renderer::destroy() noexcept -> void {
 
     clear_submissions();
 
-    for (auto &model: models_) {
-        model.draws.clear();
-        model.occupied = false;
-    }
-
-    models_.clear();
-
-    for (auto &mesh: meshes_) {
-        mesh.submeshes.clear();
-        mesh.occupied = false;
-    }
-
-    meshes_.clear();
+    model_storage_.destroy();
+    mesh_storage_.destroy();
 
     default_material_handle_ = {};
 
     forward_pipeline_ = {};
     composite_pipeline_ = {};
-
-    mesh_free_head_ = 0;
-    model_free_head_ = 0;
 
     maximum_draw_count_ = 0;
     maximum_submission_count_ = 0;
@@ -1992,9 +1981,11 @@ auto Renderer::create_model(Model const &model) -> std::expected<ModelHandle, Re
 
 auto Renderer::create_model(Model const &model, MaterialHandle fallback_material)
         -> std::expected<ModelHandle, RendererError> {
-    if (!initialized_ || model_free_head_ == 0) {
-        return std::unexpected(make_error(model_free_head_ == 0 ? RendererErrorType::capacity_exceeded
-                                                                : RendererErrorType::invalid_argument));
+    auto const model_capacity_exceeded = model_storage_.size() >= model_storage_.capacity();
+
+    if (!initialized_ || model_capacity_exceeded) {
+        return std::unexpected(make_error(model_capacity_exceeded ? RendererErrorType::capacity_exceeded
+                                                                   : RendererErrorType::invalid_argument));
     }
 
     if (material_storage_.get(fallback_material) == nullptr) {
@@ -2109,25 +2100,20 @@ auto Renderer::create_model(Model const &model, MaterialHandle fallback_material
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
 
-    auto const model_index = model_free_head_;
+    auto handle = model_storage_.create_model(ModelSlotData{
+            .draws = std::move(flattened_draws),
+            .bounds_min = model.bounds_min,
+            .bounds_max = model.bounds_max,
+            .lights = model.lights,
+    });
 
-    auto &destination = models_[model_index];
+    if (!handle) {
+        rollback_meshes();
 
-    model_free_head_ = destination.next_free;
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
 
-    destination.draws = std::move(flattened_draws);
-    destination.bounds_min = model.bounds_min;
-    destination.bounds_max = model.bounds_max;
-
-    destination.next_free = 0;
-    destination.occupied = true;
-
-    destination.lights = model.lights;
-
-    return ModelHandle{
-            .index = model_index,
-            .generation = destination.generation,
-    };
+    return *handle;
 }
 
 auto Renderer::model_bounds(ModelHandle model) const -> std::optional<std::pair<glm::vec3, glm::vec3>> {
@@ -2236,9 +2222,12 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    if (mesh_free_head_ == 0) {
+    if (mesh_storage_.size() >= mesh_storage_.capacity()) {
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
     }
+
+    std::vector<Submesh> submeshes;
+    submeshes.reserve(create_info.submeshes.size());
 
     for (auto const &submesh_info: create_info.submeshes) {
         auto const &lod0 = submesh_info.lods[0];
@@ -2261,19 +2250,8 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
         if (lod0.indices.bytes.offset % *stride != 0) {
             return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
-    }
 
-    auto const index = mesh_free_head_;
-    auto &slot = meshes_[index];
-
-    mesh_free_head_ = slot.next_free;
-
-    slot.submeshes.clear();
-
-    slot.submeshes.reserve(create_info.submeshes.size());
-
-    for (auto const &submesh_info: create_info.submeshes) {
-        slot.submeshes.push_back(Submesh{
+        submeshes.push_back(Submesh{
                 .lods = submesh_info.lods,
                 .material = submesh_info.material,
                 .bounds_min = submesh_info.bounds_min,
@@ -2281,33 +2259,21 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
         });
     }
 
-    slot.next_free = 0;
-    slot.occupied = true;
+    auto handle = mesh_storage_.create_mesh(std::move(submeshes));
 
-    return MeshHandle{
-            .index = index,
-            .generation = slot.generation,
-    };
+    if (!handle) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    return *handle;
 }
 
 auto Renderer::destroy_mesh(MeshHandle handle) -> std::expected<void, RendererError> {
-    auto *slot = mesh_slot(handle);
+    auto result = mesh_storage_.destroy_mesh(handle);
 
-    if (slot == nullptr) {
+    if (!result) {
         return std::unexpected(make_error(RendererErrorType::invalid_mesh));
     }
-
-    slot->submeshes.clear();
-    slot->occupied = false;
-
-    ++slot->generation;
-
-    if (slot->generation == 0) {
-        slot->generation = 1;
-    }
-
-    slot->next_free = mesh_free_head_;
-    mesh_free_head_ = handle.index;
 
     return {};
 }
@@ -3702,60 +3668,16 @@ auto Renderer::wait_idle() -> std::expected<void, RendererError> {
                                   });
 }
 
-auto Renderer::mesh_slot(MeshHandle handle) noexcept -> MeshSlot * {
-    if (handle.index >= meshes_.size()) {
-        return nullptr;
-    }
+auto Renderer::mesh_slot(MeshHandle handle) noexcept -> MeshSlotData * { return mesh_storage_.get(handle); }
 
-    auto &slot = meshes_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return nullptr;
-    }
-
-    return &slot;
+auto Renderer::mesh_slot(MeshHandle handle) const noexcept -> MeshSlotData const * {
+    return mesh_storage_.get(handle);
 }
 
-auto Renderer::mesh_slot(MeshHandle handle) const noexcept -> MeshSlot const * {
-    if (handle.index >= meshes_.size()) {
-        return nullptr;
-    }
+auto Renderer::model_slot(ModelHandle handle) noexcept -> ModelSlotData * { return model_storage_.get(handle); }
 
-    auto const &slot = meshes_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return nullptr;
-    }
-
-    return &slot;
-}
-
-auto Renderer::model_slot(ModelHandle handle) noexcept -> ModelSlot * {
-    if (handle.index >= models_.size()) {
-        return nullptr;
-    }
-
-    auto &slot = models_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return nullptr;
-    }
-
-    return &slot;
-}
-
-auto Renderer::model_slot(ModelHandle handle) const noexcept -> ModelSlot const * {
-    if (handle.index >= models_.size()) {
-        return nullptr;
-    }
-
-    auto const &slot = models_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return nullptr;
-    }
-
-    return &slot;
+auto Renderer::model_slot(ModelHandle handle) const noexcept -> ModelSlotData const * {
+    return model_storage_.get(handle);
 }
 
 void Renderer::record_bloom_pass(VkCommandBuffer command_buffer, std::uint32_t frame_index, ImageHandle input_hdr,

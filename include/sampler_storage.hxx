@@ -13,6 +13,7 @@
 
 #include "error_context.hxx"
 #include "forward.hxx"
+#include "object_pool.hxx"
 #include "sampler.hxx"
 
 inline constexpr std::uint32_t default_sampler_count = 5;
@@ -90,6 +91,22 @@ struct SamplerDescriptorRecord {
     bool occupied = false;
 };
 
+// Backs SamplerHandle = Handle<SamplerSlotData> (see sampler.hxx) and is the
+// payload type of SamplerStorage's ObjectPool. descriptor_revision is
+// deliberately NOT reset by ObjectPool across a release()/allocate() cycle
+// -- it's bumped monotonically by create_sampler()/destroy_sampler() so
+// GpuResourceTable::prepare_frame's per-frame cached revisions never mistake
+// a reused slot for an unchanged one.
+struct SamplerSlotData {
+    VkSampler sampler = VK_NULL_HANDLE;
+
+    std::uint64_t descriptor_revision = 1;
+
+    SamplerClass sampler_class = SamplerClass::regular;
+
+    bool protected_default = false;
+};
+
 class SamplerStorage {
 public:
     SamplerStorage() = default;
@@ -115,7 +132,7 @@ public:
 
     [[nodiscard]]
     auto capacity() const noexcept -> std::uint32_t {
-        return capacity_;
+        return slots_.capacity();
     }
 
     [[nodiscard]]
@@ -164,26 +181,9 @@ public:
     auto destroy() noexcept -> void;
 
 private:
-    struct Slot {
-        VkSampler sampler = VK_NULL_HANDLE;
-
-        std::uint32_t generation = 1;
-        std::uint32_t next_free = 0;
-
-        std::uint64_t descriptor_revision = 1;
-
-        SamplerClass sampler_class = SamplerClass::regular;
-
-        bool occupied = false;
-        bool protected_default = false;
-    };
-
     VulkanContext *context_ = nullptr;
 
-    std::vector<Slot> slots_;
-
-    std::uint32_t free_head_ = 0;
-    std::uint32_t capacity_ = 0;
+    ObjectPool<SamplerSlotData> slots_;
 
     std::string debug_name_;
 };

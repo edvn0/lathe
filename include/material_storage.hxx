@@ -17,6 +17,7 @@
 #include "error_context.hxx"
 #include "forward.hxx"
 #include "material.hxx"
+#include "object_pool.hxx"
 
 #include "image.hxx"
 #include "sampler.hxx"
@@ -99,6 +100,13 @@ struct MaterialStorageCreateInfo {
     std::string_view debug_name = "material_storage";
 };
 
+// Backs MaterialHandle = Handle<MaterialSlotData, 0> (see material.hxx).
+struct MaterialSlotData {
+    GpuMaterial material{};
+
+    bool dirty = false;
+};
+
 struct MaterialStorage {
     MaterialStorage() = default;
 
@@ -144,33 +152,15 @@ struct MaterialStorage {
 
     [[nodiscard]]
     auto capacity() const noexcept -> std::uint32_t {
-        return capacity_;
+        return slots_.capacity();
     }
 
     auto destroy() noexcept -> void;
 
 private:
-    struct Slot {
-        GpuMaterial material{};
-
-        std::uint32_t generation = 1;
-        std::uint32_t next_free = 0;
-
-        bool occupied = false;
-        bool dirty = false;
-    };
-
-    [[nodiscard]]
-    auto slot_for(MaterialHandle handle) noexcept -> Slot *;
-
-    [[nodiscard]]
-    auto slot_for(MaterialHandle handle) const noexcept -> Slot const *;
-
     VulkanContext *context_ = nullptr;
 
-    std::vector<Slot> slots_;
-    std::uint32_t free_head_ = 0;
-    std::uint32_t capacity_ = 0;
+    ObjectPool<MaterialSlotData, 0> slots_;
 
     Buffer gpu_buffer_{};
     Buffer upload_buffer_{};

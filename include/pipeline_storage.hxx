@@ -12,19 +12,14 @@
 
 #include "error_context.hxx"
 #include "forward.hxx"
+#include "object_pool.hxx"
 #include "pipeline.hxx"
 
-struct PipelineHandle {
-    std::uint32_t index = 0;
-    std::uint32_t generation = 0;
-
-    [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return generation != 0;
-    }
-
-    auto operator==(PipelineHandle const &) const -> bool = default;
-};
+// Sentinel stays the default (u32 max): index 0 is a legitimate pipeline
+// slot here (unlike MaterialHandle), so validity is effectively
+// generation != 0 alone -- a default-constructed index can never collide
+// with a real slot index.
+using PipelineHandle = Handle<Pipeline>;
 
 enum class PipelineStorageErrorType : std::uint8_t {
     invalid_argument,
@@ -116,12 +111,12 @@ public:
 
     [[nodiscard]]
     auto size() const noexcept -> std::uint32_t {
-        return size_;
+        return slots_.size();
     }
 
     [[nodiscard]]
     auto capacity() const noexcept -> std::uint32_t {
-        return capacity_;
+        return slots_.capacity();
     }
 
     [[nodiscard]]
@@ -140,38 +135,19 @@ public:
     auto destroy() noexcept -> void;
 
 private:
-    struct Slot {
-        Pipeline pipeline{};
-
-        std::uint32_t generation = 1;
-        std::uint32_t next_free = 0;
-
-        bool occupied = false;
-    };
-
-    [[nodiscard]]
-    auto slot_for(PipelineHandle handle) noexcept -> Slot *;
-
-    [[nodiscard]]
-    auto slot_for(PipelineHandle handle) const noexcept -> Slot const *;
-
     VulkanContext *context_ = nullptr;
 
-    std::vector<Slot> slots_;
+    ObjectPool<Pipeline> slots_;
 
-    // Guards free_head_/slots_[*].next_free/occupied/size_ -- plain C++
-    // bookkeeping mutated by create_graphics/create_compute, which
-    // register_pipelines_parallel's build phase calls concurrently from
-    // multiple threads. Deliberately separate from Pipeline's own
-    // VkPipelineCache mutex (see pipeline.cxx): this one is cheap
-    // (index/pointer juggling only) and must not wrap the expensive
-    // vkCreateGraphicsPipelines/vkCreateComputePipelines call itself, or it
-    // would serialize away the benefit of building pipelines in parallel.
+    // Guards slots_.allocate()/release() -- plain C++ bookkeeping mutated by
+    // create_graphics/create_compute, which register_pipelines_parallel's
+    // build phase calls concurrently from multiple threads. Deliberately
+    // separate from Pipeline's own VkPipelineCache mutex (see pipeline.cxx):
+    // this one is cheap (index/pointer juggling only) and must not wrap the
+    // expensive vkCreateGraphicsPipelines/vkCreateComputePipelines call
+    // itself, or it would serialize away the benefit of building pipelines
+    // in parallel.
     std::mutex slot_mutex_;
-
-    std::uint32_t free_head_ = 0;
-    std::uint32_t capacity_ = 0;
-    std::uint32_t size_ = 0;
 
     VkPipelineCache cache_ = VK_NULL_HANDLE;
     std::filesystem::path cache_file_path_;

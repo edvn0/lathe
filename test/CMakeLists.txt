@@ -28,6 +28,34 @@ doctest_discover_tests(
 )
 
 add_executable(
+    object_pool_tests
+    object_pool_test.cxx
+)
+
+target_include_directories(
+    object_pool_tests
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/include"
+)
+
+target_compile_definitions(object_pool_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
+
+target_link_libraries(
+    object_pool_tests
+    PRIVATE
+        mingw-vulkan-core
+        doctest::doctest_with_main
+        spdlog::spdlog
+)
+
+configure_compiler_options(object_pool_tests)
+
+doctest_discover_tests(
+    object_pool_tests
+    ADD_LABELS 1
+)
+
+add_executable(
     texture_pipeline_tests
     texture_pipeline_test.cxx
 )

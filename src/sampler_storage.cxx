@@ -192,7 +192,6 @@ SamplerStorage::~SamplerStorage() { destroy(); }
 
 SamplerStorage::SamplerStorage(SamplerStorage &&other) noexcept :
     context_{std::exchange(other.context_, nullptr)}, slots_{std::move(other.slots_)},
-    free_head_{std::exchange(other.free_head_, 0)}, capacity_{std::exchange(other.capacity_, 0)},
     debug_name_{std::move(other.debug_name_)} {}
 
 auto SamplerStorage::operator=(SamplerStorage &&other) noexcept -> SamplerStorage & {
@@ -205,10 +204,6 @@ auto SamplerStorage::operator=(SamplerStorage &&other) noexcept -> SamplerStorag
     context_ = std::exchange(other.context_, nullptr);
 
     slots_ = std::move(other.slots_);
-
-    free_head_ = std::exchange(other.free_head_, 0);
-
-    capacity_ = std::exchange(other.capacity_, 0);
 
     debug_name_ = std::move(other.debug_name_);
 
@@ -224,10 +219,9 @@ auto SamplerStorage::create(VulkanContext &context, std::uint32_t capacity, std:
     SamplerStorage storage;
 
     storage.context_ = &context;
-    storage.capacity_ = capacity;
     storage.debug_name_ = std::string{debug_name};
 
-    storage.slots_.resize(capacity);
+    storage.slots_ = ObjectPool<SamplerSlotData>::create(capacity);
 
     auto const defaults = default_sampler_infos();
 
@@ -246,23 +240,16 @@ auto SamplerStorage::create(VulkanContext &context, std::uint32_t capacity, std:
             return std::unexpected(sampler.error());
         }
 
-        auto &slot = storage.slots_[index];
+        // The default samplers are allocated first, in order, out of a
+        // freshly-created pool, so this always lands on index == `index`
+        // with generation == 1 -- matching linear_repeat()/linear_clamp()/
+        // etc.'s hard-coded handles below.
+        auto &slot = storage.slots_.allocate()->second;
 
         slot.sampler = *sampler;
-        slot.generation = 1;
-        slot.next_free = 0;
         slot.descriptor_revision = 1;
         slot.sampler_class = defaults[index].sampler_class;
-        slot.occupied = true;
         slot.protected_default = true;
-    }
-
-    if (capacity > default_sampler_count) {
-        storage.free_head_ = default_sampler_count;
-
-        for (std::uint32_t index = default_sampler_count; index < capacity; ++index) {
-            storage.slots_[index].next_free = index + 1 < capacity ? index + 1 : 0;
-        }
     }
 
     return storage;
@@ -274,7 +261,7 @@ auto SamplerStorage::create_sampler(SamplerCreateInfo const &create_info)
         return std::unexpected(make_error(SamplerStorageErrorType::invalid_argument));
     }
 
-    if (free_head_ == 0) {
+    if (slots_.size() >= slots_.capacity()) {
         return std::unexpected(make_error(SamplerStorageErrorType::capacity_exceeded));
     }
 
@@ -284,98 +271,72 @@ auto SamplerStorage::create_sampler(SamplerCreateInfo const &create_info)
         return std::unexpected(sampler.error());
     }
 
-    auto const index = free_head_;
-    auto &slot = slots_[index];
-
-    free_head_ = slot.next_free;
+    auto [handle, slot] = *slots_.allocate();
 
     slot.sampler = *sampler;
-    slot.next_free = 0;
     slot.sampler_class = create_info.sampler_class;
-    slot.occupied = true;
     slot.protected_default = false;
 
     bump_revision(slot.descriptor_revision);
 
-    return SamplerHandle{
-            .index = index,
-            .generation = slot.generation,
-    };
+    return handle;
 }
 
 auto SamplerStorage::descriptor_record(std::uint32_t index) const noexcept -> SamplerDescriptorRecord {
-    if (index >= slots_.size()) {
+    auto const *slot = slots_.get_at(index);
+
+    if (slot == nullptr) {
         return {};
     }
 
-    auto const &slot = slots_[index];
+    auto const occupied = slots_.occupied_at(index);
 
     return SamplerDescriptorRecord{
-            .sampler = slot.occupied ? slot.sampler : VK_NULL_HANDLE,
-            .revision = slot.descriptor_revision,
-            .sampler_class = slot.sampler_class,
-            .occupied = slot.occupied,
+            .sampler = occupied ? slot->sampler : VK_NULL_HANDLE,
+            .revision = slot->descriptor_revision,
+            .sampler_class = slot->sampler_class,
+            .occupied = occupied,
     };
 }
 
 auto SamplerStorage::destroy() noexcept -> void {
     if (context_ != nullptr && context_->device != VK_NULL_HANDLE) {
-        for (auto &slot: slots_) {
-            if (slot.sampler != VK_NULL_HANDLE) {
-                vkDestroySampler(context_->device, slot.sampler, nullptr);
+        for (std::uint32_t index = 0; index < slots_.capacity(); ++index) {
+            auto const *slot = slots_.get_at(index);
+
+            if (slot != nullptr && slot->sampler != VK_NULL_HANDLE) {
+                vkDestroySampler(context_->device, slot->sampler, nullptr);
             }
-
-            slot.sampler = VK_NULL_HANDLE;
-
-            slot.occupied = false;
-            slot.protected_default = false;
         }
     }
 
-    slots_.clear();
+    slots_ = ObjectPool<SamplerSlotData>{};
 
     context_ = nullptr;
-    free_head_ = 0;
-    capacity_ = 0;
 
     debug_name_.clear();
 }
 
 auto SamplerStorage::destroy_sampler(SamplerHandle handle) -> std::expected<void, SamplerStorageError> {
-    if (!handle.valid() || handle.index >= slots_.size()) {
+    auto *slot = slots_.get(handle);
+
+    if (slot == nullptr) {
         return std::unexpected(make_error(SamplerStorageErrorType::invalid_handle));
     }
 
-    auto &slot = slots_[handle.index];
-
-    if (!slot.occupied || slot.generation != handle.generation) {
-        return std::unexpected(make_error(SamplerStorageErrorType::invalid_handle));
-    }
-
-    if (slot.protected_default) {
+    if (slot->protected_default) {
         return std::unexpected(make_error(SamplerStorageErrorType::protected_default));
     }
 
-    if (context_ != nullptr && context_->device != VK_NULL_HANDLE && slot.sampler != VK_NULL_HANDLE) {
-        vkDestroySampler(context_->device, slot.sampler, nullptr);
+    if (context_ != nullptr && context_->device != VK_NULL_HANDLE && slot->sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(context_->device, slot->sampler, nullptr);
     }
 
-    slot.sampler = VK_NULL_HANDLE;
+    slot->sampler = VK_NULL_HANDLE;
 
-    slot.occupied = false;
-    slot.protected_default = false;
+    bump_revision(slot->descriptor_revision);
 
-    ++slot.generation;
-
-    if (slot.generation == 0) {
-        slot.generation = 1;
-    }
-
-    bump_revision(slot.descriptor_revision);
-
-    slot.next_free = free_head_;
-
-    free_head_ = handle.index;
+    static_cast<void>(slots_.release(handle));
 
     return {};
 }

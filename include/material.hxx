@@ -4,18 +4,7 @@
 #include <glm/glm.hpp>
 
 #include "config.hxx"
-
-struct MaterialHandle {
-    std::uint32_t index = 0;
-    std::uint32_t generation = 0;
-
-    [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return index != 0;
-    }
-
-    auto operator==(MaterialHandle const &) const -> bool = default;
-};
+#include "handle.hxx"
 
 enum class AlphaMode : std::uint32_t {
     opaque,
@@ -56,3 +45,17 @@ struct alignas(16) GpuMaterial {
 static_assert(std::is_trivially_copyable_v<GpuMaterial>);
 static_assert(sizeof(GpuMaterial) % 16 == 0);
 static_assert(alignof(GpuMaterial) == 16);
+
+// Full definition lives in material_storage.hxx, alongside the
+// ObjectPool<MaterialSlotData, 0> it backs (see sampler.hxx's SamplerHandle
+// for why an incomplete forward declaration is enough here).
+//
+// Sentinel = 0: slot 0 is MaterialStorage's permanently-reserved default
+// material (see MaterialStorage::create()), so MaterialHandle{.index = 0}
+// deliberately reads as invalid -- e.g. Renderer::submit_model/submit_mesh
+// use .valid() to mean "was an explicit material_override given", and a
+// bare MaterialHandle{} (index 0, generation 0) must mean "no override"
+// even though slot 0 itself holds real, live default-material data.
+struct MaterialSlotData;
+
+using MaterialHandle = Handle<MaterialSlotData, 0>;

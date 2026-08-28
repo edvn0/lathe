@@ -15,6 +15,7 @@
 #include "buffer.hxx"
 #include "forward.hxx"
 #include "image.hxx"
+#include "object_pool.hxx"
 #include "texture_pipeline.hxx"
 
 enum class ImageDescriptorClass : std::uint8_t {
@@ -104,6 +105,22 @@ struct ImageStorageCreateInfo {
 struct ImageViewRegistration {
     VkImageView sampled_2d = VK_NULL_HANDLE;
     VkImageView storage_2d = VK_NULL_HANDLE;
+};
+
+// Backs ImageHandle = Handle<ImageSlotData> (see image.hxx). revision is
+// deliberately NOT reset by ObjectPool across a release()/allocate() cycle
+// -- it's bumped monotonically so GpuResourceTable::prepare_frame's
+// per-frame cached revisions never mistake a reused slot for an unchanged
+// one (see SamplerSlotData's identical comment in sampler_storage.hxx).
+struct ImageSlotData {
+    Image image{};
+
+    VkImageView alias_sampled_2d = VK_NULL_HANDLE;
+    VkImageView alias_storage_2d = VK_NULL_HANDLE;
+    bool is_alias = false;
+
+    bool protected_default = false;
+    std::uint64_t revision = 1;
 };
 
 class ImageStorage {
@@ -222,12 +239,12 @@ public:
 
     [[nodiscard]]
     auto size() const noexcept -> std::uint32_t {
-        return size_;
+        return slots_.size();
     }
 
     [[nodiscard]]
     auto capacity() const noexcept -> std::uint32_t {
-        return capacity_;
+        return slots_.capacity();
     }
 
     [[nodiscard]]
@@ -242,21 +259,7 @@ public:
     auto destroy() noexcept -> void;
 
 private:
-    struct Slot {
-        Image image{};
-
-        VkImageView alias_sampled_2d = VK_NULL_HANDLE;
-        VkImageView alias_storage_2d = VK_NULL_HANDLE;
-        bool is_alias = false;
-
-        std::uint32_t generation = 1;
-        std::uint32_t next_free = 0;
-
-        bool occupied = false;
-        bool protected_default = false;
-        std::uint64_t revision = 1;
-    };
-    static constexpr auto bump_revision = [](Slot &slot) noexcept {
+    static constexpr auto bump_revision = [](ImageSlotData &slot) noexcept {
         ++slot.revision;
 
         if (slot.revision == 0) {
@@ -265,23 +268,13 @@ private:
     };
 
     [[nodiscard]]
-    auto slot_for(ImageHandle handle) noexcept -> Slot *;
-
-    [[nodiscard]]
-    auto slot_for(ImageHandle handle) const noexcept -> Slot const *;
-
-    [[nodiscard]]
     auto create_default_images() -> std::expected<void, ImageStorageError>;
 
     VulkanContext *context_ = nullptr;
 
-    std::vector<Slot> slots_;
+    ObjectPool<ImageSlotData> slots_;
 
     Buffer default_upload_buffer_{};
-
-    std::uint32_t free_head_ = 0;
-    std::uint32_t capacity_ = 0;
-    std::uint32_t size_ = 0;
 
     bool defaults_uploaded_ = false;
 

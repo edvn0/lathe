@@ -17,21 +17,16 @@
 #include "device_error.hxx"
 #include "error_context.hxx"
 #include "forward.hxx"
+#include "handle.hxx"
 
 inline constexpr auto invalid_image_index = std::numeric_limits<std::uint32_t>::max();
 
-struct ImageHandle {
-    std::uint32_t index = invalid_image_index;
+// Full definition lives in image_storage.hxx, alongside the
+// ObjectPool<ImageSlotData> it backs (see sampler.hxx's SamplerHandle for
+// why an incomplete forward declaration is enough here).
+struct ImageSlotData;
 
-    std::uint32_t generation = 0;
-
-    [[nodiscard]]
-    auto valid() const noexcept -> bool {
-        return generation != 0 && index != invalid_image_index;
-    }
-
-    auto operator==(ImageHandle const &) const -> bool = default;
-};
+using ImageHandle = Handle<ImageSlotData>;
 
 enum class ImageDescriptorView : std::uint8_t {
     sampled_2d = 0,
