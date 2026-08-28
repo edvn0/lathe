@@ -927,9 +927,14 @@ namespace {
 Renderer::Renderer(VulkanContext &context) noexcept : context_(context) {}
 
 auto Renderer::thread_pool() noexcept -> BS::priority_thread_pool & {
-    static std::unique_ptr<BS::priority_thread_pool> thread_pool_ =
-            std::make_unique<BS::priority_thread_pool>(std::thread::hardware_concurrency());
+    static auto thread_pool_ = std::make_unique<BS::priority_thread_pool>(std::thread::hardware_concurrency());
     return *thread_pool_;
+}
+
+auto Renderer::compiler() noexcept -> renderer::SlangCompiler & {
+    static auto compiler_ =
+            std::make_unique<renderer::SlangCompiler>(std::move(renderer::SlangCompiler::create().value()));
+    return *compiler_;
 }
 
 auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expected<void, RendererError> {
@@ -952,13 +957,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             destroy();
         }
     }};
-
-    auto maybe_compiler = renderer::SlangCompiler::create();
-    if (!maybe_compiler) {
-        return std::unexpected(make_compiler_error(maybe_compiler.error()));
-    }
-
-    this->compiler = std::move(*maybe_compiler);
 
     auto geometry_arena = GeometryArena::create(context_, GeometryArenaCreateInfo{
                                                                   .capacity = create_info.geometry_capacity,
@@ -1321,7 +1319,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     });
 
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
-    auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(compiler, pipeline_infos);
+    auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
 
     for (std::size_t i = 0; i < registered_pipelines.size(); ++i) {
@@ -1888,7 +1886,7 @@ auto Renderer::destroy() noexcept -> void {
     texture_streamer_.wait_all();
     image_storage_.destroy();
     geometry_arena_.destroy(context_);
-    compiler.destroy();
+    compiler().destroy();
 
     clear_submissions();
 
@@ -1985,7 +1983,7 @@ auto Renderer::create_model(Model const &model, MaterialHandle fallback_material
 
     if (!initialized_ || model_capacity_exceeded) {
         return std::unexpected(make_error(model_capacity_exceeded ? RendererErrorType::capacity_exceeded
-                                                                   : RendererErrorType::invalid_argument));
+                                                                  : RendererErrorType::invalid_argument));
     }
 
     if (material_storage_.get(fallback_material) == nullptr) {
@@ -2346,7 +2344,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         pipeline_graph_.on_files_changed(changed);
     }
 
-    pipeline_graph_.process_dirty(compiler);
+    pipeline_graph_.process_dirty();
 
 
     auto image_result = image_storage_.prepare_frame(command_buffer);
@@ -3670,9 +3668,7 @@ auto Renderer::wait_idle() -> std::expected<void, RendererError> {
 
 auto Renderer::mesh_slot(MeshHandle handle) noexcept -> MeshSlotData * { return mesh_storage_.get(handle); }
 
-auto Renderer::mesh_slot(MeshHandle handle) const noexcept -> MeshSlotData const * {
-    return mesh_storage_.get(handle);
-}
+auto Renderer::mesh_slot(MeshHandle handle) const noexcept -> MeshSlotData const * { return mesh_storage_.get(handle); }
 
 auto Renderer::model_slot(ModelHandle handle) noexcept -> ModelSlotData * { return model_storage_.get(handle); }
 

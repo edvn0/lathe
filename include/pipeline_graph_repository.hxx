@@ -141,8 +141,7 @@ public:
     // already registered by another pipeline) reuse their existing
     // compiled SPIR-V instead of recompiling.
     [[nodiscard]]
-    auto register_pipeline(renderer::SlangCompiler const &compiler, PipelineRegisterInfo register_info)
-            -> std::expected<PipelineNodeHandle, PipelineGraphError>;
+    auto register_pipeline(PipelineRegisterInfo register_info) -> std::expected<PipelineNodeHandle, PipelineGraphError>;
 
     // Batched equivalent of calling register_pipeline() once per entry, but
     // shared dirty stages compile exactly once across the whole batch, all
@@ -152,8 +151,7 @@ public:
     // batch fails every reserved entry (rare -- usually a broken shared
     // shader file); a build failure only fails that one entry.
     [[nodiscard]]
-    auto register_pipelines_parallel(renderer::SlangCompiler const &compiler,
-                                     std::span<PipelineRegisterInfo> register_infos)
+    auto register_pipelines_parallel(std::span<PipelineRegisterInfo> register_infos)
             -> std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>>;
 
     // Persists the VkPipelineCache to disk (see
@@ -182,7 +180,7 @@ public:
     // Call once per frame. Recompiles dirty stages and rebuilds any
     // pipeline whose stages are now all clean. Failed compiles log and
     // leave the live pipeline untouched.
-    auto process_dirty(renderer::SlangCompiler const &compiler) -> void;
+    auto process_dirty() -> void;
 
     // Call once per frame, before resolve() calls that will be recorded
     // into a new command buffer. Destroys pipelines that have been

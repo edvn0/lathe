@@ -377,7 +377,7 @@ struct Renderer {
 
     [[nodiscard]] auto register_pipeline(PipelineRegisterInfo info)
             -> std::expected<PipelineNodeHandle, RendererError> {
-        auto registered = pipeline_graph_.register_pipeline(compiler, std::move(info));
+        auto registered = pipeline_graph_.register_pipeline(std::move(info));
 
         if (!registered) {
             return std::unexpected(RendererError{
@@ -402,6 +402,7 @@ struct Renderer {
     auto wait_idle() -> std::expected<void, RendererError>;
 
     static auto thread_pool() noexcept -> BS::priority_thread_pool &;
+    static auto compiler() noexcept -> renderer::SlangCompiler &;
 
 private:
     struct Submission {
@@ -671,7 +672,6 @@ private:
     ScreenshotCapture screenshot_;
 
     bool initialized_ = false;
-    renderer::SlangCompiler compiler;
 };
 
 template<>

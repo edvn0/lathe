@@ -298,8 +298,7 @@ auto PipelineGraphRepository::build_node(PipelineNode const &node) -> std::expec
     return BuiltNode{.handle = *created, .shader_object_handle = {}};
 }
 
-auto PipelineGraphRepository::register_pipeline(renderer::SlangCompiler const &compiler,
-                                                PipelineRegisterInfo register_info)
+auto PipelineGraphRepository::register_pipeline(PipelineRegisterInfo register_info)
         -> std::expected<PipelineNodeHandle, PipelineGraphError> {
     if (register_info.stages.empty()) {
         return std::unexpected(PipelineGraphError{
@@ -327,10 +326,10 @@ auto PipelineGraphRepository::register_pipeline(renderer::SlangCompiler const &c
         auto &stage = stage_nodes_[stage_index];
 
         if (!stage.dirty) {
-            continue; // already compiled by a prior register_pipeline() call sharing this stage
+            continue;
         }
 
-        auto compiled = compiler.compile(stage.request);
+        auto compiled = Renderer::compiler().compile(stage.request);
 
         if (!compiled) {
             return std::unexpected(PipelineGraphError{
@@ -369,8 +368,7 @@ auto PipelineGraphRepository::register_pipeline(renderer::SlangCompiler const &c
     };
 }
 
-auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompiler const &compiler,
-                                                          std::span<PipelineRegisterInfo> register_infos)
+auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegisterInfo> register_infos)
         -> std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>> {
 
     std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>> results(register_infos.size());
@@ -379,10 +377,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
     std::vector<std::vector<std::uint32_t>> stage_indices_per_entry(register_infos.size());
     std::vector<bool> reserved(register_infos.size(), false);
 
-    // Phase 1 (sequential): find_or_create_stage/find_or_create_source_file
-    // mutate shared lookup maps (stage_lookup_, source_file_lookup_), so
-    // this whole phase must run single-threaded -- see
-    // docs/parallel-pipeline.md Task 3.
     for (std::size_t i = 0; i < register_infos.size(); ++i) {
         auto const &info = register_infos[i];
 
@@ -449,7 +443,7 @@ auto PipelineGraphRepository::register_pipelines_parallel(renderer::SlangCompile
             auto const &request = stage_nodes_[stage_index].request;
 
 
-            futures.push_back(thread_pool.submit_task([&compiler, &request] { return compiler.compile(request); }));
+            futures.push_back(thread_pool.submit_task([&request] { return Renderer::compiler().compile(request); }));
         }
 
 
@@ -677,7 +671,7 @@ auto PipelineGraphRepository::on_files_changed(std::span<std::filesystem::path c
     }
 }
 
-auto PipelineGraphRepository::process_dirty(renderer::SlangCompiler const &compiler) -> void {
+auto PipelineGraphRepository::process_dirty() -> void {
     for (auto &node: pipeline_nodes_) {
         if (!node.occupied || !node.pending_rebuild) {
             continue;
@@ -699,7 +693,7 @@ auto PipelineGraphRepository::process_dirty(renderer::SlangCompiler const &compi
 
             stage.last_attempt_generation = change_generation_;
 
-            auto compiled = compiler.compile(stage.request);
+            auto compiled = Renderer::compiler().compile(stage.request);
 
             if (!compiled) {
                 error("Shader reload failed for {} ({}): {}", stage.request.source_path.string(),
