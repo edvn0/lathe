@@ -27,6 +27,13 @@
 #include "slang_compiler.hxx"
 #include "vk_barrier.hxx"
 
+// ForwardPushConstants, ShadowPushConstants, CompositePushConstants,
+// LightIconPushConstants, CullPushConstants, DownsamplePushConstants, and
+// UpsamplePushConstants are generated at build time by reflecting the
+// corresponding .slang shader's push_constant block -- see the "Shader
+// push-constant reflection" section of CMakeLists.txt.
+#include "shader_push_constants.hxx"
+
 namespace {
     template<typename Action>
     struct FinalAction {
@@ -34,106 +41,6 @@ namespace {
 
         ~FinalAction() { action(); }
     };
-
-    struct ForwardPushConstants {
-        VkDeviceAddress draw_buffer_address;
-        VkDeviceAddress transform_buffer_address;
-        VkDeviceAddress material_buffer_address;
-        VkDeviceAddress ubo_buffer_address;
-        VkDeviceAddress lights_buffer_address;
-        std::uint32_t light_count;
-        std::uint32_t padding;
-    };
-
-    static_assert(sizeof(ForwardPushConstants) == 48);
-
-    struct ShadowPushConstants {
-        VkDeviceAddress draw_buffer_address;
-        VkDeviceAddress transform_buffer_address;
-        VkDeviceAddress material_buffer_address;
-        VkDeviceAddress ubo_buffer_address;
-        VkDeviceAddress lights_buffer_address;
-        std::uint32_t light_count;
-        std::uint32_t padding0;
-        std::uint32_t cascade_index;
-        std::uint32_t padding1;
-    };
-
-    static_assert(sizeof(ShadowPushConstants) == 56);
-    static_assert(offsetof(ShadowPushConstants, cascade_index) == 48);
-
-    struct CompositePushConstants {
-        std::uint32_t hdr_texture_index;
-        std::uint32_t bloom_texture_index; // <-- Added
-        std::uint32_t sampler_index;
-        float exposure;
-        float bloom_intensity; // <-- Added
-    };
-
-    static_assert(sizeof(CompositePushConstants) == 20);
-
-    struct LightIconPushConstants {
-        VkDeviceAddress lights_buffer_address;
-        VkDeviceAddress ubo_buffer_address;
-        std::uint32_t light_count;
-        std::uint32_t icon_texture_index;
-        std::uint32_t sampler_index;
-        float icon_world_size;
-    };
-
-    static_assert(sizeof(LightIconPushConstants) == 32);
-
-    // Mirrors CullPC in assets/shaders/frustum_cull.slang. One compute
-    // workgroup handles one batch: it reads that batch's un-culled
-    // indirect command to learn [firstInstance, firstInstance +
-    // instanceCount), culls each instance, compacts survivors in place via
-    // a shared-memory scan, and writes the recomputed command to
-    // dst_indirect[batch]. No per-instance batch lookup or atomic counter
-    // buffer is needed -- the batch index *is* the workgroup index.
-    struct CullPushConstants {
-        VkDeviceAddress src_draws_address;
-        VkDeviceAddress src_transforms_address;
-        VkDeviceAddress batch_bounds_address;
-        VkDeviceAddress src_indirect_address;
-        VkDeviceAddress dst_indirect_address;
-        VkDeviceAddress dst_draws_address;
-        VkDeviceAddress dst_transforms_address;
-        VkDeviceAddress frustum_planes_address;
-        std::uint32_t batch_count;
-        std::uint32_t padding;
-    };
-
-    static_assert(sizeof(CullPushConstants) == 72);
-
-    struct DownsamplePushConstants {
-        std::uint32_t src_texture_index;
-        std::uint32_t linear_sampler_index;
-        std::uint32_t dst_mip0_storage_index;
-        std::uint32_t dst_mip1_storage_index;
-        std::uint32_t dst_mip2_storage_index;
-        std::uint32_t dst_mip3_storage_index;
-        float src_texel_size_x;
-        float src_texel_size_y;
-        std::int32_t mip0_size_x;
-        std::int32_t mip0_size_y;
-        float threshold;
-        float knee;
-    };
-    static_assert(sizeof(DownsamplePushConstants) == 48);
-
-    struct UpsamplePushConstants {
-        std::uint32_t lower_mip_texture_index;
-        std::uint32_t target_mip_storage_index;
-        std::uint32_t linear_sampler_index;
-        float lower_texel_size_x;
-        float lower_texel_size_y;
-        int target_size_x;
-        int target_size_y;
-        float filter_radius;
-    };
-
-    static_assert(sizeof(UpsamplePushConstants) == 32);
-
 
     // Pins VkDrawIndexedIndirectCommand's ABI layout against IndirectCommand
     // in assets/shaders/frustum_cull.slang, which mirrors it field-for-field
@@ -2870,6 +2777,13 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         bind_compute_node(pipeline_graph_, frustum_cull_pipeline_, command_buffer);
         gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, frustum_cull_pipeline);
 
+        // One compute workgroup handles one batch: it reads that batch's
+        // un-culled indirect command to learn [firstInstance, firstInstance
+        // + instanceCount), culls each instance, compacts survivors in
+        // place via a shared-memory scan, and writes the recomputed command
+        // to dst_indirect[batch]. No per-instance batch lookup or atomic
+        // counter buffer is needed -- the batch index *is* the workgroup
+        // index. See CullPC in assets/shaders/frustum_cull.slang.
         CullPushConstants const cull_pc{
                 .src_draws_address = frame.draw_buffer.device_address,
                 .src_transforms_address = frame.transform_buffer.device_address,
@@ -3148,15 +3062,15 @@ template<typename OverlayPolicy>
             bind_graphics_node(pipeline_graph_, shadow_pipeline_, command_buffer, VK_SAMPLE_COUNT_1_BIT, 0, false);
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline);
             ShadowPushConstants pc{
-                    .draw_buffer_address = frame.draw_buffer.device_address,
-                    .transform_buffer_address = frame.transform_buffer.device_address,
-                    .material_buffer_address = material_storage_.device_address(),
-                    .ubo_buffer_address = ubos_[frame_index].device_address,
-                    .lights_buffer_address = frame.lights_buffer.device_address,
+                    .draws_address = frame.draw_buffer.device_address,
+                    .transforms_address = frame.transform_buffer.device_address,
+                    .materials_address = material_storage_.device_address(),
+                    .ubo_address = ubos_[frame_index].device_address,
+                    .lights_address = frame.lights_buffer.device_address,
                     .light_count = 0,
-                    .padding0 = 0,
+                    ._padding = 0,
                     .cascade_index = 0,
-                    .padding1 = 0,
+                    .padding = 0,
             };
 
             vkCmdPushConstants(command_buffer, shadow_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(ShadowPushConstants),
@@ -3186,15 +3100,15 @@ template<typename OverlayPolicy>
                                      shadow_mask_pipeline);
 
             ShadowPushConstants pc{
-                    .draw_buffer_address = frame.draw_buffer.device_address,
-                    .transform_buffer_address = frame.transform_buffer.device_address,
-                    .material_buffer_address = material_storage_.device_address(),
-                    .ubo_buffer_address = ubos_[frame_index].device_address,
-                    .lights_buffer_address = frame.lights_buffer.device_address,
+                    .draws_address = frame.draw_buffer.device_address,
+                    .transforms_address = frame.transform_buffer.device_address,
+                    .materials_address = material_storage_.device_address(),
+                    .ubo_address = ubos_[frame_index].device_address,
+                    .lights_address = frame.lights_buffer.device_address,
                     .light_count = 0,
-                    .padding0 = 0,
+                    ._padding = 0,
                     .cascade_index = 0,
-                    .padding1 = 0,
+                    .padding = 0,
             };
 
             vkCmdPushConstants(command_buffer, shadow_mask_pipeline, VK_SHADER_STAGE_ALL, 0,
@@ -3281,13 +3195,13 @@ template<typename OverlayPolicy>
         vkCmdBindIndexBuffer(command_buffer, geometry_arena_.bindable_buffer(), 0, VK_INDEX_TYPE_UINT32);
 
         ForwardPushConstants pc{
-                .draw_buffer_address = main_view_draw_buffer.device_address,
-                .transform_buffer_address = main_view_transform_buffer.device_address,
-                .material_buffer_address = material_storage_.device_address(),
-                .ubo_buffer_address = ubos_[frame_index].device_address,
-                .lights_buffer_address = frame.lights_buffer.device_address,
+                .draws_address = main_view_draw_buffer.device_address,
+                .transforms_address = main_view_transform_buffer.device_address,
+                .materials_address = material_storage_.device_address(),
+                .ubo_address = ubos_[frame_index].device_address,
+                .lights_address = frame.lights_buffer.device_address,
                 .light_count = 0,
-                .padding = 0,
+                ._padding = 0,
         };
 
         if (frame.opaque_indirect_count != 0) {
@@ -3397,13 +3311,13 @@ template<typename OverlayPolicy>
         vkCmdBindIndexBuffer(command_buffer, geometry_arena_.bindable_buffer(), 0, VK_INDEX_TYPE_UINT32);
 
         ForwardPushConstants const pc{
-                .draw_buffer_address = main_view_draw_buffer.device_address,
-                .transform_buffer_address = main_view_transform_buffer.device_address,
-                .material_buffer_address = material_storage_.device_address(),
-                .ubo_buffer_address = ubos_[frame_index].device_address,
-                .lights_buffer_address = frame.lights_buffer.device_address,
+                .draws_address = main_view_draw_buffer.device_address,
+                .transforms_address = main_view_transform_buffer.device_address,
+                .materials_address = material_storage_.device_address(),
+                .ubo_address = ubos_[frame_index].device_address,
+                .lights_address = frame.lights_buffer.device_address,
                 .light_count = frame.light_count,
-                .padding = 0,
+                ._padding = 0,
         };
 
         bind_graphics_node(pipeline_graph_, forward_pipeline_, command_buffer, samples_, 1, false);
@@ -3456,8 +3370,8 @@ template<typename OverlayPolicy>
             vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
 
             LightIconPushConstants const light_pc{
-                    .lights_buffer_address = frame.lights_buffer.device_address,
-                    .ubo_buffer_address = ubos_[frame_index].device_address,
+                    .lights_address = frame.lights_buffer.device_address,
+                    .ubo_address = ubos_[frame_index].device_address,
                     .light_count = frame.light_count,
                     .icon_texture_index = light_icon_texture_.index,
                     .sampler_index = sampler_storage_.linear_clamp().index,
