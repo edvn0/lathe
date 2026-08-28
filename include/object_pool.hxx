@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "handle.hxx"
+#include "holder.hxx"
 
 /*
  * Generic fixed-capacity, generation-checked free-list pool ("bindless
@@ -31,6 +32,7 @@ template<typename T, std::uint32_t Sentinel = std::numeric_limits<std::uint32_t>
 class ObjectPool {
 public:
     using HandleT = Handle<T, Sentinel>;
+    using HolderT = Holder<T, Sentinel>;
 
     ObjectPool() = default;
 
@@ -94,6 +96,20 @@ public:
         return std::pair<HandleT, T &>{
                 HandleT{.index = index, .generation = slot.generation},
                 slot.value,
+        };
+    }
+
+    [[nodiscard]]
+    auto acquire() -> std::optional<HolderT> {
+        auto allocation = allocate();
+
+        if (!allocation) {
+            return std::nullopt;
+        }
+
+        return HolderT{
+                *this,
+                allocation->first,
         };
     }
 

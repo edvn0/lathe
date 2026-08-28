@@ -15,10 +15,6 @@
 #include "object_pool.hxx"
 #include "pipeline.hxx"
 
-// Sentinel stays the default (u32 max): index 0 is a legitimate pipeline
-// slot here (unlike MaterialHandle), so validity is effectively
-// generation != 0 alone -- a default-constructed index can never collide
-// with a real slot index.
 using PipelineHandle = Handle<Pipeline>;
 
 enum class PipelineStorageErrorType : std::uint8_t {
@@ -31,7 +27,7 @@ enum class PipelineStorageErrorType : std::uint8_t {
 struct PipelineStorageError {
     PipelineStorageErrorType type = PipelineStorageErrorType::invalid_argument;
 
-    std::optional<ErrorCause> cause;
+    std::optional<ErrorCause> cause{std::nullopt};
 };
 
 template<>
@@ -58,15 +54,8 @@ struct std::formatter<PipelineStorageErrorType> : std::formatter<std::string_vie
 
 struct PipelineStorageCreateInfo {
     std::uint32_t capacity = 0;
-
     VkDescriptorSetLayout global_descriptor_set_layout = VK_NULL_HANDLE;
-
-    // Where the VkPipelineCache is persisted across runs. Empty means "don't
-    // load or save a cache file" -- create() still creates an in-memory-only
-    // VkPipelineCache either way, since that's needed regardless of disk
-    // persistence to satisfy vkCreateGraphicsPipelines/vkCreateComputePipelines.
     std::filesystem::path cache_file_path;
-
     std::string_view debug_name = "pipeline_storage";
 };
 
@@ -76,11 +65,8 @@ public:
     ~PipelineStorage();
 
     PipelineStorage(PipelineStorage const &) = delete;
-
     auto operator=(PipelineStorage const &) -> PipelineStorage & = delete;
-
     PipelineStorage(PipelineStorage &&other) noexcept;
-
     auto operator=(PipelineStorage &&other) noexcept -> PipelineStorage &;
 
     [[nodiscard]]
@@ -124,11 +110,6 @@ public:
         return global_descriptor_set_layout_;
     }
 
-    // Serializes the current VkPipelineCache contents to cache_file_path (see
-    // PipelineStorageCreateInfo). No-op (returns success) if this storage
-    // wasn't created with a cache_file_path. Called from
-    // PipelineGraphRepository::save_pipeline_cache(), which Renderer::destroy()
-    // calls on shutdown -- never treat a failure here as fatal.
     [[nodiscard]]
     auto save_cache_to_disk() const -> std::expected<void, PipelineStorageError>;
 
@@ -139,14 +120,6 @@ private:
 
     ObjectPool<Pipeline> slots_;
 
-    // Guards slots_.allocate()/release() -- plain C++ bookkeeping mutated by
-    // create_graphics/create_compute, which register_pipelines_parallel's
-    // build phase calls concurrently from multiple threads. Deliberately
-    // separate from Pipeline's own VkPipelineCache mutex (see pipeline.cxx):
-    // this one is cheap (index/pointer juggling only) and must not wrap the
-    // expensive vkCreateGraphicsPipelines/vkCreateComputePipelines call
-    // itself, or it would serialize away the benefit of building pipelines
-    // in parallel.
     std::mutex slot_mutex_;
 
     VkPipelineCache cache_ = VK_NULL_HANDLE;
