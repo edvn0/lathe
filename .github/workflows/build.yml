@@ -194,11 +194,3 @@ jobs:
             --env CCACHE_DIR=/ccache \
             cross-build:latest \
             ccache --show-stats
-
-      - name: Upload build artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}-${{ matrix.build_type }}
-          path: build/${{ matrix.target }}-${{ matrix.build_type == 'Debug' && 'debug' || 'relwithdebinfo' }}/
-          if-no-files-found: error
