@@ -1,16 +1,9 @@
-// Global operator new/delete overrides, feeding every heap allocation in the
-// process (this engine plus every statically-linked third-party library) to
-// Tracy's memory profiler. TracyAlloc/TracyFree are no-ops when TRACY_ENABLE
-// isn't defined, so this file behaves as a plain malloc/free passthrough in
-// that configuration.
-//
-// MINGW_VULKAN_ENABLE_EXCEPTIONS is off project-wide, so allocation failure
-// aborts instead of throwing std::bad_alloc.
-
 #include <tracy/Tracy.hpp>
 
 #include <cstdio>
 #include <cstdlib>
+
+#include "memory_tracker.hxx"
 
 namespace {
 
@@ -27,6 +20,7 @@ auto operator new(std::size_t size) -> void * {
         abort_out_of_memory(size);
     }
 
+    MemoryTracker::on_allocate(size);
     TracyAlloc(ptr, size);
 
     return ptr;
@@ -38,6 +32,7 @@ auto operator new[](std::size_t size) -> void * {
         abort_out_of_memory(size);
     }
 
+    MemoryTracker::on_allocate(size);
     TracyAlloc(ptr, size);
 
     return ptr;
@@ -53,12 +48,14 @@ auto operator delete[](void *ptr) noexcept -> void {
     std::free(ptr);
 }
 
-auto operator delete(void *ptr, std::size_t) noexcept -> void {
+auto operator delete(void *ptr, std::size_t free_size) noexcept -> void {
     TracyFree(ptr);
     std::free(ptr);
+    MemoryTracker::on_free(free_size);
 }
 
-auto operator delete[](void *ptr, std::size_t) noexcept -> void {
+auto operator delete[](void *ptr, std::size_t free_size) noexcept -> void {
     TracyFree(ptr);
     std::free(ptr);
+    MemoryTracker::on_free(free_size);
 }

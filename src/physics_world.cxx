@@ -231,6 +231,7 @@ auto PhysicsWorld::attach_debug_drawer(debug_draw::DebugRenderer &renderer) -> v
 
 auto PhysicsWorld::detach_debug_drawer() -> void {
     impl_->world->setDebugDrawer(nullptr);
+    impl_->debug_renderer->clear_lines();
     impl_->debug_renderer = nullptr;
 }
 
