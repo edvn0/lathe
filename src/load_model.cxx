@@ -393,10 +393,9 @@ auto generate_mesh_lods(std::vector<ModelVertex> const &vertices, std::vector<st
 
         std::vector<std::uint32_t> simplified(indices.size());
 
-        auto const result_count =
-                meshopt_simplify(simplified.data(), indices.data(), indices.size(), &vertices[0].position.x,
-                                 vertices.size(), sizeof(ModelVertex), target_index_count, /*target_error=*/1e-2F,
-                                 meshopt_SimplifyLockBorder, nullptr);
+        auto const result_count = meshopt_simplify(
+                simplified.data(), indices.data(), indices.size(), &vertices[0].position.x, vertices.size(),
+                sizeof(ModelVertex), target_index_count, /*target_error=*/1e-2F, meshopt_SimplifyLockBorder, nullptr);
 
         if (result_count == 0 || result_count >= indices.size()) {
             continue; // simplifier couldn't reduce this level at all
@@ -783,6 +782,8 @@ namespace {
 
 auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage)
         -> std::expected<ModelCpuData, ModelLoadError> {
+    ZoneScopedNC("LoadModelCpu", tracy::Color::Goldenrod);
+
     fastgltf::GltfFileStream file_stream{path};
 
     if (!file_stream.isOpen()) {
@@ -943,6 +944,8 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                              GeometryArena &geometry_arena, ImageStorage &image_storage,
                              TextureStreamer &texture_streamer, MaterialStorage &material_storage)
         -> std::expected<Model, ModelLoadError> {
+    ZoneScopedNC("RecordModelGpuUpload", tracy::Color::Goldenrod);
+
     if (command_buffer == VK_NULL_HANDLE) {
         return std::unexpected(ModelLoadError{
                 .type = ModelLoadErrorType::invalid_argument,
@@ -1129,6 +1132,8 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
 auto load_model(std::filesystem::path const &path, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
                 ImageStorage &image_storage, TextureStreamer &texture_streamer, SamplerStorage &sampler_storage,
                 MaterialStorage &material_storage) -> std::expected<Model, ModelLoadError> {
+    ZoneScopedNC("LoadModel", tracy::Color::Goldenrod);
+
     auto cpu_data = load_model_cpu(path, sampler_storage);
 
     if (!cpu_data) {

@@ -28,9 +28,9 @@ auto TextureStreamer::request(ImageStorage &images, std::filesystem::path source
     return *pending_handle;
 }
 
-auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std::byte> encoded_bytes,
-                                          TextureRole role, std::string cache_key, ImageHandle fallback,
-                                          std::string debug_name) -> ImageHandle {
+auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std::byte> encoded_bytes, TextureRole role,
+                                          std::string cache_key, ImageHandle fallback, std::string debug_name)
+        -> ImageHandle {
     auto pending_handle = images.create_pending_image(fallback);
 
     if (!pending_handle) {
@@ -55,6 +55,8 @@ auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std:
 
 auto TextureStreamer::process_ready(ImageStorage &images, VkCommandBuffer command_buffer, std::uint32_t frame_index)
         -> void {
+    ZoneScopedNC("ProcessReadyTextures", tracy::Color::Goldenrod);
+
     using namespace std::chrono_literals;
 
     if (frame_index >= retiring_staging_.size()) {
@@ -80,7 +82,7 @@ auto TextureStreamer::process_ready(ImageStorage &images, VkCommandBuffer comman
 
         if (!result) {
             error("texture_streamer: '{}' failed to load ({}); staying on its fallback texture", request.debug_name,
-                 result.error().type);
+                  result.error().type);
 
             return true;
         }
@@ -89,7 +91,7 @@ auto TextureStreamer::process_ready(ImageStorage &images, VkCommandBuffer comman
 
         if (!uploaded) {
             error("texture_streamer: '{}' failed to upload ({}); staying on its fallback texture", request.debug_name,
-                 uploaded.error().type);
+                  uploaded.error().type);
 
             return true;
         }

@@ -235,6 +235,8 @@ auto PhysicsWorld::detach_debug_drawer() -> void {
 }
 
 auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
+    ZoneScopedNC("PhysicsStep", tracy::Color::Firebrick);
+
     constexpr float fixed_dt = 1.0F / 60.0F;
     constexpr int max_substeps = 2;
     impl_->world->stepSimulation(delta_time, max_substeps, fixed_dt);

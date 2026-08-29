@@ -2224,6 +2224,8 @@ auto Renderer::submit_mesh(MeshHandle mesh, glm::mat4 const &transform, Material
 
 auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrices &matrices, std::uint32_t frame_index)
         -> std::expected<void, RendererError> {
+    ZoneScopedNC("PrepareFrame", tracy::Color::RoyalBlue);
+
     if (!initialized_ || command_buffer == VK_NULL_HANDLE || frame_index >= frames_.size()) {
         clear_submissions();
 
@@ -2756,114 +2758,121 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, const CameraMatrice
         frame.light_count = light_count_;
     }
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
-                         static_cast<std::uint32_t>(RenderStage::Culling) * 2);
+#pragma region Culling
+    {
+        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Culling", tracy::Color::SlateBlue);
 
-    if (frame.indirect_command_count != 0) {
-        if (frame.indirect_command_count > 65535) {
-            clear_submissions();
-
-            return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
-        }
-
-        auto const frustum_cull_pipeline = resolve_layout(pipeline_graph_, frustum_cull_pipeline_);
-
-        if (frustum_cull_pipeline == VK_NULL_HANDLE) {
-            clear_submissions();
-
-            return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
-        }
-
-        bind_compute_node(pipeline_graph_, frustum_cull_pipeline_, command_buffer);
-        gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, frustum_cull_pipeline);
-
-        // One compute workgroup handles one batch: it reads that batch's
-        // un-culled indirect command to learn [firstInstance, firstInstance
-        // + instanceCount), culls each instance, compacts survivors in
-        // place via a shared-memory scan, and writes the recomputed command
-        // to dst_indirect[batch]. No per-instance batch lookup or atomic
-        // counter buffer is needed -- the batch index *is* the workgroup
-        // index. See CullPC in assets/shaders/frustum_cull.slang.
-        CullPushConstants const cull_pc{
-                .src_draws_address = frame.draw_buffer.device_address,
-                .src_transforms_address = frame.transform_buffer.device_address,
-                .batch_bounds_address = frame.batch_bounds_buffer.device_address,
-                .src_indirect_address = frame.indirect_buffer.device_address,
-                .dst_indirect_address = frame.culled_indirect_buffer.device_address,
-                .dst_draws_address = frame.visible_draw_buffer.device_address,
-                .dst_transforms_address = frame.visible_transform_buffer.device_address,
-                .frustum_planes_address = frame.frustum_planes_buffer.device_address,
-                .batch_count = frame.indirect_command_count,
-                .padding = 0,
-        };
-
-        vkCmdPushConstants(command_buffer, frustum_cull_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(CullPushConstants),
-                           &cull_pc);
-
-        vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
-
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
-                             (static_cast<std::uint32_t>(RenderStage::Culling) * 2) + 1);
-
-        std::array<VkBufferMemoryBarrier2, 3> const post_cull_barriers{
-                VkBufferMemoryBarrier2{
-                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                        .pNext = nullptr,
-                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .buffer = frame.visible_draw_buffer.buffer,
-                        .offset = 0,
-                        .size = VK_WHOLE_SIZE,
-                },
-                VkBufferMemoryBarrier2{
-                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                        .pNext = nullptr,
-                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .buffer = frame.visible_transform_buffer.buffer,
-                        .offset = 0,
-                        .size = VK_WHOLE_SIZE,
-                },
-                VkBufferMemoryBarrier2{
-                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                        .pNext = nullptr,
-                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-                        .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .buffer = frame.culled_indirect_buffer.buffer,
-                        .offset = 0,
-                        .size = VK_WHOLE_SIZE,
-                },
-        };
-
-        VkDependencyInfo const post_cull_dependency_info{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .pNext = nullptr,
-                .dependencyFlags = 0,
-                .memoryBarrierCount = 0,
-                .pMemoryBarriers = nullptr,
-                .bufferMemoryBarrierCount = static_cast<std::uint32_t>(post_cull_barriers.size()),
-                .pBufferMemoryBarriers = post_cull_barriers.data(),
-                .imageMemoryBarrierCount = 0,
-                .pImageMemoryBarriers = nullptr,
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &post_cull_dependency_info);
-    } else {
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
-                             (static_cast<std::uint32_t>(RenderStage::Culling) * 2) + 1);
+                             static_cast<std::uint32_t>(RenderStage::Culling) * 2);
+
+        if (frame.indirect_command_count != 0) {
+            if (frame.indirect_command_count > 65535) {
+                clear_submissions();
+
+                return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+            }
+
+            auto const frustum_cull_pipeline = resolve_layout(pipeline_graph_, frustum_cull_pipeline_);
+
+            if (frustum_cull_pipeline == VK_NULL_HANDLE) {
+                clear_submissions();
+
+                return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+            }
+
+            bind_compute_node(pipeline_graph_, frustum_cull_pipeline_, command_buffer);
+            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                     frustum_cull_pipeline);
+
+            // One compute workgroup handles one batch: it reads that batch's
+            // un-culled indirect command to learn [firstInstance, firstInstance
+            // + instanceCount), culls each instance, compacts survivors in
+            // place via a shared-memory scan, and writes the recomputed command
+            // to dst_indirect[batch]. No per-instance batch lookup or atomic
+            // counter buffer is needed -- the batch index *is* the workgroup
+            // index. See CullPC in assets/shaders/frustum_cull.slang.
+            CullPushConstants const cull_pc{
+                    .src_draws_address = frame.draw_buffer.device_address,
+                    .src_transforms_address = frame.transform_buffer.device_address,
+                    .batch_bounds_address = frame.batch_bounds_buffer.device_address,
+                    .src_indirect_address = frame.indirect_buffer.device_address,
+                    .dst_indirect_address = frame.culled_indirect_buffer.device_address,
+                    .dst_draws_address = frame.visible_draw_buffer.device_address,
+                    .dst_transforms_address = frame.visible_transform_buffer.device_address,
+                    .frustum_planes_address = frame.frustum_planes_buffer.device_address,
+                    .batch_count = frame.indirect_command_count,
+                    .padding = 0,
+            };
+
+            vkCmdPushConstants(command_buffer, frustum_cull_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(CullPushConstants),
+                               &cull_pc);
+
+            vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
+
+            vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
+                                 (static_cast<std::uint32_t>(RenderStage::Culling) * 2) + 1);
+
+            std::array<VkBufferMemoryBarrier2, 3> const post_cull_barriers{
+                    VkBufferMemoryBarrier2{
+                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                            .pNext = nullptr,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = frame.visible_draw_buffer.buffer,
+                            .offset = 0,
+                            .size = VK_WHOLE_SIZE,
+                    },
+                    VkBufferMemoryBarrier2{
+                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                            .pNext = nullptr,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = frame.visible_transform_buffer.buffer,
+                            .offset = 0,
+                            .size = VK_WHOLE_SIZE,
+                    },
+                    VkBufferMemoryBarrier2{
+                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                            .pNext = nullptr,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                            .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = frame.culled_indirect_buffer.buffer,
+                            .offset = 0,
+                            .size = VK_WHOLE_SIZE,
+                    },
+            };
+
+            VkDependencyInfo const post_cull_dependency_info{
+                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .pNext = nullptr,
+                    .dependencyFlags = 0,
+                    .memoryBarrierCount = 0,
+                    .pMemoryBarriers = nullptr,
+                    .bufferMemoryBarrierCount = static_cast<std::uint32_t>(post_cull_barriers.size()),
+                    .pBufferMemoryBarriers = post_cull_barriers.data(),
+                    .imageMemoryBarrierCount = 0,
+                    .pImageMemoryBarriers = nullptr,
+            };
+
+            vkCmdPipelineBarrier2(command_buffer, &post_cull_dependency_info);
+        } else {
+            vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
+                                 (static_cast<std::uint32_t>(RenderStage::Culling) * 2) + 1);
+        }
     }
+#pragma endregion
 
     last_frame_stats_ = FrameStats{
             .submitted_triangle_count = submitted_triangle_count,
@@ -2927,6 +2936,7 @@ template<typename OverlayPolicy>
 [[nodiscard]] auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
                                           std::uint32_t frame_index, Application const &app, glm::mat4 const &vp)
         -> std::expected<void, RendererError> {
+    ZoneScopedNC("RecordFrame", tracy::Color::RoyalBlue);
 
     if (!initialized_ || command_buffer == VK_NULL_HANDLE || swapchain_image.image == VK_NULL_HANDLE ||
         swapchain_image.view == VK_NULL_HANDLE || swapchain_image.format == VK_FORMAT_UNDEFINED ||
@@ -3012,6 +3022,8 @@ template<typename OverlayPolicy>
 
 #pragma region Shadow pass
     {
+        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Shadow Pass", tracy::Color::Purple);
+
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
                              static_cast<std::uint32_t>(RenderStage::ShadowPass) * 2);
 
@@ -3152,6 +3164,8 @@ template<typename OverlayPolicy>
 
 #pragma region Predepth pass
     {
+        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Depth Prepass", tracy::Color::SlateGray);
+
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
                              static_cast<std::uint32_t>(RenderStage::DepthPrepass) * 2);
 
@@ -3241,6 +3255,8 @@ template<typename OverlayPolicy>
 
 #pragma region Forward pass
     {
+        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Forward Pass", tracy::Color::RoyalBlue);
+
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, frame_query.query_pool,
                              static_cast<std::uint32_t>(RenderStage::ForwardPass) * 2);
 
@@ -3399,6 +3415,8 @@ template<typename OverlayPolicy>
 #pragma region Bloom pass
     auto bloom_texture_index = bloom_settings_.enabled ? frame.bloom_target.mip_slots[0].index : 0;
     {
+        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Bloom Pass", tracy::Color::Orange);
+
         if (bloom_settings_.enabled) {
             vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
                                  static_cast<std::uint32_t>(RenderStage::BloomPass) * 2);
@@ -3413,6 +3431,8 @@ template<typename OverlayPolicy>
 
 #pragma region Composition for swapchain
     {
+        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Composition", tracy::Color::SeaGreen);
+
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, frame_query.query_pool,
                              static_cast<std::uint32_t>(RenderStage::Composition) * 2);
 
@@ -3485,6 +3505,8 @@ template<typename OverlayPolicy>
 
     frame_query.has_results = true;
     pipeline_stat_queries_[frame_index].has_results = true;
+
+    TracyVkCollectHost(context_.host_query_context.context);
 
     return {};
 }

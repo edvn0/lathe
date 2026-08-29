@@ -20,7 +20,11 @@ auto Scene::on_scene_start() -> void {
 
 auto Scene::on_scene_stop() -> void { physics_world.reset(); }
 
-auto Scene::step(float delta_time) -> void { physics_world->step(get_registry(), std::min(delta_time, 0.25F)); }
+auto Scene::step(float delta_time) -> void {
+    ZoneScopedNC("SceneStep", tracy::Color::Firebrick);
+
+    physics_world->step(get_registry(), std::min(delta_time, 0.25F));
+}
 
 auto Scene::mark_lights_dirty(entt::registry &, entt::entity) -> void { lights_changed_signal_.publish(); }
 

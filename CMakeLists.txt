@@ -79,6 +79,12 @@ option(
     OFF
 )
 
+option(
+    MINGW_VULKAN_ENABLE_TRACY
+    "Enable Tracy profiler instrumentation"
+    ON
+)
+
 set(
     SLANG_VERSION
     "2026.12.0.1"
@@ -254,6 +260,17 @@ CPMAddPackage(
     VERSION 5.1.0
     EXCLUDE_FROM_ALL
     SYSTEM
+)
+
+# TRACY_ON_DEMAND defers data collection until a profiler actually connects,
+# so an unattached run doesn't buffer an ever-growing history in memory.
+CPMAddPackage(
+    NAME tracy
+    GITHUB_REPOSITORY wolfpld/tracy
+    GIT_TAG v0.14.1
+    OPTIONS
+        "TRACY_ENABLE ${MINGW_VULKAN_ENABLE_TRACY}"
+        "TRACY_ON_DEMAND ON"
 )
 
 add_library(BS_thread_pool INTERFACE)
@@ -455,6 +472,7 @@ endif()
 
 mark_target_includes_system(meshoptimizer)
 mark_target_includes_system(efsw)
+mark_target_includes_system(TracyClient)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/add_mikktspace.cmake")
 
@@ -1078,6 +1096,7 @@ target_link_libraries(
         tinyexr
         ktx
         BS_thread_pool
+        TracyClient
 )
 
 target_precompile_headers(

@@ -5,6 +5,8 @@ auto VulkanContext::destroy() -> void {
 
     context.swapchain.destroy();
 
+    context.host_query_context.destroy();
+
     if (context.one_time_pool != VK_NULL_HANDLE) {
         vkDestroyCommandPool(context.device, context.one_time_pool, nullptr);
 

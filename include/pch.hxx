@@ -50,3 +50,6 @@
 
 // Thread pool
 #include <BS_thread_pool.hpp>
+
+// Profiling (no-ops throughout when TRACY_ENABLE isn't defined)
+#include <tracy/Tracy.hpp>

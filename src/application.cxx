@@ -320,6 +320,8 @@ auto Application::stop() -> void {
 }
 
 auto Application::update(float delta_time) -> void {
+    ZoneScopedNC("ApplicationUpdate", tracy::Color::Firebrick);
+
     if (!is_playing || !active_scene) {
         return;
     }
@@ -704,14 +706,14 @@ auto Application::recreate_entities() -> void {
     // texture_pipeline.hxx / TextureStreamer) and swaps in in place once
     // decoded, cached, and uploaded.
     auto const dirt_normal_index = streamer.request(images, "assets/textures/dirt/dirt_nor_gl_1k_zip.exr",
-                                                     TextureRole::normal_map, images.flat_normal(), "dirt.normal");
+                                                    TextureRole::normal_map, images.flat_normal(), "dirt.normal");
 
     auto const dirt_albedo_index = streamer.request(images, "assets/textures/dirt/dirt_diff_1k.jpg",
-                                                     TextureRole::colour, images.white(), "dirt.albedo");
+                                                    TextureRole::colour, images.white(), "dirt.albedo");
 
-    auto const dirt_roughness_index = streamer.request(images, "assets/textures/dirt/dirt_rough_1k.exr",
-                                                        TextureRole::generic, images.metallic_roughness(),
-                                                        "dirt.roughness");
+    auto const dirt_roughness_index =
+            streamer.request(images, "assets/textures/dirt/dirt_rough_1k.exr", TextureRole::generic,
+                             images.metallic_roughness(), "dirt.roughness");
 
     auto const floor_material = renderer->create_material(MaterialCreateInfo{
             .base_colour_factor = glm::vec4{1.0F, 1.0F, 1.0F, 1.0F},

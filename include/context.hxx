@@ -12,6 +12,7 @@
 #include <GLFW/glfw3.h>
 
 #include "allocator.hxx"
+#include "host_query_context.hxx"
 #include "swapchain.hxx"
 
 #include "forward.hxx"
@@ -47,6 +48,15 @@ struct VulkanContext {
     // VkPipeline vs ShaderObjectSet at pipeline-registration time -- not
     // every GPU (e.g. some Intel iGPUs) implements this extension yet.
     bool shader_objects_supported = false;
+
+    // Whether VK_EXT_calibrated_timestamps is present on physical_device,
+    // and whether its calibrateable time domains additionally allow Tracy's
+    // host-calibrated Vulkan context (see host_query_context.hxx). Decided
+    // once at device selection in main.cxx.
+    bool calibrated_timestamps_supported = false;
+    bool host_calibrated_timestamps_supported = false;
+
+    HostQueryContext host_query_context{};
 
     VkQueue graphics_queue = VK_NULL_HANDLE;
     VkQueue present_queue = VK_NULL_HANDLE;

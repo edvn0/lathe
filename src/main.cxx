@@ -597,6 +597,24 @@ namespace {
         });
     }
 
+    auto calibrateable_time_domains(VkPhysicalDevice physical_device) noexcept -> std::vector<VkTimeDomainEXT> {
+        std::uint32_t domain_count = 0;
+        auto result = vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(physical_device, &domain_count, nullptr);
+
+        if (result != VK_SUCCESS || domain_count == 0) {
+            return {};
+        }
+
+        std::vector<VkTimeDomainEXT> domains(domain_count);
+        result = vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(physical_device, &domain_count, domains.data());
+
+        if (result != VK_SUCCESS) {
+            return {};
+        }
+
+        return domains;
+    }
+
     auto rate_device_type(VkPhysicalDeviceType type) noexcept -> int {
         switch (type) {
             case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
@@ -737,6 +755,32 @@ namespace {
 
         info("VK_EXT_shader_object support: {}",
              context.shader_objects_supported ? "yes" : "no (falling back to VkPipeline)");
+
+        // Tracy's "host query" Vulkan context (see host_query_context.hxx)
+        // needs VK_EXT_calibrated_timestamps plus a calibrateable device/host
+        // time domain pair -- absent either, HostQueryContext::initialize
+        // falls back to a calibrated or plain Tracy Vulkan context instead.
+        context.calibrated_timestamps_supported =
+                supports_device_extension(context.physical_device, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+
+        if (context.calibrated_timestamps_supported) {
+            auto const domains = calibrateable_time_domains(context.physical_device);
+
+#ifdef _WIN32
+            constexpr auto host_time_domain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT;
+#else
+            constexpr auto host_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT;
+#endif
+
+            context.host_calibrated_timestamps_supported =
+                    std::ranges::find(domains, VK_TIME_DOMAIN_DEVICE_EXT) != domains.end() &&
+                    std::ranges::find(domains, host_time_domain) != domains.end();
+        }
+
+        info("Calibrated timestamps support: {} (host-calibrated: {})",
+             context.calibrated_timestamps_supported ? "yes" : "no",
+             context.host_calibrated_timestamps_supported ? "yes" : "no");
+
         return true;
     }
 
@@ -772,6 +816,10 @@ namespace {
             device_extensions.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
             device_extensions.push_back(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
             device_extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+        }
+
+        if (context.calibrated_timestamps_supported) {
+            device_extensions.push_back(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
         }
 
         VkPhysicalDeviceVulkan11Features vulkan11_features{};
@@ -902,6 +950,12 @@ namespace {
         return true;
     }
 
+    auto create_host_query_context(VulkanContext &context) noexcept -> bool {
+        context.host_query_context.initialize(context);
+
+        return true;
+    }
+
     auto create_allocator(VulkanContext &context) noexcept -> bool {
         VmaAllocatorCreateInfo create_info{
 
@@ -972,11 +1026,13 @@ namespace {
 
     auto initialize_vulkan(VulkanContext &context, ScreenType screen_type) noexcept -> bool {
         return initialize_glfw(context, screen_type) && create_instance(context) && create_surface(context) &&
-               select_physical_device(context) && create_device(context) && create_allocator(context) &&
-               create_swapchain(context);
+               select_physical_device(context) && create_device(context) && create_host_query_context(context) &&
+               create_allocator(context) && create_swapchain(context);
     }
 
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
+        ZoneScopedNC("SubmitScene", tracy::Color::RoyalBlue);
+
         auto &registry = application.active_scene->get_registry();
 
         auto view = registry.view<Components::Transform const, Components::Model const>();
@@ -1057,6 +1113,8 @@ namespace {
     }
 
     auto draw(VulkanContext &context, Application &application) noexcept -> bool {
+        ZoneScopedNC("Draw", tracy::Color::RoyalBlue);
+
         auto frame = context.swapchain.begin_frame();
 
         if (!frame) {
@@ -1418,6 +1476,7 @@ auto main(int argc, char **argv) -> int {
 
     while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire) &&
            glfwWindowShouldClose(context.window) != GLFW_TRUE) {
+        ZoneScopedNC("MainLoop", tracy::Color::Gray);
 
         auto const width = context.framebuffer_width.load(std::memory_order_relaxed);
         auto const height = context.framebuffer_height.load(std::memory_order_relaxed);
@@ -1461,6 +1520,8 @@ auto main(int argc, char **argv) -> int {
             exit_code = EXIT_FAILURE;
             break;
         }
+
+        FrameMark;
 
         auto const swapchain_extent = context.swapchain.extent();
 
