@@ -9,6 +9,9 @@
 #include "material.hxx"
 #include "renderer.hxx"
 
+class btRigidBody;
+class btCollisionShape;
+
 namespace Components {
     struct Lifetime {
         float remaining_seconds{0.0F};
@@ -83,5 +86,17 @@ namespace Components {
                     .lock_rotation = true,
             };
         }
+    };
+
+    // The live Bullet handle for an entity's RigidBody, added by
+    // PhysicsWorld::add_body once the body exists in the simulation and
+    // removed by PhysicsWorld::remove_body. Neither pointer is owned here --
+    // PhysicsWorld's arena owns the storage; this is just how PhysicsWorld
+    // finds an entity's body without keeping its own entity-keyed map (which
+    // used to mean every per-frame transform writeback walked a hash map
+    // instead of an entt::view).
+    struct PhysicsBody {
+        btRigidBody *rigid_body = nullptr;
+        btCollisionShape *shape = nullptr;
     };
 } // namespace Components

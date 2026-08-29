@@ -7,6 +7,13 @@ readonly build_type="${CMAKE_BUILD_TYPE:-Debug}"
 readonly renderdoc_include_path="${RENDERDOC_INCLUDE_PATH:-}"
 readonly cpm_cache_dir="${HOME}/.cache/CPM"
 
+# The image has no non-root user, so without --user every file the
+# container writes into a bind mount (build/, ~/.cache/CPM) ends up
+# root-owned on the host. Running as the invoking host user instead avoids
+# that; HOME is repointed at a writable, persistent dir since root's HOME
+# (/root) isn't accessible to this UID and isn't a real passwd entry either.
+readonly container_home="${HOME}/.cache/cross-build-container-home"
+
 # windows-mingw: cross-compile to Windows via mingw-w64.
 # linux-native:  build natively inside the container with its gcc/g++.
 readonly target="${TARGET:-windows-mingw}"
@@ -146,6 +153,13 @@ for cheaper:
 
 unwinding instead of DWARF.
 
+SANITIZE=1 configures a linux-native build with AddressSanitizer and
+UndefinedBehaviorSanitizer enabled.
+
+WERROR=1 treats warnings as errors on this project's own targets
+(mingw-vulkan-core, mingw-vulkan, mingw-vulkan-tests) -- not on vendored
+dependencies.
+
 Examples:
 
   TARGET=linux-native \
@@ -172,6 +186,11 @@ Examples:
   TARGET=windows-mingw \
     CMAKE_BUILD_TYPE=Release \
     ./compile.sh --rebuild
+
+  TARGET=linux-native \
+    CMAKE_BUILD_TYPE=Debug \
+    SANITIZE=1 \
+    ./compile.sh --rebuild
 EOF
 }
 
@@ -193,15 +212,19 @@ validate_renderdoc_path() {
 
 run_container() {
   mkdir -p "${cpm_cache_dir}"
+  mkdir -p "${container_home}"
 
   validate_renderdoc_path
 
   local docker_args=(
     run
     --rm
+    --user "$(id -u):$(id -g)"
     --mount "type=bind,source=${project_dir},target=${project_dir}"
     --mount "type=bind,source=${cpm_cache_dir},target=${cpm_cache_dir}"
+    --mount "type=bind,source=${container_home},target=${container_home}"
     --env "CPM_SOURCE_CACHE=${cpm_cache_dir}"
+    --env "HOME=${container_home}"
     --workdir "${project_dir}"
   )
 
@@ -272,6 +295,23 @@ configure() {
     cmake_args+=(
       -DCMAKE_CXX_FLAGS="-fno-omit-frame-pointer"
       -DCMAKE_C_FLAGS="-fno-omit-frame-pointer"
+    )
+  fi
+
+  if [[ "${SANITIZE:-0}" == "1" ]]; then
+    if [[ "${target}" != "linux-native" ]]; then
+      echo "SANITIZE=1 requires TARGET=linux-native" >&2
+      exit 1
+    fi
+
+    cmake_args+=(
+      -DMINGW_VULKAN_SANITIZE=ON
+    )
+  fi
+
+  if [[ "${WERROR:-0}" == "1" ]]; then
+    cmake_args+=(
+      -DMINGW_VULKAN_WERROR=ON
     )
   fi
 

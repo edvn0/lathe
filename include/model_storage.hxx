@@ -83,6 +83,21 @@ public:
     [[nodiscard]]
     auto create_model(ModelSlotData data) -> std::expected<ModelHandle, ModelStorageError>;
 
+    // Reserves a new slot as a copy of `fallback`'s data (same MeshHandles,
+    // bounds, lights) so the returned handle renders and reports bounds
+    // identically to the fallback until upgrade_pending_model() installs
+    // the real data -- for async loads that hand back a usable handle
+    // before the real model has finished loading.
+    [[nodiscard]]
+    auto create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, ModelStorageError>;
+
+    // Replaces a slot's data in place and returns the same handle back.
+    // index/generation are unchanged, so every draw-list/bounds query
+    // against this handle transparently sees the new data from the next
+    // read onward -- no handle churn for whatever already holds it.
+    [[nodiscard]]
+    auto upgrade_pending_model(ModelHandle handle, ModelSlotData data) -> std::expected<ModelHandle, ModelStorageError>;
+
     [[nodiscard]]
     auto get(ModelHandle handle) noexcept -> ModelSlotData *;
 

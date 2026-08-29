@@ -194,3 +194,124 @@ jobs:
             --env CCACHE_DIR=/ccache \
             cross-build:latest \
             ccache --show-stats
+
+  sanitize:
+    name: linux-native / Debug / ASan+UBSan / -Werror
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: cross-build:latest
+          load: true
+          cache-from: type=gha,scope=toolchain
+          cache-to: type=gha,mode=max,scope=toolchain
+
+      - name: Restore CPM cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: >-
+            cpm-${{
+              hashFiles('**/CMakeLists.txt', '**/*.cmake')
+            }}-sanitize
+          restore-keys: |
+            cpm-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}-
+            cpm-
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: >-
+            ccache-sanitize-${{
+              hashFiles(
+                'Dockerfile',
+                'cmake/toolchains/**',
+                '**/CMakeLists.txt',
+                '**/*.cmake'
+              )
+            }}
+          restore-keys: |
+            ccache-sanitize-
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${HOME}/.cache/CPM"
+          mkdir -p "${HOME}/.cache/ccache"
+
+          docker run --rm \
+            --mount type=bind,source="${PWD}",target=/workspace \
+            --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
+            --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
+            --env CPM_SOURCE_CACHE=/cpm-cache \
+            --env CCACHE_DIR=/ccache \
+            --env CCACHE_BASEDIR=/workspace \
+            --env CCACHE_NOHASHDIR=true \
+            --env CCACHE_COMPILERCHECK=content \
+            --env CCACHE_MAXSIZE=2G \
+            --workdir /workspace \
+            cross-build:latest \
+            cmake \
+              -S . \
+              -B build/linux-native-debug \
+              -G Ninja \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+              -DMINGW_VULKAN_SANITIZE=ON \
+              -DMINGW_VULKAN_WERROR=ON
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run --rm \
+            --mount type=bind,source="${PWD}",target=/workspace \
+            --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
+            --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
+            --env CPM_SOURCE_CACHE=/cpm-cache \
+            --env CCACHE_DIR=/ccache \
+            --env CCACHE_BASEDIR=/workspace \
+            --env CCACHE_NOHASHDIR=true \
+            --env CCACHE_COMPILERCHECK=content \
+            --env CCACHE_MAXSIZE=2G \
+            --workdir /workspace \
+            cross-build:latest \
+            cmake \
+              --build build/linux-native-debug \
+              --parallel
+
+      # ASan/UBSan errors abort the process with a nonzero exit code, which
+      # ctest already treats as a test failure -- no extra flag needed beyond
+      # making the sanitizers fail loudly instead of just logging.
+      - name: Test
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run --rm \
+            --mount type=bind,source="${PWD}",target=/workspace \
+            --env ASAN_OPTIONS=halt_on_error=1:abort_on_error=1 \
+            --env UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            --workdir /workspace \
+            cross-build:latest \
+            ctest \
+              --test-dir build/linux-native-debug \
+              --output-on-failure \
+              --parallel 4 \
+              --no-tests=error

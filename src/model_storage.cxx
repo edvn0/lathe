@@ -33,6 +33,29 @@ auto ModelStorage::create_model(ModelSlotData data) -> std::expected<ModelHandle
     return handle;
 }
 
+auto ModelStorage::create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, ModelStorageError> {
+    auto const *fallback_slot = slots_.get(fallback);
+
+    if (fallback_slot == nullptr) {
+        return std::unexpected(ModelStorageError{.type = ModelStorageErrorType::invalid_handle});
+    }
+
+    return create_model(*fallback_slot);
+}
+
+auto ModelStorage::upgrade_pending_model(ModelHandle handle, ModelSlotData data)
+        -> std::expected<ModelHandle, ModelStorageError> {
+    auto *slot = slots_.get(handle);
+
+    if (slot == nullptr) {
+        return std::unexpected(ModelStorageError{.type = ModelStorageErrorType::invalid_handle});
+    }
+
+    *slot = std::move(data);
+
+    return handle;
+}
+
 auto ModelStorage::get(ModelHandle handle) noexcept -> ModelSlotData * { return slots_.get(handle); }
 
 auto ModelStorage::get(ModelHandle handle) const noexcept -> ModelSlotData const * { return slots_.get(handle); }

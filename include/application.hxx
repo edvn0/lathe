@@ -85,8 +85,15 @@ struct Application {
 
     std::unique_ptr<Scene> editor_scene = std::make_unique<Scene>(*renderer);
     std::unique_ptr<Scene> runtime_scene;
-    Scene *active_scene = editor_scene.get();
     bool is_playing = false;
+
+    // Computed rather than a separately-mutated pointer: play()/stop() only
+    // need to flip is_playing, so there's no window where this field and
+    // is_playing can desync (e.g. a re-entrant stop() call, or something
+    // capturing a scene pointer that outlives the run it was captured for).
+    [[nodiscard]] auto active_scene() const noexcept -> Scene * {
+        return is_playing ? runtime_scene.get() : editor_scene.get();
+    }
 
     entt::entity player_entity{entt::null};
     PlayerController player_controller;
@@ -98,8 +105,8 @@ struct Application {
 
     EngineModels engine_models{};
 
-    // Set by recreate_entities() -- reused by shoot_bullet() so
-    // projectiles are built from the same model/collision-shape
+    // Set by build_demo_scene() (demo_scene.hxx) -- reused by shoot_bullet()
+    // so projectiles are built from the same model/collision-shape
     // relationship as the grid cubes and floor.
     ModelHandle cube_model{};
     glm::vec3 cube_half_extents{0.5F};
@@ -107,7 +114,7 @@ struct Application {
     ModelHandle house_model{};
     ModelHandle tree_model{};
 
-    // Wind-swaying grass material -- created once in recreate_entities()
+    // Wind-swaying grass material -- created once in build_demo_scene()
     // and shared as a MaterialOverride across every grass clump entity.
     MaterialHandle grass_material{};
 
@@ -148,5 +155,4 @@ struct Application {
     [[nodiscard]] auto cursor_ray() const -> std::pair<glm::vec3, glm::vec3>;
 
     auto shoot_bullet(std::size_t n = 1) -> void;
-    auto recreate_entities() -> void;
 };

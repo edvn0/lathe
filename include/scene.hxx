@@ -47,6 +47,7 @@ private:
 
     auto mark_lights_dirty(entt::registry &, entt::entity) -> void;
     auto on_transform_changed(entt::registry &reg, entt::entity entity) -> void;
+    auto on_rigid_body_destroyed(entt::registry &, entt::entity entity) -> void;
     auto connect_light_signals() -> void;
 
     template<typename T>

@@ -85,6 +85,18 @@ option(
     ON
 )
 
+option(
+    MINGW_VULKAN_SANITIZE
+    "Build with AddressSanitizer + UndefinedBehaviorSanitizer (native builds only)"
+    OFF
+)
+
+option(
+    MINGW_VULKAN_WERROR
+    "Treat warnings as errors on this project's own targets (mingw-vulkan-core/mingw-vulkan/mingw-vulkan-tests)"
+    OFF
+)
+
 set(
     SLANG_VERSION
     "2026.12.0.1"
@@ -197,6 +209,7 @@ cpmaddpackage(
     NAME glm
     GITHUB_REPOSITORY g-truc/glm
     GIT_TAG 1.0.3
+    SYSTEM YES
     OPTIONS
         "GLM_BUILD_TESTS OFF"
         "GLM_BUILD_INSTALL OFF"
@@ -222,7 +235,7 @@ cpmaddpackage(
 cpmaddpackage(
     NAME stb
     GITHUB_REPOSITORY nothings/stb
-    GIT_TAG master
+    GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20
     GIT_SHALLOW YES
     DOWNLOAD_ONLY YES
 )
@@ -244,7 +257,7 @@ CPMAddPackage(
 CPMAddPackage(
     NAME freetype
     GITHUB_REPOSITORY freetype/freetype
-    GIT_TAG master
+    GIT_TAG VER-2-14-3
     OPTIONS
         "BUILD_SHARED_LIBS OFF"
         "FT_DISABLE_ZLIB ON"
@@ -284,10 +297,23 @@ target_include_directories(
 CPMAddPackage(
     NAME bullet3
     GITHUB_REPOSITORY bulletphysics/bullet3
-    GIT_TAG master
+    GIT_TAG 3.25
     GIT_SHALLOW YES
     OPTIONS
-        "BT_THREADSAFE OFF"
+        # This project uses Bullet's *Mt classes (btCollisionDispatcherMt,
+        # btConstraintSolverPoolMt, btDiscreteDynamicsWorldMt) and installs a
+        # custom btITaskScheduler (see physics_world.cxx), which requires
+        # Bullet's own mutex primitives to be compiled in. Bullet gates that
+        # behind BULLET2_MULTITHREADING (defaults OFF), not a "BT_THREADSAFE"
+        # cache variable -- that name isn't read anywhere in Bullet's
+        # CMakeLists, so setting it here was a no-op. Without the real
+        # option, LinearMath/btThreads.cpp compiles btSpinMutex::lock() as an
+        # assert-and-abort stub, and every *Mt class call that needs it
+        # crashes the moment Bullet's internal dispatch is busy enough to
+        # actually take that lock -- confirmed by test/physics_world_test.cxx
+        # aborting with "unimplemented btSpinMutex::lock() called" before
+        # this option was corrected.
+        "BULLET2_MULTITHREADING ON"
         "BUILD_SHARED_LIBS OFF"
         "BUILD_BULLET2_DEMOS OFF"
         "BUILD_CPU_DEMOS OFF"
@@ -975,23 +1001,32 @@ list(
     EXCLUDE REGEX "/renderdoc/"
 )
 
+#
+# main.cxx is just the entry point/frame loop/window-event wiring;
+# vulkan_bootstrap.cxx holds the one-time instance/device/swapchain bring-up
+# it calls into. Both belong to the executable rather than the reusable
+# core library, since nothing else links against them.
+#
 set(
-    mingw_vulkan_main_source
+    mingw_vulkan_main_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cxx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan_bootstrap.cxx"
 )
 
-if(NOT EXISTS "${mingw_vulkan_main_source}")
-  message(
-      FATAL_ERROR
-      "Expected application entry point at "
-      "${mingw_vulkan_main_source}"
-  )
-endif()
+foreach(mingw_vulkan_main_source ${mingw_vulkan_main_sources})
+  if(NOT EXISTS "${mingw_vulkan_main_source}")
+    message(
+        FATAL_ERROR
+        "Expected application entry point source at "
+        "${mingw_vulkan_main_source}"
+    )
+  endif()
+endforeach()
 
 list(
     REMOVE_ITEM
     mingw_vulkan_core_sources
-    "${mingw_vulkan_main_source}"
+    ${mingw_vulkan_main_sources}
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
@@ -1045,6 +1080,14 @@ target_include_directories(
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         "${shader_reflect_generated_dir}/include"
+)
+
+# stb is DOWNLOAD_ONLY (no CMake target of its own), so there's nothing for
+# mark_target_includes_system() to act on -- SYSTEM has to be requested
+# directly on this include path instead, same reasoning as bullet3 below.
+target_include_directories(
+    mingw-vulkan-core
+    SYSTEM
     PRIVATE
         "${stb_SOURCE_DIR}"
 )
@@ -1150,7 +1193,8 @@ configure_compiler_options(mingw-vulkan-core)
 # RenderDoc
 #
 # RenderDoc implementation belongs to the core library, since the executable
-# itself now contains only main.cxx.
+# itself only contains main.cxx and vulkan_bootstrap.cxx (the entry point,
+# frame loop, and one-time Vulkan bring-up).
 # ------------------------------------------------------------------------------
 
 include(
@@ -1173,7 +1217,7 @@ configure_renderdoc(
 
 add_executable(
     mingw-vulkan
-    "${mingw_vulkan_main_source}"
+    ${mingw_vulkan_main_sources}
 )
 
 target_link_libraries(
@@ -1183,14 +1227,15 @@ target_link_libraries(
 )
 
 #
-# Keep the same project compiler options on main.cxx as well. The majority of
-# the source tree is compiled by mingw-vulkan-core, but the executable should
-# not silently use a different warning/exception/RTTI configuration.
+# Keep the same project compiler options on the executable's own sources as
+# well. The majority of the source tree is compiled by mingw-vulkan-core, but
+# the executable should not silently use a different warning/exception/RTTI
+# configuration.
 #
 configure_compiler_options(mingw-vulkan)
 
-# If main.cxx relies on the project PCH, retain the same behaviour it had when
-# all sources belonged to the executable target.
+# If these sources rely on the project PCH, retain the same behaviour they had
+# when all sources belonged to the executable target.
 target_precompile_headers(
     mingw-vulkan
     PRIVATE

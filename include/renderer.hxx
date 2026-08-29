@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <future>
 #include <optional>
 #include <span>
 #include <type_traits>
@@ -32,6 +33,7 @@
 #include "mesh_storage.hxx"
 #include "model.hxx"
 #include "model_storage.hxx"
+#include "model_streamer.hxx"
 #include "pipeline_graph_repository.hxx"
 #include "pipeline_storage.hxx"
 #include "render_stage.hxx"
@@ -208,6 +210,47 @@ struct Renderer {
     [[nodiscard]]
     auto load_model(std::filesystem::path const &path) -> std::expected<ModelHandle, RendererError>;
 
+    // Low-level async primitive: runs load_model()'s CPU-heavy work (glTF
+    // parsing, tangent generation, LOD simplification) on thread_pool()
+    // instead of blocking the calling thread. GPU uploads aren't safe to
+    // issue off the render thread, so this doesn't create a ModelHandle
+    // itself -- pair it with create_pending_model()/finish_model_load()
+    // (or just use model_streamer(), which already does this) to get a
+    // handle that's usable immediately and upgrades in place once the
+    // background work and GPU upload both finish. Bypasses load_model()'s
+    // path cache -- the caller is responsible for not requesting the same
+    // path twice concurrently if that matters for their use case.
+    //
+    // Unlike TextureStreamer's requests, this Renderer does not track or
+    // wait on the returned future itself (destroy() only waits on
+    // texture_streamer_/model_streamer_). A caller using this directly
+    // (rather than through model_streamer()) owns the future and must
+    // ensure it has either completed or been discarded before this
+    // Renderer is destroyed -- the background task reads this Renderer's
+    // sampler_storage_, so a still-running task outliving the Renderer is
+    // a use-after-free.
+    [[nodiscard]]
+    auto load_model_cpu_async(std::filesystem::path path)
+            -> std::future<std::expected<ModelCpuData, ModelLoadError>>;
+
+    // Reserves a model handle as a copy of `fallback`'s data -- usable
+    // immediately (renders and reports bounds as the fallback) -- to be
+    // installed into later via finish_model_load(). See ModelStorage::create_pending_model.
+    [[nodiscard]]
+    auto create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, RendererError>;
+
+    // Completes an async load started with load_model_cpu_async(): records
+    // the GPU upload (meshes, materials, any embedded textures) into
+    // `command_buffer` -- which must be a currently-recording command
+    // buffer whose submission this caller will wait on via the normal
+    // frames-in-flight fence discipline, not a one-time_submit buffer --
+    // then installs the result into `pending` in place. Must run on the
+    // render thread. On failure `pending` is left showing its original
+    // fallback content rather than being torn down.
+    [[nodiscard]]
+    auto finish_model_load(ModelHandle pending, ModelCpuData const &cpu_data, VkCommandBuffer command_buffer)
+            -> std::expected<void, RendererError>;
+
     // Uploads already-CPU-side geometry (e.g. procedurally generated engine
     // primitives — see primitive_meshes.hxx / engine_models.hxx) through the
     // same GPU upload path as load_model, without touching disk or a glTF
@@ -369,6 +412,7 @@ struct Renderer {
     [[nodiscard]] auto image_storage() noexcept -> ImageStorage & { return image_storage_; }
     [[nodiscard]] auto sampler_storage() noexcept -> SamplerStorage & { return sampler_storage_; }
     [[nodiscard]] auto texture_streamer() noexcept -> TextureStreamer & { return texture_streamer_; }
+    [[nodiscard]] auto model_streamer() noexcept -> ModelStreamer & { return model_streamer_; }
     [[nodiscard]] auto resource_table() noexcept -> GpuResourceTable & { return gpu_resource_table_; }
 
     [[nodiscard]] auto resolve_pipeline(PipelineNodeHandle handle) const noexcept -> Pipeline const * {
@@ -623,6 +667,19 @@ private:
     [[nodiscard]]
     auto model_slot(ModelHandle handle) const noexcept -> ModelSlotData const *;
 
+    // Shared by create_model() and finish_model_load(): creates every mesh
+    // `model` references, flattens its scene graph into a draw list, and
+    // hands the resulting ModelSlotData to `install` -- create_model()
+    // passes model_storage_.create_model (a fresh handle), finish_model_load()
+    // passes model_storage_.upgrade_pending_model (installs into an
+    // already-issued pending handle in place). Rolls back every mesh it
+    // created if `install` itself fails (e.g. capacity_exceeded).
+    [[nodiscard]]
+    auto create_model_common(
+            Model const &model, MaterialHandle fallback_material,
+            std::move_only_function<std::expected<ModelHandle, ModelStorageError>(ModelSlotData)> install)
+            -> std::expected<ModelHandle, RendererError>;
+
     [[nodiscard]]
     auto upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame) -> std::expected<void, RendererError>;
 
@@ -643,6 +700,7 @@ private:
     ImageStorage image_storage_{};
     SamplerStorage sampler_storage_{};
     TextureStreamer texture_streamer_{};
+    ModelStreamer model_streamer_{};
     GpuResourceTable gpu_resource_table_{};
 
     std::vector<Buffer> ubos_;

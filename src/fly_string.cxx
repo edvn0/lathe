@@ -1,6 +1,6 @@
 #include "fly_string.hxx"
 
-#include "logger.hxx"
+#include <cstdio>
 
 FlyString::FlyString() noexcept = default;
 
@@ -48,12 +48,17 @@ void FlyString::Pool::print_stats() const {
                                                   static_cast<float>(total_requests_))
                                                : 0.0F;
 
-    debug("=== FlyString Pool Stats ===");
-    debug("  Unique strings interned : {}", strings_.size());
-    debug("  Total intern requests   : {}", total_requests_);
-    debug("  Deduplication hit rate  : {:.2f}%", hit_rate);
-    debug("  Heap payload allocated  : {} bytes", total_string_bytes);
-    debug("============================");
+    // This only ever runs from the atexit hook below, by which point other
+    // function-local statics (including the spdlog-backed logger's) may
+    // already be destroyed -- C++ does not order unrelated statics' teardown
+    // against each other or against atexit callbacks. stderr has no such
+    // lifetime issue, so the exit-time report bypasses logger::* entirely.
+    std::fprintf(stderr, "=== FlyString Pool Stats ===\n");
+    std::fprintf(stderr, "  Unique strings interned : %zu\n", strings_.size());
+    std::fprintf(stderr, "  Total intern requests   : %zu\n", total_requests_);
+    std::fprintf(stderr, "  Deduplication hit rate  : %.2f%%\n", static_cast<double>(hit_rate));
+    std::fprintf(stderr, "  Heap payload allocated  : %zu bytes\n", total_string_bytes);
+    std::fprintf(stderr, "============================\n");
 }
 
 auto FlyString::pool() -> Pool & {

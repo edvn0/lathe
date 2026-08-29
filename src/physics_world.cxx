@@ -57,12 +57,8 @@ namespace {
 } // namespace
 
 struct PhysicsWorld::Impl {
-    struct Body {
-        btRigidBody *rigid_body;
-        btCollisionShape *shape;
-    };
-
-    Impl(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool) : task_scheduler{thread_pool} {
+    Impl(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool, entt::registry &reg) :
+        task_scheduler{thread_pool}, registry{reg} {
         btSetTaskScheduler(&task_scheduler);
 
         collision_configuration = arena.construct<btDefaultCollisionConfiguration>();
@@ -82,10 +78,38 @@ struct PhysicsWorld::Impl {
     }
 
     ~Impl() {
-        for (auto &[entity, body]: bodies) {
-            world->removeRigidBody(body.rigid_body);
-            body.rigid_body->~btRigidBody();
-            body.shape->~btCollisionShape();
+        // No entity-keyed container of our own to walk here -- world's own
+        // collision object array already lists every body add_body() put
+        // in, so teardown reads that instead of duplicating it. Removing
+        // the current last element each iteration (by always indexing from
+        // the current end and counting down) stays valid across whatever
+        // removeRigidBody()'s internal swap-and-pop does to the array.
+        auto &collision_objects = world->getCollisionObjectArray();
+
+        for (auto i = collision_objects.size() - 1; i >= 0; --i) {
+            auto *rigid_body = btRigidBody::upcast(collision_objects[i]);
+
+            if (rigid_body == nullptr) {
+                continue;
+            }
+
+            auto *shape = rigid_body->getCollisionShape();
+
+            // Every body still in the world at this point only ever got
+            // here via add_body(), which always paired it with a
+            // Components::PhysicsBody on this same entity -- remove that
+            // now too, or it's left pointing at memory this destructor is
+            // about to free.
+            auto const entity = static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(rigid_body->getUserPointer()));
+
+            if (registry.valid(entity)) {
+                registry.remove<Components::PhysicsBody>(entity);
+            }
+
+            world->removeRigidBody(rigid_body);
+
+            rigid_body->~btRigidBody();
+            shape->~btCollisionShape();
         }
 
         world->~btDiscreteDynamicsWorldMt();
@@ -95,6 +119,14 @@ struct PhysicsWorld::Impl {
         broadphase->~btBroadphaseInterface();
         dispatcher->~btCollisionDispatcherMt();
         collision_configuration->~btDefaultCollisionConfiguration();
+
+        // btSetTaskScheduler(other) calls the *previous* scheduler's deactivate() before
+        // switching. task_scheduler is about to be destroyed along with this Impl, so the
+        // global must be cleared now -- otherwise the next PhysicsWorld's constructor calls
+        // btSetTaskScheduler() and dereferences this now-dangling pointer.
+        if (btGetTaskScheduler() == &task_scheduler) {
+            btSetTaskScheduler(nullptr);
+        }
     }
 
     ArenaAllocator arena{512 * 1024};
@@ -103,18 +135,19 @@ struct PhysicsWorld::Impl {
 
     ThreadPoolTaskScheduler task_scheduler; // must outlive world; declared before it, constructed first
 
+    entt::registry &registry; // outlives this PhysicsWorld -- see the constructor's doc comment
+
     btDefaultCollisionConfiguration *collision_configuration{nullptr};
     btCollisionDispatcherMt *dispatcher{nullptr};
     btBroadphaseInterface *broadphase{nullptr};
     btConstraintSolverPoolMt *solver_pool{nullptr};
     btSequentialImpulseConstraintSolverMt *solver_mt{nullptr};
     btDiscreteDynamicsWorldMt *world{nullptr};
-
-    std::unordered_map<entt::entity, Body> bodies;
 };
 
-PhysicsWorld::PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool) :
-    impl_{std::make_unique<Impl>(settings, thread_pool)} {}
+PhysicsWorld::PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool,
+                           entt::registry &registry) :
+    impl_{std::make_unique<Impl>(settings, thread_pool, registry)} {}
 
 PhysicsWorld::~PhysicsWorld() = default; // Impl is complete here, so the default destructor is fine
 
@@ -122,11 +155,11 @@ auto PhysicsWorld::populate_from(entt::registry &registry) -> void {
     auto view = registry.view<Components::Transform const, Components::RigidBody const>();
 
     for (auto &&[entity, transform, rigid]: view.each()) {
-        add_body(entity, transform, rigid);
+        add_body(registry, entity, transform, rigid);
     }
 }
 
-auto PhysicsWorld::add_body(entt::entity entity, Components::Transform const &transform,
+auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Components::Transform const &transform,
                             Components::RigidBody const &body) -> void {
     auto *shape = body.shape == Components::BodyShape::capsule
                           ? impl_->arena.construct_with_base<btCapsuleShape, btCollisionShape>(body.capsule_radius,
@@ -166,27 +199,31 @@ auto PhysicsWorld::add_body(entt::entity entity, Components::Transform const &tr
 
     impl_->world->addRigidBody(rigid_body);
 
-    impl_->bodies.emplace(entity, Impl::Body{rigid_body, shape});
+    registry.emplace<Components::PhysicsBody>(entity, Components::PhysicsBody{
+                                                               .rigid_body = rigid_body,
+                                                               .shape = shape,
+                                                       });
 }
 
-auto PhysicsWorld::set_velocity(entt::entity entity, glm::vec3 const &linear_velocity) -> void {
-    auto it = impl_->bodies.find(entity);
-    if (it == impl_->bodies.end()) {
+auto PhysicsWorld::set_velocity(entt::registry const &registry, entt::entity entity,
+                                glm::vec3 const &linear_velocity) -> void {
+    auto const *physics_body = registry.try_get<Components::PhysicsBody const>(entity);
+    if (physics_body == nullptr) {
         return;
     }
 
-    auto current = it->second.rigid_body->getLinearVelocity();
-    it->second.rigid_body->setLinearVelocity(btVector3{linear_velocity.x, current.y(), linear_velocity.z});
-    it->second.rigid_body->activate(true);
+    auto current = physics_body->rigid_body->getLinearVelocity();
+    physics_body->rigid_body->setLinearVelocity(btVector3{linear_velocity.x, current.y(), linear_velocity.z});
+    physics_body->rigid_body->activate(true);
 }
 
-auto PhysicsWorld::jump(entt::entity entity, float jump_velocity) -> void {
-    auto it = impl_->bodies.find(entity);
-    if (it == impl_->bodies.end()) {
+auto PhysicsWorld::jump(entt::registry const &registry, entt::entity entity, float jump_velocity) -> void {
+    auto const *physics_body = registry.try_get<Components::PhysicsBody const>(entity);
+    if (physics_body == nullptr) {
         return;
     }
 
-    auto *body = it->second.rigid_body;
+    auto *body = physics_body->rigid_body;
     auto velocity = body->getLinearVelocity();
     velocity.setY(jump_velocity);
 
@@ -194,13 +231,14 @@ auto PhysicsWorld::jump(entt::entity entity, float jump_velocity) -> void {
     body->activate(true);
 }
 
-auto PhysicsWorld::is_grounded(entt::entity entity, float capsule_half_height, float capsule_radius) const -> bool {
-    auto it = impl_->bodies.find(entity);
-    if (it == impl_->bodies.end()) {
+auto PhysicsWorld::is_grounded(entt::registry const &registry, entt::entity entity, float capsule_half_height,
+                               float capsule_radius) const -> bool {
+    auto const *physics_body = registry.try_get<Components::PhysicsBody const>(entity);
+    if (physics_body == nullptr) {
         return false;
     }
 
-    auto const &origin = it->second.rigid_body->getWorldTransform().getOrigin();
+    auto const &origin = physics_body->rigid_body->getWorldTransform().getOrigin();
     glm::vec3 const start = to_glm(origin);
 
     float const ray_length = capsule_half_height + capsule_radius + 0.1f;
@@ -210,18 +248,18 @@ auto PhysicsWorld::is_grounded(entt::entity entity, float capsule_half_height, f
     return hit.has_value() && hit->entity != entity;
 }
 
-auto PhysicsWorld::remove_body(entt::entity entity) -> void {
-    auto it = impl_->bodies.find(entity);
-    if (it == impl_->bodies.end()) {
+auto PhysicsWorld::remove_body(entt::registry &registry, entt::entity entity) -> void {
+    auto const *physics_body = registry.try_get<Components::PhysicsBody const>(entity);
+    if (physics_body == nullptr) {
         return;
     }
 
-    impl_->world->removeRigidBody(it->second.rigid_body);
+    impl_->world->removeRigidBody(physics_body->rigid_body);
 
-    it->second.rigid_body->~btRigidBody();
-    it->second.shape->~btCollisionShape();
+    physics_body->rigid_body->~btRigidBody();
+    physics_body->shape->~btCollisionShape();
 
-    impl_->bodies.erase(it);
+    registry.remove<Components::PhysicsBody>(entity);
 }
 
 auto PhysicsWorld::attach_debug_drawer(debug_draw::DebugRenderer &renderer) -> void {
@@ -242,13 +280,15 @@ auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
     constexpr int max_substeps = 2;
     impl_->world->stepSimulation(delta_time, max_substeps, fixed_dt);
 
-    for (auto &[entity, body]: impl_->bodies) {
-        if (!registry.valid(entity) || !registry.all_of<Components::Transform>(entity)) {
-            continue;
-        }
+    // A view instead of walking our own entity-keyed container: entt
+    // already guarantees every iterated entity is alive and has both
+    // components, and packs Transform/PhysicsBody contiguously per its own
+    // storage layout, so this no longer pays a hash lookup per body per
+    // step just to find what a view already hands over directly.
+    auto view = registry.view<Components::Transform, Components::PhysicsBody const>();
 
-        auto const &world_transform = body.rigid_body->getWorldTransform();
-        auto &transform = registry.get<Components::Transform>(entity);
+    for (auto &&[entity, transform, physics_body]: view.each()) {
+        auto const &world_transform = physics_body.rigid_body->getWorldTransform();
 
         transform.position = to_glm(world_transform.getOrigin());
         transform.rotation = to_glm(world_transform.getRotation());

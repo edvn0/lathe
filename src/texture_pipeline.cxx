@@ -193,7 +193,14 @@ namespace {
         ktxBasisParams params{};
         params.structSize = sizeof(params);
         params.uastc = KTX_TRUE;
-        params.threadCount = 1;
+        // Each call here already runs as its own task on Renderer's shared
+        // thread pool (see TextureStreamer::request), so letting this spin
+        // up hardware_concurrency() internal threads per texture would
+        // oversubscribe the CPU during a burst load of many textures at
+        // once. A small bounded count instead gives a real speedup for the
+        // common case (one or two textures streaming in) without turning a
+        // multi-texture burst into thread-thrashing.
+        params.threadCount = std::max(1U, std::min(4U, std::thread::hardware_concurrency()));
         params.normalMap = role == TextureRole::normal_map ? KTX_TRUE : KTX_FALSE;
         params.uastcFlags = static_cast<ktx_pack_uastc_flags>(KTX_PACK_UASTC_LEVEL_DEFAULT);
 

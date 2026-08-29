@@ -14,7 +14,7 @@ Scene::Scene(Renderer &renderer) {
 Scene::~Scene() = default;
 
 auto Scene::on_scene_start() -> void {
-    physics_world = std::make_unique<PhysicsWorld>(physics_settings, Renderer::thread_pool());
+    physics_world = std::make_unique<PhysicsWorld>(physics_settings, Renderer::thread_pool(), registry);
     physics_world->populate_from(registry);
 }
 
@@ -31,6 +31,19 @@ auto Scene::mark_lights_dirty(entt::registry &, entt::entity) -> void { lights_c
 auto Scene::on_transform_changed(entt::registry &reg, entt::entity entity) -> void {
     if (reg.any_of<Components::PointLight, Components::SpotLight>(entity)) {
         lights_changed_signal_.publish();
+    }
+}
+
+// registry.destroy()/remove<RigidBody>() on a physics entity would otherwise
+// leak its btRigidBody/btCollisionShape in both the arena and Bullet's world
+// forever -- systems::lifetime() already calls physics_world->remove_body()
+// itself before destroying an expired entity, but remove_body() is a no-op
+// for an entity it doesn't know about, so this hook is the safety net for
+// every other path (editor deletion, future gameplay code) rather than the
+// only place cleanup happens.
+auto Scene::on_rigid_body_destroyed(entt::registry &reg, entt::entity entity) -> void {
+    if (physics_world) {
+        physics_world->remove_body(reg, entity);
     }
 }
 
@@ -56,6 +69,8 @@ auto Scene::connect_light_signals() -> void {
     registry.on_destroy<Components::SpotLight>().connect<&Scene::mark_lights_dirty>(*this);
 
     registry.on_update<Components::Transform>().connect<&Scene::on_transform_changed>(*this);
+
+    registry.on_destroy<Components::RigidBody>().connect<&Scene::on_rigid_body_destroyed>(*this);
 }
 
 void systems::lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) {
@@ -72,7 +87,7 @@ void systems::lifetime(entt::registry &registry, PhysicsWorld &physics, float dt
     }
 
     for (auto entity: expired) {
-        physics.remove_body(entity);
+        physics.remove_body(registry, entity);
         registry.destroy(entity);
     }
 }
@@ -88,15 +103,16 @@ auto systems::player_movement(entt::registry &registry, PhysicsWorld &physics_wo
     auto const &body = registry.get<Components::RigidBody>(player_entity);
 
     auto const capsule_half_height = body.capsule_height * 0.5F;
-    auto const is_grounded = physics_world.is_grounded(player_entity, capsule_half_height, body.capsule_radius);
+    auto const is_grounded =
+            physics_world.is_grounded(registry, player_entity, capsule_half_height, body.capsule_radius);
 
     if (controller.consumes_jump() && is_grounded) {
         constexpr float jump_velocity = 6.5F; // Adjust to match gravity
-        physics_world.jump(player_entity, jump_velocity);
+        physics_world.jump(registry, player_entity, jump_velocity);
     }
 
     auto const desired_velocity = controller.desired_horizontal_velocity();
-    physics_world.set_velocity(player_entity, desired_velocity);
+    physics_world.set_velocity(registry, player_entity, desired_velocity);
 
     auto const speed_factor =
             controller.move_speed() > 0.0F ? glm::length(desired_velocity) / controller.move_speed() : 0.0F;

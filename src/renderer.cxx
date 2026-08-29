@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <cstring>
 #include <expected>
-#include <fstream>
 #include <future>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
@@ -525,7 +524,11 @@ namespace {
 
     // Mirrors default_vertex_description() (load_model.hxx) in the
     // VK_EXT_vertex_input_dynamic_state shape.
-    auto default_shader_object_vertex_input() noexcept
+    //
+    // [[maybe_unused]]: genuinely uncalled until Phase 5 wires it in (see the
+    // migration-status comment above), not accidental dead code -- keeps
+    // -Werror from tripping on a function that's staged on purpose.
+    [[maybe_unused]] auto default_shader_object_vertex_input() noexcept
             -> std::pair<std::array<VkVertexInputBindingDescription2EXT, 1>,
                          std::array<VkVertexInputAttributeDescription2EXT, 4>> {
         std::array<VkVertexInputBindingDescription2EXT, 1> bindings{};
@@ -607,25 +610,35 @@ namespace {
     // multi-attachment case would need one entry per attachment here).
     auto set_shader_object_color_blend_state(VkCommandBuffer command_buffer, std::uint32_t attachment_count,
                                              bool blending) noexcept -> void {
+        // Called once per draw call on the ShaderObjectSet path, so this
+        // used to heap-allocate 3 vectors per draw for what every call site
+        // in this file passes as a count of 1. VkPhysicalDeviceLimits
+        // guarantees maxColorAttachments >= 4; 8 covers every attachment
+        // layout this renderer uses today with headroom, without allocating.
+        constexpr std::uint32_t max_supported_attachments = 8;
+
         if (attachment_count == 0) {
             return;
         }
 
-        std::vector<VkBool32> const blend_enable(attachment_count, blending ? VK_TRUE : VK_FALSE);
+        attachment_count = std::min(attachment_count, max_supported_attachments);
 
-        std::vector<VkColorBlendEquationEXT> const blend_equation(
-                attachment_count, VkColorBlendEquationEXT{
-                                          .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-                                          .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                                          .colorBlendOp = VK_BLEND_OP_ADD,
-                                          .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-                                          .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                                          .alphaBlendOp = VK_BLEND_OP_ADD,
-                                  });
+        std::array<VkBool32, max_supported_attachments> blend_enable{};
+        blend_enable.fill(blending ? VK_TRUE : VK_FALSE);
 
-        std::vector<VkColorComponentFlags> const write_mask(
-                attachment_count, VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
-                                          VK_COLOR_COMPONENT_A_BIT);
+        std::array<VkColorBlendEquationEXT, max_supported_attachments> blend_equation{};
+        blend_equation.fill(VkColorBlendEquationEXT{
+                .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+                .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .colorBlendOp = VK_BLEND_OP_ADD,
+                .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .alphaBlendOp = VK_BLEND_OP_ADD,
+        });
+
+        std::array<VkColorComponentFlags, max_supported_attachments> write_mask{};
+        write_mask.fill(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                        VK_COLOR_COMPONENT_A_BIT);
 
         vkCmdSetColorBlendEnableEXT(command_buffer, 0, attachment_count, blend_enable.data());
 
@@ -639,7 +652,11 @@ namespace {
     // empty spans -- confirm against validation layer output during Phase 5
     // whether omitting the call is actually required by spec or just
     // equivalent to an empty VkVertexInputBindingDescription2EXT list.
-    auto set_mesh_shader_object_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent,
+    //
+    // [[maybe_unused]]: staged for Phase 5 (light_icon_pipeline_'s
+    // migration), not accidental dead code -- see the migration-status
+    // comment further up this section.
+    [[maybe_unused]] auto set_mesh_shader_object_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent,
                                               VkSampleCountFlagBits samples) noexcept -> void {
         VkViewport const viewport{
                 .x = 0.0F,
@@ -775,13 +792,6 @@ namespace {
         return RendererError{
                 .type = RendererErrorType::geometry_error,
                 .cause = ErrorCause{Boxed<GeometryArenaError>{std::move(error)}},
-        };
-    }
-
-    auto make_compiler_error(renderer::ShaderCompileError error) -> RendererError {
-        return RendererError{
-                .type = RendererErrorType::compiler_error,
-                .cause = ErrorCause{Boxed<renderer::ShaderCompileError>{std::move(error)}},
         };
     }
 
@@ -1790,6 +1800,13 @@ auto Renderer::destroy() noexcept -> void {
     }
 
     frames_.clear();
+
+    // Must wait before destroying anything a still-running background load
+    // could touch when it finishes: model_streamer_'s finish_model_load()
+    // creates meshes/materials (mesh_storage_/material_storage_) and writes
+    // into model_storage_/geometry_arena_, so it has to drain first.
+    model_streamer_.wait_all();
+
     material_storage_.destroy();
     texture_streamer_.wait_all();
     image_storage_.destroy();
@@ -1823,19 +1840,16 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    std::array<char, 64> header_buffer{};
-    std::ifstream file(path, std::ios::binary);
-
-    if (!file.is_open()) {
-        return std::unexpected(make_error(RendererErrorType::invalid_argument));
-    }
-
-    file.read(header_buffer.data(), header_buffer.size());
-    std::streamsize bytes_read = file.gcount();
-    file.close();
-
-    std::string_view header_view(header_buffer.data(), static_cast<std::size_t>(bytes_read));
-    std::size_t file_hash = std::hash<std::string_view>{}(header_view);
+    // Keyed on the resolved path rather than file content: hashing only the
+    // first 64 bytes (the previous approach) let two different models with
+    // the same header -- e.g. two glTFs from the same exporter -- collide
+    // and silently return each other's cached ModelHandle. Models aren't
+    // hot-reloaded, so a path-based key loses nothing while removing both
+    // the collision risk and a redundant file open+read on every call.
+    std::error_code canonicalize_error;
+    auto const canonical_path = std::filesystem::weakly_canonical(path, canonicalize_error);
+    auto const &cache_key_path = canonicalize_error ? path : canonical_path;
+    std::size_t const file_hash = std::filesystem::hash_value(cache_key_path);
 
     if (auto it = model_cache_.find(file_hash); it != model_cache_.end()) {
         return it->second; // Return cached handle
@@ -1855,6 +1869,17 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
     model_cache_[file_hash] = *model_result;
 
     return model_result;
+}
+
+auto Renderer::load_model_cpu_async(std::filesystem::path path)
+        -> std::future<std::expected<ModelCpuData, ModelLoadError>> {
+    // sampler_storage_ is only read here (nearest/linear clamp/repeat are
+    // fixed defaults resolved once at Renderer::initialize, never mutated
+    // afterwards -- see SamplerStorage), so calling load_model_cpu()
+    // concurrently with anything the render thread does to sampler_storage_
+    // is safe without additional synchronization.
+    return thread_pool().submit_task(
+            [this, path = std::move(path)] { return load_model_cpu(path, sampler_storage_); });
 }
 
 auto Renderer::create_model_from_cpu_data(ModelCpuData const &cpu_data) -> std::expected<ModelHandle, RendererError> {
@@ -1894,6 +1919,54 @@ auto Renderer::create_model(Model const &model, MaterialHandle fallback_material
                                                                   : RendererErrorType::invalid_argument));
     }
 
+    return create_model_common(model, fallback_material,
+                               [this](ModelSlotData data) { return model_storage_.create_model(std::move(data)); });
+}
+
+auto Renderer::create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, RendererError> {
+    if (!initialized_) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    auto handle = model_storage_.create_pending_model(fallback);
+
+    if (!handle) {
+        return std::unexpected(make_error(handle.error().type == ModelStorageErrorType::capacity_exceeded
+                                                  ? RendererErrorType::capacity_exceeded
+                                                  : RendererErrorType::invalid_argument));
+    }
+
+    return *handle;
+}
+
+auto Renderer::finish_model_load(ModelHandle pending, ModelCpuData const &cpu_data, VkCommandBuffer command_buffer)
+        -> std::expected<void, RendererError> {
+    if (!initialized_) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    auto imported_model = record_model_gpu_upload(cpu_data, command_buffer, geometry_arena_, image_storage_,
+                                                  texture_streamer_, material_storage_);
+
+    if (!imported_model) {
+        return std::unexpected(make_model_load_error(imported_model.error()));
+    }
+
+    auto handle = create_model_common(*imported_model, default_material_handle_, [this, pending](ModelSlotData data) {
+        return model_storage_.upgrade_pending_model(pending, std::move(data));
+    });
+
+    if (!handle) {
+        return std::unexpected(handle.error());
+    }
+
+    return {};
+}
+
+auto Renderer::create_model_common(
+        Model const &model, MaterialHandle fallback_material,
+        std::move_only_function<std::expected<ModelHandle, ModelStorageError>(ModelSlotData)> install)
+        -> std::expected<ModelHandle, RendererError> {
     if (material_storage_.get(fallback_material) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_material));
     }
@@ -2006,7 +2079,7 @@ auto Renderer::create_model(Model const &model, MaterialHandle fallback_material
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
 
-    auto handle = model_storage_.create_model(ModelSlotData{
+    auto handle = install(ModelSlotData{
             .draws = std::move(flattened_draws),
             .bounds_min = model.bounds_min,
             .bounds_max = model.bounds_max,
@@ -2262,6 +2335,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     }
 
     texture_streamer_.process_ready(image_storage_, command_buffer, frame_index);
+    model_streamer_.process_ready(*this, command_buffer);
 
     auto resource_result = gpu_resource_table_.prepare_frame(frame_index, image_storage_, sampler_storage_);
 
@@ -3569,6 +3643,17 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
 
     if (extent.width == extent_.width && extent.height == extent_.height) {
         return {};
+    }
+
+    // Destroying frames_[i].forward_target below is only safe once the GPU is
+    // done with it. The caller (main.cxx) currently only ever calls resize()
+    // right after Swapchain::recreate(), which itself does a full
+    // vkDeviceWaitIdle -- but that ordering isn't enforced here, so a future
+    // caller (or a reordering of the resize path) could destroy an image the
+    // GPU is still rendering into. Wait unconditionally so this function is
+    // correct on its own.
+    if (auto waited = wait_idle(); !waited) {
+        return std::unexpected(waited.error());
     }
 
     std::vector<ForwardTarget> replacements;
