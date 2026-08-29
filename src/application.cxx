@@ -42,6 +42,7 @@
 #include "imgui_renderer.hxx"
 #include "implot.h"
 #include "logger.hxx"
+#include "memory_tracking_ui.hxx"
 #include "physics.hxx"
 #include "physics_world.hxx"
 #include "player_camera.hxx"
@@ -128,8 +129,9 @@ Application::Application(VulkanContext &ctx) noexcept :
 
 Application::~Application() { shader_watcher_.stop(); }
 
+
 auto Application::on_ui() -> void {
-    widget("Console", [&] { terminal_widget.draw(); });
+    on_memory_ui();
 
     widget("Simulation", [&] {
         if (is_playing) {
@@ -220,9 +222,6 @@ auto Application::on_ui() -> void {
                     ImPlot::PlotShaded(to_string(static_cast<RenderStage>(stage)).data(), &buf.data[0].x,
                                        &buf.data[0].y, &prev.data[0].y, static_cast<int>(buf.data.size()), prev_spec);
                 }
-
-                ImPlot::PlotLine(to_string(static_cast<RenderStage>(stage)).data(), &buf.data[0].x, &buf.data[0].y,
-                                 static_cast<int>(buf.data.size()), spec);
             }
 
             ImPlot::EndPlot();

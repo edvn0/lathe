@@ -566,6 +566,51 @@ private:
         MaterialHandle material_override{};
     };
 
+    struct BatchEntry {
+        MeshHandle mesh{};
+        std::uint32_t submesh_index = 0;
+        MaterialHandle material{};
+        std::uint32_t lod_index = 0;
+
+        std::vector<glm::mat4> transforms;
+
+        std::uint64_t frame_stamp = 0;
+    };
+
+    struct PendingBlendBatch {
+        BatchEntry const *entry = nullptr;
+        float camera_distance_sq = 0.0F;
+    };
+
+
+    struct BatchKey {
+        std::uint32_t mesh_index;
+        std::uint32_t submesh_index;
+        std::uint32_t material_index;
+        std::uint32_t lod_index;
+
+        auto operator==(BatchKey const &) const noexcept -> bool = default;
+    };
+
+    struct BatchKeyHash {
+        auto operator()(BatchKey const &key) const noexcept -> std::size_t {
+            auto const mesh_hash =
+                    std::hash<std::uint64_t>{}((static_cast<std::uint64_t>(key.mesh_index) << 32) | key.submesh_index);
+
+            return mesh_hash ^ (std::hash<std::uint32_t>{}(key.material_index) << 1) ^
+                   (std::hash<std::uint32_t>{}(key.lod_index) << 2);
+        }
+    };
+
+    std::unordered_map<BatchKey, BatchEntry, BatchKeyHash> batches_;
+    std::vector<BatchEntry *> active_batches_;
+
+    std::vector<BatchEntry const *> opaque_batches_;
+    std::vector<BatchEntry const *> mask_batches_;
+    std::vector<PendingBlendBatch> blend_batches_;
+
+    std::uint64_t batch_frame_ = 0;
+
     [[nodiscard]]
     auto mesh_slot(MeshHandle handle) noexcept -> MeshSlotData *;
 
