@@ -22,6 +22,12 @@ auto MemoryTracker::on_free(std::size_t const size) noexcept -> void {
     total_frees_.fetch_add(1, std::memory_order_relaxed);
 }
 
+auto MemoryTracker::is_untracked() noexcept -> bool { return untracked_; }
+
+MemoryTracker::UntrackedScope::UntrackedScope() noexcept : previous_{untracked_} { untracked_ = true; }
+
+MemoryTracker::UntrackedScope::~UntrackedScope() noexcept { untracked_ = previous_; }
+
 auto MemoryTracker::stats() noexcept -> MemoryStats {
     return {
             .live_bytes = live_bytes_.load(std::memory_order_relaxed),

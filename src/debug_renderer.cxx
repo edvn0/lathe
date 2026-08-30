@@ -266,13 +266,17 @@ namespace debug_draw {
 
         auto const &extent = impl_->renderer.context().swapchain.extent();
 
+        // minDepth/maxDepth inverted to match the reverse-Z convention used by the
+        // rest of the renderer (see set_forward_dynamic_state in renderer.cxx):
+        // the projection matrix itself is left as plain [0,1] NDC depth, and the
+        // viewport flips it so near=1/far=0 matches what's already in the depth buffer.
         auto const viewport = VkViewport{
                 .x = 0.0F,
                 .y = static_cast<float>(extent.height),
                 .width = static_cast<float>(extent.width),
                 .height = -static_cast<float>(extent.height),
-                .minDepth = 0.0F,
-                .maxDepth = 1.0F,
+                .minDepth = 1.0F,
+                .maxDepth = 0.0F,
         };
 
         auto const scissor = VkRect2D{

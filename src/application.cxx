@@ -21,8 +21,10 @@
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
+#include <glm/vec2.hpp>
 #include <limits>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -42,7 +44,9 @@
 #include "imgui_renderer.hxx"
 #include "implot.h"
 #include "logger.hxx"
+#if MINGW_VULKAN_TRACK_MEMORY
 #include "memory_tracking_ui.hxx"
+#endif
 #include "physics.hxx"
 #include "physics_world.hxx"
 #include "player_camera.hxx"
@@ -98,7 +102,19 @@ namespace {
             return false;
         }
 
-        f();
+        // Dispatched on f's arity rather than overloading widget() itself: a generic
+        // lambda has one signature, so which of these f can accept is a compile-time
+        // property of f, not something callers select between at the call site.
+        if constexpr (std::is_invocable_v<decltype(f), glm::vec2, glm::vec2>) {
+            auto const size = ImGui::GetWindowSize();
+            auto const position = ImGui::GetWindowPos();
+            f(glm::vec2{size.x, size.y}, glm::vec2{position.x, position.y});
+        } else if constexpr (std::is_invocable_v<decltype(f), glm::vec2>) {
+            auto const size = ImGui::GetWindowSize();
+            f(glm::vec2{size.x, size.y});
+        } else {
+            f();
+        }
 
         ImGui::End();
         return false;
@@ -116,7 +132,10 @@ Application::~Application() { shader_watcher_.stop(); }
 
 
 auto Application::on_ui() -> void {
-    on_memory_ui();
+#if MINGW_VULKAN_TRACK_MEMORY
+    widget("Memory", [] { on_memory_ui(); });
+#endif
+    widget("Console", [&] { terminal_widget.draw(); });
 
     widget("Simulation", [&] {
         if (is_playing) {

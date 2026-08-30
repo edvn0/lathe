@@ -1002,6 +1002,24 @@ list(
 )
 
 #
+# The global operator new/delete override (global_new_delete.cxx) routes every
+# allocation through MemoryTracker for the in-app Memory panel. That's a
+# per-allocation cost worth paying in Debug/RelWithDebInfo, but not something
+# a Release build should carry -- Release gets no tracking overhead and, on
+# Linux, links jemalloc instead (see the "Release allocator" section below).
+#
+set(mingw_vulkan_track_memory ON)
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(mingw_vulkan_track_memory OFF)
+
+  list(
+      FILTER mingw_vulkan_core_sources
+      EXCLUDE REGEX "/global_new_delete\\.cxx$"
+  )
+endif()
+
+#
 # main.cxx is just the entry point/frame loop/window-event wiring;
 # vulkan_bootstrap.cxx holds the one-time instance/device/swapchain bring-up
 # it calls into. Both belong to the executable rather than the reusable
@@ -1171,6 +1189,50 @@ else()
       PUBLIC
           MINGW_VULKAN_ENABLE_VALIDATION=0
   )
+endif()
+
+if(mingw_vulkan_track_memory)
+  target_compile_definitions(
+      mingw-vulkan-core
+      PRIVATE
+          MINGW_VULKAN_TRACK_MEMORY=1
+  )
+else()
+  target_compile_definitions(
+      mingw-vulkan-core
+      PRIVATE
+          MINGW_VULKAN_TRACK_MEMORY=0
+  )
+endif()
+
+# ------------------------------------------------------------------------------
+# Release allocator (Linux only)
+#
+# windows-mingw Release just gets the plain system allocator -- jemalloc's
+# Windows/mingw-w64 support isn't solid enough to depend on for a
+# cross-compiled target. linux-native Release links jemalloc, which overrides
+# malloc/free (and therefore the default operator new/delete, which call
+# through to malloc) via ordinary symbol interposition -- no source changes
+# needed on our side. Requires libjemalloc-dev in the build image; see
+# Dockerfile.
+# ------------------------------------------------------------------------------
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "Release")
+  find_library(MINGW_VULKAN_JEMALLOC_LIBRARY jemalloc)
+
+  if(MINGW_VULKAN_JEMALLOC_LIBRARY)
+    target_link_libraries(
+        mingw-vulkan-core
+        PUBLIC
+            "${MINGW_VULKAN_JEMALLOC_LIBRARY}"
+    )
+  else()
+    message(
+        WARNING
+        "libjemalloc not found -- linux-native Release will use the plain "
+        "system allocator. Install libjemalloc-dev to enable it."
+    )
+  endif()
 endif()
 
 # The error-context types (ErrorContext and the *Error aggregates' `.cause`/

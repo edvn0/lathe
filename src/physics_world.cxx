@@ -14,6 +14,7 @@
 #include "components.hxx"
 #include "debug_renderer.hxx"
 #include "logger.hxx"
+#include "memory_tracker.hxx"
 
 namespace {
     auto to_bt(glm::vec3 const &v) -> btVector3 { return btVector3{v.x, v.y, v.z}; }
@@ -26,8 +27,14 @@ namespace {
         explicit ThreadPoolTaskScheduler(BS::priority_thread_pool &pool) :
             btITaskScheduler{"bs_thread_pool"}, pool_{pool} {}
 
-        auto getMaxNumThreads() const -> int override { return static_cast<int>(pool_.get_thread_count()); }
-        auto getNumThreads() const -> int override { return static_cast<int>(pool_.get_thread_count()); }
+        // Bullet indexes per-thread scratch arrays (e.g. btCollisionDispatcherMt's
+        // m_batchManifoldsPtr) by btGetCurrentThreadIndex(), which reserves index 0 for
+        // the calling thread and assigns worker threads 1..N. getNumThreads() must report
+        // that total (workers + caller), or Bullet undersizes those arrays and a worker
+        // thread writes one past the end -- silent heap corruption that crashes later,
+        // somewhere unrelated.
+        auto getMaxNumThreads() const -> int override { return static_cast<int>(pool_.get_thread_count()) + 1; }
+        auto getNumThreads() const -> int override { return static_cast<int>(pool_.get_thread_count()) + 1; }
         auto setNumThreads(int /*num_threads*/) -> void override {} // pool size is fixed at construction
 
         auto parallelFor(int i_begin, int i_end, int grain_size, btIParallelForBody const &body) -> void override {
@@ -37,6 +44,15 @@ namespace {
             }
 
             auto const num_chunks = std::max(1, (i_end - i_begin) / grain_size);
+
+            // submit_blocks() itself heap-allocates task/promise bookkeeping on this
+            // thread for every call -- real memory traffic, but it's thread-pool
+            // plumbing, not engine state, and it fires every substep regardless of
+            // what body actually does. Left tracked, it swamps the "this frame"
+            // allocation count with noise unrelated to what the game is doing. Only
+            // the submission itself is untracked; body.forLoop() below still runs
+            // under the worker threads' own (tracked) state.
+            auto const untracked = MemoryTracker::UntrackedScope{};
 
             auto future = pool_.submit_blocks(
                     i_begin, i_end,

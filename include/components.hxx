@@ -84,6 +84,7 @@ namespace Components {
                     .capsule_height = height,
                     .mass = mass,
                     .lock_rotation = true,
+                    .shape = BodyShape::capsule,
             };
         }
     };

@@ -33,11 +33,6 @@ auto on_memory_ui() -> void {
 
     auto const to_mib = [](std::uint64_t const bytes) { return static_cast<double>(bytes) / mib; };
 
-    if (!ImGui::Begin("Memory")) {
-        ImGui::End();
-        return;
-    }
-
     ImGui::SeparatorText("Heap");
 
     ImGui::Text("Live heap:            %10.2f MiB", to_mib(stats.live_bytes));
@@ -60,6 +55,4 @@ auto on_memory_ui() -> void {
     ImGui::Text("Net:                  %+10.2f KiB", static_cast<double>(net_bytes) / kib);
 
     ImGui::Text("Average allocation:   %10.2f bytes", average_allocation_size);
-
-    ImGui::End();
 }

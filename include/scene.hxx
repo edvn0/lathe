@@ -25,7 +25,6 @@ namespace detail {
 class Scene {
 public:
     PhysicsWorldSettings physics_settings{};
-    std::unique_ptr<PhysicsWorld> physics_world;
 
     explicit Scene(Renderer &);
     ~Scene();
@@ -45,6 +44,15 @@ private:
     entt::registry registry;
     entt::sigh<void()> lights_changed_signal_;
 
+public:
+    // Declared after `registry` above so it is destroyed first (members
+    // destruct in reverse declaration order): PhysicsWorld::~PhysicsWorld
+    // touches `registry` through the reference it was constructed with, so
+    // registry must still be alive when that runs. Public: physics_world is
+    // part of Scene's external API, unlike registry itself.
+    std::unique_ptr<PhysicsWorld> physics_world;
+
+private:
     auto mark_lights_dirty(entt::registry &, entt::entity) -> void;
     auto on_transform_changed(entt::registry &reg, entt::entity entity) -> void;
     auto on_rigid_body_destroyed(entt::registry &, entt::entity entity) -> void;
