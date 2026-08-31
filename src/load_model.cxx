@@ -784,9 +784,8 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
         -> std::expected<ModelCpuData, ModelLoadError> {
     ZoneScopedNC("LoadModelCpu", tracy::Color::Goldenrod);
 
-    fastgltf::GltfFileStream file_stream{path};
-
-    if (!file_stream.isOpen()) {
+    auto file_data = fastgltf::GltfDataBuffer::FromPath(path);
+    if (!file_data) {
         return std::unexpected(ModelLoadError{
                 .type = ModelLoadErrorType::file_not_found,
         });
@@ -804,7 +803,7 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
     // loadGltf (rather than loadGltfBinary) sniffs the header and accepts
     // both .glb (binary) and .gltf (JSON, with external .bin/.png/.jpg
     // siblings) — same call handles both container types.
-    auto asset_result = parser.loadGltf(file_stream, base_directory, options);
+    auto asset_result = parser.loadGltf(file_data.get(), base_directory, options);
 
     if (asset_result.error() != fastgltf::Error::None) {
         return std::unexpected(ModelLoadError{

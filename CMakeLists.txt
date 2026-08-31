@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(
     mingw-vulkan
     VERSION 0.1.0
@@ -1469,3 +1469,4 @@ else()
       "Slang source: CPM download"
   )
 endif()
+
