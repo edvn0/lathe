@@ -6,7 +6,7 @@
     "configurations": [
         {
             "name": "Launch",
-            "type": "lldb",
+            "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceRoot}/build/bin/mingw-vulkan",
             "args": [],

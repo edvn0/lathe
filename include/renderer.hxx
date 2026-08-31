@@ -13,10 +13,15 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <format>
+#include <functional>
 #include <future>
+#include <mutex>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -230,8 +235,7 @@ struct Renderer {
     // sampler_storage_, so a still-running task outliving the Renderer is
     // a use-after-free.
     [[nodiscard]]
-    auto load_model_cpu_async(std::filesystem::path path)
-            -> std::future<std::expected<ModelCpuData, ModelLoadError>>;
+    auto load_model_cpu_async(std::filesystem::path path) -> std::future<std::expected<ModelCpuData, ModelLoadError>>;
 
     // Reserves a model handle as a copy of `fallback`'s data -- usable
     // immediately (renders and reports bounds as the fallback) -- to be
@@ -370,10 +374,6 @@ struct Renderer {
     [[nodiscard]]
     auto prepare_frame(VkCommandBuffer command_buffer, const CameraMatrices &, std::uint32_t frame_index)
             -> std::expected<void, RendererError>;
-
-    auto record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, std::uint32_t frame_index,
-                      std::function<void(VkCommandBuffer)> const &debug_overlay,
-                      std::function<void(VkCommandBuffer)> const &ui_overlay) -> std::expected<void, RendererError>;
 
     template<typename OverlayPolicy>
     [[nodiscard]] auto record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
@@ -675,15 +675,13 @@ private:
     // already-issued pending handle in place). Rolls back every mesh it
     // created if `install` itself fails (e.g. capacity_exceeded).
     [[nodiscard]]
-    auto create_model_common(
-            Model const &model, MaterialHandle fallback_material,
-            std::move_only_function<std::expected<ModelHandle, ModelStorageError>(ModelSlotData)> install)
+    auto
+    create_model_common(Model const &model, MaterialHandle fallback_material,
+                        std::move_only_function<std::expected<ModelHandle, ModelStorageError>(ModelSlotData)> install)
             -> std::expected<ModelHandle, RendererError>;
 
     [[nodiscard]]
     auto upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame) -> std::expected<void, RendererError>;
-
-    auto record_bloom_pass(VkCommandBuffer, std::uint32_t, ImageHandle, VkExtent2D) -> void;
 
     auto clear_submissions() noexcept -> void;
 
