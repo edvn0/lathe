@@ -26,6 +26,10 @@ namespace render_pass {
         std::uint32_t index = 0;
     };
 
+    struct AoTextureIndex {
+        std::uint32_t index = 0;
+    };
+
     struct Context {
         VkCommandBuffer command_buffer = VK_NULL_HANDLE;
         std::uint32_t frame_index = 0;
@@ -96,6 +100,42 @@ namespace render_pass {
         PipelineNodeHandle mask_pipeline{};
     };
 
+    // GTAO: horizon-based screen-space ambient occlusion computed entirely
+    // from the depth buffer (view-space normals are reconstructed from
+    // neighbouring depth samples inside the shader -- this renderer has no
+    // normal G-buffer to sample instead), then denoised with a depth-aware
+    // spatial blur. Runs as two compute dispatches between the depth
+    // prepass and the forward pass: `depth` must already hold this frame's
+    // single-sample depth (the resolved target when MSAA is on, the main
+    // depth target otherwise) in DEPTH_ATTACHMENT_OPTIMAL layout on entry,
+    // and is left back in that layout on return so forward_geometry's
+    // LOAD_OP_LOAD attachment use is unaffected.
+    struct AmbientOcclusionInfo {
+        bool enabled = true;
+
+        Image const &depth;
+        Image const &raw_ao;
+        Image const &denoised_ao;
+
+        VkExtent2D extent{};
+
+        std::uint32_t depth_texture_index = 0;
+        std::uint32_t raw_ao_texture_index = 0;
+        std::uint32_t denoised_ao_texture_index = 0;
+        std::uint32_t point_sampler_index = 0;
+
+        VkDeviceAddress ubo_address = 0;
+
+        PipelineNodeHandle gtao_pipeline{};
+        PipelineNodeHandle denoise_pipeline{};
+
+        float radius_view = 0.5F;
+        float falloff_range = 0.615F;
+        std::uint32_t slice_count = 2;
+        std::uint32_t step_count = 6;
+        float denoise_depth_sigma = 40.0F;
+    };
+
     struct ForwardGeometryInfo {
         Image const &hdr;
         Image const &depth;
@@ -124,6 +164,13 @@ namespace render_pass {
         std::uint32_t light_icon_texture_index = 0;
         std::uint32_t linear_sampler_index = 0;
         float light_icon_world_size = 0.5F;
+
+        // Bindless index of the (denoised) GTAO texture, or a fully-white
+        // fallback when AO is disabled -- the caller decides which, since
+        // that's a renderer-level policy (AoSettings::enabled), not
+        // something this pass should branch on.
+        std::uint32_t ao_texture_index = 0;
+        std::uint32_t ao_sampler_index = 0;
     };
 
     struct BloomPassInfo {
@@ -189,6 +236,9 @@ namespace render_pass {
     auto shadow(Context const &context, ShadowPassInfo const &info) -> std::expected<void, RendererError>;
 
     auto depth_prepass(Context const &context, DepthPrepassInfo const &info) -> std::expected<void, RendererError>;
+
+    auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)
+            -> std::expected<std::optional<AoTextureIndex>, RendererError>;
 
     auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback debug_overlay)
             -> std::expected<HdrTextureIndex, RendererError>;

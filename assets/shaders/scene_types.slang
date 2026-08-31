@@ -75,6 +75,13 @@ public struct UBO {
     public float4x4 view;
     public float4x4 projection;
 
+    // Inverse of `projection` -- lets screen-space passes (GTAO) unproject a
+    // depth-buffer sample back to a view-space position without assuming
+    // any particular perspective-matrix convention (LH/RH, Z range, jitter):
+    // `view_space = inverse_projection * float4(ndc, 1.0); view_space /= view_space.w;`
+    // always recovers the exact position for whatever `projection` actually is.
+    public float4x4 inverse_projection;
+
     public float3 camera_position;
     public float3 fog_colour;
     public float fog_extinction;     // A
@@ -113,6 +120,11 @@ public struct UBO {
     // Flat multiplier on the (already-albedo-scaled) ambient term -- see the
     // comment on this field in include/renderer.hxx for why it exists.
     public float ambient_intensity;
+
+    // Blend factor between "no screen-space AO" (1.0 everywhere) and the
+    // GTAO pass's output -- see the comment on this field in
+    // include/renderer.hxx.
+    public float ao_intensity;
 };
 
 public struct PC
@@ -129,6 +141,17 @@ public struct PC
     public Ptr<GpuLight> lights;
     public uint light_count;
     public uint _padding;
+
+    // Bindless indices for the GTAO output, and the render-target
+    // resolution (needed to turn SV_Position into a screen UV to sample
+    // it) -- all unused (zero) by every pass except forward_geom's
+    // fragment shader. Living on the shared PC rather than a forward-only
+    // wrapper struct keeps every PC-typed push constant (shadow, depth
+    // prepass) binary compatible with the reflected struct these fields
+    // are added to.
+    public uint ao_texture_index;
+    public uint ao_sampler_index;
+    public float2 screen_size;
 };
 
 public struct ShadowPC

@@ -943,6 +943,20 @@ add_shader_push_constant(
     UpsamplePushConstants
 )
 
+add_shader_push_constant(
+    gtao.slang
+    mainCs
+    compute
+    GtaoPushConstants
+)
+
+add_shader_push_constant(
+    gtao_denoise.slang
+    mainCs
+    compute
+    GtaoDenoisePushConstants
+)
+
 set(
     shader_push_constants_header
     "${shader_reflect_generated_dir}/include/shader_push_constants.hxx"

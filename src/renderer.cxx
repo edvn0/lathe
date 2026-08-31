@@ -306,7 +306,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     // docs/parallel-pipeline.md. Indices below must stay in sync with the
     // pipeline_infos.push_back() order.
     std::vector<PipelineRegisterInfo> pipeline_infos;
-    pipeline_infos.reserve(11);
+    pipeline_infos.reserve(13);
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -594,6 +594,48 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.bloom_downsample_pipeline",
     });
 
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/gtao.slang",
+                                    .entry_point = "mainCs",
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.gtao_pipeline",
+    }); // index 11: gtao
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/gtao_denoise.slang",
+                                    .entry_point = "mainCs",
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .use_shader_objects = context_.shader_objects_supported,
+            .debug_name = "renderer.gtao_denoise_pipeline",
+    }); // index 12: gtao_denoise
+
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
@@ -620,6 +662,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     frustum_cull_pipeline_ = *registered_pipelines[8];
     bloom_downsample_pipeline_ = *registered_pipelines[9];
     bloom_upsample_pipeline_ = *registered_pipelines[10];
+    gtao_pipeline_ = *registered_pipelines[11];
+    gtao_denoise_pipeline_ = *registered_pipelines[12];
 
     {
         auto light_icon_image = DecodedImage::load_from_file("assets/textures/light_bulb.png");
@@ -998,6 +1042,70 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         frame.bloom_target = bloom_target;
+
+        // Full-resolution, 4-channel (RWTexture2D<float4> is what
+        // storage_2d[] is declared as bindless-wide -- see gtao.slang)
+        // single-channel-in-practice AO targets. `raw` holds GTAO's noisy
+        // output and is only ever read back by the denoise pass in the same
+        // frame; `denoised` is what forward_geom.slang samples.
+        auto const ao_raw_name = std::format("renderer.ao_raw_{}", frame_index);
+
+        auto ao_raw_image = image_storage_.create_image(ImageCreateInfo{
+                .extent =
+                        VkExtent3D{
+                                .width = create_info.extent.width,
+                                .height = create_info.extent.height,
+                                .depth = 1,
+                        },
+                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                .image_type = VK_IMAGE_TYPE_2D,
+                .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                .flags = 0,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .debug_name = ao_raw_name,
+        });
+
+        if (!ao_raw_image) {
+            return std::unexpected(make_image_error(ao_raw_image.error()));
+        }
+
+        auto const ao_denoised_name = std::format("renderer.ao_denoised_{}", frame_index);
+
+        auto ao_denoised_image = image_storage_.create_image(ImageCreateInfo{
+                .extent =
+                        VkExtent3D{
+                                .width = create_info.extent.width,
+                                .height = create_info.extent.height,
+                                .depth = 1,
+                        },
+                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                .image_type = VK_IMAGE_TYPE_2D,
+                .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                .flags = 0,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .debug_name = ao_denoised_name,
+        });
+
+        if (!ao_denoised_image) {
+            return std::unexpected(make_image_error(ao_denoised_image.error()));
+        }
+
+        frame.ao_target = RendererFrame::AoTarget{.raw = *ao_raw_image, .denoised = *ao_denoised_image};
+
         frame.draw_upload_offset = 0;
         frame.transform_upload_offset = transform_offset;
         frame.indirect_upload_offset = indirect_offset;
@@ -2168,6 +2276,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .view_projection = view_projection,
             .view = view,
             .projection = projection,
+            .inverse_projection = glm::inverse(projection),
             .camera_position = camera_position,
             .fog_colour = glm::vec3{0.5F},
             .cascade_view_projection = resolved_view_projection,
@@ -2212,6 +2321,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .shadow_debug_cascade_tint = shadow_settings_.debug_cascade_tint ? 1U : 0U,
             .time = matrices.time,
             .ambient_intensity = ambient_intensity_,
+            .ao_intensity = ao_settings_.enabled ? ao_settings_.intensity : 0.0F,
     };
 
     if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {
@@ -2582,6 +2692,44 @@ template<typename OverlayPolicy>
         }
     }
 
+    auto const *ao_raw = image_storage_.get(frame.ao_target.raw);
+    auto const *ao_denoised = image_storage_.get(frame.ao_target.denoised);
+
+    if (ao_raw == nullptr || ao_denoised == nullptr || !ao_raw->valid() || !ao_denoised->valid()) {
+        return std::unexpected(make_error(RendererErrorType::image_error));
+    }
+
+    auto ao_output = [&]() -> std::expected<std::optional<render_pass::AoTextureIndex>, RendererError> {
+        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Ambient Occlusion", tracy::Color::DarkSlateGray);
+
+        return render_pass::ambient_occlusion(
+                pass_context, render_pass::AmbientOcclusionInfo{
+                                      .enabled = ao_settings_.enabled,
+                                      .depth = *resolved_depth,
+                                      .raw_ao = *ao_raw,
+                                      .denoised_ao = *ao_denoised,
+                                      .extent = target_extent,
+                                      .depth_texture_index = resolved_depth_handle.index,
+                                      .raw_ao_texture_index = frame.ao_target.raw.index,
+                                      .denoised_ao_texture_index = frame.ao_target.denoised.index,
+                                      .point_sampler_index = sampler_storage_.nearest_clamp().index,
+                                      .ubo_address = ubos_[frame_index].device_address,
+                                      .gtao_pipeline = gtao_pipeline_,
+                                      .denoise_pipeline = gtao_denoise_pipeline_,
+                                      .radius_view = ao_settings_.radius,
+                                      .falloff_range = ao_settings_.falloff_range,
+                                      .slice_count = ao_settings_.slice_count,
+                                      .step_count = ao_settings_.step_count,
+                                      .denoise_depth_sigma = ao_settings_.denoise_depth_sigma,
+                              });
+    }();
+
+    if (!ao_output) {
+        return std::unexpected(ao_output.error());
+    }
+
+    auto const ao_texture_index = ao_output->has_value() ? (*ao_output)->index : image_storage_.white().index;
+
     auto debug_overlay = [&] { OverlayPolicy::render_debug(app, command_buffer, vp, frame_index); };
 
     auto hdr_output = [&]() -> std::expected<render_pass::HdrTextureIndex, RendererError> {
@@ -2611,6 +2759,8 @@ template<typename OverlayPolicy>
                         .light_icon_texture_index = light_icon_texture_.index,
                         .linear_sampler_index = sampler_storage_.linear_clamp().index,
                         .light_icon_world_size = light_icon_world_size_,
+                        .ao_texture_index = ao_texture_index,
+                        .ao_sampler_index = sampler_storage_.linear_clamp().index,
                 },
                 render_pass::Callback::bind(debug_overlay));
     }();

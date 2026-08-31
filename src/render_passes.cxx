@@ -782,6 +782,114 @@ namespace render_pass {
         return {};
     }
 
+    auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)
+            -> std::expected<std::optional<AoTextureIndex>, RendererError> {
+        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::AmbientOcclusion);
+        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                             context.timestamp_query_pool, stage * 2);
+
+        if (!info.enabled) {
+            vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                                 context.timestamp_query_pool, stage * 2 + 1);
+            return std::optional<AoTextureIndex>{};
+        }
+
+        auto const gtao_layout = detail::resolve_layout(context.pipeline_graph, info.gtao_pipeline);
+        auto const denoise_layout = detail::resolve_layout(context.pipeline_graph, info.denoise_pipeline);
+
+        if (gtao_layout == VK_NULL_HANDLE || denoise_layout == VK_NULL_HANDLE) {
+            return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
+        }
+
+        // depth arrives in DEPTH_ATTACHMENT_OPTIMAL (written by the depth
+        // prepass); both compute passes below only ever read it.
+        transition_image_layout(context.command_buffer, info.depth.image(), VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
+
+        transition_image_layout(context.command_buffer, info.raw_ao.image(), VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0, VK_ACCESS_2_SHADER_WRITE_BIT,
+                                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+
+        detail::bind_compute_node(context.pipeline_graph, info.gtao_pipeline, context.command_buffer);
+        context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    gtao_layout);
+
+        GtaoPushConstants const gtao_pc{
+                .ubo_address = info.ubo_address,
+                .depth_texture_index = info.depth_texture_index,
+                .output_storage_index = info.raw_ao_texture_index,
+                .point_sampler_index = info.point_sampler_index,
+                .width = info.extent.width,
+                .height = info.extent.height,
+                .inv_extent_x = 1.0F / static_cast<float>(info.extent.width),
+                .inv_extent_y = 1.0F / static_cast<float>(info.extent.height),
+                .radius_view = info.radius_view,
+                .falloff_range = info.falloff_range,
+                .slice_count = info.slice_count,
+                .step_count = info.step_count,
+        };
+
+        vkCmdPushConstants(context.command_buffer, gtao_layout, VK_SHADER_STAGE_ALL, 0, sizeof(gtao_pc), &gtao_pc);
+        vkCmdDispatch(context.command_buffer, (info.extent.width + 7U) / 8U, (info.extent.height + 7U) / 8U, 1);
+
+        transition_image_layout(context.command_buffer, info.raw_ao.image(), VK_IMAGE_LAYOUT_GENERAL,
+                                VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                                VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+
+        transition_image_layout(context.command_buffer, info.denoised_ao.image(), VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0, VK_ACCESS_2_SHADER_WRITE_BIT,
+                                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+
+        detail::bind_compute_node(context.pipeline_graph, info.denoise_pipeline, context.command_buffer);
+        context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    denoise_layout);
+
+        GtaoDenoisePushConstants const denoise_pc{
+                .ubo_address = info.ubo_address,
+                .input_texture_index = info.raw_ao_texture_index,
+                .depth_texture_index = info.depth_texture_index,
+                .output_storage_index = info.denoised_ao_texture_index,
+                .point_sampler_index = info.point_sampler_index,
+                .width = info.extent.width,
+                .height = info.extent.height,
+                .inv_extent_x = 1.0F / static_cast<float>(info.extent.width),
+                .inv_extent_y = 1.0F / static_cast<float>(info.extent.height),
+                .depth_sigma = info.denoise_depth_sigma,
+        };
+
+        vkCmdPushConstants(context.command_buffer, denoise_layout, VK_SHADER_STAGE_ALL, 0, sizeof(denoise_pc),
+                           &denoise_pc);
+        vkCmdDispatch(context.command_buffer, (info.extent.width + 7U) / 8U, (info.extent.height + 7U) / 8U, 1);
+
+        transition_image_layout(context.command_buffer, info.denoised_ao.image(), VK_IMAGE_LAYOUT_GENERAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                                VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+
+        // Restore the layout forward_geometry's LOAD_OP_LOAD depth
+        // attachment expects.
+        transition_image_layout(context.command_buffer, info.depth.image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                                VK_ACCESS_2_SHADER_READ_BIT,
+                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
+
+        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             context.timestamp_query_pool, stage * 2 + 1);
+
+        return std::optional<AoTextureIndex>{AoTextureIndex{.index = info.denoised_ao_texture_index}};
+    }
+
     auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback debug_overlay)
             -> std::expected<HdrTextureIndex, RendererError> {
         auto const opaque_layout = detail::resolve_layout(context.pipeline_graph, info.opaque_pipeline);
@@ -858,6 +966,10 @@ namespace render_pass {
                 .lights_address = info.lights_address,
                 .light_count = info.light_count,
                 ._padding = 0,
+                .ao_texture_index = info.ao_texture_index,
+                .ao_sampler_index = info.ao_sampler_index,
+                .screen_size_x = static_cast<float>(info.extent.width),
+                .screen_size_y = static_cast<float>(info.extent.height),
         };
 
         detail::bind_graphics_node(context.pipeline_graph, info.opaque_pipeline, context.command_buffer, info.samples,

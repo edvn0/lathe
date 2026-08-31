@@ -181,6 +181,18 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
     float ambient_occlusion = ambient_occlusion_texture.Sample(sampler, uv).r;
     ambient_occlusion = lerp(1.0, ambient_occlusion, material.occlusion_strength);
 
+    // Screen-space GTAO term (see gtao.slang/gtao_denoise.slang), sampled at
+    // this fragment's own screen position and blended in on top of the
+    // material's baked occlusion texture above -- the two account for
+    // different things (macro-scale, cross-mesh occlusion the baked texture
+    // can't see, vs. per-texel occlusion baked into the asset) and multiply
+    // together rather than replacing one another.
+    float2 screen_uv = input.position.xy / pc.screen_size;
+    const var gtao_texture = sampled_2d[NonUniformResourceIndex(pc.ao_texture_index)];
+    const var gtao_sampler = samplers[NonUniformResourceIndex(pc.ao_sampler_index)];
+    float screen_space_ao = gtao_texture.Sample(gtao_sampler, screen_uv).r;
+    ambient_occlusion *= lerp(1.0, screen_space_ao, ubo.ao_intensity);
+
 const var base_sample = texture.Sample(sampler, uv);
 
 if (material.alpha_mode == AlphaMode.mask && base_sample.a < material.alpha_cutoff) {

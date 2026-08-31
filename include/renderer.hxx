@@ -58,6 +58,36 @@ struct BloomSettings {
     float intensity = 0.04F;
 };
 
+// GTAO (Ground-Truth Ambient Occlusion, Jimenez et al. 2016): a screen-space
+// horizon-based AO term computed from the depth buffer alone (this renderer
+// has no normal G-buffer -- view-space normals are reconstructed from
+// neighbouring depth samples inside the GTAO pass itself), denoised with a
+// depth-aware spatial blur, then multiplied into the ambient term in
+// forward_geom.slang alongside each material's baked occlusion texture.
+struct AoSettings {
+    bool enabled = true;
+
+    // View-space sampling radius, in world units (view space is a rigid
+    // transform of world space, so the units match).
+    float radius = 0.5F;
+
+    // Fraction of `radius` over which a sample's contribution fades to zero
+    // rather than being cut off hard at the radius boundary.
+    float falloff_range = 0.615F;
+
+    std::uint32_t slice_count = 2;
+    std::uint32_t step_count = 6;
+
+    // Blend factor written into UBO::ao_intensity -- see that field's
+    // comment for what it does.
+    float intensity = 1.0F;
+
+    // Bilateral denoise pass: larger values tolerate bigger view-space depth
+    // differences between neighbours before down-weighting them, trading
+    // edge sharpness for noise reduction.
+    float denoise_depth_sigma = 40.0F;
+};
+
 
 struct StageTimings {
     std::array<float, stage_count> milliseconds{};
@@ -122,6 +152,10 @@ struct UBO {
     glm::mat4 view;
     glm::mat4 projection;
 
+    // Inverse of `projection` -- see the mirrored field's comment in
+    // assets/shaders/scene_types.slang.
+    glm::mat4 inverse_projection;
+
     glm::vec3 camera_position;
     glm::vec3 fog_colour;
     float fog_extinction = 0.003F;
@@ -163,13 +197,19 @@ struct UBO {
     // old ambient = albedo term this replaced, so this exists purely to let
     // the scene be re-tuned back to a sane brightness without an IBL/skybox.
     float ambient_intensity = 0.15F;
+
+    // Blend factor between "no screen-space AO" (1.0 everywhere) and the
+    // GTAO pass's output, applied on top of the material's baked occlusion
+    // texture in forward_geom.slang. 0 disables the screen-space term
+    // entirely (pure baked AO); 1 applies it at full strength.
+    float ao_intensity = 1.0F;
 };
 
-static_assert(sizeof(UBO) == 648, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 716, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(std::is_trivially_copyable_v<UBO>);
-static_assert(offsetof(UBO, cascade_view_projection) == 224);
-static_assert(offsetof(UBO, cascade_atlas_offset_u) == 528);
-static_assert(offsetof(UBO, light_direction) == 576);
+static_assert(offsetof(UBO, cascade_view_projection) == 288);
+static_assert(offsetof(UBO, cascade_atlas_offset_u) == 592);
+static_assert(offsetof(UBO, light_direction) == 640);
 
 
 static_assert(std::is_copy_constructible_v<RendererError>,
@@ -593,6 +633,18 @@ private:
         };
         BloomTarget bloom_target{};
 
+        // GTAO output at full render resolution: `raw` is the horizon-search
+        // pass's noisy output, `denoised` is the depth-aware blur's output
+        // and the texture actually sampled by forward_geom.slang. Both are
+        // per-frame-in-flight (like bloom_target) rather than shared, since
+        // they're written and read entirely within one frame's command
+        // buffer with no cross-frame history.
+        struct AoTarget {
+            ImageHandle raw;
+            ImageHandle denoised;
+        };
+        AoTarget ao_target{};
+
         // Bit i means cascade i must be cleared and redrawn into the shared,
         // persistent atlas this frame. The atlas itself intentionally does
         // not live in RendererFrame: temporal reuse must survive frame-index
@@ -757,9 +809,12 @@ private:
     PipelineNodeHandle light_icon_pipeline_;
     PipelineNodeHandle bloom_downsample_pipeline_;
     PipelineNodeHandle bloom_upsample_pipeline_;
+    PipelineNodeHandle gtao_pipeline_;
+    PipelineNodeHandle gtao_denoise_pipeline_;
     ShaderChangeQueue shader_change_queue_;
 
     BloomSettings bloom_settings_;
+    AoSettings ao_settings_;
 
     ImageHandle light_icon_texture_{};
     bool debug_draw_light_icons_ = false;

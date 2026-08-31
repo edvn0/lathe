@@ -9,6 +9,7 @@ enum class RenderStage : std::uint32_t {
     Culling,
     ShadowPass,
     DepthPrepass,
+    AmbientOcclusion,
     ForwardPass,
     Composition,
     BloomPass,
@@ -26,6 +27,8 @@ constexpr auto to_string(RenderStage stage) -> std::string_view {
             return "Shadow Pass";
         case DepthPrepass:
             return "Depth prepass";
+        case AmbientOcclusion:
+            return "Ambient Occlusion";
         case ForwardPass:
             return "Forward Pass";
         case Composition:
