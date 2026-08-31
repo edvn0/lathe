@@ -53,6 +53,12 @@ namespace render_pass {
         std::array<std::uint32_t, shadow_cascade_count> const &opaque_cascade_counts;
         std::array<std::uint32_t, shadow_cascade_count> const &mask_cascade_counts;
 
+        // Only tiles selected by update_mask are cleared and rendered. On the
+        // first use preserve_contents is false and the old layout is UNDEFINED;
+        // subsequent calls preserve the other atlas tiles across frames.
+        std::uint32_t update_mask = (1U << shadow_cascade_count) - 1U;
+        bool preserve_contents = false;
+
         VkBuffer index_buffer = VK_NULL_HANDLE;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;

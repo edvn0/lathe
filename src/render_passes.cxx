@@ -172,18 +172,20 @@ namespace render_pass {
             vkCmdPipelineBarrier2(command_buffer, &dependency_info);
         }
 
-        auto transition_shadow_atlas_to_attachment(VkCommandBuffer command_buffer, Image const &atlas) noexcept
-                -> void {
+        auto transition_shadow_atlas_to_attachment(VkCommandBuffer command_buffer, Image const &atlas,
+                                                   bool preserve_contents) noexcept -> void {
             VkImageMemoryBarrier2 const barrier{
                     .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                     .pNext = nullptr,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    .srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    .srcStageMask =
+                            preserve_contents ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_2_NONE,
+                    .srcAccessMask = preserve_contents ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : VK_ACCESS_2_NONE,
                     .dstStageMask =
                             VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                     .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                                      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .oldLayout =
+                            preserve_contents ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
                     .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                     .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -213,7 +215,8 @@ namespace render_pass {
             VkImageMemoryBarrier2 const barrier{
                     .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                     .pNext = nullptr,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                    .srcStageMask =
+                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                     .srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                     .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -503,23 +506,40 @@ namespace render_pass {
     }
 
     auto shadow(Context const &context, ShadowPassInfo const &info) -> std::expected<void, RendererError> {
-        auto const opaque_layout = info.counts.opaque != 0
-                                           ? detail::resolve_layout(context.pipeline_graph, info.opaque_pipeline)
-                                           : VK_NULL_HANDLE;
-        auto const mask_layout = info.counts.mask != 0
-                                         ? detail::resolve_layout(context.pipeline_graph, info.mask_pipeline)
-                                         : VK_NULL_HANDLE;
-
-        if ((info.counts.opaque != 0 && opaque_layout == VK_NULL_HANDLE) ||
-            (info.counts.mask != 0 && mask_layout == VK_NULL_HANDLE)) {
-            return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
-        }
-
         constexpr auto stage = static_cast<std::uint32_t>(RenderStage::ShadowPass);
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, context.timestamp_query_pool,
                              stage * 2);
 
-        detail::transition_shadow_atlas_to_attachment(context.command_buffer, info.shadow_atlas);
+        if (info.update_mask == 0) {
+            vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                 context.timestamp_query_pool, stage * 2 + 1);
+            return {};
+        }
+
+        auto has_dirty_draws = [&](auto const &counts) noexcept {
+            for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+                if ((info.update_mask & (1U << cascade)) != 0 && counts[cascade] != 0) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        auto const has_dirty_opaque = has_dirty_draws(info.opaque_cascade_counts);
+        auto const has_dirty_mask = has_dirty_draws(info.mask_cascade_counts);
+        auto const opaque_layout = has_dirty_opaque
+                                           ? detail::resolve_layout(context.pipeline_graph, info.opaque_pipeline)
+                                           : VK_NULL_HANDLE;
+        auto const mask_layout =
+                has_dirty_mask ? detail::resolve_layout(context.pipeline_graph, info.mask_pipeline) : VK_NULL_HANDLE;
+
+        if ((has_dirty_opaque && opaque_layout == VK_NULL_HANDLE) ||
+            (has_dirty_mask && mask_layout == VK_NULL_HANDLE)) {
+            return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
+        }
+
+        detail::transition_shadow_atlas_to_attachment(context.command_buffer, info.shadow_atlas,
+                                                      info.preserve_contents);
 
         VkRenderingAttachmentInfo shadow_attachment{
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -529,9 +549,8 @@ namespace render_pass {
                 .resolveMode = VK_RESOLVE_MODE_NONE,
                 .resolveImageView = VK_NULL_HANDLE,
                 .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .loadOp = info.preserve_contents ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue = {.depthStencil = {.depth = 0.0F, .stencil = 0}},
         };
 
         VkRenderingInfo const rendering_info{
@@ -548,9 +567,37 @@ namespace render_pass {
         };
 
         vkCmdBeginRendering(context.command_buffer, &rendering_info);
-        vkCmdBindIndexBuffer(context.command_buffer, info.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-        if (info.counts.opaque != 0) {
+        // LOAD keeps every cached tile intact. Explicitly clear only the tiles
+        // that this frame is about to rebuild. Reverse-Z's empty value is zero.
+        VkClearAttachment const clear_attachment{
+                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                .colorAttachment = 0,
+                .clearValue = {.depthStencil = {.depth = 0.0F, .stencil = 0}},
+        };
+        for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+            if ((info.update_mask & (1U << cascade)) == 0) {
+                continue;
+            }
+
+            VkClearRect const clear_rect{
+                    .rect =
+                            VkRect2D{
+                                    .offset = {static_cast<std::int32_t>(shadow_cascade_offset_x[cascade]), 0},
+                                    .extent = {shadow_cascade_resolutions[cascade],
+                                               shadow_cascade_resolutions[cascade]},
+                            },
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+            };
+            vkCmdClearAttachments(context.command_buffer, 1, &clear_attachment, 1, &clear_rect);
+        }
+
+        if (has_dirty_opaque || has_dirty_mask) {
+            vkCmdBindIndexBuffer(context.command_buffer, info.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+        }
+
+        if (has_dirty_opaque) {
             detail::bind_graphics_node(context.pipeline_graph, info.opaque_pipeline, context.command_buffer,
                                        VK_SAMPLE_COUNT_1_BIT, 0, false);
             context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -571,6 +618,10 @@ namespace render_pass {
             vkCmdPushConstants(context.command_buffer, opaque_layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+                if ((info.update_mask & (1U << cascade)) == 0) {
+                    continue;
+                }
+
                 auto const cascade_draw_count = info.opaque_cascade_counts[cascade];
                 if (cascade_draw_count == 0) {
                     continue;
@@ -585,7 +636,7 @@ namespace render_pass {
             }
         }
 
-        if (info.counts.mask != 0) {
+        if (has_dirty_mask) {
             detail::bind_graphics_node(context.pipeline_graph, info.mask_pipeline, context.command_buffer,
                                        VK_SAMPLE_COUNT_1_BIT, 0, false);
             context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -609,6 +660,10 @@ namespace render_pass {
                     static_cast<VkDeviceSize>(info.counts.opaque) * sizeof(VkDrawIndexedIndirectCommand);
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+                if ((info.update_mask & (1U << cascade)) == 0) {
+                    continue;
+                }
+
                 auto const cascade_draw_count = info.mask_cascade_counts[cascade];
                 if (cascade_draw_count == 0) {
                     continue;

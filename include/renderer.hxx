@@ -355,6 +355,8 @@ struct Renderer {
     auto set_ambient_intensity(float intensity) noexcept -> void { ambient_intensity_ = intensity; }
     [[nodiscard]] auto ambient_intensity() const noexcept -> float { return ambient_intensity_; }
 
+    static_assert(shadow_cascade_count == 4, "Renderer shadow-cache defaults assume four cascades");
+
     struct ShadowSettings {
         ShadowCascadeSettings cascades{};
         float normal_offset_texels = 2.0F;
@@ -362,6 +364,13 @@ struct Renderer {
         float pcf_radius_texels = 1.0F;
         float depth_bias_constant = -1.0F; // negative: reverse-Z
         float depth_bias_slope = -2.5F;
+
+        // A cascade may only adopt a new fitted matrix when it is actually
+        // redrawn. These periods are minimum update intervals: the near
+        // cascade refreshes every frame, while farther cascades can reuse
+        // their previous atlas tiles for 2/4/8 frames.
+        std::array<std::uint32_t, shadow_cascade_count> cache_update_periods{1U, 2U, 4U, 8U};
+        bool cache_enabled = true;
         bool debug_cascade_tint = false;
     };
 
@@ -370,6 +379,15 @@ struct Renderer {
 
     auto set_shadow_settings(ShadowSettings const &settings) noexcept -> void { shadow_settings_ = settings; }
     [[nodiscard]] auto shadow_settings() const noexcept -> ShadowSettings const & { return shadow_settings_; }
+
+    // Call this after an add/remove/material change that affects shadow
+    // casters. It forces every cached cascade to be refreshed immediately.
+    auto mark_shadow_casters_dirty() noexcept -> void;
+
+    // Call once per frame while any caster outside the always-fresh near
+    // cascade is moving. Far cascades still respect cache_update_periods, so
+    // this does not turn caching off; it merely guarantees bounded staleness.
+    auto mark_dynamic_shadow_casters_dirty() noexcept -> void { dynamic_shadow_casters_dirty_ = true; }
 
     [[nodiscard]]
     auto prepare_frame(VkCommandBuffer command_buffer, const CameraMatrices &, std::uint32_t frame_index)
@@ -514,6 +532,19 @@ private:
 
     static constexpr std::uint32_t maximum_light_count = 256;
 
+    using ShadowCascadeMask = std::uint32_t;
+    static constexpr ShadowCascadeMask all_shadow_cascades_mask =
+            (ShadowCascadeMask{1} << shadow_cascade_count) - ShadowCascadeMask{1};
+
+    struct ShadowCascadeCacheEntry {
+        glm::mat4 view_projection{1.0F};
+        float split_far = 0.0F;
+        float texel_world = 0.0F;
+        float depth_scale = 0.0F;
+        std::uint64_t last_update_frame = 0;
+        bool valid = false;
+    };
+
     struct RendererFrame {
         Buffer upload_buffer{};
         Buffer draw_buffer{};
@@ -561,7 +592,18 @@ private:
             std::array<ImageHandle, 4> mip_slots;
         };
         BloomTarget bloom_target{};
-        ImageHandle shadow_atlas{};
+
+        // Bit i means cascade i must be cleared and redrawn into the shared,
+        // persistent atlas this frame. The atlas itself intentionally does
+        // not live in RendererFrame: temporal reuse must survive frame-index
+        // rotation.
+        ShadowCascadeMask shadow_update_mask = all_shadow_cascades_mask;
+        std::array<ShadowCascadeCacheEntry, shadow_cascade_count> pending_shadow_cache{};
+        glm::vec3 pending_shadow_light_direction{0.0F};
+        float pending_shadow_depth_bias_constant = 0.0F;
+        float pending_shadow_depth_bias_slope = 0.0F;
+        std::uint64_t pending_shadow_caster_revision = 0;
+        std::uint64_t pending_shadow_scene_signature = 0;
 
         VkDeviceSize draw_upload_offset = 0;
         VkDeviceSize transform_upload_offset = 0;
@@ -722,6 +764,23 @@ private:
     ImageHandle light_icon_texture_{};
     bool debug_draw_light_icons_ = false;
     float light_icon_world_size_ = 0.5F;
+
+    // One atlas for the renderer, not one atlas per frame in flight. Queue
+    // ordering plus the shadow-pass barriers serialize writes/sampling while
+    // letting unchanged tiles persist across frames.
+    ImageHandle shadow_atlas_{};
+    std::array<ShadowCascadeCacheEntry, shadow_cascade_count> shadow_cascade_cache_{};
+    std::uint64_t shadow_frame_ = 0;
+    std::uint64_t shadow_caster_revision_ = 1;
+    std::uint64_t cached_shadow_caster_revision_ = 0;
+    std::uint64_t shadow_scene_signature_ = 0;
+    glm::vec3 cached_shadow_light_direction_{0.0F};
+    float cached_shadow_depth_bias_constant_ = 0.0F;
+    float cached_shadow_depth_bias_slope_ = 0.0F;
+    bool shadow_scene_signature_valid_ = false;
+    bool shadow_global_state_valid_ = false;
+    bool shadow_atlas_initialized_ = false;
+    bool dynamic_shadow_casters_dirty_ = false;
 
     DirectionalLight light_{};
     ShadowSettings shadow_settings_{};

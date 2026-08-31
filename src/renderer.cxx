@@ -164,6 +164,40 @@ namespace {
                 return std::unexpected(make_error(RendererErrorType::unsupported_index_type));
         }
     }
+
+    [[nodiscard]] auto nearly_equal(float lhs, float rhs, float epsilon = 1e-5F) noexcept -> bool {
+        auto const scale = std::max({1.0F, std::abs(lhs), std::abs(rhs)});
+        return std::abs(lhs - rhs) <= epsilon * scale;
+    }
+
+    [[nodiscard]] auto nearly_equal(glm::vec3 const &lhs, glm::vec3 const &rhs, float epsilon = 1e-5F) noexcept
+            -> bool {
+        return nearly_equal(lhs.x, rhs.x, epsilon) && nearly_equal(lhs.y, rhs.y, epsilon) &&
+               nearly_equal(lhs.z, rhs.z, epsilon);
+    }
+
+    [[nodiscard]] auto nearly_equal(glm::mat4 const &lhs, glm::mat4 const &rhs, float epsilon = 1e-5F) noexcept
+            -> bool {
+        for (std::size_t column = 0; column < 4; ++column) {
+            for (std::size_t row = 0; row < 4; ++row) {
+                if (!nearly_equal(lhs[column][row], rhs[column][row], epsilon)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] auto shadow_signature_mix(std::uint64_t value) noexcept -> std::uint64_t {
+        value += 0x9e3779b97f4a7c15ULL;
+        value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+        value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+        return value ^ (value >> 31U);
+    }
+
+    [[nodiscard]] auto shadow_signature_combine(std::uint64_t seed, std::uint64_t value) noexcept -> std::uint64_t {
+        return seed ^ (shadow_signature_mix(value) + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U));
+    }
 } // namespace
 
 Renderer::Renderer(VulkanContext &context) noexcept : context_(context) {}
@@ -714,6 +748,28 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     auto const upload_size = batch_bounds_offset + batch_bounds_size;
 
+    auto shadow_atlas = image_storage_.create_image(ImageCreateInfo{
+            .extent = VkExtent3D{.width = shadow_atlas_width, .height = shadow_atlas_height, .depth = 1},
+            .format = VK_FORMAT_D32_SFLOAT,
+            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .image_type = VK_IMAGE_TYPE_2D,
+            .view_type = VK_IMAGE_VIEW_TYPE_2D,
+            .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+            .flags = 0,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .mip_levels = 1,
+            .array_layers = 1,
+            .debug_name = "renderer.shadow_atlas",
+    });
+
+    if (!shadow_atlas) {
+        return std::unexpected(make_image_error(shadow_atlas.error()));
+    }
+
+    shadow_atlas_ = *shadow_atlas;
+
     frames_.resize(frames_in_flight);
 
     for (std::uint32_t frame_index = 0; frame_index < static_cast<std::uint32_t>(frames_.size()); ++frame_index) {
@@ -893,32 +949,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.forward_target = std::move(*forward_target);
 
-        const auto shadow_atlas_name = std::format("renderer.shadow_atlas_{}", frame_index);
-        auto shadow_atlas = image_storage_.create_image(ImageCreateInfo{
-                .extent =
-                        VkExtent3D{
-                                .width = shadow_atlas_width,
-                                .height = shadow_atlas_height,
-                                .depth = 1,
-                        },
-                .format = VK_FORMAT_D32_SFLOAT,
-                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .debug_name = shadow_atlas_name,
-        });
-
-        if (!shadow_atlas) {
-            return std::unexpected(make_image_error(shadow_atlas.error()));
-        }
-
         auto const bloom_target_name = std::format("renderer.bloom_target_{}", frame_index);
 
         auto bloom_image = image_storage_.create_image(ImageCreateInfo{
@@ -967,10 +997,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             bloom_target.mip_slots[mip] = *mip_slot;
         }
 
-        frame.shadow_atlas = *shadow_atlas;
         frame.bloom_target = bloom_target;
-
-        frame.shadow_atlas = *shadow_atlas;
         frame.draw_upload_offset = 0;
         frame.transform_upload_offset = transform_offset;
         frame.indirect_upload_offset = indirect_offset;
@@ -1099,11 +1126,6 @@ auto Renderer::destroy() noexcept -> void {
     for (auto &frame: frames_) {
         frame.forward_target.destroy(image_storage_);
 
-        if (frame.shadow_atlas.valid()) {
-            static_cast<void>(image_storage_.destroy_image(frame.shadow_atlas));
-            frame.shadow_atlas = ImageHandle{};
-        }
-
         frame.lights_buffer.destroy();
         frame.frustum_planes_buffer.destroy();
         frame.visible_transform_buffer.destroy();
@@ -1124,6 +1146,24 @@ auto Renderer::destroy() noexcept -> void {
     }
 
     frames_.clear();
+
+    if (shadow_atlas_.valid()) {
+        static_cast<void>(image_storage_.destroy_image(shadow_atlas_));
+        shadow_atlas_ = ImageHandle{};
+    }
+
+    shadow_cascade_cache_ = {};
+    shadow_frame_ = 0;
+    shadow_caster_revision_ = 1;
+    cached_shadow_caster_revision_ = 0;
+    shadow_scene_signature_ = 0;
+    cached_shadow_light_direction_ = glm::vec3{0.0F};
+    cached_shadow_depth_bias_constant_ = 0.0F;
+    cached_shadow_depth_bias_slope_ = 0.0F;
+    shadow_scene_signature_valid_ = false;
+    shadow_global_state_valid_ = false;
+    shadow_atlas_initialized_ = false;
+    dynamic_shadow_casters_dirty_ = false;
 
     // Must wait before destroying anything a still-running background load
     // could touch when it finishes: model_streamer_'s finish_model_load()
@@ -1502,6 +1542,7 @@ auto Renderer::update_material(MaterialHandle handle, MaterialCreateInfo const &
         return std::unexpected(make_material_error(result.error()));
     }
 
+    mark_shadow_casters_dirty();
     return {};
 }
 
@@ -1516,6 +1557,7 @@ auto Renderer::destroy_material(MaterialHandle handle) -> std::expected<void, Re
         return std::unexpected(make_material_error(result.error()));
     }
 
+    mark_shadow_casters_dirty();
     return {};
 }
 
@@ -1567,6 +1609,7 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
     }
 
+    mark_shadow_casters_dirty();
     return *handle;
 }
 
@@ -1577,6 +1620,7 @@ auto Renderer::destroy_mesh(MeshHandle handle) -> std::expected<void, RendererEr
         return std::unexpected(make_error(RendererErrorType::invalid_mesh));
     }
 
+    mark_shadow_casters_dirty();
     return {};
 }
 
@@ -1678,6 +1722,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     frame.opaque_indirect_count = 0;
     frame.mask_indirect_count = 0;
     frame.blend_indirect_count = 0;
+    frame.shadow_update_mask = 0;
 
     auto const camera_position = glm::vec3(glm::inverse(matrices.view)[3]);
 
@@ -1914,6 +1959,44 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return cascade == GpuMaterial::no_shadow_cascade ? -1 : static_cast<std::int32_t>(cascade);
     };
 
+    // Deliberately exclude transform matrices from this signature. Hashing 16
+    // floats for every submitted instance would make the cache expensive on
+    // the CPU. This catches structural changes (batch identity, LOD, material,
+    // instance count); moving far-away casters use
+    // mark_dynamic_shadow_casters_dirty() instead.
+    std::uint64_t current_shadow_scene_signature = 0;
+    std::uint64_t shadow_caster_batch_count = 0;
+    bool has_animated_shadow_casters = false;
+    for (auto const *batch: active_batches_) {
+        auto const *material = material_storage_.get(batch->material);
+        auto const alpha_mode = material != nullptr ? material->alpha_mode : AlphaMode::opaque;
+        auto const max_cascade = batch_max_shadow_cascade(batch);
+
+        if (alpha_mode == AlphaMode::blend || max_cascade < 0) {
+            continue;
+        }
+
+        std::uint64_t batch_signature = 0xcbf29ce484222325ULL;
+        batch_signature = shadow_signature_combine(batch_signature, batch->mesh.index);
+        batch_signature = shadow_signature_combine(batch_signature, batch->submesh_index);
+        batch_signature = shadow_signature_combine(batch_signature, material_storage_.gpu_index(batch->material));
+        batch_signature = shadow_signature_combine(batch_signature, batch->lod_index);
+        batch_signature =
+                shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(batch->transforms.size()));
+        batch_signature = shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(max_cascade));
+
+        // XOR makes the aggregate insensitive to submission/batch iteration
+        // order. Include the count separately so duplicated signatures do not
+        // trivially cancel each other out.
+        current_shadow_scene_signature ^= shadow_signature_mix(batch_signature);
+        ++shadow_caster_batch_count;
+
+        has_animated_shadow_casters =
+                has_animated_shadow_casters || (material != nullptr && std::abs(material->wind_strength) > 1e-6F);
+    }
+    current_shadow_scene_signature =
+            shadow_signature_combine(current_shadow_scene_signature, shadow_caster_batch_count);
+
     // Opaque and masked batches only have shadow_cascade_count + 1 possible
     // ordering keys: max cascade 3..0 plus "does not cast shadows". A general
     // O(n log n) sort is unnecessary. Repeated in-place partitions form those
@@ -1984,15 +2067,98 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     auto const &view = matrices.view;
     auto const &projection = matrices.projection;
-    auto const cascades = fit_shadow_cascades(ShadowCascadeFitInput{
+    auto const light_direction = glm::normalize(light_.direction);
+    auto const candidate_cascades = fit_shadow_cascades(ShadowCascadeFitInput{
             .camera_view = view,
             .camera_near = matrices.near_clip,
             .camera_far = matrices.far_clip,
             .vertical_fov_radians = matrices.vertical_fov_radians,
             .aspect_ratio = matrices.aspect_ratio,
-            .light_direction = glm::normalize(light_.direction),
+            .light_direction = light_direction,
             .settings = shadow_settings_.cascades,
     });
+
+    ++shadow_frame_;
+    if (shadow_frame_ == 0) {
+        // Extremely unlikely wraparound, but keep age arithmetic and the
+        // validity model well-defined.
+        shadow_frame_ = 1;
+        for (auto &cached: shadow_cascade_cache_) {
+            cached.valid = false;
+        }
+        shadow_atlas_initialized_ = false;
+    }
+
+    bool projection_shape_changed = false;
+    for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+        auto const &cached = shadow_cascade_cache_[cascade];
+        if (!cached.valid || !nearly_equal(candidate_cascades.split_far[cascade], cached.split_far) ||
+            !nearly_equal(candidate_cascades.texel_world[cascade], cached.texel_world) ||
+            !nearly_equal(candidate_cascades.depth_scale[cascade], cached.depth_scale)) {
+            projection_shape_changed = true;
+            break;
+        }
+    }
+
+    auto const shadow_global_state_changed =
+            !shadow_global_state_valid_ || !nearly_equal(light_direction, cached_shadow_light_direction_) ||
+            !nearly_equal(shadow_settings_.depth_bias_constant, cached_shadow_depth_bias_constant_) ||
+            !nearly_equal(shadow_settings_.depth_bias_slope, cached_shadow_depth_bias_slope_);
+    auto const shadow_scene_changed =
+            !shadow_scene_signature_valid_ || current_shadow_scene_signature != shadow_scene_signature_;
+    auto const shadow_casters_changed = cached_shadow_caster_revision_ != shadow_caster_revision_;
+    auto const force_all_cascades = !shadow_settings_.cache_enabled || !shadow_atlas_initialized_ ||
+                                    shadow_global_state_changed || shadow_scene_changed || shadow_casters_changed ||
+                                    projection_shape_changed;
+
+    auto resolved_view_projection = candidate_cascades.view_projection;
+    auto resolved_split_far = candidate_cascades.split_far;
+    auto resolved_texel_world = candidate_cascades.texel_world;
+    auto resolved_depth_scale = candidate_cascades.depth_scale;
+    frame.pending_shadow_cache = shadow_cascade_cache_;
+
+    for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+        auto const &cached = shadow_cascade_cache_[cascade];
+        auto &pending = frame.pending_shadow_cache[cascade];
+        auto const bit = ShadowCascadeMask{1} << cascade;
+        auto const period = std::max(shadow_settings_.cache_update_periods[cascade], 1U);
+        auto const age = cached.valid ? shadow_frame_ - cached.last_update_frame : std::uint64_t{period};
+        auto const period_due = age >= period;
+        auto const matrix_changed =
+                !cached.valid || !nearly_equal(candidate_cascades.view_projection[cascade], cached.view_projection);
+
+        // Cascade zero is intentionally always fresh. Far cascades update on
+        // a snapped-matrix change once their minimum interval has elapsed, or
+        // periodically while explicit/vertex-animation caster motion exists.
+        auto const dynamic_due = (dynamic_shadow_casters_dirty_ || has_animated_shadow_casters) && period_due;
+        auto const update = force_all_cascades || cascade == 0U || (matrix_changed && period_due) || dynamic_due;
+
+        if (update) {
+            frame.shadow_update_mask |= bit;
+            pending.view_projection = candidate_cascades.view_projection[cascade];
+            pending.split_far = candidate_cascades.split_far[cascade];
+            pending.texel_world = candidate_cascades.texel_world[cascade];
+            pending.depth_scale = candidate_cascades.depth_scale[cascade];
+            pending.last_update_frame = shadow_frame_;
+            pending.valid = true;
+        } else {
+            // Never sample a cached tile with a matrix that did not create it.
+            resolved_view_projection[cascade] = cached.view_projection;
+            resolved_split_far[cascade] = cached.split_far;
+            resolved_texel_world[cascade] = cached.texel_world;
+            resolved_depth_scale[cascade] = cached.depth_scale;
+        }
+    }
+
+    // Commit this state only after record_frame() successfully records the
+    // tile updates. That way a failed shadow pass cannot leave CPU cache
+    // metadata describing atlas contents that were never produced.
+    frame.pending_shadow_light_direction = light_direction;
+    frame.pending_shadow_depth_bias_constant = shadow_settings_.depth_bias_constant;
+    frame.pending_shadow_depth_bias_slope = shadow_settings_.depth_bias_slope;
+    frame.pending_shadow_caster_revision = shadow_caster_revision_;
+    frame.pending_shadow_scene_signature = current_shadow_scene_signature;
+    dynamic_shadow_casters_dirty_ = false;
 
     auto const view_projection = projection * view;
 
@@ -2004,10 +2170,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .projection = projection,
             .camera_position = camera_position,
             .fog_colour = glm::vec3{0.5F},
-            .cascade_view_projection = cascades.view_projection,
-            .cascade_split_far = glm::make_vec4(cascades.split_far.data()),
-            .cascade_texel_world = glm::make_vec4(cascades.texel_world.data()),
-            .cascade_depth_scale = glm::make_vec4(cascades.depth_scale.data()),
+            .cascade_view_projection = resolved_view_projection,
+            .cascade_split_far = glm::make_vec4(resolved_split_far.data()),
+            .cascade_texel_world = glm::make_vec4(resolved_texel_world.data()),
+            .cascade_depth_scale = glm::make_vec4(resolved_depth_scale.data()),
             .cascade_atlas_offset_u =
                     glm::vec4{
                             static_cast<float>(shadow_cascade_offset_x[0]),
@@ -2036,7 +2202,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .light_intensity = light_.intensity,
             .light_colour = light_.colour,
             .shadow_normal_offset_texels = shadow_settings_.normal_offset_texels,
-            .shadow_atlas_texture = frame.shadow_atlas.index,
+            .shadow_atlas_texture = shadow_atlas_.index,
             .shadow_sampler = sampler_storage_.shadow_compare().index,
             .shadow_depth_bias_world = shadow_settings_.depth_bias_world,
             .shadow_pcf_radius_texels = shadow_settings_.pcf_radius_texels,
@@ -2294,7 +2460,7 @@ template<typename OverlayPolicy>
     auto const *depth = image_storage_.get(depth_handle);
     auto const *resolved_hdr = image_storage_.get(resolved_hdr_handle);
     auto const *resolved_depth = image_storage_.get(resolved_depth_handle);
-    auto const *shadow_atlas = image_storage_.get(frame.shadow_atlas);
+    auto const *shadow_atlas = image_storage_.get(shadow_atlas_);
 
     if (hdr == nullptr || depth == nullptr || resolved_hdr == nullptr || resolved_depth == nullptr ||
         shadow_atlas == nullptr || !hdr->valid() || !depth->valid() || !resolved_hdr->valid() ||
@@ -2349,6 +2515,8 @@ template<typename OverlayPolicy>
                                                                   },
                                                           .opaque_cascade_counts = frame.shadow_opaque_indirect_count,
                                                           .mask_cascade_counts = frame.shadow_mask_indirect_count,
+                                                          .update_mask = frame.shadow_update_mask,
+                                                          .preserve_contents = shadow_atlas_initialized_,
                                                           .index_buffer = geometry_arena_.bindable_buffer(),
                                                           .materials_address = material_storage_.device_address(),
                                                           .ubo_address = ubos_[frame_index].device_address,
@@ -2361,6 +2529,23 @@ template<typename OverlayPolicy>
 
         if (!result) {
             return std::unexpected(result.error());
+        }
+
+        if (frame.shadow_update_mask != 0) {
+            for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
+                if ((frame.shadow_update_mask & (ShadowCascadeMask{1} << cascade)) != 0) {
+                    shadow_cascade_cache_[cascade] = frame.pending_shadow_cache[cascade];
+                }
+            }
+
+            cached_shadow_light_direction_ = frame.pending_shadow_light_direction;
+            cached_shadow_depth_bias_constant_ = frame.pending_shadow_depth_bias_constant;
+            cached_shadow_depth_bias_slope_ = frame.pending_shadow_depth_bias_slope;
+            cached_shadow_caster_revision_ = frame.pending_shadow_caster_revision;
+            shadow_scene_signature_ = frame.pending_shadow_scene_signature;
+            shadow_scene_signature_valid_ = true;
+            shadow_global_state_valid_ = true;
+            shadow_atlas_initialized_ = true;
         }
     }
 
@@ -2592,6 +2777,20 @@ void Renderer::drain_event_queue() {
     while (!local_queue.empty()) {
         local_queue.front()();
         local_queue.pop();
+    }
+}
+
+
+auto Renderer::mark_shadow_casters_dirty() noexcept -> void {
+    ++shadow_caster_revision_;
+
+    if (shadow_caster_revision_ == 0) {
+        shadow_caster_revision_ = 1;
+        cached_shadow_caster_revision_ = 0;
+        for (auto &cached: shadow_cascade_cache_) {
+            cached.valid = false;
+        }
+        shadow_atlas_initialized_ = false;
     }
 }
 
