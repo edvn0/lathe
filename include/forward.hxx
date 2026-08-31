@@ -7,9 +7,6 @@ class ImageStorage;
 class SamplerStorage;
 struct MaterialStorage;
 
-class PlayerController;
-class PlayerCamera;
-
 namespace debug_draw {
     class DebugRenderer;
 }

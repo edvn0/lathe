@@ -2,30 +2,23 @@
 
 #include <csignal>
 #include <memory>
-#include <random>
-#include <ranges>
 #include <volk.h>
 
 #include <GLFW/glfw3.h>
 
-#include <algorithm>
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <expected>
 #include <filesystem>
-#include <future>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
 #include <glm/vec2.hpp>
-#include <limits>
 #include <string_view>
 #include <type_traits>
-#include <utility>
 #include <vector>
 
 #include <entt/entt.hpp>
@@ -35,7 +28,6 @@
 #include "config.hxx"
 #include "context.hxx"
 #include "debug_renderer.hxx"
-#include "demo_scene.hxx"
 #include "editor_camera.hxx"
 #include "engine_models.hxx"
 #include "entity.hxx"
@@ -49,8 +41,6 @@
 #endif
 #include "physics.hxx"
 #include "physics_world.hxx"
-#include "player_camera.hxx"
-#include "player_controller.hxx"
 #include "renderdoc.hxx"
 #include "renderer.hxx"
 #include "renderer_application_policy.hxx"
@@ -333,8 +323,7 @@ auto Application::update(float delta_time) -> void {
 
     active_scene()->step(delta_time);
 
-    systems::player_movement(active_scene()->get_registry(), *active_scene()->physics_world, player_entity,
-                             player_controller, player_camera, delta_time);
+    game->on_update(*active_scene(), delta_time);
     systems::lifetime(active_scene()->get_registry(), *active_scene()->physics_world, delta_time);
 }
 auto Application::on_startup() -> void {
@@ -364,20 +353,20 @@ auto Application::on_startup() -> void {
 
         engine_models = *models;
 
-        build_demo_scene(*this);
+        game->on_populate(*editor_scene, *renderer, engine_models);
     });
 }
 
 auto Application::on_event(KeyPressedEvent ev) -> bool {
     if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL) {
-        renderer->queue_render_thread_event([this] { build_demo_scene(*this); });
+        renderer->queue_render_thread_event([this] { game->on_populate(*editor_scene, *renderer, engine_models); });
     }
     if (ev.key == GLFW_KEY_F12) {
         renderer->request_screenshot();
     }
 
     if (is_playing) {
-        player_controller.on_key_pressed(ev.key);
+        game->on_key_pressed(*active_scene(), ev);
     } else {
         camera.on_key_pressed(ev.key);
     }
@@ -386,7 +375,7 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
 }
 auto Application::on_event(KeyReleasedEvent ev) -> bool {
     if (is_playing) {
-        player_controller.on_key_released(ev.key);
+        game->on_key_released(*active_scene(), ev);
     } else {
         camera.on_key_released(ev.key);
     }
@@ -395,8 +384,7 @@ auto Application::on_event(KeyReleasedEvent ev) -> bool {
 }
 auto Application::on_event(MouseMovedEvent ev) -> bool {
     if (is_playing) {
-        player_controller.on_mouse_moved(static_cast<float>(ev.delta_x), static_cast<float>(ev.delta_y),
-                                         /*look_enabled=*/true);
+        game->on_mouse_moved(*active_scene(), ev);
     } else {
         camera.on_mouse_moved(static_cast<float>(ev.delta_x), static_cast<float>(ev.delta_y), mouse_dragging);
     }
@@ -413,12 +401,8 @@ auto Application::on_event(MouseButtonPressedEvent ev) -> bool {
         mouse_dragging = true;
     }
 
-    if (ev.button == GLFW_MOUSE_BUTTON_LEFT) {
-        if (ev.modifiers & GLFW_MOD_CONTROL) {
-            shoot_bullet(12);
-        } else {
-            shoot_bullet();
-        }
+    if (is_playing) {
+        game->on_mouse_button_pressed(*active_scene(), ev);
     }
 
     return true;
@@ -428,89 +412,9 @@ auto Application::on_event(MouseButtonReleasedEvent ev) -> bool {
         mouse_dragging = false;
     }
 
+    if (is_playing) {
+        game->on_mouse_button_released(*active_scene(), ev);
+    }
+
     return true;
-}
-
-[[nodiscard]] auto Application::cursor_ray() const -> std::pair<glm::vec3, glm::vec3> {
-    int window_width = 0;
-    int window_height = 0;
-    glfwGetWindowSize(context.window, &window_width, &window_height);
-
-    auto const framebuffer_width = context.framebuffer_width.load(std::memory_order_relaxed);
-    auto const framebuffer_height = context.framebuffer_height.load(std::memory_order_relaxed);
-
-    if (window_width <= 0 || window_height <= 0 || framebuffer_width <= 0 || framebuffer_height <= 0) {
-        return {camera.position(), camera.forward()};
-    }
-
-    auto const ndc_x = (2.0F * static_cast<float>(last_mouse_x)) / static_cast<float>(window_width) - 1.0F;
-    auto const ndc_y = 1.0F - (2.0F * static_cast<float>(last_mouse_y)) / static_cast<float>(window_height);
-    auto const aspect_ratio = static_cast<float>(framebuffer_width) / static_cast<float>(framebuffer_height);
-
-    auto view_projection =
-            is_playing ? player_camera.view_projection(aspect_ratio) : this->camera.view_projection(aspect_ratio);
-    auto const inverse_view_projection = glm::inverse(std::move(view_projection));
-
-    auto const unproject = [&](float ndc_z) {
-        auto const clip_space_point = inverse_view_projection * glm::vec4{ndc_x, ndc_y, ndc_z, 1.0F};
-        return glm::vec3{clip_space_point} / clip_space_point.w;
-    };
-
-    auto const ray_origin = unproject(0.0F);
-    auto const ray_direction = glm::normalize(unproject(1.0F) - ray_origin);
-
-    return {ray_origin, ray_direction};
-}
-auto Application::shoot_bullet(std::size_t n) -> void {
-    if (!is_playing || !active_scene()->physics_world) {
-        return;
-    }
-
-    if (!active_scene()->get_registry().valid(player_entity) ||
-        !active_scene()->get_registry().all_of<Components::Transform>(player_entity)) {
-        return;
-    }
-
-    constexpr auto bullet_half_extent = 0.15F;
-    constexpr auto bullet_speed = 40.0F;
-    constexpr auto bullet_mass = 0.2F;
-    constexpr auto bullet_lifetime_seconds = 3.0F;
-    constexpr auto max_aim_distance = 1000.0F;
-    constexpr auto player_eye_height = 1.5F; // Height offset from player base position
-
-    auto const &position = ReadOnlyEntity{active_scene(), this->player_entity}.get<Components::Transform>().position;
-    auto const player_position = position; // Replace with your player position accessor
-    auto const muzzle_position = player_position + glm::vec3{0.0F, player_eye_height, 0.0F};
-
-    auto const cam_origin = player_camera.position();
-    auto const cam_forward = player_camera.forward();
-
-    glm::vec3 target_point = cam_origin + (cam_forward * max_aim_distance);
-
-    if (auto const hit = active_scene()->physics_world->raycast(cam_origin, cam_forward, max_aim_distance)) {
-        target_point = hit->point;
-    }
-
-    auto const bullet_direction = glm::normalize(target_point - muzzle_position);
-
-    auto const transform = Components::Transform{
-            .position = muzzle_position + bullet_direction * (bullet_half_extent + 0.2F),
-            .scale = glm::vec3{bullet_half_extent} / cube_half_extents,
-    };
-    auto const rigid_body = Components::RigidBody{
-            .velocity = bullet_direction * bullet_speed,
-            .half_extents = glm::vec3{bullet_half_extent},
-            .restitution = 0.3F,
-            .mass = bullet_mass,
-    };
-
-    for (auto i = 0U; i < n; ++i) {
-        auto const entity = GeneratedEntity{active_scene(), "bullet_{}", static_cast<std::uint32_t>(i)};
-        entity.emplace<Components::Transform>(transform);
-        entity.emplace<Components::Model>(Components::Model{.model = cube_model});
-        entity.emplace<Components::RigidBody>(rigid_body);
-        entity.emplace<Components::Lifetime>(bullet_lifetime_seconds);
-
-        active_scene()->physics_world->add_body(active_scene()->get_registry(), entity, transform, rigid_body);
-    }
 }

@@ -1047,6 +1047,24 @@ list(
     ${mingw_vulkan_main_sources}
 )
 
+#
+# Game sources -- linked only into the mingw-vulkan executable, never into
+# mingw-vulkan-core, so the core library stays entirely game-agnostic (see
+# include/game.hxx). game/include is added as a private include directory on
+# the executable target below, separate from mingw-vulkan-core's public
+# include/.
+#
+file(
+    GLOB_RECURSE mingw_vulkan_game_sources
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/game/src/*.cxx"
+)
+
+list(
+    APPEND mingw_vulkan_main_sources
+    ${mingw_vulkan_game_sources}
+)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   file(
       GLOB_RECURSE platform_sources
@@ -1286,6 +1304,12 @@ target_link_libraries(
     mingw-vulkan
     PRIVATE
         mingw-vulkan::core
+)
+
+target_include_directories(
+    mingw-vulkan
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/game/include"
 )
 
 #

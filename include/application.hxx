@@ -4,48 +4,13 @@
 #include "debug_renderer.hxx"
 #include "editor_camera.hxx"
 #include "engine_models.hxx"
+#include "game.hxx"
 #include "imgui_renderer.hxx"
-#include "material.hxx"
-#include "model.hxx"
-#include "player_camera.hxx"
-#include "player_controller.hxx"
+#include "input_events.hxx"
 #include "render_stage.hxx"
 #include "scene.hxx"
 #include "shader_hot_reload_watcher.hxx"
 #include "terminal_widget.hxx"
-
-struct KeyPressedEvent {
-    std::int32_t key{};
-    std::int32_t modifiers{};
-};
-
-struct KeyReleasedEvent {
-    std::int32_t key{};
-    std::int32_t modifiers{};
-};
-
-// Raw cursor delta in pixels since the previous callback -- not an
-// absolute position. Application decides whether it counts as a
-// "look" based on whether a drag is currently active.
-struct MouseMovedEvent {
-    double delta_x{};
-    double delta_y{};
-};
-
-struct MouseScrolledEvent {
-    double delta_x{};
-    double delta_y{};
-};
-
-struct MouseButtonPressedEvent {
-    std::int32_t button{};
-    std::int32_t modifiers{};
-};
-
-struct MouseButtonReleasedEvent {
-    std::int32_t button{};
-    std::int32_t modifiers{};
-};
 
 struct ScrollingBuffer {
     std::int32_t max_size;
@@ -95,28 +60,16 @@ struct Application {
         return is_playing ? runtime_scene.get() : editor_scene.get();
     }
 
-    entt::entity player_entity{entt::null};
-    PlayerController player_controller;
-    PlayerCamera player_camera;
-
+    // Supplied by main.cxx (via the game's create_game() factory) before
+    // on_startup() runs. Application never constructs game content itself --
+    // it hands editor_scene/the active scene to `game` at the points listed
+    // on IGame (game.hxx).
+    std::unique_ptr<IGame> game;
 
     auto play() -> void;
     auto stop() -> void;
 
     EngineModels engine_models{};
-
-    // Set by build_demo_scene() (demo_scene.hxx) -- reused by shoot_bullet()
-    // so projectiles are built from the same model/collision-shape
-    // relationship as the grid cubes and floor.
-    ModelHandle cube_model{};
-    glm::vec3 cube_half_extents{0.5F};
-
-    ModelHandle house_model{};
-    ModelHandle tree_model{};
-
-    // Wind-swaying grass material -- created once in build_demo_scene()
-    // and shared as a MaterialOverride across every grass clump entity.
-    MaterialHandle grass_material{};
 
     // Seconds since startup -- forwarded to UBO.time each frame so the
     // wind shader (wind.slang) has something to animate against.
@@ -151,8 +104,4 @@ struct Application {
     auto on_event(MouseScrolledEvent ev) -> bool;
     auto on_event(MouseButtonPressedEvent ev) -> bool;
     auto on_event(MouseButtonReleasedEvent ev) -> bool;
-
-    [[nodiscard]] auto cursor_ray() const -> std::pair<glm::vec3, glm::vec3>;
-
-    auto shoot_bullet(std::size_t n = 1) -> void;
 };

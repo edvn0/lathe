@@ -36,6 +36,7 @@
 #include "engine_models.hxx"
 #include "entity.hxx"
 #include "error_describe.hxx"
+#include "game.hxx"
 #include "glm/gtc/type_ptr.hpp"
 #include "imgui.h"
 #include "imgui_renderer.hxx"
@@ -43,8 +44,6 @@
 #include "logger.hxx"
 #include "physics.hxx"
 #include "physics_world.hxx"
-#include "player_camera.hxx"
-#include "player_controller.hxx"
 #include "renderer.hxx"
 #include "renderer_application_policy.hxx"
 #include "scene.hxx"
@@ -200,6 +199,18 @@ namespace {
             frame_ok = false;
         }
 
+        auto const active_aspect = application.renderer->aspect(frame->frame_index);
+        auto const active_camera =
+                application.is_playing
+                        ? application.game->camera(*application.active_scene(), active_aspect)
+                        : CameraParams{
+                                  .view = application.camera.view(),
+                                  .projection = application.camera.projection(active_aspect),
+                                  .near_clip = application.camera.near_clip(),
+                                  .far_clip = application.camera.far_clip(),
+                                  .vertical_fov_radians = glm::radians(application.camera.field_of_view_degrees()),
+                          };
+
         if (frame_ok) {
             application.imgui_renderer->begin_frame(gui::ImGuiFramebuffer{frame->extent, frame->format});
             {
@@ -207,20 +218,14 @@ namespace {
             }
             application.imgui_renderer->end_frame();
 
-            auto const &active_view =
-                    application.is_playing ? application.player_camera.view() : application.camera.view();
-            auto const active_aspect = application.renderer->aspect(frame->frame_index);
-            auto const &active_projection = application.is_playing ? application.player_camera.projection(active_aspect)
-                                                                   : application.camera.projection(active_aspect);
-
             auto prepare_result = application.renderer->prepare_frame(
                     frame->command_buffer,
                     {
-                            .view = active_view,
-                            .projection = active_projection,
-                            .near_clip = application.camera.near_clip(),
-                            .far_clip = application.camera.far_clip(),
-                            .vertical_fov_radians = glm::radians(application.camera.field_of_view_degrees()),
+                            .view = active_camera.view,
+                            .projection = active_camera.projection,
+                            .near_clip = active_camera.near_clip,
+                            .far_clip = active_camera.far_clip,
+                            .vertical_fov_radians = active_camera.vertical_fov_radians,
                             .aspect_ratio = active_aspect,
                             .time = application.elapsed_time,
                     },
@@ -247,10 +252,6 @@ namespace {
             }
 
 
-            auto const &v = application.is_playing ? application.player_camera.view() : application.camera.view();
-            auto const active_aspect = application.renderer->aspect(frame->frame_index);
-            auto const &p = application.is_playing ? application.player_camera.projection(active_aspect)
-                                                   : application.camera.projection(active_aspect);
             auto record_result = application.renderer->record_frame<ApplicationOverlayPolicy>(
                     frame->command_buffer,
                     SwapchainImage{
@@ -259,7 +260,7 @@ namespace {
                             .format = frame->format,
                             .extent = frame->extent,
                     },
-                    frame->frame_index, application, p * v);
+                    frame->frame_index, application, active_camera.projection * active_camera.view);
 
             if (!record_result) {
                 error("Could not record renderer frame: {}", describe(record_result.error()));
@@ -436,8 +437,8 @@ namespace {
         }
 
         // Alt-tabbing (or any focus loss) while captured would otherwise leave
-        // the cursor disabled and player_controller still integrating whatever
-        // stray deltas the OS/compositor delivers to an unfocused window --
+        // the cursor disabled and the game's input handling still integrating
+        // whatever stray deltas the OS/compositor delivers to an unfocused window --
         // behaviour that varies between X11 and Wayland (see the platform
         // hint in initialize_glfw). Exiting play mode on focus loss sidesteps
         // that entirely rather than trying to special-case each platform.
@@ -505,6 +506,10 @@ static auto ctrl_c_handler(int) -> void {
     glfwPostEmptyEvent();
 }
 
+// Implemented by whichever game is linked into this executable (see
+// game/src/main_entry.cxx) -- this is the one place the engine names
+// game-specific content.
+auto create_game() -> std::unique_ptr<IGame>;
 
 auto main(int argc, char **argv) -> int {
     info("Starting GLFW Vulkan test at {}", std::filesystem::current_path().string());
@@ -525,6 +530,7 @@ auto main(int argc, char **argv) -> int {
 
 
     Application application{context};
+    application.game = create_game();
     install_window_callbacks(context, application);
 
     if (!initialize_application(context, application)) {

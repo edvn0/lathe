@@ -6,8 +6,8 @@
 // Over-the-shoulder follow camera for a capsule player controller.
 // Deliberately NOT a first-person eye camera -- it trails behind and
 // above the capsule, matching the interface shape of EditorCamera
-// (view/projection/near_clip/etc.) so Application::draw() can pick
-// between the two with a single branch.
+// (view/projection/near_clip/etc.) so BasicGame::camera() can build a
+// CameraParams from it with a single branch.
 struct PlayerCameraCreateInfo {
     float follow_distance = 4.0F; // behind the capsule, along -forward
     float follow_height = 1.6F; // above the capsule origin

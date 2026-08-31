@@ -106,6 +106,4 @@ namespace systems {
     [[nodiscard]] auto get_world_transform(entt::registry const &registry, entt::entity, const Components::Transform &)
             -> glm::mat4;
     auto lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) -> void;
-    auto player_movement(entt::registry &registry, PhysicsWorld &physics_world, entt::entity player_entity,
-                         PlayerController &controller, PlayerCamera &camera, float delta_time) -> void;
 } // namespace systems
