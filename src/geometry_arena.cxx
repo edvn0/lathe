@@ -50,6 +50,7 @@ auto GeometryArenaT<Allocator>::create(VulkanContext &ctx, GeometryArenaCreateIn
     if (create_info.capacity == 0) {
         return std::unexpected{GeometryArenaError{
                 .type = GeometryArenaErrorType::invalid_argument,
+                .cause = std::nullopt,
         }};
     }
 
@@ -95,6 +96,7 @@ auto GeometryArenaT<Allocator>::write(VkCommandBuffer command_buffer, GeometrySl
 
         return std::unexpected{GeometryArenaError{
                 .type = GeometryArenaErrorType::invalid_argument,
+                .cause = std::nullopt,
         }};
     }
 
@@ -163,6 +165,7 @@ auto GeometryArenaT<Allocator>::allocate_vertices(VkCommandBuffer command_buffer
 
         return std::unexpected{GeometryArenaError{
                 .type = GeometryArenaErrorType::invalid_argument,
+                .cause = std::nullopt,
         }};
     }
 
@@ -172,6 +175,7 @@ auto GeometryArenaT<Allocator>::allocate_vertices(VkCommandBuffer command_buffer
 
         return std::unexpected{GeometryArenaError{
                 .type = GeometryArenaErrorType::size_overflow,
+                .cause = std::nullopt,
         }};
     }
 
@@ -211,6 +215,7 @@ auto GeometryArenaT<Allocator>::allocate_indices(VkCommandBuffer command_buffer,
         return std::unexpected{GeometryArenaError{
                 .type = element_size == 0 ? GeometryArenaErrorType::unsupported_index_type
                                           : GeometryArenaErrorType::invalid_argument,
+                .cause = std::nullopt,
         }};
     }
 
@@ -220,6 +225,7 @@ auto GeometryArenaT<Allocator>::allocate_indices(VkCommandBuffer command_buffer,
 
         return std::unexpected{GeometryArenaError{
                 .type = GeometryArenaErrorType::size_overflow,
+                .cause = std::nullopt,
         }};
     }
 

@@ -502,8 +502,20 @@ auto BasicGame::on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent co
 [[nodiscard]] auto BasicGame::terrain_create_info(Renderer & /*renderer*/) -> std::optional<TerrainWorldCreateInfo> {
     // terrain_params_/terrain_material_/terrain_ground_y_ are set in
     // on_populate(), which always runs first (see Application::on_startup).
+    //
+    // TerrainLodSettings' own defaults (view_distance = 2048) assume a much
+    // larger world than this one; left as-is, the quadtree keeps a steady-state
+    // 64 LOD0 chunks split out around the camera (a fixed function of
+    // split_factor/split_hysteresis vs. the LOD0 chunk span, independent of
+    // view_distance) against a slots_per_lod of 48, so LOD0 permanently runs
+    // 16 chunks over budget -- see the "slot pool exhausted" warning spam this
+    // fixes. view_distance is cut down to match this small terrain, and
+    // slots_per_lod raised past that 64-chunk floor with headroom for the
+    // eviction grace period's transient parent/child overlap.
     return TerrainWorldCreateInfo{
             .params = terrain_params_,
+            .lod_settings = TerrainLodSettings{.view_distance = 512.0F},
+            .slots_per_lod = 96,
             .material = terrain_material_,
             .ground_y = terrain_ground_y_,
     };

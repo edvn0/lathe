@@ -102,6 +102,7 @@ public:
 
             return std::unexpected{GeometryArenaError{
                     .type = GeometryArenaErrorType::invalid_argument,
+                    .cause = std::nullopt,
             }};
         }
 
@@ -111,6 +112,7 @@ public:
 
             return std::unexpected{GeometryArenaError{
                     .type = GeometryArenaErrorType::size_overflow,
+                    .cause = std::nullopt,
             }};
         }
 
@@ -120,6 +122,7 @@ public:
 
             return std::unexpected{GeometryArenaError{
                     .type = GeometryArenaErrorType::out_of_memory,
+                    .cause = std::nullopt,
             }};
         }
 
@@ -127,6 +130,7 @@ public:
 
             return std::unexpected{GeometryArenaError{
                     .type = GeometryArenaErrorType::size_overflow,
+                    .cause = std::nullopt,
             }};
         }
 

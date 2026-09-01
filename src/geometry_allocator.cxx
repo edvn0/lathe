@@ -31,6 +31,7 @@ auto FreeListAllocator::allocate(VkDeviceSize allocation_size, VkDeviceSize alig
 
         return std::unexpected{GeometryArenaError{
                 .type = GeometryArenaErrorType::invalid_argument,
+                .cause = std::nullopt,
         }};
     }
 
@@ -65,6 +66,7 @@ auto FreeListAllocator::allocate(VkDeviceSize allocation_size, VkDeviceSize alig
 
         return std::unexpected{GeometryArenaError{
                 .type = GeometryArenaErrorType::out_of_memory,
+                .cause = std::nullopt,
         }};
     }
 
