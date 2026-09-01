@@ -400,6 +400,45 @@ auto PhysicsWorld::bind_terrain_collider(TerrainColliderHandle handle, glm::vec3
 
     std::ranges::copy(heights, slot.heights.begin());
 
+    // Rebinding an already-active slot repositions the same physical
+    // surface in place (e.g. a streamed chunk shifting under a floating
+    // origin) rather than swapping in an unrelated one, so any body
+    // currently resting on it must move by the same delta -- otherwise it's
+    // left floating in the empty space the terrain vacated, or embedded in
+    // the terrain if the slot moved up through it.
+    if (slot.active) {
+        glm::vec3 const delta = centre - to_glm(slot.body->getWorldTransform().getOrigin());
+
+        struct RestingBodyCollector final : public btCollisionWorld::ContactResultCallback {
+            btCollisionObject const *self = nullptr;
+            std::vector<btRigidBody *> bodies;
+
+            auto addSingleResult(btManifoldPoint & /*contact_point*/, btCollisionObjectWrapper const *col_obj_0_wrap,
+                                 int /*part_id_0*/, int /*index_0*/, btCollisionObjectWrapper const *col_obj_1_wrap,
+                                 int /*part_id_1*/, int /*index_1*/) -> btScalar override {
+                auto const *other = col_obj_0_wrap->getCollisionObject() == self ? col_obj_1_wrap->getCollisionObject()
+                                                                                  : col_obj_0_wrap->getCollisionObject();
+
+                if (auto *rigid_body = btRigidBody::upcast(other);
+                    rigid_body != nullptr && !rigid_body->isStaticObject()) {
+                    bodies.push_back(rigid_body);
+                }
+
+                return 0.0F;
+            }
+        } collector;
+        collector.self = slot.body;
+
+        impl_->world->contactTest(slot.body, collector);
+
+        for (auto *rigid_body: collector.bodies) {
+            auto body_transform = rigid_body->getWorldTransform();
+            body_transform.setOrigin(body_transform.getOrigin() + to_bt(delta));
+            rigid_body->setWorldTransform(body_transform);
+            rigid_body->activate(true);
+        }
+    }
+
     btTransform transform;
     transform.setIdentity();
     transform.setOrigin(to_bt(centre));
