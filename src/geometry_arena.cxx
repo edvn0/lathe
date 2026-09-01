@@ -2,18 +2,11 @@
 
 #include "context.hxx"
 
-#include <algorithm>
-#include <bit>
 #include <limits>
 #include <string>
 #include <utility>
 
 namespace {
-
-    [[nodiscard]]
-    constexpr auto align_up(VkDeviceSize value, VkDeviceSize alignment) noexcept -> VkDeviceSize {
-        return (value + alignment - 1) & ~(alignment - 1);
-    }
 
     [[nodiscard]]
     constexpr auto index_element_size(VkIndexType index_type) noexcept -> VkDeviceSize {
@@ -42,16 +35,17 @@ namespace {
 
 } // namespace
 
-auto GeometryArena::destroy(VulkanContext &) -> void {
+template<GeometryAllocatorPolicy Allocator>
+auto GeometryArenaT<Allocator>::destroy(VulkanContext &) -> void {
     upload_buffer.destroy();
     buffer.destroy();
 
-    capacity = 0;
-    next_offset = 0;
+    allocator_.reset(0);
 }
 
-auto GeometryArena::create(VulkanContext &ctx, GeometryArenaCreateInfo const &create_info)
-        -> std::expected<GeometryArena, GeometryArenaError> {
+template<GeometryAllocatorPolicy Allocator>
+auto GeometryArenaT<Allocator>::create(VulkanContext &ctx, GeometryArenaCreateInfo const &create_info)
+        -> std::expected<GeometryArenaT<Allocator>, GeometryArenaError> {
 
     if (create_info.capacity == 0) {
         return std::unexpected{GeometryArenaError{
@@ -85,63 +79,19 @@ auto GeometryArena::create(VulkanContext &ctx, GeometryArenaCreateInfo const &cr
         return std::unexpected{from_device_error(std::move(upload_buffer.error()))};
     }
 
-    GeometryArena result{};
+    GeometryArenaT<Allocator> result{};
     result.buffer = std::move(*buffer);
     result.upload_buffer = std::move(*upload_buffer);
-    result.capacity = create_info.capacity;
-    result.next_offset = 0;
+    result.allocator_.reset(create_info.capacity);
     return result;
 }
 
-auto GeometryArena::allocate_bytes(VkDeviceSize allocation_size, VkDeviceSize alignment)
-        -> std::expected<GeometrySlice, GeometryArenaError> {
-
-    if (allocation_size == 0 || alignment == 0 || !std::has_single_bit(alignment)) {
-
-        return std::unexpected{GeometryArenaError{
-                .type = GeometryArenaErrorType::invalid_argument,
-        }};
-    }
-
-    alignment = std::max(alignment, VkDeviceSize{4});
-
-    if (next_offset > std::numeric_limits<VkDeviceSize>::max() - (alignment - 1)) {
-
-        return std::unexpected{GeometryArenaError{
-                .type = GeometryArenaErrorType::size_overflow,
-        }};
-    }
-
-    auto const offset = align_up(next_offset, alignment);
-
-    if (offset > capacity || allocation_size > capacity - offset) {
-
-        return std::unexpected{GeometryArenaError{
-                .type = GeometryArenaErrorType::out_of_memory,
-        }};
-    }
-
-    if (offset > std::numeric_limits<VkDeviceSize>::max() - allocation_size) {
-
-        return std::unexpected{GeometryArenaError{
-                .type = GeometryArenaErrorType::size_overflow,
-        }};
-    }
-
-    next_offset = offset + allocation_size;
-
-    return GeometrySlice{
-            .offset = offset,
-            .size = allocation_size,
-            .reserved_size = allocation_size,
-    };
-}
-
-auto GeometryArena::write(VkCommandBuffer command_buffer, GeometrySlice const &slice, std::span<const std::byte> data)
-        -> std::expected<void, GeometryArenaError> {
+template<GeometryAllocatorPolicy Allocator>
+auto GeometryArenaT<Allocator>::write(VkCommandBuffer command_buffer, GeometrySlice const &slice,
+                                      std::span<const std::byte> data) -> std::expected<void, GeometryArenaError> {
 
     if (command_buffer == VK_NULL_HANDLE || data.empty() || data.size_bytes() != slice.size ||
-        slice.offset > capacity || slice.size > capacity - slice.offset) {
+        slice.offset > allocator_.capacity() || slice.size > allocator_.capacity() - slice.offset) {
 
         return std::unexpected{GeometryArenaError{
                 .type = GeometryArenaErrorType::invalid_argument,
@@ -203,8 +153,9 @@ auto GeometryArena::write(VkCommandBuffer command_buffer, GeometrySlice const &s
     return {};
 }
 
-auto GeometryArena::allocate_vertices(VkCommandBuffer command_buffer, std::span<const std::byte> data,
-                                      std::uint32_t vertex_stride, VkDeviceSize alignment)
+template<GeometryAllocatorPolicy Allocator>
+auto GeometryArenaT<Allocator>::allocate_vertices(VkCommandBuffer command_buffer, std::span<const std::byte> data,
+                                                  std::uint32_t vertex_stride, VkDeviceSize alignment)
         -> std::expected<VertexSlice, GeometryArenaError> {
 
     if (command_buffer == VK_NULL_HANDLE || data.empty() || vertex_stride == 0 ||
@@ -224,9 +175,9 @@ auto GeometryArena::allocate_vertices(VkCommandBuffer command_buffer, std::span<
         }};
     }
 
-    auto const checkpoint = next_offset;
+    auto const checkpoint = allocator_.checkpoint();
 
-    auto allocation = allocate_bytes(static_cast<VkDeviceSize>(data.size_bytes()), alignment);
+    auto allocation = allocator_.allocate(static_cast<VkDeviceSize>(data.size_bytes()), alignment);
 
     if (!allocation) {
         return std::unexpected(allocation.error());
@@ -235,7 +186,7 @@ auto GeometryArena::allocate_vertices(VkCommandBuffer command_buffer, std::span<
     auto written = write(command_buffer, *allocation, data);
 
     if (!written) {
-        next_offset = checkpoint;
+        allocator_.rollback(checkpoint);
 
         return std::unexpected(written.error());
     }
@@ -248,8 +199,9 @@ auto GeometryArena::allocate_vertices(VkCommandBuffer command_buffer, std::span<
     };
 }
 
-auto GeometryArena::allocate_indices(VkCommandBuffer command_buffer, std::span<const std::byte> data,
-                                     VkIndexType index_type) -> std::expected<IndexSlice, GeometryArenaError> {
+template<GeometryAllocatorPolicy Allocator>
+auto GeometryArenaT<Allocator>::allocate_indices(VkCommandBuffer command_buffer, std::span<const std::byte> data,
+                                                 VkIndexType index_type) -> std::expected<IndexSlice, GeometryArenaError> {
 
     auto const element_size = index_element_size(index_type);
 
@@ -271,9 +223,9 @@ auto GeometryArena::allocate_indices(VkCommandBuffer command_buffer, std::span<c
         }};
     }
 
-    auto const checkpoint = next_offset;
+    auto const checkpoint = allocator_.checkpoint();
 
-    auto allocation = allocate_bytes(static_cast<VkDeviceSize>(data.size_bytes()), element_size);
+    auto allocation = allocator_.allocate(static_cast<VkDeviceSize>(data.size_bytes()), element_size);
 
     if (!allocation) {
         return std::unexpected(allocation.error());
@@ -282,7 +234,7 @@ auto GeometryArena::allocate_indices(VkCommandBuffer command_buffer, std::span<c
     auto written = write(command_buffer, *allocation, data);
 
     if (!written) {
-        next_offset = checkpoint;
+        allocator_.rollback(checkpoint);
 
         return std::unexpected(written.error());
     }
@@ -293,3 +245,6 @@ auto GeometryArena::allocate_indices(VkCommandBuffer command_buffer, std::span<c
             .index_type = index_type,
     };
 }
+
+template struct GeometryArenaT<BumpAllocator>;
+template struct GeometryArenaT<FreeListAllocator>;

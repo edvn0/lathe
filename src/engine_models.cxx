@@ -13,27 +13,6 @@ namespace {
         };
     }
 
-    auto to_model_cpu_data(PrimitiveMeshData mesh) -> ModelCpuData {
-        ModelCpuData cpu_data;
-
-        cpu_data.meshes.push_back(ModelCpuMesh{
-                .primitives = {ModelCpuPrimitive{
-                        .vertices = std::move(mesh.vertices),
-                        .indices = std::move(mesh.indices),
-                        .material_index = std::nullopt,
-                }},
-        });
-
-        cpu_data.nodes.push_back(ModelNode{
-                .local_transform = glm::mat4{1.0F},
-                .mesh_index = 0,
-        });
-
-        cpu_data.scene_roots.push_back(0);
-
-        return cpu_data;
-    }
-
     auto create_primitive_model(Renderer &renderer, std::expected<PrimitiveMeshData, ModelLoadError> mesh)
             -> std::expected<ModelHandle, RendererError> {
         if (!mesh) {

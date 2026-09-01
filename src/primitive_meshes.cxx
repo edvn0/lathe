@@ -382,6 +382,27 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
     };
 }
 
+auto to_model_cpu_data(PrimitiveMeshData mesh) -> ModelCpuData {
+    ModelCpuData cpu_data;
+
+    cpu_data.meshes.push_back(ModelCpuMesh{
+            .primitives = {ModelCpuPrimitive{
+                    .vertices = std::move(mesh.vertices),
+                    .indices = std::move(mesh.indices),
+                    .material_index = std::nullopt,
+            }},
+    });
+
+    cpu_data.nodes.push_back(ModelNode{
+            .local_transform = glm::mat4{1.0F},
+            .mesh_index = 0,
+    });
+
+    cpu_data.scene_roots.push_back(0);
+
+    return cpu_data;
+}
+
 auto make_capsule_mesh(std::uint32_t segments, std::uint32_t rings)
         -> std::expected<PrimitiveMeshData, ModelLoadError> {
     segments = std::max(segments, 3U);

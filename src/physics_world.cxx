@@ -6,6 +6,7 @@
 
 #include <BS_thread_pool.hpp>
 #include <BulletCollision/CollisionDispatch/btCollisionDispatcherMt.h>
+#include <BulletCollision/CollisionShapes/btHeightfieldTerrainShape.h>
 #include <BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolverMt.h>
 #include <BulletDynamics/Dynamics/btDiscreteDynamicsWorldMt.h>
 #include <LinearMath/btThreads.h>
@@ -15,6 +16,9 @@
 #include "debug_renderer.hxx"
 #include "logger.hxx"
 #include "memory_tracker.hxx"
+
+#include <algorithm>
+#include <vector>
 
 namespace {
     auto to_bt(glm::vec3 const &v) -> btVector3 { return btVector3{v.x, v.y, v.z}; }
@@ -94,6 +98,22 @@ struct PhysicsWorld::Impl {
     }
 
     ~Impl() {
+        // Terrain-collider slots are never entity-backed (see
+        // TerrainColliderHandle) and are torn down explicitly here, before
+        // the generic loop below -- removeRigidBody() first means the
+        // generic loop's walk over getCollisionObjectArray() never sees
+        // them, so there's no risk of the two teardown paths double-
+        // destructing the same body/shape.
+        for (auto &slot: terrain_colliders) {
+            if (slot.active) {
+                world->removeRigidBody(slot.body);
+                slot.active = false;
+            }
+
+            slot.body->~btRigidBody();
+            slot.shape->~btCollisionShape();
+        }
+
         // No entity-keyed container of our own to walk here -- world's own
         // collision object array already lists every body add_body() put
         // in, so teardown reads that instead of duplicating it. Removing
@@ -116,6 +136,16 @@ struct PhysicsWorld::Impl {
             // Components::PhysicsBody on this same entity -- remove that
             // now too, or it's left pointing at memory this destructor is
             // about to free.
+            //
+            // Deliberately no null-user-pointer guard here: entt::entity{0}
+            // (a real, legitimate entity -- entt numbers entities from 0)
+            // bit-casts to a null pointer, so a null check can't
+            // distinguish "entity 0's own body" from "no entity backing"
+            // -- it would incorrectly skip entity 0's own teardown instead.
+            // The actual safety net for non-entity-backed bodies (terrain
+            // colliders) is structural: they're removed from `world` in the
+            // loop above, before this one runs, so they're never among
+            // `collision_objects` here at all.
             auto const entity = static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(rigid_body->getUserPointer()));
 
             if (registry.valid(entity)) {
@@ -145,7 +175,21 @@ struct PhysicsWorld::Impl {
         }
     }
 
+    struct TerrainColliderSlot {
+        // Permanently owned so the raw float* Bullet's
+        // btHeightfieldTerrainShape retains (captured once at construction,
+        // see reserve_terrain_collider) can never dangle. Sized once and
+        // never resized -- only ever overwritten in place.
+        std::vector<float> heights;
+
+        btHeightfieldTerrainShape *shape = nullptr;
+        btRigidBody *body = nullptr;
+        bool active = false; // currently added to `world`
+    };
+
     ArenaAllocator arena{512 * 1024};
+
+    std::vector<TerrainColliderSlot> terrain_colliders;
 
     debug_draw::DebugRenderer *debug_renderer = nullptr;
 
@@ -177,10 +221,32 @@ auto PhysicsWorld::populate_from(entt::registry &registry) -> void {
 
 auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Components::Transform const &transform,
                             Components::RigidBody const &body) -> void {
-    auto *shape = body.shape == Components::BodyShape::capsule
-                          ? impl_->arena.construct_with_base<btCapsuleShape, btCollisionShape>(body.capsule_radius,
-                                                                                               body.capsule_height)
-                          : impl_->arena.construct_with_base<btBoxShape, btCollisionShape>(to_bt(body.half_extents));
+    btCollisionShape *shape = nullptr;
+
+    switch (body.shape) {
+        case Components::BodyShape::capsule:
+            shape = impl_->arena.construct_with_base<btCapsuleShape, btCollisionShape>(body.capsule_radius,
+                                                                                        body.capsule_height);
+            break;
+        case Components::BodyShape::heightfield: {
+            auto const &heightfield = *body.heightfield;
+
+            // Bullet keeps a raw pointer into heightfield.heights for as
+            // long as this shape lives -- safe here because that vector is
+            // owned by the shared_ptr in the entity's RigidBody component,
+            // which outlives the shape (removed together in remove_body()).
+            shape = impl_->arena.construct_with_base<btHeightfieldTerrainShape, btCollisionShape>(
+                    static_cast<int>(heightfield.width), static_cast<int>(heightfield.length),
+                    heightfield.heights->data(), heightfield.min_height, heightfield.max_height,
+                    /*upAxis=*/1, /*flipQuadEdges=*/false);
+            shape->setLocalScaling(btVector3{heightfield.cell_size_x, 1.0F, heightfield.cell_size_z});
+            break;
+        }
+        case Components::BodyShape::box:
+        default:
+            shape = impl_->arena.construct_with_base<btBoxShape, btCollisionShape>(to_bt(body.half_extents));
+            break;
+    }
 
     btTransform start_transform;
     start_transform.setIdentity();
@@ -276,6 +342,96 @@ auto PhysicsWorld::remove_body(entt::registry &registry, entt::entity entity) ->
     physics_body->shape->~btCollisionShape();
 
     registry.remove<Components::PhysicsBody>(entity);
+}
+
+auto PhysicsWorld::reserve_terrain_colliders(std::uint32_t count) -> void {
+    impl_->terrain_colliders.reserve(count);
+}
+
+auto PhysicsWorld::reserve_terrain_collider(TerrainColliderDesc const &desc) -> TerrainColliderHandle {
+    Impl::TerrainColliderSlot slot;
+    slot.heights.assign(static_cast<std::size_t>(desc.samples_x) * desc.samples_z, 0.0F);
+
+    // Bullet stores this data() pointer for the shape's lifetime -- see
+    // TerrainColliderSlot's comment. `desc.min_height/max_height` bound the
+    // shape's cached local AABB for good, regardless of what heights this
+    // slot is later rebound to (bind_terrain_collider only ever overwrites
+    // slot.heights in place, never reconstructs the shape).
+    slot.shape = impl_->arena.construct<btHeightfieldTerrainShape>(
+            static_cast<int>(desc.samples_x), static_cast<int>(desc.samples_z), slot.heights.data(),
+            desc.min_height, desc.max_height, /*upAxis=*/1, /*flipQuadEdges=*/false);
+    slot.shape->setLocalScaling(btVector3{desc.cell_size_x, 1.0F, desc.cell_size_z});
+
+    btTransform start_transform;
+    start_transform.setIdentity();
+
+    btRigidBody::btRigidBodyConstructionInfo construction_info{0.0F, nullptr, slot.shape, btVector3{0.0F, 0.0F, 0.0F}};
+    construction_info.m_startWorldTransform = start_transform;
+
+    slot.body = impl_->arena.construct<btRigidBody>(construction_info);
+
+    // Not entity-backed -- see TerrainColliderHandle's doc comment. Left
+    // null (rather than some sentinel entity value) purely so it's visibly
+    // not a real entity if ever inspected; ~Impl never actually reads this,
+    // since it tears terrain colliders down via `terrain_colliders`
+    // directly and removes them from `world` before its generic,
+    // user-pointer-keyed teardown loop runs (see ~Impl -- entt::entity{0}
+    // is a real, valid entity that also bit-casts to a null pointer, which
+    // is why that loop can't use a null check to tell the two apart).
+    slot.body->setUserPointer(nullptr);
+
+    auto const index = static_cast<std::uint32_t>(impl_->terrain_colliders.size());
+    impl_->terrain_colliders.push_back(std::move(slot));
+
+    return TerrainColliderHandle{.index = index};
+}
+
+auto PhysicsWorld::bind_terrain_collider(TerrainColliderHandle handle, glm::vec3 const &centre,
+                                         std::span<float const> heights) -> void {
+    if (!handle.valid() || handle.index >= impl_->terrain_colliders.size()) {
+        return;
+    }
+
+    auto &slot = impl_->terrain_colliders[handle.index];
+
+    if (heights.size() != slot.heights.size()) {
+        return; // sample count must match what this slot was reserved with
+    }
+
+    std::ranges::copy(heights, slot.heights.begin());
+
+    btTransform transform;
+    transform.setIdentity();
+    transform.setOrigin(to_bt(centre));
+    slot.body->setWorldTransform(transform);
+
+    // Remove-then-add rather than an in-place AABB refresh: a static body
+    // that already has contact manifolds against dynamic bodies can leave
+    // stale contacts behind if just teleported, and this makes Bullet
+    // clean the broadphase pair cache for us. Costs microseconds; this is
+    // called at most a couple of times per frame (see the terrain
+    // streaming plan's per-frame collider-update budget).
+    if (slot.active) {
+        impl_->world->removeRigidBody(slot.body);
+    }
+
+    impl_->world->addRigidBody(slot.body);
+    slot.active = true;
+}
+
+auto PhysicsWorld::unbind_terrain_collider(TerrainColliderHandle handle) -> void {
+    if (!handle.valid() || handle.index >= impl_->terrain_colliders.size()) {
+        return;
+    }
+
+    auto &slot = impl_->terrain_colliders[handle.index];
+
+    if (!slot.active) {
+        return;
+    }
+
+    impl_->world->removeRigidBody(slot.body);
+    slot.active = false;
 }
 
 auto PhysicsWorld::attach_debug_drawer(debug_draw::DebugRenderer &renderer) -> void {

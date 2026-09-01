@@ -81,7 +81,6 @@ namespace {
     };
 
 
-
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
         ZoneScopedNC("SubmitScene", tracy::Color::RoyalBlue);
 
@@ -141,6 +140,10 @@ namespace {
             }
         }
 
+        if (application.terrain) {
+            application.terrain->submit(*application.renderer);
+        }
+
         return {};
     }
 
@@ -190,6 +193,17 @@ namespace {
             }
 
             return false;
+        }
+
+        if (application.terrain) {
+            // Before submit_scene(): puts the vertex rewrite copy before any
+            // draw recorded into this command buffer, so the only hazard
+            // direction is write-then-read -- which GeometryArena::write's
+            // existing barrier already covers (see the terrain streaming
+            // plan). Also gives a chunk zero-frame residency latency
+            // instead of one.
+            application.terrain->process_ready(*application.renderer, frame->command_buffer,
+                                               application.active_scene()->physics_world.get());
         }
 
         auto frame_ok = true;

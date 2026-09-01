@@ -7,80 +7,42 @@
 #include "error_context.hxx"
 #include "forward.hxx"
 #include "geometry.hxx"
+#include "geometry_allocator.hxx"
 
-#include <bit>
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <format>
-#include <optional>
 #include <span>
 #include <string_view>
 #include <type_traits>
-
-enum class GeometryArenaErrorType : std::uint8_t {
-    invalid_argument,
-    unsupported_index_type,
-    out_of_memory,
-    size_overflow,
-    device_error,
-};
-
-struct GeometryArenaError {
-    GeometryArenaErrorType type = GeometryArenaErrorType::invalid_argument;
-
-    std::optional<ErrorCause> cause;
-};
-
-template<>
-struct std::formatter<GeometryArenaErrorType> : std::formatter<std::string_view> {
-    constexpr auto format(GeometryArenaErrorType error, std::format_context &context) const {
-
-        auto const name = [&]() constexpr -> std::string_view {
-            switch (error) {
-                case GeometryArenaErrorType::invalid_argument:
-                    return "invalid_argument";
-
-                case GeometryArenaErrorType::unsupported_index_type:
-                    return "unsupported_index_type";
-
-                case GeometryArenaErrorType::out_of_memory:
-                    return "out_of_memory";
-
-                case GeometryArenaErrorType::size_overflow:
-                    return "size_overflow";
-
-                case GeometryArenaErrorType::device_error:
-                    return "device_error";
-            }
-
-            return "unknown_geometry_arena_error";
-        }();
-
-        return std::formatter<std::string_view>::format(name, context);
-    }
-};
 
 struct GeometryArenaCreateInfo {
     VkDeviceSize capacity = 0;
     std::string_view debug_name = "geometry_arena";
 };
 
-struct GeometryArena {
-    GeometryArena() = default;
+// Backed by an Allocator satisfying GeometryAllocatorPolicy (see
+// geometry_allocator.hxx), which owns every offset decision; this class
+// owns the GPU buffers and the upload-then-copy-then-barrier mechanics.
+// `using GeometryArena = GeometryArenaT<BumpAllocator>` below is the type
+// every other file names -- swapping the allocator is a one-line change
+// here with zero call-site impact.
+template<GeometryAllocatorPolicy Allocator>
+struct GeometryArenaT {
+    GeometryArenaT() = default;
 
-    GeometryArena(GeometryArena const &) = delete;
-    auto operator=(GeometryArena const &) -> GeometryArena & = delete;
+    GeometryArenaT(GeometryArenaT const &) = delete;
+    auto operator=(GeometryArenaT const &) -> GeometryArenaT & = delete;
 
-    GeometryArena(GeometryArena &&) noexcept = default;
-    auto operator=(GeometryArena &&) noexcept -> GeometryArena & = default;
+    GeometryArenaT(GeometryArenaT &&) noexcept = default;
+    auto operator=(GeometryArenaT &&) noexcept -> GeometryArenaT & = default;
 
     auto destroy(VulkanContext &) -> void;
 
     [[nodiscard]]
     static auto create(VulkanContext &ctx, GeometryArenaCreateInfo const &create_info)
-            -> std::expected<GeometryArena, GeometryArenaError>;
+            -> std::expected<GeometryArenaT, GeometryArenaError>;
 
     [[nodiscard]]
     auto allocate_vertices(VkCommandBuffer command_buffer, std::span<const std::byte> data, std::uint32_t vertex_stride,
@@ -124,7 +86,7 @@ struct GeometryArena {
     auto allocate_mesh(VkCommandBuffer command_buffer, std::span<const Vertex> vertices, std::span<const Index> indices)
             -> std::expected<MeshGeometry, GeometryArenaError> {
 
-        auto const checkpoint = next_offset;
+        auto const checkpoint = allocator_.checkpoint();
 
         auto vertex_slice = allocate_vertices(command_buffer, vertices);
 
@@ -135,7 +97,7 @@ struct GeometryArena {
         auto index_slice = allocate_indices(command_buffer, indices);
 
         if (!index_slice) {
-            next_offset = checkpoint;
+            allocator_.rollback(checkpoint);
 
             return std::unexpected(index_slice.error());
         }
@@ -144,6 +106,29 @@ struct GeometryArena {
                 .vertices = *vertex_slice,
                 .indices = *index_slice,
         };
+    }
+
+    // Overwrites an already-allocated slice in place -- `data` must be
+    // exactly `slice.size` bytes, and this never touches allocator state
+    // (no allocate/deallocate). The caller owns the in-flight discipline:
+    // the GPU must be done reading whatever was last submitted against this
+    // range (frames_in_flight frames since its last use in a draw), and
+    // this must be recorded before any draw in `command_buffer` that reads
+    // it -- the barrier this records is write-after-write/read, not the
+    // other direction. See TerrainSlotPool::tick_retirement() for the
+    // deferred-release discipline this depends on.
+    //
+    // Safe against staging-buffer aliasing only because `upload_buffer` is
+    // currently a full 1:1 mirror of the device buffer (see create()) --
+    // every slice has a dedicated staging offset. If that ever changes to a
+    // rotating ring (docs/engine_review_followups.md), a rewrite through a
+    // reused ring slot needs its own in-flight deferral on the staging side
+    // too.
+    [[nodiscard]]
+    auto rewrite_slice(VkCommandBuffer command_buffer, GeometrySlice const &slice, std::span<const std::byte> data)
+            -> std::expected<void, GeometryArenaError> {
+
+        return write(command_buffer, slice, data);
     }
 
     [[nodiscard]]
@@ -161,21 +146,18 @@ struct GeometryArena {
     [[nodiscard]]
     auto used_size() const noexcept -> VkDeviceSize {
 
-        return next_offset;
+        return allocator_.used_size();
     }
 
     [[nodiscard]]
     auto remaining_size() const noexcept -> VkDeviceSize {
 
-        return capacity - next_offset;
+        return allocator_.capacity() - allocator_.used_size();
     }
 
     auto bindable_buffer() const -> VkBuffer { return buffer.buffer; }
 
 private:
-    [[nodiscard]]
-    auto allocate_bytes(VkDeviceSize size, VkDeviceSize alignment) -> std::expected<GeometrySlice, GeometryArenaError>;
-
     [[nodiscard]]
     auto write(VkCommandBuffer command_buffer, GeometrySlice const &slice, std::span<const std::byte> data)
             -> std::expected<void, GeometryArenaError>;
@@ -183,6 +165,11 @@ private:
     Buffer upload_buffer{};
     Buffer buffer{};
 
-    VkDeviceSize capacity = 0;
-    VkDeviceSize next_offset = 0;
+    Allocator allocator_{};
 };
+
+// Default backing allocator: bump, never frees -- identical behavior to
+// this class before the allocator policy was factored out. See
+// geometry_allocator.hxx for FreeListAllocator, the streaming-capable
+// alternative that can be substituted here with no other call-site change.
+using GeometryArena = GeometryArenaT<BumpAllocator>;

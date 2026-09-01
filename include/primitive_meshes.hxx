@@ -11,6 +11,12 @@ struct PrimitiveMeshData {
     std::vector<std::uint32_t> indices;
 };
 
+// Wraps a generated primitive mesh into the single-mesh/single-node
+// ModelCpuData shape Renderer::create_model_from_cpu_data expects. Shared by
+// every procedural model -- the engine primitives below (via
+// engine_models.cxx) and terrain (terrain_mesh.hxx).
+[[nodiscard]] auto to_model_cpu_data(PrimitiveMeshData mesh) -> ModelCpuData;
+
 // Procedurally generated engine primitives. These share ModelVertex/
 // generate_tangents with the glTF importer, so they go through the exact
 // same GPU upload and shading path as imported meshes (see engine_models.hxx).

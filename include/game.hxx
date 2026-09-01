@@ -2,8 +2,11 @@
 
 #include <glm/mat4x4.hpp>
 
+#include <optional>
+
 #include "engine_models.hxx"
 #include "input_events.hxx"
+#include "terrain_world.hxx"
 
 class Scene;
 struct Renderer;
@@ -56,6 +59,19 @@ public:
     // Optional game HUD -- drawn separately from the engine's own debug/editor
     // ImGui panels (Application::on_ui()).
     virtual auto on_ui() -> void {}
+
+    // Opts into engine-managed streaming terrain (see TerrainWorld): called
+    // once from Application::on_startup(), after on_populate(), on the
+    // render thread with a live one-time command buffer already open (so
+    // implementations needing a MaterialHandle can create one against
+    // `renderer` from inside on_populate() and pass it through here). A
+    // game with no streaming terrain -- or one that builds its own fixed
+    // terrain, as the pre-streaming code did -- leaves this at the default
+    // nullopt, and Application never creates a TerrainWorld.
+    [[nodiscard]] virtual auto terrain_create_info(Renderer &renderer) -> std::optional<TerrainWorldCreateInfo> {
+        (void) renderer;
+        return std::nullopt;
+    }
 
     [[nodiscard]] virtual auto camera(Scene const &scene, float aspect_ratio) const -> CameraParams = 0;
 };

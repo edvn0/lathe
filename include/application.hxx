@@ -11,6 +11,7 @@
 #include "scene.hxx"
 #include "shader_hot_reload_watcher.hxx"
 #include "terminal_widget.hxx"
+#include "terrain_world.hxx"
 
 struct ScrollingBuffer {
     std::int32_t max_size;
@@ -70,6 +71,10 @@ struct Application {
     auto stop() -> void;
 
     EngineModels engine_models{};
+
+    // Created in on_startup() if `game->terrain_create_info()` returns a
+    // value; null for games with no streaming terrain. See TerrainWorld.
+    std::unique_ptr<TerrainWorld> terrain;
 
     // Seconds since startup -- forwarded to UBO.time each frame so the
     // wind shader (wind.slang) has something to animate against.

@@ -5,9 +5,12 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <numbers>
+#include <optional>
 #include <random>
 #include <ranges>
+#include <string>
 
 #include <GLFW/glfw3.h>
 #include <glm/ext/matrix_transform.hpp>
@@ -18,8 +21,10 @@
 #include "error_describe.hxx"
 #include "logger.hxx"
 #include "physics_world.hxx"
+#include "primitive_meshes.hxx"
 #include "renderer.hxx"
 #include "scene.hxx"
+#include "terrain_mesh.hxx"
 
 namespace {
 
@@ -120,116 +125,37 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     player.emplace<Components::Model>(Components::Model{.model = engine_models.capsule});
     player_entity_ = player;
 
-    auto const helmet_model = load_or_fallback("assets/models/damaged_helmet/DamagedHelmet.gltf");
     cube_model_ = load_or_fallback("assets/models/test_cube.glb");
 
-    constexpr auto house_position = glm::vec3{40.0F, 10.0F, 10.0F};
-    auto const house_transform = glm::translate(glm::mat4{1.0F}, house_position);
-
-    auto house_entity = Entity{&scene, "house"};
-    house_model_ = load_or_fallback("assets/models/scene.glb", house_entity, house_transform);
-
-    house_entity.emplace<Components::Transform>(Components::Transform{.position = house_position});
-    house_entity.emplace<Components::Model>(Components::Model{.model = house_model_});
-    house_entity.emplace<Components::RigidBody>(
-            Components::RigidBody::from_model_bounds(renderer.model_bounds(house_model_).value()));
-
-    tree_model_ = load_or_fallback("assets/models/tree.glb");
-
-    auto tree_entity = Entity{&scene, "tree"};
-    tree_entity.emplace<Components::Transform>(Components::Transform{.position = glm::vec3{20.0F, 0.0F, 20.0F}});
-    tree_entity.emplace<Components::Model>(Components::Model{.model = tree_model_});
+    auto const cube_bounds = renderer.model_bounds(cube_model_);
+    cube_half_extents_ = cube_bounds.has_value() ? (cube_bounds->second - cube_bounds->first) * 0.5F : glm::vec3{0.5F};
 
     std::random_device r;
     std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
     std::mt19937 eng(seed);
 
-
-    std::uniform_real_distribution<float> position_dist(-20.0F, 20.0F);
-    std::uniform_real_distribution<float> rotation_dist(0.0F, 1.0F);
-
-    auto random_quat = [&]() -> glm::quat {
-        const float u1 = rotation_dist(eng);
-        const float u2 = rotation_dist(eng);
-        const float u3 = rotation_dist(eng);
-
-        const float a = std::sqrt(1.0F - u1);
-
-        const float b = std::sqrt(u1);
-
-        const float theta1 = 2.0F * std::numbers::pi_v<float> * u2;
-        const float theta2 = 2.0F * std::numbers::pi_v<float> * u3;
-
-
-        return glm::quat{
-                b * std::cos(theta2), // w
-                a * std::sin(theta1), // x
-                a * std::cos(theta1), // y
-                b * std::sin(theta2), // z
-        };
+    // Terrain generation parameters, kept around for the rest of on_populate
+    // so houses/trees/grass below can sample the same noise field and sit on
+    // the actual generated surface instead of a flat plane. The actual mesh
+    // is no longer generated here -- see terrain_create_info(), which hands
+    // these same params to a streaming TerrainWorld created once on_populate()
+    // (and this material) are ready.
+    terrain_params_ = TerrainParams{
+            .samples_x = 129,
+            .samples_z = 129,
+            .world_width = 80.0F,
+            .world_depth = 80.0F,
+            .amplitude = 1.6F,
+            .frequency = 0.045F,
+            .octaves = 4,
+            .lacunarity = 2.0F,
+            .persistence = 0.5F,
+            .seed = 1337U,
+            .uv_scale = 0.08F,
+            .height_range_min = -1.6F,
+            .height_range_max = 1.6F,
     };
-
-
-    const auto count = 10;
-    auto const bounds = renderer.model_bounds(helmet_model);
-
-    for (auto i = 0; i < count * count * count; ++i) {
-        auto entity = GeneratedEntity{&scene, "helmet_{}_{}_{}", i, i % 3, i / 3};
-
-        entity.emplace<Components::Transform>(Components::Transform{
-                .position =
-                        glm::vec3{
-                                5.0F * position_dist(eng),
-                                5.0F * position_dist(eng),
-                                5.0F * position_dist(eng),
-                        },
-                .rotation = random_quat(),
-        });
-
-        entity.emplace<Components::Model>(Components::Model{.model = helmet_model});
-
-        if (bounds.has_value()) {
-            auto const [min, max] = *bounds;
-            auto const half_extents = (max - min) * 0.5F;
-
-            entity.emplace<Components::RigidBody>(Components::RigidBody{.half_extents = half_extents});
-        }
-    }
-
-    constexpr auto physics_grid = 5;
-
-    auto const cube_bounds = renderer.model_bounds(cube_model_);
-    cube_half_extents_ = cube_bounds.has_value() ? (cube_bounds->second - cube_bounds->first) * 0.5F : glm::vec3{0.5F};
-    auto const cube_diameter = std::max({cube_half_extents_.x, cube_half_extents_.y, cube_half_extents_.z}) * 2.0F;
-    auto const spacing = cube_diameter * 1.3F;
-
-    for (auto i = 0; i < physics_grid; i++) {
-        for (auto j = 0; j < physics_grid; j++) {
-            for (auto k = 0; k < physics_grid; k++) {
-                auto const entity = GeneratedEntity{&scene, "physics_cube_{}_{}_{}", i, j, k};
-                auto const position = glm::vec3{
-                        static_cast<float>(i - physics_grid / 2) * spacing,
-                        5.0F + static_cast<float>(j) * spacing,
-                        static_cast<float>(k - physics_grid / 2) * spacing,
-                };
-                entity.emplace<Components::Transform>(Components::Transform{.position = position});
-                entity.emplace<Components::Model>(Components::Model{.model = cube_model_});
-                entity.emplace<Components::RigidBody>(Components::RigidBody{.half_extents = cube_half_extents_});
-            }
-        }
-    }
-
-
-    constexpr auto floor_half_extents = glm::vec3{40.0F, 0.5F, 40.0F};
-
-    auto const floor_entity = GeneratedEntity{&scene, "floor"};
-    floor_entity.emplace<Components::Transform>(Components::Transform{
-            .position = glm::vec3{0.0F, scene.physics_settings.ground_y - floor_half_extents.y, 0.0F},
-            .scale = floor_half_extents / cube_half_extents_,
-    });
-    floor_entity.emplace<Components::Model>(Components::Model{.model = cube_model_});
-    floor_entity.emplace<Components::RigidBody>(
-            Components::RigidBody{.half_extents = floor_half_extents, .is_static = true});
+    terrain_ground_y_ = scene.physics_settings.ground_y;
 
     auto &images = renderer.image_storage();
     auto &samplers = renderer.sampler_storage();
@@ -249,7 +175,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             streamer.request(images, "assets/textures/dirt/dirt_rough_1k.exr", TextureRole::generic,
                              images.metallic_roughness(), "dirt.roughness");
 
-    auto const floor_material = renderer.create_material(MaterialCreateInfo{
+    auto const terrain_material = renderer.create_material(MaterialCreateInfo{
             .base_colour_factor = glm::vec4{1.0F, 1.0F, 1.0F, 1.0F},
             .base_colour_texture = dirt_albedo_index,
             .normal_texture = dirt_normal_index,
@@ -259,12 +185,153 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .sampler = samplers.linear_repeat(),
     });
 
-    if (floor_material) {
-        floor_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{*floor_material});
+    if (terrain_material) {
+        terrain_material_ = *terrain_material;
     } else {
-        error("Could not create floor material override: {}", describe(floor_material.error()));
+        error("Could not create terrain material: {}", describe(terrain_material.error()));
     }
 
+    constexpr auto village_radius = 14.0F;
+
+    // Houses and trees are built from the engine's box/sphere primitives
+    // rather than external assets -- walls, split doorways, overhanging
+    // roofs, and chimneys give GTAO real corners and eaves to shade, which a
+    // flat floor and scattered cubes did not.
+    auto const flat_material = [&](glm::vec3 const &colour) -> MaterialHandle {
+        auto material = renderer.create_material(MaterialCreateInfo{
+                .base_colour_factor = glm::vec4{colour, 1.0F},
+                .base_colour_texture = images.white(),
+                .normal_texture = images.flat_normal(),
+                .metallic_roughness_texture = images.metallic_roughness(),
+                .occlusion_texture = images.occlusion(),
+                .emissive_texture = images.emissive(),
+                .sampler = samplers.linear_repeat(),
+        });
+
+        if (!material) {
+            error("Could not create material: {}", describe(material.error()));
+            return MaterialHandle{};
+        }
+        return material.value();
+    };
+
+    auto const add_static_box = [&](std::string const &name, glm::vec3 const &position, glm::vec3 const &half_extents,
+                                    MaterialHandle material) {
+        auto entity = GeneratedEntity{&scene, "{}", name};
+        entity.emplace<Components::Transform>(Components::Transform{
+                .position = position,
+                .scale = half_extents / cube_half_extents_,
+        });
+        entity.emplace<Components::Model>(Components::Model{.model = cube_model_});
+        entity.emplace<Components::RigidBody>(Components::RigidBody{.half_extents = half_extents, .is_static = true});
+        if (material.valid()) {
+            entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{material});
+        }
+    };
+
+    struct HouseStyle {
+        glm::vec3 position;
+        float width;
+        float depth;
+        float wall_height;
+        glm::vec3 wall_colour;
+        glm::vec3 roof_colour;
+    };
+
+    constexpr std::array<HouseStyle, 4> house_styles{{
+            {glm::vec3{-10.0F, 0.0F, -8.0F}, 6.0F, 5.0F, 3.0F, glm::vec3{0.85F, 0.78F, 0.65F},
+             glm::vec3{0.45F, 0.2F, 0.18F}},
+            {glm::vec3{9.0F, 0.0F, -10.0F}, 5.0F, 5.0F, 2.6F, glm::vec3{0.75F, 0.72F, 0.68F},
+             glm::vec3{0.3F, 0.3F, 0.32F}},
+            {glm::vec3{10.0F, 0.0F, 9.0F}, 7.0F, 5.5F, 3.4F, glm::vec3{0.88F, 0.6F, 0.45F},
+             glm::vec3{0.25F, 0.22F, 0.2F}},
+            {glm::vec3{-9.0F, 0.0F, 10.0F}, 5.5F, 5.0F, 3.0F, glm::vec3{0.7F, 0.68F, 0.6F},
+             glm::vec3{0.4F, 0.35F, 0.3F}},
+    }};
+
+    for (auto house_index = 0; house_index < static_cast<int>(house_styles.size()); ++house_index) {
+        auto const &style = house_styles[house_index];
+        auto const base_y = scene.physics_settings.ground_y +
+                            sample_terrain_height(terrain_params_, style.position.x, style.position.z);
+        auto const base = glm::vec3{style.position.x, base_y, style.position.z};
+
+        auto const wall_material = flat_material(style.wall_colour);
+        auto const roof_material = flat_material(style.roof_colour);
+
+        constexpr float wall_thickness = 0.3F;
+        constexpr float door_width = 1.1F;
+        constexpr float roof_overhang = 0.6F;
+        constexpr float roof_thickness = 0.25F;
+
+        auto const half_w = style.width * 0.5F;
+        auto const half_d = style.depth * 0.5F;
+        auto const half_h = style.wall_height * 0.5F;
+
+        auto const part_name = [&](char const *part) { return std::format("house_{}_{}", house_index, part); };
+
+        // Back and side walls span the full footprint; the front wall is
+        // split in two to leave a doorway gap between them.
+        add_static_box(part_name("wall_back"), base + glm::vec3{0.0F, half_h, -half_d},
+                        {half_w, half_h, wall_thickness * 0.5F}, wall_material);
+        add_static_box(part_name("wall_left"), base + glm::vec3{-half_w, half_h, 0.0F},
+                        {wall_thickness * 0.5F, half_h, half_d}, wall_material);
+        add_static_box(part_name("wall_right"), base + glm::vec3{half_w, half_h, 0.0F},
+                        {wall_thickness * 0.5F, half_h, half_d}, wall_material);
+
+        auto const front_segment_width = (style.width - door_width) * 0.5F;
+        auto const front_segment_offset = (door_width + front_segment_width) * 0.5F;
+        add_static_box(part_name("wall_front_left"), base + glm::vec3{-front_segment_offset, half_h, half_d},
+                        {front_segment_width * 0.5F, half_h, wall_thickness * 0.5F}, wall_material);
+        add_static_box(part_name("wall_front_right"), base + glm::vec3{front_segment_offset, half_h, half_d},
+                        {front_segment_width * 0.5F, half_h, wall_thickness * 0.5F}, wall_material);
+
+        add_static_box(part_name("roof"), base + glm::vec3{0.0F, style.wall_height + roof_thickness * 0.5F, 0.0F},
+                        {half_w + roof_overhang, roof_thickness * 0.5F, half_d + roof_overhang}, roof_material);
+
+        add_static_box(part_name("chimney"),
+                        base + glm::vec3{half_w * 0.5F, style.wall_height + roof_thickness + 0.4F, -half_d * 0.5F},
+                        {0.3F, 0.4F, 0.3F}, roof_material);
+    }
+
+    {
+        auto const trunk_material = flat_material(glm::vec3{0.35F, 0.24F, 0.15F});
+        auto const canopy_material = flat_material(glm::vec3{0.22F, 0.45F, 0.2F});
+        constexpr float sphere_base_radius = 0.5F;
+
+        struct TreeStyle {
+            glm::vec3 position;
+            float trunk_height;
+            float trunk_radius;
+            float canopy_radius;
+        };
+
+        constexpr std::array<TreeStyle, 3> tree_styles{{
+                {glm::vec3{0.0F, 0.0F, -13.0F}, 2.2F, 0.2F, 1.4F},
+                {glm::vec3{-13.0F, 0.0F, 1.0F}, 2.6F, 0.22F, 1.6F},
+                {glm::vec3{13.0F, 0.0F, -1.5F}, 2.0F, 0.18F, 1.2F},
+        }};
+
+        for (auto tree_index = 0; tree_index < static_cast<int>(tree_styles.size()); ++tree_index) {
+            auto const &style = tree_styles[tree_index];
+            auto const base_y = scene.physics_settings.ground_y +
+                                sample_terrain_height(terrain_params_, style.position.x, style.position.z);
+            auto const base = glm::vec3{style.position.x, base_y, style.position.z};
+
+            add_static_box(std::format("tree_{}_trunk", tree_index),
+                            base + glm::vec3{0.0F, style.trunk_height * 0.5F, 0.0F},
+                            {style.trunk_radius, style.trunk_height * 0.5F, style.trunk_radius}, trunk_material);
+
+            auto canopy_entity = GeneratedEntity{&scene, "tree_{}_canopy", tree_index};
+            canopy_entity.emplace<Components::Transform>(Components::Transform{
+                    .position = base + glm::vec3{0.0F, style.trunk_height + style.canopy_radius * 0.7F, 0.0F},
+                    .scale = glm::vec3{style.canopy_radius / sphere_base_radius},
+            });
+            canopy_entity.emplace<Components::Model>(Components::Model{.model = engine_models.sphere});
+            if (canopy_material.valid()) {
+                canopy_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{canopy_material});
+            }
+        }
+    }
 
     {
         constexpr std::array<glm::vec3, 4> point_light_colours{
@@ -276,11 +343,10 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
         for (std::size_t i = 0; i < point_light_colours.size(); ++i) {
             auto const angle = (static_cast<float>(i) / static_cast<float>(point_light_colours.size())) * 6.2831853F;
-            auto const radius = spacing * static_cast<float>(physics_grid) * 0.5F;
 
             auto const light_entity = GeneratedEntity{&scene, "point_light_{}", i};
             light_entity.emplace<Components::Transform>(Components::Transform{
-                    .position = glm::vec3{radius * std::cos(angle), 12.0F, radius * std::sin(angle)},
+                    .position = glm::vec3{village_radius * std::cos(angle), 12.0F, village_radius * std::sin(angle)},
             });
             light_entity.emplace<Components::PointLight>(Components::PointLight{
                     .colour = point_light_colours[i],
@@ -321,8 +387,8 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     } else {
         grass_material_ = *grass_material_result;
 
-        constexpr auto grass_field_size = 30.0F;
-        constexpr auto grass_spacing = 0.1F;
+        constexpr auto grass_field_size = 20.0F;
+        constexpr auto grass_spacing = 0.15F;
         constexpr auto grass_cells = static_cast<int>(grass_field_size / grass_spacing);
 
         std::uniform_real_distribution<float> jitter(-grass_spacing * 0.4F, grass_spacing * 0.4F);
@@ -340,8 +406,10 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                 auto const grass_entity = GeneratedEntity{&scene, "grass_{}_{}", cell_x, cell_z};
                 auto const grass_scale = scale(eng);
 
+                auto const grass_y = scene.physics_settings.ground_y + sample_terrain_height(terrain_params_, x, z);
+
                 grass_entity.emplace<Components::Transform>(Components::Transform{
-                        .position = glm::vec3{x, scene.physics_settings.ground_y, z},
+                        .position = glm::vec3{x, grass_y, z},
                         .rotation = glm::angleAxis(yaw(eng), glm::vec3{0.0F, 1.0F, 0.0F}),
                         .scale = glm::vec3{grass_scale},
 
@@ -382,8 +450,18 @@ auto BasicGame::on_update(Scene &scene, float delta_time) -> void {
                                        ? glm::length(desired_velocity) / player_controller_.move_speed()
                                        : 0.0F;
 
+    auto const occlusion_query = [&physics_world, player = player_entity_](
+                                          glm::vec3 const &origin, glm::vec3 const &direction,
+                                          float max_distance) -> std::optional<float> {
+        auto const hit = physics_world.raycast(origin, direction, max_distance);
+        if (hit && hit->entity != player) {
+            return hit->distance;
+        }
+        return std::nullopt;
+    };
+
     player_camera_.update(transform.position, player_controller_.yaw_degrees(), player_controller_.pitch_degrees(),
-                          speed_factor, delta_time);
+                          speed_factor, delta_time, occlusion_query);
 }
 
 auto BasicGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) -> void {
@@ -418,6 +496,16 @@ auto BasicGame::on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent co
             .near_clip = player_camera_.near_clip(),
             .far_clip = player_camera_.far_clip(),
             .vertical_fov_radians = glm::radians(player_camera_.field_of_view_degrees()),
+    };
+}
+
+[[nodiscard]] auto BasicGame::terrain_create_info(Renderer & /*renderer*/) -> std::optional<TerrainWorldCreateInfo> {
+    // terrain_params_/terrain_material_/terrain_ground_y_ are set in
+    // on_populate(), which always runs first (see Application::on_startup).
+    return TerrainWorldCreateInfo{
+            .params = terrain_params_,
+            .material = terrain_material_,
+            .ground_y = terrain_ground_y_,
     };
 }
 

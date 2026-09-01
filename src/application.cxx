@@ -118,7 +118,19 @@ Application::Application(VulkanContext &ctx) noexcept :
     timing_buffers.fill(ScrollingBuffer{600});
 }
 
-Application::~Application() { shader_watcher_.stop(); }
+Application::~Application() {
+    // Not a strict safety requirement the way it is for
+    // texture_streamer_/model_streamer_ (a chunk-generation task only
+    // captures a shared_ptr<TerrainField const>, never Renderer storages,
+    // so it can't outlive-and-touch anything this destructor frees) --
+    // this just avoids leaving background work running for content nobody
+    // will use once shutdown has been decided.
+    if (terrain) {
+        terrain->wait_all();
+    }
+
+    shader_watcher_.stop();
+}
 
 
 auto Application::on_ui() -> void {
@@ -298,11 +310,27 @@ auto Application::play() -> void {
     active_scene()->on_scene_start();
     active_scene()->attach_debug_renderer(*debug_renderer);
 
+    // PhysicsWorld is recreated wholesale per run (on_scene_start() above
+    // just made a fresh one) -- every terrain collider handle TerrainWorld
+    // held from a previous run belonged to a PhysicsWorld that's already
+    // gone. GPU slots are untouched; colliders rebind lazily under
+    // TerrainWorld's normal per-frame budget.
+    if (terrain) {
+        terrain->on_physics_world_changed(active_scene()->physics_world.get());
+    }
+
     glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     has_last_mouse_position = false;
 }
 
 auto Application::stop() -> void {
+    // Before on_scene_stop() tears down the runtime PhysicsWorld, so
+    // TerrainWorld never holds a handle into an instance that's already
+    // been destroyed.
+    if (terrain) {
+        terrain->on_physics_world_changed(nullptr);
+    }
+
     active_scene()->detach_debug_renderer();
     debug_renderer->clear_lines();
     active_scene()->on_scene_stop();
@@ -316,6 +344,27 @@ auto Application::stop() -> void {
 
 auto Application::update(float delta_time) -> void {
     ZoneScopedNC("ApplicationUpdate", tracy::Color::Firebrick);
+
+    // Residency selection only (no GPU work -- see TerrainWorld::update) --
+    // runs regardless of is_playing, so terrain streams in the editor too.
+    // Keyed off the player entity's own Transform rather than the follow
+    // camera: PlayerCamera springs and gets pulled by wall occlusion, which
+    // would otherwise jitter which chunks are considered resident.
+    if (terrain) {
+        auto camera_xz = glm::vec2{camera.position().x, camera.position().z};
+
+        if (is_playing) {
+            auto &registry = active_scene()->get_registry();
+            auto view = registry.view<Components::Transform const, Components::PlayerTag const>();
+
+            for (auto &&[entity, transform]: view.each()) {
+                camera_xz = glm::vec2{transform.position.x, transform.position.z};
+                break;
+            }
+        }
+
+        terrain->update(camera_xz);
+    }
 
     if (!is_playing) {
         return;
@@ -354,6 +403,27 @@ auto Application::on_startup() -> void {
         engine_models = *models;
 
         game->on_populate(*editor_scene, *renderer, engine_models);
+
+        if (auto terrain_info = game->terrain_create_info(*renderer)) {
+            // create_engine_models() above already went through this same
+            // one-time-submit path internally (via create_model_from_cpu_data),
+            // so nesting another one here -- still on the render thread,
+            // still serialized through queue_render_thread_event -- is safe.
+            renderer->context().one_time_submit([this, info = *terrain_info](VkCommandBuffer command_buffer) {
+                auto world = TerrainWorld::create(*renderer, command_buffer, info);
+
+                if (!world) {
+                    error("Fatal: could not create TerrainWorld: {}", world.error().message);
+
+                    context.running.store(false, std::memory_order_release);
+                    glfwPostEmptyEvent();
+
+                    return;
+                }
+
+                terrain = std::make_unique<TerrainWorld>(std::move(*world));
+            });
+        }
     });
 }
 
