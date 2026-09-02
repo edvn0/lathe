@@ -89,6 +89,16 @@ struct AoSettings {
 };
 
 
+// Exponential distance fog, applied in forward_geom.slang after shading.
+// Disabled by default -- opt in via Application::on_ui() or by calling
+// Renderer::set_fog_settings() directly.
+struct FogSettings {
+    bool enabled = false;
+    glm::vec3 colour{0.5F};
+    float extinction = 0.003F;
+    float inscattering = 1.0F;
+};
+
 struct StageTimings {
     std::array<float, stage_count> milliseconds{};
     bool valid = false;
@@ -158,7 +168,7 @@ struct UBO {
 
     glm::vec3 camera_position;
     glm::vec3 fog_colour;
-    float fog_extinction = 0.003F;
+    float fog_extinction = 0.0F; // 0 = disabled; see Renderer::set_fog_settings
     float fog_inscattering = 1.0F;
 
     // ---- PSSM cascades ----
@@ -394,6 +404,9 @@ struct Renderer {
     // ambient lighting until one exists.
     auto set_ambient_intensity(float intensity) noexcept -> void { ambient_intensity_ = intensity; }
     [[nodiscard]] auto ambient_intensity() const noexcept -> float { return ambient_intensity_; }
+
+    auto set_fog_settings(FogSettings const &settings) noexcept -> void { fog_settings_ = settings; }
+    [[nodiscard]] auto fog_settings() const noexcept -> FogSettings const & { return fog_settings_; }
 
     static_assert(shadow_cascade_count == 4, "Renderer shadow-cache defaults assume four cascades");
 
@@ -840,6 +853,7 @@ private:
     DirectionalLight light_{};
     ShadowSettings shadow_settings_{};
     float ambient_intensity_ = 0.15F;
+    FogSettings fog_settings_{};
 
     std::vector<PointLight> point_light_submissions_;
     std::vector<SpotLight> spot_light_submissions_;

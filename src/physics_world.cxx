@@ -420,7 +420,8 @@ auto PhysicsWorld::bind_terrain_collider(TerrainColliderHandle handle, glm::vec3
                                                                                   : col_obj_0_wrap->getCollisionObject();
 
                 if (auto *rigid_body = btRigidBody::upcast(other);
-                    rigid_body != nullptr && !rigid_body->isStaticObject()) {
+                    rigid_body != nullptr && !rigid_body->isStaticObject() &&
+                    std::ranges::find(bodies, rigid_body) == bodies.end()) {
                     bodies.push_back(const_cast<btRigidBody *>(rigid_body));
                 }
 

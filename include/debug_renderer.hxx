@@ -30,6 +30,12 @@ namespace debug_draw {
 
         auto clear_lines() -> void;
 
+        // Physics collider wireframes drawn via PhysicsWorld's Bullet debug
+        // drawer -- disabled by default, opt in via Application::on_ui().
+        auto set_physics_debug_enabled(bool enabled) noexcept -> void;
+        [[nodiscard]]
+        auto physics_debug_enabled() const noexcept -> bool;
+
         [[nodiscard]]
         auto bullet_debug_draw() noexcept -> btIDebugDraw *;
 

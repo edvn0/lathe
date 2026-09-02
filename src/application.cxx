@@ -241,6 +241,11 @@ auto Application::on_ui() -> void {
             renderer->set_debug_draw_light_icons(draw_light_icons);
         }
 
+        bool draw_physics_debug = debug_renderer->physics_debug_enabled();
+        if (ImGui::Checkbox("Draw physics colliders", &draw_physics_debug)) {
+            debug_renderer->set_physics_debug_enabled(draw_physics_debug);
+        }
+
         auto light = renderer->directional_light();
         auto shadows = renderer->shadow_settings();
         bool dirty = false;
@@ -278,6 +283,17 @@ auto Application::on_ui() -> void {
 
             renderer->set_directional_light(light);
             renderer->set_shadow_settings(shadows);
+        }
+
+        ImGui::SeparatorText("Fog");
+        auto fog = renderer->fog_settings();
+        bool fog_dirty = false;
+        fog_dirty |= ImGui::Checkbox("Enabled", &fog.enabled);
+        fog_dirty |= ImGui::ColorEdit3("Fog colour", &fog.colour.x);
+        fog_dirty |= ImGui::SliderFloat("Fog extinction", &fog.extinction, 0.0F, 0.02F, "%.4f");
+        fog_dirty |= ImGui::SliderFloat("Fog inscattering", &fog.inscattering, 0.0F, 2.0F);
+        if (fog_dirty) {
+            renderer->set_fog_settings(fog);
         }
 
         ImGui::SeparatorText("Punctual lights");

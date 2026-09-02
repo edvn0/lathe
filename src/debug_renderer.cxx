@@ -143,7 +143,7 @@ namespace debug_draw {
 
         private:
             std::vector<Vertex> &pending_lines_;
-            int debug_mode_ = DBG_DrawWireframe;
+            int debug_mode_ = DBG_NoDebug;
         };
 
     } // namespace
@@ -312,5 +312,13 @@ namespace debug_draw {
     }
 
     auto DebugRenderer::clear_lines() -> void { impl_->bullet_debug_draw.clearLines(); }
+
+    auto DebugRenderer::set_physics_debug_enabled(bool enabled) noexcept -> void {
+        impl_->bullet_debug_draw.setDebugMode(enabled ? btIDebugDraw::DBG_DrawWireframe : btIDebugDraw::DBG_NoDebug);
+    }
+
+    auto DebugRenderer::physics_debug_enabled() const noexcept -> bool {
+        return impl_->bullet_debug_draw.getDebugMode() != btIDebugDraw::DBG_NoDebug;
+    }
 
 } // namespace debug_draw

@@ -178,8 +178,8 @@ namespace {
 
     [[nodiscard]] auto nearly_equal(glm::mat4 const &lhs, glm::mat4 const &rhs, float epsilon = 1e-5F) noexcept
             -> bool {
-        for (std::size_t column = 0; column < 4; ++column) {
-            for (std::size_t row = 0; row < 4; ++row) {
+        for (auto column = 0; column < glm::mat4::length(); ++column) {
+            for (auto row = 0; row < glm::mat4::length(); ++row) {
                 if (!nearly_equal(lhs[column][row], rhs[column][row], epsilon)) {
                     return false;
                 }
@@ -2278,7 +2278,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .projection = projection,
             .inverse_projection = glm::inverse(projection),
             .camera_position = camera_position,
-            .fog_colour = glm::vec3{0.5F},
+            .fog_colour = fog_settings_.colour,
+            .fog_extinction = fog_settings_.enabled ? fog_settings_.extinction : 0.0F,
+            .fog_inscattering = fog_settings_.inscattering,
             .cascade_view_projection = resolved_view_projection,
             .cascade_split_far = glm::make_vec4(resolved_split_far.data()),
             .cascade_texel_world = glm::make_vec4(resolved_texel_world.data()),
@@ -2700,28 +2702,29 @@ template<typename OverlayPolicy>
     }
 
     auto ao_output = [&]() -> std::expected<std::optional<render_pass::AoTextureIndex>, RendererError> {
-        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Ambient Occlusion", tracy::Color::DarkSlateGray);
+        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Ambient Occlusion",
+                     tracy::Color::DarkSlateGray);
 
-        return render_pass::ambient_occlusion(
-                pass_context, render_pass::AmbientOcclusionInfo{
-                                      .enabled = ao_settings_.enabled,
-                                      .depth = *resolved_depth,
-                                      .raw_ao = *ao_raw,
-                                      .denoised_ao = *ao_denoised,
-                                      .extent = target_extent,
-                                      .depth_texture_index = resolved_depth_handle.index,
-                                      .raw_ao_texture_index = frame.ao_target.raw.index,
-                                      .denoised_ao_texture_index = frame.ao_target.denoised.index,
-                                      .point_sampler_index = sampler_storage_.nearest_clamp().index,
-                                      .ubo_address = ubos_[frame_index].device_address,
-                                      .gtao_pipeline = gtao_pipeline_,
-                                      .denoise_pipeline = gtao_denoise_pipeline_,
-                                      .radius_view = ao_settings_.radius,
-                                      .falloff_range = ao_settings_.falloff_range,
-                                      .slice_count = ao_settings_.slice_count,
-                                      .step_count = ao_settings_.step_count,
-                                      .denoise_depth_sigma = ao_settings_.denoise_depth_sigma,
-                              });
+        return render_pass::ambient_occlusion(pass_context,
+                                              render_pass::AmbientOcclusionInfo{
+                                                      .enabled = ao_settings_.enabled,
+                                                      .depth = *resolved_depth,
+                                                      .raw_ao = *ao_raw,
+                                                      .denoised_ao = *ao_denoised,
+                                                      .extent = target_extent,
+                                                      .depth_texture_index = resolved_depth_handle.index,
+                                                      .raw_ao_texture_index = frame.ao_target.raw.index,
+                                                      .denoised_ao_texture_index = frame.ao_target.denoised.index,
+                                                      .point_sampler_index = sampler_storage_.nearest_clamp().index,
+                                                      .ubo_address = ubos_[frame_index].device_address,
+                                                      .gtao_pipeline = gtao_pipeline_,
+                                                      .denoise_pipeline = gtao_denoise_pipeline_,
+                                                      .radius_view = ao_settings_.radius,
+                                                      .falloff_range = ao_settings_.falloff_range,
+                                                      .slice_count = ao_settings_.slice_count,
+                                                      .step_count = ao_settings_.step_count,
+                                                      .denoise_depth_sigma = ao_settings_.denoise_depth_sigma,
+                                              });
     }();
 
     if (!ao_output) {
