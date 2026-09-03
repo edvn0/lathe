@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -26,6 +27,7 @@
 #include "gpu/gpu_resource_table.hxx"
 #include "gpu/sampler_storage.hxx"
 #include "gpu/vk_barrier.hxx"
+#include "maths/aabb.hxx"
 #include "rendering/render_passes.hxx"
 #include "rendering/renderer_application_policy.hxx"
 
@@ -1246,6 +1248,7 @@ auto Renderer::destroy() noexcept -> void {
         frame.frustum_planes_buffer.destroy();
         frame.visible_transform_buffer.destroy();
         frame.visible_draw_buffer.destroy();
+        frame.culled_readback_buffer.destroy();
         frame.culled_indirect_buffer.destroy();
         frame.batch_bounds_buffer.destroy();
         frame.indirect_buffer.destroy();
@@ -1259,6 +1262,9 @@ auto Renderer::destroy() noexcept -> void {
         frame.batch_bounds.clear();
 
         frame.indirect_command_count = 0;
+        frame.culled_readback_capacity = 0;
+        frame.culled_readback_count = 0;
+        frame.culled_readback_pending = false;
     }
 
     frames_.clear();
@@ -1555,6 +1561,31 @@ auto Renderer::model_bounds(ModelHandle model) const -> std::optional<std::pair<
     }
 
     return std::make_pair(slot->bounds_min, slot->bounds_max);
+}
+
+auto Renderer::model_submesh_bounds(ModelHandle model) const
+        -> std::optional<std::vector<std::pair<glm::vec3, glm::vec3>>> {
+    auto const *slot = model_slot(model);
+
+    if (slot == nullptr) {
+        return std::nullopt;
+    }
+
+    std::vector<std::pair<glm::vec3, glm::vec3>> bounds;
+
+    for (auto const &draw: slot->draws) {
+        auto const *mesh = mesh_slot(draw.mesh);
+
+        if (mesh == nullptr) {
+            continue;
+        }
+
+        for (auto const &submesh: mesh->submeshes) {
+            bounds.push_back(maths::transform_aabb(draw.local_transform, submesh.bounds_min, submesh.bounds_max));
+        }
+    }
+
+    return bounds;
 }
 
 auto Renderer::model_lights(ModelHandle model) const -> std::span<ModelCpuLight const> {
@@ -2411,7 +2442,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
             vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
 
-            std::array<VkBufferMemoryBarrier2, 3> const post_cull_barriers{
+            std::array<VkBufferMemoryBarrier2, 4> const post_cull_barriers{
                     VkBufferMemoryBarrier2{
                             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -2448,6 +2479,21 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                             .offset = 0,
                             .size = VK_WHOLE_SIZE,
                     },
+                    // Also readable by the readback copy below (FrameStats::
+                    // visible_instance_count) -- a second, independent
+                    // consumer of the same compute-shader write.
+                    VkBufferMemoryBarrier2{
+                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = frame.culled_indirect_buffer.buffer,
+                            .offset = 0,
+                            .size = VK_WHOLE_SIZE,
+                    },
             };
 
             VkDependencyInfo const dependency_info{
@@ -2457,6 +2503,71 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             };
 
             vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+
+            auto const readback_size =
+                    static_cast<VkDeviceSize>(frame.indirect_command_count) * sizeof(VkDrawIndexedIndirectCommand);
+
+            if (!frame.culled_readback_buffer.valid() || frame.culled_readback_capacity < frame.indirect_command_count) {
+                auto const capacity = std::bit_ceil(std::max(frame.indirect_command_count, 1U));
+
+                auto readback = Buffer::create(
+                        context_, BufferCreateInfo{
+                                          .size = static_cast<VkDeviceSize>(capacity) *
+                                                  sizeof(VkDrawIndexedIndirectCommand),
+                                          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                          .memory = BufferMemory::readback,
+                                          .debug_name = "renderer.culled_readback",
+                                  });
+
+                if (!readback) {
+                    clear_submissions();
+                    return std::unexpected(make_device_error(readback.error()));
+                }
+
+                frame.culled_readback_buffer = std::move(*readback);
+                frame.culled_readback_capacity = capacity;
+            }
+
+            VkBufferCopy2 const readback_region{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                    .srcOffset = 0,
+                    .dstOffset = 0,
+                    .size = readback_size,
+            };
+
+            VkCopyBufferInfo2 const readback_copy{
+                    .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+                    .srcBuffer = frame.culled_indirect_buffer.buffer,
+                    .dstBuffer = frame.culled_readback_buffer.buffer,
+                    .regionCount = 1,
+                    .pRegions = &readback_region,
+            };
+
+            vkCmdCopyBuffer2(command_buffer, &readback_copy);
+
+            VkBufferMemoryBarrier2 const readback_to_host{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                    .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                    .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                    .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = frame.culled_readback_buffer.buffer,
+                    .offset = 0,
+                    .size = readback_size,
+            };
+
+            VkDependencyInfo const readback_dependency_info{
+                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .bufferMemoryBarrierCount = 1,
+                    .pBufferMemoryBarriers = &readback_to_host,
+            };
+
+            vkCmdPipelineBarrier2(command_buffer, &readback_dependency_info);
+
+            frame.culled_readback_count = frame.indirect_command_count;
+            frame.culled_readback_pending = true;
         }
 
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool, end_query);
@@ -2541,6 +2652,31 @@ template<typename OverlayPolicy>
 
     auto &frame = frames_[frame_index];
     auto &frame_query = timestamp_queries_[frame_index];
+
+    // Same "safe once this frame-in-flight slot's fence has been waited on"
+    // point screenshot_.try_resolve() relies on above -- the copy recorded
+    // in prepare_frame's Culling region the last time this frame_index was
+    // used has long since completed on the GPU by now. See
+    // RendererFrame::culled_readback_buffer's comment for the resulting lag.
+    if (frame.culled_readback_pending) {
+        frame.culled_readback_pending = false;
+
+        if (auto invalidated = frame.culled_readback_buffer.invalidate(
+                    0, static_cast<VkDeviceSize>(frame.culled_readback_count) * sizeof(VkDrawIndexedIndirectCommand));
+            !invalidated) {
+            error("[Renderer] Failed to invalidate culled-indirect readback buffer");
+        } else if (auto const *commands =
+                           frame.culled_readback_buffer.mapped_data_as<VkDrawIndexedIndirectCommand const>();
+                   commands != nullptr) {
+            std::uint32_t visible_instance_count = 0;
+
+            for (std::uint32_t i = 0; i < frame.culled_readback_count; ++i) {
+                visible_instance_count += commands[i].instanceCount;
+            }
+
+            last_frame_stats_.visible_instance_count = visible_instance_count;
+        }
+    }
 
     auto const hdr_handle = frame.forward_target.hdr();
     auto const depth_handle = frame.forward_target.depth();

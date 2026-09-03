@@ -3,6 +3,7 @@
 #include <btBulletDynamicsCommon.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -42,13 +43,19 @@ namespace debug_draw {
         }
 
         [[nodiscard]]
-        constexpr auto pack_rgba(btVector3 const &colour, float alpha = 1.0F) noexcept -> std::uint32_t {
-            auto const to_byte = [](float value) -> std::uint32_t {
-                return static_cast<std::uint32_t>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F);
-            };
+        constexpr auto to_byte(float value) noexcept -> std::uint32_t {
+            return static_cast<std::uint32_t>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F);
+        }
 
+        [[nodiscard]]
+        constexpr auto pack_rgba(btVector3 const &colour, float alpha = 1.0F) noexcept -> std::uint32_t {
             return to_byte(colour.x()) | (to_byte(colour.y()) << 8) | (to_byte(colour.z()) << 16) |
                    (to_byte(alpha) << 24);
+        }
+
+        [[nodiscard]]
+        constexpr auto pack_rgba(glm::vec3 const &colour, float alpha = 1.0F) noexcept -> std::uint32_t {
+            return to_byte(colour.x) | (to_byte(colour.y) << 8) | (to_byte(colour.z) << 16) | (to_byte(alpha) << 24);
         }
 
         struct Vertex {
@@ -199,12 +206,23 @@ namespace debug_draw {
         Renderer &renderer;
 
         std::vector<Vertex> pending_lines;
+
+        // Populated by add_line/add_aabb (e.g. submit_scene()'s model-bounds
+        // boxes in main.cxx) rather than Bullet's debug drawer. Kept
+        // separate from pending_lines because its clear point differs: it
+        // must be cleared every rendered frame regardless of whether
+        // PhysicsWorld::step() ran this frame (that only happens while
+        // is_playing -- see Application::on_update), or lines from a paused
+        // frame would keep accumulating onto pending_lines forever.
+        std::vector<Vertex> extra_lines;
+
         std::vector<FrameBuffer> frame_buffers;
 
         PipelineNodeHandle pipeline;
         bool force_recompile = true;
 
         BulletDebugDraw bullet_debug_draw;
+        bool model_bounds_debug_enabled = false;
     };
 
     DebugRenderer::DebugRenderer(Renderer &renderer) : impl_{std::make_unique<Impl>(renderer)} {}
@@ -226,7 +244,7 @@ namespace debug_draw {
 
     auto DebugRenderer::render(VkCommandBuffer cmd, std::span<const float, 16> view_projection,
                                std::uint32_t frame_index) -> void {
-        if (impl_->pending_lines.empty()) {
+        if (impl_->pending_lines.empty() && impl_->extra_lines.empty()) {
             return;
         }
 
@@ -243,7 +261,8 @@ namespace debug_draw {
             impl_->force_recompile = false;
         }
 
-        auto const vertex_count = static_cast<std::uint32_t>(impl_->pending_lines.size());
+        auto const vertex_count =
+                static_cast<std::uint32_t>(impl_->pending_lines.size() + impl_->extra_lines.size());
 
         if (!impl_->ensure_capacity(frame_index, vertex_count)) {
             return;
@@ -255,6 +274,16 @@ namespace debug_draw {
             error("[DebugDraw] Failed to write line buffer");
             return;
         }
+
+        if (!impl_->extra_lines.empty() &&
+            !frame_buffer.vertex
+                     ->write(impl_->pending_lines.size() * sizeof(Vertex), std::span<const Vertex>{impl_->extra_lines})
+                     .has_value()) {
+            error("[DebugDraw] Failed to write line buffer");
+            return;
+        }
+
+        impl_->extra_lines.clear();
 
         auto const *pipeline = impl_->renderer.resolve_pipeline(impl_->pipeline);
 
@@ -313,12 +342,50 @@ namespace debug_draw {
 
     auto DebugRenderer::clear_lines() -> void { impl_->bullet_debug_draw.clearLines(); }
 
+    auto DebugRenderer::add_line(glm::vec3 const &from, glm::vec3 const &to, glm::vec3 const &colour) -> void {
+        auto const rgba = pack_rgba(colour);
+
+        impl_->extra_lines.push_back(Vertex{.x = from.x, .y = from.y, .z = from.z, .rgba = rgba});
+        impl_->extra_lines.push_back(Vertex{.x = to.x, .y = to.y, .z = to.z, .rgba = rgba});
+    }
+
+    auto DebugRenderer::add_aabb(glm::vec3 const &min, glm::vec3 const &max, glm::vec3 const &colour) -> void {
+        std::array<glm::vec3, 8> const corners{{
+                {min.x, min.y, min.z},
+                {max.x, min.y, min.z},
+                {max.x, max.y, min.z},
+                {min.x, max.y, min.z},
+                {min.x, min.y, max.z},
+                {max.x, min.y, max.z},
+                {max.x, max.y, max.z},
+                {min.x, max.y, max.z},
+        }};
+
+        // Bottom face, top face, then the 4 verticals joining them.
+        constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 12> edges{{
+                {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7},
+        }};
+
+        for (auto const &[a, b]: edges) {
+            add_line(corners[a], corners[b], colour);
+        }
+    }
+
     auto DebugRenderer::set_physics_debug_enabled(bool enabled) noexcept -> void {
         impl_->bullet_debug_draw.setDebugMode(enabled ? btIDebugDraw::DBG_DrawWireframe : btIDebugDraw::DBG_NoDebug);
     }
 
     auto DebugRenderer::physics_debug_enabled() const noexcept -> bool {
         return impl_->bullet_debug_draw.getDebugMode() != btIDebugDraw::DBG_NoDebug;
+    }
+
+    auto DebugRenderer::set_model_bounds_debug_enabled(bool enabled) noexcept -> void {
+        impl_->model_bounds_debug_enabled = enabled;
+    }
+
+    auto DebugRenderer::model_bounds_debug_enabled() const noexcept -> bool {
+        return impl_->model_bounds_debug_enabled;
     }
 
 } // namespace debug_draw

@@ -38,6 +38,7 @@
 #include "gpu/swapchain.hxx"
 #include "imgui.h"
 #include "implot.h"
+#include "maths/aabb.hxx"
 #include "physics/physics.hxx"
 #include "physics/physics_world.hxx"
 #include "rendering/debug_renderer.hxx"
@@ -88,6 +89,13 @@ namespace {
 
         auto view = registry.view<Components::Transform const, Components::Model const>();
 
+        // Opt-in via Application::on_ui() (see set_model_bounds_debug_enabled)
+        // -- one wireframe box per submesh, drawn from the same per-submesh
+        // AABBs the GPU frustum-culling pass tests against, so this shows
+        // exactly what's being culled rather than a coarse per-model guess.
+        auto const draw_model_bounds = application.debug_renderer->model_bounds_debug_enabled();
+        constexpr auto model_bounds_debug_colour = glm::vec3{0.2F, 1.0F, 0.4F};
+
         for (auto [entity, transform, model]: view.each()) {
             auto const *override_component = registry.try_get<Components::MaterialOverride const>(entity);
             auto const material_override =
@@ -99,6 +107,17 @@ namespace {
             if (!result) {
                 error("Could not submit scene object (model index {}): {}", model.model.index,
                       describe(result.error()));
+            }
+
+            if (draw_model_bounds) {
+                auto const submesh_bounds = application.renderer->model_submesh_bounds(model.model);
+
+                if (submesh_bounds) {
+                    for (auto const &[min, max]: *submesh_bounds) {
+                        auto const [world_min, world_max] = maths::transform_aabb(world_transform, min, max);
+                        application.debug_renderer->add_aabb(world_min, world_max, model_bounds_debug_colour);
+                    }
+                }
             }
         }
 

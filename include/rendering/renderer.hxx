@@ -116,6 +116,13 @@ struct FrameStats {
     std::uint32_t mask_indirect_count = 0;
     std::uint32_t blend_indirect_count = 0;
 
+    // Sum of instanceCount across every culled_indirect_buffer command from
+    // the GPU frustum-culling pass -- i.e. how many of submitted_instance_count
+    // actually survived culling and got drawn. Read back a frames_in_flight
+    // cycle behind the rest of this struct (see RendererFrame::
+    // culled_readback_buffer's comment); 0 until the first readback lands.
+    std::uint32_t visible_instance_count = 0;
+
     std::uint32_t model_submission_count = 0;
     std::uint32_t mesh_submission_count = 0;
 
@@ -293,6 +300,24 @@ struct Renderer final : public IMeshSink, public IModelSink {
     // geometry instead of guessing.
     [[nodiscard]]
     auto model_bounds(ModelHandle model) const -> std::optional<std::pair<glm::vec3, glm::vec3>>;
+
+    // Model-space AABB for every submesh this model draws (one entry per
+    // (draw, submesh) pair, in draw order), instead of one box over the
+    // whole model like model_bounds() above. Each submesh's own local AABB
+    // is folded through its draw's local_transform using the same
+    // axis-aligned "sum of abs(scaled basis vectors)" trick as
+    // transform_aabb in frustum_cull.slang, so a rotated/scaled node still
+    // gets a tight (if conservative) box in model space.
+    //
+    // Meant for approximating a large multi-submesh model (e.g. a Sponza-
+    // like glTF scene, one primitive per wall/column) with many small boxes
+    // -- see Components::RigidBody::from_submesh_boxes -- rather than a
+    // single box over the whole model that would let the player walk
+    // through every gap and alcove.
+    [[nodiscard]]
+    auto model_submesh_bounds(ModelHandle model) const
+            -> std::optional<std::vector<std::pair<glm::vec3, glm::vec3>>>;
+
     [[nodiscard]]
     auto model_lights(ModelHandle model) const -> std::span<ModelCpuLight const>;
 
@@ -585,6 +610,23 @@ private:
         Buffer culled_indirect_buffer{};
         Buffer visible_draw_buffer{};
         Buffer visible_transform_buffer{};
+
+        // Host-visible copy of culled_indirect_buffer's first
+        // culled_readback_count commands, for FrameStats::visible_instance_count
+        // -- grown on demand (see ensure_culled_readback_capacity in
+        // renderer.cxx) rather than sized for maximum_draw_count_ like the
+        // buffers above, since it only ever needs to hold this frame's
+        // actual batch count. Written by the copy recorded in prepare_frame
+        // right after the cull dispatch; read back at the start of
+        // record_frame for this same frame_index, the same "safe once this
+        // frame-in-flight slot's fence has been waited on" point
+        // screenshot_.try_resolve() relies on -- so the counts it produces
+        // are one full frames_in_flight cycle behind the rest of FrameStats,
+        // same lag as last_frame_pipeline_stats_.
+        Buffer culled_readback_buffer{};
+        std::uint32_t culled_readback_capacity = 0;
+        std::uint32_t culled_readback_count = 0;
+        bool culled_readback_pending = false;
 
         // 6 world-space frustum planes (vec4 each), written fresh every
         // frame in prepare_frame. Deliberately its own tiny buffer rather

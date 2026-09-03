@@ -6,6 +6,7 @@
 
 #include <BS_thread_pool.hpp>
 #include <BulletCollision/CollisionDispatch/btCollisionDispatcherMt.h>
+#include <BulletCollision/CollisionShapes/btCompoundShape.h>
 #include <BulletCollision/CollisionShapes/btHeightfieldTerrainShape.h>
 #include <BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolverMt.h>
 #include <BulletDynamics/Dynamics/btDiscreteDynamicsWorldMt.h>
@@ -26,6 +27,25 @@ namespace {
     auto to_glm(btVector3 const &v) -> glm::vec3 { return glm::vec3{v.x(), v.y(), v.z()}; }
     auto to_bt(glm::quat const &q) -> btQuaternion { return btQuaternion{q.x, q.y, q.z, q.w}; }
     auto to_glm(btQuaternion const &q) -> glm::quat { return glm::quat{q.w(), q.x(), q.y(), q.z()}; }
+
+    // Arena-placement-new'd shapes are never freed individually (the whole
+    // arena goes away with PhysicsWorld) -- only their destructors need
+    // calling, same as every other shape teardown in this file. A
+    // btCompoundShape (BodyShape::compound) additionally owns child shape
+    // pointers it never destructs itself, so its children need the same
+    // treatment first, recursively -- a compound-of-compounds isn't
+    // something this codebase builds, but the recursion costs nothing.
+    auto destroy_shape(btCollisionShape *shape) -> void {
+        if (shape->getShapeType() == COMPOUND_SHAPE_PROXYTYPE) {
+            auto *compound = static_cast<btCompoundShape *>(shape);
+
+            for (int i = 0; i < compound->getNumChildShapes(); ++i) {
+                destroy_shape(compound->getChildShape(i));
+            }
+        }
+
+        shape->~btCollisionShape();
+    }
 
     class ThreadPoolTaskScheduler final : public btITaskScheduler {
     public:
@@ -156,7 +176,7 @@ struct PhysicsWorld::Impl {
             world->removeRigidBody(rigid_body);
 
             rigid_body->~btRigidBody();
-            shape->~btCollisionShape();
+            destroy_shape(shape);
         }
 
         world->~btDiscreteDynamicsWorldMt();
@@ -241,6 +261,28 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
                     heightfield.heights->data(), heightfield.min_height, heightfield.max_height,
                     /*upAxis=*/1, /*flipQuadEdges=*/false);
             shape->setLocalScaling(btVector3{heightfield.cell_size_x, 1.0F, heightfield.cell_size_z});
+            break;
+        }
+        case Components::BodyShape::compound: {
+            // See Components::RigidBody::from_submesh_boxes: one btBoxShape
+            // child per submesh, each already axis-aligned in the compound's
+            // local space, so every child transform is translation-only.
+            auto *compound = impl_->arena.construct<btCompoundShape>();
+
+            if (body.compound_boxes) {
+                for (auto const &child: *body.compound_boxes) {
+                    auto *box =
+                            impl_->arena.construct_with_base<btBoxShape, btCollisionShape>(to_bt(child.half_extents));
+
+                    btTransform child_transform;
+                    child_transform.setIdentity();
+                    child_transform.setOrigin(to_bt(child.local_centre));
+
+                    compound->addChildShape(child_transform, box);
+                }
+            }
+
+            shape = compound;
             break;
         }
         case Components::BodyShape::box:
@@ -340,7 +382,7 @@ auto PhysicsWorld::remove_body(entt::registry &registry, entt::entity entity) ->
     impl_->world->removeRigidBody(physics_body->rigid_body);
 
     physics_body->rigid_body->~btRigidBody();
-    physics_body->shape->~btCollisionShape();
+    destroy_shape(physics_body->shape);
 
     registry.remove<Components::PhysicsBody>(entity);
 }

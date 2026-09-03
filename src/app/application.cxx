@@ -278,6 +278,18 @@ auto Application::on_ui() -> void {
                     stats.opaque_indirect_count, stats.mask_indirect_count, stats.blend_indirect_count);
         ImGui::Text("Instances submitted: %s (%u)", fmt(stats.submitted_instance_count),
                     stats.submitted_instance_count);
+
+        // Lags submitted_instance_count by one frames-in-flight cycle -- see
+        // RendererFrame::culled_readback_buffer's comment -- so it can
+        // briefly read 0 or a slightly stale count right after a scene
+        // change, not just "nothing survived culling".
+        auto const culled_percent = stats.submitted_instance_count != 0
+                                             ? 100.0F * static_cast<float>(stats.visible_instance_count) /
+                                                       static_cast<float>(stats.submitted_instance_count)
+                                             : 0.0F;
+        ImGui::Text("Instances visible (post-cull): %s (%u, %.1f%%)", fmt(stats.visible_instance_count),
+                    stats.visible_instance_count, culled_percent);
+
         ImGui::Text("Model / mesh submissions: %u / %u", stats.model_submission_count, stats.mesh_submission_count);
         ImGui::Text("Lights: %u point / %u spot", stats.point_light_count, stats.spot_light_count);
     });
@@ -330,6 +342,11 @@ auto Application::on_ui() -> void {
         bool draw_physics_debug = debug_renderer->physics_debug_enabled();
         if (ImGui::Checkbox("Draw physics colliders", &draw_physics_debug)) {
             debug_renderer->set_physics_debug_enabled(draw_physics_debug);
+        }
+
+        bool draw_model_bounds_debug = debug_renderer->model_bounds_debug_enabled();
+        if (ImGui::Checkbox("Draw model submesh bounds", &draw_model_bounds_debug)) {
+            debug_renderer->set_model_bounds_debug_enabled(draw_model_bounds_debug);
         }
 
         auto light = renderer->directional_light();
