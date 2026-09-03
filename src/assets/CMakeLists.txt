@@ -6,6 +6,7 @@ set(
     load_model.cxx
     material_storage.cxx
     mesh_storage.cxx
+    model_load_profile.cxx
     model_storage.cxx
     model_streamer.cxx
     primitive_meshes.cxx

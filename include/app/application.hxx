@@ -13,6 +13,12 @@
 #include "rendering/terminal_widget.hxx"
 #include "terrain/terrain_world.hxx"
 
+// Forward-declared rather than pulling in portable-file-dialogs.h here: the
+// dialog is only ever touched from application.cxx, which owns the include.
+namespace pfd {
+    class open_file;
+} // namespace pfd
+
 struct ScrollingBuffer {
     std::int32_t max_size;
     std::int32_t offset = 0;
@@ -98,6 +104,16 @@ struct Application {
     bool has_last_mouse_position = false;
 
     gui::TerminalWidget terminal_widget;
+
+    // Status line for the "Load Model" widget's last browse attempt (success
+    // or failure), shown underneath its Browse... button in on_ui().
+    std::string model_load_status;
+
+    // Non-null while a file-picker dialog spawned by the "Load Model" widget
+    // is open. Polled non-blockingly (ready(0)) each frame in on_ui() rather
+    // than calling result() straight after construction, so browsing for a
+    // model doesn't stall the render loop for as long as the dialog is open.
+    std::unique_ptr<pfd::open_file> model_load_dialog;
 
     auto update(float delta_time) -> void;
 

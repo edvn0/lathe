@@ -257,17 +257,12 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, RendererError> override;
 
-    // Completes an async load started with load_model_cpu_async(): records
-    // the GPU upload (meshes, materials, any embedded textures) into
-    // `command_buffer` -- which must be a currently-recording command
-    // buffer whose submission this caller will wait on via the normal
-    // frames-in-flight fence discipline, not a one-time_submit buffer --
-    // then installs the result into `pending` in place. Must run on the
-    // render thread. On failure `pending` is left showing its original
-    // fallback content rather than being torn down.
+    // Installs a Model that ModelStreamer finished uploading (via
+    // start_model_gpu_upload()/step_model_gpu_upload()) into `pending` in
+    // place. Must run on the render thread. On failure `pending` is left
+    // showing its original fallback content rather than being torn down.
     [[nodiscard]]
-    auto finish_model_load(ModelHandle pending, ModelCpuData const &cpu_data, VkCommandBuffer command_buffer)
-            -> std::expected<void, RendererError> override;
+    auto install_model(ModelHandle pending, Model const &model) -> std::expected<void, RendererError> override;
 
     // Uploads already-CPU-side geometry (e.g. procedurally generated engine
     // primitives — see primitive_meshes.hxx / engine_models.hxx) through the
@@ -444,7 +439,8 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto hdr_format() const noexcept { return frames_[0].forward_target.hdr_format(); }
     [[nodiscard]] auto samples() const noexcept { return frames_[0].forward_target.samples(); }
 
-    [[nodiscard]] auto image_storage() noexcept -> ImageStorage & { return image_storage_; }
+    [[nodiscard]] auto image_storage() noexcept -> ImageStorage & override { return image_storage_; }
+    [[nodiscard]] auto material_storage() noexcept -> MaterialStorage & override { return material_storage_; }
     [[nodiscard]] auto sampler_storage() noexcept -> SamplerStorage & override { return sampler_storage_; }
     // Shared across editor_scene/runtime_scene -- Scene::get_scripts() forwards here so a
     // ScriptHandle allocated while populating editor_scene still resolves after
@@ -452,7 +448,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     // Scene::Scene(Renderer&)).
     [[nodiscard]] auto script_storage() noexcept -> ScriptStorage & { return script_storage_; }
     [[nodiscard]] auto script_storage() const noexcept -> ScriptStorage const & { return script_storage_; }
-    [[nodiscard]] auto texture_streamer() noexcept -> TextureStreamer & { return texture_streamer_; }
+    [[nodiscard]] auto texture_streamer() noexcept -> TextureStreamer & override { return texture_streamer_; }
     [[nodiscard]] auto model_streamer() noexcept -> ModelStreamer & { return model_streamer_; }
     [[nodiscard]] auto resource_table() noexcept -> GpuResourceTable & { return gpu_resource_table_; }
 

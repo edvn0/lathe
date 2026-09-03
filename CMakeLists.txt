@@ -424,6 +424,20 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # ------------------------------------------------------------------------------
+# portable-file-dialogs: single-header native file/message dialogs (Win32
+# common dialog on windows-mingw, zenity/kdialog on linux-native). Header-only
+# -- its include dir is added to engine_deps below alongside stb/bullet3.
+# ------------------------------------------------------------------------------
+
+CPMAddPackage(
+    NAME portable_file_dialogs
+    GITHUB_REPOSITORY samhocevar/portable-file-dialogs
+    GIT_TAG 0.1.0
+    GIT_SHALLOW YES
+    DOWNLOAD_ONLY YES
+)
+
+# ------------------------------------------------------------------------------
 # KTX-Software (libktx): KTX2 container read/write plus the Basis Universal
 # UASTC encoder/transcoder used to bake BC5/BC7 textures. Tools, loadtests,
 # and its own GL/Vulkan upload paths are all disabled -- we only need the

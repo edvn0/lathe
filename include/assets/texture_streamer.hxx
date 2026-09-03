@@ -18,9 +18,12 @@
 // its real GPU image -- callers never block waiting for a texture to load.
 class TextureStreamer {
 public:
+    // `profile`, when non-null, gets this texture's share of the texture
+    // section of its timing breakdown added in once the background job
+    // runs -- see ModelLoadProfile and load_compressed_texture().
     [[nodiscard]]
     auto request(ImageStorage &images, std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
-                std::string debug_name) -> ImageHandle;
+                std::string debug_name, std::shared_ptr<ModelLoadProfile> profile = nullptr) -> ImageHandle;
 
     // Same as request(), for a texture with no file on disk to stream from
     // (e.g. a glTF image embedded in a bufferView/data URI): `encoded_bytes`
@@ -29,7 +32,8 @@ public:
     // unique per distinct source image -- see load_compressed_texture_from_encoded_memory().
     [[nodiscard]]
     auto request_from_memory(ImageStorage &images, std::vector<std::byte> encoded_bytes, TextureRole role,
-                             std::string cache_key, ImageHandle fallback, std::string debug_name) -> ImageHandle;
+                             std::string cache_key, ImageHandle fallback, std::string debug_name,
+                             std::shared_ptr<ModelLoadProfile> profile = nullptr) -> ImageHandle;
 
     // Finalizes every request whose background CompressedTexture is ready:
     // records its GPU upload into `command_buffer` and swaps it into the

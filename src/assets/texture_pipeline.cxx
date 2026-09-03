@@ -21,7 +21,21 @@
 
 namespace {
 
-    constexpr int texture_pipeline_encoder_version = 1;
+    // Bump whenever the cached .ktx2 payload's format/content changes in a
+    // way that makes existing cache files stale -- this is folded into the
+    // cache key (see cache_path_for), so a bump just makes every prior
+    // entry unreachable under its old filename rather than needing an
+    // explicit migration. version 2: the cache now stores the
+    // already-transcoded BC7/BC5 result instead of the pre-transcode UASTC
+    // container (see encode_and_transcode/try_load_cached) -- a warm load
+    // used to pay a full UASTC->BC7 transcode on every hit (BC7 is an
+    // expensive transcode target; this alone measured ~22s of aggregate
+    // worker time across Sponza's 72 textures on an already-warm cache),
+    // which a plain block-data file read avoids entirely. version 3:
+    // dropped to KTX_PACK_UASTC_LEVEL_FASTEST (see encode_uastc) -- the
+    // cache stores encode output now, so a quality change has to bump this
+    // too or old entries would keep serving the previous quality forever.
+    constexpr int texture_pipeline_encoder_version = 3;
 
     auto make_error(TexturePipelineErrorType type, std::string_view message = {},
                     std::source_location location = std::source_location::current()) -> TexturePipelineError {
@@ -194,15 +208,34 @@ namespace {
         params.structSize = sizeof(params);
         params.uastc = KTX_TRUE;
         // Each call here already runs as its own task on Renderer's shared
-        // thread pool (see TextureStreamer::request), so letting this spin
-        // up hardware_concurrency() internal threads per texture would
-        // oversubscribe the CPU during a burst load of many textures at
-        // once. A small bounded count instead gives a real speedup for the
-        // common case (one or two textures streaming in) without turning a
-        // multi-texture burst into thread-thrashing.
-        params.threadCount = std::max(1U, std::min(4U, std::thread::hardware_concurrency()));
+        // thread pool (see TextureStreamer::request), which itself has
+        // hardware_concurrency() worker threads -- so this already gets
+        // full-core parallelism for free whenever more than one texture is
+        // in flight, which is the common case (a model load streams in all
+        // of its textures at once). Letting CompressBasisEx ALSO spin up
+        // its own internal threads per call -- even a small bounded count --
+        // multiplies against however many of those pool workers are
+        // concurrently mid-encode: a burst load of many textures (e.g. a
+        // large model with dozens of materials) can have every pool worker
+        // running an encode at once, each spawning more threads on top,
+        // oversubscribing the CPU by several times over and stalling the
+        // whole process. Single-threaded per call avoids that regardless of
+        // burst size; the only cost is a lone in-flight texture (the rest of
+        // the pool idle) taking a bit longer to finish encoding, which is
+        // invisible -- streamed textures are never waited on synchronously.
+        params.threadCount = 1;
         params.normalMap = role == TextureRole::normal_map ? KTX_TRUE : KTX_FALSE;
-        params.uastcFlags = static_cast<ktx_pack_uastc_flags>(KTX_PACK_UASTC_LEVEL_DEFAULT);
+        // Cheapest level ktx.h offers: 43.45dB PSNR vs LEVEL_DEFAULT's
+        // 47.47dB -- a real, visible quality drop, but profiling a
+        // cold-cache Sponza load put aggregate encode time (summed across
+        // all 72 textures) at ~2.2 million ms, by far the single largest
+        // contributor to a cold load's wall-clock time -- an order of
+        // magnitude past every other section combined, including
+        // everything two rounds of scheduling fixes (core reservation,
+        // then SCHED_IDLE worker priority) failed to touch. This is what
+        // actually pays down that cost; the cache means it's a one-time hit
+        // per texture regardless.
+        params.uastcFlags = static_cast<ktx_pack_uastc_flags>(KTX_PACK_UASTC_LEVEL_FASTEST);
 
         if (ktxTexture2_CompressBasisEx(texture.get(), &params) != KTX_SUCCESS) {
             return std::unexpected(
@@ -289,14 +322,22 @@ namespace {
         return role == TextureRole::normal_map ? KTX_TTF_BC5_RG : KTX_TTF_BC7_RGBA;
     }
 
-    // Cache hit path: load the cached UASTC container and transcode it.
-    // Returns nullopt (not an error) on any miss/corruption so the caller
-    // falls back to re-encoding from source -- a torn or stale cache file is
-    // an ordinary condition, not a load failure.
+    // Cache hit path: load the cached file and hand its data straight back.
+    // The cache stores the already-transcoded BC7/BC5 result (see
+    // encode_and_transcode -- ktxTexture2_TranscodeBasis mutates its
+    // ktxTexture2 in place, replacing vkFormat/pData/supercompressionScheme
+    // with the transcoded form, so what gets written to disk after that
+    // call needs no further transcoding to read back), so this is just a
+    // file read, not a decode of any kind. Returns nullopt (not an error) on
+    // any miss/corruption so the caller falls back to re-encoding from
+    // source -- a torn or stale cache file is an ordinary condition, not a
+    // load failure.
     [[nodiscard]]
-    auto try_load_cached(std::filesystem::path const &cache_path, TextureRole role, std::string debug_name)
+    auto try_load_cached(std::filesystem::path const &cache_path, std::string debug_name, ModelLoadProfile *profile)
             -> std::optional<CompressedTexture> {
         std::error_code ec;
+
+        ScopedProfileSample lookup_sample{profile != nullptr ? &profile->texture_cache_lookup_ns : nullptr};
 
         if (!std::filesystem::exists(cache_path, ec) || ec) {
             return std::nullopt;
@@ -304,40 +345,46 @@ namespace {
 
         ktxTexture2 *raw = nullptr;
 
-        auto result = ktxTexture2_CreateFromNamedFile(cache_path.string().c_str(),
-                                                       KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw);
+        auto const create_result = ktxTexture2_CreateFromNamedFile(cache_path.string().c_str(),
+                                                                    KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw);
 
-        if (result != KTX_SUCCESS || raw == nullptr) {
+        if (create_result != KTX_SUCCESS || raw == nullptr) {
             warn("texture_pipeline: cache file '{}' failed to load, re-encoding", cache_path.string());
             return std::nullopt;
         }
 
         KtxTexturePtr texture{raw};
 
-        // UASTC-encoded textures (what this pipeline always writes) stay
-        // supercompressionScheme == KTX_SS_NONE -- BASIS_LZ is only used by
-        // the separate ETC1S codepath. TranscodeBasis itself is the real
-        // arbiter of whether this file is transcodable; let it fail below
-        // rather than second-guessing it here.
-        result = ktxTexture2_TranscodeBasis(texture.get(), transcode_target(role), 0);
-
-        if (result != KTX_SUCCESS) {
-            warn("texture_pipeline: cache file '{}' failed to transcode, re-encoding", cache_path.string());
-            return std::nullopt;
-        }
+        lookup_sample.stop();
 
         debug("texture_pipeline: '{}' loaded from cache '{}'", debug_name, cache_path.string());
+
+        if (profile != nullptr) {
+            profile->texture_cache_hits.fetch_add(1, std::memory_order_relaxed);
+        }
 
         return extract_compressed_texture(texture.get(), std::move(debug_name));
     }
 
     [[nodiscard]]
     auto encode_and_transcode(std::vector<std::byte> base_rgba8, std::uint32_t width, std::uint32_t height,
-                              TextureRole role, std::filesystem::path const &cache_path, std::string debug_name)
-            -> std::expected<CompressedTexture, TexturePipelineError> {
+                              TextureRole role, std::filesystem::path const &cache_path, std::string debug_name,
+                              ModelLoadProfile *profile) -> std::expected<CompressedTexture, TexturePipelineError> {
+        if (profile != nullptr) {
+            profile->texture_cache_misses.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        ScopedProfileSample mip_sample{profile != nullptr ? &profile->texture_mip_generation_ns : nullptr};
+
         auto mips = generate_mip_chain(std::move(base_rgba8), width, height, role);
 
+        mip_sample.stop();
+
+        ScopedProfileSample encode_sample{profile != nullptr ? &profile->texture_encode_ns : nullptr};
+
         auto encoded = encode_uastc(mips, role);
+
+        encode_sample.stop();
 
         if (!encoded) {
             return std::unexpected(encoded.error());
@@ -345,12 +392,23 @@ namespace {
 
         auto texture = std::move(*encoded);
 
-        write_cache_atomic(texture.get(), cache_path);
+        ScopedProfileSample transcode_sample{profile != nullptr ? &profile->texture_transcode_ns : nullptr};
 
+        // Mutates `texture` in place -- vkFormat, pData and
+        // supercompressionScheme all get overwritten with the transcoded
+        // BC7/BC5 result, so what write_cache_atomic saves below is already
+        // in its final GPU-ready form. A cache hit later then needs no
+        // transcode step at all, just a file read (see try_load_cached).
         if (ktxTexture2_TranscodeBasis(texture.get(), transcode_target(role), 0) != KTX_SUCCESS) {
             return std::unexpected(
                     make_error(TexturePipelineErrorType::transcode_failed, "ktxTexture2_TranscodeBasis failed"));
         }
+
+        transcode_sample.stop();
+
+        ScopedProfileSample const write_sample{profile != nullptr ? &profile->texture_cache_write_ns : nullptr};
+
+        write_cache_atomic(texture.get(), cache_path);
 
         return extract_compressed_texture(texture.get(), std::move(debug_name));
     }
@@ -361,13 +419,14 @@ namespace {
     // the encoder.
     [[nodiscard]]
     auto compress_decoded_image(DecodedImage const &decoded, TextureRole role,
-                                std::filesystem::path const &cache_path, std::string debug_name)
-            -> std::expected<CompressedTexture, TexturePipelineError> {
+                                std::filesystem::path const &cache_path, std::string debug_name,
+                                ModelLoadProfile *profile) -> std::expected<CompressedTexture, TexturePipelineError> {
         auto const width = decoded.width();
         auto const height = decoded.height();
         auto rgba8 = to_rgba8(decoded);
 
-        return encode_and_transcode(std::move(rgba8), width, height, role, cache_path, std::move(debug_name));
+        return encode_and_transcode(std::move(rgba8), width, height, role, cache_path, std::move(debug_name),
+                                    profile);
     }
 
 } // namespace
@@ -385,8 +444,15 @@ auto default_texture_cache_directory() -> std::filesystem::path {
 }
 
 auto load_compressed_texture(std::filesystem::path const &source_path, TextureRole role,
-                             std::filesystem::path const &cache_directory)
+                             std::filesystem::path const &cache_directory,
+                             std::shared_ptr<ModelLoadProfile> const &profile)
         -> std::expected<CompressedTexture, TexturePipelineError> {
+    auto *const profile_ptr = profile.get();
+
+    if (profile_ptr != nullptr) {
+        profile_ptr->texture_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
     std::error_code ec;
 
     if (!std::filesystem::exists(source_path, ec) || ec) {
@@ -416,27 +482,38 @@ auto load_compressed_texture(std::filesystem::path const &source_path, TextureRo
     auto const stem = source_path.stem().string();
     auto const cache_path = cache_path_for(identity, role, cache_directory, stem);
 
-    if (auto cached = try_load_cached(cache_path, role, stem); cached.has_value()) {
+    if (auto cached = try_load_cached(cache_path, stem, profile_ptr); cached.has_value()) {
         return std::move(*cached);
     }
 
     debug("texture_pipeline: '{}' not cached, decoding from source '{}'", stem, source_path.string());
 
+    ScopedProfileSample decode_sample{profile_ptr != nullptr ? &profile_ptr->texture_decode_ns : nullptr};
+
     auto decoded = DecodedImage::load_from_file(
             source_path.string(), role == TextureRole::colour ? ImageColourSpace::srgb : ImageColourSpace::linear);
+
+    decode_sample.stop();
 
     if (!decoded.has_value()) {
         return std::unexpected(make_error(TexturePipelineErrorType::decode_failed,
                                           std::format("failed to decode '{}'", source_path.string())));
     }
 
-    return compress_decoded_image(*decoded, role, cache_path, stem);
+    return compress_decoded_image(*decoded, role, cache_path, stem, profile_ptr);
 }
 
 auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> encoded_bytes, TextureRole role,
                                                   std::string_view cache_key,
-                                                  std::filesystem::path const &cache_directory)
+                                                  std::filesystem::path const &cache_directory,
+                                                  std::shared_ptr<ModelLoadProfile> const &profile)
         -> std::expected<CompressedTexture, TexturePipelineError> {
+    auto *const profile_ptr = profile.get();
+
+    if (profile_ptr != nullptr) {
+        profile_ptr->texture_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
     if (encoded_bytes.empty()) {
         return std::unexpected(make_error(TexturePipelineErrorType::decode_failed, "empty encoded image buffer"));
     }
@@ -444,26 +521,37 @@ auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> enco
     auto const identity = std::format("encoded-memory|{}", cache_key);
     auto const cache_path = cache_path_for(identity, role, cache_directory, "embedded");
 
-    if (auto cached = try_load_cached(cache_path, role, std::string{cache_key}); cached.has_value()) {
+    if (auto cached = try_load_cached(cache_path, std::string{cache_key}, profile_ptr); cached.has_value()) {
         return std::move(*cached);
     }
 
     debug("texture_pipeline: '{}' not cached, decoding from embedded memory", cache_key);
 
+    ScopedProfileSample decode_sample{profile_ptr != nullptr ? &profile_ptr->texture_decode_ns : nullptr};
+
     auto decoded = DecodedImage::load_from_memory(
             encoded_bytes, role == TextureRole::colour ? ImageColourSpace::srgb : ImageColourSpace::linear);
+
+    decode_sample.stop();
 
     if (!decoded.has_value()) {
         return std::unexpected(make_error(TexturePipelineErrorType::decode_failed, "failed to decode embedded image"));
     }
 
-    return compress_decoded_image(*decoded, role, cache_path, std::string{cache_key});
+    return compress_decoded_image(*decoded, role, cache_path, std::string{cache_key}, profile_ptr);
 }
 
 auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels, std::uint32_t width,
                                          std::uint32_t height, TextureRole role, std::string_view cache_key,
-                                         std::filesystem::path const &cache_directory)
+                                         std::filesystem::path const &cache_directory,
+                                         std::shared_ptr<ModelLoadProfile> const &profile)
         -> std::expected<CompressedTexture, TexturePipelineError> {
+    auto *const profile_ptr = profile.get();
+
+    if (profile_ptr != nullptr) {
+        profile_ptr->texture_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
     if (width == 0 || height == 0 ||
         rgba_pixels.size_bytes() != static_cast<std::size_t>(width) * height * 4) {
         return std::unexpected(
@@ -473,7 +561,7 @@ auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels,
     auto const identity = std::format("memory|{}", cache_key);
     auto const cache_path = cache_path_for(identity, role, cache_directory, "embedded");
 
-    if (auto cached = try_load_cached(cache_path, role, std::string{cache_key}); cached.has_value()) {
+    if (auto cached = try_load_cached(cache_path, std::string{cache_key}, profile_ptr); cached.has_value()) {
         return std::move(*cached);
     }
 
@@ -481,5 +569,6 @@ auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels,
 
     std::vector<std::byte> base{rgba_pixels.begin(), rgba_pixels.end()};
 
-    return encode_and_transcode(std::move(base), width, height, role, cache_path, std::string{cache_key});
+    return encode_and_transcode(std::move(base), width, height, role, cache_path, std::string{cache_key},
+                                profile_ptr);
 }

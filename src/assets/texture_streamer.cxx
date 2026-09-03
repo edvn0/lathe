@@ -6,7 +6,8 @@
 #include "core/thread_pool.hxx"
 
 auto TextureStreamer::request(ImageStorage &images, std::filesystem::path source_path, TextureRole role,
-                              ImageHandle fallback, std::string debug_name) -> ImageHandle {
+                              ImageHandle fallback, std::string debug_name,
+                              std::shared_ptr<ModelLoadProfile> profile) -> ImageHandle {
     auto pending_handle = images.create_pending_image(fallback);
 
     if (!pending_handle) {
@@ -14,10 +15,15 @@ auto TextureStreamer::request(ImageStorage &images, std::filesystem::path source
         return fallback;
     }
 
+    if (profile != nullptr) {
+        profile->expected_texture_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
     auto &pool = thread_pool();
 
-    auto future =
-            pool.submit_task([path = std::move(source_path), role]() { return load_compressed_texture(path, role); });
+    auto future = pool.submit_task([path = std::move(source_path), role, profile = std::move(profile)]() {
+        return load_compressed_texture(path, role, default_texture_cache_directory(), profile);
+    });
 
     pending_.push_back(PendingRequest{
             .handle = *pending_handle,
@@ -29,8 +35,8 @@ auto TextureStreamer::request(ImageStorage &images, std::filesystem::path source
 }
 
 auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std::byte> encoded_bytes, TextureRole role,
-                                          std::string cache_key, ImageHandle fallback, std::string debug_name)
-        -> ImageHandle {
+                                          std::string cache_key, ImageHandle fallback, std::string debug_name,
+                                          std::shared_ptr<ModelLoadProfile> profile) -> ImageHandle {
     auto pending_handle = images.create_pending_image(fallback);
 
     if (!pending_handle) {
@@ -38,10 +44,16 @@ auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std:
         return fallback;
     }
 
+    if (profile != nullptr) {
+        profile->expected_texture_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
     auto &pool = thread_pool();
 
-    auto future = pool.submit_task([encoded = std::move(encoded_bytes), role, cache_key = std::move(cache_key)]() {
-        return load_compressed_texture_from_encoded_memory(encoded, role, cache_key);
+    auto future = pool.submit_task([encoded = std::move(encoded_bytes), role, cache_key = std::move(cache_key),
+                                    profile = std::move(profile)]() {
+        return load_compressed_texture_from_encoded_memory(encoded, role, cache_key,
+                                                            default_texture_cache_directory(), profile);
     });
 
     pending_.push_back(PendingRequest{

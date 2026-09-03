@@ -33,6 +33,7 @@ target_include_directories(
     INTERFACE
         "${stb_SOURCE_DIR}"
         "${bullet3_SOURCE_DIR}/src"
+        "${portable_file_dialogs_SOURCE_DIR}"
 )
 
 target_link_libraries(

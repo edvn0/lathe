@@ -7,6 +7,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "gpu/compressed_texture.hxx"
+#include "assets/model_load_profile.hxx"
 #include "core/error_context.hxx"
 
 enum class TexturePipelineErrorType : std::uint8_t {
@@ -40,10 +42,13 @@ auto default_texture_cache_directory() -> std::filesystem::path;
 // work -- decoding, mip generation, Basis Universal UASTC encoding, and
 // transcode to the target block format all happen here. Safe to call from
 // any thread: touches only the filesystem and CPU memory, never a Vulkan
-// handle.
+// handle. `profile`, when non-null, gets this call's share of the texture
+// section of its timing breakdown added in (safe to do from multiple
+// threads at once -- see ModelLoadProfile).
 [[nodiscard]]
 auto load_compressed_texture(std::filesystem::path const &source_path, TextureRole role,
-                             std::filesystem::path const &cache_directory = default_texture_cache_directory())
+                             std::filesystem::path const &cache_directory = default_texture_cache_directory(),
+                             std::shared_ptr<ModelLoadProfile> const &profile = nullptr)
         -> std::expected<CompressedTexture, TexturePipelineError>;
 
 // Same pipeline (mip-generate, UASTC-encode, disk-cache, BC5/BC7-transcode)
@@ -54,7 +59,8 @@ auto load_compressed_texture(std::filesystem::path const &source_path, TextureRo
 [[nodiscard]]
 auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels, std::uint32_t width,
                                          std::uint32_t height, TextureRole role, std::string_view cache_key,
-                                         std::filesystem::path const &cache_directory = default_texture_cache_directory())
+                                         std::filesystem::path const &cache_directory = default_texture_cache_directory(),
+                                         std::shared_ptr<ModelLoadProfile> const &profile = nullptr)
         -> std::expected<CompressedTexture, TexturePipelineError>;
 
 // Same pipeline again, this time for an image that's still encoded (raw
@@ -67,7 +73,8 @@ auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels,
 auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> encoded_bytes, TextureRole role,
                                                   std::string_view cache_key,
                                                   std::filesystem::path const &cache_directory =
-                                                          default_texture_cache_directory())
+                                                          default_texture_cache_directory(),
+                                                  std::shared_ptr<ModelLoadProfile> const &profile = nullptr)
         -> std::expected<CompressedTexture, TexturePipelineError>;
 
 template<>

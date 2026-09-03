@@ -12,7 +12,6 @@
 #include <future>
 #include <meshoptimizer.h>
 #include <mikktspace.h>
-#include <mutex>
 #include <vector>
 
 #include <algorithm>
@@ -354,8 +353,16 @@ namespace {
     // builds the vertex/index arrays and hands them back as plain data.
     // ------------------------------------------------------------------------
 
-    auto load_primitive_cpu(fastgltf::Asset const &asset, fastgltf::Primitive const &primitive)
-            -> std::expected<ModelCpuPrimitive, ModelLoadError> {
+    // CPU pass, part 1: reads this primitive's accessors into plain
+    // vertex/index arrays. Safe to call from any thread. Does not generate
+    // tangents or LOD variants -- see finalize_primitive_cpu() for that;
+    // ModelCpuPrimitive::has_tangents records whether the glTF primitive
+    // already had its own TANGENT accessor, which finalize_primitive_cpu()
+    // needs to know whether to run generate_tangents() at all.
+    auto extract_primitive_cpu(fastgltf::Asset const &asset, fastgltf::Primitive const &primitive,
+                               ModelLoadProfile *profile) -> std::expected<ModelCpuPrimitive, ModelLoadError> {
+        ScopedProfileSample extract_sample{profile != nullptr ? &profile->primitive_extract_ns : nullptr};
+
         if (primitive.type != fastgltf::PrimitiveType::Triangles) {
             return std::unexpected(ModelLoadError{
                     .type = ModelLoadErrorType::unsupported_primitive,
@@ -436,7 +443,29 @@ namespace {
 
         auto indices = std::move(*indices_result);
 
-        if (!has_tangents) {
+        return ModelCpuPrimitive{
+                .vertices = std::move(vertices),
+                .indices = std::move(indices),
+                .material_index = primitive.materialIndex.has_value()
+                                          ? std::optional(static_cast<std::uint32_t>(*primitive.materialIndex))
+                                          : std::nullopt,
+                .has_tangents = has_tangents,
+        };
+    }
+
+    // CPU pass, part 2: MikkTSpace tangent generation (if `raw` didn't
+    // already have its own) followed by meshopt LOD simplification. Pure
+    // CPU, operates only on `raw`'s own data, so this is the unit
+    // start_primitive_finalization()/step_primitive_finalization() run in
+    // parallel, one task per primitive, across the whole model.
+    auto finalize_primitive_cpu(ModelCpuPrimitive raw, ModelLoadProfile *profile)
+            -> std::expected<ModelCpuPrimitive, ModelLoadError> {
+        auto vertices = std::move(raw.vertices);
+        auto indices = std::move(raw.indices);
+
+        if (!raw.has_tangents) {
+            ScopedProfileSample const tangent_sample{profile != nullptr ? &profile->tangent_generation_ns : nullptr};
+
             auto tangent_result = generate_tangents(vertices, indices);
 
             if (!tangent_result) {
@@ -444,15 +473,19 @@ namespace {
             }
         }
 
-        auto reduced_indices = generate_mesh_lods(vertices, indices);
+        std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1> reduced_indices;
+
+        {
+            ScopedProfileSample const lod_sample{profile != nullptr ? &profile->lod_generation_ns : nullptr};
+
+            reduced_indices = generate_mesh_lods(vertices, indices);
+        }
 
         return ModelCpuPrimitive{
                 .vertices = std::move(vertices),
                 .indices = std::move(indices),
                 .reduced_indices = std::move(reduced_indices),
-                .material_index = primitive.materialIndex.has_value()
-                                          ? std::optional(static_cast<std::uint32_t>(*primitive.materialIndex))
-                                          : std::nullopt,
+                .material_index = raw.material_index,
         };
     }
 
@@ -716,9 +749,17 @@ namespace {
 // filesystem, stb_image, meshoptimizer, and MikkTSpace only.
 // ------------------------------------------------------------------------
 
-auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage)
+auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorage &sampler_storage,
+                                std::shared_ptr<ModelLoadProfile> profile)
         -> std::expected<ModelCpuData, ModelLoadError> {
-    ZoneScopedNC("LoadModelCpu", tracy::Color::Goldenrod);
+    ZoneScopedNC("LoadModelCpuUnfinalized", tracy::Color::Goldenrod);
+
+    auto *const profile_ptr = profile.get();
+
+    // Covers both the file read and the parse itself (loadGltf below) --
+    // one section, since a caller profiling this cares about "how long did
+    // getting a usable fastgltf::Asset take", not the split between them.
+    ScopedProfileSample gltf_sample{profile_ptr != nullptr ? &profile_ptr->gltf_parse_ns : nullptr};
 
     auto file_data = fastgltf::GltfDataBuffer::FromPath(path);
     if (!file_data) {
@@ -741,6 +782,8 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
     // siblings) — same call handles both container types.
     auto asset_result = parser.loadGltf(file_data.get(), base_directory, options);
 
+    gltf_sample.stop();
+
     if (asset_result.error() != fastgltf::Error::None) {
         return std::unexpected(ModelLoadError{
                 .type = ModelLoadErrorType::parse_error,
@@ -756,10 +799,14 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
     cpu_data.meshes.reserve(asset.meshes.size());
     cpu_data.nodes.reserve(asset.nodes.size());
     cpu_data.materials.reserve(asset.materials.size());
+    cpu_data.profile = std::move(profile);
 
     std::unordered_map<std::size_t, std::size_t> image_cache;
 
     for (auto const &gltf_material: asset.materials) {
+        ScopedProfileSample const material_sample{profile_ptr != nullptr ? &profile_ptr->material_resolve_ns
+                                                                          : nullptr};
+
         auto material = load_material_cpu(asset, gltf_material, sampler_storage, path, base_directory, image_cache,
                                           cpu_data.image_sources);
 
@@ -775,7 +822,7 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
         mesh.primitives.reserve(gltf_mesh.primitives.size());
 
         for (auto const &gltf_primitive: gltf_mesh.primitives) {
-            auto primitive = load_primitive_cpu(asset, gltf_primitive);
+            auto primitive = extract_primitive_cpu(asset, gltf_primitive, profile_ptr);
 
             if (!primitive) {
                 return std::unexpected(primitive.error());
@@ -834,15 +881,111 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
     return cpu_data;
 }
 
-auto load_model_cpu_async(std::filesystem::path path, SamplerStorage &sampler_storage)
+auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage,
+                    std::shared_ptr<ModelLoadProfile> profile) -> std::expected<ModelCpuData, ModelLoadError> {
+    ZoneScopedNC("LoadModelCpu", tracy::Color::Goldenrod);
+
+    auto cpu_data = load_model_cpu_unfinalized(path, sampler_storage, std::move(profile));
+
+    if (!cpu_data) {
+        return cpu_data;
+    }
+
+    auto *const profile_ptr = cpu_data->profile.get();
+
+    for (auto &mesh: cpu_data->meshes) {
+        for (auto &primitive: mesh.primitives) {
+            auto finalized = finalize_primitive_cpu(std::move(primitive), profile_ptr);
+
+            if (!finalized) {
+                return std::unexpected(finalized.error());
+            }
+
+            primitive = std::move(*finalized);
+        }
+    }
+
+    return cpu_data;
+}
+
+auto load_model_cpu_async(std::filesystem::path path, SamplerStorage &sampler_storage,
+                          std::shared_ptr<ModelLoadProfile> profile)
         -> std::future<std::expected<ModelCpuData, ModelLoadError>> {
     // sampler_storage is only read here (nearest/linear clamp/repeat are
     // fixed defaults resolved once at Renderer::initialize, never mutated
-    // afterwards -- see SamplerStorage), so calling load_model_cpu()
+    // afterwards -- see SamplerStorage), so calling load_model_cpu_unfinalized()
     // concurrently with anything the render thread does to sampler_storage
-    // is safe without additional synchronization.
-    return thread_pool().submit_task(
-            [path = std::move(path), &sampler_storage] { return load_model_cpu(path, sampler_storage); });
+    // is safe without additional synchronization. Deliberately calls
+    // *_unfinalized rather than load_model_cpu() -- ModelStreamer runs
+    // finalization itself, in parallel, via
+    // start_primitive_finalization()/step_primitive_finalization(), rather
+    // than sequentially here on a single background thread.
+    return thread_pool().submit_task([path = std::move(path), &sampler_storage, profile = std::move(profile)] {
+        return load_model_cpu_unfinalized(path, sampler_storage, profile);
+    });
+}
+
+auto start_primitive_finalization(ModelCpuData cpu_data) -> ModelPrimitiveFinalization {
+    ZoneScopedNC("StartPrimitiveFinalization", tracy::Color::Goldenrod);
+
+    ModelPrimitiveFinalization finalization{.cpu_data = std::move(cpu_data)};
+
+    auto *const profile = finalization.cpu_data.profile.get();
+    auto &pool = thread_pool();
+
+    for (std::size_t mesh_index = 0; mesh_index < finalization.cpu_data.meshes.size(); ++mesh_index) {
+        auto &mesh = finalization.cpu_data.meshes[mesh_index];
+
+        for (std::size_t primitive_index = 0; primitive_index < mesh.primitives.size(); ++primitive_index) {
+            finalization.targets.emplace_back(mesh_index, primitive_index);
+
+            finalization.tasks.push_back(pool.submit_task(
+                    [raw = std::move(mesh.primitives[primitive_index]), profile]() mutable {
+                        return finalize_primitive_cpu(std::move(raw), profile);
+                    }));
+        }
+    }
+
+    return finalization;
+}
+
+auto step_primitive_finalization(ModelPrimitiveFinalization &finalization)
+        -> std::expected<std::optional<ModelCpuData>, ModelLoadError> {
+    ZoneScopedNC("StepPrimitiveFinalization", tracy::Color::Goldenrod);
+
+    using namespace std::chrono_literals;
+
+    std::size_t write = 0;
+
+    for (std::size_t read = 0; read < finalization.tasks.size(); ++read) {
+        if (finalization.tasks[read].wait_for(0s) != std::future_status::ready) {
+            if (write != read) {
+                finalization.tasks[write] = std::move(finalization.tasks[read]);
+                finalization.targets[write] = finalization.targets[read];
+            }
+
+            ++write;
+            continue;
+        }
+
+        auto result = finalization.tasks[read].get();
+
+        if (!result) {
+            return std::unexpected(result.error());
+        }
+
+        auto const [mesh_index, primitive_index] = finalization.targets[read];
+        finalization.cpu_data.meshes[mesh_index].primitives[primitive_index] = std::move(*result);
+    }
+
+    finalization.tasks.resize(write);
+    finalization.targets.resize(write);
+
+    if (!finalization.tasks.empty()) {
+        return std::optional<ModelCpuData>{std::nullopt};
+    }
+
+    return std::optional<ModelCpuData>{std::move(finalization.cpu_data)};
 }
 
 
@@ -886,11 +1029,38 @@ namespace {
 
 } // namespace
 
-auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer command_buffer,
-                             GeometryArena &geometry_arena, ImageStorage &image_storage,
-                             TextureStreamer &texture_streamer, MaterialStorage &material_storage)
-        -> std::expected<Model, ModelLoadError> {
-    ZoneScopedNC("RecordModelGpuUpload", tracy::Color::Goldenrod);
+auto start_model_gpu_upload(ModelCpuData cpu_data, ImageStorage &image_storage, TextureStreamer &texture_streamer)
+        -> ModelGpuUpload {
+    ZoneScopedNC("StartModelGpuUpload", tracy::Color::Goldenrod);
+
+    ModelGpuUpload upload{.cpu_data = std::move(cpu_data)};
+
+    upload.image_handles.reserve(upload.cpu_data.image_sources.size());
+
+    for (auto const &source: upload.cpu_data.image_sources) {
+        auto const role = texture_role_for_slot(source.slot);
+        auto const fallback = default_fallback_for_slot(image_storage, source.slot);
+
+        auto const handle =
+                source.path.empty()
+                        ? texture_streamer.request_from_memory(image_storage, source.encoded, role, source.cache_key,
+                                                               fallback, source.debug_name, upload.cpu_data.profile)
+                        : texture_streamer.request(image_storage, source.path, role, fallback, source.debug_name,
+                                                   upload.cpu_data.profile);
+
+        upload.image_handles.push_back(handle);
+    }
+
+    upload.materials.reserve(upload.cpu_data.materials.size());
+    upload.meshes.reserve(upload.cpu_data.meshes.size());
+
+    return upload;
+}
+
+auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
+                           ImageStorage &image_storage, MaterialStorage &material_storage,
+                           std::uint32_t item_budget) -> std::expected<std::optional<Model>, ModelLoadError> {
+    ZoneScopedNC("StepModelGpuUpload", tracy::Color::Goldenrod);
 
     if (command_buffer == VK_NULL_HANDLE) {
         return std::unexpected(ModelLoadError{
@@ -898,96 +1068,83 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
         });
     }
 
-    std::vector<ImageHandle> image_handles;
-    image_handles.reserve(cpu_data.image_sources.size());
+    auto const &cpu_data = upload.cpu_data;
+    auto *const profile = cpu_data.profile.get();
 
-    for (auto const &source: cpu_data.image_sources) {
-        auto const role = texture_role_for_slot(source.slot);
-        auto const fallback = default_fallback_for_slot(image_storage, source.slot);
-
-        auto const handle =
-                source.path.empty()
-                        ? texture_streamer.request_from_memory(image_storage, source.encoded, role, source.cache_key,
-                                                               fallback, source.debug_name)
-                        : texture_streamer.request(image_storage, source.path, role, fallback, source.debug_name);
-
-        image_handles.push_back(handle);
+    if (profile != nullptr) {
+        profile->gpu_upload_frames.fetch_add(1, std::memory_order_relaxed);
     }
 
     auto const resolve_image = [&](std::optional<std::size_t> cpu_index, ImageHandle fallback) {
-        return cpu_index.has_value() ? image_handles[*cpu_index] : fallback;
+        return cpu_index.has_value() ? upload.image_handles[*cpu_index] : fallback;
     };
 
-    Model model;
-    model.meshes.reserve(cpu_data.meshes.size());
-    model.materials.reserve(cpu_data.materials.size());
+    for (std::uint32_t processed = 0; processed < item_budget;) {
+        if (upload.material_cursor < cpu_data.materials.size()) {
+            auto const &cpu_material = cpu_data.materials[upload.material_cursor];
 
-    std::mutex sync_mutex;
+            MaterialCreateInfo const info{
+                    .base_colour_factor = cpu_material.base_colour_factor,
+                    .emissive_factor = cpu_material.emissive_factor,
+                    .emissive_strength = cpu_material.emissive_strength,
+                    .metallic_factor = cpu_material.metallic_factor,
+                    .roughness_factor = cpu_material.roughness_factor,
+                    .normal_scale = cpu_material.normal_scale,
+                    .occlusion_strength = cpu_material.occlusion_strength,
+                    .alpha_cutoff = cpu_material.alpha_cutoff,
+                    .base_colour_texture = resolve_image(cpu_material.base_colour_image, image_storage.white()),
+                    .normal_texture = resolve_image(cpu_material.normal_image, image_storage.flat_normal()),
+                    .metallic_roughness_texture = resolve_image(cpu_material.metallic_roughness_image,
+                                                                 image_storage.metallic_roughness()),
+                    .occlusion_texture = resolve_image(cpu_material.occlusion_image, image_storage.occlusion()),
+                    .emissive_texture = resolve_image(cpu_material.emissive_image, image_storage.emissive()),
+                    .sampler = cpu_material.sampler,
+                    .alpha_mode = cpu_material.alpha_mode,
+            };
 
-    std::vector<std::future<std::expected<MaterialHandle, ModelLoadError>>> material_futures;
-    material_futures.reserve(cpu_data.materials.size());
+            ScopedProfileSample material_sample{profile != nullptr ? &profile->material_creation_ns : nullptr};
 
-    for (auto const &cpu_material: cpu_data.materials) {
-        material_futures.push_back(
-                std::async(std::launch::async, [&]() -> std::expected<MaterialHandle, ModelLoadError> {
-                    MaterialCreateInfo const info{
-                            .base_colour_factor = cpu_material.base_colour_factor,
-                            .emissive_factor = cpu_material.emissive_factor,
-                            .emissive_strength = cpu_material.emissive_strength,
-                            .metallic_factor = cpu_material.metallic_factor,
-                            .roughness_factor = cpu_material.roughness_factor,
-                            .normal_scale = cpu_material.normal_scale,
-                            .occlusion_strength = cpu_material.occlusion_strength,
-                            .alpha_cutoff = cpu_material.alpha_cutoff,
-                            .base_colour_texture = resolve_image(cpu_material.base_colour_image, image_storage.white()),
-                            .normal_texture = resolve_image(cpu_material.normal_image, image_storage.flat_normal()),
-                            .metallic_roughness_texture = resolve_image(cpu_material.metallic_roughness_image,
-                                                                        image_storage.metallic_roughness()),
-                            .occlusion_texture = resolve_image(cpu_material.occlusion_image, image_storage.occlusion()),
-                            .emissive_texture = resolve_image(cpu_material.emissive_image, image_storage.emissive()),
-                            .sampler = cpu_material.sampler,
-                            .alpha_mode = cpu_material.alpha_mode,
-                    };
+            auto gpu_material = to_gpu_material(info);
+            auto material_handle = material_storage.create_material(gpu_material);
 
-                    auto gpu_material = to_gpu_material(info);
+            material_sample.stop();
 
-                    // Synchronize the external insertion
-                    std::lock_guard<std::mutex> lock(sync_mutex);
-                    auto material_handle = material_storage.create_material(gpu_material);
+            if (!material_handle) {
+                return std::unexpected(ModelLoadError{
+                        .type = ModelLoadErrorType::material_creation_failed,
+                        .cause = ErrorCause{Boxed<MaterialStorageError>{material_handle.error()}},
+                });
+            }
 
-                    if (!material_handle) {
-                        return std::unexpected(ModelLoadError{
-                                .type = ModelLoadErrorType::material_creation_failed,
-                                .cause = ErrorCause{Boxed<MaterialStorageError>{material_handle.error()}},
-                        });
-                    }
+            upload.materials.push_back(*material_handle);
+            ++upload.material_cursor;
+            ++processed;
+            continue;
+        }
 
-                    return *material_handle;
-                }));
-    }
+        if (upload.mesh_cursor < cpu_data.meshes.size()) {
+            auto const &cpu_mesh = cpu_data.meshes[upload.mesh_cursor];
 
-    for (auto &fut: material_futures) {
-        auto result = fut.get();
-        if (!result)
-            return std::unexpected(result.error());
-        model.materials.push_back(*result);
-    }
+            if (upload.meshes.size() == upload.mesh_cursor) {
+                upload.meshes.push_back(ModelMesh{});
+                upload.meshes.back().primitives.reserve(cpu_mesh.primitives.size());
+            }
 
-    std::vector<std::future<std::expected<ModelMesh, ModelLoadError>>> mesh_futures;
-    mesh_futures.reserve(cpu_data.meshes.size());
+            if (upload.primitive_cursor < cpu_mesh.primitives.size()) {
+                auto const &cpu_primitive = cpu_mesh.primitives[upload.primitive_cursor];
 
-    for (auto const &cpu_mesh: cpu_data.meshes) {
-        mesh_futures.push_back(std::async(std::launch::async, [&]() -> std::expected<ModelMesh, ModelLoadError> {
-            ModelMesh mesh;
-            mesh.primitives.reserve(cpu_mesh.primitives.size());
-            for (auto const &cpu_primitive: cpu_mesh.primitives) {
+                ScopedProfileSample vertex_compress_sample{profile != nullptr ? &profile->vertex_compression_ns
+                                                                              : nullptr};
+
                 auto const compressed_vertices = compress_vertices(cpu_primitive.vertices);
 
-                auto vertex_slice = [&]() {
-                    std::lock_guard<std::mutex> lock(sync_mutex);
-                    return geometry_arena.allocate_vertices(
-                            command_buffer, std::span<CompressedModelVertex const>{compressed_vertices});
-                }();
+                vertex_compress_sample.stop();
+
+                ScopedProfileSample geometry_upload_sample{profile != nullptr ? &profile->geometry_upload_ns
+                                                                               : nullptr};
+
+                auto vertex_slice = geometry_arena.allocate_vertices(
+                        command_buffer, std::span<CompressedModelVertex const>{compressed_vertices});
 
                 if (!vertex_slice) {
                     return std::unexpected(ModelLoadError{
@@ -1022,11 +1179,8 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                         continue;
                     }
 
-                    auto index_slice = [&]() {
-                        std::lock_guard<std::mutex> lock(sync_mutex);
-                        return geometry_arena.allocate_indices(command_buffer,
-                                                               std::span<std::uint32_t const>{*source_indices});
-                    }();
+                    auto index_slice = geometry_arena.allocate_indices(
+                            command_buffer, std::span<std::uint32_t const>{*source_indices});
 
                     if (!index_slice) {
                         return std::unexpected(ModelLoadError{
@@ -1038,8 +1192,10 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                     lods[level].indices = *index_slice;
                 }
 
+                geometry_upload_sample.stop();
+
                 if (cpu_primitive.material_index.has_value() &&
-                    *cpu_primitive.material_index >= model.materials.size()) {
+                    *cpu_primitive.material_index >= upload.materials.size()) {
                     return std::unexpected(ModelLoadError{
                             .type = ModelLoadErrorType::invalid_material_index,
                     });
@@ -1048,31 +1204,64 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                 auto const [primitive_bounds_min, primitive_bounds_max] =
                         compute_primitive_bounds(std::span<ModelVertex const>{cpu_primitive.vertices});
 
-                mesh.primitives.push_back(ModelPrimitive{
+                upload.meshes[upload.mesh_cursor].primitives.push_back(ModelPrimitive{
                         .lods = lods,
                         .material_index = cpu_primitive.material_index,
                         .bounds_min = primitive_bounds_min,
                         .bounds_max = primitive_bounds_max,
                 });
+
+                ++upload.primitive_cursor;
+                ++processed;
+
+                if (upload.primitive_cursor >= cpu_mesh.primitives.size()) {
+                    ++upload.mesh_cursor;
+                    upload.primitive_cursor = 0;
+                }
+
+                continue;
             }
 
-            return mesh;
-        }));
+            // Empty mesh -- nothing to process, advance without spending budget.
+            ++upload.mesh_cursor;
+            upload.primitive_cursor = 0;
+            continue;
+        }
+
+        Model model;
+        model.meshes = std::move(upload.meshes);
+        model.materials = std::move(upload.materials);
+        model.nodes = cpu_data.nodes;
+        model.scene_roots = cpu_data.scene_roots;
+        std::tie(model.bounds_min, model.bounds_max) = compute_model_bounds(cpu_data);
+        model.lights = cpu_data.lights;
+
+        return std::optional<Model>{std::move(model)};
     }
 
-    for (auto &fut: mesh_futures) {
-        auto result = fut.get();
-        if (!result)
-            return std::unexpected(result.error());
-        model.meshes.push_back(std::move(*result));
+    return std::optional<Model>{std::nullopt};
+}
+
+auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer command_buffer,
+                             GeometryArena &geometry_arena, ImageStorage &image_storage,
+                             TextureStreamer &texture_streamer, MaterialStorage &material_storage)
+        -> std::expected<Model, ModelLoadError> {
+    ZoneScopedNC("RecordModelGpuUpload", tracy::Color::Goldenrod);
+
+    auto upload = start_model_gpu_upload(cpu_data, image_storage, texture_streamer);
+
+    while (true) {
+        auto stepped = step_model_gpu_upload(upload, command_buffer, geometry_arena, image_storage, material_storage,
+                                             std::numeric_limits<std::uint32_t>::max());
+
+        if (!stepped) {
+            return std::unexpected(stepped.error());
+        }
+
+        if (stepped->has_value()) {
+            return std::move(**stepped);
+        }
     }
-
-    model.nodes = cpu_data.nodes;
-    model.scene_roots = cpu_data.scene_roots;
-    std::tie(model.bounds_min, model.bounds_max) = compute_model_bounds(cpu_data);
-    model.lights = cpu_data.lights;
-
-    return model;
 }
 
 auto load_model(std::filesystem::path const &path, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,

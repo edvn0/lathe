@@ -1281,10 +1281,7 @@ auto Renderer::destroy() noexcept -> void {
     shadow_atlas_initialized_ = false;
     dynamic_shadow_casters_dirty_ = false;
 
-    // Must wait before destroying anything a still-running background load
-    // could touch when it finishes: model_streamer_'s finish_model_load()
-    // creates meshes/materials (mesh_storage_/material_storage_) and writes
-    // into model_storage_/geometry_arena_, so it has to drain first.
+
     model_streamer_.wait_all();
 
     material_storage_.destroy();
@@ -1320,12 +1317,6 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    // Keyed on the resolved path rather than file content: hashing only the
-    // first 64 bytes (the previous approach) let two different models with
-    // the same header -- e.g. two glTFs from the same exporter -- collide
-    // and silently return each other's cached ModelHandle. Models aren't
-    // hot-reloaded, so a path-based key loses nothing while removing both
-    // the collision risk and a redundant file open+read on every call.
     std::error_code canonicalize_error;
     auto const canonical_path = std::filesystem::weakly_canonical(path, canonicalize_error);
     auto const &cache_key_path = canonicalize_error ? path : canonical_path;
@@ -1408,20 +1399,12 @@ auto Renderer::create_pending_model(ModelHandle fallback) -> std::expected<Model
     return *handle;
 }
 
-auto Renderer::finish_model_load(ModelHandle pending, ModelCpuData const &cpu_data, VkCommandBuffer command_buffer)
-        -> std::expected<void, RendererError> {
+auto Renderer::install_model(ModelHandle pending, Model const &model) -> std::expected<void, RendererError> {
     if (!initialized_) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    auto imported_model = record_model_gpu_upload(cpu_data, command_buffer, geometry_arena_, image_storage_,
-                                                  texture_streamer_, material_storage_);
-
-    if (!imported_model) {
-        return std::unexpected(make_model_load_error(imported_model.error()));
-    }
-
-    auto handle = create_model_common(*imported_model, default_material_handle_, [this, pending](ModelSlotData data) {
+    auto handle = create_model_common(model, default_material_handle_, [this, pending](ModelSlotData data) {
         return model_storage_.upgrade_pending_model(pending, std::move(data));
     });
 

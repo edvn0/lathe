@@ -5,6 +5,7 @@ find_program(
     "$ENV{CARGO_HOME}/bin"
     "$ENV{HOME}/.cargo/bin"
     NO_CMAKE_FIND_ROOT_PATH
+    REQUIRED
 )
 
 set(shader_reflect_cargo_environment)

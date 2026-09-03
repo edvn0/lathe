@@ -30,11 +30,15 @@ namespace {
     }
 
     // Independently verifies the on-disk .ktx2 cache file this pipeline run
-    // produced is itself a well-formed, loadable, Basis-supercompressed KTX2
-    // container -- i.e. the atomic temp-file-then-rename write path actually
-    // produced something libktx can read back and transcode, not just bytes
-    // this process happens to interpret correctly from memory.
-    auto verify_cache_file_round_trips(std::filesystem::path const &cache_dir, ktx_transcode_fmt_e target) -> void {
+    // produced is itself a well-formed, loadable KTX2 container already in
+    // its final GPU-ready block format -- i.e. the atomic
+    // temp-file-then-rename write path actually produced something libktx
+    // can read back directly, with no further transcode step needed (the
+    // cache stores the already-transcoded BC7/BC5 result, not the
+    // pre-transcode UASTC container -- see try_load_cached/
+    // encode_and_transcode), not just bytes this process happens to
+    // interpret correctly from memory.
+    auto verify_cache_file_round_trips(std::filesystem::path const &cache_dir, VkFormat expected_format) -> void {
         std::vector<std::filesystem::path> ktx2_files;
 
         for (auto const &entry: std::filesystem::directory_iterator{cache_dir}) {
@@ -52,8 +56,8 @@ namespace {
         REQUIRE(create_result == KTX_SUCCESS);
         REQUIRE(raw != nullptr);
 
-        auto const transcode_result = ktxTexture2_TranscodeBasis(raw, target, 0);
-        CHECK(transcode_result == KTX_SUCCESS);
+        CHECK(raw->vkFormat == static_cast<ktx_uint32_t>(expected_format));
+        CHECK(raw->supercompressionScheme == KTX_SS_NONE);
 
         ktxTexture_Destroy(ktxTexture(raw));
     }
@@ -79,7 +83,7 @@ TEST_SUITE("unit") {
                 static_cast<std::size_t>(std::bit_width(std::max(first->width, first->height)));
         CHECK(first->mips.size() == expected_mip_count);
 
-        verify_cache_file_round_trips(cache_dir, KTX_TTF_BC7_RGBA);
+        verify_cache_file_round_trips(cache_dir, VK_FORMAT_BC7_SRGB_BLOCK);
 
         // Second call should be a cache hit: identical transcoded output.
         auto second = load_compressed_texture(source, TextureRole::colour, cache_dir);
@@ -103,7 +107,7 @@ TEST_SUITE("unit") {
         CHECK(result->width > 0);
         CHECK(result->height > 0);
 
-        verify_cache_file_round_trips(cache_dir, KTX_TTF_BC5_RG);
+        verify_cache_file_round_trips(cache_dir, VK_FORMAT_BC5_UNORM_BLOCK);
 
         std::filesystem::remove_all(cache_dir);
     }
@@ -121,7 +125,7 @@ TEST_SUITE("unit") {
 
         CHECK(result->format == VK_FORMAT_BC7_UNORM_BLOCK);
 
-        verify_cache_file_round_trips(cache_dir, KTX_TTF_BC7_RGBA);
+        verify_cache_file_round_trips(cache_dir, VK_FORMAT_BC7_UNORM_BLOCK);
 
         std::filesystem::remove_all(cache_dir);
     }

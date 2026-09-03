@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
@@ -39,14 +40,15 @@
 #if MINGW_VULKAN_TRACK_MEMORY
 #include "core/memory_tracking_ui.hxx"
 #endif
+#include "assets/shader_hot_reload_watcher.hxx"
+#include "gpu/renderdoc.hxx"
+#include "gpu/swapchain.hxx"
 #include "physics/physics.hxx"
 #include "physics/physics_world.hxx"
-#include "gpu/renderdoc.hxx"
+#include "portable-file-dialogs.h"
 #include "rendering/renderer.hxx"
 #include "rendering/renderer_application_policy.hxx"
 #include "rendering/scene.hxx"
-#include "assets/shader_hot_reload_watcher.hxx"
-#include "gpu/swapchain.hxx"
 
 namespace {
 
@@ -86,6 +88,40 @@ namespace {
         }
     };
 
+#if !defined(_WIN32)
+    // kdialog/zenity (spawned by pfd::open_file below) are themselves
+    // dynamically linked against the system's Qt/GTK. pfd forks and
+    // execvp()s them inheriting this process's environment, so if
+    // LD_LIBRARY_PATH here points at a different Qt build (e.g. one
+    // vendored alongside this engine), the child resolves its Qt libraries
+    // from there instead, mismatches ABI, and crashes on startup -- which
+    // looks like the dialog closing instantly with an empty selection
+    // rather than a launch failure. Scope this around just the
+    // pfd::open_file construction (the fork+exec happens synchronously
+    // inside its constructor) to fix that without affecting anything else
+    // this process spawns or dynamically loads.
+    class ScopedLdLibraryPathClear {
+    public:
+        ScopedLdLibraryPathClear() : saved_(std::getenv("LD_LIBRARY_PATH") ? std::getenv("LD_LIBRARY_PATH") : "") {
+            if (!saved_.empty()) {
+                unsetenv("LD_LIBRARY_PATH");
+            }
+        }
+
+        ~ScopedLdLibraryPathClear() {
+            if (!saved_.empty()) {
+                setenv("LD_LIBRARY_PATH", saved_.c_str(), 1);
+            }
+        }
+
+        ScopedLdLibraryPathClear(ScopedLdLibraryPathClear const &) = delete;
+        auto operator=(ScopedLdLibraryPathClear const &) -> ScopedLdLibraryPathClear & = delete;
+
+    private:
+        std::string saved_;
+    };
+#endif
+
     constexpr auto widget = [](const std::string_view name, auto &&f) -> bool {
         if (!ImGui::Begin(name.data())) {
             ImGui::End();
@@ -119,12 +155,6 @@ Application::Application(VulkanContext &ctx) noexcept :
 }
 
 Application::~Application() {
-    // Not a strict safety requirement the way it is for
-    // texture_streamer_/model_streamer_ (a chunk-generation task only
-    // captures a shared_ptr<TerrainField const>, never Renderer storages,
-    // so it can't outlive-and-touch anything this destructor frees) --
-    // this just avoids leaving background work running for content nobody
-    // will use once shutdown has been decided.
     if (terrain) {
         terrain->wait_all();
     }
@@ -138,6 +168,62 @@ auto Application::on_ui() -> void {
     widget("Memory", [] { on_memory_ui(); });
 #endif
     widget("Console", [&] { terminal_widget.draw(); });
+
+    widget("Load Model", [&] {
+        ImGui::TextUnformatted("glTF / GLB model");
+
+        if (!model_load_dialog) {
+            if (ImGui::Button("Browse...")) {
+                // Logs the exact helper command (zenity/kdialog/osascript/...)
+                // pfd resolves to on stderr, useful if it ever silently
+                // falls back to "echo" because no supported helper was found.
+                pfd::settings::verbose(true);
+
+#if !defined(_WIN32)
+                ScopedLdLibraryPathClear const scoped_ld_library_path_clear;
+#endif
+                model_load_dialog = std::make_unique<pfd::open_file>(
+                        "Load model", ".", std::vector<std::string>{"glTF models", "*.gltf *.glb", "All files", "*"});
+            }
+        } else {
+            ImGui::BeginDisabled();
+            ImGui::Button("Browse...");
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::TextDisabled("Waiting for file dialog...");
+
+            // Poll with a zero timeout -- ready() with a nonzero timeout
+            // sleeps the calling thread for up to that long, which would
+            // stall the render loop the same way result() does.
+            if (model_load_dialog->ready(0)) {
+                auto const selection = model_load_dialog->result();
+                model_load_dialog.reset();
+
+                if (selection.empty()) {
+                    warn("Load Model: file dialog closed with no selection -- check stderr for the 'pfd: ...' "
+                         "command line (enabled via pfd::settings::verbose) to see what it actually ran");
+                } else {
+                    auto const path = std::filesystem::path{selection.front()};
+                    auto const model = renderer->model_streamer().request(*renderer, path, engine_models.cube,
+                                                                          path.filename().string());
+
+                    if (model.valid()) {
+                        auto entity = Entity{active_scene(), path.stem().string()};
+                        entity.emplace<Components::Transform>();
+                        entity.emplace<Components::Model>(Components::Model{.model = model});
+                        model_load_status = std::format("Loading '{}'...", path.filename().string());
+                    } else {
+                        model_load_status = std::format("Failed to load '{}': could not reserve a model slot",
+                                                        path.filename().string());
+                    }
+                }
+            }
+        }
+
+        if (!model_load_status.empty()) {
+            ImGui::TextUnformatted(model_load_status.c_str());
+        }
+    });
 
     widget("Simulation", [&] {
         if (is_playing) {
