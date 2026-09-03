@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "object_pool.hxx"
+#include "core/object_pool.hxx"
 
 namespace {
 

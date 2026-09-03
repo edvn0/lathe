@@ -25,11 +25,10 @@ target_compile_definitions(
 target_link_libraries(
     mingw-vulkan-tests
     PRIVATE
-        mingw-vulkan-core
+        mingw-vulkan::core
         doctest::doctest_with_main
+        engine_options
 )
-
-configure_compiler_options(mingw-vulkan-tests)
 
 doctest_discover_tests(
     mingw-vulkan-tests

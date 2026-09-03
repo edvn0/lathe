@@ -3,8 +3,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/packing.hpp>
 
-#include "terrain_chunk.hxx"
-#include "terrain_mesh.hxx"
+#include "terrain/terrain_chunk.hxx"
+#include "terrain/terrain_mesh.hxx"
 
 #include <cmath>
 #include <optional>

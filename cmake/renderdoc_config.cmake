@@ -95,7 +95,15 @@ function(configure_renderdoc target)
             "${renderdoc_isolated_dir}"
         )
 
-        target_compile_definitions(${target} PRIVATE
+        # PUBLIC, not PRIVATE: application.cxx (engine_app) and
+        # vulkan_bootstrap.cxx (a direct executable source) both
+        # #include "gpu/renderdoc.hxx". Before the module split this define
+        # reached them transitively for free (everything was one archive);
+        # now that engine_gpu is its own library, PRIVATE would leave those
+        # other targets seeing it undefined -- a silent bug, since
+        # `#if HAS_RENDERDOC` evaluates false-via-undefined instead of
+        # erroring.
+        target_compile_definitions(${target} PUBLIC
             HAS_RENDERDOC=1
         )
 
@@ -105,7 +113,7 @@ function(configure_renderdoc target)
             "${DY_RENDERDOC_STUB_SOURCE}"
         )
 
-        target_compile_definitions(${target} PRIVATE
+        target_compile_definitions(${target} PUBLIC
             HAS_RENDERDOC=0
         )
 

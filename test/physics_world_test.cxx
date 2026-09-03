@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 
-#include "components.hxx"
-#include "physics_world.hxx"
+#include "scene/components.hxx"
+#include "physics/physics_world.hxx"
 
 #include <BS_thread_pool.hpp>
 #include <entt/entt.hpp>

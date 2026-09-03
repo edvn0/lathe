@@ -4,7 +4,7 @@
 
 #include <string_view>
 
-#include "forward.hxx"
+#include "core/forward.hxx"
 
 // Selects the window mode main() passes to initialize_vulkan() -- parsed
 // from a --screen-type= command line argument.

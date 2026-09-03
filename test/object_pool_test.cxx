@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 
-#include "object_pool.hxx"
-#include "handle.hxx"
+#include "core/object_pool.hxx"
+#include "core/handle.hxx"
 
 #include <cstdint>
 #include <utility>

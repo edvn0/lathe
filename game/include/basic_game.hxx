@@ -3,12 +3,12 @@
 #include <entt/entt.hpp>
 #include <glm/vec3.hpp>
 
-#include "game.hxx"
-#include "material.hxx"
-#include "model.hxx"
+#include "app/game.hxx"
+#include "assets/material.hxx"
+#include "assets/model.hxx"
 #include "player_camera.hxx"
 #include "player_controller.hxx"
-#include "terrain_mesh.hxx"
+#include "terrain/terrain_mesh.hxx"
 
 // Sample content exercising the engine's rendering and physics systems end
 // to end: a player capsule exploring a small village of procedurally built

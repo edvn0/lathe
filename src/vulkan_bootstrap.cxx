@@ -11,9 +11,9 @@
 #include <string_view>
 #include <vector>
 
-#include "context.hxx"
-#include "logger.hxx"
-#include "renderdoc.hxx"
+#include "gpu/context.hxx"
+#include "core/logger.hxx"
+#include "gpu/renderdoc.hxx"
 
 namespace {
 

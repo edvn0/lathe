@@ -1,6 +1,6 @@
 #include <doctest/doctest.h>
 
-#include "fly_string.hxx"
+#include "core/fly_string.hxx"
 
 #include <atomic>
 #include <cstddef>

@@ -16,15 +16,15 @@
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-#include "components.hxx"
-#include "entity.hxx"
-#include "error_describe.hxx"
-#include "logger.hxx"
-#include "physics_world.hxx"
-#include "primitive_meshes.hxx"
-#include "renderer.hxx"
-#include "scene.hxx"
-#include "terrain_mesh.hxx"
+#include "scene/components.hxx"
+#include "rendering/entity.hxx"
+#include "core/error_describe.hxx"
+#include "core/logger.hxx"
+#include "physics/physics_world.hxx"
+#include "assets/primitive_meshes.hxx"
+#include "rendering/renderer.hxx"
+#include "rendering/scene.hxx"
+#include "terrain/terrain_mesh.hxx"
 
 namespace {
 

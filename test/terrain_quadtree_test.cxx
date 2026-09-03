@@ -1,6 +1,6 @@
 #include <doctest/doctest.h>
 
-#include "terrain_quadtree.hxx"
+#include "terrain/terrain_quadtree.hxx"
 
 #include <algorithm>
 #include <set>

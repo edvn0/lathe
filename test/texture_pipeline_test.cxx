@@ -1,6 +1,6 @@
 #include <doctest/doctest.h>
 
-#include "texture_pipeline.hxx"
+#include "assets/texture_pipeline.hxx"
 
 #include <algorithm>
 #include <bit>

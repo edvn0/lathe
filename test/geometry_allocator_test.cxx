@@ -1,6 +1,6 @@
 #include <doctest/doctest.h>
 
-#include "geometry_allocator.hxx"
+#include "assets/geometry_allocator.hxx"
 
 #include <algorithm>
 #include <cstdint>

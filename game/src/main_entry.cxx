@@ -1,7 +1,7 @@
 #include <memory>
 
 #include "basic_game.hxx"
-#include "game.hxx"
+#include "app/game.hxx"
 
 // Declared (not defined) by the engine's main.cxx, which calls this once
 // during startup to obtain the game instance it drives.
