@@ -22,8 +22,10 @@
 #include "core/logger.hxx"
 #include "physics/physics_world.hxx"
 #include "assets/primitive_meshes.hxx"
+#include "enemy_ai_script.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
+#include "rendering/script_storage.hxx"
 #include "terrain/terrain_mesh.hxx"
 
 namespace {
@@ -124,6 +126,45 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     player.emplace<Components::PlayerTag>();
     player.emplace<Components::Model>(Components::Model{.model = engine_models.capsule});
     player_entity_ = player;
+
+    // 10 enemy capsules orbiting the player's spawn point, all sharing one
+    // EnemyAIScript instance -- each entity only carries its own
+    // Components::CircularMotion (center/radius/phase), demonstrating the
+    // shared-script-instance/per-entity-data pattern (see enemy_ai_script.hxx).
+    constexpr auto enemy_count = 10U;
+    constexpr float enemy_orbit_radius = 6.0F;
+    constexpr float enemy_capsule_radius = 0.3F;
+    constexpr float enemy_capsule_height = 0.8F;
+
+    auto const enemy_ai = scene.get_scripts().emplace<EnemyAIScript>();
+    if (!enemy_ai) {
+        error("[BasicGame::on_populate] Could not create EnemyAIScript instance");
+    } else {
+        auto const enemy_scale =
+                glm::vec3{enemy_capsule_radius / mesh_base_radius, enemy_capsule_height / mesh_base_height,
+                          enemy_capsule_radius / mesh_base_radius};
+
+        for (auto i = 0U; i < enemy_count; ++i) {
+            auto const angle =
+                    (static_cast<float>(i) / static_cast<float>(enemy_count)) * 2.0F * std::numbers::pi_v<float>;
+            auto const center = glm::vec3{0.0F, 3.0F, 0.0F};
+
+            auto enemy = GeneratedEntity{&scene, "enemy_{}", i};
+            enemy.emplace<Components::Transform>(Components::Transform{
+                    .position = center + glm::vec3{enemy_orbit_radius * std::cos(angle), 0.0F,
+                                                    enemy_orbit_radius * std::sin(angle)},
+                    .scale = enemy_scale,
+            });
+            enemy.emplace<Components::CircularMotion>(Components::CircularMotion{
+                    .center = center,
+                    .radius = enemy_orbit_radius,
+                    .angular_speed = 0.6F,
+                    .angle = angle,
+            });
+            enemy.emplace<Components::Model>(Components::Model{.model = engine_models.capsule});
+            enemy.emplace<Components::Script>(Components::Script{.script = enemy_ai.value()});
+        }
+    }
 
     cube_model_ = load_or_fallback("assets/models/test_cube.glb");
 
@@ -419,6 +460,15 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             }
         }
     }
+}
+
+auto BasicGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
+    // Components::Script/Components::CircularMotion need to ride along with
+    // the engine's base clone (see clone_editor_into_runtime()) -- without
+    // this, the enemy capsules would keep their Transform/Model but lose the
+    // data EnemyAIScript::on_update needs, so they'd stop moving the moment
+    // Play starts.
+    clone_editor_into_runtime<Components::Script, Components::CircularMotion>(editor_scene, runtime_scene);
 }
 
 auto BasicGame::on_update(Scene &scene, float delta_time) -> void {

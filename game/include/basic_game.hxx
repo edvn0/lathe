@@ -31,6 +31,8 @@ public:
 
     [[nodiscard]] auto terrain_create_info(Renderer &renderer) -> std::optional<TerrainWorldCreateInfo> override;
 
+    auto clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void override;
+
 private:
     auto shoot_bullet(Scene &scene, std::size_t n = 1) -> void;
 

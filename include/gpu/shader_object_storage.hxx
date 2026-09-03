@@ -12,11 +12,9 @@
 #include "core/error_context.hxx"
 #include "core/forward.hxx"
 #include "core/object_pool.hxx"
+#include "gpu/shader_binary_cache.hxx"
 #include "gpu/shader_object.hxx"
 
-// Sentinel stays the default (u32 max): index 0 is a legitimate slot here
-// (unlike MaterialHandle), so validity is effectively generation != 0
-// alone -- see PipelineHandle's identical reasoning.
 using ShaderObjectHandle = Handle<ShaderObjectSet>;
 
 enum class ShaderObjectStorageErrorType : std::uint8_t {
@@ -58,12 +56,11 @@ struct ShaderObjectStorageCreateInfo {
     std::uint32_t capacity = 0;
 
     VkDescriptorSetLayout global_descriptor_set_layout = VK_NULL_HANDLE;
+    std::filesystem::path binary_cache_directory;
 
     std::string_view debug_name = "shader_object_storage";
 };
 
-// Parallel to PipelineStorage: a generational-handle slot map owning
-// ShaderObjectSet instances. See docs/pipeline_to_shader_objects.md Phase 4.
 class ShaderObjectStorage {
 public:
     ShaderObjectStorage() = default;
@@ -124,6 +121,10 @@ private:
     VulkanContext *context_ = nullptr;
 
     ObjectPool<ShaderObjectSet> slots_;
+
+    std::optional<ShaderBinaryCache> binary_cache_;
+
+    auto binary_cache() -> const ShaderBinaryCache * { return binary_cache_ ? &*binary_cache_ : nullptr; }
 
     // Guards slots_.allocate()/release() -- see the identical comment on
     // PipelineStorage::slot_mutex_. ShaderObjectSet creation has no shared

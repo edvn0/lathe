@@ -4,6 +4,8 @@
 #include <numeric>
 #include <random>
 
+#include "maths/constexpr_maths.hxx"
+
 namespace {
 
     constexpr std::array<std::array<float, 2>, 8> gradients{{
@@ -17,8 +19,8 @@ namespace {
             {-0.70710678F, -0.70710678F},
     }};
 
-    constexpr float f2 = 0.3660254038F; // 0.5 * (sqrt(3) - 1)
-    constexpr float g2 = 0.2113248654F; // (3 - sqrt(3)) / 6
+    constexpr float f2 = 0.5F * (maths::root_three - 1);
+    constexpr float g2 = (3.0F - maths::root_three) / 6.0F;
 
     auto fastfloor(float x) -> int {
         auto const truncated = static_cast<int>(x);

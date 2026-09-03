@@ -5,11 +5,30 @@
 #include <optional>
 
 #include "rendering/engine_models.hxx"
+#include "rendering/entity.hxx" // Components::Meta/GeneratedMeta
+#include "rendering/scene.hxx" // clone_registry<>()
+#include "scene/components.hxx"
 #include "scene/input_events.hxx"
 #include "terrain/terrain_world.hxx"
 
 class Scene;
 struct Renderer;
+
+// entt::snapshot_loader asserts its destination registry is empty on
+// construction (see basic_snapshot_loader's ctor in entt/entity/snapshot.hpp),
+// so editor_scene -> runtime_scene cloning can only ever run as a single
+// snapshot/loader pass -- there's no way to clone the engine's base component
+// set now and a game's own extra component types later via a second,
+// separate clone_registry<>() call. This helper is that one pass: it always
+// includes the engine's own base set, plus whatever ExtraComponents a game
+// passes in for its own per-entity data (see IGame::clone_into_runtime).
+template<typename... ExtraComponents>
+auto clone_editor_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
+    clone_registry<Components::Transform, Components::Model, Components::RigidBody, Components::MaterialOverride,
+                   Components::PlayerTag, Components::Lifetime, Components::PointLight, Components::SpotLight,
+                   Components::GeneratedMeta, Components::Meta, ExtraComponents...>(editor_scene.get_registry(),
+                                                                                    runtime_scene.get_registry());
+}
 
 // View/projection/clip-plane values the engine needs to render a frame --
 // decouples Application/main.cxx from whatever camera type a game uses
@@ -74,4 +93,17 @@ public:
     }
 
     [[nodiscard]] virtual auto camera(Scene const &scene, float aspect_ratio) const -> CameraParams = 0;
+
+    // Called once from Application::play() to populate runtime_scene's
+    // registry from editor_scene's -- see clone_editor_into_runtime() above
+    // for why this can't be split into an engine-side call plus a separate
+    // game-side one. Default clones just the engine's own base component
+    // set; a game that adds its own component types via on_populate() (e.g.
+    // gameplay/script data) must override this and pass them as
+    // ExtraComponents, or they silently won't exist on the entities
+    // Application actually simulates/renders once playing -- see
+    // BasicGame::clone_into_runtime for Components::Script/CircularMotion.
+    virtual auto clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
+        clone_editor_into_runtime<>(editor_scene, runtime_scene);
+    }
 };

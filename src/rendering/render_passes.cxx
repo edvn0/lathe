@@ -5,10 +5,10 @@
 #include <cstddef>
 #include <span>
 
-#include "rendering/render_stage.hxx"
-#include "shader_push_constants.hxx"
-#include "rendering/shadow_cascades.hxx"
 #include "gpu/vk_barrier.hxx"
+#include "rendering/render_stage.hxx"
+#include "rendering/shadow_cascades.hxx"
+#include "shader_push_constants.hxx"
 
 namespace render_pass {
 
@@ -458,10 +458,6 @@ namespace render_pass {
                 return shader_objects->layout();
             }
 
-            if (auto const *pipeline = graph.resolve(handle); pipeline != nullptr) {
-                return pipeline->layout();
-            }
-
             return VK_NULL_HANDLE;
         }
 
@@ -480,10 +476,6 @@ namespace render_pass {
                 set_shader_object_color_blend_state(command_buffer, colour_attachment_count, blending);
                 return;
             }
-
-            if (auto const *pipeline = graph.resolve(handle); pipeline != nullptr) {
-                vkCmdBindPipeline(command_buffer, pipeline->bind_point(), pipeline->pipeline());
-            }
         }
 
         auto bind_compute_node(PipelineGraphRepository const &graph, PipelineNodeHandle handle,
@@ -491,10 +483,6 @@ namespace render_pass {
             if (auto const *shader_objects = graph.resolve_shader_objects(handle); shader_objects != nullptr) {
                 shader_objects->bind(command_buffer);
                 return;
-            }
-
-            if (auto const *pipeline = graph.resolve(handle); pipeline != nullptr) {
-                vkCmdBindPipeline(command_buffer, pipeline->bind_point(), pipeline->pipeline());
             }
         }
 
@@ -875,14 +863,13 @@ namespace render_pass {
 
         // Restore the layout forward_geometry's LOAD_OP_LOAD depth
         // attachment expects.
-        transition_image_layout(context.command_buffer, info.depth.image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                                VK_ACCESS_2_SHADER_READ_BIT,
-                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                                VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
+        transition_image_layout(
+                context.command_buffer, info.depth.image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_2_SHADER_READ_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
 
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                              context.timestamp_query_pool, stage * 2 + 1);

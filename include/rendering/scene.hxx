@@ -3,8 +3,8 @@
 #include "core/forward.hxx"
 #include "physics/physics.hxx"
 
-#include <entt/entity/snapshot.hpp>
 #include <entt/entt.hpp>
+#include <entt/entity/snapshot.hpp>
 
 #include <glm/mat4x4.hpp>
 
@@ -14,12 +14,14 @@
 #include <vector>
 
 class PhysicsWorld;
+class ScriptStorage;
 
 namespace detail {
     template<typename NameType>
     class Entity;
 
     class ReadOnlyEntity;
+    class ScriptEntity;
 } // namespace detail
 
 class Scene {
@@ -40,6 +42,9 @@ public:
     auto attach_debug_renderer(debug_draw::DebugRenderer &renderer) -> void;
     auto detach_debug_renderer() -> void;
 
+    auto get_scripts() noexcept -> ScriptStorage &;
+    auto get_scripts() const noexcept -> ScriptStorage const &;
+
 private:
     entt::registry registry;
     entt::sigh<void()> lights_changed_signal_;
@@ -53,14 +58,26 @@ public:
     std::unique_ptr<PhysicsWorld> physics_world;
 
 private:
+    // ScriptStorage actually lives on Renderer, not here -- get_scripts()
+    // forwards to it. A Scene-owned ScriptStorage would break ScriptHandle
+    // validity across Application::play(): play() clones entities into a
+    // brand-new runtime Scene, and a handle allocated while populating
+    // editor_scene must still resolve afterwards. Renderer is the one object
+    // shared by both editor_scene and runtime_scene (see EngineModels/
+    // MaterialStorage/ModelStorage, which rely on the exact same fact).
+    Renderer &renderer_;
+
     auto mark_lights_dirty(entt::registry &, entt::entity) -> void;
     auto on_transform_changed(entt::registry &reg, entt::entity entity) -> void;
     auto on_rigid_body_destroyed(entt::registry &, entt::entity entity) -> void;
+    auto on_script_attached(entt::registry &, entt::entity) -> void;
+    auto on_script_detached(entt::registry &, entt::entity) -> void;
     auto connect_light_signals() -> void;
 
     template<typename T>
     friend class detail::Entity;
     friend class detail::ReadOnlyEntity;
+    friend class detail::ScriptEntity;
 };
 
 namespace detail {
@@ -106,4 +123,5 @@ namespace systems {
     [[nodiscard]] auto get_world_transform(entt::registry const &registry, entt::entity, const Components::Transform &)
             -> glm::mat4;
     auto lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) -> void;
+    auto script_update(entt::registry &registry, Scene &scene, float dt) -> void;
 } // namespace systems

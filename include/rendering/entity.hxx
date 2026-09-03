@@ -85,6 +85,38 @@ namespace detail {
         friend class Scene;
     };
 
+    // Handed to IScript::on_update, which may run concurrently (once per
+    // entity referencing a parallelizable() script) across thread_pool() --
+    // see script.hxx. Deliberately exposes neither Entity's lazy
+    // get_or_emplace<Meta> name resolution (a registry-structural mutation)
+    // nor emplace<T>(): no path here can add/remove components or
+    // create/destroy entities, which entt::registry only allows safely from
+    // the main thread. get<T>() in-place mutation of a component the entity
+    // already has is fine to do concurrently across *different* entities.
+    class ScriptEntity {
+    public:
+        ScriptEntity(Scene *s, entt::entity e) noexcept : scene(s), entity(e) {}
+        ~ScriptEntity() = default;
+
+        template<typename T>
+        auto has() const -> bool {
+            return scene->registry.all_of<T>(entity);
+        }
+
+        template<typename T>
+        auto get() const -> T & {
+            return scene->registry.get<T>(entity);
+        }
+
+        operator entt::entity() const noexcept { return entity; }
+
+    private:
+        Scene *scene;
+        entt::entity entity;
+
+        friend class Scene;
+    };
+
 } // namespace detail
 
 
@@ -95,3 +127,4 @@ using GeneratedEntity = detail::Entity<std::string>;
 using Entity = detail::Entity<FlyString>;
 
 using ReadOnlyEntity = detail::ReadOnlyEntity;
+using ScriptEntity = detail::ScriptEntity;

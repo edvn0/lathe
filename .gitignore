@@ -8,3 +8,5 @@ screenshots
 imgui.ini
 
 assets/models/*
+
+tools/shader_reflect/target

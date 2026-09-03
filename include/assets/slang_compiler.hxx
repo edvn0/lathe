@@ -43,7 +43,6 @@ namespace renderer {
     struct CompiledShader {
         ShaderStage stage = ShaderStage::vertex;
         std::string entry_point;
-
         std::vector<std::uint32_t> spirv;
     };
 

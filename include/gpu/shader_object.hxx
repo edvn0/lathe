@@ -12,7 +12,9 @@
 
 #include "core/error_context.hxx"
 #include "core/forward.hxx"
-#include "gpu/pipeline.hxx" // ShaderStageInfo
+#include "gpu/shader_stage.hxx"
+
+struct ShaderBinaryCache;
 
 enum class ShaderObjectErrorType : std::uint8_t {
     invalid_argument,
@@ -49,17 +51,8 @@ struct std::formatter<ShaderObjectErrorType> : std::formatter<std::string_view> 
 };
 
 struct ShaderObjectCreateInfo {
-    // Stages in pipeline order (e.g. vertex,fragment or task,mesh,fragment).
-    // nextStage chaining for the VK_SHADER_CREATE_LINK_STAGE_BIT_EXT group is
-    // derived from this order.
     std::span<const ShaderStageInfo> shaders;
-
-    /*
-     * Additional layouts beginning at descriptor set 1.
-     * Set 0 is injected by the caller (global_layout).
-     */
     std::span<VkDescriptorSetLayout const> additional_descriptor_set_layouts;
-
     std::span<VkPushConstantRange const> push_constant_ranges;
 
     std::string_view debug_name = "shader_object_set";
@@ -67,9 +60,7 @@ struct ShaderObjectCreateInfo {
 
 struct ComputeShaderCreateInfo {
     ShaderStageInfo shader;
-
     std::span<VkDescriptorSetLayout const> additional_descriptor_set_layouts;
-
     std::span<VkPushConstantRange const> push_constant_ranges;
 
     std::string_view debug_name = "compute_shader_object";
@@ -124,10 +115,11 @@ private:
 
     [[nodiscard]]
     static auto create_linked(VulkanContext &context, ShaderObjectCreateInfo const &create_info,
-                              VkDescriptorSetLayout global_layout) -> std::expected<ShaderObjectSet, ShaderObjectError>;
+                              VkDescriptorSetLayout global_layout, ShaderBinaryCache const * = nullptr)
+            -> std::expected<ShaderObjectSet, ShaderObjectError>;
 
     [[nodiscard]]
     static auto create_compute(VulkanContext &context, ComputeShaderCreateInfo const &create_info,
-                               VkDescriptorSetLayout global_layout)
+                               VkDescriptorSetLayout global_layout, ShaderBinaryCache const * = nullptr)
             -> std::expected<ShaderObjectSet, ShaderObjectError>;
 };

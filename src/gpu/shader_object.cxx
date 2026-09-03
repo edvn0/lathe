@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "gpu/context.hxx"
+#include "gpu/shader_binary_cache.hxx"
 #include "gpu/vk_object_name.hxx"
 
 namespace {
@@ -90,7 +91,7 @@ auto ShaderObjectSet::operator=(ShaderObjectSet &&other) noexcept -> ShaderObjec
 }
 
 auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateInfo const &create_info,
-                                    VkDescriptorSetLayout global_layout)
+                                    VkDescriptorSetLayout global_layout, ShaderBinaryCache const *binary_cache)
         -> std::expected<ShaderObjectSet, ShaderObjectError> {
     if (context.device == VK_NULL_HANDLE || create_info.shaders.empty()) {
         return std::unexpected(make_error(ShaderObjectErrorType::invalid_argument,
@@ -131,36 +132,65 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
     layouts.insert(layouts.end(), create_info.additional_descriptor_set_layouts.begin(),
                    create_info.additional_descriptor_set_layouts.end());
 
-    std::vector<VkShaderCreateInfoEXT> shader_create_infos(create_info.shaders.size());
+    std::vector<std::optional<std::vector<std::byte>>> binary_storage(create_info.shaders.size());
+    std::vector<bool> used_binary(create_info.shaders.size(), false);
 
-    for (std::size_t index = 0; index < create_info.shaders.size(); ++index) {
-        auto const &shader = create_info.shaders[index];
+    auto const build_create_infos = [&](bool force_spirv) {
+        std::vector<VkShaderCreateInfoEXT> infos(create_info.shaders.size());
 
-        auto const is_last = index + 1 == create_info.shaders.size();
+        for (std::size_t index = 0; index < create_info.shaders.size(); ++index) {
+            auto const &shader = create_info.shaders[index];
+            auto const is_last = index + 1 == create_info.shaders.size();
 
-        shader_create_infos[index] = VkShaderCreateInfoEXT{
-                .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
-                .pNext = nullptr,
-                .flags = VK_SHADER_CREATE_LINK_STAGE_BIT_EXT,
-                .stage = shader.stage,
-                .nextStage = is_last ? VkShaderStageFlags{0}
-                                     : static_cast<VkShaderStageFlags>(create_info.shaders[index + 1].stage),
-                .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
-                .codeSize = shader.spirv.size_bytes(),
-                .pCode = shader.spirv.data(),
-                .pName = shader.entry_point.view().data(),
-                .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
-                .pSetLayouts = layouts.data(),
-                .pushConstantRangeCount = static_cast<std::uint32_t>(create_info.push_constant_ranges.size()),
-                .pPushConstantRanges = create_info.push_constant_ranges.data(),
-                .pSpecializationInfo = shader.specialization_info,
-        };
-    }
+            if (!force_spirv && binary_cache != nullptr && !shader.cache_key.empty()) {
+                binary_storage[index] = binary_cache->find(shader.cache_key);
+            } else {
+                binary_storage[index].reset();
+            }
 
+            used_binary[index] = binary_storage[index].has_value();
+
+            infos[index] = VkShaderCreateInfoEXT{
+                    .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+                    .pNext = nullptr,
+                    .flags = VK_SHADER_CREATE_LINK_STAGE_BIT_EXT,
+                    .stage = shader.stage,
+                    .nextStage = is_last ? VkShaderStageFlags{0}
+                                         : static_cast<VkShaderStageFlags>(create_info.shaders[index + 1].stage),
+                    .codeType = used_binary[index] ? VK_SHADER_CODE_TYPE_BINARY_EXT : VK_SHADER_CODE_TYPE_SPIRV_EXT,
+                    .codeSize = used_binary[index] ? binary_storage[index]->size() : shader.spirv.size_bytes(),
+                    .pCode = used_binary[index] ? static_cast<void const *>(binary_storage[index]->data())
+                                                : static_cast<void const *>(shader.spirv.data()),
+                    .pName = shader.entry_point.view().data(),
+                    .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
+                    .pSetLayouts = layouts.data(),
+                    .pushConstantRangeCount = static_cast<std::uint32_t>(create_info.push_constant_ranges.size()),
+                    .pPushConstantRanges = create_info.push_constant_ranges.data(),
+                    .pSpecializationInfo = shader.specialization_info,
+            };
+        }
+
+        return infos;
+    };
+
+    auto shader_create_infos = build_create_infos(/*force_spirv=*/false);
     std::array<VkShaderEXT, ShaderObjectSet::max_stages> created_shaders{};
+    auto vk_result = vkCreateShadersEXT(context.device, static_cast<std::uint32_t>(shader_create_infos.size()),
+                                        shader_create_infos.data(), nullptr, created_shaders.data());
 
-    auto const vk_result = vkCreateShadersEXT(context.device, static_cast<std::uint32_t>(shader_create_infos.size()),
-                                              shader_create_infos.data(), nullptr, created_shaders.data());
+    if (vk_result == VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT) {
+        for (auto const shader: created_shaders) {
+            if (shader != VK_NULL_HANDLE) {
+                vkDestroyShaderEXT(context.device, shader, nullptr);
+            }
+        }
+        created_shaders.fill(VK_NULL_HANDLE);
+
+        shader_create_infos = build_create_infos(/*force_spirv=*/true);
+
+        vk_result = vkCreateShadersEXT(context.device, static_cast<std::uint32_t>(shader_create_infos.size()),
+                                       shader_create_infos.data(), nullptr, created_shaders.data());
+    }
 
     if (vk_result != VK_SUCCESS) {
         for (std::size_t index = 0; index < shader_create_infos.size(); ++index) {
@@ -186,6 +216,27 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
         auto const object_name = std::format("{}.stage{}", create_info.debug_name, index);
         vk::set_object_name(context.device, VK_OBJECT_TYPE_SHADER_EXT, vk::object_handle(created_shaders[index]),
                             object_name);
+
+        // Populate the cache for anything that didn't just come from it --
+        // a first-time SPIR-V compile, or every stage after a retry (the
+        // retry re-caches stages that weren't actually incompatible too;
+        // harmless, just an extra vkGetShaderBinaryDataEXT call).
+        auto const &shader = create_info.shaders[index];
+
+        if (binary_cache != nullptr && !shader.cache_key.empty() && !used_binary[index]) {
+            std::size_t size = 0;
+            vkGetShaderBinaryDataEXT(context.device, created_shaders[index], &size, nullptr);
+
+            if (size != 0) {
+                std::vector<std::byte> blob(size);
+
+                if (vkGetShaderBinaryDataEXT(context.device, created_shaders[index], &size, blob.data()) ==
+                    VK_SUCCESS) {
+                    blob.resize(size);
+                    binary_cache->store(shader.cache_key, blob);
+                }
+            }
+        }
     }
 
     result.count_ = static_cast<std::uint32_t>(create_info.shaders.size());
@@ -198,7 +249,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
 }
 
 auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreateInfo const &create_info,
-                                     VkDescriptorSetLayout global_layout)
+                                     VkDescriptorSetLayout global_layout, ShaderBinaryCache const *binary_cache)
         -> std::expected<ShaderObjectSet, ShaderObjectError> {
     if (context.device == VK_NULL_HANDLE || create_info.shader.spirv.empty()) {
         return std::unexpected(
@@ -230,26 +281,54 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
     layouts.insert(layouts.end(), create_info.additional_descriptor_set_layouts.begin(),
                    create_info.additional_descriptor_set_layouts.end());
 
-    VkShaderCreateInfoEXT const shader_create_info{
-            .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
-            .pNext = nullptr,
-            .flags = 0, // unlinked
-            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-            .nextStage = 0,
-            .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
-            .codeSize = shader.spirv.size_bytes(),
-            .pCode = shader.spirv.data(),
-            .pName = shader.entry_point.view().data(),
-            .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
-            .pSetLayouts = layouts.data(),
-            .pushConstantRangeCount = static_cast<std::uint32_t>(create_info.push_constant_ranges.size()),
-            .pPushConstantRanges = create_info.push_constant_ranges.data(),
-            .pSpecializationInfo = shader.specialization_info,
+    std::optional<std::vector<std::byte>> binary_storage;
+
+    auto const build_create_info = [&](bool force_spirv) {
+        if (!force_spirv && binary_cache != nullptr && !shader.cache_key.empty()) {
+            binary_storage = binary_cache->find(shader.cache_key);
+        } else {
+            binary_storage.reset();
+        }
+
+        auto const use_binary = binary_storage.has_value();
+
+        return VkShaderCreateInfoEXT{
+                .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+                .pNext = nullptr,
+                .flags = 0, // unlinked
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .nextStage = 0,
+                .codeType = use_binary ? VK_SHADER_CODE_TYPE_BINARY_EXT : VK_SHADER_CODE_TYPE_SPIRV_EXT,
+                .codeSize = use_binary ? binary_storage->size() : shader.spirv.size_bytes(),
+                .pCode = use_binary ? static_cast<void const *>(binary_storage->data())
+                                    : static_cast<void const *>(shader.spirv.data()),
+                .pName = shader.entry_point.view().data(),
+                .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
+                .pSetLayouts = layouts.data(),
+                .pushConstantRangeCount = static_cast<std::uint32_t>(create_info.push_constant_ranges.size()),
+                .pPushConstantRanges = create_info.push_constant_ranges.data(),
+                .pSpecializationInfo = shader.specialization_info,
+        };
     };
+
+    auto shader_create_info = build_create_info(/*force_spirv=*/false);
+    auto used_binary = binary_storage.has_value();
 
     VkShaderEXT created_shader = VK_NULL_HANDLE;
 
-    auto const vk_result = vkCreateShadersEXT(context.device, 1, &shader_create_info, nullptr, &created_shader);
+    auto vk_result = vkCreateShadersEXT(context.device, 1, &shader_create_info, nullptr, &created_shader);
+
+    if (vk_result == VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT) {
+        if (created_shader != VK_NULL_HANDLE) {
+            vkDestroyShaderEXT(context.device, created_shader, nullptr);
+            created_shader = VK_NULL_HANDLE;
+        }
+
+        shader_create_info = build_create_info(/*force_spirv=*/true);
+        used_binary = false;
+
+        vk_result = vkCreateShadersEXT(context.device, 1, &shader_create_info, nullptr, &created_shader);
+    }
 
     if (vk_result != VK_SUCCESS) {
         vkDestroyPipelineLayout(context.device, result.layout_, nullptr);
@@ -271,6 +350,20 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
                         create_info.debug_name);
     auto const layout_name = std::string{create_info.debug_name} + ".layout";
     vk::set_object_name(context.device, VK_OBJECT_TYPE_PIPELINE_LAYOUT, vk::object_handle(result.layout_), layout_name);
+
+    if (binary_cache != nullptr && !shader.cache_key.empty() && !used_binary) {
+        std::size_t size = 0;
+        vkGetShaderBinaryDataEXT(context.device, created_shader, &size, nullptr);
+
+        if (size != 0) {
+            std::vector<std::byte> blob(size);
+
+            if (vkGetShaderBinaryDataEXT(context.device, created_shader, &size, blob.data()) == VK_SUCCESS) {
+                blob.resize(size);
+                binary_cache->store(shader.cache_key, blob);
+            }
+        }
+    }
 
     return result;
 }

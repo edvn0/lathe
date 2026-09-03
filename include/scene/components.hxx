@@ -7,6 +7,7 @@
 #include "assets/model.hxx" // ModelHandle
 #include "physics/physics_components.hxx"
 #include "core/transform.hxx"
+#include "scene/script_handle.hxx"
 
 namespace Components {
     struct PointLight {
@@ -30,6 +31,10 @@ namespace Components {
 
     struct Model {
         ModelHandle model{};
+    };
+
+    struct Script {
+        ScriptHandle script{};
     };
 
     struct PlayerTag {};

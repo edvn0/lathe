@@ -1,9 +1,3 @@
-# ------------------------------------------------------------------------------
-# engine_assets -- model/texture/material loading and streaming, Slang shader
-# compilation. Depends on engine_gpu (compressed textures, vertex formats) and
-# engine_core.
-# ------------------------------------------------------------------------------
-
 set(
     engine_assets_sources
     assets_error_describe.cxx
@@ -51,6 +45,7 @@ target_link_libraries(
         engine_core
     PRIVATE
         engine_options
+        spirv-tools::opt
 )
 
 target_precompile_headers(

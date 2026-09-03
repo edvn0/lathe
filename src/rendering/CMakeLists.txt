@@ -17,6 +17,7 @@ add_library(
         render_passes.cxx
         scene.cxx
         screenshot.cxx
+        script_storage.cxx
         shadow_cascades.cxx
         terminal_widget.cxx
 )

@@ -2,6 +2,8 @@
 
 #include <slang-com-ptr.h>
 
+#include <spirv-tools/optimizer.hpp>
+
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -14,8 +16,8 @@
 #include <thread>
 #include <utility>
 
-#include "core/logger.hxx"
 #include "assets/slang_library.hxx"
+#include "core/logger.hxx"
 
 namespace renderer {
     namespace {
@@ -146,6 +148,22 @@ namespace renderer {
         }
 
         [[nodiscard]]
+        auto make_string_option(slang::CompilerOptionName name, char const *value) noexcept
+                -> slang::CompilerOptionEntry {
+            return slang::CompilerOptionEntry{
+                    .name = name,
+                    .value =
+                            slang::CompilerOptionValue{
+                                    .kind = slang::CompilerOptionValueKind::String,
+                                    .intValue0 = 0,
+                                    .intValue1 = 0,
+                                    .stringValue0 = value,
+                                    .stringValue1 = nullptr,
+                            },
+            };
+        }
+
+        [[nodiscard]]
         auto validate_request(ShaderCompileRequest const &request) -> std::expected<void, ShaderCompileError> {
             if (request.source_path.empty()) {
                 return std::unexpected{
@@ -172,6 +190,40 @@ namespace renderer {
             return {};
         }
     } // namespace
+
+    namespace spirv_opt {
+        [[nodiscard]]
+        auto run(std::vector<std::uint32_t> spirv, bool optimize_for_size)
+                -> std::expected<std::vector<std::uint32_t>, ShaderCompileError> {
+            auto optimizer = spvtools::Optimizer{SPV_ENV_VULKAN_1_3};
+
+            optimizer.SetMessageConsumer(
+                    [](spv_message_level_t, char const *source, spv_position_t const &position, char const *message) {
+                        warn("spirv-opt: {} ({}:{}:{})", message, source != nullptr ? source : "<unknown>",
+                             position.line, position.column);
+                    });
+
+            if (optimize_for_size) {
+                optimizer.RegisterSizePasses();
+            } else {
+                optimizer.RegisterPerformancePasses();
+            }
+
+            auto optimized = std::vector<std::uint32_t>{};
+
+            auto options = spvtools::OptimizerOptions{};
+
+            // Slang already validated via SkipSPIRVValidation=0 above; skip re-validating here.
+            options.set_run_validator(false);
+
+            if (!optimizer.Run(spirv.data(), spirv.size(), &optimized, options)) {
+                return std::unexpected{make_error(ShaderCompileErrorType::invalid_spirv, SLANG_FAIL,
+                                                  "spirv-opt failed to optimize the generated SPIR-V module.")};
+            }
+
+            return optimized;
+        }
+    } // namespace spirv_opt
 
     struct SlangCompiler::Impl {
         SlangLibrary library;
@@ -297,33 +349,18 @@ namespace renderer {
         auto options = std::vector<slang::CompilerOptionEntry>{};
 
         options.reserve(5);
-
         options.push_back(make_integer_option(slang::CompilerOptionName::EmitSpirvDirectly, 1));
-
-        /*
-         * Preserve the selected Slang function name in OpEntryPoint.
-         * This lets PipelineStorage use CompiledShader::entry_point
-         * directly as VkPipelineShaderStageCreateInfo::pName.
-         */
         options.push_back(make_integer_option(slang::CompilerOptionName::VulkanUseEntryPointName, 1));
-
         options.push_back(make_integer_option(slang::CompilerOptionName::Optimization,
                                               request.optimize ? SLANG_OPTIMIZATION_LEVEL_MAXIMAL
                                                                : SLANG_OPTIMIZATION_LEVEL_NONE));
-
         options.push_back(make_integer_option(slang::CompilerOptionName::DebugInformation,
                                               request.generate_debug_info ? SLANG_DEBUG_INFO_LEVEL_STANDARD
                                                                           : SLANG_DEBUG_INFO_LEVEL_NONE));
-
-        /*
-         * Keep Slang's built-in SPIR-V validation enabled.
-         * SkipSPIRVValidation = 0 is explicit here so the compiler
-         * contract remains obvious.
-         */
         options.push_back(make_integer_option(slang::CompilerOptionName::SkipSPIRVValidation, 0));
-
         options.push_back(make_integer_option(slang::CompilerOptionName::MatrixLayoutColumn, 1));
         options.push_back(make_integer_option(slang::CompilerOptionName::MatrixLayoutRow, 0));
+        options.push_back(make_string_option(slang::CompilerOptionName::DisableWarning, "41012"));
 
         auto target_description = slang::TargetDesc{
                 .structureSize = sizeof(slang::TargetDesc),
@@ -525,6 +562,20 @@ namespace renderer {
                                               "the SPIR-V magic number.")};
         }
 
+        if (request.optimize) {
+            auto opt_result = spirv_opt::run(std::move(spirv), /*optimize_for_size=*/false);
+
+            if (!opt_result) {
+                return std::unexpected{std::move(opt_result.error())};
+            }
+
+            spirv = std::move(*opt_result);
+        }
+
+        if (!diagnostics.empty()) {
+            warn("Slang diagnostics for '{}' [{}]:\n{}", request.source_path.string(), request.entry_point,
+                 diagnostics);
+        }
 
         return CompiledShader{
                 .stage = request.stage,

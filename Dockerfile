@@ -30,4 +30,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix \
     && rm -rf /var/lib/apt/lists/*
 
+ENV CARGO_HOME=/root/.cargo
+ENV RUSTUP_HOME=/root/.rustup
+ENV PATH="${CARGO_HOME}/bin:${PATH}"
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain stable \
+    && cargo --version \
+    && rustc --version
+
+ARG SPIRV_TOOLS_TAG=vulkan-sdk-1.4.357.0
+
+RUN git clone --branch "${SPIRV_TOOLS_TAG}" --depth 1 \
+        https://github.com/KhronosGroup/SPIRV-Tools.git /tmp/spirv-tools \
+    && git clone --branch "${SPIRV_TOOLS_TAG}" --depth 1 \
+        https://github.com/KhronosGroup/SPIRV-Headers.git /tmp/spirv-tools/external/spirv-headers \
+    && cmake -S /tmp/spirv-tools -B /tmp/spirv-tools/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DSPIRV_SKIP_TESTS=ON \
+        -DSPIRV_SKIP_EXECUTABLES=ON \
+        -DSPIRV_WERROR=OFF \
+    && cmake --build /tmp/spirv-tools/build -j"$(nproc)" \
+    && cmake --install /tmp/spirv-tools/build --prefix /usr/local \
+    && rm -rf /tmp/spirv-tools
+
 WORKDIR /workspace

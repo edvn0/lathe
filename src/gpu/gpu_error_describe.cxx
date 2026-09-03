@@ -9,8 +9,6 @@
 #include "gpu/gpu_resource_table.hxx"
 #include "gpu/image.hxx"
 #include "gpu/image_storage.hxx"
-#include "gpu/pipeline.hxx"
-#include "gpu/pipeline_storage.hxx"
 #include "gpu/sampler_storage.hxx"
 #include "gpu/shader_object.hxx"
 #include "gpu/shader_object_storage.hxx"
@@ -34,26 +32,6 @@ auto describe(ImageError const &error) -> std::string {
 
 auto describe(ImageStorageError const &error) -> std::string {
     auto head = std::format("ImageStorageError({})", error.type);
-
-    if (error.cause.has_value()) {
-        return head + " -> " + describe(*error.cause);
-    }
-
-    return head;
-}
-
-auto describe(PipelineError const &error) -> std::string {
-    auto head = std::format("PipelineError({})", error.type);
-
-    if (error.context.has_value()) {
-        return head + " -> " + describe(*error.context);
-    }
-
-    return head;
-}
-
-auto describe(PipelineStorageError const &error) -> std::string {
-    auto head = std::format("PipelineStorageError({})", error.type);
 
     if (error.cause.has_value()) {
         return head + " -> " + describe(*error.cause);

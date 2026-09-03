@@ -16,18 +16,18 @@
 #include <utility>
 #include <vector>
 
+#include "assets/material_storage.hxx"
+#include "assets/slang_compiler.hxx"
+#include "core/logger.hxx"
+#include "core/thread_pool.hxx"
 #include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
 #include "gpu/device_error.hxx"
 #include "gpu/gpu_resource_table.hxx"
-#include "core/logger.hxx"
-#include "assets/material_storage.hxx"
+#include "gpu/sampler_storage.hxx"
+#include "gpu/vk_barrier.hxx"
 #include "rendering/render_passes.hxx"
 #include "rendering/renderer_application_policy.hxx"
-#include "gpu/sampler_storage.hxx"
-#include "assets/slang_compiler.hxx"
-#include "core/thread_pool.hxx"
-#include "gpu/vk_barrier.hxx"
 
 // ForwardPushConstants, ShadowPushConstants, CompositePushConstants,
 // LightIconPushConstants, CullPushConstants, DownsamplePushConstants, and
@@ -37,6 +37,28 @@
 #include "shader_push_constants.hxx"
 
 namespace {
+    [[nodiscard]]
+    inline auto compile_stages_parallel(std::span<renderer::ShaderCompileRequest const> requests)
+            -> std::vector<std::expected<renderer::CompiledShader, renderer::ShaderCompileError>> {
+        auto &pool = thread_pool();
+
+        std::vector<std::future<std::expected<renderer::CompiledShader, renderer::ShaderCompileError>>> futures;
+        futures.reserve(requests.size());
+
+        for (auto const &request: requests) {
+            futures.push_back(pool.submit_task([&request] { return Renderer::compiler().compile(request); }));
+        }
+
+        std::vector<std::expected<renderer::CompiledShader, renderer::ShaderCompileError>> results;
+        results.reserve(requests.size());
+
+        for (auto &future: futures) {
+            results.push_back(future.get());
+        }
+
+        return results;
+    }
+
     template<typename Action>
     struct FinalAction {
         Action action;
@@ -65,10 +87,6 @@ namespace {
             return shader_objects->layout();
         }
 
-        if (auto const *pipeline = graph.resolve(handle); pipeline != nullptr) {
-            return pipeline->layout();
-        }
-
         return VK_NULL_HANDLE;
     }
 
@@ -77,10 +95,6 @@ namespace {
         if (auto const *shader_objects = graph.resolve_shader_objects(handle); shader_objects != nullptr) {
             shader_objects->bind(command_buffer);
             return;
-        }
-
-        if (auto const *pipeline = graph.resolve(handle); pipeline != nullptr) {
-            vkCmdBindPipeline(command_buffer, pipeline->bind_point(), pipeline->pipeline());
         }
     }
 } // namespace
@@ -214,7 +228,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     if (initialized_ || create_info.extent.width == 0 || create_info.extent.height == 0 || frames_in_flight == 0 ||
         create_info.material_capacity < 2 || create_info.mesh_capacity < 2 || create_info.model_capacity < 2 ||
-        create_info.maximum_draw_count == 0 || create_info.maximum_submission_count == 0) {
+        create_info.script_capacity < 2 || create_info.maximum_draw_count == 0 ||
+        create_info.maximum_submission_count == 0) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
@@ -283,6 +298,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                               .frames_in_flight = frames_in_flight,
                               .global_descriptor_set_layout = gpu_resource_table_.layout(),
                               .cache_file_path = "cache/pipeline_cache.bin",
+                              .shader_binary_cache_directory = "cache/shader_binaries",
                               .debug_name = "renderer.pipelines",
                       });
 
@@ -328,7 +344,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = create_info.depth_format,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = create_info.samples,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.forward_pipeline",
     }); // index 0: forward
 
@@ -360,7 +375,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = create_info.samples,
             .blending = true,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.forward_blend_pipeline",
     }); // index 1: forward_blend
 
@@ -396,7 +410,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = create_info.samples,
             .blending = true,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.light_icon_pipeline",
     }); // index 2: light_icon
 
@@ -417,7 +430,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = VK_FORMAT_D32_SFLOAT,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.shadow_pipeline",
     }); // index 3: shadow
 
@@ -445,7 +457,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = VK_FORMAT_D32_SFLOAT,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.shadow_mask_pipeline",
     }); // index 4: shadow_mask
 
@@ -466,7 +477,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = create_info.depth_format,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = create_info.samples,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.depth_prepass_pipeline",
     }); // index 5: depth_prepass
 
@@ -494,7 +504,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = create_info.depth_format,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = create_info.samples,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.depth_prepass_mask_pipeline",
     }); // index 6: depth_prepass_mask
 
@@ -522,7 +531,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = VK_FORMAT_UNDEFINED,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.composite_pipeline",
     }); // index 7: composite
 
@@ -543,7 +551,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = VK_FORMAT_UNDEFINED,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.frustum_cull_pipeline",
     }); // index 8: frustum_cull
 
@@ -565,7 +572,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = VK_FORMAT_UNDEFINED,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.bloom_downsample_pipeline",
     });
 
@@ -586,7 +592,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = VK_FORMAT_UNDEFINED,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.bloom_downsample_pipeline",
     });
 
@@ -607,7 +612,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = VK_FORMAT_UNDEFINED,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.gtao_pipeline",
     }); // index 11: gtao
 
@@ -628,7 +632,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .depth_format = VK_FORMAT_UNDEFINED,
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
-            .use_shader_objects = context_.shader_objects_supported,
             .debug_name = "renderer.gtao_denoise_pipeline",
     }); // index 12: gtao_denoise
 
@@ -754,6 +757,15 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     }
 
     model_storage_ = std::move(*model_storage);
+
+    auto script_storage = ScriptStorage::create(ScriptStorageCreateInfo{.capacity = create_info.script_capacity});
+
+    if (!script_storage) {
+        error("Could not create script storage");
+        return std::unexpected(RendererError{.type = RendererErrorType::invalid_argument});
+    }
+
+    script_storage_ = std::move(*script_storage);
 
     maximum_draw_count_ = create_info.maximum_draw_count;
     maximum_submission_count_ = create_info.maximum_submission_count;

@@ -5,3 +5,5 @@ compile_commands.json
 cmake-build-*
 
 assets
+
+tools/shader_reflect/target

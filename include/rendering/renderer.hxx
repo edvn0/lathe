@@ -25,14 +25,7 @@
 #include <utility>
 #include <vector>
 
-#include "gpu/buffer.hxx"
-#include "core/config.hxx"
-#include "core/error_context.hxx"
-#include "core/forward.hxx"
-#include "rendering/forward_target.hxx"
 #include "assets/geometry_arena.hxx"
-#include "gpu/gpu_resource_table.hxx"
-#include "gpu/image_storage.hxx"
 #include "assets/load_model.hxx"
 #include "assets/material_storage.hxx" // TextureHandle, MaterialCreateInfo now live here
 #include "assets/mesh_create_info.hxx"
@@ -42,16 +35,23 @@
 #include "assets/model_sink.hxx"
 #include "assets/model_storage.hxx"
 #include "assets/model_streamer.hxx"
-#include "rendering/pipeline_graph_repository.hxx"
-#include "gpu/pipeline_storage.hxx"
-#include "rendering/render_stage.hxx"
-#include "core/renderer_error.hxx"
-#include "gpu/sampler_storage.hxx"
-#include "rendering/screenshot.hxx"
 #include "assets/shader_change_queue.hxx"
-#include "rendering/shadow_cascades.hxx"
 #include "assets/slang_compiler.hxx"
 #include "assets/texture_streamer.hxx"
+#include "core/config.hxx"
+#include "core/error_context.hxx"
+#include "core/forward.hxx"
+#include "core/renderer_error.hxx"
+#include "gpu/buffer.hxx"
+#include "gpu/gpu_resource_table.hxx"
+#include "gpu/image_storage.hxx"
+#include "gpu/sampler_storage.hxx"
+#include "rendering/forward_target.hxx"
+#include "rendering/pipeline_graph_repository.hxx"
+#include "rendering/render_stage.hxx"
+#include "rendering/screenshot.hxx"
+#include "rendering/script_storage.hxx"
+#include "rendering/shadow_cascades.hxx"
 
 struct BloomSettings {
     bool enabled = true;
@@ -221,6 +221,7 @@ struct RendererCreateInfo {
     std::uint32_t image_capacity = 4096;
     std::uint32_t sampler_capacity = 128;
     std::uint32_t pipeline_capacity = 128;
+    std::uint32_t script_capacity = 4096;
 
     VkFormat hdr_format = VK_FORMAT_R16G16B16A16_SFLOAT;
     VkFormat swapchain_format = VK_FORMAT_B8G8R8A8_SRGB;
@@ -445,12 +446,18 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     [[nodiscard]] auto image_storage() noexcept -> ImageStorage & { return image_storage_; }
     [[nodiscard]] auto sampler_storage() noexcept -> SamplerStorage & override { return sampler_storage_; }
+    // Shared across editor_scene/runtime_scene -- Scene::get_scripts() forwards here so a
+    // ScriptHandle allocated while populating editor_scene still resolves after
+    // Application::play() clones entities into the fresh runtime_scene (see
+    // Scene::Scene(Renderer&)).
+    [[nodiscard]] auto script_storage() noexcept -> ScriptStorage & { return script_storage_; }
+    [[nodiscard]] auto script_storage() const noexcept -> ScriptStorage const & { return script_storage_; }
     [[nodiscard]] auto texture_streamer() noexcept -> TextureStreamer & { return texture_streamer_; }
     [[nodiscard]] auto model_streamer() noexcept -> ModelStreamer & { return model_streamer_; }
     [[nodiscard]] auto resource_table() noexcept -> GpuResourceTable & { return gpu_resource_table_; }
 
-    [[nodiscard]] auto resolve_pipeline(PipelineNodeHandle handle) const noexcept -> Pipeline const * {
-        return pipeline_graph_.resolve(handle);
+    [[nodiscard]] auto resolve_pipeline(PipelineNodeHandle handle) const noexcept -> ShaderObjectSet const * {
+        return pipeline_graph_.resolve_shader_objects(handle);
     }
 
     [[nodiscard]] auto register_pipeline(PipelineRegisterInfo info)
@@ -822,6 +829,7 @@ private:
 
     MeshStorage mesh_storage_;
     ModelStorage model_storage_;
+    ScriptStorage script_storage_;
 
     std::unordered_map<std::size_t, ModelHandle> model_cache_;
 

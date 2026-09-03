@@ -14,10 +14,9 @@
 #include <unordered_map>
 #include <utility>
 
-#include "gpu/context.hxx"
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
-#include "gpu/pipeline.hxx"
+#include "gpu/context.hxx"
 #include "rendering/renderer.hxx"
 
 namespace gui {
@@ -261,7 +260,7 @@ namespace gui {
         }
     }
 
-    auto ImGuiRenderer::render_draw_data(VkCommandBuffer cmd, ImDrawData *dd, Pipeline const &pipeline,
+    auto ImGuiRenderer::render_draw_data(VkCommandBuffer cmd, ImDrawData *dd, ShaderObjectSet const &pipeline,
                                          std::uint32_t frame_index) -> void {
         if (!dd || dd->TotalIdxCount == 0) {
             return;
@@ -362,7 +361,7 @@ namespace gui {
         }
 
         vkCmdBindIndexBuffer(cmd, drawable.index->buffer, 0, VK_INDEX_TYPE_UINT16);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline());
+        pipeline.bind(cmd);
 
         renderer.resource_table().bind(cmd, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout());
 

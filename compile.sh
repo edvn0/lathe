@@ -417,6 +417,7 @@ run_test() {
 
   run_container \
     ctest \
+    --parallel 20 \
     --test-dir "${project_dir}/${build_dir}" \
     --output-on-failure \
     "$@"

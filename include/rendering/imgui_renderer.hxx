@@ -10,8 +10,8 @@
 
 #include "gpu/buffer.hxx"
 #include "gpu/image.hxx"
-#include "rendering/pipeline_graph_repository.hxx"
 #include "gpu/sampler.hxx"
+#include "rendering/pipeline_graph_repository.hxx"
 
 #include <imgui.h>
 
@@ -81,9 +81,8 @@ namespace gui {
 
         bool force_recompile_primary{false};
 
-    private:
-        auto render_draw_data(VkCommandBuffer cmd, ImDrawData *dd, Pipeline const &pipeline, std::uint32_t frame_index)
-                -> void;
+        auto render_draw_data(VkCommandBuffer cmd, ImDrawData *dd, ShaderObjectSet const &pipeline,
+                              std::uint32_t frame_index) -> void;
         auto acquire_draw_slot() -> DrawableData &;
     };
 

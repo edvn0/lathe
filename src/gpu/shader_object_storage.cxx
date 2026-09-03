@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "core/logger.hxx"
 #include "gpu/context.hxx"
 
 namespace {
@@ -60,6 +61,30 @@ auto ShaderObjectStorage::create(VulkanContext &context, ShaderObjectStorageCrea
     storage.slots_ = ObjectPool<ShaderObjectSet>::create(create_info.capacity);
     storage.global_descriptor_set_layout_ = create_info.global_descriptor_set_layout;
 
+    if (!create_info.binary_cache_directory.empty()) {
+        VkPhysicalDeviceShaderObjectPropertiesEXT shader_object_properties{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT,
+        };
+        VkPhysicalDeviceProperties2 properties2{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                .pNext = &shader_object_properties,
+        };
+        vkGetPhysicalDeviceProperties2(context.physical_device, &properties2);
+
+        std::array<std::uint8_t, VK_UUID_SIZE> uuid{};
+        std::ranges::copy(shader_object_properties.shaderBinaryUUID, uuid.begin());
+
+        auto cache = ShaderBinaryCache::create(create_info.binary_cache_directory, uuid,
+                                               shader_object_properties.shaderBinaryVersion);
+
+        if (cache) {
+            storage.binary_cache_ = std::move(*cache);
+        } else {
+            warn("Failed to open shader binary cache at '{}'", create_info.binary_cache_directory.string());
+        }
+    }
+
+
     return storage;
 }
 
@@ -72,13 +97,14 @@ auto ShaderObjectStorage::create_linked(ShaderObjectCreateInfo const &create_inf
     // vkCreateShadersEXT (called inside ShaderObjectSet::create_linked) has
     // no shared cache to synchronize -- see the comment on slot_mutex_ --
     // so it runs unlocked; only the free-list bookkeeping below needs it.
-    auto shader_object = ShaderObjectSet::create_linked(*context_, create_info, global_descriptor_set_layout());
+    auto shader_object =
+            ShaderObjectSet::create_linked(*context_, create_info, global_descriptor_set_layout(), binary_cache());
 
     if (!shader_object) {
         return std::unexpected(make_shader_object_error(shader_object.error()));
     }
 
-    std::lock_guard<std::mutex> const lock{slot_mutex_};
+    std::lock_guard const lock{slot_mutex_};
 
     auto allocation = slots_.allocate();
 
@@ -100,7 +126,8 @@ auto ShaderObjectStorage::create_compute(ComputeShaderCreateInfo const &create_i
         return std::unexpected(make_error(ShaderObjectStorageErrorType::invalid_argument));
     }
 
-    auto shader_object = ShaderObjectSet::create_compute(*context_, create_info, global_descriptor_set_layout());
+    auto shader_object =
+            ShaderObjectSet::create_compute(*context_, create_info, global_descriptor_set_layout(), binary_cache());
 
     if (!shader_object) {
         return std::unexpected(make_shader_object_error(shader_object.error()));

@@ -16,9 +16,9 @@
 #include <glm/ext/matrix_float4x4.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include "core/logger.hxx"
 #include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
-#include "core/logger.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/renderer.hxx"
 
@@ -251,7 +251,7 @@ namespace debug_draw {
 
         auto &frame_buffer = impl_->frame_buffers[frame_index];
 
-        if (!frame_buffer.vertex->write(0, std::span<const Vertex>{impl_->pending_lines})) {
+        if (!frame_buffer.vertex->write(0, std::span<const Vertex>{impl_->pending_lines}).has_value()) {
             error("[DebugDraw] Failed to write line buffer");
             return;
         }
@@ -262,7 +262,7 @@ namespace debug_draw {
             return;
         }
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline());
+        pipeline->bind(cmd);
 
         auto const &extent = impl_->renderer.context().swapchain.extent();
 

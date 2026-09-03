@@ -15,12 +15,10 @@
 
 #include "core/error_context.hxx"
 
-#include "core/forward.hxx"
-#include "gpu/pipeline.hxx"
-#include "gpu/pipeline_storage.hxx"
-#include "gpu/shader_object.hxx"
-#include "gpu/shader_object_storage.hxx"
 #include "assets/slang_compiler.hxx"
+#include "core/forward.hxx"
+#include "gpu/shader_object_storage.hxx"
+#include "gpu/shader_stage.hxx"
 
 struct PipelineNodeHandle {
     std::uint32_t index = 0;
@@ -72,15 +70,35 @@ struct std::formatter<PipelineGraphErrorType> : std::formatter<std::string_view>
     }
 };
 
+struct PrecompiledStage {
+    renderer::ShaderCompileRequest request;
+    renderer::CompiledShader compiled;
+};
+
+struct PrecompiledPipelineRegisterInfo {
+    std::vector<PrecompiledStage> stages;
+    std::vector<VkDescriptorSetLayout> additional_descriptor_set_layouts{};
+    std::vector<VkPushConstantRange> push_constant_ranges;
+    std::vector<VkFormat> colour_formats;
+    std::vector<VkDynamicState> dynamic_states{};
+
+    VkFormat depth_format = VK_FORMAT_UNDEFINED;
+    VkFormat stencil_format = VK_FORMAT_UNDEFINED;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+
+    bool blending = false;
+
+    std::string debug_name;
+};
+
 struct PipelineGraphCreateInfo {
     std::uint32_t pipeline_capacity = 0;
     std::uint32_t frames_in_flight = 1;
 
     VkDescriptorSetLayout global_descriptor_set_layout = VK_NULL_HANDLE;
 
-    // Forwarded to PipelineStorageCreateInfo::cache_file_path. Empty means
-    // no disk persistence for the VkPipelineCache.
     std::filesystem::path cache_file_path;
+    std::filesystem::path shader_binary_cache_directory;
 
     std::string_view debug_name = "pipeline_graph";
 };
@@ -97,12 +115,6 @@ struct PipelineRegisterInfo {
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 
     bool blending = false;
-
-    // When true, register_pipeline() builds a ShaderObjectSet (via
-    // ShaderObjectStorage) instead of a Pipeline for this node. See
-    // docs/pipeline_to_shader_objects.md Phase 4 -- allows migrating one
-    // registered pipeline at a time while the rest keep using VkPipeline.
-    bool use_shader_objects = false;
 
     std::string debug_name;
 };
@@ -136,37 +148,23 @@ public:
     static auto create(VulkanContext &context, PipelineGraphCreateInfo const &create_info)
             -> std::expected<PipelineGraphRepository, PipelineGraphError>;
 
-    // Compiles every stage synchronously and builds the pipeline before
-    // returning. Shared stages (same source_path + entry_point + stage,
-    // already registered by another pipeline) reuse their existing
-    // compiled SPIR-V instead of recompiling.
     [[nodiscard]]
     auto register_pipeline(PipelineRegisterInfo register_info) -> std::expected<PipelineNodeHandle, PipelineGraphError>;
 
-    // Batched equivalent of calling register_pipeline() once per entry, but
-    // shared dirty stages compile exactly once across the whole batch, all
-    // dirty stages compile concurrently on thread_pool, and all pipelines
-    // build concurrently once compiling finishes. See
-    // docs/parallel-pipeline.md Task 3. A compile failure anywhere in the
-    // batch fails every reserved entry (rare -- usually a broken shared
-    // shader file); a build failure only fails that one entry.
     [[nodiscard]]
     auto register_pipelines_parallel(std::span<PipelineRegisterInfo> register_infos)
             -> std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>>;
 
-    // Persists the VkPipelineCache to disk (see
-    // PipelineGraphCreateInfo::cache_file_path). Logs and does nothing on
-    // failure -- never treat this as fatal on a shutdown path.
+    [[nodiscard]]
+    auto register_pipeline_precompiled(PrecompiledPipelineRegisterInfo register_info)
+            -> std::expected<PipelineNodeHandle, PipelineGraphError>;
+
+    [[nodiscard]]
+    auto register_pipelines_precompiled_parallel(std::span<PrecompiledPipelineRegisterInfo> register_infos)
+            -> std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>>;
+
     auto save_pipeline_cache() const -> void;
 
-    [[nodiscard]]
-    auto resolve(PipelineNodeHandle handle) const noexcept -> Pipeline const *;
-
-    [[nodiscard]]
-    auto pipeline_handle(PipelineNodeHandle handle) const noexcept -> PipelineHandle;
-
-    // Valid only for nodes registered with use_shader_objects = true; returns
-    // nullptr for a VkPipeline-backed node (or an unknown/stale handle).
     [[nodiscard]]
     auto resolve_shader_objects(PipelineNodeHandle handle) const noexcept -> ShaderObjectSet const *;
 
@@ -215,7 +213,6 @@ private:
     struct PipelineNode {
         std::vector<std::uint32_t> stage_indices;
         PipelineRegisterInfo register_info;
-        PipelineHandle live_handle{};
         ShaderObjectHandle live_shader_object_handle{};
 
         std::uint32_t generation = 1;
@@ -226,14 +223,11 @@ private:
     };
 
     struct RetiringPipeline {
-        PipelineHandle handle;
         ShaderObjectHandle shader_object_handle;
-        bool is_shader_object = false;
         std::uint32_t frames_remaining = 0;
     };
 
     struct BuiltNode {
-        PipelineHandle handle;
         ShaderObjectHandle shader_object_handle;
     };
 
@@ -248,14 +242,14 @@ private:
 
     [[nodiscard]]
     auto build_node(PipelineNode const &node) -> std::expected<BuiltNode, PipelineGraphError>;
+    [[nodiscard]]
+    auto build_shader_object_node(PipelineNode const &node) -> std::expected<ShaderObjectHandle, PipelineGraphError>;
 
-    auto retire(PipelineHandle handle) -> void;
     auto retire(ShaderObjectHandle handle) -> void;
 
     [[nodiscard]]
     static auto to_vk_stage(renderer::ShaderStage stage) noexcept -> VkShaderStageFlagBits;
 
-    PipelineStorage storage_;
     ShaderObjectStorage shader_object_storage_;
 
     std::vector<SourceFileNode> source_files_;

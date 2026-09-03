@@ -315,10 +315,7 @@ auto Application::on_ui() -> void {
 auto Application::play() -> void {
     runtime_scene = std::make_unique<Scene>(*renderer);
     runtime_scene->physics_settings = editor_scene->physics_settings;
-    clone_registry<Components::Transform, Components::Model, Components::RigidBody, Components::MaterialOverride,
-                   Components::PlayerTag, Components::Lifetime, Components::PointLight, Components::SpotLight,
-                   Components::GeneratedMeta, Components::Meta>(editor_scene->get_registry(),
-                                                                runtime_scene->get_registry());
+    game->clone_into_runtime(*editor_scene, *runtime_scene);
 
     // is_playing flips first so active_scene() already resolves to
     // runtime_scene for on_scene_start()/attach_debug_renderer() below.
