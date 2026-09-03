@@ -133,7 +133,7 @@ auto ShaderObjectStorage::create_compute(ComputeShaderCreateInfo const &create_i
         return std::unexpected(make_shader_object_error(shader_object.error()));
     }
 
-    std::lock_guard<std::mutex> const lock{slot_mutex_};
+    std::lock_guard const lock{slot_mutex_};
 
     auto allocation = slots_.allocate();
 

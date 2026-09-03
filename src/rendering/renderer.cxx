@@ -3027,7 +3027,7 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
 }
 
 void Renderer::queue_render_thread_event(std::move_only_function<void()> &&task) {
-    std::lock_guard<std::mutex> lock(queue_mutex_);
+    std::lock_guard lock(queue_mutex_);
     event_queue_.push(std::move(task));
     queued_events_.fetch_add(1);
 }
@@ -3040,7 +3040,7 @@ void Renderer::drain_event_queue() {
     std::queue<std::move_only_function<void()>> local_queue;
 
     {
-        std::lock_guard<std::mutex> lock(queue_mutex_);
+        std::lock_guard lock(queue_mutex_);
         std::swap(event_queue_, local_queue);
     }
 

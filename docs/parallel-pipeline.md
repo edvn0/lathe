@@ -158,7 +158,7 @@ plumbing + shutdown hook only)
 1. Add `#include <mutex>` to `slang_compiler.hxx`.
 2. Add `std::mutex session_creation_mutex;` to `SlangCompiler::Impl`.
 3. In `compile()`, wrap only the `impl_->global_session->createSession(...)`
-   call in `std::lock_guard<std::mutex>`. Everything before (validation,
+   call in `std::lock_guard`. Everything before (validation,
    file read, macro/search-path vector construction) and everything after
    (module load, entry point, composite, link, codegen, SPIR-V validation)
    stays outside the lock.

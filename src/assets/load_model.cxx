@@ -27,12 +27,12 @@
 #include <utility>
 #include <vector>
 
+#include "assets/material_storage.hxx"
+#include "core/logger.hxx"
+#include "core/thread_pool.hxx"
 #include "gpu/image.hxx"
 #include "gpu/image_storage.hxx"
-#include "core/logger.hxx"
-#include "assets/material_storage.hxx"
 #include "gpu/sampler_storage.hxx"
-#include "core/thread_pool.hxx"
 
 namespace {
 
@@ -804,8 +804,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
     std::unordered_map<std::size_t, std::size_t> image_cache;
 
     for (auto const &gltf_material: asset.materials) {
-        ScopedProfileSample const material_sample{profile_ptr != nullptr ? &profile_ptr->material_resolve_ns
-                                                                          : nullptr};
+        ScopedProfileSample const material_sample{profile_ptr != nullptr ? &profile_ptr->material_resolve_ns : nullptr};
 
         auto material = load_material_cpu(asset, gltf_material, sampler_storage, path, base_directory, image_cache,
                                           cpu_data.image_sources);
@@ -939,8 +938,8 @@ auto start_primitive_finalization(ModelCpuData cpu_data) -> ModelPrimitiveFinali
         for (std::size_t primitive_index = 0; primitive_index < mesh.primitives.size(); ++primitive_index) {
             finalization.targets.emplace_back(mesh_index, primitive_index);
 
-            finalization.tasks.push_back(pool.submit_task(
-                    [raw = std::move(mesh.primitives[primitive_index]), profile]() mutable {
+            finalization.tasks.push_back(
+                    pool.submit_task([raw = std::move(mesh.primitives[primitive_index]), profile]() mutable {
                         return finalize_primitive_cpu(std::move(raw), profile);
                     }));
         }
@@ -1058,8 +1057,8 @@ auto start_model_gpu_upload(ModelCpuData cpu_data, ImageStorage &image_storage, 
 }
 
 auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
-                           ImageStorage &image_storage, MaterialStorage &material_storage,
-                           std::uint32_t item_budget) -> std::expected<std::optional<Model>, ModelLoadError> {
+                           ImageStorage &image_storage, MaterialStorage &material_storage, std::uint32_t item_budget)
+        -> std::expected<std::optional<Model>, ModelLoadError> {
     ZoneScopedNC("StepModelGpuUpload", tracy::Color::Goldenrod);
 
     if (command_buffer == VK_NULL_HANDLE) {
@@ -1094,8 +1093,8 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                     .alpha_cutoff = cpu_material.alpha_cutoff,
                     .base_colour_texture = resolve_image(cpu_material.base_colour_image, image_storage.white()),
                     .normal_texture = resolve_image(cpu_material.normal_image, image_storage.flat_normal()),
-                    .metallic_roughness_texture = resolve_image(cpu_material.metallic_roughness_image,
-                                                                 image_storage.metallic_roughness()),
+                    .metallic_roughness_texture =
+                            resolve_image(cpu_material.metallic_roughness_image, image_storage.metallic_roughness()),
                     .occlusion_texture = resolve_image(cpu_material.occlusion_image, image_storage.occlusion()),
                     .emissive_texture = resolve_image(cpu_material.emissive_image, image_storage.emissive()),
                     .sampler = cpu_material.sampler,
@@ -1140,8 +1139,7 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
 
                 vertex_compress_sample.stop();
 
-                ScopedProfileSample geometry_upload_sample{profile != nullptr ? &profile->geometry_upload_ns
-                                                                               : nullptr};
+                ScopedProfileSample geometry_upload_sample{profile != nullptr ? &profile->geometry_upload_ns : nullptr};
 
                 auto vertex_slice = geometry_arena.allocate_vertices(
                         command_buffer, std::span<CompressedModelVertex const>{compressed_vertices});
@@ -1179,8 +1177,8 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                         continue;
                     }
 
-                    auto index_slice = geometry_arena.allocate_indices(
-                            command_buffer, std::span<std::uint32_t const>{*source_indices});
+                    auto index_slice = geometry_arena.allocate_indices(command_buffer,
+                                                                       std::span<std::uint32_t const>{*source_indices});
 
                     if (!index_slice) {
                         return std::unexpected(ModelLoadError{

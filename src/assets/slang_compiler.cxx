@@ -413,7 +413,7 @@ namespace renderer {
         // every dirty stage to the thread pool -- it just no longer gets
         // wall-clock parallelism *within* Slang itself, only overlap with
         // Phase 1/3 bookkeeping and other threads' non-Slang work.
-        std::lock_guard<std::mutex> const compile_lock{impl_->compile_mutex};
+        std::lock_guard const compile_lock{impl_->compile_mutex};
 
         auto const session_result = impl_->global_session->createSession(session_description, session.writeRef());
 
