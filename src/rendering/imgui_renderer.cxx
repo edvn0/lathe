@@ -284,6 +284,24 @@ namespace gui {
         vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
         vkCmdSetViewportWithCount(cmd, 1, &vp);
 
+        // Shader objects have no baked pipeline state, so blending is command-buffer
+        // dynamic state that must be set explicitly here rather than carried from
+        // whatever the previous draw in this command buffer left it as.
+        VkBool32 const blend_enable = VK_TRUE;
+        VkColorBlendEquationEXT const blend_equation{
+                .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+                .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .colorBlendOp = VK_BLEND_OP_ADD,
+                .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .alphaBlendOp = VK_BLEND_OP_ADD,
+        };
+        VkColorComponentFlags const write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                                  VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        vkCmdSetColorBlendEnableEXT(cmd, 0, 1, &blend_enable);
+        vkCmdSetColorBlendEquationEXT(cmd, 0, 1, &blend_equation);
+        vkCmdSetColorWriteMaskEXT(cmd, 0, 1, &write_mask);
+
         const float L = dd->DisplayPos.x;
         const float R = dd->DisplayPos.x + dd->DisplaySize.x;
         const float T = dd->DisplayPos.y;

@@ -334,6 +334,13 @@ auto Application::play() -> void {
 
     glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     has_last_mouse_position = false;
+
+    // While the cursor is disabled its reported position is an unbounded
+    // virtual accumulator, not a real screen coordinate -- ImGui would
+    // otherwise keep hit-testing widgets against wherever that value drifts
+    // to (starting at wherever the "Play" click happened to land) and
+    // intermittently steal input meant for the game.
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard;
 }
 
 auto Application::stop() -> void {
@@ -353,6 +360,7 @@ auto Application::stop() -> void {
     runtime_scene.reset();
 
     glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    ImGui::GetIO().ConfigFlags &= ~(ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard);
 }
 
 auto Application::update(float delta_time) -> void {
@@ -449,6 +457,16 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
     }
 
     if (is_playing) {
+        // Escape is the keyboard way out of play mode -- previously the
+        // only way back to the editor was tabbing/alt-tabbing out and
+        // relying on focus_callback's stop() (see main.cxx), which is not
+        // a deliberate exit path. Consumed here rather than forwarded to
+        // the game, since play mode is ending.
+        if (ev.key == GLFW_KEY_ESCAPE) {
+            stop();
+            return true;
+        }
+
         game->on_key_pressed(*active_scene(), ev);
     } else {
         camera.on_key_pressed(ev.key);

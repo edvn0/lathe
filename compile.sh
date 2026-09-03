@@ -415,6 +415,15 @@ run_test() {
     exit 1
   fi
 
+  # mingw-vulkan-tests is EXCLUDE_FROM_ALL (see test/CMakeLists.txt) so a
+  # plain --build doesn't pay for compiling it or for doctest's build-time
+  # test discovery. Build it explicitly here instead.
+  run_container \
+    cmake \
+    --build "${project_dir}/${build_dir}" \
+    --target mingw-vulkan-tests \
+    -j20
+
   run_container \
     ctest \
     --parallel 20 \

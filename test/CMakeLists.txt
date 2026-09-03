@@ -6,6 +6,7 @@ file(
 
 add_executable(
     mingw-vulkan-tests
+    EXCLUDE_FROM_ALL
     ${test_sources}
 )
 
