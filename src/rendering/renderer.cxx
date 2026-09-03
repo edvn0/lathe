@@ -2872,7 +2872,7 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
     replacements.reserve(frames_.size());
 
     for (std::size_t index = 0; index < frames_.size(); ++index) {
-        auto const target_name = std::string{"renderer.forward_target_"} + std::to_string(index);
+        auto const target_name = std::format("renderer.forward_target_{}", index);
 
         auto replacement = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
                                                                          .extent = extent,

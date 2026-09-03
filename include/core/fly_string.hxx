@@ -28,13 +28,9 @@ private:
     public:
         auto intern(std::string_view value) -> std::string const &;
 
-        void print_stats() const;
-
     private:
         mutable std::mutex mutex_;
         std::unordered_set<std::string> strings_;
-        std::size_t total_requests_ = 0;
-        std::size_t total_bytes_allocated_ = 0;
     };
 
     static auto pool() -> Pool &;

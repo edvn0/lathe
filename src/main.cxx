@@ -26,29 +26,29 @@
 
 #include <entt/entt.hpp>
 
-#include "core/allocator.hxx"
 #include "app/application.hxx"
-#include "scene/components.hxx"
-#include "core/config.hxx"
-#include "gpu/context.hxx"
-#include "rendering/debug_renderer.hxx"
-#include "scene/editor_camera.hxx"
-#include "rendering/engine_models.hxx"
-#include "rendering/entity.hxx"
-#include "core/error_describe.hxx"
 #include "app/game.hxx"
-#include "glm/gtc/type_ptr.hpp"
-#include "imgui.h"
-#include "rendering/imgui_renderer.hxx"
-#include "implot.h"
+#include "assets/shader_hot_reload_watcher.hxx"
+#include "core/allocator.hxx"
+#include "core/config.hxx"
+#include "core/error_describe.hxx"
 #include "core/logger.hxx"
+#include "glm/gtc/type_ptr.hpp"
+#include "gpu/context.hxx"
+#include "gpu/swapchain.hxx"
+#include "imgui.h"
+#include "implot.h"
 #include "physics/physics.hxx"
 #include "physics/physics_world.hxx"
+#include "rendering/debug_renderer.hxx"
+#include "rendering/engine_models.hxx"
+#include "rendering/entity.hxx"
+#include "rendering/imgui_renderer.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/renderer_application_policy.hxx"
 #include "rendering/scene.hxx"
-#include "assets/shader_hot_reload_watcher.hxx"
-#include "gpu/swapchain.hxx"
+#include "scene/components.hxx"
+#include "scene/editor_camera.hxx"
 #include "vulkan_bootstrap.hxx"
 
 namespace {
@@ -342,20 +342,12 @@ namespace {
             return;
         }
 
-        // This callback and the render loop both run on the main thread
-        // now, so there's no concurrent reader/writer to lock against --
-        // a plain relaxed store is enough.
         context->framebuffer_width.store(width, std::memory_order_relaxed);
         context->framebuffer_height.store(height, std::memory_order_relaxed);
         context->framebuffer_dirty.store(true, std::memory_order_relaxed);
     }
 
-    // Callbacks are installed (install_window_callbacks) before ImGuiRenderer
-    // constructs its context (Application::on_startup(), later the same
-    // frame before the first glfwPollEvents()), so today nothing can invoke
-    // these before ImGui exists. Guarding here just means a future reordering
-    // -- an early glfwPollEvents(), or callback installation moving earlier
-    // -- can't turn into a null-context read of ImGui::GetIO().
+
     auto imgui_wants_keyboard() -> bool {
         return ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureKeyboard;
     }
@@ -412,10 +404,6 @@ namespace {
             return;
         }
 
-        // Swallow the first callback after (re)acquiring a cursor position:
-        // without a previous sample the delta would be "distance from
-        // wherever the cursor happened to be", producing a large spurious
-        // look jump on the first drag frame.
         if (!app->has_last_mouse_position) {
             app->last_mouse_x = x_position;
             app->last_mouse_y = y_position;
@@ -450,12 +438,6 @@ namespace {
             return;
         }
 
-        // Alt-tabbing (or any focus loss) while captured would otherwise leave
-        // the cursor disabled and the game's input handling still integrating
-        // whatever stray deltas the OS/compositor delivers to an unfocused window --
-        // behaviour that varies between X11 and Wayland (see the platform
-        // hint in initialize_glfw). Exiting play mode on focus loss sidesteps
-        // that entirely rather than trying to special-case each platform.
         if (focused == GLFW_FALSE && app->is_playing) {
             app->stop();
         }
@@ -476,13 +458,6 @@ namespace {
         glfwSetWindowFocusCallback(context.window, focus_callback);
     }
 
-    // vkDeviceWaitIdle has no timeout parameter -- a genuinely non-responding
-    // GPU hangs it forever with no way to interrupt the wait from this
-    // thread. Running it as an async task and giving up on *waiting for it*
-    // after a bound at least lets the process exit instead of hanging. Once
-    // we've given up, continuing on to call more Vulkan destroy functions
-    // against a device the driver may still be touching is itself unsafe, so
-    // this terminates immediately rather than attempting further cleanup.
     auto wait_idle_bounded(VkDevice device, std::string_view label) noexcept -> VkResult {
         constexpr auto timeout = std::chrono::seconds{3};
 
@@ -520,9 +495,6 @@ static auto ctrl_c_handler(int) -> void {
     glfwPostEmptyEvent();
 }
 
-// Implemented by whichever game is linked into this executable (see
-// game/src/main_entry.cxx) -- this is the one place the engine names
-// game-specific content.
 auto create_game() -> std::unique_ptr<IGame>;
 
 auto main(int argc, char **argv) -> int {
@@ -531,9 +503,7 @@ auto main(int argc, char **argv) -> int {
     std::signal(SIGINT, ctrl_c_handler);
 
     auto const screen_type = parse_screen_type(argc, argv);
-
     VulkanContext context{};
-
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
 
@@ -549,7 +519,6 @@ auto main(int argc, char **argv) -> int {
 
     if (!initialize_application(context, application)) {
         destroy_application(context, application);
-
         return EXIT_FAILURE;
     }
 
@@ -568,18 +537,6 @@ auto main(int argc, char **argv) -> int {
         auto const width = context.framebuffer_width.load(std::memory_order_relaxed);
         auto const height = context.framebuffer_height.load(std::memory_order_relaxed);
 
-        // Minimized / zero-sized framebuffer: nothing to render, so block
-        // for the next event instead of busy-looping. Everywhere else we
-        // poll (non-blocking), since we want to keep rendering every
-        // iteration rather than waiting for input.
-        //
-        // This is the only glfwPollEvents()/glfwWaitEvents() call in the
-        // loop, and it runs before any per-frame work below -- window
-        // callbacks (focus_callback in particular, which can call
-        // Application::stop()) therefore only ever fire between frames,
-        // never while a frame is mid-flight. Keep it that way: a second
-        // poll call added elsewhere in this loop would let a callback run
-        // mid-frame instead.
         if (width <= 0 || height <= 0) {
             glfwWaitEvents();
         } else {
@@ -620,7 +577,7 @@ auto main(int argc, char **argv) -> int {
 
         auto const swapchain_extent = context.swapchain.extent();
 
-        if (compare(swapchain_extent, renderer_extent)) {
+        if (!compare(swapchain_extent, renderer_extent)) {
             auto resize_result = application.renderer->resize(swapchain_extent);
 
             if (!resize_result) {
@@ -630,6 +587,7 @@ auto main(int argc, char **argv) -> int {
                 break;
             }
 
+            info("Resizing renderer to new swapchain extent: {}x{}", swapchain_extent.width, swapchain_extent.height);
             renderer_extent = swapchain_extent;
         }
     }
