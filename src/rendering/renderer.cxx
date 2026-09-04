@@ -1636,6 +1636,28 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
     return {};
 }
 
+auto Renderer::submit_model_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
+                                       MaterialHandle material_override) -> std::expected<void, RendererError> {
+    if (model_slot(model) == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_model));
+    }
+
+    if (model_submissions_.size() + transforms.size() > maximum_submission_count_) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    model_submissions_.reserve(model_submissions_.size() + transforms.size());
+    for (auto const &transform: transforms) {
+        model_submissions_.push_back(ModelSubmission{
+                .model = model,
+                .transform = transform,
+                .material_override = material_override,
+        });
+    }
+
+    return {};
+}
+
 auto Renderer::create_material(MaterialCreateInfo const &create_info) -> std::expected<MaterialHandle, RendererError> {
     if (!initialized_) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));

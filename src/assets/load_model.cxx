@@ -59,8 +59,7 @@ namespace {
                 light.direction = glm::normalize(glm::mat3{local_to_model} * glm::vec3{0.0F, 0.0F, -1.0F});
 
                 light.colour = glm::vec3{gltf_light.color[0], gltf_light.color[1], gltf_light.color[2]};
-                light.intensity =
-                        glm::clamp(gltf_light.intensity, 0.0F, 10.0F); // Clamp to avoid absurdly bright lights
+                light.intensity = gltf_light.intensity;
                 light.range = gltf_light.range.value_or(light.range);
 
                 if (gltf_light.type == fastgltf::LightType::Spot) {
@@ -106,11 +105,6 @@ namespace {
         }
     }
 
-    // Local-space AABB over a primitive's own vertices, with no node
-    // transform applied (that's baked in per-instance at render time via
-    // ModelDraw::local_transform). Shared by both the glTF loader and
-    // procedural primitives, since both converge on ModelCpuPrimitive before
-    // reaching the geometry arena.
     auto compute_primitive_bounds(std::span<ModelVertex const> vertices) -> std::pair<glm::vec3, glm::vec3> {
         auto bounds_min = glm::vec3{std::numeric_limits<float>::max()};
         auto bounds_max = glm::vec3{std::numeric_limits<float>::lowest()};
@@ -142,10 +136,6 @@ namespace {
         return {bounds_min, bounds_max};
     }
 
-    // ------------------------------------------------------------------------
-    // Shared helpers — pure CPU, unchanged from before.
-    // ------------------------------------------------------------------------
-
     auto to_glm(fastgltf::math::fmat4x4 const &matrix) noexcept -> glm::mat4 { return glm::make_mat4(matrix.data()); }
 
     auto find_attribute(fastgltf::Primitive const &primitive, std::string_view name) -> std::optional<std::size_t> {
@@ -161,11 +151,8 @@ namespace {
     template<typename T>
     auto read_accessor(fastgltf::Asset const &asset, std::size_t accessor_index) -> std::vector<T> {
         auto const &accessor = asset.accessors[accessor_index];
-
         std::vector<T> values(accessor.count);
-
         fastgltf::copyFromAccessor<T>(asset, accessor, values.data());
-
         return values;
     }
 
@@ -192,15 +179,10 @@ namespace {
         auto const &accessor = asset.accessors[accessor_index];
 
         std::vector<std::uint32_t> indices(accessor.count);
-
         fastgltf::copyFromAccessor<std::uint32_t>(asset, accessor, indices.data());
 
         return indices;
     }
-
-    // ------------------------------------------------------------------------
-    // MikkTSpace tangent generation (unchanged — pure CPU already).
-    // ------------------------------------------------------------------------
 
     struct MikktspaceUserData {
         std::vector<ModelVertex> *vertices = nullptr;
@@ -321,25 +303,20 @@ auto generate_mesh_lods(std::vector<ModelVertex> const &vertices, std::vector<st
         auto target_index_count =
                 static_cast<std::size_t>(static_cast<float>(indices.size()) * lod_simplification_ratios[level]);
         target_index_count -= target_index_count % 3;
-
         if (target_index_count == 0 || target_index_count >= indices.size()) {
-            continue; // nothing meaningful to simplify to at this ratio
+            continue;
         }
 
         std::vector<std::uint32_t> simplified(indices.size());
-
-        auto const result_count = meshopt_simplify(
-                simplified.data(), indices.data(), indices.size(), &vertices[0].position.x, vertices.size(),
-                sizeof(ModelVertex), target_index_count, /*target_error=*/1e-2F, meshopt_SimplifyLockBorder, nullptr);
-
+        auto const result_count = meshopt_simplify(simplified.data(), indices.data(), indices.size(),
+                                                   &vertices[0].position.x, vertices.size(), sizeof(ModelVertex),
+                                                   target_index_count, 1e-2F, meshopt_SimplifyLockBorder, nullptr);
         if (result_count == 0 || result_count >= indices.size()) {
-            continue; // simplifier couldn't reduce this level at all
+            continue;
         }
 
         simplified.resize(result_count);
-
         meshopt_optimizeVertexCache(simplified.data(), simplified.data(), simplified.size(), vertices.size());
-
         reduced[level] = std::move(simplified);
     }
 
@@ -348,17 +325,6 @@ auto generate_mesh_lods(std::vector<ModelVertex> const &vertices, std::vector<st
 
 namespace {
 
-    // ------------------------------------------------------------------------
-    // CPU pass — geometry. No GeometryArena involved anymore: this only
-    // builds the vertex/index arrays and hands them back as plain data.
-    // ------------------------------------------------------------------------
-
-    // CPU pass, part 1: reads this primitive's accessors into plain
-    // vertex/index arrays. Safe to call from any thread. Does not generate
-    // tangents or LOD variants -- see finalize_primitive_cpu() for that;
-    // ModelCpuPrimitive::has_tangents records whether the glTF primitive
-    // already had its own TANGENT accessor, which finalize_primitive_cpu()
-    // needs to know whether to run generate_tangents() at all.
     auto extract_primitive_cpu(fastgltf::Asset const &asset, fastgltf::Primitive const &primitive,
                                ModelLoadProfile *profile) -> std::expected<ModelCpuPrimitive, ModelLoadError> {
         ScopedProfileSample extract_sample{profile != nullptr ? &profile->primitive_extract_ns : nullptr};
@@ -453,11 +419,6 @@ namespace {
         };
     }
 
-    // CPU pass, part 2: MikkTSpace tangent generation (if `raw` didn't
-    // already have its own) followed by meshopt LOD simplification. Pure
-    // CPU, operates only on `raw`'s own data, so this is the unit
-    // start_primitive_finalization()/step_primitive_finalization() run in
-    // parallel, one task per primitive, across the whole model.
     auto finalize_primitive_cpu(ModelCpuPrimitive raw, ModelLoadProfile *profile)
             -> std::expected<ModelCpuPrimitive, ModelLoadError> {
         auto vertices = std::move(raw.vertices);
@@ -473,7 +434,7 @@ namespace {
             }
         }
 
-        std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1> reduced_indices;
+        std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1> reduced_indices{};
 
         {
             ScopedProfileSample const lod_sample{profile != nullptr ? &profile->lod_generation_ns : nullptr};
@@ -549,7 +510,7 @@ namespace {
                filter == fastgltf::Filter::NearestMipMapLinear;
     }
 
-    auto select_sampler(SamplerStorage &sampler_storage, fastgltf::Sampler const *gltf_sampler) -> SamplerHandle {
+    auto select_sampler(const SamplerStorage &sampler_storage, fastgltf::Sampler const *gltf_sampler) -> SamplerHandle {
         bool const nearest =
                 gltf_sampler != nullptr &&
                 (gltf_sampler->minFilter.has_value() ? is_nearest_filter(*gltf_sampler->minFilter)
@@ -591,12 +552,19 @@ namespace {
         return select_sampler(sampler_storage, &asset.samplers[*gltf_texture.samplerIndex]);
     }
 
-    template<typename TextureInfoT>
+    using ImageCache = std::unordered_map<std::size_t, std::size_t>;
+    using ImageSources = std::vector<ModelCpuImageSource>;
+
+    template<typename T>
+    concept IndexableTexture = requires(T &t) {
+        { t.textureIndex } -> std::convertible_to<std::size_t>;
+    };
+
+    template<IndexableTexture TextureInfoT>
     auto resolve_texture_cpu(fastgltf::Asset const &asset, std::optional<TextureInfoT> const &info,
                              ModelTextureSlot slot, std::string_view slot_name, std::string_view material_name,
                              std::filesystem::path const &gltf_path, std::filesystem::path const &base_directory,
-                             std::unordered_map<std::size_t, std::size_t> &image_cache,
-                             std::vector<ModelCpuImageSource> &image_sources)
+                             ImageCache &image_cache, ImageSources &image_sources)
             -> std::expected<std::optional<std::size_t>, ModelLoadError> {
         if (!info.has_value()) {
             return std::nullopt;
@@ -744,11 +712,6 @@ namespace {
 
 } // namespace
 
-// ------------------------------------------------------------------------
-// Phase 1 — CPU pass. Safe to run on a background thread: touches the
-// filesystem, stb_image, meshoptimizer, and MikkTSpace only.
-// ------------------------------------------------------------------------
-
 auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorage &sampler_storage,
                                 std::shared_ptr<ModelLoadProfile> profile)
         -> std::expected<ModelCpuData, ModelLoadError> {
@@ -756,9 +719,6 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
 
     auto *const profile_ptr = profile.get();
 
-    // Covers both the file read and the parse itself (loadGltf below) --
-    // one section, since a caller profiling this cares about "how long did
-    // getting a usable fastgltf::Asset take", not the split between them.
     ScopedProfileSample gltf_sample{profile_ptr != nullptr ? &profile_ptr->gltf_parse_ns : nullptr};
 
     auto file_data = fastgltf::GltfDataBuffer::FromPath(path);
@@ -771,17 +731,10 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
     static thread_local fastgltf::Parser parser{
             fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_lights_punctual,
     };
-
     constexpr auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices |
                              fastgltf::Options::LoadExternalImages;
-
     auto const base_directory = path.parent_path();
-
-    // loadGltf (rather than loadGltfBinary) sniffs the header and accepts
-    // both .glb (binary) and .gltf (JSON, with external .bin/.png/.jpg
-    // siblings) — same call handles both container types.
     auto asset_result = parser.loadGltf(file_data.get(), base_directory, options);
-
     gltf_sample.stop();
 
     if (asset_result.error() != fastgltf::Error::None) {
@@ -857,9 +810,8 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
         cpu_data.nodes.push_back(std::move(node));
     }
 
-    auto const scene_index = asset.defaultScene.value_or(0);
 
-    if (scene_index < asset.scenes.size()) {
+    if (auto const scene_index = asset.defaultScene.value_or(0); scene_index < asset.scenes.size()) {
         auto const &scene = asset.scenes[scene_index];
 
         cpu_data.scene_roots.reserve(scene.nodeIndices.size());
@@ -910,15 +862,6 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
 auto load_model_cpu_async(std::filesystem::path path, SamplerStorage &sampler_storage,
                           std::shared_ptr<ModelLoadProfile> profile)
         -> std::future<std::expected<ModelCpuData, ModelLoadError>> {
-    // sampler_storage is only read here (nearest/linear clamp/repeat are
-    // fixed defaults resolved once at Renderer::initialize, never mutated
-    // afterwards -- see SamplerStorage), so calling load_model_cpu_unfinalized()
-    // concurrently with anything the render thread does to sampler_storage
-    // is safe without additional synchronization. Deliberately calls
-    // *_unfinalized rather than load_model_cpu() -- ModelStreamer runs
-    // finalization itself, in parallel, via
-    // start_primitive_finalization()/step_primitive_finalization(), rather
-    // than sequentially here on a single background thread.
     return thread_pool().submit_task([path = std::move(path), &sampler_storage, profile = std::move(profile)] {
         return load_model_cpu_unfinalized(path, sampler_storage, profile);
     });
@@ -993,15 +936,16 @@ namespace {
     [[nodiscard]]
     auto texture_role_for_slot(ModelTextureSlot slot) noexcept -> TextureRole {
         switch (slot) {
-            case ModelTextureSlot::base_colour:
-            case ModelTextureSlot::emissive:
+            using enum ModelTextureSlot;
+            case base_colour:
+            case emissive:
                 return TextureRole::colour;
 
-            case ModelTextureSlot::normal:
+            case normal:
                 return TextureRole::normal_map;
 
-            case ModelTextureSlot::metallic_roughness:
-            case ModelTextureSlot::occlusion:
+            case metallic_roughness:
+            case occlusion:
                 return TextureRole::generic;
         }
 
@@ -1071,7 +1015,7 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
     auto *const profile = cpu_data.profile.get();
 
     if (profile != nullptr) {
-        profile->gpu_upload_frames.fetch_add(1, std::memory_order_relaxed);
+        profile->gpu_upload_frames.fetch_add(1, std::memory_order_seq_cst);
     }
 
     auto const resolve_image = [&](std::optional<std::size_t> cpu_index, ImageHandle fallback) {
@@ -1125,8 +1069,8 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
             auto const &cpu_mesh = cpu_data.meshes[upload.mesh_cursor];
 
             if (upload.meshes.size() == upload.mesh_cursor) {
-                upload.meshes.push_back(ModelMesh{});
-                upload.meshes.back().primitives.reserve(cpu_mesh.primitives.size());
+                auto &mesh = upload.meshes.emplace_back();
+                mesh.primitives.reserve(cpu_mesh.primitives.size());
             }
 
             if (upload.primitive_cursor < cpu_mesh.primitives.size()) {
@@ -1151,19 +1095,12 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                     });
                 }
 
-                // LOD0 is the full-detail index buffer; LOD1..LOD(lod_count-1)
-                // are meshopt_simplify'd variants (see generate_mesh_lods),
-                // all sharing this same vertex buffer. A level without a
-                // distinct simplification (procedural meshes, or a level
-                // meshopt_simplify couldn't reduce) reuses the previous
-                // level's already-allocated index buffer instead of
-                // re-uploading a duplicate.
                 std::array<MeshGeometry, lod_count> lods{};
 
                 for (std::uint32_t level = 0; level < lod_count; ++level) {
                     lods[level].vertices = *vertex_slice;
 
-                    auto const *source_indices = [&]() -> std::vector<std::uint32_t> const * {
+                    auto const *source_indices = [&]() {
                         if (level == 0) {
                             return &cpu_primitive.indices;
                         }

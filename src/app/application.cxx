@@ -25,18 +25,19 @@
 #include <entt/entt.hpp>
 
 #include "core/allocator.hxx"
-#include "scene/components.hxx"
 #include "core/config.hxx"
+#include "core/error_describe.hxx"
+#include "core/logger.hxx"
+#include "glm/gtc/type_ptr.hpp"
 #include "gpu/context.hxx"
+#include "implot.h"
 #include "rendering/debug_renderer.hxx"
-#include "scene/editor_camera.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
-#include "core/error_describe.hxx"
-#include "glm/gtc/type_ptr.hpp"
 #include "rendering/imgui_renderer.hxx"
-#include "implot.h"
-#include "core/logger.hxx"
+#include "rendering/imgui_widget.hxx"
+#include "scene/components.hxx"
+#include "scene/editor_camera.hxx"
 #if MINGW_VULKAN_TRACK_MEMORY
 #include "core/memory_tracking_ui.hxx"
 #endif
@@ -122,29 +123,10 @@ namespace {
     };
 #endif
 
-    constexpr auto widget = [](const std::string_view name, auto &&f) -> bool {
-        if (!ImGui::Begin(name.data())) {
-            ImGui::End();
-            return false;
-        }
-
-        // Dispatched on f's arity rather than overloading widget() itself: a generic
-        // lambda has one signature, so which of these f can accept is a compile-time
-        // property of f, not something callers select between at the call site.
-        if constexpr (std::is_invocable_v<decltype(f), glm::vec2, glm::vec2>) {
-            auto const size = ImGui::GetWindowSize();
-            auto const position = ImGui::GetWindowPos();
-            f(glm::vec2{size.x, size.y}, glm::vec2{position.x, position.y});
-        } else if constexpr (std::is_invocable_v<decltype(f), glm::vec2>) {
-            auto const size = ImGui::GetWindowSize();
-            f(glm::vec2{size.x, size.y});
-        } else {
-            f();
-        }
-
-        ImGui::End();
-        return false;
-    };
+    // Moved to include/rendering/imgui_widget.hxx so game code (IGame::on_ui())
+    // can use the same helper -- kept unqualified here via this using-declaration
+    // so none of the call sites below needed to change.
+    using gui::widget;
 } // namespace
 
 
@@ -164,6 +146,9 @@ Application::~Application() {
 
 
 auto Application::on_ui() -> void {
+    if (game) {
+        game->on_ui(*active_scene(), *renderer);
+    }
 #if MINGW_VULKAN_TRACK_MEMORY
     widget("Memory", [] { on_memory_ui(); });
 #endif
@@ -192,36 +177,96 @@ auto Application::on_ui() -> void {
             ImGui::SameLine();
             ImGui::TextDisabled("Waiting for file dialog...");
 
-            // Poll with a zero timeout -- ready() with a nonzero timeout
-            // sleeps the calling thread for up to that long, which would
-            // stall the render loop the same way result() does.
-            if (model_load_dialog->ready(0)) {
-                auto const selection = model_load_dialog->result();
-                model_load_dialog.reset();
+            if (!model_load_dialog->ready(0))
+                return;
 
-                if (selection.empty()) {
-                    warn("Load Model: file dialog closed with no selection -- check stderr for the 'pfd: ...' "
-                         "command line (enabled via pfd::settings::verbose) to see what it actually ran");
-                } else {
-                    auto const path = std::filesystem::path{selection.front()};
-                    auto const model = renderer->model_streamer().request(*renderer, path, engine_models.cube,
-                                                                          path.filename().string());
+            auto const selection = model_load_dialog->result();
+            model_load_dialog.reset();
 
-                    if (model.valid()) {
-                        auto entity = Entity{active_scene(), path.stem().string()};
-                        entity.emplace<Components::Transform>();
-                        entity.emplace<Components::Model>(Components::Model{.model = model});
-                        model_load_status = std::format("Loading '{}'...", path.filename().string());
-                    } else {
-                        model_load_status = std::format("Failed to load '{}': could not reserve a model slot",
-                                                        path.filename().string());
-                    }
-                }
+            if (selection.empty())
+                return;
+
+            auto const path = std::filesystem::path{selection.front()};
+            auto const model =
+                    renderer->model_streamer().request(*renderer, path, engine_models.cube, path.filename().string());
+
+            if (model.valid()) {
+                auto entity = Entity{active_scene(), path.stem().string()};
+                entity.emplace<Components::Transform>();
+                entity.emplace<Components::Model>(Components::Model{.model = model});
+                model_load_status = std::format("Loading '{}'...", path.filename().string());
+            } else {
+                model_load_status =
+                        std::format("Failed to load '{}': could not reserve a model slot", path.filename().string());
             }
         }
 
         if (!model_load_status.empty()) {
             ImGui::TextUnformatted(model_load_status.c_str());
+        }
+    });
+
+    widget("Hierarchy", [&] {
+        ImGui::SeparatorText("Gizmo");
+        if (ImGui::RadioButton("Translate (1)", gizmo_operation == ImGuizmo::TRANSLATE)) {
+            gizmo_operation = ImGuizmo::TRANSLATE;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Rotate (2)", gizmo_operation == ImGuizmo::ROTATE)) {
+            gizmo_operation = ImGuizmo::ROTATE;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Scale (3)", gizmo_operation == ImGuizmo::SCALE)) {
+            gizmo_operation = ImGuizmo::SCALE;
+        }
+
+        bool local_space = gizmo_mode == ImGuizmo::LOCAL;
+        if (ImGui::Checkbox("Local space (4)", &local_space)) {
+            gizmo_mode = local_space ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
+        }
+
+        ImGui::SeparatorText("Entities");
+
+        auto &registry = active_scene()->get_registry();
+
+        auto const draw_selectable = [&](entt::entity entity, char const *name) {
+            ImGui::PushID(static_cast<int>(entity));
+            if (ImGui::Selectable(name != nullptr && name[0] != '\0' ? name : "(unnamed)",
+                                   selected_entity == entity)) {
+                selected_entity = entity;
+            }
+            ImGui::PopID();
+        };
+
+        // Bullets grouped under a collapsible node instead of listed flat --
+        // shoot_bullet() can spawn a dozen at once per Ctrl+click, each with
+        // only a ~3s Lifetime, which would otherwise dominate/spam this list.
+        auto const bullet_view = registry.view<Components::BulletTag>();
+        auto const bullet_count = static_cast<std::uint32_t>(std::distance(bullet_view.begin(), bullet_view.end()));
+
+        if (bullet_count > 0 && ImGui::TreeNode("Bullets", "Bullets (%u)", bullet_count)) {
+            for (auto const entity:
+                 registry.view<Components::Transform, Components::GeneratedMeta, Components::BulletTag>()) {
+                draw_selectable(entity, registry.get<Components::GeneratedMeta>(entity).name.c_str());
+            }
+            ImGui::TreePop();
+        }
+
+        // Two separate views (rather than one over both Meta and
+        // GeneratedMeta) because an entity only ever carries one of the two
+        // name-component types -- see Entity/GeneratedEntity in entity.hxx.
+        // Both exclude BulletTag since those are listed above instead.
+        for (auto const entity:
+             registry.view<Components::Transform, Components::Meta>(entt::exclude<Components::BulletTag>)) {
+            draw_selectable(entity, registry.get<Components::Meta>(entity).name.c_str());
+        }
+        for (auto const entity: registry.view<Components::Transform, Components::GeneratedMeta>(
+                     entt::exclude<Components::BulletTag>)) {
+            draw_selectable(entity, registry.get<Components::GeneratedMeta>(entity).name.c_str());
+        }
+
+        if (selected_entity != entt::null && !registry.valid(selected_entity)) {
+            selected_entity = entt::null;
         }
     });
 
@@ -284,9 +329,9 @@ auto Application::on_ui() -> void {
         // briefly read 0 or a slightly stale count right after a scene
         // change, not just "nothing survived culling".
         auto const culled_percent = stats.submitted_instance_count != 0
-                                             ? 100.0F * static_cast<float>(stats.visible_instance_count) /
-                                                       static_cast<float>(stats.submitted_instance_count)
-                                             : 0.0F;
+                                            ? 100.0F * static_cast<float>(stats.visible_instance_count) /
+                                                      static_cast<float>(stats.submitted_instance_count)
+                                            : 0.0F;
         ImGui::Text("Instances visible (post-cull): %s (%u, %.1f%%)", fmt(stats.visible_instance_count),
                     stats.visible_instance_count, culled_percent);
 
@@ -413,9 +458,67 @@ auto Application::on_ui() -> void {
                   registry.view<Components::Transform, Components::SpotLight, Components::GeneratedMeta>(),
                   draw_spot_light);
     });
+
+    // Not routed through widget(): the gizmo needs a fullscreen, click-through
+    // overlay rather than a titled/movable window, and ImGuizmo does its own
+    // mouse hit-testing against io.MousePos rather than relying on the host
+    // ImGui window being hovered -- so ImGuiWindowFlags_NoInputs here doesn't
+    // stop it from picking up drags on the gizmo handles.
+    if (!is_playing) {
+        auto &registry = active_scene()->get_registry();
+
+        if (selected_entity != entt::null && registry.valid(selected_entity) &&
+            registry.all_of<Components::Transform>(selected_entity)) {
+            auto &io = ImGui::GetIO();
+
+            ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+            ImGui::SetNextWindowSize(io.DisplaySize);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
+            ImGui::Begin("##gizmo_overlay", nullptr,
+                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs |
+                                 ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings);
+
+            ImGuizmo::SetOrthographic(false);
+            ImGuizmo::SetDrawlist();
+            ImGuizmo::SetRect(0.0F, 0.0F, io.DisplaySize.x, io.DisplaySize.y);
+
+            auto const aspect = io.DisplaySize.y > 0.0F ? io.DisplaySize.x / io.DisplaySize.y : 1.0F;
+            auto const view = camera.view();
+            auto const projection = camera.projection(aspect);
+
+            auto matrix = registry.get<Components::Transform>(selected_entity).matrix();
+
+            if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection), gizmo_operation, gizmo_mode,
+                                      glm::value_ptr(matrix))) {
+                auto const translation = glm::vec3{matrix[3]};
+                glm::vec3 const scale{glm::length(glm::vec3{matrix[0]}), glm::length(glm::vec3{matrix[1]}),
+                                       glm::length(glm::vec3{matrix[2]})};
+                glm::mat3 const rotation_matrix{glm::vec3{matrix[0]} / scale.x, glm::vec3{matrix[1]} / scale.y,
+                                                 glm::vec3{matrix[2]} / scale.z};
+                auto const rotation = glm::quat_cast(rotation_matrix);
+
+                // patch<>() rather than a direct write so Scene::on_transform_changed
+                // still fires (e.g. to re-dirty light data when gizmo-editing a light).
+                registry.patch<Components::Transform>(selected_entity, [&](Components::Transform &transform) {
+                    transform.position = translation;
+                    transform.rotation = rotation;
+                    transform.scale = scale;
+                });
+            }
+
+            ImGui::End();
+            ImGui::PopStyleColor();
+        }
+    }
 }
 
 auto Application::play() -> void {
+    // Names an entity in editor_scene's registry; runtime_scene (about to be
+    // created below) starts with entirely different entity handles.
+    selected_entity = entt::null;
+
     runtime_scene = std::make_unique<Scene>(*renderer);
     runtime_scene->physics_settings = editor_scene->physics_settings;
     game->clone_into_runtime(*editor_scene, *runtime_scene);
@@ -447,6 +550,9 @@ auto Application::play() -> void {
 }
 
 auto Application::stop() -> void {
+    // Names an entity in runtime_scene's registry, which is reset() below.
+    selected_entity = entt::null;
+
     // Before on_scene_stop() tears down the runtime PhysicsWorld, so
     // TerrainWorld never holds a handle into an instance that's already
     // been destroyed.
@@ -572,6 +678,32 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
 
         game->on_key_pressed(*active_scene(), ev);
     } else {
+        // Gated on WantCaptureKeyboard so typing an entity name (were that
+        // ever added to the Hierarchy widget) or similar text entry doesn't
+        // also swap the gizmo operation. 1-4 rather than the ImGuizmo-classic
+        // W/E/R: those already fly the editor camera (EditorCamera's
+        // is_forward_key/is_up_key etc.), and camera.on_key_pressed below is
+        // unconditional, so reusing them would move the camera and the
+        // gizmo mode at once.
+        if (!ImGui::GetIO().WantCaptureKeyboard) {
+            switch (ev.key) {
+                case GLFW_KEY_1:
+                    gizmo_operation = ImGuizmo::TRANSLATE;
+                    break;
+                case GLFW_KEY_2:
+                    gizmo_operation = ImGuizmo::ROTATE;
+                    break;
+                case GLFW_KEY_3:
+                    gizmo_operation = ImGuizmo::SCALE;
+                    break;
+                case GLFW_KEY_4:
+                    gizmo_mode = gizmo_mode == ImGuizmo::WORLD ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
+                    break;
+                default:
+                    break;
+            }
+        }
+
         camera.on_key_pressed(ev.key);
     }
 

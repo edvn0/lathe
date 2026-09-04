@@ -24,10 +24,10 @@ struct Renderer;
 // passes in for its own per-entity data (see IGame::clone_into_runtime).
 template<typename... ExtraComponents>
 auto clone_editor_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
-    clone_registry<Components::Transform, Components::Model, Components::RigidBody, Components::MaterialOverride,
-                   Components::PlayerTag, Components::Lifetime, Components::PointLight, Components::SpotLight,
-                   Components::GeneratedMeta, Components::Meta, ExtraComponents...>(editor_scene.get_registry(),
-                                                                                    runtime_scene.get_registry());
+    clone_registry<Components::Transform, Components::Model, Components::InstancedModel, Components::RigidBody,
+                   Components::MaterialOverride, Components::PlayerTag, Components::Lifetime, Components::PointLight,
+                   Components::SpotLight, Components::GeneratedMeta, Components::Meta, ExtraComponents...>(
+            editor_scene.get_registry(), runtime_scene.get_registry());
 }
 
 // View/projection/clip-plane values the engine needs to render a frame --
@@ -76,8 +76,20 @@ public:
     }
 
     // Optional game HUD -- drawn separately from the engine's own debug/editor
-    // ImGui panels (Application::on_ui()).
-    virtual auto on_ui() -> void {}
+    // ImGui panels (Application::on_ui()), but called from inside the same
+    // ImGui frame (see Application::on_ui()'s call site), so implementations
+    // just Begin()/End() their own window(s) (gui::widget() in
+    // rendering/imgui_widget.hxx is the same helper Application::on_ui() uses).
+    // `scene` is always the active scene (editor or runtime, matching
+    // Application::active_scene()); `renderer` is handed in (rather than
+    // requiring the game to have cached one from on_populate()) -- together
+    // they let a panel read back current values (MaterialStorage::get(),
+    // registry state) and call mutators (Renderer::update_material(),
+    // registry.replace<>()) directly.
+    virtual auto on_ui(Scene &scene, Renderer &renderer) -> void {
+        (void) scene;
+        (void) renderer;
+    }
 
     // Opts into engine-managed streaming terrain (see TerrainWorld): called
     // once from Application::on_startup(), after on_populate(), on the

@@ -121,6 +121,18 @@ namespace {
             }
         }
 
+        auto instanced_model_view = registry.view<Components::InstancedModel const>();
+
+        for (auto [entity, instanced]: instanced_model_view.each()) {
+            auto result = application.renderer->submit_model_instances(instanced.model, instanced.transforms,
+                                                                        instanced.material_override);
+
+            if (!result) {
+                error("Could not submit instanced model (model index {}, {} instances): {}", instanced.model.index,
+                      instanced.transforms.size(), describe(result.error()));
+            }
+        }
+
         auto point_light_view = registry.view<Components::Transform const, Components::PointLight const>();
 
         for (auto [entity, transform, light]: point_light_view.each()) {

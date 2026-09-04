@@ -1,11 +1,17 @@
 #pragma once
 
+// ImGuizmo.h expects imgui.h to already be included by the includer rather
+// than including it itself -- pull it in first via imgui_renderer.hxx's
+// transitive <imgui.h>, which must precede the ImGuizmo.h include below.
+#include "rendering/imgui_renderer.hxx"
+
+#include <ImGuizmo.h>
+
 #include "gpu/context.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "scene/editor_camera.hxx"
 #include "rendering/engine_models.hxx"
 #include "app/game.hxx"
-#include "rendering/imgui_renderer.hxx"
 #include "scene/input_events.hxx"
 #include "rendering/render_stage.hxx"
 #include "rendering/scene.hxx"
@@ -93,6 +99,15 @@ struct Application {
     float timing_x = 0.0F;
 
     EditorCamera camera;
+
+    // Editor-only selection driven by the "Hierarchy" widget in on_ui() and
+    // manipulated in-viewport via ImGuizmo. Cleared on play()/stop() since
+    // it names an entity in whichever registry was active_scene() at
+    // selection time, and that registry swaps out across the play/stop
+    // boundary (see active_scene()).
+    entt::entity selected_entity = entt::null;
+    ImGuizmo::OPERATION gizmo_operation = ImGuizmo::TRANSLATE;
+    ImGuizmo::MODE gizmo_mode = ImGuizmo::WORLD;
 
     float light_azimuth_degrees = 30.0F;
     float light_elevation_degrees = 55.0F;

@@ -15,6 +15,7 @@
 #include <GLFW/glfw3.h>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <imgui.h>
 
 #include "scene/components.hxx"
 #include "rendering/entity.hxx"
@@ -23,6 +24,7 @@
 #include "physics/physics_world.hxx"
 #include "assets/primitive_meshes.hxx"
 #include "enemy_ai_script.hxx"
+#include "rendering/imgui_widget.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/script_storage.hxx"
@@ -411,7 +413,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     }
 
 
-    auto const grass_material_result = renderer.create_material(MaterialCreateInfo{
+    grass_material_info_ = MaterialCreateInfo{
             .base_colour_factor = glm::vec4{0.25F, 0.55F, 0.18F, 1.0F},
             .base_colour_texture = images.white(),
             .normal_texture = images.flat_normal(),
@@ -421,45 +423,71 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .sampler = samplers.linear_repeat(),
             .wind_strength = 0.28F,
             .max_shadow_cascade = GpuMaterial::no_shadow_cascade,
-    });
+    };
+    auto const grass_material_result = renderer.create_material(grass_material_info_);
 
     if (!grass_material_result) {
         error("Could not create grass material: {}", describe(grass_material_result.error()));
     } else {
         grass_material_ = *grass_material_result;
 
-        constexpr auto grass_field_size = 20.0F;
-        constexpr auto grass_spacing = 0.15F;
-        constexpr auto grass_cells = static_cast<int>(grass_field_size / grass_spacing);
+        // One entity owning every blade's transform, rather than one entity
+        // per blade -- ~17.7k entities each carrying Transform/Model/
+        // MaterialOverride made entity spawn, ECS iteration, and
+        // Application::play()'s per-entity clone_registry() all pay for
+        // bookkeeping that this field never needs (blades never move
+        // individually or get selected/edited on their own).
+        auto const grass_field_entity = GeneratedEntity{&scene, "grass_field"};
+        grass_field_entity.emplace<Components::InstancedModel>(Components::InstancedModel{
+                .model = engine_models.grass_clump,
+                .material_override = grass_material_,
+        });
+        grass_field_entity_ = grass_field_entity;
 
-        std::uniform_real_distribution<float> jitter(-grass_spacing * 0.4F, grass_spacing * 0.4F);
-        std::uniform_real_distribution<float> yaw(0.0F, 6.2831853F);
-        std::uniform_real_distribution<float> scale{0.85F, 1.15F};
+        rebuild_grass_field(scene);
+    }
+}
 
+auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
+    auto &registry = scene.get_registry();
 
-        for (auto cell_x = 0; cell_x < grass_cells; ++cell_x) {
-            for (auto cell_z = 0; cell_z < grass_cells; ++cell_z) {
-                auto const x =
-                        (static_cast<float>(cell_x) + 0.5F) * grass_spacing - grass_field_size * 0.5F + jitter(eng);
-                auto const z =
-                        (static_cast<float>(cell_z) + 0.5F) * grass_spacing - grass_field_size * 0.5F + jitter(eng);
+    if (!registry.valid(grass_field_entity_) || !registry.all_of<Components::InstancedModel>(grass_field_entity_)) {
+        return;
+    }
 
-                auto const grass_entity = GeneratedEntity{&scene, "grass_{}_{}", cell_x, cell_z};
-                auto const grass_scale = scale(eng);
+    auto const grass_cells = static_cast<int>(grass_field_size_ / grass_spacing_);
 
-                auto const grass_y = scene.physics_settings.ground_y + sample_terrain_height(terrain_params_, x, z);
+    std::random_device r;
+    std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
+    std::mt19937 grass_eng(seed);
 
-                grass_entity.emplace<Components::Transform>(Components::Transform{
-                        .position = glm::vec3{x, grass_y, z},
-                        .rotation = glm::angleAxis(yaw(eng), glm::vec3{0.0F, 1.0F, 0.0F}),
-                        .scale = glm::vec3{grass_scale},
+    std::uniform_real_distribution<float> jitter(-grass_spacing_ * 0.4F, grass_spacing_ * 0.4F);
+    std::uniform_real_distribution<float> yaw(0.0F, 6.2831853F);
+    std::uniform_real_distribution<float> scale{0.85F, 1.15F};
 
-                });
-                grass_entity.emplace<Components::Model>(Components::Model{.model = engine_models.grass_clump});
-                grass_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{grass_material_});
+    std::vector<glm::mat4> grass_transforms;
+    grass_transforms.reserve(static_cast<std::size_t>(grass_cells) * static_cast<std::size_t>(grass_cells));
+
+    for (auto cell_x = 0; cell_x < grass_cells; ++cell_x) {
+        for (auto cell_z = 0; cell_z < grass_cells; ++cell_z) {
+            auto const x = (static_cast<float>(cell_x) + 0.5F) * grass_spacing_ - grass_field_size_ * 0.5F +
+                           jitter(grass_eng);
+            auto const z = (static_cast<float>(cell_z) + 0.5F) * grass_spacing_ - grass_field_size_ * 0.5F +
+                           jitter(grass_eng);
+
+            auto const grass_scale = scale(grass_eng);
+            auto const grass_y = scene.physics_settings.ground_y + sample_terrain_height(terrain_params_, x, z);
+
+            grass_transforms.push_back(Components::Transform{
+                                                .position = glm::vec3{x, grass_y, z},
+                                                .rotation = glm::angleAxis(yaw(grass_eng), glm::vec3{0.0F, 1.0F, 0.0F}),
+                                                .scale = glm::vec3{grass_scale},
             }
+                                                .matrix());
         }
     }
+
+    registry.get<Components::InstancedModel>(grass_field_entity_).transforms = std::move(grass_transforms);
 }
 
 auto BasicGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
@@ -469,6 +497,45 @@ auto BasicGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_sce
     // data EnemyAIScript::on_update needs, so they'd stop moving the moment
     // Play starts.
     clone_editor_into_runtime<Components::Script, Components::CircularMotion>(editor_scene, runtime_scene);
+}
+
+auto BasicGame::on_ui(Scene &scene, Renderer &renderer) -> void {
+    if (!grass_material_.valid()) {
+        return;
+    }
+
+    gui::widget("Grass", [&] {
+        bool material_changed = false;
+        material_changed |= ImGui::ColorEdit3("Colour", &grass_material_info_.base_colour_factor.x);
+        material_changed |= ImGui::SliderFloat("Wind strength", &grass_material_info_.wind_strength, 0.0F, 2.0F);
+
+        if (material_changed) {
+            auto const result = renderer.update_material(grass_material_, grass_material_info_);
+
+            if (!result) {
+                error("Could not update grass material: {}", describe(result.error()));
+            }
+        }
+
+        ImGui::SeparatorText("Field");
+        ImGui::SliderFloat("Field size (m)", &grass_field_size_, 5.0F, 40.0F, "%.1f");
+        // IsItemDeactivatedAfterEdit() rather than the slider's own return
+        // value: that fires on every pixel of drag, and each rebuild here is
+        // an O(blade count) regeneration -- up to hundreds of thousands of
+        // mat4s -- not a cheap field write like the material sliders above.
+        bool const field_size_committed = ImGui::IsItemDeactivatedAfterEdit();
+
+        ImGui::SliderFloat("Spacing (m)", &grass_spacing_, 0.08F, 0.5F, "%.2f");
+        bool const spacing_committed = ImGui::IsItemDeactivatedAfterEdit();
+
+        auto const blade_count = static_cast<std::uint32_t>(grass_field_size_ / grass_spacing_) *
+                                  static_cast<std::uint32_t>(grass_field_size_ / grass_spacing_);
+        ImGui::Text("Blades: %u", blade_count);
+
+        if (field_size_committed || spacing_committed) {
+            rebuild_grass_field(scene);
+        }
+    });
 }
 
 auto BasicGame::on_update(Scene &scene, float delta_time) -> void {
@@ -619,6 +686,7 @@ auto BasicGame::shoot_bullet(Scene &scene, std::size_t n) -> void {
         entity.emplace<Components::Model>(Components::Model{.model = cube_model_});
         entity.emplace<Components::RigidBody>(rigid_body);
         entity.emplace<Components::Lifetime>(bullet_lifetime_seconds);
+        entity.emplace<Components::BulletTag>();
 
         scene.physics_world->add_body(scene.get_registry(), entity, transform, rigid_body);
     }

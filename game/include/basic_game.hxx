@@ -5,6 +5,7 @@
 
 #include "app/game.hxx"
 #include "assets/material.hxx"
+#include "assets/material_storage.hxx" // MaterialCreateInfo
 #include "assets/model.hxx"
 #include "player_camera.hxx"
 #include "player_controller.hxx"
@@ -27,6 +28,8 @@ public:
     auto on_mouse_moved(Scene &scene, MouseMovedEvent const &event) -> void override;
     auto on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void override;
 
+    auto on_ui(Scene &scene, Renderer &renderer) -> void override;
+
     [[nodiscard]] auto camera(Scene const &scene, float aspect_ratio) const -> CameraParams override;
 
     [[nodiscard]] auto terrain_create_info(Renderer &renderer) -> std::optional<TerrainWorldCreateInfo> override;
@@ -35,6 +38,14 @@ public:
 
 private:
     auto shoot_bullet(Scene &scene, std::size_t n = 1) -> void;
+
+    // Regenerates every blade transform on grass_field_entity_ from the
+    // current grass_field_size_/grass_spacing_ -- called once from
+    // on_populate() and again from on_ui() whenever those are edited live.
+    // A fresh RNG each call (rather than a persisted member) means replayed
+    // layouts aren't reproducible across edits, which is fine here: nothing
+    // depends on a stable seed, and it keeps regeneration self-contained.
+    auto rebuild_grass_field(Scene &scene) -> void;
 
     entt::entity player_entity_{entt::null};
     PlayerController player_controller_;
@@ -46,9 +57,25 @@ private:
     ModelHandle cube_model_{};
     glm::vec3 cube_half_extents_{0.5F};
 
-    // Wind-swaying grass material -- created once in on_populate() and
-    // shared as a MaterialOverride across every grass clump entity.
+    // Wind-swaying grass material -- created once in on_populate() and used
+    // as the single grass field entity's Components::InstancedModel::material_override.
     MaterialHandle grass_material_{};
+
+    // Mirrors grass_material_'s current create-info so on_ui() has starting
+    // values for its sliders and something to hand back to
+    // Renderer::update_material() on change, without needing a
+    // MaterialCreateInfo-shaped getter off MaterialStorage (its get() returns
+    // the GPU-side GpuMaterial, which drops CPU-only fields like texture/
+    // sampler *handles* in favour of resolved GPU indices).
+    MaterialCreateInfo grass_material_info_{};
+
+    // Owns the field's Components::InstancedModel -- entity id is stable
+    // across Application::play()'s clone into runtime_scene (entt::snapshot
+    // preserves ids), same as player_entity_ above, so on_ui()'s edits work
+    // against either scene via the `scene` it's handed.
+    entt::entity grass_field_entity_{entt::null};
+    float grass_field_size_ = 20.0F;
+    float grass_spacing_ = 0.15F;
 
     // Set by on_populate() -- reused for the rest of that call so
     // houses/trees/grass can sample the same noise field the streaming

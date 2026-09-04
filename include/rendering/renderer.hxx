@@ -295,6 +295,18 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto submit_model(ModelHandle model, glm::mat4 &&, MaterialHandle material_override = {})
             -> std::expected<void, RendererError>;
 
+    // Bulk form of submit_model() for many instances of the same model
+    // sharing one material_override (e.g. a grass field's blades) -- lets a
+    // single entity own the whole instance array instead of needing one ECS
+    // entity per instance. Instances still batch with any other submission
+    // of the same (mesh, submesh, material, LOD) -- this only saves the
+    // per-instance entity/Transform/Model overhead, not draw calls, which
+    // were already merged by prepare_frame()'s batching regardless of
+    // submission source.
+    [[nodiscard]]
+    auto submit_model_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
+                                 MaterialHandle material_override = {}) -> std::expected<void, RendererError>;
+
     // Model-space AABB across every vertex of the model, as loaded --
     // callers can use this to size collision volumes/gizmos to the actual
     // geometry instead of guessing.
