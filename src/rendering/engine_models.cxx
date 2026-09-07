@@ -49,6 +49,18 @@ auto create_engine_models(Renderer &renderer) -> std::expected<EngineModels, Ren
         return std::unexpected(capsule.error());
     }
 
+    // Named like any other model (see Renderer::register_model_name) so
+    // these built-ins show up in the Assets panel's Models section and the
+    // Inspector's "Add Component > Model" picker instead of being usable
+    // only through EngineModels' own fields -- create_model_from_cpu_data()
+    // (unlike load_model()) never names what it creates, since it also
+    // backs one-off procedural geometry (e.g. terrain chunks) that has no
+    // business cluttering the named asset list.
+    renderer.register_model_name(*cube, "Cube");
+    renderer.register_model_name(*sphere, "Sphere");
+    renderer.register_model_name(*grass_clump, "Grass Clump");
+    renderer.register_model_name(*capsule, "Capsule");
+
     return EngineModels{
             .cube = *cube,
             .sphere = *sphere,

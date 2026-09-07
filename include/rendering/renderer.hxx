@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "assets/asset_registry.hxx"
 #include "assets/geometry_arena.hxx"
 #include "assets/load_model.hxx"
 #include "assets/material_storage.hxx" // TextureHandle, MaterialCreateInfo now live here
@@ -271,6 +272,26 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto install_model(ModelHandle pending, Model const &model) -> std::expected<void, RendererError> override;
 
+    // See IModelSink::retain_model. No-op (besides a warning log) if
+    // `handle` isn't currently a live model -- callers only ever pass a
+    // handle a cache just looked up, but a defensive no-op is cheaper than
+    // a crash if that ever stops being true.
+    auto retain_model(ModelHandle handle) -> void override;
+
+    // See IModelSink::register_model_name.
+    auto register_model_name(ModelHandle handle, std::string_view name) -> void override;
+
+    // Decrements the model's ModelSlotData::ref_count and, once it reaches
+    // zero, actually tears it down: destroy_mesh()s every mesh it draws
+    // (which retires their GeometryArena ranges -- see destroy_mesh's
+    // comment), forgets it from load_model's model_cache_ and
+    // ModelStreamer's path_cache_ so neither hands out the now-dead handle
+    // again, and releases the ModelStorage slot. Safe to call on a handle
+    // still referenced elsewhere (e.g. via retain_model()) -- that just
+    // decrements the count without touching anything else.
+    [[nodiscard]]
+    auto destroy_model(ModelHandle handle) -> std::expected<void, RendererError>;
+
     // Uploads already-CPU-side geometry (e.g. procedurally generated engine
     // primitives — see primitive_meshes.hxx / engine_models.hxx) through the
     // same GPU upload path as load_model, without touching disk or a glTF
@@ -333,8 +354,15 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto model_lights(ModelHandle model) const -> std::span<ModelCpuLight const>;
 
+    // `debug_name`, when non-empty, registers the new material in assets()
+    // (see AssetRegistry) so editor UI can offer it by name later -- the
+    // same debug_name/register_asset pattern request_texture() uses for
+    // textures. Empty by default: most materials created internally (e.g.
+    // per-submesh materials baked out of a loaded glTF, see load_model.cxx)
+    // have no single meaningful name and stay anonymous.
     [[nodiscard]]
-    auto create_material(MaterialCreateInfo const &create_info) -> std::expected<MaterialHandle, RendererError>;
+    auto create_material(MaterialCreateInfo const &create_info, std::string debug_name = {})
+            -> std::expected<MaterialHandle, RendererError>;
 
     [[nodiscard]]
     auto update_material(MaterialHandle handle, MaterialCreateInfo const &create_info)
@@ -488,6 +516,22 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto texture_streamer() noexcept -> TextureStreamer & override { return texture_streamer_; }
     [[nodiscard]] auto model_streamer() noexcept -> ModelStreamer & { return model_streamer_; }
     [[nodiscard]] auto resource_table() noexcept -> GpuResourceTable & { return gpu_resource_table_; }
+
+    // Name -> handle bookkeeping for the Inspector/Assets-panel UI (see
+    // application.cxx) -- see asset_registry.hxx for why this is a separate
+    // layer from the *Storage classes above.
+    [[nodiscard]] auto assets() noexcept -> AssetRegistry & { return assets_; }
+    [[nodiscard]] auto assets() const noexcept -> AssetRegistry const & { return assets_; }
+
+    // Thin wrapper over texture_streamer().request() that also registers
+    // `debug_name` in assets().textures(), for standalone textures a user
+    // should be able to pick by name later (e.g. from the Assets browser
+    // panel). Internal texture loads that are implementation details of a
+    // model/material load keep calling texture_streamer() directly and stay
+    // unnamed.
+    [[nodiscard]]
+    auto request_texture(std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
+                         std::string debug_name) -> ImageHandle;
 
     [[nodiscard]] auto resolve_pipeline(PipelineNodeHandle handle) const noexcept -> ShaderObjectSet const * {
         return pipeline_graph_.resolve_shader_objects(handle);
@@ -825,6 +869,7 @@ private:
     SamplerStorage sampler_storage_{};
     TextureStreamer texture_streamer_{};
     ModelStreamer model_streamer_{};
+    AssetRegistry assets_{};
     GpuResourceTable gpu_resource_table_{};
 
     std::vector<Buffer> ubos_;

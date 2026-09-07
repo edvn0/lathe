@@ -4,6 +4,7 @@
 
 #include "gpu/buffer.hxx"
 #include "gpu/device_error.hxx"
+#include "core/config.hxx"
 #include "core/error_context.hxx"
 #include "core/forward.hxx"
 #include "assets/geometry.hxx"
@@ -16,6 +17,7 @@
 #include <span>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 struct GeometryArenaCreateInfo {
     VkDeviceSize capacity = 0;
@@ -131,6 +133,25 @@ struct GeometryArenaT {
         return write(command_buffer, slice, data);
     }
 
+    // Defers the actual reclaim until tick_retirement() has been called
+    // frames_in_flight times after this -- the GPU may still be reading
+    // draws recorded against `slice` in an already-submitted, not-yet-
+    // fenced frame, so handing this range back out immediately (i.e. a
+    // plain allocator_.deallocate()) could let a new allocate() overwrite
+    // it out from under those draws. Same discipline as
+    // TerrainSlotPool::tick_retirement()/PipelineGraphRepository::
+    // tick_retirement() -- see docs/engine_review_followups.md #1. A no-op
+    // slice (GeometrySlice::valid() == false) is silently ignored so
+    // callers can pass e.g. an unused MeshGeometry::indices without
+    // special-casing it.
+    auto retire(GeometrySlice const &slice) -> void;
+
+    // Call once per frame (see Renderer::prepare_frame, alongside
+    // pipeline_graph_.tick_retirement()) -- actually calls
+    // allocator_.deallocate() for every retire()d range whose
+    // frames_in_flight countdown has reached zero.
+    auto tick_retirement() -> void;
+
     [[nodiscard]]
     auto device_address(GeometrySlice const &slice) const noexcept -> VkDeviceAddress {
 
@@ -166,10 +187,18 @@ private:
     Buffer buffer{};
 
     Allocator allocator_{};
+
+    struct RetiringRange {
+        GeometrySlice slice;
+        std::uint32_t frames_remaining = frames_in_flight;
+    };
+
+    std::vector<RetiringRange> retiring_;
 };
 
-// Default backing allocator: bump, never frees -- identical behavior to
-// this class before the allocator policy was factored out. See
-// geometry_allocator.hxx for FreeListAllocator, the streaming-capable
-// alternative that can be substituted here with no other call-site change.
-using GeometryArena = GeometryArenaT<BumpAllocator>;
+// FreeListAllocator-backed: mesh/model geometry can be retire()d and
+// actually reclaimed (see Renderer::destroy_mesh/destroy_model). Was
+// BumpAllocator (never frees) before GeometryArena grew a real free path --
+// see docs/engine_review_followups.md #1 and geometry_allocator.hxx for
+// BumpAllocator if something ever needs arena-never-shrinks behavior back.
+using GeometryArena = GeometryArenaT<FreeListAllocator>;

@@ -11,13 +11,15 @@
 #include "player_controller.hxx"
 #include "terrain/terrain_mesh.hxx"
 
-// Sample content exercising the engine's rendering and physics systems end
-// to end: a player capsule exploring a small village of procedurally built
-// houses and trees, a textured floor, a few point/spot lights, patches of
-// wind-swaying grass, and left-click bullet shooting. The houses/trees are
-// composed from the engine's box/sphere primitives (no external assets),
-// which gives GTAO plenty of corners, overhangs, and self-shadowing to work
-// with.
+struct GrassParams {
+    float field_size = 100.0F;
+    float spacing = 0.5F;
+    float blotch_scale = 20.0F;
+    float blotch_threshold = 0.5F;
+    float blotch_softness = 0.15F;
+    std::uint32_t blotch_seed = 1337U;
+};
+
 class BasicGame final : public IGame {
 public:
     auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void override;
@@ -39,56 +41,26 @@ public:
 private:
     auto shoot_bullet(Scene &scene, std::size_t n = 1) -> void;
 
-    // Regenerates every blade transform on grass_field_entity_ from the
-    // current grass_field_size_/grass_spacing_ -- called once from
-    // on_populate() and again from on_ui() whenever those are edited live.
-    // A fresh RNG each call (rather than a persisted member) means replayed
-    // layouts aren't reproducible across edits, which is fine here: nothing
-    // depends on a stable seed, and it keeps regeneration self-contained.
+
     auto rebuild_grass_field(Scene &scene) -> void;
 
     entt::entity player_entity_{entt::null};
     PlayerController player_controller_;
     PlayerCamera player_camera_;
 
-    // Set by on_populate() -- reused by shoot_bullet() so projectiles are
-    // built from the same model/collision-shape relationship as the grid
-    // cubes and floor.
     ModelHandle cube_model_{};
     glm::vec3 cube_half_extents_{0.5F};
 
-    // Wind-swaying grass material -- created once in on_populate() and used
-    // as the single grass field entity's Components::InstancedModel::material_override.
     MaterialHandle grass_material_{};
 
-    // Mirrors grass_material_'s current create-info so on_ui() has starting
-    // values for its sliders and something to hand back to
-    // Renderer::update_material() on change, without needing a
-    // MaterialCreateInfo-shaped getter off MaterialStorage (its get() returns
-    // the GPU-side GpuMaterial, which drops CPU-only fields like texture/
-    // sampler *handles* in favour of resolved GPU indices).
     MaterialCreateInfo grass_material_info_{};
 
-    // Owns the field's Components::InstancedModel -- entity id is stable
-    // across Application::play()'s clone into runtime_scene (entt::snapshot
-    // preserves ids), same as player_entity_ above, so on_ui()'s edits work
-    // against either scene via the `scene` it's handed.
     entt::entity grass_field_entity_{entt::null};
-    float grass_field_size_ = 20.0F;
-    float grass_spacing_ = 0.15F;
+    GrassParams grass_field_params_{};
+    std::uint32_t grass_field_blade_count_ = 0U;
 
-    // Set by on_populate() -- reused for the rest of that call so
-    // houses/trees/grass can sample the same noise field the streaming
-    // terrain (see terrain_create_info()) generates and rest on the actual
-    // generated surface. height_range_min/max are set here too, so
-    // TerrainWorld's chunks agree with these placement calls about where
-    // local Y = 0 sits (see TerrainMeshResult::mid_height / make_terrain_chunk).
     TerrainParams terrain_params_{};
 
-    // Terrain material, created once in on_populate() (needs the texture
-    // streamer/image storage, both only reachable via Renderer there) and
-    // handed to TerrainWorld via terrain_create_info(), which runs later
-    // with no Scene access of its own.
     MaterialHandle terrain_material_{};
     float terrain_ground_y_ = 0.0F;
 };

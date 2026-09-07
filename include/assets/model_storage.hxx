@@ -28,6 +28,21 @@ struct ModelSlotData {
     glm::vec3 bounds_max{0.5F};
 
     std::vector<ModelCpuLight> lights;
+
+    // How many independent callers currently hold this handle. Starts at 1
+    // for whoever create_model()/create_pending_model() hands the fresh
+    // handle to; Renderer::retain_model() bumps it every time a path-based
+    // cache (Renderer::load_model's model_cache_, ModelStreamer's
+    // path_cache_) hands the *same* handle out to another caller instead of
+    // loading a new copy. Renderer::destroy_model() decrements it and only
+    // actually releases the slot (and the geometry/meshes it references)
+    // once it reaches zero, so one caller releasing its copy doesn't yank
+    // the model out from under another that still references it.
+    //
+    // create_model()/upgrade_pending_model() deliberately reset/preserve
+    // this field explicitly (see model_storage.cxx) rather than letting a
+    // wholesale ModelSlotData overwrite clobber it -- see their comments.
+    std::uint32_t ref_count = 1;
 };
 
 enum class ModelStorageErrorType : std::uint8_t {
@@ -97,6 +112,15 @@ public:
     // read onward -- no handle churn for whatever already holds it.
     [[nodiscard]]
     auto upgrade_pending_model(ModelHandle handle, ModelSlotData data) -> std::expected<ModelHandle, ModelStorageError>;
+
+    // Unconditionally releases the slot back to the pool -- callers are
+    // responsible for having already driven ref_count to zero (see
+    // ModelSlotData::ref_count) and for tearing down whatever the slot's
+    // `draws` reference (MeshStorage/GeometryArena) before calling this, the
+    // same way MeshStorage::destroy_mesh's caller (Renderer::destroy_mesh)
+    // owns the GeometryArena side of things.
+    [[nodiscard]]
+    auto release(ModelHandle handle) -> std::expected<void, ModelStorageError>;
 
     [[nodiscard]]
     auto get(ModelHandle handle) noexcept -> ModelSlotData *;

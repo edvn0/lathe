@@ -7,6 +7,11 @@
 
 #include <ImGuizmo.h>
 
+#include "rendering/editor_icons.hxx"
+
+#include <functional> // std::move_only_function
+
+#include "assets/material_storage.hxx" // MaterialCreateInfo
 #include "gpu/context.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "scene/editor_camera.hxx"
@@ -59,6 +64,7 @@ struct Application {
     std::unique_ptr<Renderer> renderer;
     std::unique_ptr<debug_draw::DebugRenderer> debug_renderer;
     std::unique_ptr<gui::ImGuiRenderer> imgui_renderer;
+    std::unique_ptr<gui::EditorIcons> editor_icons;
     ShaderHotReloadWatcher shader_watcher_;
 
     std::unique_ptr<Scene> editor_scene = std::make_unique<Scene>(*renderer);
@@ -109,6 +115,10 @@ struct Application {
     ImGuizmo::OPERATION gizmo_operation = ImGuizmo::TRANSLATE;
     ImGuizmo::MODE gizmo_mode = ImGuizmo::WORLD;
 
+    // Persists the Hierarchy widget's search filter across frames (see
+    // on_ui()'s "Entities" section).
+    std::string hierarchy_search;
+
     float light_azimuth_degrees = 30.0F;
     float light_elevation_degrees = 55.0F;
 
@@ -129,6 +139,44 @@ struct Application {
     // than calling result() straight after construction, so browsing for a
     // model doesn't stall the render loop for as long as the dialog is open.
     std::unique_ptr<pfd::open_file> model_load_dialog;
+
+    // Same as model_load_dialog, for the Inspector's per-entity "Change
+    // Model" browse control (see the Model section in on_ui()) -- kept
+    // separate since both can conceivably be mid-browse at once (the
+    // standalone "Load Model" widget and the Inspector are different
+    // windows the user can interact with independently).
+    std::unique_ptr<pfd::open_file> inspector_model_dialog;
+
+    // In-progress state for the Assets panel's "New Material" popup (see
+    // the Materials section in on_ui()) -- persisted across frames like
+    // model_load_status/hierarchy_search above rather than reset to a local
+    // the moment the popup is open, so edits made across several frames
+    // (dragging a slider, typing a name) aren't lost between them.
+    MaterialCreateInfo new_material_info{};
+    std::string new_material_name;
+
+    // A "Delete" click in the Assets panel doesn't destroy the underlying
+    // asset immediately -- it queues `commit` to run once elapsed_time
+    // reaches `delete_at`, deferred by deletion_grace_seconds (see on_ui()'s
+    // Materials section). This gives the Assets panel an undo window (the
+    // "Recently deleted" list restores an entry by just erasing its queued
+    // PendingDeletion, since nothing was actually touched yet) and, unlike
+    // Application's other undo-less destructive actions (Hierarchy's
+    // Delete), matters more here because a wrongly-deleted named material
+    // can be referenced by an arbitrary number of entities' MaterialOverride
+    // that have no record of what handle they used to point at.
+    //
+    // Kept asset-kind-agnostic (a label + a type-erased commit callback)
+    // rather than typed to MaterialHandle specifically, so Models/Textures
+    // could feed the same queue later instead of each growing its own copy
+    // of this grace-period/restore machinery.
+    struct PendingDeletion {
+        std::string label;
+        float delete_at = 0.0F;
+        std::move_only_function<void()> commit;
+    };
+    static constexpr float deletion_grace_seconds = 20.0F;
+    std::vector<PendingDeletion> pending_deletions;
 
     auto update(float delta_time) -> void;
 

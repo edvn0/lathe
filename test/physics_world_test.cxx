@@ -153,15 +153,6 @@ TEST_SUITE("unit") {
         BS::priority_thread_pool pool{2};
         entt::registry registry;
 
-        // entt::entity{0} bit-casts to a null pointer, same as a terrain
-        // collider's (deliberately unset) user pointer -- see
-        // PhysicsWorld::reserve_terrain_collider. ~Impl's generic teardown
-        // loop relies on terrain colliders being removed from the world
-        // (via a separate, earlier loop) before it runs, rather than on a
-        // null-pointer check, precisely so entity 0's own body is torn down
-        // normally instead of being mistaken for "no entity backing" --
-        // this reproduces both bodies coexisting across repeated
-        // construct/destroy cycles.
         auto const entity_zero = registry.create();
         REQUIRE(entity_zero == entt::entity{0});
         registry.emplace<Components::Transform>(entity_zero, Components::Transform{.position = {0.0F, 1.0F, 0.0F}});

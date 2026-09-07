@@ -41,6 +41,7 @@ auto GeometryArenaT<Allocator>::destroy(VulkanContext &) -> void {
     buffer.destroy();
 
     allocator_.reset(0);
+    retiring_.clear();
 }
 
 template<GeometryAllocatorPolicy Allocator>
@@ -250,6 +251,33 @@ auto GeometryArenaT<Allocator>::allocate_indices(VkCommandBuffer command_buffer,
             .index_count = static_cast<std::uint32_t>(index_count),
             .index_type = index_type,
     };
+}
+
+template<GeometryAllocatorPolicy Allocator>
+auto GeometryArenaT<Allocator>::retire(GeometrySlice const &slice) -> void {
+    if (!slice.valid()) {
+        return;
+    }
+
+    retiring_.push_back(RetiringRange{.slice = slice, .frames_remaining = frames_in_flight});
+}
+
+template<GeometryAllocatorPolicy Allocator>
+auto GeometryArenaT<Allocator>::tick_retirement() -> void {
+    for (auto &retiring: retiring_) {
+        if (retiring.frames_remaining > 0) {
+            --retiring.frames_remaining;
+        }
+    }
+
+    std::erase_if(retiring_, [this](RetiringRange const &retiring) {
+        if (retiring.frames_remaining > 0) {
+            return false;
+        }
+
+        allocator_.deallocate(retiring.slice);
+        return true;
+    });
 }
 
 template struct GeometryArenaT<BumpAllocator>;

@@ -63,6 +63,54 @@ namespace detail {
         friend class Scene;
     };
 
+    // Handed to IScript::on_attach/on_detach. Unlike Entity/GeneratedEntity,
+    // this never binds or creates a name component -- an entity may already
+    // be named via either Meta or GeneratedMeta (or neither) by the time a
+    // script attaches to it, and Entity's get_or_emplace<Meta> used to add a
+    // spurious *empty* Components::Meta alongside an entity's real
+    // GeneratedMeta name the moment Components::Script was emplaced (every
+    // enemy in BasicGame::on_populate hit this), leaving it with both name
+    // components at once. Unlike ScriptEntity (on_update's counterpart),
+    // this does expose emplace<T>() -- on_attach/on_detach always run
+    // synchronously on the main thread the instant Components::Script is
+    // emplaced/removed (see Scene::on_script_attached/on_script_detached),
+    // never concurrently across the thread pool like a parallelizable()
+    // script's on_update can, so the structural-mutation hazard ScriptEntity
+    // is deliberately avoiding doesn't apply here.
+    class AttachedEntity {
+    public:
+        AttachedEntity(Scene *s, entt::entity e) noexcept : scene(s), entity(e) {}
+        ~AttachedEntity() = default;
+
+        template<typename T, typename... Args>
+        auto emplace(Args &&...args) const -> decltype(auto) {
+            return scene->registry.emplace<T>(entity, std::forward<Args>(args)...);
+        }
+
+        template<typename T>
+        auto has() const -> bool {
+            return scene->registry.all_of<T>(entity);
+        }
+
+        template<typename T>
+        auto get() const -> T & {
+            return scene->registry.get<T>(entity);
+        }
+
+        template<typename T>
+        auto get() const -> const T & {
+            return scene->registry.get<T>(entity);
+        }
+
+        operator entt::entity() const noexcept { return entity; }
+
+    private:
+        Scene *scene;
+        entt::entity entity;
+
+        friend class Scene;
+    };
+
     class ReadOnlyEntity {
     public:
         ReadOnlyEntity(Scene *s, entt::entity e) noexcept : scene(s), entity(e) {}
@@ -128,3 +176,4 @@ using Entity = detail::Entity<FlyString>;
 
 using ReadOnlyEntity = detail::ReadOnlyEntity;
 using ScriptEntity = detail::ScriptEntity;
+using AttachedEntity = detail::AttachedEntity;

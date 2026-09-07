@@ -59,4 +59,17 @@ namespace Components {
     // aren't even unique -- shoot_bullet() restarts its index at 0 every
     // call, so multiple live bullets can share the same GeneratedMeta name).
     struct BulletTag {};
+
+    // Marks an entity whose Model handle was obtained through a path-based
+    // cache with real ref-counting (Renderer::load_model's model_cache_,
+    // ModelStreamer's path_cache_/the "Load Model" UI widget) -- every such
+    // handle-hand-out is paired with exactly one eventual
+    // Renderer::destroy_model() call, so it's safe for the Hierarchy
+    // widget's "remove" action to call destroy_model() when deleting one of
+    // these. Deliberately NOT applied to entities sharing a bare, unrefcounted
+    // ModelHandle some other way (e.g. BasicGame's grid/bullets all pointing
+    // at one shared cube_model_) -- destroying those on removal would pull
+    // the model out from under every other entity still using it, since
+    // nothing ever called retain_model() on their behalf.
+    struct StreamedModelTag {};
 } // namespace Components

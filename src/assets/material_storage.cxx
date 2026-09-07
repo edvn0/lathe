@@ -115,13 +115,14 @@ auto MaterialStorage::create(VulkanContext &context, MaterialStorageCreateInfo c
     // (see the explicit handle.index == 0 guard in destroy_material below).
     auto &default_slot = storage.slots_.allocate()->second;
 
-    default_slot.material = GpuMaterial{};
+    default_slot.source = MaterialCreateInfo{};
+    default_slot.material = to_gpu_material(default_slot.source);
     default_slot.dirty = true;
 
     return storage;
 }
 
-auto MaterialStorage::create_material(GpuMaterial const &material)
+auto MaterialStorage::create_material(MaterialCreateInfo const &create_info)
         -> std::expected<MaterialHandle, MaterialStorageError> {
     auto allocation = slots_.allocate();
 
@@ -131,13 +132,14 @@ auto MaterialStorage::create_material(GpuMaterial const &material)
 
     auto &[handle, slot] = *allocation;
 
-    slot.material = material;
+    slot.source = create_info;
+    slot.material = to_gpu_material(create_info);
     slot.dirty = true;
 
     return handle;
 }
 
-auto MaterialStorage::update_material(MaterialHandle handle, GpuMaterial const &material)
+auto MaterialStorage::update_material(MaterialHandle handle, MaterialCreateInfo const &create_info)
         -> std::expected<void, MaterialStorageError> {
     auto *slot = slots_.get(handle);
 
@@ -145,7 +147,8 @@ auto MaterialStorage::update_material(MaterialHandle handle, GpuMaterial const &
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
     }
 
-    slot->material = material;
+    slot->source = create_info;
+    slot->material = to_gpu_material(create_info);
     slot->dirty = true;
 
     return {};
@@ -168,6 +171,7 @@ auto MaterialStorage::destroy_material(MaterialHandle handle) -> std::expected<v
     // the slot, matching the pre-refactor behavior of never leaving a freed
     // slot's last material contents sitting in the GPU buffer.
     slot->material = GpuMaterial{};
+    slot->source = MaterialCreateInfo{};
     slot->dirty = true;
 
     static_cast<void>(slots_.release(handle));
@@ -179,6 +183,12 @@ auto MaterialStorage::get(MaterialHandle handle) const noexcept -> GpuMaterial c
     auto const *slot = slots_.get(handle);
 
     return slot != nullptr ? &slot->material : nullptr;
+}
+
+auto MaterialStorage::create_info(MaterialHandle handle) const noexcept -> MaterialCreateInfo const * {
+    auto const *slot = slots_.get(handle);
+
+    return slot != nullptr ? &slot->source : nullptr;
 }
 
 auto MaterialStorage::gpu_index(MaterialHandle handle) const noexcept -> std::uint32_t {

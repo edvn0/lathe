@@ -3,12 +3,14 @@
 #include <volk.h>
 
 #include <chrono>
+#include <cstddef>
 #include <expected>
 #include <filesystem>
 #include <future>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "assets/load_model.hxx"
@@ -43,9 +45,27 @@ public:
     // texture, negligible next to the parse/encode/upload work itself, and
     // format_model_load_profile()'s breakdown is logged automatically once
     // the model finishes installing (see process_ready()).
+    //
+    // Requests for a `source_path` that already finished loading (compared
+    // by weakly_canonical() path, same key scheme as Renderer::load_model's
+    // model_cache_) return the previously installed handle immediately
+    // instead of re-parsing and re-uploading -- mirrors load_model's cache,
+    // which this streaming path didn't previously have, so re-requesting
+    // the same file (e.g. the "Load Model" UI widget's file dialog) no
+    // longer burns a second GeometryArena allocation for geometry that's
+    // already resident (GeometryArena has no free-list -- see
+    // docs/engine_review_followups.md #1 -- so those never got reclaimed
+    // and a second big model could exhaust it outright). A request that
+    // failed is not cached, so it can be retried.
     [[nodiscard]]
     auto request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback, std::string debug_name)
             -> ModelHandle;
+
+    // Erases any path_cache_ entries pointing at `handle` -- call this when
+    // `handle` is actually destroyed (Renderer::destroy_model) so a later
+    // request() for the same path doesn't hand back a now-dangling handle
+    // instead of loading it again.
+    auto forget(ModelHandle handle) -> void;
 
     // Advances every pending request by up to gpu_upload_items_per_frame
     // worth of GPU-upload work: promotes a request whose background
@@ -92,7 +112,17 @@ private:
 
         std::shared_ptr<ModelLoadProfile> profile;
         std::chrono::steady_clock::time_point requested_at;
+
+        // Recorded from source_path at request() time so process_ready()
+        // can populate path_cache_ once this request installs successfully.
+        std::size_t path_hash = 0;
     };
 
     std::vector<PendingRequest> pending_;
+
+    // path -> handle for requests that finished installing, keyed the same
+    // way Renderer::load_model's model_cache_ is (hash_value() of the
+    // weakly_canonical() path). Checked at the top of request(); see its
+    // doc comment.
+    std::unordered_map<std::size_t, ModelHandle> path_cache_;
 };

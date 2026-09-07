@@ -32,6 +32,51 @@
 
 namespace {
 
+    [[nodiscard]] auto hash_to_unit_float(std::uint32_t x, std::uint32_t z, std::uint32_t seed) -> float {
+        std::uint32_t h = x * 374761393U + z * 668265263U + seed * 2654435761U;
+        h = (h ^ (h >> 13)) * 1274126177U;
+        h ^= h >> 16;
+        return static_cast<float>(h) / static_cast<float>(std::numeric_limits<std::uint32_t>::max());
+    }
+
+    [[nodiscard]] auto value_noise_2d(glm::vec2 pos, std::uint32_t seed) -> float {
+        auto const cell = glm::floor(pos);
+        auto const frac = pos - cell;
+
+        auto const cell_x = static_cast<std::uint32_t>(static_cast<std::int32_t>(cell.x));
+        auto const cell_z = static_cast<std::uint32_t>(static_cast<std::int32_t>(cell.y));
+
+        auto const corner00 = hash_to_unit_float(cell_x, cell_z, seed);
+        auto const corner10 = hash_to_unit_float(cell_x + 1U, cell_z, seed);
+        auto const corner01 = hash_to_unit_float(cell_x, cell_z + 1U, seed);
+        auto const corner11 = hash_to_unit_float(cell_x + 1U, cell_z + 1U, seed);
+
+        auto const smooth = frac * frac * (glm::vec2{3.0F} - 2.0F * frac);
+        auto const top = glm::mix(corner00, corner10, smooth.x);
+        auto const bottom = glm::mix(corner01, corner11, smooth.x);
+        return glm::mix(top, bottom, smooth.y);
+    }
+
+    [[nodiscard]] auto blotch_density(glm::vec2 world_pos, GrassParams const &params) -> float {
+        constexpr auto octaves = 3;
+        constexpr auto lacunarity = 2.0F;
+        constexpr auto persistence = 0.5F;
+
+        auto sample_pos = world_pos / params.blotch_scale;
+        auto amplitude = 1.0F;
+        auto amplitude_sum = 0.0F;
+        auto density = 0.0F;
+
+        for (auto octave = 0; octave < octaves; ++octave) {
+            density += value_noise_2d(sample_pos, params.blotch_seed + static_cast<std::uint32_t>(octave)) * amplitude;
+            amplitude_sum += amplitude;
+            sample_pos *= lacunarity;
+            amplitude *= persistence;
+        }
+
+        return density / amplitude_sum;
+    }
+
     auto direction_to_rotation(glm::vec3 const &direction) -> glm::quat {
         constexpr auto local_forward = glm::vec3{0.0F, -1.0F, 0.0F};
         auto const dot = glm::dot(local_forward, direction);
@@ -226,7 +271,11 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .occlusion_texture = images.occlusion(),
             .emissive_texture = images.emissive(),
             .sampler = samplers.linear_repeat(),
-    });
+    },
+            // Named so the Inspector's Material Override picker / the Assets
+            // browser panel can offer it -- see AssetRegistry
+            // (asset_registry.hxx) and Renderer::create_material's debug_name.
+            "terrain");
 
     if (terrain_material) {
         terrain_material_ = *terrain_material;
@@ -258,8 +307,16 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         return material.value();
     };
 
+    // `parent`, when not null, only adds a Components::Parent link for
+    // grouping this part under a container entity in the Hierarchy panel
+    // (and, since get_world_transform() composes it, for rendering) --
+    // `position` is still world-space and unaffected by it, and physics
+    // (PhysicsWorld::add_body) reads Components::Transform directly and
+    // ignores Parent entirely, so a static box's collider always stays
+    // exactly where `position` puts it even if its parent entity is later
+    // moved.
     auto const add_static_box = [&](std::string const &name, glm::vec3 const &position, glm::vec3 const &half_extents,
-                                    MaterialHandle material) {
+                                    MaterialHandle material, entt::entity parent = entt::null) {
         auto entity = GeneratedEntity{&scene, "{}", name};
         entity.emplace<Components::Transform>(Components::Transform{
                 .position = position,
@@ -269,6 +326,9 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         entity.emplace<Components::RigidBody>(Components::RigidBody{.half_extents = half_extents, .is_static = true});
         if (material.valid()) {
             entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{material});
+        }
+        if (parent != entt::null) {
+            entity.emplace<Components::Parent>(Components::Parent{.entity = parent});
         }
     };
 
@@ -312,28 +372,36 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
         auto const part_name = [&](char const *part) { return std::format("house_{}_{}", house_index, part); };
 
+        // Groups this house's 7 parts under one Hierarchy-panel entity --
+        // see add_static_box's comment for why an identity Transform here
+        // is required (parts stay world-space, so a non-identity parent
+        // transform would double-apply on top of them when rendered).
+        auto house_entity = GeneratedEntity{&scene, "house_{}", house_index};
+        house_entity.emplace<Components::Transform>();
+
         // Back and side walls span the full footprint; the front wall is
         // split in two to leave a doorway gap between them.
         add_static_box(part_name("wall_back"), base + glm::vec3{0.0F, half_h, -half_d},
-                        {half_w, half_h, wall_thickness * 0.5F}, wall_material);
+                       {half_w, half_h, wall_thickness * 0.5F}, wall_material, house_entity);
         add_static_box(part_name("wall_left"), base + glm::vec3{-half_w, half_h, 0.0F},
-                        {wall_thickness * 0.5F, half_h, half_d}, wall_material);
+                       {wall_thickness * 0.5F, half_h, half_d}, wall_material, house_entity);
         add_static_box(part_name("wall_right"), base + glm::vec3{half_w, half_h, 0.0F},
-                        {wall_thickness * 0.5F, half_h, half_d}, wall_material);
+                       {wall_thickness * 0.5F, half_h, half_d}, wall_material, house_entity);
 
         auto const front_segment_width = (style.width - door_width) * 0.5F;
         auto const front_segment_offset = (door_width + front_segment_width) * 0.5F;
         add_static_box(part_name("wall_front_left"), base + glm::vec3{-front_segment_offset, half_h, half_d},
-                        {front_segment_width * 0.5F, half_h, wall_thickness * 0.5F}, wall_material);
+                       {front_segment_width * 0.5F, half_h, wall_thickness * 0.5F}, wall_material, house_entity);
         add_static_box(part_name("wall_front_right"), base + glm::vec3{front_segment_offset, half_h, half_d},
-                        {front_segment_width * 0.5F, half_h, wall_thickness * 0.5F}, wall_material);
+                       {front_segment_width * 0.5F, half_h, wall_thickness * 0.5F}, wall_material, house_entity);
 
         add_static_box(part_name("roof"), base + glm::vec3{0.0F, style.wall_height + roof_thickness * 0.5F, 0.0F},
-                        {half_w + roof_overhang, roof_thickness * 0.5F, half_d + roof_overhang}, roof_material);
+                       {half_w + roof_overhang, roof_thickness * 0.5F, half_d + roof_overhang}, roof_material,
+                       house_entity);
 
         add_static_box(part_name("chimney"),
-                        base + glm::vec3{half_w * 0.5F, style.wall_height + roof_thickness + 0.4F, -half_d * 0.5F},
-                        {0.3F, 0.4F, 0.3F}, roof_material);
+                       base + glm::vec3{half_w * 0.5F, style.wall_height + roof_thickness + 0.4F, -half_d * 0.5F},
+                       {0.3F, 0.4F, 0.3F}, roof_material, house_entity);
     }
 
     {
@@ -360,9 +428,12 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                                 sample_terrain_height(terrain_params_, style.position.x, style.position.z);
             auto const base = glm::vec3{style.position.x, base_y, style.position.z};
 
-            add_static_box(std::format("tree_{}_trunk", tree_index),
-                            base + glm::vec3{0.0F, style.trunk_height * 0.5F, 0.0F},
-                            {style.trunk_radius, style.trunk_height * 0.5F, style.trunk_radius}, trunk_material);
+            auto tree_entity = GeneratedEntity{&scene, "tree_{}", tree_index};
+            tree_entity.emplace<Components::Transform>();
+
+            add_static_box(
+                    std::format("tree_{}_trunk", tree_index), base + glm::vec3{0.0F, style.trunk_height * 0.5F, 0.0F},
+                    {style.trunk_radius, style.trunk_height * 0.5F, style.trunk_radius}, trunk_material, tree_entity);
 
             auto canopy_entity = GeneratedEntity{&scene, "tree_{}_canopy", tree_index};
             canopy_entity.emplace<Components::Transform>(Components::Transform{
@@ -373,6 +444,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             if (canopy_material.valid()) {
                 canopy_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{canopy_material});
             }
+            canopy_entity.emplace<Components::Parent>(Components::Parent{.entity = tree_entity});
         }
     }
 
@@ -424,7 +496,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .wind_strength = 0.28F,
             .max_shadow_cascade = GpuMaterial::no_shadow_cascade,
     };
-    auto const grass_material_result = renderer.create_material(grass_material_info_);
+    auto const grass_material_result = renderer.create_material(grass_material_info_, "grass");
 
     if (!grass_material_result) {
         error("Could not create grass material: {}", describe(grass_material_result.error()));
@@ -455,25 +527,38 @@ auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
         return;
     }
 
-    auto const grass_cells = static_cast<int>(grass_field_size_ / grass_spacing_);
+    auto const grass_cells = static_cast<int>(grass_field_params_.field_size / grass_field_params_.spacing);
 
     std::random_device r;
     std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
     std::mt19937 grass_eng(seed);
 
-    std::uniform_real_distribution<float> jitter(-grass_spacing_ * 0.4F, grass_spacing_ * 0.4F);
+    std::uniform_real_distribution<float> jitter(-grass_field_params_.spacing * 0.4F,
+                                                 grass_field_params_.spacing * 0.4F);
     std::uniform_real_distribution<float> yaw(0.0F, 6.2831853F);
     std::uniform_real_distribution<float> scale{0.85F, 1.15F};
+    std::uniform_real_distribution<float> spawn_roll(0.0F, 1.0F);
 
     std::vector<glm::mat4> grass_transforms;
+    // Upper bound only -- blotchiness can never spawn more than the raw
+    // grid, only fewer, so this reservation is still correct.
     grass_transforms.reserve(static_cast<std::size_t>(grass_cells) * static_cast<std::size_t>(grass_cells));
 
     for (auto cell_x = 0; cell_x < grass_cells; ++cell_x) {
         for (auto cell_z = 0; cell_z < grass_cells; ++cell_z) {
-            auto const x = (static_cast<float>(cell_x) + 0.5F) * grass_spacing_ - grass_field_size_ * 0.5F +
-                           jitter(grass_eng);
-            auto const z = (static_cast<float>(cell_z) + 0.5F) * grass_spacing_ - grass_field_size_ * 0.5F +
-                           jitter(grass_eng);
+            auto const x = (static_cast<float>(cell_x) + 0.5F) * grass_field_params_.spacing -
+                           grass_field_params_.field_size * 0.5F + jitter(grass_eng);
+            auto const z = (static_cast<float>(cell_z) + 0.5F) * grass_field_params_.spacing -
+                           grass_field_params_.field_size * 0.5F + jitter(grass_eng);
+
+            auto const density = blotch_density(glm::vec2{x, z}, grass_field_params_);
+            auto const spawn_chance = glm::smoothstep(
+                    grass_field_params_.blotch_threshold - grass_field_params_.blotch_softness,
+                    grass_field_params_.blotch_threshold + grass_field_params_.blotch_softness, density);
+
+            if (spawn_roll(grass_eng) >= spawn_chance) {
+                continue;
+            }
 
             auto const grass_scale = scale(grass_eng);
             auto const grass_y = scene.physics_settings.ground_y + sample_terrain_height(terrain_params_, x, z);
@@ -487,6 +572,7 @@ auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
         }
     }
 
+    grass_field_blade_count_ = static_cast<std::uint32_t>(grass_transforms.size());
     registry.get<Components::InstancedModel>(grass_field_entity_).transforms = std::move(grass_transforms);
 }
 
@@ -518,21 +604,44 @@ auto BasicGame::on_ui(Scene &scene, Renderer &renderer) -> void {
         }
 
         ImGui::SeparatorText("Field");
-        ImGui::SliderFloat("Field size (m)", &grass_field_size_, 5.0F, 40.0F, "%.1f");
-        // IsItemDeactivatedAfterEdit() rather than the slider's own return
-        // value: that fires on every pixel of drag, and each rebuild here is
-        // an O(blade count) regeneration -- up to hundreds of thousands of
-        // mat4s -- not a cheap field write like the material sliders above.
+        ImGui::SliderFloat("Field size (m)", &grass_field_params_.field_size, 5.0F, 300.0F, "%.1f");
         bool const field_size_committed = ImGui::IsItemDeactivatedAfterEdit();
 
-        ImGui::SliderFloat("Spacing (m)", &grass_spacing_, 0.08F, 0.5F, "%.2f");
+        ImGui::SliderFloat("Spacing (m)", &grass_field_params_.spacing, 0.2F, 2.5F, "%.2f");
         bool const spacing_committed = ImGui::IsItemDeactivatedAfterEdit();
 
-        auto const blade_count = static_cast<std::uint32_t>(grass_field_size_ / grass_spacing_) *
-                                  static_cast<std::uint32_t>(grass_field_size_ / grass_spacing_);
-        ImGui::Text("Blades: %u", blade_count);
+        ImGui::SeparatorText("Blotchiness");
+        ImGui::SliderFloat("Blotch scale (m)", &grass_field_params_.blotch_scale, 2.0F, 80.0F, "%.1f");
+        bool const blotch_scale_committed = ImGui::IsItemDeactivatedAfterEdit();
 
-        if (field_size_committed || spacing_committed) {
+        ImGui::SliderFloat("Blotch threshold", &grass_field_params_.blotch_threshold, 0.0F, 1.0F, "%.2f");
+        bool const blotch_threshold_committed = ImGui::IsItemDeactivatedAfterEdit();
+
+        ImGui::SliderFloat("Blotch softness", &grass_field_params_.blotch_softness, 0.0F, 0.5F, "%.2f");
+        bool const blotch_softness_committed = ImGui::IsItemDeactivatedAfterEdit();
+
+        bool const any_committed = field_size_committed || spacing_committed || blotch_scale_committed ||
+                                   blotch_threshold_committed || blotch_softness_committed;
+
+        static constexpr std::uint32_t max_blade_count = 250'000;
+        float const min_spacing_for_size =
+                grass_field_params_.field_size / std::sqrt(static_cast<float>(max_blade_count));
+
+        if (field_size_committed) {
+            grass_field_params_.spacing = std::max(grass_field_params_.spacing, min_spacing_for_size);
+        }
+        if (spacing_committed) {
+            float const max_size_for_spacing =
+                    grass_field_params_.spacing * std::sqrt(static_cast<float>(max_blade_count));
+            grass_field_params_.field_size = std::min(grass_field_params_.field_size, max_size_for_spacing);
+        }
+
+        auto const grid_candidates =
+                static_cast<std::uint32_t>(grass_field_params_.field_size / grass_field_params_.spacing) *
+                static_cast<std::uint32_t>(grass_field_params_.field_size / grass_field_params_.spacing);
+        ImGui::Text("Blades: %u (of %u candidates)", grass_field_blade_count_, grid_candidates);
+
+        if (any_committed) {
             rebuild_grass_field(scene);
         }
     });

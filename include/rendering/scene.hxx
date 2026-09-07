@@ -22,6 +22,7 @@ namespace detail {
 
     class ReadOnlyEntity;
     class ScriptEntity;
+    class AttachedEntity;
 } // namespace detail
 
 class Scene {
@@ -78,6 +79,7 @@ private:
     friend class detail::Entity;
     friend class detail::ReadOnlyEntity;
     friend class detail::ScriptEntity;
+    friend class detail::AttachedEntity;
 };
 
 namespace detail {

@@ -704,33 +704,22 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     auto const emissive = image_storage_.emissive();
 
     constexpr auto def_mat = MaterialHandle{0, 1};
-    const GpuMaterial mat{
-            .base_colour_factor =
-                    {
-                            1.0F,
-                            1.0F,
-                            1.0F,
-                            1.0F,
-                    },
-            .emissive_factor =
-                    {
-                            0.0F,
-                            0.0F,
-                            0.0F,
-                    },
+    MaterialCreateInfo const mat{
+            .base_colour_factor = {1.0F, 1.0F, 1.0F, 1.0F},
+            .emissive_factor = {0.0F, 0.0F, 0.0F},
             .emissive_strength = 1.0F,
             .metallic_factor = 0.0F,
             .roughness_factor = 1.0F,
             .normal_scale = 1.0F,
             .occlusion_strength = 1.0F,
-            .base_colour_texture = white.index,
-            .normal_texture = flat_normal.index,
-            .metallic_roughness_texture = metallic_roughness.index,
-            .occlusion_texture = occlusion.index,
-            .emissive_texture = emissive.index,
-            .sampler_index = 0,
-            .alpha_mode = AlphaMode::opaque,
             .alpha_cutoff = 0.5F,
+            .base_colour_texture = white,
+            .normal_texture = flat_normal,
+            .metallic_roughness_texture = metallic_roughness,
+            .occlusion_texture = occlusion,
+            .emissive_texture = emissive,
+            .sampler = sampler_storage_.linear_repeat(),
+            .alpha_mode = AlphaMode::opaque,
     };
 
     if (!material_storage_.update_material(def_mat, mat)) {
@@ -741,6 +730,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     }
 
     default_material_handle_ = def_mat;
+    static_cast<void>(assets_.materials().register_asset("Default", default_material_handle_));
 
     auto mesh_storage = MeshStorage::create(MeshStorageCreateInfo{.capacity = create_info.mesh_capacity});
 
@@ -1329,6 +1319,7 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
     std::size_t const file_hash = std::filesystem::hash_value(cache_key_path);
 
     if (auto it = model_cache_.find(file_hash); it != model_cache_.end()) {
+        retain_model(it->second);
         return it->second; // Return cached handle
     }
 
@@ -1344,6 +1335,7 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
     }
 
     model_cache_[file_hash] = *model_result;
+    register_model_name(*model_result, path.filename().string());
 
     return model_result;
 }
@@ -1658,15 +1650,23 @@ auto Renderer::submit_model_instances(ModelHandle model, std::span<glm::mat4 con
     return {};
 }
 
-auto Renderer::create_material(MaterialCreateInfo const &create_info) -> std::expected<MaterialHandle, RendererError> {
+auto Renderer::create_material(MaterialCreateInfo const &create_info, std::string debug_name)
+        -> std::expected<MaterialHandle, RendererError> {
     if (!initialized_) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    auto material = material_storage_.create_material(to_gpu_material(create_info));
+    auto material = material_storage_.create_material(create_info);
 
     if (!material) {
         return std::unexpected(make_material_error(material.error()));
+    }
+
+    if (!debug_name.empty()) {
+        // A no-op collision (name already taken) is fine -- the material is
+        // still usable, just not name-addressable a second way, same as
+        // register_model_name's collision handling.
+        static_cast<void>(assets_.materials().register_asset(std::move(debug_name), *material));
     }
 
     return *material;
@@ -1678,7 +1678,7 @@ auto Renderer::update_material(MaterialHandle handle, MaterialCreateInfo const &
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    auto result = material_storage_.update_material(handle, to_gpu_material(create_info));
+    auto result = material_storage_.update_material(handle, create_info);
 
     if (!result) {
         return std::unexpected(make_material_error(result.error()));
@@ -1699,8 +1699,28 @@ auto Renderer::destroy_material(MaterialHandle handle) -> std::expected<void, Re
         return std::unexpected(make_material_error(result.error()));
     }
 
+    assets_.materials().unregister(handle);
+
     mark_shadow_casters_dirty();
     return {};
+}
+
+auto Renderer::request_texture(std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
+                               std::string debug_name) -> ImageHandle {
+    // Registered immediately rather than once the background decode
+    // finishes, unlike register_model_name() (see ModelStreamer::
+    // process_ready()) -- TextureStreamer::process_ready() only takes an
+    // ImageStorage&, with no sink/registry hook for "this request just
+    // finished". The handle itself is stable across the pending-to-real
+    // transition (it renders as `fallback` until then, then upgrades in
+    // place), so the name is valid immediately; it just may briefly point
+    // at fallback content, same as any other still-streaming handle.
+    auto const handle =
+            texture_streamer_.request(image_storage_, std::move(source_path), role, fallback, debug_name);
+
+    static_cast<void>(assets_.textures().register_asset(std::move(debug_name), handle));
+
+    return handle;
 }
 
 auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<MeshHandle, RendererError> {
@@ -1755,11 +1775,97 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
     return *handle;
 }
 
+namespace {
+
+    // Submesh::lods[level].vertices is always the exact same GeometrySlice
+    // across every LOD (load_model.cxx only ever allocates one vertex
+    // buffer per primitive, copied into every lods[] entry) and .indices
+    // can alias an earlier level's allocation too (load_model.cxx: "no
+    // simplified index buffer for this level, reuse the previous one").
+    // Retiring the same GeometrySlice twice would hand the same range back
+    // to GeometryArena's free-list twice, corrupting it -- so this retires
+    // each distinct offset in `submesh` exactly once.
+    auto retire_submesh_geometry(GeometryArena &geometry_arena, Submesh const &submesh) -> void {
+        std::array<VkDeviceSize, lod_count * 2> retired_offsets{};
+        std::size_t retired_count = 0;
+
+        auto retire_once = [&](GeometrySlice const &slice) {
+            if (!slice.valid()) {
+                return;
+            }
+
+            for (std::size_t i = 0; i < retired_count; ++i) {
+                if (retired_offsets[i] == slice.offset) {
+                    return;
+                }
+            }
+
+            geometry_arena.retire(slice);
+            retired_offsets[retired_count++] = slice.offset;
+        };
+
+        for (auto const &lod: submesh.lods) {
+            retire_once(lod.vertices.bytes);
+            retire_once(lod.indices.bytes);
+        }
+    }
+
+} // namespace
+
 auto Renderer::destroy_mesh(MeshHandle handle) -> std::expected<void, RendererError> {
+    if (auto const *slot = mesh_storage_.get(handle)) {
+        for (auto const &submesh: slot->submeshes) {
+            retire_submesh_geometry(geometry_arena_, submesh);
+        }
+    }
+
     auto result = mesh_storage_.destroy_mesh(handle);
 
     if (!result) {
         return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+    }
+
+    mark_shadow_casters_dirty();
+    return {};
+}
+
+auto Renderer::retain_model(ModelHandle handle) -> void {
+    auto *slot = model_storage_.get(handle);
+
+    if (slot == nullptr) {
+        warn("Renderer::retain_model: handle is not a live model");
+        return;
+    }
+
+    ++slot->ref_count;
+}
+
+auto Renderer::register_model_name(ModelHandle handle, std::string_view name) -> void {
+    static_cast<void>(assets_.models().register_asset(std::string{name}, handle));
+}
+
+auto Renderer::destroy_model(ModelHandle handle) -> std::expected<void, RendererError> {
+    auto *slot = model_storage_.get(handle);
+
+    if (slot == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_model));
+    }
+
+    if (slot->ref_count > 1) {
+        --slot->ref_count;
+        return {};
+    }
+
+    for (auto const &draw: slot->draws) {
+        static_cast<void>(destroy_mesh(draw.mesh));
+    }
+
+    model_streamer_.forget(handle);
+    std::erase_if(model_cache_, [handle](auto const &entry) { return entry.second == handle; });
+    assets_.models().unregister(handle);
+
+    if (auto released = model_storage_.release(handle); !released) {
+        return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
 
     mark_shadow_casters_dirty();
@@ -1828,6 +1934,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                          static_cast<std::uint32_t>(RenderStage::FullFrame) * 2);
 
     pipeline_graph_.tick_retirement();
+    geometry_arena_.tick_retirement();
 
     if (auto changed = shader_change_queue_.drain(); !changed.empty()) {
         pipeline_graph_.on_files_changed(changed);

@@ -84,14 +84,14 @@ auto Scene::on_rigid_body_destroyed(entt::registry &reg, entt::entity entity) ->
 auto Scene::on_script_attached(entt::registry &reg, entt::entity entity) -> void {
     auto const handle = reg.get<Components::Script>(entity).script;
     if (auto *script = renderer_.script_storage().get(handle)) {
-        script->on_attach(Entity{this, entity});
+        script->on_attach(AttachedEntity{this, entity});
     }
 }
 
 auto Scene::on_script_detached(entt::registry &reg, entt::entity entity) -> void {
     auto const handle = reg.get<Components::Script>(entity).script;
     if (auto *script = renderer_.script_storage().get(handle)) {
-        script->on_detach(Entity{this, entity});
+        script->on_detach(AttachedEntity{this, entity});
     }
 }
 

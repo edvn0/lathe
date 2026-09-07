@@ -8,6 +8,7 @@ add_library(
     engine_rendering
     STATIC
         debug_renderer.cxx
+        editor_icons.cxx
         engine_models.cxx
         forward_target.cxx
         imgui_renderer.cxx

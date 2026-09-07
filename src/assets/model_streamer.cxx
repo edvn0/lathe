@@ -6,6 +6,17 @@
 
 auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback,
                             std::string debug_name) -> ModelHandle {
+    std::error_code canonicalize_error;
+    auto const canonical_path = std::filesystem::weakly_canonical(source_path, canonicalize_error);
+    auto const &cache_key_path = canonicalize_error ? source_path : canonical_path;
+    std::size_t const path_hash = std::filesystem::hash_value(cache_key_path);
+
+    if (auto it = path_cache_.find(path_hash); it != path_cache_.end()) {
+        debug("model_streamer: '{}' already loaded, reusing its model handle", debug_name);
+        sink.retain_model(it->second);
+        return it->second;
+    }
+
     auto pending_handle = sink.create_pending_model(fallback);
 
     if (!pending_handle) {
@@ -22,6 +33,7 @@ auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path,
             .future = std::move(future),
             .profile = std::move(profile),
             .requested_at = std::chrono::steady_clock::now(),
+            .path_hash = path_hash,
     });
 
     return *pending_handle;
@@ -108,6 +120,8 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             debug("model_streamer: '{}' uploaded to GPU", request.debug_name);
 
             request.installed = true;
+            path_cache_[request.path_hash] = request.handle;
+            sink.register_model_name(request.handle, request.debug_name);
         }
 
         // Geometry/materials installing doesn't mean this model is fully
@@ -137,6 +151,10 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
 
         return true;
     });
+}
+
+auto ModelStreamer::forget(ModelHandle handle) -> void {
+    std::erase_if(path_cache_, [handle](auto const &entry) { return entry.second == handle; });
 }
 
 auto ModelStreamer::wait_all() -> void {

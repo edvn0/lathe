@@ -29,6 +29,12 @@ auto ModelStorage::create_model(ModelSlotData data) -> std::expected<ModelHandle
     auto &[handle, slot] = *allocation;
 
     slot = std::move(data);
+    // A freshly allocated slot always starts with exactly one owner,
+    // regardless of what ref_count the caller's `data` happened to carry
+    // (e.g. create_pending_model() below copies a fallback slot's data
+    // wholesale, which would otherwise also copy the fallback's own
+    // ref_count onto this unrelated new handle).
+    slot.ref_count = 1;
 
     return handle;
 }
@@ -51,9 +57,25 @@ auto ModelStorage::upgrade_pending_model(ModelHandle handle, ModelSlotData data)
         return std::unexpected(ModelStorageError{.type = ModelStorageErrorType::invalid_handle});
     }
 
+    // Preserve the existing occupant's ref_count -- this replaces a pending
+    // placeholder's data with the real, finished model in place (same
+    // handle identity throughout, see this function's header comment), it
+    // does not change who owns the handle.
+    auto const preserved_ref_count = slot->ref_count;
     *slot = std::move(data);
+    slot->ref_count = preserved_ref_count;
 
     return handle;
+}
+
+auto ModelStorage::release(ModelHandle handle) -> std::expected<void, ModelStorageError> {
+    if (slots_.get(handle) == nullptr) {
+        return std::unexpected(ModelStorageError{.type = ModelStorageErrorType::invalid_handle});
+    }
+
+    static_cast<void>(slots_.release(handle));
+
+    return {};
 }
 
 auto ModelStorage::get(ModelHandle handle) noexcept -> ModelSlotData * { return slots_.get(handle); }

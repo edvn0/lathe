@@ -104,6 +104,14 @@ struct MaterialStorageCreateInfo {
 struct MaterialSlotData {
     GpuMaterial material{};
 
+    // The CPU-side create info this slot's `material` was last built from --
+    // kept alongside the baked GpuMaterial (which only stores raw texture
+    // *indices*, see to_gpu_material) so editor UI (the Inspector's Assets
+    // panel, application.cxx) can read back a material's real ImageHandles/
+    // SamplerHandle to populate an edit form, and diff/round-trip through
+    // update_material() without the caller needing to keep its own copy.
+    MaterialCreateInfo source{};
+
     bool dirty = false;
 };
 
@@ -121,10 +129,10 @@ struct MaterialStorage {
             -> std::expected<MaterialStorage, MaterialStorageError>;
 
     [[nodiscard]]
-    auto create_material(GpuMaterial const &material) -> std::expected<MaterialHandle, MaterialStorageError>;
+    auto create_material(MaterialCreateInfo const &create_info) -> std::expected<MaterialHandle, MaterialStorageError>;
 
     [[nodiscard]]
-    auto update_material(MaterialHandle handle, GpuMaterial const &material)
+    auto update_material(MaterialHandle handle, MaterialCreateInfo const &create_info)
             -> std::expected<void, MaterialStorageError>;
 
     [[nodiscard]]
@@ -132,6 +140,12 @@ struct MaterialStorage {
 
     [[nodiscard]]
     auto get(MaterialHandle handle) const noexcept -> GpuMaterial const *;
+
+    // The MaterialCreateInfo a live slot's baked GpuMaterial was last built
+    // from -- see MaterialSlotData::source. nullptr for an invalid/released
+    // handle, same as get() above.
+    [[nodiscard]]
+    auto create_info(MaterialHandle handle) const noexcept -> MaterialCreateInfo const *;
 
     [[nodiscard]]
     auto gpu_index(MaterialHandle handle) const noexcept -> std::uint32_t;

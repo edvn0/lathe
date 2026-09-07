@@ -1,6 +1,7 @@
 #pragma once
 
 #include <expected>
+#include <string_view>
 
 #include <volk.h>
 
@@ -21,6 +22,21 @@ struct IModelSink {
     // place. Must run on the render thread.
     [[nodiscard]]
     virtual auto install_model(ModelHandle pending, Model const &model) -> std::expected<void, RendererError> = 0;
+
+    // Bumps `handle`'s ModelSlotData::ref_count -- called by ModelStreamer
+    // when its path_cache_ hands the same handle out to a second caller
+    // instead of loading a fresh copy, so a later destroy_model() call from
+    // either caller doesn't tear the model down while the other still
+    // references it.
+    virtual auto retain_model(ModelHandle handle) -> void = 0;
+
+    // Registers `handle` under `name` in the sink's AssetRegistry (see
+    // asset_registry.hxx), so editor UI can offer it by name later --
+    // called by ModelStreamer::process_ready() once a request finishes
+    // installing, using the same debug_name the request was made with. A
+    // no-op collision (name already taken) is fine here; the model is still
+    // usable, just not name-addressable a second way.
+    virtual auto register_model_name(ModelHandle handle, std::string_view name) -> void = 0;
 
     [[nodiscard]]
     virtual auto sampler_storage() noexcept -> SamplerStorage & = 0;

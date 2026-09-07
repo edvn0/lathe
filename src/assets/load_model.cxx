@@ -1047,8 +1047,7 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
 
             ScopedProfileSample material_sample{profile != nullptr ? &profile->material_creation_ns : nullptr};
 
-            auto gpu_material = to_gpu_material(info);
-            auto material_handle = material_storage.create_material(gpu_material);
+            auto material_handle = material_storage.create_material(info);
 
             material_sample.stop();
 

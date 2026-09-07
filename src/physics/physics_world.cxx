@@ -395,11 +395,6 @@ auto PhysicsWorld::reserve_terrain_collider(TerrainColliderDesc const &desc) -> 
     Impl::TerrainColliderSlot slot;
     slot.heights.assign(static_cast<std::size_t>(desc.samples_x) * desc.samples_z, 0.0F);
 
-    // Bullet stores this data() pointer for the shape's lifetime -- see
-    // TerrainColliderSlot's comment. `desc.min_height/max_height` bound the
-    // shape's cached local AABB for good, regardless of what heights this
-    // slot is later rebound to (bind_terrain_collider only ever overwrites
-    // slot.heights in place, never reconstructs the shape).
     slot.shape = impl_->arena.construct<btHeightfieldTerrainShape>(
             static_cast<int>(desc.samples_x), static_cast<int>(desc.samples_z), slot.heights.data(),
             desc.min_height, desc.max_height, /*upAxis=*/1, /*flipQuadEdges=*/false);
@@ -412,15 +407,6 @@ auto PhysicsWorld::reserve_terrain_collider(TerrainColliderDesc const &desc) -> 
     construction_info.m_startWorldTransform = start_transform;
 
     slot.body = impl_->arena.construct<btRigidBody>(construction_info);
-
-    // Not entity-backed -- see TerrainColliderHandle's doc comment. Left
-    // null (rather than some sentinel entity value) purely so it's visibly
-    // not a real entity if ever inspected; ~Impl never actually reads this,
-    // since it tears terrain colliders down via `terrain_colliders`
-    // directly and removes them from `world` before its generic,
-    // user-pointer-keyed teardown loop runs (see ~Impl -- entt::entity{0}
-    // is a real, valid entity that also bit-casts to a null pointer, which
-    // is why that loop can't use a null check to tell the two apart).
     slot.body->setUserPointer(nullptr);
 
     auto const index = static_cast<std::uint32_t>(impl_->terrain_colliders.size());
