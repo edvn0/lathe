@@ -496,6 +496,16 @@ struct Renderer final : public IMeshSink, public IModelSink {
                static_cast<float>(frames_[index].forward_target.extent().height);
     }
 
+    // See RendererFrame::viewport_target's doc comment. Valid any time
+    // record_frame() has run at least once for this frame_index in embedded
+    // mode -- the editor's Viewport panel reads this the same frame it was
+    // written (frame_index is known before Application::on_ui() runs; see
+    // main.cxx's draw()), so there is no extra latency versus what's on
+    // screen.
+    [[nodiscard]] auto viewport_target(std::uint32_t index) const noexcept -> ImageHandle {
+        return frames_[index].viewport_target;
+    }
+
     void queue_render_thread_event(std::move_only_function<void()> &&);
     void drain_event_queue();
 
@@ -703,6 +713,14 @@ private:
 
         ForwardTarget forward_target{};
 
+        // LDR copy of forward_target's tonemapped/composited output, sized
+        // 1:1 with it -- see Renderer::viewport_target(). Written by the
+        // embedded-mode composite() call in record_frame() and sampled by
+        // the editor's Viewport panel (ImGui::Image); unused (and left
+        // untouched) while playing fullscreen, where composite() writes
+        // straight to the swapchain instead, same as before this existed.
+        ImageHandle viewport_target{};
+
         struct BloomTarget {
             ImageHandle image;
             std::array<ImageHandle, 4> mip_slots;
@@ -860,6 +878,11 @@ private:
 
     VkFormat hdr_format_ = VK_FORMAT_UNDEFINED;
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
+    // RendererCreateInfo::swapchain_format, kept around (rather than just
+    // read once at composite_pipeline_ registration, as before this field
+    // existed) so resize() can create/recreate each frame's viewport_target
+    // in a format that matches what composite() actually produces.
+    VkFormat swapchain_format_ = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
     VkExtent2D extent_{};
 

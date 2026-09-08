@@ -39,6 +39,9 @@
 #include "glm/gtc/type_ptr.hpp"
 #include "gpu/context.hxx"
 #include "implot.h"
+// DockBuilder* (default-layout construction, on_ui()'s dockspace host) lives
+// here rather than in the public imgui.h.
+#include "imgui_internal.h"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
@@ -318,7 +321,129 @@ Application::~Application() {
 }
 
 
-auto Application::on_ui() -> void {
+auto Application::on_ui(std::uint32_t frame_index) -> void {
+    // Fullscreen play covers the whole swapchain with no editor chrome at
+    // all, exactly like this engine's play mode always has -- see
+    // Renderer::record_frame's matching `fullscreen` branch, which this must
+    // stay in lockstep with: it decides whether the 3D scene lands straight
+    // in the swapchain or in the offscreen viewport_target the Viewport
+    // panel below displays.
+    if (is_playing && play_fullscreen) {
+        return;
+    }
+
+    auto const *main_viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(main_viewport->WorkPos);
+    ImGui::SetNextWindowSize(main_viewport->WorkSize);
+    ImGui::SetNextWindowViewport(main_viewport->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
+    ImGui::Begin("##dockspace_host", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBackground);
+    ImGui::PopStyleVar(3);
+
+    ImGuiID const dockspace_id = ImGui::GetID("MainDockSpace");
+
+    // Builds the default layout exactly once ever -- imgui.ini (see
+    // ImGuiRenderer::set_app_name) restores this dockspace's node before
+    // this code runs on every launch after the first, so rebuilding it
+    // unconditionally would silently discard the user's layout every time.
+    if (ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
+        ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspace_id, main_viewport->WorkSize);
+
+        ImGuiID center = dockspace_id;
+        ImGuiID const left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20F, nullptr, &center);
+        ImGuiID const right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25F, nullptr, &center);
+        ImGuiID const bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28F, nullptr, &center);
+
+        ImGui::DockBuilderDockWindow("Viewport", center);
+        ImGui::DockBuilderDockWindow("Hierarchy", left);
+        ImGui::DockBuilderDockWindow("Inspector", right);
+        ImGui::DockBuilderDockWindow("Console", bottom);
+        ImGui::DockBuilderDockWindow("Assets", bottom);
+        ImGui::DockBuilderDockWindow("Load Model", bottom);
+        ImGui::DockBuilderDockWindow("Simulation", bottom);
+        ImGui::DockBuilderDockWindow("Scene stats", bottom);
+        ImGui::DockBuilderDockWindow("Frame timings", bottom);
+        ImGui::DockBuilderDockWindow("Lighting", bottom);
+
+        ImGui::DockBuilderFinish(dockspace_id);
+    }
+
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0F, 0.0F), ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::End();
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
+    widget("Viewport", [&] {
+        viewport_hovered = ImGui::IsWindowHovered();
+        viewport_screen_pos = ImGui::GetCursorScreenPos();
+        viewport_content_size = ImGui::GetContentRegionAvail();
+
+        auto const target = renderer->viewport_target(frame_index);
+        bool const has_room = viewport_content_size.x > 0.0F && viewport_content_size.y > 0.0F;
+        if (target.valid() && has_room) {
+            ImGui::Image(gui::linear_source_texture_id(target.index), viewport_content_size);
+        }
+
+        // Drawn straight into the Viewport window's own draw list -- rather
+        // than a separate overlay window sized to match its rect (the old
+        // approach, back when the 3D view was a fullscreen backdrop and not
+        // an actual ImGui window) -- so it's always on top of the Image()
+        // above regardless of window z-order; two same-rect windows aren't
+        // reliably ordered relative to each other. ImGuizmo does its own
+        // mouse hit-testing against io.MousePos rather than relying on the
+        // host window being hovered, so this works fine even though the
+        // Viewport window itself takes normal input (camera-look drag,
+        // click-to-capture in embedded play).
+        if (!is_playing && has_room) {
+            auto &registry = active_scene()->get_registry();
+
+            if (selected_entity != entt::null && registry.valid(selected_entity) &&
+                registry.all_of<Components::Transform>(selected_entity)) {
+                ImGuizmo::SetOrthographic(false);
+                ImGuizmo::SetDrawlist();
+                ImGuizmo::SetRect(viewport_screen_pos.x, viewport_screen_pos.y, viewport_content_size.x,
+                                  viewport_content_size.y);
+
+                auto const aspect =
+                        viewport_content_size.y > 0.0F ? viewport_content_size.x / viewport_content_size.y : 1.0F;
+                auto const view = camera.view();
+                auto const projection = camera.projection(aspect);
+
+                auto matrix = registry.get<Components::Transform>(selected_entity).matrix();
+
+                if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection), gizmo_operation,
+                                         gizmo_mode, glm::value_ptr(matrix))) {
+                    auto const translation = glm::vec3{matrix[3]};
+                    glm::vec3 const scale{glm::length(glm::vec3{matrix[0]}), glm::length(glm::vec3{matrix[1]}),
+                                          glm::length(glm::vec3{matrix[2]})};
+                    glm::mat3 const rotation_matrix{glm::vec3{matrix[0]} / scale.x, glm::vec3{matrix[1]} / scale.y,
+                                                    glm::vec3{matrix[2]} / scale.z};
+                    auto const rotation = glm::quat_cast(rotation_matrix);
+
+                    // patch<>() rather than a direct write so
+                    // Scene::on_transform_changed still fires (e.g. to
+                    // re-dirty light data when gizmo-editing a light).
+                    registry.patch<Components::Transform>(selected_entity, [&](Components::Transform &transform) {
+                        transform.position = translation;
+                        transform.rotation = rotation;
+                        transform.scale = scale;
+                    });
+
+                    // Interactive drag, not a discrete edit -- bounded-staleness
+                    // refresh via the dynamic flag rather than forcing every
+                    // cascade to redraw on every dragged frame.
+                    renderer->mark_dynamic_shadow_casters_dirty();
+                }
+            }
+        }
+    });
+    ImGui::PopStyleVar();
+
     if (game) {
         game->on_ui(*active_scene(), *renderer);
     }
@@ -1665,6 +1790,11 @@ auto Application::on_ui() -> void {
                 play();
             }
         }
+
+        ImGui::SameLine();
+        // Editable any time, including mid-play, so a running embedded
+        // session can flip to fullscreen (or back) without stopping.
+        ImGui::Checkbox("Fullscreen", &play_fullscreen);
     });
 
     widget("Scene stats", [&] {
@@ -1844,64 +1974,6 @@ auto Application::on_ui() -> void {
                   draw_spot_light);
     });
 
-    // Not routed through widget(): the gizmo needs a fullscreen, click-through
-    // overlay rather than a titled/movable window, and ImGuizmo does its own
-    // mouse hit-testing against io.MousePos rather than relying on the host
-    // ImGui window being hovered -- so ImGuiWindowFlags_NoInputs here doesn't
-    // stop it from picking up drags on the gizmo handles.
-    if (!is_playing) {
-        auto &registry = active_scene()->get_registry();
-
-        if (selected_entity != entt::null && registry.valid(selected_entity) &&
-            registry.all_of<Components::Transform>(selected_entity)) {
-            auto &io = ImGui::GetIO();
-
-            ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-            ImGui::SetNextWindowSize(io.DisplaySize);
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
-            ImGui::Begin("##gizmo_overlay", nullptr,
-                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs |
-                                 ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings);
-
-            ImGuizmo::SetOrthographic(false);
-            ImGuizmo::SetDrawlist();
-            ImGuizmo::SetRect(0.0F, 0.0F, io.DisplaySize.x, io.DisplaySize.y);
-
-            auto const aspect = io.DisplaySize.y > 0.0F ? io.DisplaySize.x / io.DisplaySize.y : 1.0F;
-            auto const view = camera.view();
-            auto const projection = camera.projection(aspect);
-
-            auto matrix = registry.get<Components::Transform>(selected_entity).matrix();
-
-            if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection), gizmo_operation, gizmo_mode,
-                                      glm::value_ptr(matrix))) {
-                auto const translation = glm::vec3{matrix[3]};
-                glm::vec3 const scale{glm::length(glm::vec3{matrix[0]}), glm::length(glm::vec3{matrix[1]}),
-                                       glm::length(glm::vec3{matrix[2]})};
-                glm::mat3 const rotation_matrix{glm::vec3{matrix[0]} / scale.x, glm::vec3{matrix[1]} / scale.y,
-                                                 glm::vec3{matrix[2]} / scale.z};
-                auto const rotation = glm::quat_cast(rotation_matrix);
-
-                // patch<>() rather than a direct write so Scene::on_transform_changed
-                // still fires (e.g. to re-dirty light data when gizmo-editing a light).
-                registry.patch<Components::Transform>(selected_entity, [&](Components::Transform &transform) {
-                    transform.position = translation;
-                    transform.rotation = rotation;
-                    transform.scale = scale;
-                });
-
-                // Interactive drag, not a discrete edit -- bounded-staleness
-                // refresh via the dynamic flag rather than forcing every
-                // cascade to redraw on every dragged frame.
-                renderer->mark_dynamic_shadow_casters_dirty();
-            }
-
-            ImGui::End();
-            ImGui::PopStyleColor();
-        }
-    }
 }
 
 auto Application::play() -> void {
@@ -1928,15 +2000,24 @@ auto Application::play() -> void {
         terrain->on_physics_world_changed(active_scene()->physics_world.get());
     }
 
-    glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    has_last_mouse_position = false;
+    game_mouse_captured = false;
 
-    // While the cursor is disabled its reported position is an unbounded
-    // virtual accumulator, not a real screen coordinate -- ImGui would
-    // otherwise keep hit-testing widgets against wherever that value drifts
-    // to (starting at wherever the "Play" click happened to land) and
-    // intermittently steal input meant for the game.
-    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard;
+    // Fullscreen play covers the whole window like this engine's play mode
+    // always has -- capture the cursor immediately. Embedded play leaves the
+    // editor (and its cursor) alone until the user clicks into the Viewport
+    // panel -- see mouse_button_callback in main.cxx -- so Hierarchy/
+    // Inspector/etc. stay usable around the running game.
+    if (play_fullscreen) {
+        glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        has_last_mouse_position = false;
+
+        // While the cursor is disabled its reported position is an unbounded
+        // virtual accumulator, not a real screen coordinate -- ImGui would
+        // otherwise keep hit-testing widgets against wherever that value
+        // drifts to (starting at wherever the "Play" click happened to land)
+        // and intermittently steal input meant for the game.
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard;
+    }
 }
 
 auto Application::stop() -> void {
@@ -1956,6 +2037,7 @@ auto Application::stop() -> void {
     // Flips active_scene() over to editor_scene immediately -- nothing below
     // this line touches the runtime scene, so runtime_scene.reset() is safe.
     is_playing = false;
+    game_mouse_captured = false;
     runtime_scene.reset();
 
     glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
@@ -2075,7 +2157,21 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
         // relying on focus_callback's stop() (see main.cxx), which is not
         // a deliberate exit path. Consumed here rather than forwarded to
         // the game, since play mode is ending.
+        //
+        // Embedded play captured the mouse on a Viewport-panel click
+        // (mouse_button_callback, main.cxx) rather than unconditionally on
+        // play() the way fullscreen does -- so the first Escape there just
+        // releases that capture back to the editor (leaving the rest of the
+        // editor, and the running game, untouched); a second Escape (mouse
+        // no longer captured) falls through to actually stopping, same as
+        // fullscreen play always has.
         if (ev.key == GLFW_KEY_ESCAPE) {
+            if (game_mouse_captured) {
+                game_mouse_captured = false;
+                glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                return true;
+            }
+
             stop();
             return true;
         }
@@ -2124,7 +2220,16 @@ auto Application::on_event(KeyReleasedEvent ev) -> bool {
 }
 auto Application::on_event(MouseMovedEvent ev) -> bool {
     if (is_playing) {
-        game->on_mouse_moved(*active_scene(), ev);
+        // Fullscreen play captures the cursor unconditionally in play(), so
+        // every delta while playing is deliberate look input, same as
+        // always. Embedded play leaves the cursor free to roam the rest of
+        // the editor until a Viewport-panel click captures it (see
+        // mouse_button_callback, main.cxx) -- without this gate, moving the
+        // mouse over Hierarchy/Inspector/etc. while an embedded session runs
+        // would spuriously spin the game's camera.
+        if (play_fullscreen || game_mouse_captured) {
+            game->on_mouse_moved(*active_scene(), ev);
+        }
     } else {
         camera.on_mouse_moved(static_cast<float>(ev.delta_x), static_cast<float>(ev.delta_y), mouse_dragging);
     }

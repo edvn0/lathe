@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "app/application.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/slang_compiler.hxx"
 #include "core/logger.hxx"
@@ -237,6 +238,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     hdr_format_ = create_info.hdr_format;
     depth_format_ = create_info.depth_format;
+    swapchain_format_ = create_info.swapchain_format;
     samples_ = create_info.samples;
     extent_ = create_info.extent;
 
@@ -895,12 +897,15 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         // No TRANSFER_DST: unlike indirect_buffer above, this is never
         // host-seeded -- mainCs is its sole writer, one thread (lane 0)
-        // per batch, no atomics needed.
+        // per batch, no atomics needed. TRANSFER_SRC is needed though: the
+        // FrameStats::visible_instance_count readback below copies out of
+        // this buffer every frame.
         auto culled_indirect = Buffer::create(context_, BufferCreateInfo{
                                                                 .size = culled_indirect_size,
                                                                 .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                                                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                                                 .memory = BufferMemory::device,
                                                                 .debug_name = "renderer.frame_culled_indirect",
                                                         });
@@ -992,6 +997,34 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         frame.forward_target = std::move(*forward_target);
+
+        auto const viewport_target_name = std::format("renderer.viewport_target_{}", frame_index);
+        auto viewport_target = image_storage_.create_image(ImageCreateInfo{
+                .extent =
+                        VkExtent3D{
+                                .width = create_info.extent.width,
+                                .height = create_info.extent.height,
+                                .depth = 1,
+                        },
+                .format = swapchain_format_,
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                .image_type = VK_IMAGE_TYPE_2D,
+                .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                .flags = 0,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .debug_name = viewport_target_name,
+        });
+
+        if (!viewport_target) {
+            return std::unexpected(make_image_error(viewport_target.error()));
+        }
+
+        frame.viewport_target = *viewport_target;
 
         auto const bloom_target_name = std::format("renderer.bloom_target_{}", frame_index);
 
@@ -1233,6 +1266,11 @@ auto Renderer::destroy() noexcept -> void {
 
     for (auto &frame: frames_) {
         frame.forward_target.destroy(image_storage_);
+
+        if (frame.viewport_target.valid()) {
+            static_cast<void>(image_storage_.destroy_image(frame.viewport_target));
+            frame.viewport_target = ImageHandle{};
+        }
 
         frame.lights_buffer.destroy();
         frame.frustum_planes_buffer.destroy();
@@ -3049,28 +3087,57 @@ template<typename OverlayPolicy>
     }
 
     auto ui_overlay = [&] { OverlayPolicy::render_ui(app, command_buffer, frame_index); };
+
+    // Fullscreen play covers the whole swapchain with the game exactly like
+    // this engine always has -- composite() writes the tonemapped scene
+    // straight into the swapchain image and ui_overlay draws directly on
+    // top of it, all in one pass. Any other time (editing, or playing
+    // embedded), the scene instead goes into this frame's offscreen
+    // viewport_target -- which the editor's Viewport panel samples via
+    // ImGui::Image -- and a second, separate pass clears the real swapchain
+    // and draws the full (docked) ImGui frame onto it. See the plan this
+    // shipped under for why: a docked "Viewport" panel is itself a real
+    // ImGui window, so it can't be the thing composite() paints the 3D
+    // scene onto without also being asked to host arbitrary editor chrome
+    // around it.
+    bool const fullscreen = app.is_playing && app.play_fullscreen;
+
     {
         TracyVkZoneC(context_.host_query_context.context, command_buffer, "Composition", tracy::Color::SeaGreen);
 
-        auto const result =
-                render_pass::composite(pass_context,
-                                       render_pass::CompositePassInfo{
-                                               .swapchain_image = swapchain_image.image,
-                                               .swapchain_view = swapchain_image.view,
-                                               .extent = swapchain_image.extent,
-                                               .hdr = *hdr_output,
-                                               .bloom = *bloom_output,
-                                               // The default emissive texture is the renderer's valid black texture.
-                                               .bloom_fallback_texture_index = image_storage_.emissive().index,
-                                               .linear_sampler_index = sampler_storage_.linear_clamp().index,
-                                               .pipeline = composite_pipeline_,
-                                               .exposure = 1.0F,
-                                               .bloom_intensity = bloom_settings_.intensity,
-                                       },
-                                       render_pass::Callback::bind(ui_overlay));
+        auto const *viewport_target_image = image_storage_.get(frame.viewport_target);
+
+        auto const result = render_pass::composite(
+                pass_context,
+                render_pass::CompositePassInfo{
+                        .swapchain_image = fullscreen ? swapchain_image.image : viewport_target_image->image(),
+                        .swapchain_view = fullscreen ? swapchain_image.view : viewport_target_image->view(),
+                        .extent = fullscreen ? swapchain_image.extent : target_extent,
+                        .hdr = *hdr_output,
+                        .bloom = *bloom_output,
+                        // The default emissive texture is the renderer's valid black texture.
+                        .bloom_fallback_texture_index = image_storage_.emissive().index,
+                        .linear_sampler_index = sampler_storage_.linear_clamp().index,
+                        .pipeline = composite_pipeline_,
+                        .exposure = 1.0F,
+                        .bloom_intensity = bloom_settings_.intensity,
+                },
+                fullscreen ? render_pass::Callback::bind(ui_overlay) : render_pass::Callback{});
 
         if (!result) {
             return std::unexpected(result.error());
+        }
+
+        if (!fullscreen) {
+            render_pass::transition_to_shader_read(command_buffer, *viewport_target_image);
+
+            render_pass::ui_only(pass_context,
+                                 render_pass::UiOnlyPassInfo{
+                                         .target_image = swapchain_image.image,
+                                         .target_view = swapchain_image.view,
+                                         .extent = swapchain_image.extent,
+                                 },
+                                 render_pass::Callback::bind(ui_overlay));
         }
     }
 
@@ -3119,6 +3186,20 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
     std::vector<ForwardTarget> replacements;
     replacements.reserve(frames_.size());
 
+    // Paired 1:1 with replacements above -- see RendererFrame::viewport_target's
+    // doc comment for why it must stay the same size as forward_target.
+    std::vector<ImageHandle> viewport_target_replacements;
+    viewport_target_replacements.reserve(frames_.size());
+
+    auto const destroy_replacements = [&] {
+        for (auto &created: replacements) {
+            created.destroy(image_storage_);
+        }
+        for (auto const handle: viewport_target_replacements) {
+            static_cast<void>(image_storage_.destroy_image(handle));
+        }
+    };
+
     for (std::size_t index = 0; index < frames_.size(); ++index) {
         auto const target_name = std::format("renderer.forward_target_{}", index);
 
@@ -3131,9 +3212,7 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
                                                                  });
 
         if (!replacement) {
-            for (auto &created: replacements) {
-                created.destroy(image_storage_);
-            }
+            destroy_replacements();
 
             return std::unexpected(RendererError{
                     .type = RendererErrorType::forward_target_error,
@@ -3142,12 +3221,39 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         }
 
         replacements.push_back(std::move(*replacement));
+
+        auto const viewport_target_name = std::format("renderer.viewport_target_{}", index);
+        auto viewport_target_replacement = image_storage_.create_image(ImageCreateInfo{
+                .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
+                .format = swapchain_format_,
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                .image_type = VK_IMAGE_TYPE_2D,
+                .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                .flags = 0,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .debug_name = viewport_target_name,
+        });
+
+        if (!viewport_target_replacement) {
+            destroy_replacements();
+
+            return std::unexpected(make_image_error(viewport_target_replacement.error()));
+        }
+
+        viewport_target_replacements.push_back(*viewport_target_replacement);
     }
 
     for (std::size_t index = 0; index < frames_.size(); ++index) {
         frames_[index].forward_target.destroy(image_storage_);
-
         frames_[index].forward_target = std::move(replacements[index]);
+
+        static_cast<void>(image_storage_.destroy_image(frames_[index].viewport_target));
+        frames_[index].viewport_target = viewport_target_replacements[index];
     }
 
     extent_ = extent;

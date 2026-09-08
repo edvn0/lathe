@@ -14,6 +14,10 @@ struct PC
     uint base_vertex;
     uint texture_id;
     uint sampler_id;
+    // Non-zero when texture_id names an already hardware-decoded (SRGB
+    // format) source -- see gui::linear_source_texture_id's doc comment
+    // (imgui_renderer.hxx) for why fs_main must not decode it a second time.
+    uint already_linear;
 }
 
 struct VertexOutput
@@ -56,7 +60,10 @@ float4 fs_main(VertexOutput input, uniform PC pc) : SV_Target0
                           .Sample(samplers[NonUniformResourceIndex(pc.sampler_id)], input.uv);
 
     float4 colour = sampled * input.colour;
-    colour.rgb = srgb_to_linear(colour.rgb);
+    if (pc.already_linear == 0)
+    {
+        colour.rgb = srgb_to_linear(colour.rgb);
+    }
 
     return colour;
 }

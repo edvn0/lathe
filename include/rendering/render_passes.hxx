@@ -249,6 +249,32 @@ namespace render_pass {
     auto composite(Context const &context, CompositePassInfo const &info, Callback ui_overlay)
             -> std::expected<void, RendererError>;
 
+    // Clears `target_view` and runs `ui_overlay` against it -- no pipeline,
+    // no draw of its own. Used for the swapchain pass in embedded/docked
+    // mode, where the 3D scene was already composited into an offscreen
+    // viewport texture (see composite() above, called separately against
+    // that texture) and this pass exists purely to host the ImGui frame
+    // (which draws the dockspace, including the Viewport panel's Image of
+    // that texture) against the real swapchain attachment. ui_overlay is
+    // fully self-sufficient re: dynamic rendering state (viewport/scissor/
+    // blend -- see ImGuiRenderer::render_draw_data), so unlike composite()
+    // this needs no equivalent of set_composite_dynamic_state.
+    struct UiOnlyPassInfo {
+        VkImage target_image = VK_NULL_HANDLE;
+        VkImageView target_view = VK_NULL_HANDLE;
+        VkExtent2D extent{};
+        std::array<float, 4> clear_colour{0.0F, 0.0F, 0.0F, 1.0F};
+    };
+
+    auto ui_only(Context const &context, UiOnlyPassInfo const &info, Callback ui_overlay) noexcept -> void;
+
+    // Exposes detail::transition_hdr_to_shader_read (COLOR_ATTACHMENT_OPTIMAL
+    // -> SHADER_READ_ONLY_OPTIMAL) for callers outside this translation unit
+    // -- Renderer::record_frame uses it to make the offscreen viewport
+    // texture composite() just wrote into sampleable by the ui_only() pass's
+    // ImGui draw later in the same command buffer.
+    auto transition_to_shader_read(VkCommandBuffer command_buffer, Image const &image) noexcept -> void;
+
     auto present_swapchain(VkCommandBuffer command_buffer, VkImage image) noexcept -> void;
 
 } // namespace render_pass

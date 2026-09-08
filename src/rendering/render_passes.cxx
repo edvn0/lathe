@@ -1211,6 +1211,45 @@ namespace render_pass {
         return {};
     }
 
+    auto ui_only(Context const &context, UiOnlyPassInfo const &info, Callback ui_overlay) noexcept -> void {
+        detail::transition_swapchain_to_attachment(context.command_buffer, info.target_image);
+
+        VkRenderingAttachmentInfo const attachment{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext = nullptr,
+                .imageView = info.target_view,
+                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .resolveMode = VK_RESOLVE_MODE_NONE,
+                .resolveImageView = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .clearValue = {.color = {.float32 = {info.clear_colour[0], info.clear_colour[1], info.clear_colour[2],
+                                                     info.clear_colour[3]}}},
+        };
+
+        VkRenderingInfo const rendering_info{
+                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .renderArea = VkRect2D{.offset = {0, 0}, .extent = info.extent},
+                .layerCount = 1,
+                .viewMask = 0,
+                .colorAttachmentCount = 1,
+                .pColorAttachments = &attachment,
+                .pDepthAttachment = nullptr,
+                .pStencilAttachment = nullptr,
+        };
+
+        vkCmdBeginRendering(context.command_buffer, &rendering_info);
+        ui_overlay();
+        vkCmdEndRendering(context.command_buffer);
+    }
+
+    auto transition_to_shader_read(VkCommandBuffer command_buffer, Image const &image) noexcept -> void {
+        detail::transition_hdr_to_shader_read(command_buffer, image);
+    }
+
     auto present_swapchain(VkCommandBuffer command_buffer, VkImage image) noexcept -> void {
         detail::transition_swapchain_to_present(command_buffer, image);
     }

@@ -259,7 +259,7 @@ namespace {
         if (frame_ok) {
             application.imgui_renderer->begin_frame(gui::ImGuiFramebuffer{frame->extent, frame->format});
             {
-                application.on_ui();
+                application.on_ui(frame->frame_index);
             }
             application.imgui_renderer->end_frame();
 
@@ -409,7 +409,14 @@ namespace {
             return;
         }
 
-        if (imgui_wants_mouse()) {
+        // Docking a real "Viewport" window into the central dockspace node
+        // means WantCaptureMouse is true while hovering it (unlike the
+        // fullscreen 3D backdrop this replaced, which wasn't an ImGui window
+        // at all) -- so let input through when it's the Viewport being
+        // hovered even though ImGui itself would otherwise claim it, same
+        // as the pre-docking "not over any panel" case this is standing in
+        // for. See scroll_callback below for the same override.
+        if (imgui_wants_mouse() && !app->viewport_hovered) {
             return;
         }
 
@@ -419,6 +426,14 @@ namespace {
             } else if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_RIGHT) {
                 glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
             }
+        } else if (!app->play_fullscreen && action == GLFW_PRESS && app->viewport_hovered &&
+                   !app->game_mouse_captured) {
+            // Embedded play leaves the cursor alone (see Application::play())
+            // until a click inside the Viewport panel captures it for the
+            // game's raw-delta mouselook -- see on_event(KeyPressedEvent)'s
+            // Escape handling for how it's released again.
+            app->game_mouse_captured = true;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         }
 
         if (action == GLFW_PRESS) {
@@ -455,7 +470,7 @@ namespace {
     auto scroll_callback(GLFWwindow *window, double x_offset, double y_offset) -> void {
         auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
-        if (app == nullptr || imgui_wants_mouse()) {
+        if (app == nullptr || (imgui_wants_mouse() && !app->viewport_hovered)) {
             return;
         }
 
@@ -606,10 +621,34 @@ auto main(int argc, char **argv) -> int {
 
         FrameMark;
 
-        auto const swapchain_extent = context.swapchain.extent();
+        // Render resolution tracks the Viewport panel's size, not the
+        // window's -- fullscreen play is the one exception, since there the
+        // 3D scene covers the whole swapchain with no panel involved (see
+        // Application::on_ui()'s early return and Renderer::record_frame's
+        // matching `fullscreen` branch). The swapchain itself still always
+        // resizes to the real framebuffer size regardless, via
+        // request_resize_if_needed() above.
+        auto const desired_render_extent = [&]() -> VkExtent2D {
+            if (application.is_playing && application.play_fullscreen) {
+                return context.swapchain.extent();
+            }
 
-        if (!compare(swapchain_extent, renderer_extent)) {
-            auto resize_result = application.renderer->resize(swapchain_extent);
+            auto const &size = application.viewport_content_size;
+            if (size.x <= 0.0F || size.y <= 0.0F) {
+                // Panel collapsed/not laid out yet this frame -- keep
+                // whatever the render targets are already sized to rather
+                // than asking Renderer::resize() for a 0x0 extent.
+                return renderer_extent;
+            }
+
+            return VkExtent2D{
+                    .width = static_cast<std::uint32_t>(size.x),
+                    .height = static_cast<std::uint32_t>(size.y),
+            };
+        }();
+
+        if (!compare(desired_render_extent, renderer_extent)) {
+            auto resize_result = application.renderer->resize(desired_render_extent);
 
             if (!resize_result) {
                 error("Could not resize renderer: {}", describe(resize_result.error()));
@@ -618,8 +657,8 @@ auto main(int argc, char **argv) -> int {
                 break;
             }
 
-            info("Resizing renderer to new swapchain extent: {}x{}", swapchain_extent.width, swapchain_extent.height);
-            renderer_extent = swapchain_extent;
+            info("Resizing renderer to {}x{}", desired_render_extent.width, desired_render_extent.height);
+            renderer_extent = desired_render_extent;
         }
     }
 

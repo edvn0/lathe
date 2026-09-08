@@ -41,6 +41,8 @@ namespace gui {
             std::uint32_t base_vertex;
             std::uint32_t texture_id;
             std::uint32_t sampler_id{0};
+            // See gui::linear_source_texture_id's doc comment.
+            std::uint32_t already_linear{0};
         };
 
         auto apply_dark_theme() -> void {
@@ -169,7 +171,7 @@ namespace gui {
         io.BackendRendererName = "imgui-custom-vulkan";
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 
-        // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
         if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
             io.BackendFlags |= ImGuiBackendFlags_PlatformHasViewports;
@@ -406,12 +408,20 @@ namespace gui {
                     continue;
                 }
 
+                // See gui::linear_source_texture_id's doc comment
+                // (imgui_renderer.hxx) -- the flag bit lives above the
+                // bindless index range (indices fit comfortably in 32 bits),
+                // so it's masked back off before use as texture_id.
+                auto const raw_tex_id = static_cast<std::uint64_t>(imgui_cmd.GetTexID());
+                bool const already_linear = (raw_tex_id & linear_source_texture_bit) != 0;
+
                 PC pc{
                         .lrtb = {L, R, T, B},
                         .vb = drawable.vertex->device_address,
                         .base_vertex = vertex_offset + imgui_cmd.VtxOffset,
-                        .texture_id = static_cast<std::uint32_t>(imgui_cmd.GetTexID()),
+                        .texture_id = static_cast<std::uint32_t>(raw_tex_id & 0xFFFFFFFFULL),
                         .sampler_id = sampler.index,
+                        .already_linear = already_linear ? 1U : 0U,
                 };
 
                 vkCmdPushConstants(cmd, pipeline.layout(), VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);

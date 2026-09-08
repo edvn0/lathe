@@ -31,6 +31,28 @@ namespace gui {
 
     using ImGuiFramebuffer = std::tuple<VkExtent2D, VkFormat>;
 
+    // gui.slang's fragment shader unconditionally applies its own manual
+    // sRGB->linear decode, matching every bindless texture ImGui normally
+    // displays (font atlas, asset thumbnails, ...): those are plain UNORM
+    // images, so that manual decode is the *only* decode applied before the
+    // result is written to the (SRGB-format) render target, which
+    // hardware-encodes it back on store -- a deliberate round trip that
+    // displays the stored bytes unchanged.
+    //
+    // A texture that's itself SRGB-format (e.g. Renderer::viewport_target,
+    // which must stay SRGB to match what the composite pass's
+    // auto-encode-on-write already assumes -- see composite.slang, which
+    // relies on the same trick and does no manual encoding of its own) is
+    // *already* hardware-decoded to linear by the sampler read. Tag such a
+    // texture's ImTextureID with this bit so ImGuiRenderer::render_draw_data
+    // can tell it apart and skip the redundant manual decode -- otherwise
+    // the value gets decoded twice and the image renders too dark.
+    inline constexpr std::uint64_t linear_source_texture_bit = std::uint64_t{1} << 32;
+
+    [[nodiscard]] constexpr auto linear_source_texture_id(std::uint32_t bindless_index) noexcept -> ImTextureID {
+        return ImTextureID{static_cast<std::uint64_t>(bindless_index) | linear_source_texture_bit};
+    }
+
     class ImGuiRenderer {
     public:
         ImGuiRenderer(Renderer &, FontChoice);
