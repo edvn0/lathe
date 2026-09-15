@@ -1,7 +1,7 @@
 #pragma once
 
-#include "gpu/buffer.hxx"
 #include "core/forward.hxx"
+#include "gpu/buffer.hxx"
 
 #include <volk.h>
 
@@ -62,15 +62,13 @@ public:
     // mapped memory is temporarily handed to a background worker.
     auto try_resolve(std::uint32_t frame_index) -> void;
 
+    auto close() noexcept -> void;
+
 private:
     struct ReadbackSlot {
         Buffer buffer;
-
-        // True while a CPU worker may still be reading buffer.mapped_data().
         std::atomic<bool> cpu_busy{false};
 
-        // True between record() submitting the GPU copy and the corresponding
-        // frame-in-flight slot becoming GPU-complete.
         bool gpu_pending = false;
 
         VkExtent2D extent{};
@@ -83,8 +81,8 @@ private:
 
     std::atomic<bool> requested_{false};
 
-    // unique_ptr keeps each ReadbackSlot at a stable address even if the vector
-    // itself reallocates. Background workers are therefore free to retain a
-    // ReadbackSlot* until their memcpy has completed.
     std::vector<std::unique_ptr<ReadbackSlot>> slots_;
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
 };

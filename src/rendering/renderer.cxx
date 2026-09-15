@@ -31,6 +31,7 @@
 #include "maths/aabb.hxx"
 #include "rendering/render_passes.hxx"
 #include "rendering/renderer_application_policy.hxx"
+#include "rendering/screenshot.hxx"
 
 // ForwardPushConstants, ShadowPushConstants, CompositePushConstants,
 // LightIconPushConstants, CullPushConstants, DownsamplePushConstants, and
@@ -218,7 +219,9 @@ namespace {
     }
 } // namespace
 
-Renderer::Renderer(VulkanContext &context) noexcept : context_(context) {}
+Renderer::Renderer(VulkanContext &context) noexcept :
+    context_(context), screenshot_(std::make_unique<ScreenshotCapture>()) {}
+Renderer::~Renderer() noexcept = default;
 
 auto Renderer::compiler() noexcept -> renderer::SlangCompiler & {
     static auto compiler_ =
@@ -900,15 +903,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         // per batch, no atomics needed. TRANSFER_SRC is needed though: the
         // FrameStats::visible_instance_count readback below copies out of
         // this buffer every frame.
-        auto culled_indirect = Buffer::create(context_, BufferCreateInfo{
-                                                                .size = culled_indirect_size,
-                                                                .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                                                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                                                .memory = BufferMemory::device,
-                                                                .debug_name = "renderer.frame_culled_indirect",
-                                                        });
+        auto culled_indirect = Buffer::create(
+                context_, BufferCreateInfo{
+                                  .size = culled_indirect_size,
+                                  .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                  .memory = BufferMemory::device,
+                                  .debug_name = "renderer.frame_culled_indirect",
+                          });
 
         if (!culled_indirect) {
             return std::unexpected(make_device_error(culled_indirect.error()));
@@ -1076,13 +1078,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.bloom_target = bloom_target;
 
-        // Full-resolution, 4-channel (RWTexture2D<float4> is what
-        // storage_2d[] is declared as bindless-wide -- see gtao.slang)
-        // single-channel-in-practice AO targets. `raw` holds GTAO's noisy
-        // output and is only ever read back by the denoise pass in the same
-        // frame; `denoised` is what forward_geom.slang samples.
         auto const ao_raw_name = std::format("renderer.ao_raw_{}", frame_index);
-
         auto ao_raw_image = image_storage_.create_image(ImageCreateInfo{
                 .extent =
                         VkExtent3D{
@@ -1238,6 +1234,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 auto Renderer::destroy() noexcept -> void {
     debug("[Renderer::destroy] enter");
 
+    screenshot_->close();
+
     pipeline_graph_.save_pipeline_cache();
     pipeline_graph_.destroy();
     gpu_resource_table_.destroy();
@@ -1271,6 +1269,27 @@ auto Renderer::destroy() noexcept -> void {
             static_cast<void>(image_storage_.destroy_image(frame.viewport_target));
             frame.viewport_target = ImageHandle{};
         }
+
+        for (auto const mip_slot: frame.bloom_target.mip_slots) {
+            if (mip_slot.valid()) {
+                static_cast<void>(image_storage_.destroy_image(mip_slot));
+            }
+        }
+        if (frame.bloom_target.image.valid()) {
+            static_cast<void>(image_storage_.destroy_image(frame.bloom_target.image));
+            frame.bloom_target = {};
+        }
+
+        if (frame.ao_target.raw.valid()) {
+            static_cast<void>(image_storage_.destroy_image(frame.ao_target.raw));
+        }
+        if (frame.ao_target.denoised.valid()) {
+            static_cast<void>(image_storage_.destroy_image(frame.ao_target.denoised));
+        }
+        frame.ao_target = {};
+
+        frame.lights_buffer.destroy();
+        frame.frustum_planes_buffer.destroy();
 
         frame.lights_buffer.destroy();
         frame.frustum_planes_buffer.destroy();
@@ -1667,7 +1686,7 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
 }
 
 auto Renderer::submit_model_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
-                                       MaterialHandle material_override) -> std::expected<void, RendererError> {
+                                      MaterialHandle material_override) -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
@@ -1753,8 +1772,7 @@ auto Renderer::request_texture(std::filesystem::path source_path, TextureRole ro
     // transition (it renders as `fallback` until then, then upgrades in
     // place), so the name is valid immediately; it just may briefly point
     // at fallback content, same as any other still-streaming handle.
-    auto const handle =
-            texture_streamer_.request(image_storage_, std::move(source_path), role, fallback, debug_name);
+    auto const handle = texture_streamer_.request(image_storage_, std::move(source_path), role, fallback, debug_name);
 
     static_cast<void>(assets_.textures().register_asset(std::move(debug_name), handle));
 
@@ -2221,9 +2239,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
     }
 
-    // Transparent batches need a true back-to-front ordering. For sufficiently
-    // large lists, let the renderer's persistent worker pool sort them while
-    // the render thread orders the opaque/masked shadow batches below.
     constexpr std::size_t parallel_blend_sort_threshold = 4'096;
 
     auto sort_blend_batches = [this] {
@@ -2367,8 +2382,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     ++shadow_frame_;
     if (shadow_frame_ == 0) {
-        // Extremely unlikely wraparound, but keep age arithmetic and the
-        // validity model well-defined.
         shadow_frame_ = 1;
         for (auto &cached: shadow_cascade_cache_) {
             cached.valid = false;
@@ -2566,7 +2579,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     {
         TracyVkZoneC(context_.host_query_context.context, command_buffer, "Culling", tracy::Color::SlateBlue);
 
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Culling);
+        constexpr auto stage = std::to_underlying(RenderStage::Culling);
         constexpr auto start_query = stage * 2;
         constexpr auto end_query = start_query + 1;
 
@@ -2674,17 +2687,17 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             auto const readback_size =
                     static_cast<VkDeviceSize>(frame.indirect_command_count) * sizeof(VkDrawIndexedIndirectCommand);
 
-            if (!frame.culled_readback_buffer.valid() || frame.culled_readback_capacity < frame.indirect_command_count) {
+            if (!frame.culled_readback_buffer.valid() ||
+                frame.culled_readback_capacity < frame.indirect_command_count) {
                 auto const capacity = std::bit_ceil(std::max(frame.indirect_command_count, 1U));
 
-                auto readback = Buffer::create(
-                        context_, BufferCreateInfo{
-                                          .size = static_cast<VkDeviceSize>(capacity) *
-                                                  sizeof(VkDrawIndexedIndirectCommand),
-                                          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                          .memory = BufferMemory::readback,
-                                          .debug_name = "renderer.culled_readback",
-                                  });
+                auto readback = Buffer::create(context_, BufferCreateInfo{
+                                                                 .size = static_cast<VkDeviceSize>(capacity) *
+                                                                         sizeof(VkDrawIndexedIndirectCommand),
+                                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                                 .memory = BufferMemory::readback,
+                                                                 .debug_name = "renderer.culled_readback",
+                                                         });
 
                 if (!readback) {
                     clear_submissions();
@@ -2815,7 +2828,7 @@ template<typename OverlayPolicy>
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    screenshot_.try_resolve(frame_index);
+    screenshot_->try_resolve(frame_index);
 
     auto &frame = frames_[frame_index];
     auto &frame_query = timestamp_queries_[frame_index];
@@ -2985,7 +2998,7 @@ template<typename OverlayPolicy>
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
 
-    auto ao_output = [&]() -> std::expected<std::optional<render_pass::AoTextureIndex>, RendererError> {
+    auto ao_output = [&] {
         TracyVkZoneC(context_.host_query_context.context, command_buffer, "Ambient Occlusion",
                      tracy::Color::DarkSlateGray);
 
@@ -3019,7 +3032,7 @@ template<typename OverlayPolicy>
 
     auto debug_overlay = [&] { OverlayPolicy::render_debug(app, command_buffer, vp, frame_index); };
 
-    auto hdr_output = [&]() -> std::expected<render_pass::HdrTextureIndex, RendererError> {
+    auto hdr_output = [&] {
         TracyVkZoneC(context_.host_query_context.context, command_buffer, "Forward Pass", tracy::Color::RoyalBlue);
 
         return render_pass::forward_geometry(
@@ -3058,7 +3071,7 @@ template<typename OverlayPolicy>
 
     auto const *bloom_target = bloom_settings_.enabled ? image_storage_.get(frame.bloom_target.image) : nullptr;
 
-    auto bloom_output = [&]() -> std::expected<std::optional<render_pass::BloomTextureIndex>, RendererError> {
+    auto bloom_output = [&] {
         TracyVkZoneC(context_.host_query_context.context, command_buffer, "Bloom Pass", tracy::Color::Orange);
 
         return render_pass::bloom(pass_context, render_pass::BloomPassInfo{
@@ -3141,8 +3154,8 @@ template<typename OverlayPolicy>
         }
     }
 
-    bool const screenshot_recorded = screenshot_.record(context_, command_buffer, swapchain_image.image,
-                                                        swapchain_image.format, swapchain_image.extent, frame_index);
+    bool const screenshot_recorded = screenshot_->record(context_, command_buffer, swapchain_image.image,
+                                                         swapchain_image.format, swapchain_image.extent, frame_index);
 
     if (!screenshot_recorded) {
         render_pass::present_swapchain(command_buffer, swapchain_image.image);
@@ -3186,10 +3199,14 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
     std::vector<ForwardTarget> replacements;
     replacements.reserve(frames_.size());
 
-    // Paired 1:1 with replacements above -- see RendererFrame::viewport_target's
-    // doc comment for why it must stay the same size as forward_target.
     std::vector<ImageHandle> viewport_target_replacements;
     viewport_target_replacements.reserve(frames_.size());
+
+    std::vector<RendererFrame::AoTarget> ao_target_replacements;
+    ao_target_replacements.reserve(frames_.size());
+
+    std::vector<RendererFrame::BloomTarget> bloom_target_replacements;
+    bloom_target_replacements.reserve(frames_.size());
 
     auto const destroy_replacements = [&] {
         for (auto &created: replacements) {
@@ -3197,6 +3214,16 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         }
         for (auto const handle: viewport_target_replacements) {
             static_cast<void>(image_storage_.destroy_image(handle));
+        }
+        for (auto const &ao: ao_target_replacements) {
+            static_cast<void>(image_storage_.destroy_image(ao.raw));
+            static_cast<void>(image_storage_.destroy_image(ao.denoised));
+        }
+        for (auto const &bloom: bloom_target_replacements) {
+            for (auto const mip_slot: bloom.mip_slots) {
+                static_cast<void>(image_storage_.destroy_image(mip_slot));
+            }
+            static_cast<void>(image_storage_.destroy_image(bloom.image));
         }
     };
 
@@ -3246,6 +3273,121 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         }
 
         viewport_target_replacements.push_back(*viewport_target_replacement);
+
+        auto const ao_raw_name = std::format("renderer.ao_raw_{}", index);
+        auto ao_raw_image = image_storage_.create_image(ImageCreateInfo{
+                .extent =
+                        VkExtent3D{
+                                .width = extent.width,
+                                .height = extent.height,
+                                .depth = 1,
+                        },
+                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                .image_type = VK_IMAGE_TYPE_2D,
+                .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                .flags = 0,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .debug_name = ao_raw_name,
+        });
+
+        if (!ao_raw_image) {
+            destroy_replacements();
+
+            return std::unexpected(make_image_error(ao_raw_image.error()));
+        }
+
+        auto const ao_denoised_name = std::format("renderer.ao_denoised_{}", index);
+
+        auto ao_denoised_image = image_storage_.create_image(ImageCreateInfo{
+                .extent =
+                        VkExtent3D{
+                                .width = extent.width,
+                                .height = extent.height,
+                                .depth = 1,
+                        },
+                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                .image_type = VK_IMAGE_TYPE_2D,
+                .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                .flags = 0,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .debug_name = ao_denoised_name,
+        });
+
+        if (!ao_denoised_image) {
+            destroy_replacements();
+
+            return std::unexpected(make_image_error(ao_denoised_image.error()));
+        }
+
+        ao_target_replacements.push_back(RendererFrame::AoTarget{.raw = *ao_raw_image, .denoised = *ao_denoised_image});
+
+        auto const bloom_target_name = std::format("renderer.bloom_target_{}", index);
+
+        auto bloom_image = image_storage_.create_image(ImageCreateInfo{
+                .extent =
+                        VkExtent3D{
+                                .width = extent.width / 2,
+                                .height = extent.height / 2,
+                                .depth = 1,
+                        },
+                .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                .image_type = VK_IMAGE_TYPE_2D,
+                .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                .flags = 0,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .mip_levels = 4,
+                .array_layers = 1,
+                .create_mip_layer_views = true,
+                .debug_name = bloom_target_name,
+        });
+
+        if (!bloom_image) {
+            destroy_replacements();
+
+            return std::unexpected(make_image_error(bloom_image.error()));
+        }
+
+        RendererFrame::BloomTarget bloom_target{.image = *bloom_image};
+
+        auto const *bloom_image_ptr = image_storage_.get(*bloom_image);
+
+        for (std::uint32_t mip = 0; mip < 4; ++mip) {
+            auto const view = bloom_image_ptr->mip_layer_view(mip, 0);
+
+            auto mip_slot = image_storage_.register_view(ImageViewRegistration{
+                    .sampled_2d = view,
+                    .storage_2d = view,
+            });
+
+            if (!mip_slot) {
+                destroy_replacements();
+
+                return std::unexpected(make_image_error(mip_slot.error()));
+            }
+
+            bloom_target.mip_slots[mip] = *mip_slot;
+        }
+
+        bloom_target_replacements.push_back(bloom_target);
     }
 
     for (std::size_t index = 0; index < frames_.size(); ++index) {
@@ -3254,6 +3396,16 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
 
         static_cast<void>(image_storage_.destroy_image(frames_[index].viewport_target));
         frames_[index].viewport_target = viewport_target_replacements[index];
+
+        static_cast<void>(image_storage_.destroy_image(frames_[index].ao_target.raw));
+        static_cast<void>(image_storage_.destroy_image(frames_[index].ao_target.denoised));
+        frames_[index].ao_target = ao_target_replacements[index];
+
+        for (auto const mip_slot: frames_[index].bloom_target.mip_slots) {
+            static_cast<void>(image_storage_.destroy_image(mip_slot));
+        }
+        static_cast<void>(image_storage_.destroy_image(frames_[index].bloom_target.image));
+        frames_[index].bloom_target = bloom_target_replacements[index];
     }
 
     extent_ = extent;
@@ -3300,6 +3452,7 @@ auto Renderer::mark_shadow_casters_dirty() noexcept -> void {
 }
 
 
+auto Renderer::request_screenshot() noexcept -> void { screenshot_->request(); }
 auto Renderer::wait_idle() -> std::expected<void, RendererError> {
     auto result = vkDeviceWaitIdle(context_.device);
     return result == VK_SUCCESS ? std::expected<void, RendererError>{}

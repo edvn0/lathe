@@ -17,3 +17,5 @@ struct Renderer;
 namespace Components {
     struct Transform;
 }
+
+class ScreenshotCapture;

@@ -50,7 +50,6 @@
 #include "rendering/forward_target.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/render_stage.hxx"
-#include "rendering/screenshot.hxx"
 #include "rendering/script_storage.hxx"
 #include "rendering/shadow_cascades.hxx"
 
@@ -149,7 +148,6 @@ struct SwapchainImage {
     VkExtent2D extent{};
 };
 
-
 struct UBO {
     glm::mat4 view_projection;
     glm::mat4 view;
@@ -244,6 +242,7 @@ struct RendererCreateInfo {
 
 struct Renderer final : public IMeshSink, public IModelSink {
     explicit Renderer(VulkanContext &context) noexcept;
+    ~Renderer() noexcept;
 
     Renderer(Renderer const &) = delete;
     auto operator=(Renderer const &) -> Renderer & = delete;
@@ -326,7 +325,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     // submission source.
     [[nodiscard]]
     auto submit_model_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
-                                 MaterialHandle material_override = {}) -> std::expected<void, RendererError>;
+                                MaterialHandle material_override = {}) -> std::expected<void, RendererError>;
 
     // Model-space AABB across every vertex of the model, as loaded --
     // callers can use this to size collision volumes/gizmos to the actual
@@ -348,8 +347,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     // single box over the whole model that would let the player walk
     // through every gap and alcove.
     [[nodiscard]]
-    auto model_submesh_bounds(ModelHandle model) const
-            -> std::optional<std::vector<std::pair<glm::vec3, glm::vec3>>>;
+    auto model_submesh_bounds(ModelHandle model) const -> std::optional<std::vector<std::pair<glm::vec3, glm::vec3>>>;
 
     [[nodiscard]]
     auto model_lights(ModelHandle model) const -> std::span<ModelCpuLight const>;
@@ -569,7 +567,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto debug_draw_light_icons() const noexcept -> bool { return debug_draw_light_icons_; }
     auto set_debug_draw_light_icons(bool enabled) noexcept -> void { debug_draw_light_icons_ = enabled; }
 
-    auto request_screenshot() noexcept -> void { screenshot_.request(); }
+    auto request_screenshot() noexcept -> void;
     auto mark_lights_dirty() -> void { lights_dirty_mask_ = frames_.empty() ? 0U : ((1U << frames_.size()) - 1U); }
     auto wait_idle() -> std::expected<void, RendererError>;
 
@@ -986,7 +984,7 @@ private:
     std::vector<FramePipelineQuery> pipeline_stat_queries_;
     PipelineStats last_frame_pipeline_stats_{};
 
-    ScreenshotCapture screenshot_;
+    std::unique_ptr<ScreenshotCapture> screenshot_;
 
     bool initialized_ = false;
 };

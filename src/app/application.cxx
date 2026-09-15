@@ -300,8 +300,8 @@ namespace {
     [[nodiscard]] auto is_material_pending_deletion(std::span<Application::PendingDeletion const> pending_deletions,
                                                     std::string_view name) -> bool {
         auto const label = material_deletion_label(name);
-        return std::ranges::any_of(
-                pending_deletions, [&](Application::PendingDeletion const &pending) { return pending.label == label; });
+        return std::ranges::any_of(pending_deletions,
+                                   [&](Application::PendingDeletion const &pending) { return pending.label == label; });
     }
 } // namespace
 
@@ -416,8 +416,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
                 auto matrix = registry.get<Components::Transform>(selected_entity).matrix();
 
-                if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection), gizmo_operation,
-                                         gizmo_mode, glm::value_ptr(matrix))) {
+                if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection), gizmo_operation, gizmo_mode,
+                                         glm::value_ptr(matrix))) {
                     auto const translation = glm::vec3{matrix[3]};
                     glm::vec3 const scale{glm::length(glm::vec3{matrix[0]}), glm::length(glm::vec3{matrix[1]}),
                                           glm::length(glm::vec3{matrix[2]})};
@@ -494,7 +494,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 // here as submesh_bounds already being available, since a
                 // still-loading model reports its fallback's bounds.
                 model_load_status = submesh_bounds ? std::format("Reused already-loaded '{}'", path.filename().string())
-                                                    : std::format("Loading '{}'...", path.filename().string());
+                                                   : std::format("Loading '{}'...", path.filename().string());
             } else {
                 model_load_status =
                         std::format("Failed to load '{}': could not reserve a model slot", path.filename().string());
@@ -550,9 +550,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         // request-based path the Inspector's "Browse..." uses, so a freshly
         // loaded file is immediately selectable everywhere else).
         auto draw_file_backed_section = [&]<typename HandleT>(char const *label, std::filesystem::path const &root,
-                                                               std::span<std::string_view const> extensions,
-                                                               NamedAssetTable<HandleT> &table, auto &&load,
-                                                               auto &&draw_entry) {
+                                                              std::span<std::string_view const> extensions,
+                                                              NamedAssetTable<HandleT> &table, auto &&load,
+                                                              auto &&draw_entry) {
             if (!ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen)) {
                 return;
             }
@@ -578,12 +578,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         };
 
         static constexpr std::array<std::string_view, 2> model_extensions{".gltf", ".glb"};
-        draw_file_backed_section("Models", "assets/models", model_extensions, assets.models(),
-                                 [&](std::filesystem::path const &path, std::string const &name) {
-                                     static_cast<void>(
-                                             renderer->model_streamer().request(*renderer, path, engine_models.cube, name));
-                                 },
-                                 draw_bullet_entry);
+        draw_file_backed_section(
+                "Models", "assets/models", model_extensions, assets.models(),
+                [&](std::filesystem::path const &path, std::string const &name) {
+                    static_cast<void>(renderer->model_streamer().request(*renderer, path, engine_models.cube, name));
+                },
+                draw_bullet_entry);
 
         // Textures get a small live thumbnail next to the name instead of
         // draw_bullet_entry's plain text -- ImageHandle's .index doubles as
@@ -606,12 +606,13 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         };
 
         static constexpr std::array<std::string_view, 3> texture_extensions{".png", ".jpg", ".jpeg"};
-        draw_file_backed_section("Textures", "assets/textures", texture_extensions, assets.textures(),
-                                 [&](std::filesystem::path const &path, std::string const &name) {
-                                     static_cast<void>(renderer->request_texture(
-                                             path, TextureRole::colour, renderer->image_storage().white(), name));
-                                 },
-                                 draw_texture_entry);
+        draw_file_backed_section(
+                "Textures", "assets/textures", texture_extensions, assets.textures(),
+                [&](std::filesystem::path const &path, std::string const &name) {
+                    static_cast<void>(renderer->request_texture(path, TextureRole::colour,
+                                                                renderer->image_storage().white(), name));
+                },
+                draw_texture_entry);
 
         // Scripts aren't a file asset -- no disk scan, just whatever's
         // currently registered (see AssetRegistry's doc comment). Unlike
@@ -738,7 +739,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 draw_material_fields(new_material_info);
                 ImGui::Separator();
 
-                bool const name_taken = !new_material_name.empty() && assets.materials().find(new_material_name).valid();
+                bool const name_taken =
+                        !new_material_name.empty() && assets.materials().find(new_material_name).valid();
                 if (name_taken) {
                     ImGui::TextColored(ImVec4(0.95F, 0.45F, 0.35F, 1.0F), "That name is already registered.");
                 }
@@ -748,7 +750,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     auto const created = renderer->create_material(new_material_info, new_material_name);
                     if (!created) {
                         warn("Assets panel: failed to create material '{}': {}", new_material_name,
-                            describe(created.error()));
+                             describe(created.error()));
                     }
                     ImGui::CloseCurrentPopup();
                 }
@@ -803,7 +805,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                         [renderer = renderer.get(), handle = entry.handle, name = entry.name] {
                                             if (auto const result = renderer->destroy_material(handle); !result) {
                                                 warn("Assets panel: failed to delete material '{}': {}", name,
-                                                    describe(result.error()));
+                                                     describe(result.error()));
                                             }
                                         },
                         });
@@ -824,10 +826,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             // commit -- cheap to offer since nothing was actually mutated
             // yet, so "restoring" is just forgetting the queue entry.
             static constexpr std::string_view material_prefix = "material:";
-            bool has_material_deletions =
-                    std::ranges::any_of(pending_deletions, [&](PendingDeletion const &pending) {
-                        return pending.label.starts_with(material_prefix);
-                    });
+            bool has_material_deletions = std::ranges::any_of(pending_deletions, [&](PendingDeletion const &pending) {
+                return pending.label.starts_with(material_prefix);
+            });
 
             if (has_material_deletions && ImGui::TreeNode("Recently deleted")) {
                 std::optional<std::size_t> restore_index;
@@ -861,8 +862,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     pending_deletions.erase(pending_deletions.begin() + static_cast<std::ptrdiff_t>(*restore_index));
                 } else if (commit_now_index) {
                     pending_deletions[*commit_now_index].commit();
-                    pending_deletions.erase(pending_deletions.begin() +
-                                            static_cast<std::ptrdiff_t>(*commit_now_index));
+                    pending_deletions.erase(pending_deletions.begin() + static_cast<std::ptrdiff_t>(*commit_now_index));
                 }
 
                 ImGui::TreePop();
@@ -901,8 +901,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             gizmo_operation = ImGuizmo::TRANSLATE;
         }
         ImGui::SameLine();
-        if (tool_button(gui::EditorIcon::rotate, gizmo_operation == ImGuizmo::ROTATE, "##gizmo_rotate",
-                        "Rotate (2)")) {
+        if (tool_button(gui::EditorIcon::rotate, gizmo_operation == ImGuizmo::ROTATE, "##gizmo_rotate", "Rotate (2)")) {
             gizmo_operation = ImGuizmo::ROTATE;
         }
         ImGui::SameLine();
@@ -946,13 +945,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             float const frame_h = ImGui::GetFrameHeight();
             ImVec2 const row_start = ImGui::GetCursorPos();
 
-            ImGui::SetCursorPos(
-                    ImVec2(row_start.x + style.FramePadding.x, row_start.y + (frame_h - icon_sz) * 0.5F));
+            ImGui::SetCursorPos(ImVec2(row_start.x + style.FramePadding.x, row_start.y + (frame_h - icon_sz) * 0.5F));
             ImGui::ImageWithBg(editor_icons->texture(gui::EditorIcon::search), ImVec2(icon_sz, icon_sz), ImVec2(0, 0),
-                              ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(0.55F, 0.55F, 0.60F, 1.0F));
+                               ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(0.55F, 0.55F, 0.60F, 1.0F));
 
-            ImGui::SetCursorPos(ImVec2(row_start.x + icon_sz + style.FramePadding.x + style.ItemInnerSpacing.x,
-                                       row_start.y));
+            ImGui::SetCursorPos(
+                    ImVec2(row_start.x + icon_sz + style.FramePadding.x + style.ItemInnerSpacing.x, row_start.y));
             ImGui::SetNextItemWidth(-1.0F);
 
             std::array<char, 128> search_buf{};
@@ -1010,8 +1008,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         // those are listed above instead.
         auto const meta_view =
                 registry.view<Components::Transform, Components::Meta>(entt::exclude<Components::BulletTag>);
-        auto const generated_view = registry.view<Components::Transform, Components::GeneratedMeta>(
-                entt::exclude<Components::BulletTag>);
+        auto const generated_view =
+                registry.view<Components::Transform, Components::GeneratedMeta>(entt::exclude<Components::BulletTag>);
 
         // generated_view first, then meta_view entries not already added --
         // an entity with both components (see entity_display_name's comment
@@ -1047,9 +1045,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         for (auto const entity: listed_entities) {
             auto const *parent = registry.try_get<Components::Parent>(entity);
-            bool const has_listed_parent =
-                    parent != nullptr && registry.valid(parent->entity) &&
-                    registry.any_of<Components::Meta, Components::GeneratedMeta>(parent->entity);
+            bool const has_listed_parent = parent != nullptr && registry.valid(parent->entity) &&
+                                           registry.any_of<Components::Meta, Components::GeneratedMeta>(parent->entity);
             if (has_listed_parent) {
                 children_of[parent->entity].push_back(entity);
             } else {
@@ -1230,7 +1227,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             // overlay draws happen to leave it.
             ImGui::SetCursorPos(ImVec2(label_x, row_pos.y + (row_height - icon_size) * 0.5F));
             ImGui::ImageWithBg(editor_icons->texture(visual.icon), ImVec2(icon_size, icon_size), ImVec2(0, 0),
-                              ImVec2(1, 1), ImVec4(0, 0, 0, 0), visual.tint);
+                               ImVec2(1, 1), ImVec4(0, 0, 0, 0), visual.tint);
 
             ImGui::SetCursorPos(ImVec2(label_x + icon_size + style.ItemInnerSpacing.x,
                                        row_pos.y + (row_height - ImGui::GetTextLineHeight()) * 0.5F));
@@ -1269,8 +1266,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::TextDisabled("%u %s", total_count, total_count == 1 ? "entity" : "entities");
 
         bool const any_bullet_matches =
-                search_lower.empty() ||
-                std::ranges::any_of(bullet_view, [&](entt::entity e) {
+                search_lower.empty() || std::ranges::any_of(bullet_view, [&](entt::entity e) {
                     return matches_filter(registry.get<Components::GeneratedMeta>(e).name.c_str());
                 });
 
@@ -1287,14 +1283,14 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             // for this row to naturally come out row_height tall, matching
             // every other row in the tree instead of the shorter height an
             // empty-label unframed tree node collapses to.
-            bool const open = ImGui::TreeNodeEx(" ##bullets_node", ImGuiTreeNodeFlags_SpanAvailWidth |
-                                                                            ImGuiTreeNodeFlags_FramePadding);
+            bool const open = ImGui::TreeNodeEx(" ##bullets_node",
+                                                ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding);
             ImVec2 const after_tree_pos = ImGui::GetCursorPos();
 
             float const label_x = row_pos.x + ImGui::GetTreeNodeToLabelSpacing();
             ImGui::SetCursorPos(ImVec2(label_x, row_pos.y + (row_height - icon_size) * 0.5F));
             ImGui::ImageWithBg(editor_icons->texture(gui::EditorIcon::folder), ImVec2(icon_size, icon_size),
-                              ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(0.95F, 0.80F, 0.45F, 1.0F));
+                               ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(0.95F, 0.80F, 0.45F, 1.0F));
             ImGui::SetCursorPos(ImVec2(label_x + icon_size + style.ItemInnerSpacing.x,
                                        row_pos.y + (row_height - ImGui::GetTextLineHeight()) * 0.5F));
             ImGui::Text("Bullets (%u)", bullet_count);
@@ -1338,8 +1334,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         // Right-click on empty space below/between rows -- NoOpenOverItems
         // keeps this from also firing over a row (each row already has its
         // own "entity_context" popup via OpenPopupOnItemClick above).
-        if (ImGui::BeginPopupContextWindow("hierarchy_bg_context", ImGuiPopupFlags_MouseButtonRight |
-                                                                            ImGuiPopupFlags_NoOpenOverItems)) {
+        if (ImGui::BeginPopupContextWindow("hierarchy_bg_context",
+                                           ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
             if (ImGui::MenuItem("Create Empty Entity")) {
                 pending_action = HierarchyAction::add_child;
                 action_target = entt::null;
@@ -1403,8 +1399,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     };
 
                     auto const *source_parent = registry.try_get<Components::Parent>(action_target);
-                    selected_entity = duplicate_subtree(
-                            action_target, source_parent != nullptr ? source_parent->entity : entt::null);
+                    selected_entity = duplicate_subtree(action_target,
+                                                        source_parent != nullptr ? source_parent->entity : entt::null);
                 }
                 break;
             }
@@ -1607,7 +1603,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         // retain_model() needed here, unlike the combo path
                         // above.
                         reassign(renderer->model_streamer().request(*renderer, *path, engine_models.cube,
-                                                                     path->filename().string()));
+                                                                    path->filename().string()));
                     }
                 }
             }
@@ -1740,7 +1736,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     for (auto const &entry: renderer->assets().models().entries()) {
                         if (ImGui::MenuItem(entry.name.c_str())) {
                             renderer->retain_model(entry.handle);
-                            registry.emplace<Components::Model>(selected_entity, Components::Model{.model = entry.handle});
+                            registry.emplace<Components::Model>(selected_entity,
+                                                                Components::Model{.model = entry.handle});
                             registry.emplace<Components::StreamedModelTag>(selected_entity);
                         }
                     }
@@ -1749,7 +1746,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
 
             if (!registry.all_of<Components::Lifetime>(selected_entity) && ImGui::MenuItem("Lifetime")) {
-                registry.emplace<Components::Lifetime>(selected_entity, Components::Lifetime{.remaining_seconds = 5.0F});
+                registry.emplace<Components::Lifetime>(selected_entity,
+                                                       Components::Lifetime{.remaining_seconds = 5.0F});
             }
 
             if (!registry.all_of<Components::MaterialOverride>(selected_entity) &&
@@ -1759,8 +1757,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         continue;
                     }
                     if (ImGui::MenuItem(entry.name.c_str())) {
-                        registry.emplace<Components::MaterialOverride>(selected_entity,
-                                                                        Components::MaterialOverride{.material = entry.handle});
+                        registry.emplace<Components::MaterialOverride>(
+                                selected_entity, Components::MaterialOverride{.material = entry.handle});
                     }
                 }
                 ImGui::EndMenu();
@@ -1770,7 +1768,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 !renderer->assets().scripts().entries().empty() && ImGui::BeginMenu("Script")) {
                 for (auto const &entry: renderer->assets().scripts().entries()) {
                     if (ImGui::MenuItem(entry.name.c_str())) {
-                        registry.emplace<Components::Script>(selected_entity, Components::Script{.script = entry.handle});
+                        registry.emplace<Components::Script>(selected_entity,
+                                                             Components::Script{.script = entry.handle});
                     }
                 }
                 ImGui::EndMenu();
@@ -1973,7 +1972,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                   registry.view<Components::Transform, Components::SpotLight, Components::GeneratedMeta>(),
                   draw_spot_light);
     });
-
 }
 
 auto Application::play() -> void {

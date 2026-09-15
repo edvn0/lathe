@@ -1,16 +1,21 @@
 #include "rendering/screenshot.hxx"
 
-#include "gpu/context.hxx"
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
+#include "core/thread_pool.hxx"
+#include "gpu/context.hxx"
+#include "rendering/renderer.hxx"
 
+#include <atomic>
 #include <stb_image_write.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <mutex>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -45,10 +50,10 @@ namespace {
         localtime_r(&now, &tm_buf);
 #endif
 
-        char buffer[32]{};
-        std::strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", &tm_buf);
+        std::string buffer(32, '\0');
+        std::strftime(buffer.data(), buffer.size(), "%Y%m%d_%H%M%S", &tm_buf);
 
-        return buffer;
+        return std::string(buffer.data(), std::strlen(buffer.data()));
     }
 
     // Runs entirely off the render thread.
@@ -87,20 +92,15 @@ namespace {
 
 } // namespace
 
-ScreenshotCapture::~ScreenshotCapture() {
-    // Workers release cpu_busy immediately after memcpy(), before PNG
-    // conversion/compression. Therefore waiting for cpu_busy == false is
-    // sufficient to guarantee that no worker still references mapped Vulkan
-    // memory when the readback buffers are destroyed.
-    for (auto const &slot: slots_) {
-        if (!slot) {
-            continue;
-        }
+ScreenshotCapture::~ScreenshotCapture() { close(); }
 
-        while (slot->cpu_busy.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-    }
+auto ScreenshotCapture::close() noexcept -> void {
+    std::unique_lock lock(mutex_);
+
+    cv_.wait(lock, [this] {
+        return std::ranges::all_of(
+                slots_, [](auto const &slot) { return !slot || !slot->cpu_busy.load(std::memory_order_seq_cst); });
+    });
 }
 
 auto ScreenshotCapture::get_or_create_slot(std::uint32_t frame_index) -> ReadbackSlot & {
@@ -125,7 +125,7 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
     //
     // This means a screenshot requested while the CPU worker is still
     // consuming this slot automatically gets retried on another frame.
-    if (slot.gpu_pending || slot.cpu_busy.load(std::memory_order_acquire)) {
+    if (slot.gpu_pending || slot.cpu_busy.load(std::memory_order_seq_cst)) {
         return false;
     }
 
@@ -305,13 +305,9 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
     };
 
     vkCmdPipelineBarrier2(command_buffer, &finish_info);
-
     slot.gpu_pending = true;
-
     slot.extent = extent;
-
     slot.format = format;
-
     slot.byte_size = static_cast<std::size_t>(byte_size);
 
     return true;
@@ -329,15 +325,24 @@ auto ScreenshotCapture::try_resolve(std::uint32_t frame_index) -> void {
         return;
     }
 
-    // The renderer has already waited for this frame-in-flight slot's fence,
-    // so the image -> buffer copy is complete at this point.
     slot.gpu_pending = false;
 
-    slot.cpu_busy.store(true, std::memory_order_release);
+    slot.cpu_busy.store(true, std::memory_order_seq_cst);
 
     auto *slot_ptr = &slot;
+    auto *cv_ptr = &cv_;
+    auto *mutex_ptr = &mutex_;
 
-    std::thread([slot_ptr]() {
+    auto const finish = [slot_ptr, cv_ptr, mutex_ptr]() noexcept {
+        {
+            std::lock_guard lock(*mutex_ptr);
+            slot_ptr->cpu_busy.store(false, std::memory_order_seq_cst);
+        }
+        cv_ptr->notify_all();
+    };
+
+    auto &pool = thread_pool();
+    pool.detach_task([slot_ptr, finish]() {
         //
         // For HOST_COHERENT allocations this is effectively a no-op.
         // For non-coherent readback memory it makes the GPU's writes
@@ -349,7 +354,7 @@ auto ScreenshotCapture::try_resolve(std::uint32_t frame_index) -> void {
                   "readback buffer: {}",
                   describe(invalidated.error()));
 
-            slot_ptr->cpu_busy.store(false, std::memory_order_release);
+            finish();
 
             return;
         }
@@ -359,7 +364,7 @@ auto ScreenshotCapture::try_resolve(std::uint32_t frame_index) -> void {
         if (mapped == nullptr) {
             error("Screenshot: readback buffer is not mapped");
 
-            slot_ptr->cpu_busy.store(false, std::memory_order_release);
+            finish();
 
             return;
         }
@@ -381,8 +386,8 @@ auto ScreenshotCapture::try_resolve(std::uint32_t frame_index) -> void {
         // compression, and disk I/O; those can take considerably
         // longer than the memcpy itself.
         //
-        slot_ptr->cpu_busy.store(false, std::memory_order_release);
+        finish();
 
         write_screenshot_png(std::move(pixels), extent, format);
-    }).detach();
+    });
 }
