@@ -52,15 +52,17 @@ public float3 shade_punctual(float3 normal, float3 view_dir, float3 light_dir, f
     float ndoth = max(dot(normal, half_vector), 0.0);
     float vdoth = max(dot(view_dir, half_vector), 0.0);
 
-    // Perceptually-linear roughness -> alpha remap, clamped away from 0 so
-    // the NDF/visibility terms above never divide by zero for mirror-smooth
+    // distribution_ggx and visibility_smith_ggx_correlated each do their own
+    // perceptually-linear roughness -> alpha remap internally, so the raw
+    // roughness is passed straight through here (not pre-squared). Clamp
+    // away from 0 so those terms never divide by zero for mirror-smooth
     // materials.
-    float alpha = max(roughness * roughness, 1e-3);
+    float safe_roughness = max(roughness, 1e-3);
 
     float3 f0 = lerp(float3(0.04), albedo, metallic);
 
-    float d = distribution_ggx(ndoth, alpha);
-    float vis = visibility_smith_ggx_correlated(ndotv, ndotl, alpha);
+    float d = distribution_ggx(ndoth, safe_roughness);
+    float vis = visibility_smith_ggx_correlated(ndotv, ndotl, safe_roughness);
     float3 f = fresnel_schlick(vdoth, f0);
 
     float3 specular = d * vis * f;

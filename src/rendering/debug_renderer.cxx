@@ -293,7 +293,15 @@ namespace debug_draw {
 
         pipeline->bind(cmd);
 
-        auto const &extent = impl_->renderer.context().swapchain.extent();
+        // Must match the forward pass's own render target size, not the
+        // swapchain -- this draws inside forward_geometry()'s render scope,
+        // which targets forward_target (the editor Viewport panel's
+        // resolution in non-fullscreen mode), and the view_projection we
+        // were handed was built from Renderer::aspect(), itself derived from
+        // that same forward_target extent. Using swapchain extent here
+        // desyncs the viewport from the projection's aspect whenever the
+        // panel and window sizes differ, distorting/flipping the lines.
+        auto const extent = impl_->renderer.forward_extent(frame_index);
 
         // minDepth/maxDepth inverted to match the reverse-Z convention used by the
         // rest of the renderer (see set_forward_dynamic_state in renderer.cxx):

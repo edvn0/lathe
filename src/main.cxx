@@ -390,11 +390,18 @@ namespace {
     auto key_callback(GLFWwindow *window, int key, int, int action, int mods) -> void {
         auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
-        if (app == nullptr || imgui_wants_keyboard()) {
+        if (app == nullptr) {
             return;
         }
 
-        if (action == GLFW_PRESS) {
+        // Releases must never be swallowed, even when ImGui currently wants
+        // the keyboard (e.g. clicking a panel mid-stride) -- a key that was
+        // pressed while ImGui didn't have focus still needs its release
+        // delivered, or EditorCamera/PlayerController's moving_forward_-style
+        // latches get stuck on until the key happens to be pressed and
+        // released again while ImGui isn't capturing. Only presses are
+        // gated, so ImGui text entry can't also start camera movement.
+        if (action == GLFW_PRESS && !imgui_wants_keyboard()) {
             app->on_event(KeyPressedEvent{key, mods});
         }
         if (action == GLFW_RELEASE) {

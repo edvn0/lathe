@@ -494,6 +494,17 @@ struct Renderer final : public IMeshSink, public IModelSink {
                static_cast<float>(frames_[index].forward_target.extent().height);
     }
 
+    // The resolution the forward pass (and thus aspect() above) actually
+    // rendered at this frame -- the editor's embedded Viewport panel size in
+    // non-fullscreen mode, which can differ from the swapchain/window size.
+    // Anything drawn into the same render pass as the forward geometry (e.g.
+    // DebugRenderer's overlay, invoked from within forward_geometry()) must
+    // size its viewport off this, not swapchain().extent(), or its lines
+    // render with the wrong aspect against the projection aspect() built.
+    [[nodiscard]] auto forward_extent(std::uint32_t index) const noexcept -> VkExtent2D {
+        return frames_[index].forward_target.extent();
+    }
+
     // See RendererFrame::viewport_target's doc comment. Valid any time
     // record_frame() has run at least once for this frame_index in embedded
     // mode -- the editor's Viewport panel reads this the same frame it was
