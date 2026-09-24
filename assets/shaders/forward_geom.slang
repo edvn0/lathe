@@ -2,6 +2,7 @@ import bindless;
 import scene_types;
 import wind;
 import pbr;
+import meshlet_task;
 
 struct VertexOutput
 {
@@ -15,45 +16,27 @@ struct VertexOutput
     nointerpolation uint material_index;
 };
 
-[shader("vertex")]
-VertexOutput mainVs(
-uint vertex_id: SV_VulkanVertexID,
-                 uint draw_id: SV_DrawIndex,
-                 uint inst_base: SV_VulkanInstanceID,
-    uniform PC pc)
+[shader("amplification")]
+[numthreads(meshlets_per_task, 1, 1)]
+void main_task(uint3 group_id: SV_GroupID, uint lane: SV_GroupIndex, uint draw_index: SV_DrawIndex, uniform PC pc)
 {
-    GpuDraw draw = pc.draws[inst_base];
-    const var ubo = pc.ubo;
+    run_meshlet_task(pc, 0, draw_index, group_id, lane);
+}
 
+VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_strength, uint vertex_id)
+{
+    const var ubo = pc.ubo;
     const var vertex = decode_vertex(draw.vertex_address[vertex_id]);
 
-    float4x4 model = pc.transforms[inst_base];
-
-    float4 world_position = mul(
-        model,
-        float4(vertex.position, 1.0)
-    );
-
-    const var wind_material = pc.materials[draw.material_index];
-    world_position.xz += wind_offset(vertex.position, world_position.xyz, wind_material.wind_strength, ubo.time);
+    float4 world_position = mul(model, float4(vertex.position, 1.0));
+    world_position.xz += wind_offset(vertex.position, world_position.xyz, wind_strength, ubo.time);
 
     // This is correct for uniform scale and rotation.
     // Use inverse-transpose when non-uniform scaling is supported.
     float3x3 normal_matrix = (float3x3)model;
 
-    float3 world_normal = normalize(
-        mul(
-            normal_matrix,
-            vertex.normal
-        )
-    );
-
-    float3 world_tangent = normalize(
-        mul(
-            normal_matrix,
-            vertex.tangent.xyz
-        )
-    );
+    float3 world_normal = normalize(mul(normal_matrix, vertex.normal));
+    float3 world_tangent = normalize(mul(normal_matrix, vertex.tangent.xyz));
 
     VertexOutput output;
     output.position = mul(ubo.view_projection, world_position);
@@ -64,6 +47,30 @@ uint vertex_id: SV_VulkanVertexID,
     output.material_index = draw.material_index;
 
     return output;
+}
+
+[shader("mesh")]
+[numthreads(mesh_group_size, 1, 1)]
+[outputtopology("triangle")]
+void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, uint lane: SV_GroupIndex,
+               uniform PC pc, out vertices VertexOutput verts[meshlet_max_vertices],
+               out indices uint3 tris[meshlet_max_triangles])
+{
+    const GpuDraw draw = pc.draws[payload.instance_index];
+    const Meshlet meshlet = draw.meshlets[payload_meshlet_index(payload, group_id.x)];
+
+    SetMeshOutputCounts(meshlet.vertex_count, meshlet.triangle_count);
+
+    const float4x4 model = pc.transforms[payload.instance_index];
+    const float wind_strength = pc.materials[draw.material_index].wind_strength;
+
+    for (uint v = lane; v < meshlet.vertex_count; v += mesh_group_size) {
+        verts[v] = forward_vertex(pc, draw, model, wind_strength, meshlet_vertex_index(draw, meshlet, v));
+    }
+
+    for (uint t = lane; t < meshlet.triangle_count; t += mesh_group_size) {
+        tris[t] = meshlet_triangle(draw, meshlet, t);
+    }
 }
 
 struct OutputFS

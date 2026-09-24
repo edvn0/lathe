@@ -38,6 +38,8 @@ namespace render_pass {
         VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
     };
 
+    // `indirect` holds one GpuTaskCommand (assets/meshlet.hxx) per batch,
+    // partitioned opaque | mask | blend like DrawCounts.
     struct DrawBuffers {
         Buffer const &draws;
         Buffer const &transforms;
@@ -63,7 +65,11 @@ namespace render_pass {
         std::uint32_t update_mask = (1U << shadow_cascade_count) - 1U;
         bool preserve_contents = false;
 
-        VkBuffer index_buffer = VK_NULL_HANDLE;
+        bool meshlet_culling = true;
+
+        // First of the 6-planes-per-cascade blocks (cascade 0's left plane)
+        // -- the task shader offsets by cascade_index * 6 from here.
+        VkDeviceAddress cascade_cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
@@ -91,13 +97,18 @@ namespace render_pass {
         DrawBuffers draws;
         DrawCounts counts;
 
-        VkBuffer index_buffer = VK_NULL_HANDLE;
+        // The camera's 6 world-space frustum planes, for meshlet culling.
+        VkDeviceAddress cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
 
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle mask_pipeline{};
+
+        // Must match ForwardGeometryInfo::meshlet_culling: forward depth
+        // tests EQUAL against what this pass wrote.
+        bool meshlet_culling = true;
     };
 
     // GTAO: horizon-based screen-space ambient occlusion computed entirely
@@ -148,13 +159,16 @@ namespace render_pass {
         DrawBuffers draws;
         DrawCounts counts;
 
-        VkBuffer index_buffer = VK_NULL_HANDLE;
+        // The camera's 6 world-space frustum planes, for meshlet culling.
+        VkDeviceAddress cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
         std::uint32_t light_count = 0;
 
         VkQueryPool pipeline_statistics_query_pool = VK_NULL_HANDLE;
+
+        bool meshlet_culling = true;
 
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle blend_pipeline{};

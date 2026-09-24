@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <span>
 
+#include "assets/meshlet.hxx"
 #include "gpu/vk_barrier.hxx"
 #include "rendering/render_stage.hxx"
 #include "rendering/shadow_cascades.hxx"
@@ -486,6 +487,33 @@ namespace render_pass {
             }
         }
 
+        // Issues one vkCmdDrawMeshTasksIndirectEXT over `command_count`
+        // GpuTaskCommands starting at `first_command`. SV_DrawIndex restarts
+        // at 0 for every indirect call, so the task shader's view of the
+        // command array (PC::task_commands) is re-pointed at this call's
+        // first command rather than the buffer's start.
+        template<typename PushConstants>
+        auto draw_task_commands(VkCommandBuffer command_buffer, VkPipelineLayout layout, Buffer const &commands,
+                                std::uint32_t first_command, std::uint32_t command_count, PushConstants pc) noexcept
+                -> void {
+            if (command_count == 0) {
+                return;
+            }
+
+            auto const offset = static_cast<VkDeviceSize>(first_command) * sizeof(GpuTaskCommand);
+
+            pc.task_commands_address = commands.device_address + offset;
+            vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+            vkCmdDrawMeshTasksIndirectEXT(command_buffer, commands.buffer, offset, command_count,
+                                          sizeof(GpuTaskCommand));
+        }
+
+        // Frustum-only for everything drawn without back-face culling
+        // (mask, blend, shadows); opaque main-view draws also cone-cull
+        // backfacing meshlets. Mirrors cull_*_bit in scene_types.slang.
+        constexpr std::uint32_t cull_frustum = 1U;
+        constexpr std::uint32_t cull_frustum_and_backface = 1U | 2U;
+
     } // namespace detail
 
     auto prepare_forward_targets(Context const &context, ForwardTargets const &targets) noexcept -> void {
@@ -581,13 +609,9 @@ namespace render_pass {
             vkCmdClearAttachments(context.command_buffer, 1, &clear_attachment, 1, &clear_rect);
         }
 
-        if (has_dirty_opaque || has_dirty_mask) {
-            vkCmdBindIndexBuffer(context.command_buffer, info.index_buffer, 0, VK_INDEX_TYPE_UINT32);
-        }
-
         if (has_dirty_opaque) {
             detail::bind_graphics_node(context.pipeline_graph, info.opaque_pipeline, context.command_buffer,
-                                       VK_SAMPLE_COUNT_1_BIT, 0, false);
+                                       VK_SAMPLE_COUNT_1_BIT, 0, false, false);
             context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         opaque_layout);
 
@@ -599,11 +623,11 @@ namespace render_pass {
                     .lights_address = info.lights_address,
                     .light_count = 0,
                     ._padding = 0,
+                    .cull_planes_address = info.cascade_cull_planes_address,
+                    .cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U,
                     .cascade_index = 0,
                     .padding = 0,
             };
-
-            vkCmdPushConstants(context.command_buffer, opaque_layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
                 if ((info.update_mask & (1U << cascade)) == 0) {
@@ -617,16 +641,15 @@ namespace render_pass {
 
                 detail::set_shadow_dynamic_state(context.command_buffer, cascade, info.depth_bias_constant,
                                                  info.depth_bias_slope);
-                vkCmdPushConstants(context.command_buffer, opaque_layout, VK_SHADER_STAGE_ALL,
-                                   offsetof(ShadowPushConstants, cascade_index), sizeof(cascade), &cascade);
-                vkCmdDrawIndexedIndirect(context.command_buffer, info.draws.indirect.buffer, 0, cascade_draw_count,
-                                         sizeof(VkDrawIndexedIndirectCommand));
+                pc.cascade_index = cascade;
+                detail::draw_task_commands(context.command_buffer, opaque_layout, info.draws.indirect, 0,
+                                           cascade_draw_count, pc);
             }
         }
 
         if (has_dirty_mask) {
             detail::bind_graphics_node(context.pipeline_graph, info.mask_pipeline, context.command_buffer,
-                                       VK_SAMPLE_COUNT_1_BIT, 0, false);
+                                       VK_SAMPLE_COUNT_1_BIT, 0, false, false);
             context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         mask_layout);
 
@@ -638,14 +661,11 @@ namespace render_pass {
                     .lights_address = info.lights_address,
                     .light_count = 0,
                     ._padding = 0,
+                    .cull_planes_address = info.cascade_cull_planes_address,
+                    .cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U,
                     .cascade_index = 0,
                     .padding = 0,
             };
-
-            vkCmdPushConstants(context.command_buffer, mask_layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
-
-            auto const mask_offset =
-                    static_cast<VkDeviceSize>(info.counts.opaque) * sizeof(VkDrawIndexedIndirectCommand);
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
                 if ((info.update_mask & (1U << cascade)) == 0) {
@@ -659,10 +679,9 @@ namespace render_pass {
 
                 detail::set_shadow_dynamic_state(context.command_buffer, cascade, info.depth_bias_constant,
                                                  info.depth_bias_slope);
-                vkCmdPushConstants(context.command_buffer, mask_layout, VK_SHADER_STAGE_ALL,
-                                   offsetof(ShadowPushConstants, cascade_index), sizeof(cascade), &cascade);
-                vkCmdDrawIndexedIndirect(context.command_buffer, info.draws.indirect.buffer, mask_offset,
-                                         cascade_draw_count, sizeof(VkDrawIndexedIndirectCommand));
+                pc.cascade_index = cascade;
+                detail::draw_task_commands(context.command_buffer, mask_layout, info.draws.indirect, info.counts.opaque,
+                                           cascade_draw_count, pc);
             }
         }
 
@@ -724,7 +743,6 @@ namespace render_pass {
         };
 
         vkCmdBeginRendering(context.command_buffer, &rendering_info);
-        vkCmdBindIndexBuffer(context.command_buffer, info.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
         ForwardPushConstants const pc{
                 .draws_address = info.draws.draws.device_address,
@@ -734,34 +752,36 @@ namespace render_pass {
                 .lights_address = info.lights_address,
                 .light_count = 0,
                 ._padding = 0,
+                .cull_planes_address = info.cull_planes_address,
         };
+
+        auto opaque_pc = pc;
+        opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface : 0U;
+
+        auto mask_pc = pc;
+        mask_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U;
 
         if (info.counts.opaque != 0) {
             detail::bind_graphics_node(context.pipeline_graph, info.opaque_pipeline, context.command_buffer,
-                                       info.samples, 0, false);
+                                       info.samples, 0, false, false);
             context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         opaque_layout);
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::prepass);
-            vkCmdPushConstants(context.command_buffer, opaque_layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
-            vkCmdDrawIndexedIndirect(context.command_buffer, info.draws.indirect.buffer, 0, info.counts.opaque,
-                                     sizeof(VkDrawIndexedIndirectCommand));
+            detail::draw_task_commands(context.command_buffer, opaque_layout, info.draws.indirect, 0,
+                                       info.counts.opaque, opaque_pc);
         }
 
         if (info.counts.mask != 0) {
             detail::bind_graphics_node(context.pipeline_graph, info.mask_pipeline, context.command_buffer, info.samples,
-                                       0, false);
+                                       0, false, false);
             context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         mask_layout);
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::prepass);
             vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
-            vkCmdPushConstants(context.command_buffer, mask_layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
-
-            auto const mask_offset =
-                    static_cast<VkDeviceSize>(info.counts.opaque) * sizeof(VkDrawIndexedIndirectCommand);
-            vkCmdDrawIndexedIndirect(context.command_buffer, info.draws.indirect.buffer, mask_offset, info.counts.mask,
-                                     sizeof(VkDrawIndexedIndirectCommand));
+            detail::draw_task_commands(context.command_buffer, mask_layout, info.draws.indirect, info.counts.opaque,
+                                       info.counts.mask, mask_pc);
         }
 
         vkCmdEndRendering(context.command_buffer);
@@ -943,7 +963,6 @@ namespace render_pass {
 
         vkCmdBeginRendering(context.command_buffer, &rendering_info);
         vkCmdBeginQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0, 0);
-        vkCmdBindIndexBuffer(context.command_buffer, info.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
         ForwardPushConstants const pc{
                 .draws_address = info.draws.draws.device_address,
@@ -957,45 +976,47 @@ namespace render_pass {
                 .ao_sampler_index = info.ao_sampler_index,
                 .screen_size_x = static_cast<float>(info.extent.width),
                 .screen_size_y = static_cast<float>(info.extent.height),
+                .cull_planes_address = info.cull_planes_address,
         };
 
+        // Opaque must cull exactly like the depth prepass's opaque draw
+        // (frustum + backface): this pass depth-tests EQUAL against it.
+        auto opaque_pc = pc;
+        opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface : 0U;
+
+        auto unculled_backface_pc = pc;
+        unculled_backface_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U;
+
         detail::bind_graphics_node(context.pipeline_graph, info.opaque_pipeline, context.command_buffer, info.samples,
-                                   1, false);
+                                   1, false, false);
         context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     opaque_layout);
-        vkCmdPushConstants(context.command_buffer, opaque_layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
 
         if (info.counts.opaque != 0) {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::main);
-            vkCmdDrawIndexedIndirect(context.command_buffer, info.draws.indirect.buffer, 0, info.counts.opaque,
-                                     sizeof(VkDrawIndexedIndirectCommand));
+            detail::draw_task_commands(context.command_buffer, opaque_layout, info.draws.indirect, 0,
+                                       info.counts.opaque, opaque_pc);
         }
 
         if (info.counts.mask != 0) {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::main);
             vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
-            auto const mask_offset =
-                    static_cast<VkDeviceSize>(info.counts.opaque) * sizeof(VkDrawIndexedIndirectCommand);
-            vkCmdDrawIndexedIndirect(context.command_buffer, info.draws.indirect.buffer, mask_offset, info.counts.mask,
-                                     sizeof(VkDrawIndexedIndirectCommand));
+            detail::draw_task_commands(context.command_buffer, opaque_layout, info.draws.indirect, info.counts.opaque,
+                                       info.counts.mask, unculled_backface_pc);
         }
 
         if (info.counts.blend != 0) {
             detail::bind_graphics_node(context.pipeline_graph, info.blend_pipeline, context.command_buffer,
-                                       info.samples, 1, true);
+                                       info.samples, 1, true, false);
             context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                         blend_layout);
-            vkCmdPushConstants(context.command_buffer, blend_layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::blend);
             vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
-
-            auto const blend_offset = static_cast<VkDeviceSize>(info.counts.opaque + info.counts.mask) *
-                                      sizeof(VkDrawIndexedIndirectCommand);
-            vkCmdDrawIndexedIndirect(context.command_buffer, info.draws.indirect.buffer, blend_offset,
-                                     info.counts.blend, sizeof(VkDrawIndexedIndirectCommand));
+            detail::draw_task_commands(context.command_buffer, blend_layout, info.draws.indirect,
+                                       info.counts.opaque + info.counts.mask, info.counts.blend, unculled_backface_pc);
         }
 
         vkCmdEndQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0);

@@ -575,6 +575,12 @@ namespace {
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
         extended_dynamic_state3_features.pNext = nullptr;
 
+        VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_query_features{};
+        mesh_shader_query_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+        mesh_shader_query_features.pNext = nullptr;
+
+        extended_dynamic_state3_features.pNext = &mesh_shader_query_features;
+
         VkPhysicalDeviceShaderObjectFeaturesEXT shader_object_features{};
         shader_object_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT;
         shader_object_features.pNext = &extended_dynamic_state3_features;
@@ -600,6 +606,8 @@ namespace {
                 supports_device_extension(context.physical_device, VK_EXT_SHADER_OBJECT_EXTENSION_NAME) &&
                 supports_device_extension(context.physical_device, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME) &&
                 supports_device_extension(context.physical_device, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+
+        context.mesh_shader_queries_supported = mesh_shader_query_features.meshShaderQueries == VK_TRUE;
 
         info("VK_EXT_shader_object support: {}",
              context.shader_objects_supported ? "yes" : "no (falling back to VkPipeline)");
@@ -704,6 +712,7 @@ namespace {
         mesh_shader_features.pNext = &vulkan14_features;
         mesh_shader_features.taskShader = VK_TRUE;
         mesh_shader_features.meshShader = VK_TRUE;
+        mesh_shader_features.meshShaderQueries = context.mesh_shader_queries_supported ? VK_TRUE : VK_FALSE;
 
         VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vertex_input_dynamic_state_features{};
         vertex_input_dynamic_state_features.sType =

@@ -1,4 +1,5 @@
 #include "assets/load_model.hxx"
+#include "assets/meshlet.hxx"
 
 #include <bit>
 #include <fastgltf/core.hpp>
@@ -1110,6 +1111,7 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
 
                     if (source_indices == nullptr) {
                         lods[level].indices = lods[level - 1].indices;
+                        lods[level].meshlets = lods[level - 1].meshlets;
                         continue;
                     }
 
@@ -1124,6 +1126,22 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                     }
 
                     lods[level].indices = *index_slice;
+
+                    // Every scene pass draws through task/mesh shaders, so
+                    // each distinct index buffer also needs its meshlet
+                    // split (see assets/meshlet.hxx).
+                    auto meshlets = create_meshlets(geometry_arena, command_buffer,
+                                                    std::span<std::uint32_t const>{*source_indices},
+                                                    std::span<CompressedModelVertex const>{compressed_vertices});
+
+                    if (!meshlets) {
+                        return std::unexpected(ModelLoadError{
+                                .type = ModelLoadErrorType::geometry_upload_failed,
+                                .cause = ErrorCause{Boxed<GeometryArenaError>{meshlets.error()}},
+                        });
+                    }
+
+                    lods[level].meshlets = *meshlets;
                 }
 
                 geometry_upload_sample.stop();

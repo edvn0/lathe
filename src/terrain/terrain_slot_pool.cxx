@@ -42,10 +42,24 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
         });
     }
 
+    // One index-order meshlet split shared by every slot -- no vertex
+    // positions exist yet to guide a spatial split, and the canonical grid's
+    // index order is already vertex-cache optimized (see terrain_chunk.cxx).
+    pool.meshlet_topology_ = build_meshlet_topology(std::span{canonical_indices}, terrain_chunk_vertex_count);
+
+    auto meshlet_data = upload_meshlet_data(mesh_sink.geometry_arena(), command_buffer, pool.meshlet_topology_);
+
+    if (pool.meshlet_topology_.meshlets.empty() || !meshlet_data) {
+        return std::unexpected(TerrainSlotPoolError{
+                .message = "terrain_slot_pool: failed to build/allocate the shared meshlet topology",
+        });
+    }
+
     // Placeholder contents for a freshly-allocated slot -- never rendered,
     // since a slot is only handed out by acquire() and only submitted by
     // TerrainWorld once write() has installed real chunk data.
     std::vector<CompressedModelVertex> const placeholder(terrain_chunk_vertex_count);
+    auto const placeholder_meshlets = compute_meshlet_bounds(pool.meshlet_topology_, placeholder);
 
     for (std::uint8_t lod = 0; lod < create_info.lod_levels; ++lod) {
         auto const [bounds_min, bounds_max] = slot_bounds(create_info, lod);
@@ -60,7 +74,26 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
                 });
             }
 
-            MeshGeometry const geometry{.vertices = *vertex_slice, .indices = *index_slice};
+            auto meshlet_slice =
+                    upload_meshlet_descriptors(mesh_sink.geometry_arena(), command_buffer, placeholder_meshlets);
+
+            if (!meshlet_slice) {
+                return std::unexpected(TerrainSlotPoolError{
+                        .message = std::format("terrain_slot_pool: failed to allocate meshlets (lod={}, slot={}): {}",
+                                               lod, slot, describe(meshlet_slice.error())),
+                });
+            }
+
+            MeshGeometry const geometry{
+                    .vertices = *vertex_slice,
+                    .indices = *index_slice,
+                    .meshlets =
+                            MeshletSlice{
+                                    .descriptors = *meshlet_slice,
+                                    .data = *meshlet_data,
+                                    .meshlet_count = static_cast<std::uint32_t>(placeholder_meshlets.size()),
+                            },
+            };
 
             SubmeshCreateInfo submesh{
                     .material = create_info.material,
@@ -79,7 +112,12 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
             }
 
             auto const slot_index = static_cast<std::uint32_t>(pool.slots_.size());
-            pool.slots_.push_back(SlotRecord{.mesh = *mesh, .vertex_bytes = vertex_slice->bytes, .lod = lod});
+            pool.slots_.push_back(SlotRecord{
+                    .mesh = *mesh,
+                    .vertex_bytes = vertex_slice->bytes,
+                    .meshlet_bytes = *meshlet_slice,
+                    .lod = lod,
+            });
             pool.free_by_lod_[lod].push_back(slot_index);
         }
     }
@@ -112,6 +150,16 @@ auto TerrainSlotPool::write(IMeshSink &mesh_sink, VkCommandBuffer command_buffer
     if (!written) {
         error("terrain_slot_pool: rewrite_slice failed for slot {} (lod={}): {}", handle.index, slot.lod,
               describe(written.error()));
+        return false;
+    }
+
+    auto const meshlets = compute_meshlet_bounds(meshlet_topology_, vertices);
+    auto meshlets_written = mesh_sink.geometry_arena().rewrite_slice(command_buffer, slot.meshlet_bytes,
+                                                                     std::as_bytes(std::span{meshlets}));
+
+    if (!meshlets_written) {
+        error("terrain_slot_pool: meshlet rewrite failed for slot {} (lod={}): {}", handle.index, slot.lod,
+              describe(meshlets_written.error()));
         return false;
     }
 

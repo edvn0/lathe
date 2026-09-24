@@ -32,6 +32,7 @@
 #include "assets/mesh_create_info.hxx"
 #include "assets/mesh_sink.hxx"
 #include "assets/mesh_storage.hxx"
+#include "assets/meshlet.hxx"
 #include "assets/model.hxx"
 #include "assets/model_sink.hxx"
 #include "assets/model_storage.hxx"
@@ -132,11 +133,17 @@ struct FrameStats {
 
 inline constexpr std::uint32_t pipeline_stat_count = 4;
 
+// Forward pass only. Scene geometry is drawn with task/mesh shaders, which
+// never touch input assembly, so there are no input-assembly counts: the
+// meshlet-level picture comes from task/mesh shader invocations instead
+// (only when VulkanContext::mesh_shader_queries_supported -- otherwise
+// mesh_stats_valid stays false).
 struct PipelineStats {
-    std::uint64_t assembled_primitive_count = 0;
     std::uint64_t clipped_primitive_count = 0;
-    std::uint64_t assembled_vertex_count = 0;
     std::uint64_t fragment_shader_invocation_count = 0;
+    std::uint64_t task_shader_invocation_count = 0;
+    std::uint64_t mesh_shader_invocation_count = 0;
+    bool mesh_stats_valid = false;
 
     bool valid = false;
 };
@@ -578,6 +585,13 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto debug_draw_light_icons() const noexcept -> bool { return debug_draw_light_icons_; }
     auto set_debug_draw_light_icons(bool enabled) noexcept -> void { debug_draw_light_icons_ = enabled; }
 
+    // Per-meshlet frustum + backface-cone culling in the task shaders (see
+    // assets/shaders/meshlet_task.slang). On by default; turning it off
+    // draws every meshlet of every instance that survived instance culling
+    // -- a debugging aid for telling culling artefacts from other bugs.
+    [[nodiscard]] auto meshlet_culling() const noexcept -> bool { return meshlet_culling_; }
+    auto set_meshlet_culling(bool enabled) noexcept -> void { meshlet_culling_ = enabled; }
+
     auto request_screenshot() noexcept -> void;
     auto mark_lights_dirty() -> void { lights_dirty_mask_ = frames_.empty() ? 0U : ((1U << frames_.size()) - 1U); }
     auto wait_idle() -> std::expected<void, RendererError>;
@@ -591,8 +605,13 @@ private:
         MaterialHandle material_override{};
     };
 
+    // Mirrors GpuDraw in assets/shaders/scene_types.slang. meshlet_address/
+    // meshlet_data_address are the batch geometry's MeshletSlice
+    // descriptors/data (see assets/meshlet.hxx).
     struct alignas(16) GpuDraw {
         VkDeviceAddress vertex_address = 0;
+        VkDeviceAddress meshlet_address = 0;
+        VkDeviceAddress meshlet_data_address = 0;
 
         std::uint32_t material_index = 0;
         std::uint32_t transform_index = 0;
@@ -600,7 +619,7 @@ private:
 
     static_assert(std::is_trivially_copyable_v<GpuDraw>);
 
-    static_assert(sizeof(GpuDraw) == 16);
+    static_assert(sizeof(GpuDraw) == 32);
 
     // Local-space AABB for one batch (mesh+submesh+material), used by the
     // GPU frustum-culling compute pass. Mirrors GpuCullBounds in
@@ -649,6 +668,10 @@ private:
     static_assert(sizeof(GpuLight) == 64);
 
     static constexpr std::uint32_t maximum_light_count = 256;
+
+    // Camera frustum + one frustum per shadow cascade, 6 planes each -- see
+    // RendererFrame::frustum_planes_buffer.
+    static constexpr std::uint32_t cull_plane_count = 6 * (1 + shadow_cascade_count);
 
     using ShadowCascadeMask = std::uint32_t;
     static constexpr ShadowCascadeMask all_shadow_cascades_mask =
@@ -703,8 +726,10 @@ private:
         std::uint32_t culled_readback_count = 0;
         bool culled_readback_pending = false;
 
-        // 6 world-space frustum planes (vec4 each), written fresh every
-        // frame in prepare_frame. Deliberately its own tiny buffer rather
+        // cull_plane_count world-space frustum planes (vec4 each), written
+        // fresh every frame in prepare_frame: the camera's 6 first (read by
+        // mainCs and the main-view task shaders), then 6 per shadow cascade
+        // (read by the shadow pass's task shader, see ShadowPassInfo). Deliberately its own tiny buffer rather
         // than a field on the shared UBO -- a Ptr<float4> array has an
         // unambiguous 16-byte stride under every struct-layout convention,
         // whereas a trailing array field on UBO would depend on exactly
@@ -768,7 +793,10 @@ private:
         std::vector<GpuDraw> draws;
         std::vector<glm::mat4> transforms;
 
-        std::vector<VkDrawIndexedIndirectCommand> indirect_commands;
+        // One GpuTaskCommand per batch, un-culled (every instance) -- the
+        // shadow pass draws these directly; mainCs culls them into
+        // culled_indirect_buffer for the main view.
+        std::vector<GpuTaskCommand> indirect_commands;
 
         // Per-batch local-space AABB + wind padding, parallel to
         // indirect_commands. culled_indirect_buffer is written entirely by
@@ -776,10 +804,10 @@ private:
         // overwrites instanceCount) -- no CPU-side seed vector is needed.
         std::vector<GpuCullBounds> batch_bounds;
 
-        // Number of VkDrawIndexedIndirectCommand entries in indirect_commands
-        // (one per unique (mesh, submesh) batch this frame) — NOT the number
-        // of GpuDraw / instance entries in `draws`. This is the value that
-        // must be passed as drawCount to vkCmdDrawIndexedIndirect.
+        // Number of GpuTaskCommand entries in indirect_commands (one per
+        // unique (mesh, submesh) batch this frame) — NOT the number of
+        // GpuDraw / instance entries in `draws`. This is the value that
+        // must be passed as drawCount to vkCmdDrawMeshTasksIndirectEXT.
         std::uint32_t indirect_command_count = 0;
 
         // indirect_commands (and therefore culled_indirect_buffer, since GPU
@@ -927,6 +955,7 @@ private:
 
     ImageHandle light_icon_texture_{};
     bool debug_draw_light_icons_ = false;
+    bool meshlet_culling_ = true;
     float light_icon_world_size_ = 0.5F;
 
     // One atlas for the renderer, not one atlas per frame in flight. Queue

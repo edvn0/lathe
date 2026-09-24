@@ -1815,16 +1815,16 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             return buf.data();
         };
 
-        auto &&[assembled_vertex_count, assembled_primitive_count, clipped_primitive_count,
-                fragment_shader_invocation_count, valid] = pipeline_stats;
-
-        if (valid) {
-            ImGui::Text("Triangles assembled (post-cull): %s (%llu)", fmt(pipeline_stats.assembled_primitive_count),
-                        static_cast<unsigned long long>(pipeline_stats.assembled_primitive_count));
+        if (pipeline_stats.valid) {
             ImGui::Text("Triangles rendered (post-clip): %s (%llu)", fmt(pipeline_stats.clipped_primitive_count),
                         static_cast<unsigned long long>(pipeline_stats.clipped_primitive_count));
-            ImGui::Text("Vertices assembled (post-cull): %s (%llu)", fmt(pipeline_stats.assembled_vertex_count),
-                        static_cast<unsigned long long>(pipeline_stats.assembled_vertex_count));
+
+            if (pipeline_stats.mesh_stats_valid) {
+                ImGui::Text("Task shader invocations: %s (%llu)", fmt(pipeline_stats.task_shader_invocation_count),
+                            static_cast<unsigned long long>(pipeline_stats.task_shader_invocation_count));
+                ImGui::Text("Mesh shader invocations: %s (%llu)", fmt(pipeline_stats.mesh_shader_invocation_count),
+                            static_cast<unsigned long long>(pipeline_stats.mesh_shader_invocation_count));
+            }
             ImGui::Text("Fragment shader invocations: %s (%llu)", fmt(pipeline_stats.fragment_shader_invocation_count),
                         static_cast<unsigned long long>(pipeline_stats.fragment_shader_invocation_count));
         } else {
@@ -1906,6 +1906,11 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         bool draw_model_bounds_debug = debug_renderer->model_bounds_debug_enabled();
         if (ImGui::Checkbox("Draw model submesh bounds", &draw_model_bounds_debug)) {
             debug_renderer->set_model_bounds_debug_enabled(draw_model_bounds_debug);
+        }
+
+        bool meshlet_culling = renderer->meshlet_culling();
+        if (ImGui::Checkbox("Meshlet culling (task shader)", &meshlet_culling)) {
+            renderer->set_meshlet_culling(meshlet_culling);
         }
 
         auto light = renderer->directional_light();

@@ -4,6 +4,7 @@ set(
     geometry_allocator.cxx
     geometry_arena.cxx
     load_model.cxx
+    meshlet.cxx
     material_storage.cxx
     mesh_storage.cxx
     model_load_profile.cxx

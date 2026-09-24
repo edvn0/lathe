@@ -1,16 +1,16 @@
 import scene_types;
 
 // GPU frustum culling: one workgroup per batch (mainCs, one thread per
-// SV_VulkanInstanceID is deliberately NOT how this works -- see below). Each
-// workgroup reads its own batch's un-culled indirect command to learn
-// [firstInstance, firstInstance + instanceCount), tests every instance in
-// that range against the camera frustum (CullPC.frustum_planes), and
-// compacts survivors back into [firstInstance, firstInstance + survivor
-// count) using an in-workgroup shared-memory prefix sum -- so the surviving
+// instance is deliberately NOT how this works -- see below). Each workgroup
+// reads its own batch's un-culled TaskCommand to learn [first_instance,
+// first_instance + instance_count), tests every instance in that range
+// against the camera frustum (CullPC.frustum_planes), and compacts
+// survivors back into [first_instance, first_instance + survivor count)
+// using an in-workgroup shared-memory prefix sum -- so the surviving
 // instances of a batch stay contiguous starting at that batch's original
-// firstInstance, which is exactly what SV_VulkanInstanceID indexing in
-// forward_geom.slang / depth_prepass.slang already expects. No changes are
-// needed in those shaders.
+// first_instance, which is what run_meshlet_task() (meshlet_task.slang)
+// expects. It then rewrites the batch's task group counts for the survivor
+// count; per-meshlet culling happens afterwards, in the task shaders.
 //
 // This replaces an earlier two-dispatch design (one thread per instance,
 // global InterlockedAdd into a per-batch atomic counter, then a second
@@ -27,7 +27,8 @@ import scene_types;
 // Only the main view (depth prepass + forward) reads the output of this
 // pass; the shadow pass keeps drawing from the un-culled buffers, since a
 // shadow caster can be outside the camera frustum while still being visible
-// in a shadow cascade.
+// in a shadow cascade -- its task shader culls meshlets against each
+// cascade's own frustum instead.
 
 static const uint WG_SIZE = 256;
 
@@ -47,15 +48,20 @@ public struct GpuCullBounds
     public float pad1;
 };
 
-// Mirrors VkDrawIndexedIndirectCommand.
-public struct IndirectCommand
+// Largest per-dimension task group count Vulkan guarantees
+// (maxTaskWorkGroupCount minimum) -- mirrors max_task_group_count_x in
+// renderer.cxx, whose task_group_counts() this matches exactly.
+static const uint max_task_group_count_x = 65535;
+
+void set_task_group_counts(inout TaskCommand command)
 {
-    public uint indexCount;
-    public uint instanceCount;
-    public uint firstIndex;
-    public int vertexOffset;
-    public uint firstInstance;
-};
+    const uint chunk_count = (command.meshlet_count + meshlets_per_task - 1) / meshlets_per_task;
+    const uint total = command.instance_count * chunk_count;
+
+    command.group_count_x = min(total, max_task_group_count_x);
+    command.group_count_y = total == 0 ? 1 : (total + command.group_count_x - 1) / command.group_count_x;
+    command.group_count_z = 1;
+}
 
 public struct CullPC
 {
@@ -63,13 +69,13 @@ public struct CullPC
     public Ptr<float4x4> src_transforms;
     public Ptr<GpuCullBounds> batch_bounds;
 
-    // Read-only: each workgroup's own [firstIndex, firstInstance,
-    // instanceCount) range to cull.
-    public Ptr<IndirectCommand> src_indirect;
+    // Read-only: each workgroup's own [first_instance, first_instance +
+    // instance_count) range to cull, plus its meshlet_count.
+    public Ptr<TaskCommand> src_indirect;
 
     // Written once per batch, by thread 0 only -- no atomics needed, since
     // each batch has exactly one workgroup and thus exactly one writer.
-    public Ptr<IndirectCommand> dst_indirect;
+    public Ptr<TaskCommand> dst_indirect;
 
     public Ptr<GpuDraw> dst_draws;
     public Ptr<float4x4> dst_transforms;
@@ -148,18 +154,18 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
         return;
     }
 
-    IndirectCommand source_command = pc.src_indirect[batch];
+    TaskCommand source_command = pc.src_indirect[batch];
     GpuCullBounds bounds = pc.batch_bounds[batch];
     uint lane = group_thread_id.x;
 
     uint running_survivors = 0;
 
-    for (uint base = 0; base < source_command.instanceCount; base += WG_SIZE) {
+    for (uint base = 0; base < source_command.instance_count; base += WG_SIZE) {
         uint local_index = base + lane;
         bool visible = false;
 
-        if (local_index < source_command.instanceCount) {
-            visible = instance_visible(pc, bounds, source_command.firstInstance + local_index);
+        if (local_index < source_command.instance_count) {
+            visible = instance_visible(pc, bounds, source_command.first_instance + local_index);
         }
 
         uint wave_exclusive = WavePrefixCountBits(visible);
@@ -190,8 +196,8 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
         uint chunk_survivor_count = s_chunk_total;
 
         if (visible) {
-            uint source_index = source_command.firstInstance + local_index;
-            uint destination_index = source_command.firstInstance + running_survivors + exclusive_scan;
+            uint source_index = source_command.first_instance + local_index;
+            uint destination_index = source_command.first_instance + running_survivors + exclusive_scan;
 
             pc.dst_draws[destination_index] = pc.src_draws[source_index];
             pc.dst_transforms[destination_index] = pc.src_transforms[source_index];
@@ -203,8 +209,9 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
     }
 
     if (lane == 0) {
-        IndirectCommand out_command = source_command;
-        out_command.instanceCount = running_survivors;
+        TaskCommand out_command = source_command;
+        out_command.instance_count = running_survivors;
+        set_task_group_counts(out_command);
         pc.dst_indirect[batch] = out_command;
     }
 }
