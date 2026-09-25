@@ -522,6 +522,10 @@ if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
             X11::X11
     )
   endif()
+
+  # imgui_internal.h trips -Wconversion (ImExponentialMovingAverage), which
+  # the -Werror CI job turns into a hard error in every TU that includes it.
+  mark_target_includes_system(imgui)
 endif()
 
 mark_target_includes_system(meshoptimizer)
