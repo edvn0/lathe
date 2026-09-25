@@ -18,8 +18,15 @@ fullscreen composite/post passes are not scene geometry and are unchanged.
   (`i0 | i1 << 8 | i2 << 16`). `Renderer::create_mesh` rejects a submesh
   whose LODs lack meshlets; `destroy_mesh` retires them with the rest of the
   geometry.
-- **Models**: built per LOD in `step_model_gpu_upload`, next to the index
-  upload. Aliased LODs alias the meshlets too.
+- **Models**: built per LOD off the render thread by
+  `prepare_primitive_gpu_data()` (`load_model.hxx`), together with vertex
+  compression -- as the last step of `finalize_primitive_cpu`, which
+  `ModelStreamer` runs per primitive on `thread_pool()`; procedural meshes
+  get it in `to_model_cpu_data()`. `step_model_gpu_upload` only uploads
+  the prebuilt `MeshletBuild`s (and warns if handed an unprepared
+  primitive, building it late as a fallback). Aliased LODs alias the
+  meshlets too. The synchronous `Renderer::load_model()` still finalizes
+  on its caller's thread, like the rest of its CPU work.
 - **Terrain**: `TerrainSlotPool` builds one index-order topology for the
   canonical chunk index buffer and shares its data range across every slot;
   each slot has its own descriptor range whose bounds are recomputed in

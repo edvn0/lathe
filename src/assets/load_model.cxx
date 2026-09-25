@@ -1,5 +1,4 @@
 #include "assets/load_model.hxx"
-#include "assets/meshlet.hxx"
 
 #include <bit>
 #include <fastgltf/core.hpp>
@@ -324,6 +323,33 @@ auto generate_mesh_lods(std::vector<ModelVertex> const &vertices, std::vector<st
     return reduced;
 }
 
+auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *profile) -> void {
+    {
+        ScopedProfileSample const compress_sample{profile != nullptr ? &profile->vertex_compression_ns : nullptr};
+
+        primitive.compressed_vertices = compress_vertices(primitive.vertices);
+    }
+
+    ScopedProfileSample const meshlet_sample{profile != nullptr ? &profile->meshlet_build_ns : nullptr};
+
+    // Same per-level index-buffer selection step_model_gpu_upload() uses:
+    // a level without its own reduced indices aliases the previous level's
+    // GPU geometry, so it gets no build of its own.
+    for (std::uint32_t level = 0; level < lod_count; ++level) {
+        auto const *source_indices = level == 0 ? &primitive.indices
+                                     : primitive.reduced_indices[level - 1].has_value()
+                                             ? &*primitive.reduced_indices[level - 1]
+                                             : nullptr;
+
+        if (source_indices == nullptr) {
+            primitive.meshlets[level].reset();
+            continue;
+        }
+
+        primitive.meshlets[level] = build_meshlets(*source_indices, primitive.compressed_vertices);
+    }
+}
+
 namespace {
 
     auto extract_primitive_cpu(fastgltf::Asset const &asset, fastgltf::Primitive const &primitive,
@@ -443,12 +469,16 @@ namespace {
             reduced_indices = generate_mesh_lods(vertices, indices);
         }
 
-        return ModelCpuPrimitive{
+        ModelCpuPrimitive finalized{
                 .vertices = std::move(vertices),
                 .indices = std::move(indices),
                 .reduced_indices = std::move(reduced_indices),
                 .material_index = raw.material_index,
         };
+
+        prepare_primitive_gpu_data(finalized, profile);
+
+        return finalized;
     }
 
     struct ImageSource {
@@ -1074,19 +1104,27 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
             }
 
             if (upload.primitive_cursor < cpu_mesh.primitives.size()) {
-                auto const &cpu_primitive = cpu_mesh.primitives[upload.primitive_cursor];
+                // Vertex compression and meshlet building already happened off
+                // the render thread (prepare_primitive_gpu_data). A primitive
+                // from a producer that skipped it still renders, but pays
+                // for it here -- loudly, so the producer gets fixed.
+                std::optional<ModelCpuPrimitive> late_prepared;
 
-                ScopedProfileSample vertex_compress_sample{profile != nullptr ? &profile->vertex_compression_ns
-                                                                              : nullptr};
+                if (cpu_mesh.primitives[upload.primitive_cursor].compressed_vertices.empty()) {
+                    warn("step_model_gpu_upload: primitive was not prepared off-thread; building its vertex/meshlet "
+                         "data on the render thread");
 
-                auto const compressed_vertices = compress_vertices(cpu_primitive.vertices);
+                    late_prepared = cpu_mesh.primitives[upload.primitive_cursor];
+                    prepare_primitive_gpu_data(*late_prepared, profile);
+                }
 
-                vertex_compress_sample.stop();
+                auto const &cpu_primitive =
+                        late_prepared.has_value() ? *late_prepared : cpu_mesh.primitives[upload.primitive_cursor];
 
                 ScopedProfileSample geometry_upload_sample{profile != nullptr ? &profile->geometry_upload_ns : nullptr};
 
                 auto vertex_slice = geometry_arena.allocate_vertices(
-                        command_buffer, std::span<CompressedModelVertex const>{compressed_vertices});
+                        command_buffer, std::span<CompressedModelVertex const>{cpu_primitive.compressed_vertices});
 
                 if (!vertex_slice) {
                     return std::unexpected(ModelLoadError{
@@ -1129,10 +1167,17 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
 
                     // Every scene pass draws through task/mesh shaders, so
                     // each distinct index buffer also needs its meshlet
-                    // split (see assets/meshlet.hxx).
-                    auto meshlets = create_meshlets(geometry_arena, command_buffer,
-                                                    std::span<std::uint32_t const>{*source_indices},
-                                                    std::span<CompressedModelVertex const>{compressed_vertices});
+                    // split (see assets/meshlet.hxx) -- prebuilt for exactly
+                    // the levels that reach this point.
+                    auto const &meshlet_build = cpu_primitive.meshlets[level];
+
+                    if (!meshlet_build.has_value()) {
+                        return std::unexpected(ModelLoadError{
+                                .type = ModelLoadErrorType::geometry_upload_failed,
+                        });
+                    }
+
+                    auto meshlets = upload_meshlets(geometry_arena, command_buffer, *meshlet_build);
 
                     if (!meshlets) {
                         return std::unexpected(ModelLoadError{

@@ -133,9 +133,23 @@ auto upload_meshlet_descriptors(GeometryArena &geometry_arena, VkCommandBuffer c
                                 std::span<GpuMeshlet const> meshlets)
         -> std::expected<GeometrySlice, GeometryArenaError>;
 
-// build_meshlet_topology + compute_meshlet_bounds + both uploads, for the
-// common case of an index buffer that belongs to exactly one vertex buffer.
+// A finished CPU-side meshlet split of one index buffer that belongs to
+// exactly one vertex buffer: topology plus bounds, ready to upload.
+struct MeshletBuild {
+    MeshletTopology topology;
+    std::vector<GpuMeshlet> meshlets;
+};
+
+// build_meshlet_topology + compute_meshlet_bounds. Pure CPU and touches no
+// shared state, so it is safe (and meant) to run on a loading thread --
+// see prepare_primitive_gpu_data() in load_model.hxx. Returns an empty
+// build for degenerate input (fewer than one triangle).
 [[nodiscard]]
-auto create_meshlets(GeometryArena &geometry_arena, VkCommandBuffer command_buffer,
-                     std::span<std::uint32_t const> indices, std::span<CompressedModelVertex const> vertices)
+auto build_meshlets(std::span<std::uint32_t const> indices, std::span<CompressedModelVertex const> vertices)
+        -> MeshletBuild;
+
+// Render-thread half: uploads a finished build's data and descriptors.
+// Fails with invalid_argument for an empty build.
+[[nodiscard]]
+auto upload_meshlets(GeometryArena &geometry_arena, VkCommandBuffer command_buffer, MeshletBuild const &build)
         -> std::expected<MeshletSlice, GeometryArenaError>;

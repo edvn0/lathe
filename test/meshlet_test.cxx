@@ -3,7 +3,9 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/packing.hpp>
 
+#include "assets/load_model.hxx"
 #include "assets/meshlet.hxx"
+#include "assets/primitive_meshes.hxx"
 #include "terrain/terrain_chunk.hxx"
 #include "terrain/terrain_mesh.hxx"
 
@@ -167,6 +169,46 @@ TEST_CASE("task group counts cover every (instance, meshlet chunk) within per-di
 
             // At most one partial row of no-op groups.
             CHECK(dispatched - needed < std::max<std::uint64_t>(command.group_count_x, 1));
+        }
+    }
+}
+
+TEST_CASE("prepare_primitive_gpu_data builds meshlets exactly for levels with their own index buffer") {
+    auto capsule = make_capsule_mesh(16, 8);
+    REQUIRE(capsule.has_value());
+
+    SUBCASE("procedural meshes arrive prepared from to_model_cpu_data") {
+        auto const cpu_data = to_model_cpu_data(*capsule);
+        auto const &primitive = cpu_data.meshes.front().primitives.front();
+
+        CHECK(primitive.compressed_vertices.size() == primitive.vertices.size());
+        REQUIRE(primitive.meshlets[0].has_value());
+        CHECK_FALSE(primitive.meshlets[0]->meshlets.empty());
+
+        for (std::size_t level = 1; level < lod_count; ++level) {
+            CHECK_FALSE(primitive.meshlets[level].has_value());
+        }
+    }
+
+    SUBCASE("reduced LODs get their own build, missing ones alias") {
+        ModelCpuPrimitive primitive{.vertices = capsule->vertices, .indices = capsule->indices};
+
+        // Every other triangle -- any valid, distinct index buffer will do.
+        std::vector<std::uint32_t> reduced;
+        for (std::size_t i = 0; i + 2 < primitive.indices.size(); i += 6) {
+            reduced.insert(reduced.end(), primitive.indices.begin() + static_cast<std::ptrdiff_t>(i),
+                           primitive.indices.begin() + static_cast<std::ptrdiff_t>(i + 3));
+        }
+        primitive.reduced_indices[0] = reduced;
+
+        prepare_primitive_gpu_data(primitive);
+
+        REQUIRE(primitive.meshlets[0].has_value());
+        REQUIRE(primitive.meshlets[1].has_value());
+        CHECK(meshlet_triangles(primitive.meshlets[1]->topology) == source_triangles(reduced));
+
+        for (std::size_t level = 2; level < lod_count; ++level) {
+            CHECK_FALSE(primitive.meshlets[level].has_value());
         }
     }
 }

@@ -164,27 +164,29 @@ auto upload_meshlet_descriptors(GeometryArena &geometry_arena, VkCommandBuffer c
     return slice->bytes;
 }
 
-auto create_meshlets(GeometryArena &geometry_arena, VkCommandBuffer command_buffer,
-                     std::span<std::uint32_t const> indices, std::span<CompressedModelVertex const> vertices)
-        -> std::expected<MeshletSlice, GeometryArenaError> {
-    auto const topology = build_meshlet_topology(indices, vertices.size(), vertices);
+auto build_meshlets(std::span<std::uint32_t const> indices, std::span<CompressedModelVertex const> vertices)
+        -> MeshletBuild {
+    MeshletBuild build{.topology = build_meshlet_topology(indices, vertices.size(), vertices), .meshlets = {}};
+    build.meshlets = compute_meshlet_bounds(build.topology, vertices);
+    return build;
+}
 
-    if (topology.meshlets.empty()) {
+auto upload_meshlets(GeometryArena &geometry_arena, VkCommandBuffer command_buffer, MeshletBuild const &build)
+        -> std::expected<MeshletSlice, GeometryArenaError> {
+    if (build.meshlets.empty()) {
         return std::unexpected(GeometryArenaError{
                 .type = GeometryArenaErrorType::invalid_argument,
                 .cause = std::nullopt,
         });
     }
 
-    auto const descriptors = compute_meshlet_bounds(topology, vertices);
-
-    auto data = upload_meshlet_data(geometry_arena, command_buffer, topology);
+    auto data = upload_meshlet_data(geometry_arena, command_buffer, build.topology);
 
     if (!data) {
         return std::unexpected(data.error());
     }
 
-    auto descriptor_slice = upload_meshlet_descriptors(geometry_arena, command_buffer, descriptors);
+    auto descriptor_slice = upload_meshlet_descriptors(geometry_arena, command_buffer, build.meshlets);
 
     if (!descriptor_slice) {
         geometry_arena.retire(*data);
@@ -194,6 +196,6 @@ auto create_meshlets(GeometryArena &geometry_arena, VkCommandBuffer command_buff
     return MeshletSlice{
             .descriptors = *descriptor_slice,
             .data = *data,
-            .meshlet_count = static_cast<std::uint32_t>(descriptors.size()),
+            .meshlet_count = static_cast<std::uint32_t>(build.meshlets.size()),
     };
 }
