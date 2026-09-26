@@ -7,6 +7,7 @@
 add_library(
     engine_scene
     STATIC
+        camera_path.cxx
         editor_camera.cxx
 )
 

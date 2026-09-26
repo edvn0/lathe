@@ -56,6 +56,12 @@ struct VulkanContext {
     bool calibrated_timestamps_supported = false;
     bool host_calibrated_timestamps_supported = false;
 
+    // VkPhysicalDeviceMeshShaderFeaturesEXT::meshShaderQueries -- lets the
+    // renderer's pipeline-statistics query count task/mesh shader
+    // invocations (meshlets tested/drawn). Optional; decided at device
+    // selection.
+    bool mesh_shader_queries_supported = false;
+
     HostQueryContext host_query_context{};
 
     VkQueue graphics_queue = VK_NULL_HANDLE;

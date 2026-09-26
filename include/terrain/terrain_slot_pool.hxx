@@ -14,6 +14,7 @@
 #include "assets/load_model.hxx"
 #include "assets/material.hxx"
 #include "assets/mesh_sink.hxx"
+#include "assets/meshlet.hxx"
 #include "assets/model.hxx"
 #include "terrain/terrain_chunk.hxx"
 #include "terrain/terrain_quadtree.hxx"
@@ -103,6 +104,11 @@ private:
     struct SlotRecord {
         MeshHandle mesh{};
         GeometrySlice vertex_bytes{};
+
+        // This slot's own GpuMeshlet array -- the meshlet topology (and its
+        // data slice) is shared by every slot, but the bounds depend on the
+        // vertex heights, so write() rewrites these alongside the vertices.
+        GeometrySlice meshlet_bytes{};
         std::uint8_t lod = 0;
     };
 
@@ -115,4 +121,7 @@ private:
     std::vector<std::vector<std::uint32_t>> free_by_lod_{}; // indices into slots_, one free-list per LOD
     std::vector<RetiringSlot> retiring_{};
     std::uint32_t slots_per_lod_ = 0;
+
+    // Meshlet split of terrain_chunk_indices(), built once in create().
+    MeshletTopology meshlet_topology_{};
 };

@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {
@@ -95,6 +96,25 @@ auto EditorCamera::on_mouse_moved(float delta_x, float delta_y, bool dragging) n
 
 auto EditorCamera::on_mouse_scrolled(float delta_y) noexcept -> void {
     move_speed_ = std::clamp(move_speed_ * (1.0F + delta_y * 0.1F), min_move_speed_, max_move_speed_);
+}
+
+auto EditorCamera::look_at(glm::vec3 const &position, glm::vec3 const &target) noexcept -> void {
+    position_ = position;
+
+    auto const offset = target - position;
+    auto const length = glm::length(offset);
+
+    if (length <= 0.0F) {
+        return;
+    }
+
+    // Inverse of compute_basis(): forward = (cos p cos y, sin p, cos p sin y).
+    auto const direction = offset / length;
+    yaw_degrees_ = glm::degrees(std::atan2(direction.z, direction.x));
+    pitch_degrees_ = std::clamp(glm::degrees(std::asin(std::clamp(direction.y, -1.0F, 1.0F))), -pitch_limit_degrees,
+                                pitch_limit_degrees);
+
+    rebuild_basis();
 }
 
 auto EditorCamera::rebuild_basis() noexcept -> void {

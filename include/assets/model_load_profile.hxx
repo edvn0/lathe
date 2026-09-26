@@ -35,11 +35,12 @@ struct ModelLoadProfile {
     ProfileNanos primitive_extract_ns{0}; // load_primitive_cpu: reading vertex/index accessors
     ProfileNanos tangent_generation_ns{0}; // generate_tangents: MikkTSpace + weld/optimize
     ProfileNanos lod_generation_ns{0}; // generate_mesh_lods: meshopt_simplify per level
+    ProfileNanos vertex_compression_ns{0}; // prepare_primitive_gpu_data: compress_vertices
+    ProfileNanos meshlet_build_ns{0}; // prepare_primitive_gpu_data: build_meshlets per LOD
 
     // ---- GPU upload (step_model_gpu_upload, render thread, spread across frames) ----
     ProfileNanos material_creation_ns{0}; // to_gpu_material + MaterialStorage::create_material
-    ProfileNanos vertex_compression_ns{0}; // compress_vertices
-    ProfileNanos geometry_upload_ns{0}; // GeometryArena::allocate_vertices/allocate_indices
+    ProfileNanos geometry_upload_ns{0}; // GeometryArena vertex/index/meshlet uploads
     std::atomic<std::uint32_t> gpu_upload_frames{0}; // how many process_ready() calls it took
 
     // ---- Texture pipeline (thread_pool workers, one job per texture, concurrent) ----

@@ -76,7 +76,11 @@ namespace {
             return;
         }
 
-        auto const path = std::format("screenshots/screenshot_{}.png", make_timestamp());
+        // The counter keeps several screenshots within one second (the
+        // benchmark's keyframe captures) from overwriting each other.
+        static std::atomic<std::uint32_t> sequence{0};
+        auto const path = std::format("screenshots/screenshot_{}_{:03}.png", make_timestamp(),
+                                      sequence.fetch_add(1, std::memory_order_relaxed));
 
         auto const row_pitch = static_cast<int>(extent.width) * 4;
 
@@ -101,6 +105,11 @@ auto ScreenshotCapture::close() noexcept -> void {
         return std::ranges::all_of(
                 slots_, [](auto const &slot) { return !slot || !slot->cpu_busy.load(std::memory_order_seq_cst); });
     });
+
+    // Free the readback buffers now, while the VMA allocator is still alive:
+    // Renderer::destroy() calls this before the device goes away, but the
+    // ScreenshotCapture itself only dies with the Renderer, after it.
+    slots_.clear();
 }
 
 auto ScreenshotCapture::get_or_create_slot(std::uint32_t frame_index) -> ReadbackSlot & {

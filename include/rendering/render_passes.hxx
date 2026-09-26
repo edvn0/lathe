@@ -38,10 +38,14 @@ namespace render_pass {
         VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
     };
 
+    // `indirect` holds one GpuDrawCommand (assets/meshlet.hxx) per batch,
+    // partitioned opaque | mask | blend like DrawCounts. `index_buffer` is
+    // the geometry arena's, read by the instanced half of those commands.
     struct DrawBuffers {
         Buffer const &draws;
         Buffer const &transforms;
         Buffer const &indirect;
+        VkBuffer index_buffer = VK_NULL_HANDLE;
     };
 
     struct DrawCounts {
@@ -63,13 +67,21 @@ namespace render_pass {
         std::uint32_t update_mask = (1U << shadow_cascade_count) - 1U;
         bool preserve_contents = false;
 
-        VkBuffer index_buffer = VK_NULL_HANDLE;
+        bool meshlet_culling = true;
+
+        // First of the 6-planes-per-cascade blocks (cascade 0's left plane)
+        // -- the task shader offsets by cascade_index * 6 from here.
+        VkDeviceAddress cascade_cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
 
+        // Task/mesh pipelines and their instanced vertex-shader twins
+        // (see uses_meshlet_path() in assets/meshlet.hxx).
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle mask_pipeline{};
+        PipelineNodeHandle opaque_instanced_pipeline{};
+        PipelineNodeHandle mask_instanced_pipeline{};
 
         float depth_bias_constant = -1.0F;
         float depth_bias_slope = -2.5F;
@@ -91,13 +103,22 @@ namespace render_pass {
         DrawBuffers draws;
         DrawCounts counts;
 
-        VkBuffer index_buffer = VK_NULL_HANDLE;
+        // The camera's 6 world-space frustum planes, for meshlet culling.
+        VkDeviceAddress cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
 
+        // Task/mesh pipelines and their instanced vertex-shader twins
+        // (see uses_meshlet_path() in assets/meshlet.hxx).
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle mask_pipeline{};
+        PipelineNodeHandle opaque_instanced_pipeline{};
+        PipelineNodeHandle mask_instanced_pipeline{};
+
+        // Must match ForwardGeometryInfo::meshlet_culling: forward depth
+        // tests EQUAL against what this pass wrote.
+        bool meshlet_culling = true;
     };
 
     // GTAO: horizon-based screen-space ambient occlusion computed entirely
@@ -148,7 +169,8 @@ namespace render_pass {
         DrawBuffers draws;
         DrawCounts counts;
 
-        VkBuffer index_buffer = VK_NULL_HANDLE;
+        // The camera's 6 world-space frustum planes, for meshlet culling.
+        VkDeviceAddress cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
@@ -156,8 +178,14 @@ namespace render_pass {
 
         VkQueryPool pipeline_statistics_query_pool = VK_NULL_HANDLE;
 
+        bool meshlet_culling = true;
+
+        // Task/mesh pipelines and their instanced vertex-shader twins
+        // (see uses_meshlet_path() in assets/meshlet.hxx).
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle blend_pipeline{};
+        PipelineNodeHandle opaque_instanced_pipeline{};
+        PipelineNodeHandle blend_instanced_pipeline{};
 
         bool draw_light_icons = false;
         PipelineNodeHandle light_icon_pipeline{};

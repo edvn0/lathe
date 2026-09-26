@@ -385,12 +385,18 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
 auto to_model_cpu_data(PrimitiveMeshData mesh) -> ModelCpuData {
     ModelCpuData cpu_data;
 
+    ModelCpuPrimitive primitive{
+            .vertices = std::move(mesh.vertices),
+            .indices = std::move(mesh.indices),
+            .material_index = std::nullopt,
+    };
+
+    // Procedural meshes never go through finalize_primitive_cpu(), so the
+    // GPU-ready data is built here, on whichever thread generated the mesh.
+    prepare_primitive_gpu_data(primitive);
+
     cpu_data.meshes.push_back(ModelCpuMesh{
-            .primitives = {ModelCpuPrimitive{
-                    .vertices = std::move(mesh.vertices),
-                    .indices = std::move(mesh.indices),
-                    .material_index = std::nullopt,
-            }},
+            .primitives = {std::move(primitive)},
     });
 
     cpu_data.nodes.push_back(ModelNode{

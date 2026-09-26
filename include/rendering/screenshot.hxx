@@ -62,6 +62,8 @@ public:
     // mapped memory is temporarily handed to a background worker.
     auto try_resolve(std::uint32_t frame_index) -> void;
 
+    // Waits for in-flight PNG writes, then frees every readback buffer --
+    // must run while the device/allocator is still alive.
     auto close() noexcept -> void;
 
 private:

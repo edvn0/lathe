@@ -3,10 +3,12 @@
 #include <glm/mat4x4.hpp>
 
 #include <optional>
+#include <vector>
 
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx" // Components::Meta/GeneratedMeta
 #include "rendering/scene.hxx" // clone_registry<>()
+#include "scene/camera_path.hxx"
 #include "scene/components.hxx"
 #include "scene/input_events.hxx"
 #include "terrain/terrain_world.hxx"
@@ -103,6 +105,14 @@ public:
         (void) renderer;
         return std::nullopt;
     }
+
+    // The closed loop --benchmark flies the editor camera around (see
+    // app/benchmark.hxx and sample_camera_path()). Should cover what the
+    // game's scene actually stresses -- dense foliage up close, wide
+    // overviews, occluded interiors -- since every perf comparison between
+    // two builds is taken along exactly this path. Empty (the default)
+    // means the game has no benchmark, and --benchmark fails at startup.
+    [[nodiscard]] virtual auto benchmark_camera_path() const -> std::vector<CameraKeyframe> { return {}; }
 
     [[nodiscard]] virtual auto camera(Scene const &scene, float aspect_ratio) const -> CameraParams = 0;
 

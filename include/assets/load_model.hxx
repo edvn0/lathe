@@ -24,6 +24,7 @@
 #include "assets/geometry.hxx"
 #include "assets/geometry_arena.hxx"
 #include "assets/material.hxx"
+#include "assets/meshlet.hxx"
 #include "assets/model_load_profile.hxx"
 #include "gpu/model_vertex.hxx"
 #include "gpu/sampler.hxx"
@@ -157,6 +158,16 @@ struct ModelCpuPrimitive {
 
     std::optional<std::uint32_t> material_index;
 
+    // GPU-ready derived data, filled by prepare_primitive_gpu_data() off the
+    // render thread so step_model_gpu_upload() only has to copy:
+    // `compressed_vertices` is `vertices` packed for the GPU, and
+    // meshlets[level] is the meshlet split of that level's index buffer
+    // (indices for level 0, reduced_indices[level - 1] otherwise) --
+    // nullopt exactly where the level has no index buffer of its own and
+    // the upload aliases the previous level.
+    std::vector<CompressedModelVertex> compressed_vertices;
+    std::array<std::optional<MeshletBuild>, lod_count> meshlets{};
+
     // Transient: true if the glTF primitive already carried a TANGENT
     // accessor. Only meaningful between extract_primitive_cpu() and
     // finalize_primitive_cpu() -- see load_model_cpu_unfinalized() and
@@ -195,6 +206,14 @@ auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint
 // can't reduce that level's index count at all.
 auto generate_mesh_lods(std::vector<ModelVertex> const &vertices, std::vector<std::uint32_t> const &indices)
         -> std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1>;
+
+// Fills `primitive.compressed_vertices` and `primitive.meshlets` from its
+// final vertices/indices/reduced_indices. Pure CPU: runs as the last step
+// of per-primitive finalization on thread_pool() (see
+// ModelPrimitiveFinalization), and from to_model_cpu_data() for procedural
+// meshes. `profile`, when non-null, gets vertex_compression_ns and
+// meshlet_build_ns.
+auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *profile = nullptr) -> void;
 
 // `profile`, when non-null, gets the CPU-parse section of its timing
 // breakdown filled in (see ModelLoadProfile) and is copied into the

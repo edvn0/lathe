@@ -2,9 +2,74 @@ module scene_types;
 
 public static const uint shadow_cascade_count = 4;
 
+// Meshlet limits -- mirror meshlet_max_vertices/meshlet_max_triangles/
+// meshlets_per_task in include/assets/meshlet.hxx. The mesh shaders size
+// their output arrays from these.
+public static const uint meshlet_max_vertices = 64;
+public static const uint meshlet_max_triangles = 124;
+
+// Task workgroup size: one lane culls one meshlet.
+public static const uint meshlets_per_task = 32;
+
+// Mesh workgroup size: lanes stride over a meshlet's vertices/triangles.
+public static const uint mesh_group_size = 32;
+
+// One meshlet. Mirrors GpuMeshlet in include/assets/meshlet.hxx. Bounds are
+// local space; cone_cutoff >= 1 disables cone (backface) culling for it.
+// vertex_offset/triangle_offset index GpuDraw::meshlet_data (uint units).
+public struct Meshlet
+{
+    public float3 centre;
+    public float radius;
+    public float3 cone_axis;
+    public float cone_cutoff;
+    public uint vertex_offset;
+    public uint triangle_offset;
+    public uint vertex_count;
+    public uint triangle_count;
+};
+
+// One batch's indirect draw in both forms -- a
+// VkDrawMeshTasksIndirectCommandEXT at offset 0 and a
+// VkDrawIndexedIndirectCommand at offset 12 -- of which each batch uses
+// one and zeroes the other (index_count 0 for meshlet batches,
+// meshlet_count 0 and so zero task groups for instanced ones; see
+// uses_meshlet_path() in include/assets/meshlet.hxx). Mirrors
+// GpuDrawCommand there.
+//
+// A meshlet batch needs instance_count * ceil(meshlet_count /
+// meshlets_per_task) task groups, spread over X and Y (see
+// set_task_group_counts()) so neither dimension exceeds the guaranteed
+// 65535 minimum of maxTaskWorkGroupCount; groups past that total are no-ops.
+public struct DrawCommand
+{
+    public uint group_count_x;
+    public uint group_count_y;
+    public uint group_count_z;
+
+    public uint index_count;
+    public uint instance_count;
+    public uint first_index;
+    public int vertex_offset;
+    public uint first_instance;
+
+    public uint meshlet_count;
+    public uint _pad0;
+};
+
+// PC::cull_flags bits.
+public static const uint cull_frustum_bit = 1u;
+// Normal-cone culling of backfacing meshlets -- only valid for passes that
+// also rasterize with back-face culling (opaque prepass/forward), and must
+// be identical between the prepass and forward pass: forward depth-tests
+// EQUAL against the prepass.
+public static const uint cull_backface_bit = 2u;
+
 public struct GpuDraw
 {
     public Ptr<CompressedVertex> vertex_address;
+    public Ptr<Meshlet> meshlets;
+    public Ptr<uint> meshlet_data;
 
     public uint material_index;
     public uint transform_index;
@@ -152,6 +217,15 @@ public struct PC
     public uint ao_texture_index;
     public uint ao_sampler_index;
     public float2 screen_size;
+
+    // Meshlet task-shader inputs (see meshlet_task.slang): the indirect
+    // commands this draw was issued from (indexed by SV_DrawIndex), the
+    // world-space planes to cull against (6 per view -- ShadowPC indexes
+    // cascade_index * 6 into it), and which culling tests are enabled.
+    public Ptr<DrawCommand> task_commands;
+    public Ptr<float4> cull_planes;
+    public uint cull_flags;
+    public uint cull_padding;
 };
 
 public struct ShadowPC

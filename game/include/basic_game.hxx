@@ -36,6 +36,8 @@ public:
 
     [[nodiscard]] auto terrain_create_info(Renderer &renderer) -> std::optional<TerrainWorldCreateInfo> override;
 
+    [[nodiscard]] auto benchmark_camera_path() const -> std::vector<CameraKeyframe> override;
+
     auto clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void override;
 
 private:

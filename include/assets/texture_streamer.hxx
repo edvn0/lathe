@@ -49,6 +49,10 @@ public:
     // streamer's requests point into.
     auto wait_all() -> void;
 
+    // Requests still decoding in the background (not yet promoted by
+    // process_ready()).
+    [[nodiscard]] auto pending_count() const noexcept -> std::size_t { return pending_.size(); }
+
 private:
     struct PendingRequest {
         ImageHandle handle;

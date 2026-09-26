@@ -236,15 +236,15 @@ endmacro()
 
 add_shader_push_constant(
     forward_geom.slang
-    mainVs
-    vertex
+    main_task
+    amplification
     ForwardPushConstants
 )
 
 add_shader_push_constant(
     shadow_depth.slang
-    mainVs
-    vertex
+    main_task
+    amplification
     ShadowPushConstants
 )
 
