@@ -37,6 +37,17 @@ VertexOutput shadow_vertex(ShadowPC pc, GpuDraw draw, float4x4 model, float wind
     return output;
 }
 
+// Instanced path for batches too small for meshlets (see
+// uses_meshlet_path() in include/assets/meshlet.hxx) -- same vertex
+// function as main_mesh, so both paths produce identical positions.
+[shader("vertex")]
+VertexOutput mainVs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform ShadowPC pc)
+{
+    const GpuDraw draw = pc.base.draws[instance_index];
+    const float wind_strength = pc.base.materials[draw.material_index].wind_strength;
+    return shadow_vertex(pc, draw, pc.base.transforms[instance_index], wind_strength, vertex_id);
+}
+
 [shader("mesh")]
 [numthreads(mesh_group_size, 1, 1)]
 [outputtopology("triangle")]
@@ -61,8 +72,8 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
     }
 }
 
-// Only used by shadow_mask_pipeline_ -- the opaque shadow PSO stays
-// vertex-only (no mainFs) to preserve early-Z / cheap depth-only rendering.
+// Only used by shadow_mask_pipeline_ and its instanced twin -- the opaque shadow
+// PSOs have no mainFs, to preserve early-Z / cheap depth-only rendering.
 [shader("fragment")]
 void mainFs(VertexOutput input, uniform ShadowPC pc)
 {

@@ -48,25 +48,50 @@ struct GpuMeshlet {
 static_assert(sizeof(GpuMeshlet) == 48);
 static_assert(std::is_trivially_copyable_v<GpuMeshlet>);
 
-// One batch's vkCmdDrawMeshTasksIndirectEXT command. Vulkan only reads the
-// three group counts; the rest rides along because draws are issued with
-// stride sizeof(GpuTaskCommand) and the task shader reads its own entry
-// (via SV_DrawIndex) to map a task group back to an (instance, meshlet
-// chunk) pair. Mirrors TaskCommand in assets/shaders/scene_types.slang.
-struct GpuTaskCommand {
+// A mesh whose split has fewer meshlets than this is drawn with plain
+// instanced vkCmdDrawIndexedIndirect instead of task/mesh shaders. One task
+// workgroup covers (instance, up to meshlets_per_task meshlets), so for a
+// small mesh -- a grass clump is ~4 meshlets, drawn ~20K times -- most task
+// lanes idle and every instance pays a task + mesh workgroup launch for
+// culling that saves next to nothing. Big meshes (terrain chunks, loaded
+// models) are where per-meshlet culling pays off.
+inline constexpr std::uint32_t min_meshlets_for_task_path = meshlets_per_task;
+
+[[nodiscard]] constexpr auto uses_meshlet_path(std::uint32_t meshlet_count) noexcept -> bool {
+    return meshlet_count >= min_meshlets_for_task_path;
+}
+
+// One batch's indirect draw, in both forms: every scene pass issues a
+// vkCmdDrawMeshTasksIndirectEXT at offset 0 AND a vkCmdDrawIndexedIndirect
+// at offset 12 over the same commands (stride sizeof(GpuDrawCommand)), and
+// each batch zeroes the half it doesn't use -- meshlet batches have
+// index_count 0, instanced batches meshlet_count 0 (so zero task groups).
+// instance_count/first_instance are shared: mainCs culls them once for
+// both. meshlet_count rides along for the task shader, which reads its own
+// entry via SV_DrawIndex. Mirrors DrawCommand in
+// assets/shaders/scene_types.slang.
+struct GpuDrawCommand {
+    // VkDrawMeshTasksIndirectCommandEXT
     std::uint32_t group_count_x = 0;
     std::uint32_t group_count_y = 1;
     std::uint32_t group_count_z = 1;
-    std::uint32_t first_instance = 0;
+
+    // VkDrawIndexedIndirectCommand
+    std::uint32_t index_count = 0;
     std::uint32_t instance_count = 0;
+    std::uint32_t first_index = 0;
+    std::int32_t vertex_offset = 0;
+    std::uint32_t first_instance = 0;
+
     std::uint32_t meshlet_count = 0;
     std::uint32_t _pad0 = 0;
-    std::uint32_t _pad1 = 0;
 };
 
-static_assert(sizeof(GpuTaskCommand) == 32);
-static_assert(offsetof(GpuTaskCommand, instance_count) == 16);
-static_assert(std::is_trivially_copyable_v<GpuTaskCommand>);
+inline constexpr std::size_t indexed_command_offset = 12;
+
+static_assert(sizeof(GpuDrawCommand) == 40);
+static_assert(offsetof(GpuDrawCommand, index_count) == indexed_command_offset);
+static_assert(std::is_trivially_copyable_v<GpuDrawCommand>);
 
 // Largest per-dimension task group count Vulkan guarantees
 // (maxTaskWorkGroupCount's required minimum). Mirrors
@@ -77,7 +102,7 @@ inline constexpr std::uint32_t max_task_group_count_x = 65535;
 // groups over X and Y. Must match set_task_group_counts() in
 // frustum_cull.slang -- the shadow pass draws CPU-built commands, the main
 // view GPU-culled ones, and run_meshlet_task() decodes both the same way.
-constexpr auto set_task_group_counts(GpuTaskCommand &command) noexcept -> void {
+constexpr auto set_task_group_counts(GpuDrawCommand &command) noexcept -> void {
     auto const chunk_count = (command.meshlet_count + meshlets_per_task - 1) / meshlets_per_task;
     auto const total = command.instance_count * chunk_count;
 

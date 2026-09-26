@@ -70,13 +70,13 @@ namespace {
         ~FinalAction() { action(); }
     };
 
-    // GpuTaskCommand's leading three fields are read by Vulkan itself as a
+    // GpuDrawCommand's leading three fields are read by Vulkan itself as a
     // VkDrawMeshTasksIndirectCommandEXT (the rest is task-shader payload,
     // see assets/meshlet.hxx) -- pin that prefix explicitly.
     static_assert(sizeof(VkDrawMeshTasksIndirectCommandEXT) == 12);
-    static_assert(offsetof(GpuTaskCommand, group_count_x) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountX));
-    static_assert(offsetof(GpuTaskCommand, group_count_y) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountY));
-    static_assert(offsetof(GpuTaskCommand, group_count_z) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountZ));
+    static_assert(offsetof(GpuDrawCommand, group_count_x) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountX));
+    static_assert(offsetof(GpuDrawCommand, group_count_y) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountY));
+    static_assert(offsetof(GpuDrawCommand, group_count_z) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountZ));
 } // namespace
 
 namespace {
@@ -318,7 +318,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     // Every scene-geometry pipeline (forward, shadow, depth prepass and their
     // mask/blend variants) is task + mesh (+ fragment): meshlets are culled
     // per instance in main_task (see assets/shaders/meshlet_task.slang) and
-    // expanded in main_mesh. There is no vertex-shader geometry path left.
+    // expanded in main_mesh. Each also gets an instanced vertex-shader twin
+    // (registered after the rest) for batches too small for meshlets.
     //
     // Registers every startup pipeline in one batched, parallel call rather
     // than 9 sequential register_pipeline() calls -- see
@@ -684,6 +685,28 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.gtao_denoise_pipeline",
     }); // index 12: gtao_denoise
 
+    // Instanced twins of the scene-geometry pipelines (indices 13..18):
+    // identical, except main_task + main_mesh become mainVs. Batches too
+    // small for meshlets draw through these -- see uses_meshlet_path() in
+    // assets/meshlet.hxx.
+    for (std::size_t const meshlet_index: {0U, 1U, 3U, 4U, 5U, 6U}) {
+        auto instanced = pipeline_infos[meshlet_index];
+
+        std::erase_if(instanced.stages, [](renderer::ShaderCompileRequest const &stage) {
+            return stage.stage == renderer::ShaderStage::task;
+        });
+
+        for (auto &stage: instanced.stages) {
+            if (stage.stage == renderer::ShaderStage::mesh) {
+                stage.stage = renderer::ShaderStage::vertex;
+                stage.entry_point = "mainVs";
+            }
+        }
+
+        instanced.debug_name += "_instanced";
+        pipeline_infos.push_back(std::move(instanced));
+    }
+
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
@@ -712,6 +735,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     bloom_upsample_pipeline_ = *registered_pipelines[10];
     gtao_pipeline_ = *registered_pipelines[11];
     gtao_denoise_pipeline_ = *registered_pipelines[12];
+    forward_instanced_pipeline_ = *registered_pipelines[13];
+    forward_blend_instanced_pipeline_ = *registered_pipelines[14];
+    shadow_instanced_pipeline_ = *registered_pipelines[15];
+    shadow_mask_instanced_pipeline_ = *registered_pipelines[16];
+    depth_prepass_instanced_pipeline_ = *registered_pipelines[17];
+    depth_prepass_mask_instanced_pipeline_ = *registered_pipelines[18];
 
     {
         auto light_icon_image = DecodedImage::load_from_file("assets/textures/light_bulb.png");
@@ -812,7 +841,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     model_submissions_.reserve(maximum_submission_count_);
     auto draw_size_result = checked_multiply(sizeof(GpuDraw), maximum_draw_count_);
     auto transform_size_result = checked_multiply(sizeof(glm::mat4), maximum_submission_count_);
-    auto indirect_size_result = checked_multiply(sizeof(GpuTaskCommand), maximum_draw_count_);
+    auto indirect_size_result = checked_multiply(sizeof(GpuDrawCommand), maximum_draw_count_);
     auto batch_bounds_size_result = checked_multiply(sizeof(GpuCullBounds), maximum_draw_count_);
 
     if (!draw_size_result || !transform_size_result || !indirect_size_result || !batch_bounds_size_result) {
@@ -2238,11 +2267,31 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
         // Un-culled command (every instance) -- drawn as-is by the shadow
         // pass, and the source mainCs culls into culled_indirect_buffer.
-        GpuTaskCommand command{
-                .first_instance = first_instance,
+        // Exactly one of its two halves is live, see uses_meshlet_path().
+        GpuDrawCommand command{
                 .instance_count = instance_count,
-                .meshlet_count = geometry.meshlets.meshlet_count,
+                .first_instance = first_instance,
         };
+
+        if (uses_meshlet_path(geometry.meshlets.meshlet_count)) {
+            command.meshlet_count = geometry.meshlets.meshlet_count;
+        } else {
+            auto const stride = index_stride(geometry.indices.index_type);
+            if (!stride) {
+                clear_submissions();
+                return std::unexpected(stride.error());
+            }
+
+            auto const first_index_u64 = geometry.indices.bytes.offset / *stride;
+            if (first_index_u64 > std::numeric_limits<std::uint32_t>::max()) {
+                clear_submissions();
+                return std::unexpected(make_error(RendererErrorType::size_overflow));
+            }
+
+            command.index_count = geometry.indices.index_count;
+            command.first_index = static_cast<std::uint32_t>(first_index_u64);
+        }
+
         set_task_group_counts(command);
         frame.indirect_commands.push_back(command);
 
@@ -2694,8 +2743,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                             .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask =
-                                    VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                            VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                                            VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
                             .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
                             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -2707,8 +2757,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                             .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask =
-                                    VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                            VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                                            VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
                             .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
                             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -2757,7 +2808,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
             vkCmdPipelineBarrier2(command_buffer, &dependency_info);
 
-            auto const readback_size = static_cast<VkDeviceSize>(frame.indirect_command_count) * sizeof(GpuTaskCommand);
+            auto const readback_size = static_cast<VkDeviceSize>(frame.indirect_command_count) * sizeof(GpuDrawCommand);
 
             if (!frame.culled_readback_buffer.valid() ||
                 frame.culled_readback_capacity < frame.indirect_command_count) {
@@ -2765,7 +2816,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
                 auto readback = Buffer::create(
                         context_, BufferCreateInfo{
-                                          .size = static_cast<VkDeviceSize>(capacity) * sizeof(GpuTaskCommand),
+                                          .size = static_cast<VkDeviceSize>(capacity) * sizeof(GpuDrawCommand),
                                           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                           .memory = BufferMemory::readback,
                                           .debug_name = "renderer.culled_readback",
@@ -2918,10 +2969,10 @@ template<typename OverlayPolicy>
         frame.culled_readback_pending = false;
 
         if (auto invalidated = frame.culled_readback_buffer.invalidate(
-                    0, static_cast<VkDeviceSize>(frame.culled_readback_count) * sizeof(GpuTaskCommand));
+                    0, static_cast<VkDeviceSize>(frame.culled_readback_count) * sizeof(GpuDrawCommand));
             !invalidated) {
             error("[Renderer] Failed to invalidate culled-indirect readback buffer");
-        } else if (auto const *commands = frame.culled_readback_buffer.mapped_data_as<GpuTaskCommand const>();
+        } else if (auto const *commands = frame.culled_readback_buffer.mapped_data_as<GpuDrawCommand const>();
                    commands != nullptr) {
             std::uint32_t visible_instance_count = 0;
 
@@ -2971,6 +3022,7 @@ template<typename OverlayPolicy>
             .draws = frame.visible_draw_buffer,
             .transforms = frame.visible_transform_buffer,
             .indirect = frame.culled_indirect_buffer,
+            .index_buffer = geometry_arena_.bindable_buffer(),
     };
 
     auto const main_view_counts = render_pass::DrawCounts{
@@ -2990,6 +3042,7 @@ template<typename OverlayPolicy>
                                                       .draws = frame.draw_buffer,
                                                       .transforms = frame.transform_buffer,
                                                       .indirect = frame.indirect_buffer,
+                                                      .index_buffer = geometry_arena_.bindable_buffer(),
                                               },
                                       .counts =
                                               {
@@ -3009,6 +3062,8 @@ template<typename OverlayPolicy>
                                       .lights_address = frame.lights_buffer.device_address,
                                       .opaque_pipeline = shadow_pipeline_,
                                       .mask_pipeline = shadow_mask_pipeline_,
+                                      .opaque_instanced_pipeline = shadow_instanced_pipeline_,
+                                      .mask_instanced_pipeline = shadow_mask_instanced_pipeline_,
                                       .depth_bias_constant = shadow_settings_.depth_bias_constant,
                                       .depth_bias_slope = shadow_settings_.depth_bias_slope,
                               });
@@ -3061,6 +3116,8 @@ template<typename OverlayPolicy>
                         .lights_address = frame.lights_buffer.device_address,
                         .opaque_pipeline = depth_prepass_pipeline_,
                         .mask_pipeline = depth_prepass_mask_pipeline_,
+                        .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
+                        .mask_instanced_pipeline = depth_prepass_mask_instanced_pipeline_,
                         .meshlet_culling = meshlet_culling_,
                 });
 
@@ -3133,6 +3190,8 @@ template<typename OverlayPolicy>
                         .meshlet_culling = meshlet_culling_,
                         .opaque_pipeline = forward_pipeline_,
                         .blend_pipeline = forward_blend_pipeline_,
+                        .opaque_instanced_pipeline = forward_instanced_pipeline_,
+                        .blend_instanced_pipeline = forward_blend_instanced_pipeline_,
                         .draw_light_icons = debug_draw_light_icons_,
                         .light_icon_pipeline = light_icon_pipeline_,
                         .light_icon_texture_index = light_icon_texture_.index,
@@ -3560,7 +3619,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
 
     auto const draw_size = static_cast<VkDeviceSize>(frame.draws.size()) * sizeof(GpuDraw);
     auto const transform_size = static_cast<VkDeviceSize>(frame.transforms.size()) * sizeof(glm::mat4);
-    auto const indirect_size = static_cast<VkDeviceSize>(frame.indirect_commands.size()) * sizeof(GpuTaskCommand);
+    auto const indirect_size = static_cast<VkDeviceSize>(frame.indirect_commands.size()) * sizeof(GpuDrawCommand);
     auto const batch_bounds_size = static_cast<VkDeviceSize>(frame.batch_bounds.size()) * sizeof(GpuCullBounds);
 
     if (draw_size != 0) {
@@ -3683,8 +3742,9 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
                 .pNext = nullptr,
                 .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
-                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                                VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -3700,8 +3760,9 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
                 .pNext = nullptr,
                 .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
-                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                                VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                 .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -3712,9 +3773,10 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
     }
 
     // Read by three consumers: the shadow pass's vkCmdDrawMeshTasksIndirectEXT
-    // (DRAW_INDIRECT / INDIRECT_COMMAND_READ), its task shader (which reads
-    // its own command's first_instance/meshlet_count), and mainCs's
-    // src_indirect Ptr<> (COMPUTE_SHADER / SHADER_STORAGE_READ).
+    // and vkCmdDrawIndexedIndirect (DRAW_INDIRECT / INDIRECT_COMMAND_READ),
+    // its task shader (which reads its own command's first_instance/
+    // meshlet_count), and mainCs's src_indirect Ptr<> (COMPUTE_SHADER /
+    // SHADER_STORAGE_READ).
     if (indirect_size != 0) {
         barriers[barrier_count++] = VkBufferMemoryBarrier2{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,

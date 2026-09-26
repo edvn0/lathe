@@ -793,10 +793,10 @@ private:
         std::vector<GpuDraw> draws;
         std::vector<glm::mat4> transforms;
 
-        // One GpuTaskCommand per batch, un-culled (every instance) -- the
+        // One GpuDrawCommand per batch, un-culled (every instance) -- the
         // shadow pass draws these directly; mainCs culls them into
         // culled_indirect_buffer for the main view.
-        std::vector<GpuTaskCommand> indirect_commands;
+        std::vector<GpuDrawCommand> indirect_commands;
 
         // Per-batch local-space AABB + wind padding, parallel to
         // indirect_commands. culled_indirect_buffer is written entirely by
@@ -804,7 +804,7 @@ private:
         // overwrites instanceCount) -- no CPU-side seed vector is needed.
         std::vector<GpuCullBounds> batch_bounds;
 
-        // Number of GpuTaskCommand entries in indirect_commands (one per
+        // Number of GpuDrawCommand entries in indirect_commands (one per
         // unique (mesh, submesh) batch this frame) — NOT the number of
         // GpuDraw / instance entries in `draws`. This is the value that
         // must be passed as drawCount to vkCmdDrawMeshTasksIndirectEXT.
@@ -941,6 +941,15 @@ private:
     PipelineNodeHandle depth_prepass_mask_pipeline_;
     PipelineNodeHandle forward_pipeline_;
     PipelineNodeHandle forward_blend_pipeline_;
+
+    // Vertex-shader twins of the six scene pipelines above, for batches
+    // drawn with plain instancing (see uses_meshlet_path()).
+    PipelineNodeHandle shadow_instanced_pipeline_;
+    PipelineNodeHandle shadow_mask_instanced_pipeline_;
+    PipelineNodeHandle depth_prepass_instanced_pipeline_;
+    PipelineNodeHandle depth_prepass_mask_instanced_pipeline_;
+    PipelineNodeHandle forward_instanced_pipeline_;
+    PipelineNodeHandle forward_blend_instanced_pipeline_;
     PipelineNodeHandle composite_pipeline_;
     PipelineNodeHandle frustum_cull_pipeline_;
     PipelineNodeHandle light_icon_pipeline_;

@@ -1,9 +1,23 @@
 # Meshlet rendering
 
 Every scene-geometry pass (shadow cascades, depth prepass, forward -- and
-their mask/blend variants) draws through task + mesh shaders. There is no
-vertex-shader geometry path left; ImGui, the debug line renderer and the
-fullscreen composite/post passes are not scene geometry and are unchanged.
+their mask/blend variants) draws big meshes through task + mesh shaders and
+small ones with plain instanced vertex shaders; see "Which path" below.
+ImGui, the debug line renderer and the fullscreen composite/post passes are
+not scene geometry and are unchanged.
+
+## Which path
+
+`uses_meshlet_path()` (`assets/meshlet.hxx`): a mesh with at least
+`meshlets_per_task` (32) meshlets goes through task/mesh shaders, anything
+smaller through `mainVs` + `vkCmdDrawIndexedIndirect`. One task workgroup
+covers (one instance, up to 32 meshlets), so a small mesh leaves most task
+lanes idle and pays a task + mesh workgroup launch per instance for culling
+that saves almost nothing. Grass made that concrete: ~20K clumps of ~4
+meshlets each took the frame on lavapipe from ~800 ms to ~1900 ms, with the
+depth prepass alone ~7x slower. Terrain chunks and loaded models stay on
+meshlets; primitives and grass are instanced. Instance-level GPU frustum
+culling (`mainCs`) applies to both.
 
 ## Data
 
@@ -34,10 +48,14 @@ fullscreen composite/post passes are not scene geometry and are unchanged.
 
 ## Draws
 
-- One `GpuTaskCommand` per batch (32 bytes: the three
-  `VkDrawMeshTasksIndirectCommandEXT` group counts plus `first_instance`,
-  `instance_count`, `meshlet_count`), drawn with
-  `vkCmdDrawMeshTasksIndirectEXT` at that stride.
+- One `GpuDrawCommand` per batch (40 bytes): a
+  `VkDrawMeshTasksIndirectCommandEXT` at offset 0, a
+  `VkDrawIndexedIndirectCommand` at offset 12, then `meshlet_count`. Each
+  batch zeroes the half it doesn't use (`index_count` 0 for meshlet
+  batches, zero task groups for instanced ones), and every draw site issues
+  both indirect draws over the same range -- see
+  `render_pass::detail::draw_scene_commands`, which binds the task/mesh
+  pipeline and then its instanced twin.
 - A batch needs `instance_count * ceil(meshlet_count / 32)` task groups,
   spread over X/Y by `set_task_group_counts` (C++ and `frustum_cull.slang`
   must agree) so no dimension exceeds the guaranteed 65535.
@@ -45,7 +63,7 @@ fullscreen composite/post passes are not scene geometry and are unchanged.
   frustum-culls instances as before, compacts survivors and rewrites the
   group counts for the survivor count.
 - `SV_DrawIndex` restarts at 0 per indirect call, so
-  `render_pass::detail::draw_task_commands` re-points `PC::task_commands`
+  `render_pass::detail::draw_scene_commands` re-points `PC::task_commands`
   at the first command of each call.
 
 ## Task-shader culling (`assets/shaders/meshlet_task.slang`)

@@ -38,12 +38,14 @@ namespace render_pass {
         VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
     };
 
-    // `indirect` holds one GpuTaskCommand (assets/meshlet.hxx) per batch,
-    // partitioned opaque | mask | blend like DrawCounts.
+    // `indirect` holds one GpuDrawCommand (assets/meshlet.hxx) per batch,
+    // partitioned opaque | mask | blend like DrawCounts. `index_buffer` is
+    // the geometry arena's, read by the instanced half of those commands.
     struct DrawBuffers {
         Buffer const &draws;
         Buffer const &transforms;
         Buffer const &indirect;
+        VkBuffer index_buffer = VK_NULL_HANDLE;
     };
 
     struct DrawCounts {
@@ -74,8 +76,12 @@ namespace render_pass {
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
 
+        // Task/mesh pipelines and their instanced vertex-shader twins
+        // (see uses_meshlet_path() in assets/meshlet.hxx).
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle mask_pipeline{};
+        PipelineNodeHandle opaque_instanced_pipeline{};
+        PipelineNodeHandle mask_instanced_pipeline{};
 
         float depth_bias_constant = -1.0F;
         float depth_bias_slope = -2.5F;
@@ -103,8 +109,12 @@ namespace render_pass {
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
 
+        // Task/mesh pipelines and their instanced vertex-shader twins
+        // (see uses_meshlet_path() in assets/meshlet.hxx).
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle mask_pipeline{};
+        PipelineNodeHandle opaque_instanced_pipeline{};
+        PipelineNodeHandle mask_instanced_pipeline{};
 
         // Must match ForwardGeometryInfo::meshlet_culling: forward depth
         // tests EQUAL against what this pass wrote.
@@ -170,8 +180,12 @@ namespace render_pass {
 
         bool meshlet_culling = true;
 
+        // Task/mesh pipelines and their instanced vertex-shader twins
+        // (see uses_meshlet_path() in assets/meshlet.hxx).
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle blend_pipeline{};
+        PipelineNodeHandle opaque_instanced_pipeline{};
+        PipelineNodeHandle blend_instanced_pipeline{};
 
         bool draw_light_icons = false;
         PipelineNodeHandle light_icon_pipeline{};

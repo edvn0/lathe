@@ -33,6 +33,17 @@ VertexOutput prepass_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_stre
     return output;
 }
 
+// Instanced path for batches too small for meshlets (see
+// uses_meshlet_path() in include/assets/meshlet.hxx) -- same vertex
+// function as main_mesh, so both paths produce identical positions.
+[shader("vertex")]
+VertexOutput mainVs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform PC pc)
+{
+    const GpuDraw draw = pc.draws[instance_index];
+    const float wind_strength = pc.materials[draw.material_index].wind_strength;
+    return prepass_vertex(pc, draw, pc.transforms[instance_index], wind_strength, vertex_id);
+}
+
 [shader("mesh")]
 [numthreads(mesh_group_size, 1, 1)]
 [outputtopology("triangle")]
@@ -57,8 +68,8 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
     }
 }
 
-// Only used by depth_prepass_mask_pipeline_ -- the opaque prepass PSO stays
-// vertex-only (no mainFs) to preserve early-Z / cheap depth-only rendering.
+// Only used by depth_prepass_mask_pipeline_ and its instanced twin -- the opaque prepass
+// PSOs have no mainFs, to preserve early-Z / cheap depth-only rendering.
 [shader("fragment")]
 void mainFs(VertexOutput input, uniform PC pc)
 {

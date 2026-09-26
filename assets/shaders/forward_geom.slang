@@ -49,6 +49,17 @@ VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_stre
     return output;
 }
 
+// Instanced path for batches too small for meshlets (see
+// uses_meshlet_path() in include/assets/meshlet.hxx) -- same vertex
+// function as main_mesh, so both paths produce identical positions.
+[shader("vertex")]
+VertexOutput mainVs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform PC pc)
+{
+    const GpuDraw draw = pc.draws[instance_index];
+    const float wind_strength = pc.materials[draw.material_index].wind_strength;
+    return forward_vertex(pc, draw, pc.transforms[instance_index], wind_strength, vertex_id);
+}
+
 [shader("mesh")]
 [numthreads(mesh_group_size, 1, 1)]
 [outputtopology("triangle")]

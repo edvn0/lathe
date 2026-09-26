@@ -2,15 +2,17 @@ import scene_types;
 
 // GPU frustum culling: one workgroup per batch (mainCs, one thread per
 // instance is deliberately NOT how this works -- see below). Each workgroup
-// reads its own batch's un-culled TaskCommand to learn [first_instance,
+// reads its own batch's un-culled DrawCommand to learn [first_instance,
 // first_instance + instance_count), tests every instance in that range
 // against the camera frustum (CullPC.frustum_planes), and compacts
 // survivors back into [first_instance, first_instance + survivor count)
 // using an in-workgroup shared-memory prefix sum -- so the surviving
 // instances of a batch stay contiguous starting at that batch's original
 // first_instance, which is what run_meshlet_task() (meshlet_task.slang)
-// expects. It then rewrites the batch's task group counts for the survivor
-// count; per-meshlet culling happens afterwards, in the task shaders.
+// and the instanced mainVs paths expect. It then rewrites the batch's
+// instance count (read by both of DrawCommand's halves) and task group
+// counts for the survivors; per-meshlet culling happens afterwards, in the
+// task shaders.
 //
 // This replaces an earlier two-dispatch design (one thread per instance,
 // global InterlockedAdd into a per-batch atomic counter, then a second
@@ -53,7 +55,7 @@ public struct GpuCullBounds
 // renderer.cxx, whose task_group_counts() this matches exactly.
 static const uint max_task_group_count_x = 65535;
 
-void set_task_group_counts(inout TaskCommand command)
+void set_task_group_counts(inout DrawCommand command)
 {
     const uint chunk_count = (command.meshlet_count + meshlets_per_task - 1) / meshlets_per_task;
     const uint total = command.instance_count * chunk_count;
@@ -71,11 +73,11 @@ public struct CullPC
 
     // Read-only: each workgroup's own [first_instance, first_instance +
     // instance_count) range to cull, plus its meshlet_count.
-    public Ptr<TaskCommand> src_indirect;
+    public Ptr<DrawCommand> src_indirect;
 
     // Written once per batch, by thread 0 only -- no atomics needed, since
     // each batch has exactly one workgroup and thus exactly one writer.
-    public Ptr<TaskCommand> dst_indirect;
+    public Ptr<DrawCommand> dst_indirect;
 
     public Ptr<GpuDraw> dst_draws;
     public Ptr<float4x4> dst_transforms;
@@ -154,7 +156,7 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
         return;
     }
 
-    TaskCommand source_command = pc.src_indirect[batch];
+    DrawCommand source_command = pc.src_indirect[batch];
     GpuCullBounds bounds = pc.batch_bounds[batch];
     uint lane = group_thread_id.x;
 
@@ -209,7 +211,7 @@ void mainCs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID,
     }
 
     if (lane == 0) {
-        TaskCommand out_command = source_command;
+        DrawCommand out_command = source_command;
         out_command.instance_count = running_survivors;
         set_task_group_counts(out_command);
         pc.dst_indirect[batch] = out_command;

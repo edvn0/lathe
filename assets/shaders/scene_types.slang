@@ -29,26 +29,32 @@ public struct Meshlet
     public uint triangle_count;
 };
 
-// One batch's vkCmdDrawMeshTasksIndirectEXT command, extended past the
-// three group counts Vulkan reads (the draw stride is sizeof(TaskCommand))
-// with what the task shader needs to map its SV_GroupID back to an
-// (instance, meshlet chunk) pair. Mirrors GpuTaskCommand in
-// include/rendering/renderer.hxx.
+// One batch's indirect draw in both forms -- a
+// VkDrawMeshTasksIndirectCommandEXT at offset 0 and a
+// VkDrawIndexedIndirectCommand at offset 12 -- of which each batch uses
+// one and zeroes the other (index_count 0 for meshlet batches,
+// meshlet_count 0 and so zero task groups for instanced ones; see
+// uses_meshlet_path() in include/assets/meshlet.hxx). Mirrors
+// GpuDrawCommand there.
 //
-// The batch needs instance_count * ceil(meshlet_count / meshlets_per_task)
-// task groups, spread over X and Y (see task_group_counts() in
-// renderer.cxx) so neither dimension exceeds the guaranteed 65535 minimum
-// of maxTaskWorkGroupCount; groups past that total are no-ops.
-public struct TaskCommand
+// A meshlet batch needs instance_count * ceil(meshlet_count /
+// meshlets_per_task) task groups, spread over X and Y (see
+// set_task_group_counts()) so neither dimension exceeds the guaranteed
+// 65535 minimum of maxTaskWorkGroupCount; groups past that total are no-ops.
+public struct DrawCommand
 {
     public uint group_count_x;
     public uint group_count_y;
     public uint group_count_z;
-    public uint first_instance;
+
+    public uint index_count;
     public uint instance_count;
+    public uint first_index;
+    public int vertex_offset;
+    public uint first_instance;
+
     public uint meshlet_count;
     public uint _pad0;
-    public uint _pad1;
 };
 
 // PC::cull_flags bits.
@@ -216,7 +222,7 @@ public struct PC
     // commands this draw was issued from (indexed by SV_DrawIndex), the
     // world-space planes to cull against (6 per view -- ShadowPC indexes
     // cascade_index * 6 into it), and which culling tests are enabled.
-    public Ptr<TaskCommand> task_commands;
+    public Ptr<DrawCommand> task_commands;
     public Ptr<float4> cull_planes;
     public uint cull_flags;
     public uint cull_padding;

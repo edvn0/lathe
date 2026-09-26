@@ -10,7 +10,7 @@ import scene_types;
 // drew (or vice versa) would show up as holes or z-fighting.
 //
 // One task workgroup covers up to meshlets_per_task consecutive meshlets of
-// ONE instance: SV_GroupID (flattened over X/Y, see TaskCommand) picks the
+// ONE instance: SV_GroupID (flattened over X/Y, see DrawCommand) picks the
 // (instance, meshlet chunk), each lane tests one meshlet, and the survivors
 // are compacted into the payload in lane order (deterministic, unlike an
 // atomic append) before a single DispatchMesh.
@@ -87,7 +87,7 @@ bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet
 // the main camera, cascade_index * 6 for a shadow cascade).
 public void run_meshlet_task(PC pc, uint plane_offset, uint draw_index, uint3 group_id, uint lane)
 {
-    const TaskCommand command = pc.task_commands[draw_index];
+    const DrawCommand command = pc.task_commands[draw_index];
 
     const uint chunk_count = (command.meshlet_count + meshlets_per_task - 1) / meshlets_per_task;
     const uint linear_group = group_id.x + group_id.y * command.group_count_x;

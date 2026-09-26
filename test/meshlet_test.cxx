@@ -152,7 +152,7 @@ TEST_CASE("meshlet bounding spheres contain every decoded vertex they draw") {
 TEST_CASE("task group counts cover every (instance, meshlet chunk) within per-dimension limits") {
     for (std::uint32_t const instance_count: {0U, 1U, 7U, 65'535U, 65'536U, 250'000U}) {
         for (std::uint32_t const meshlet_count: {1U, 31U, 32U, 33U, 200U}) {
-            GpuTaskCommand command{.instance_count = instance_count, .meshlet_count = meshlet_count};
+            GpuDrawCommand command{.instance_count = instance_count, .meshlet_count = meshlet_count};
             set_task_group_counts(command);
 
             auto const chunks = (meshlet_count + meshlets_per_task - 1) / meshlets_per_task;
@@ -211,4 +211,30 @@ TEST_CASE("prepare_primitive_gpu_data builds meshlets exactly for levels with th
             CHECK_FALSE(primitive.meshlets[level].has_value());
         }
     }
+}
+
+TEST_CASE("small meshes draw instanced, big ones through meshlets") {
+    auto const count_meshlets = [](std::vector<std::uint32_t> const &indices, std::size_t vertex_count) {
+        return static_cast<std::uint32_t>(build_meshlet_topology(indices, vertex_count).meshlets.size());
+    };
+
+    // ~20K grass clumps per scene: one task + mesh workgroup per clump for
+    // ~4 meshlets was the regression this threshold exists for.
+    auto grass = make_grass_clump_mesh();
+    REQUIRE(grass.has_value());
+    CHECK_FALSE(uses_meshlet_path(count_meshlets(grass->indices, grass->vertices.size())));
+
+    auto const &terrain_indices = terrain_chunk_indices();
+    CHECK(uses_meshlet_path(count_meshlets(terrain_indices, terrain_vertices().size())));
+}
+
+TEST_CASE("draw commands leave exactly one path live") {
+    GpuDrawCommand meshlet{.instance_count = 10, .meshlet_count = 64};
+    set_task_group_counts(meshlet);
+    CHECK(meshlet.index_count == 0);
+    CHECK(meshlet.group_count_x * meshlet.group_count_y == 20);
+
+    GpuDrawCommand instanced{.index_count = 144, .instance_count = 10};
+    set_task_group_counts(instanced);
+    CHECK(instanced.group_count_x * instanced.group_count_y * instanced.group_count_z == 0);
 }
