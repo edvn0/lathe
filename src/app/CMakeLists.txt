@@ -10,6 +10,7 @@ add_library(
     engine_app
     STATIC
         application.cxx
+        benchmark.cxx
         renderer_application_policy.cxx
 )
 

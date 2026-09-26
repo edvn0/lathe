@@ -2,6 +2,9 @@ FROM debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# xvfb/xauth/libvulkan1/mesa-vulkan-drivers are the headless runtime for the
+# perf workflow's --benchmark runs (.github/workflows/perf.yml): a virtual X
+# server and Mesa's lavapipe software Vulkan driver.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     mingw-w64 \
@@ -26,6 +29,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-dev \
     libjemalloc-dev \
     mold \
+    xvfb \
+    xauth \
+    libvulkan1 \
+    mesa-vulkan-drivers \
     && update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix \
     && update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix \
     && rm -rf /var/lib/apt/lists/*

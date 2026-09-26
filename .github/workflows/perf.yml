@@ -1,0 +1,236 @@
+name: perf
+
+# Benchmarks the PR against its base: both builds fly the same seeded scene
+# along the game's benchmark camera loop (--benchmark, see
+# include/app/benchmark.hxx), and tools/perf/compare_benchmarks.py turns the
+# two JSON results into a per-stage table posted on the PR. Hosted runners
+# have no GPU, so this renders with Mesa's lavapipe: reliable for large
+# regressions, not a substitute for profiling on real hardware.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: perf-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: benchmark / base vs head
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      # One lap of 240 frames (16 per keyframe segment) after at least 30
+      # warmup frames; lavapipe manages roughly a frame per second or two.
+      BENCHMARK_ARGS: --benchmark-frames=240 --benchmark-warmup=30 --seed=1337
+      BENCHMARK_TIMEOUT: "2700"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: cross-build:latest
+          load: true
+          cache-from: type=gha,scope=toolchain
+          cache-to: type=gha,mode=max,scope=toolchain
+
+      - name: Restore CPM cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: >-
+            cpm-${{
+              hashFiles('**/CMakeLists.txt', '**/*.cmake')
+            }}-perf
+          restore-keys: |
+            cpm-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}-
+            cpm-
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: >-
+            ccache-perf-${{
+              hashFiles(
+                'Dockerfile',
+                '**/CMakeLists.txt',
+                '**/*.cmake'
+              )
+            }}
+          restore-keys: |
+            ccache-perf-
+            ccache-linux-native-RelWithDebInfo-
+
+      # A plain export rather than a git worktree: a worktree's .git file
+      # points at a host path the build container can't see.
+      - name: Export base sources
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Created here, as the runner user: the benchmark containers run
+          # as root, and the host-side compare step writes into it too.
+          mkdir -p perf
+
+          mkdir -p build/perf-base-src
+          git archive "${BASE_SHA}" | tar -x -C build/perf-base-src
+
+          if [[ -f build/perf-base-src/include/app/benchmark.hxx ]]; then
+            echo "has_benchmark=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Base ${BASE_SHA} predates --benchmark; reporting head only."
+            echo "has_benchmark=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${HOME}/.cache/CPM" "${HOME}/.cache/ccache"
+
+          in_container() {
+            docker run --rm \
+              --mount type=bind,source="${PWD}",target=/workspace \
+              --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
+              --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
+              --env CPM_SOURCE_CACHE=/cpm-cache \
+              --env CCACHE_DIR=/ccache \
+              --env CCACHE_BASEDIR=/workspace \
+              --env CCACHE_NOHASHDIR=true \
+              --env CCACHE_COMPILERCHECK=content \
+              --env CCACHE_MAXSIZE=2G \
+              --workdir /workspace \
+              cross-build:latest \
+              "$@"
+          }
+
+          build() {
+            local source_dir="$1" build_dir="$2"
+
+            in_container cmake \
+              -S "${source_dir}" \
+              -B "${build_dir}" \
+              -G Ninja \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+            in_container cmake --build "${build_dir}" --parallel --target mingw-vulkan
+          }
+
+          build . build/perf-head
+
+          if [[ "${{ steps.base.outputs.has_benchmark }}" == "true" ]]; then
+            build build/perf-base-src build/perf-base
+          fi
+
+      # Base first, then head, back to back on the same runner. The base
+      # build is driven by head's run script, which only needs its binary.
+      - name: Benchmark base
+        if: steps.base.outputs.has_benchmark == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # shellcheck disable=SC2086 # BENCHMARK_ARGS is a list of flags
+          docker run --rm \
+            --mount type=bind,source="${PWD}",target=/workspace \
+            --env BENCHMARK_TIMEOUT \
+            --workdir /workspace \
+            cross-build:latest \
+            tools/perf/run_benchmark.sh build/perf-base perf/base.json ${BENCHMARK_ARGS}
+
+      - name: Benchmark head
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # shellcheck disable=SC2086 # BENCHMARK_ARGS is a list of flags
+          docker run --rm \
+            --mount type=bind,source="${PWD}",target=/workspace \
+            --env BENCHMARK_TIMEOUT \
+            --workdir /workspace \
+            cross-build:latest \
+            tools/perf/run_benchmark.sh build/perf-head perf/head.json ${BENCHMARK_ARGS} --benchmark-screenshots
+
+      - name: Compare
+        id: compare
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          python3 tools/perf/compare_benchmarks.py \
+            --base perf/base.json \
+            --head perf/head.json \
+            --markdown perf/report.md
+          status=$?
+
+          cat perf/report.md >> "${GITHUB_STEP_SUMMARY}"
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+
+          # 1 is "regressed past the threshold" -- reported below, after the
+          # comment is posted. Anything else is the script itself failing.
+          if [[ ${status} -ne 0 && ${status} -ne 1 ]]; then
+            exit "${status}"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-benchmark
+          path: |
+            perf/
+            build/perf-head/bin/screenshots/
+          if-no-files-found: ignore
+
+      # Read-only token on fork PRs: the report is still in the job summary.
+      - name: Comment on PR
+        if: steps.compare.outcome == 'success'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- perf-benchmark -->';
+            const run_url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n${fs.readFileSync('perf/report.md', 'utf8')}\n` +
+                         `Raw results and keyframe screenshots: [workflow run](${run_url}) (artifact \`perf-benchmark\`).`;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((comment) => comment.body && comment.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Fail on regression
+        if: steps.compare.outputs.status == '1'
+        shell: bash
+        run: |
+          echo "Full-frame median regressed past the threshold -- see the report above." >&2
+          exit 1

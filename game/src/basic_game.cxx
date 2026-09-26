@@ -20,6 +20,7 @@
 #include "scene/components.hxx"
 #include "rendering/entity.hxx"
 #include "core/error_describe.hxx"
+#include "core/random.hxx"
 #include "core/logger.hxx"
 #include "physics/physics_world.hxx"
 #include "assets/primitive_meshes.hxx"
@@ -217,10 +218,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
     auto const cube_bounds = renderer.model_bounds(cube_model_);
     cube_half_extents_ = cube_bounds.has_value() ? (cube_bounds->second - cube_bounds->first) * 0.5F : glm::vec3{0.5F};
-
-    std::random_device r;
-    std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
-    std::mt19937 eng(seed);
 
     // Terrain generation parameters, kept around for the rest of on_populate
     // so houses/trees/grass below can sample the same noise field and sit on
@@ -529,9 +526,7 @@ auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
 
     auto const grass_cells = static_cast<int>(grass_field_params_.field_size / grass_field_params_.spacing);
 
-    std::random_device r;
-    std::seed_seq seed{r(), r(), r(), r(), r(), r(), r(), r()};
-    std::mt19937 grass_eng(seed);
+    auto grass_eng = make_random_engine(1);
 
     std::uniform_real_distribution<float> jitter(-grass_field_params_.spacing * 0.4F,
                                                  grass_field_params_.spacing * 0.4F);
@@ -799,4 +794,30 @@ auto BasicGame::shoot_bullet(Scene &scene, std::size_t n) -> void {
 
         scene.physics_world->add_body(scene.get_registry(), entity, transform, rigid_body);
     }
+}
+
+auto BasicGame::benchmark_camera_path() const -> std::vector<CameraKeyframe> {
+    // A loop around the village (houses at ~(+-10, +-9), trees at ~13 m,
+    // enemies orbiting the centre) mixing grass-level shots through the
+    // densest foliage, close-ups against walls and canopies, and high
+    // overviews that put the whole grass field and far terrain on screen.
+    // Heights stay above the terrain's +1.6 m amplitude everywhere along
+    // the spline.
+    return {
+            {.position = {0.0F, 2.2F, 6.0F}, .target = {0.0F, 2.0F, -10.0F}},
+            {.position = {-6.0F, 2.0F, 2.0F}, .target = {-10.0F, 1.5F, -8.0F}},
+            {.position = {-16.0F, 3.0F, -4.0F}, .target = {-10.0F, 2.0F, -8.0F}},
+            {.position = {-18.0F, 8.0F, -18.0F}, .target = {0.0F, 0.0F, 0.0F}},
+            {.position = {0.0F, 2.2F, -19.0F}, .target = {0.0F, 2.0F, -13.0F}},
+            {.position = {12.0F, 2.5F, -16.0F}, .target = {9.0F, 2.0F, -10.0F}},
+            {.position = {22.0F, 5.0F, -2.0F}, .target = {-20.0F, 0.0F, 0.0F}},
+            {.position = {17.0F, 2.2F, 4.0F}, .target = {13.0F, 2.0F, -1.5F}},
+            {.position = {15.0F, 3.0F, 16.0F}, .target = {10.0F, 2.0F, 9.0F}},
+            {.position = {0.0F, 25.0F, 20.0F}, .target = {0.0F, 0.0F, 0.0F}},
+            {.position = {-4.0F, 2.2F, 16.0F}, .target = {-9.0F, 2.0F, 10.0F}},
+            {.position = {-18.0F, 2.5F, 6.0F}, .target = {-40.0F, 1.0F, 30.0F}},
+            {.position = {-15.0F, 2.2F, -1.0F}, .target = {-13.0F, 2.5F, 1.0F}},
+            {.position = {-6.0F, 6.0F, -6.0F}, .target = {6.0F, 0.0F, 6.0F}},
+            {.position = {0.0F, 3.0F, 12.0F}, .target = {0.0F, 3.0F, 0.0F}},
+    };
 }

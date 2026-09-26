@@ -61,6 +61,11 @@ public:
 
     auto set_position(glm::vec3 const &position) noexcept -> void { position_ = position; }
 
+    // Places the camera at `position` facing `target` (yaw/pitch derived
+    // from the direction, pitch clamped like mouse look). A target equal to
+    // the position leaves the orientation unchanged.
+    auto look_at(glm::vec3 const &position, glm::vec3 const &target) noexcept -> void;
+
 private:
     auto rebuild_basis() noexcept -> void;
 

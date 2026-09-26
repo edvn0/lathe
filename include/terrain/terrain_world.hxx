@@ -97,6 +97,10 @@ public:
     // pool references is destroyed.
     auto wait_all() -> void { streamer_.wait_all(); }
 
+    // No chunk generation outstanding -- everything the last update()
+    // asked for is resident.
+    [[nodiscard]] auto streaming_idle() const noexcept -> bool { return in_flight_.empty(); }
+
 private:
     struct ResidentChunk {
         TerrainSlotHandle slot;

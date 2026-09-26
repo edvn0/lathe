@@ -20,6 +20,8 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/random.hpp>
 #include <limits>
+#include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -27,12 +29,14 @@
 #include <entt/entt.hpp>
 
 #include "app/application.hxx"
+#include "app/benchmark.hxx"
 #include "app/game.hxx"
 #include "assets/shader_hot_reload_watcher.hxx"
 #include "core/allocator.hxx"
 #include "core/config.hxx"
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
+#include "core/random.hxx"
 #include "glm/gtc/type_ptr.hpp"
 #include "gpu/context.hxx"
 #include "gpu/swapchain.hxx"
@@ -556,6 +560,19 @@ auto main(int argc, char **argv) -> int {
     std::signal(SIGINT, ctrl_c_handler);
 
     auto const screen_type = parse_screen_type(argc, argv);
+
+    auto benchmark_options = parse_benchmark_options(std::span<char const *const>{argv + 1, argv + argc});
+    if (!benchmark_options) {
+        error("Invalid benchmark arguments: {}", benchmark_options.error());
+        return EXIT_FAILURE;
+    }
+
+    // Before on_startup(): the seed has to be in place when the game
+    // populates the scene.
+    if (*benchmark_options) {
+        set_fixed_random_seed((*benchmark_options)->seed);
+    }
+
     VulkanContext context{};
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
@@ -576,6 +593,21 @@ auto main(int argc, char **argv) -> int {
     }
 
     application.on_startup();
+
+    std::optional<BenchmarkRun> benchmark;
+    if (*benchmark_options) {
+        auto keyframes = application.game->benchmark_camera_path();
+
+        if (keyframes.empty()) {
+            error("--benchmark: this game defines no benchmark_camera_path()");
+            destroy_application(context, application);
+            return EXIT_FAILURE;
+        }
+
+        info("Benchmark: {} frames along {} keyframes, seed {}, writing {}", (*benchmark_options)->frame_count,
+             keyframes.size(), (*benchmark_options)->seed, (*benchmark_options)->output_path.string());
+        benchmark.emplace(std::move(**benchmark_options), std::move(keyframes));
+    }
 
     info("Initialization complete; close the window to exit");
 
@@ -611,12 +643,26 @@ auto main(int argc, char **argv) -> int {
         }
 
         auto const now = std::chrono::steady_clock::now();
-        auto const delta_time = std::chrono::duration<float>(now - last_frame_time).count();
+        // Fixed step under --benchmark, so frame N simulates the same moment
+        // in every run however slow the device is.
+        auto const delta_time =
+                benchmark ? benchmark_timestep : std::chrono::duration<float>(now - last_frame_time).count();
         last_frame_time = now;
 
         application.elapsed_time += delta_time;
 
         application.camera.update(std::min(delta_time, 0.1F));
+
+        // Before update(): terrain streaming follows the camera position.
+        if (benchmark) {
+            auto const keyframe = benchmark->camera();
+            application.camera.look_at(keyframe.position, keyframe.target);
+
+            if (benchmark->options().keyframe_screenshots && benchmark->at_keyframe()) {
+                application.renderer->request_screenshot();
+            }
+        }
+
         application.update(delta_time);
 
         request_resize_if_needed(context, current_width, current_height);
@@ -627,6 +673,32 @@ auto main(int argc, char **argv) -> int {
         }
 
         FrameMark;
+
+        if (benchmark) {
+            auto const streaming_idle = application.renderer->texture_streamer().pending_count() == 0 &&
+                                        (!application.terrain || application.terrain->streaming_idle());
+            benchmark->on_frame_drawn(application.renderer->last_frame_timings(), streaming_idle);
+
+            if (benchmark->finished()) {
+                VkPhysicalDeviceProperties properties{};
+                vkGetPhysicalDeviceProperties(context.physical_device, &properties);
+
+                auto const written = benchmark->write(BenchmarkEnvironment{
+                        .device_name = properties.deviceName,
+                        .render_width = renderer_extent.width,
+                        .render_height = renderer_extent.height,
+                });
+
+                if (written) {
+                    info("Benchmark written to {}", benchmark->options().output_path.string());
+                } else {
+                    error("Could not write benchmark results: {}", written.error());
+                    exit_code = EXIT_FAILURE;
+                }
+
+                break;
+            }
+        }
 
         // Render resolution tracks the Viewport panel's size, not the
         // window's -- fullscreen play is the one exception, since there the
@@ -670,6 +742,11 @@ auto main(int argc, char **argv) -> int {
     }
 
     context.running.store(false, std::memory_order_release);
+
+    if (benchmark && !benchmark->finished()) {
+        error("Benchmark interrupted before it finished; no results written");
+        exit_code = EXIT_FAILURE;
+    }
 
     destroy_application(context, application);
 

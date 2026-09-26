@@ -10,6 +10,7 @@ add_library(
         fly_string.cxx
         logger.cxx
         memory_tracker.cxx
+        random.cxx
         thread_pool.cxx
 )
 
