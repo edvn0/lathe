@@ -604,6 +604,13 @@ auto main(int argc, char **argv) -> int {
             return EXIT_FAILURE;
         }
 
+        // The editor layout decides the Viewport panel's size and so the
+        // render resolution -- a saved imgui.ini from an earlier session
+        // would make two runs render at different sizes. Always start from
+        // the default layout, and don't save it back. ImGui only reads the
+        // file on its first frame, so this is still in time.
+        ImGui::GetIO().IniFilename = nullptr;
+
         info("Benchmark: {} frames along {} keyframes, seed {}, writing {}", (*benchmark_options)->frame_count,
              keyframes.size(), (*benchmark_options)->seed, (*benchmark_options)->output_path.string());
         benchmark.emplace(std::move(**benchmark_options), std::move(keyframes));
