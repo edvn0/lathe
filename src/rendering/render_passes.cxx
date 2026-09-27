@@ -920,7 +920,7 @@ namespace render_pass {
         return std::optional<AoTextureIndex>{AoTextureIndex{.index = info.denoised_ao_texture_index}};
     }
 
-    auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback debug_overlay)
+    auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback scene_overlays)
             -> std::expected<HdrTextureIndex, RendererError> {
         detail::SceneDraw const opaque_draw{
                 .meshlet_pipeline = info.opaque_pipeline,
@@ -1042,35 +1042,7 @@ namespace render_pass {
 
         vkCmdEndQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0);
 
-        if (info.draw_light_icons && info.light_count != 0) {
-            if (auto const light_icon_layout = detail::resolve_layout(context.pipeline_graph, info.light_icon_pipeline);
-                light_icon_layout != VK_NULL_HANDLE) {
-                detail::bind_graphics_node(context.pipeline_graph, info.light_icon_pipeline, context.command_buffer,
-                                           info.samples, 1, true, false);
-                context.resource_table.bind(context.command_buffer, context.frame_index,
-                                            VK_PIPELINE_BIND_POINT_GRAPHICS, light_icon_layout);
-
-                vkCmdSetDepthTestEnable(context.command_buffer, VK_TRUE);
-                vkCmdSetDepthWriteEnable(context.command_buffer, VK_FALSE);
-                vkCmdSetDepthCompareOp(context.command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
-                vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
-
-                LightIconPushConstants const light_pc{
-                        .lights_address = info.lights_address,
-                        .ubo_address = info.ubo_address,
-                        .light_count = info.light_count,
-                        .icon_texture_index = info.light_icon_texture_index,
-                        .sampler_index = info.linear_sampler_index,
-                        .icon_world_size = info.light_icon_world_size,
-                };
-
-                vkCmdPushConstants(context.command_buffer, light_icon_layout, VK_SHADER_STAGE_ALL, 0, sizeof(light_pc),
-                                   &light_pc);
-                vkCmdDrawMeshTasksEXT(context.command_buffer, (info.light_count + 31U) / 32U, 1, 1);
-            }
-        }
-
-        debug_overlay();
+        scene_overlays();
 
         vkCmdEndRendering(context.command_buffer);
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1079,6 +1051,70 @@ namespace render_pass {
         detail::transition_hdr_to_shader_read(context.command_buffer,
                                               info.resolved_hdr != nullptr ? *info.resolved_hdr : info.hdr);
         return info.output_hdr;
+    }
+
+    auto set_overlay_baseline_state(VkCommandBuffer command_buffer, OverlayStage stage,
+                                    OverlayScope const &scope) noexcept -> void {
+        auto const width = static_cast<float>(scope.extent.width);
+        auto const height = static_cast<float>(scope.extent.height);
+
+        VkViewport const viewport =
+                stage == OverlayStage::scene
+                        ? VkViewport{.x = 0.0F, .y = height, .width = width, .height = -height, .minDepth = 1.0F,
+                                     .maxDepth = 0.0F}
+                        : VkViewport{.x = 0.0F, .y = 0.0F, .width = width, .height = height, .minDepth = 0.0F,
+                                     .maxDepth = 1.0F};
+
+        VkRect2D const scissor{.offset = {0, 0}, .extent = scope.extent};
+
+        vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
+        vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
+
+        detail::set_shader_object_vertex_input(command_buffer, {}, {});
+        detail::set_shader_object_raster_state(command_buffer, VK_POLYGON_MODE_FILL, scope.samples, false);
+        detail::set_shader_object_color_blend_state(command_buffer, 1, false);
+
+        vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+        vkCmdSetPrimitiveRestartEnable(command_buffer, VK_FALSE);
+        vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
+        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+        vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+        vkCmdSetDepthBiasEnable(command_buffer, VK_FALSE);
+        vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
+
+        vkCmdSetDepthTestEnable(command_buffer, scope.has_depth() ? VK_TRUE : VK_FALSE);
+        vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
+        vkCmdSetDepthCompareOp(command_buffer,
+                               scope.has_depth() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_ALWAYS);
+    }
+
+    auto light_icons(Context const &context, LightIconsInfo const &info, OverlayScope const &scope) noexcept -> void {
+        if (info.light_count == 0) {
+            return;
+        }
+
+        auto const layout = detail::resolve_layout(context.pipeline_graph, info.pipeline);
+        if (layout == VK_NULL_HANDLE) {
+            return;
+        }
+
+        // Task/mesh pipeline: no vertex input stage to configure.
+        detail::bind_graphics_node(context.pipeline_graph, info.pipeline, context.command_buffer, scope.samples, 1,
+                                   true, false);
+        context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    layout);
+
+        LightIconPushConstants const pc{
+                .lights_address = info.lights_address,
+                .ubo_address = info.ubo_address,
+                .light_count = info.light_count,
+                .icon_texture_index = info.icon_texture_index,
+                .sampler_index = info.sampler_index,
+                .icon_world_size = info.icon_world_size,
+        };
+
+        vkCmdPushConstants(context.command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+        vkCmdDrawMeshTasksEXT(context.command_buffer, (info.light_count + 31U) / 32U, 1, 1);
     }
 
     auto bloom(Context const &context, BloomPassInfo const &info)

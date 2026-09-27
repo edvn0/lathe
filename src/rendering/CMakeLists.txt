@@ -12,6 +12,7 @@ add_library(
         engine_models.cxx
         forward_target.cxx
         imgui_renderer.cxx
+        overlay.cxx
         pipeline_graph_repository.cxx
         renderer.cxx
         rendering_error_describe.cxx

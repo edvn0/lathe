@@ -8,6 +8,7 @@
 #include <glm/vec3.hpp>
 
 #include "physics/debug_lines.hxx"
+#include "rendering/overlay.hxx"
 
 class Renderer;
 
@@ -26,16 +27,17 @@ namespace debug_draw {
 
         auto begin_frame() -> void override;
 
-        auto render(VkCommandBuffer cmd, glm::mat4 const &view_projection, std::uint32_t frame_index) -> void;
-
-        auto render(VkCommandBuffer cmd, std::span<const float, 16> view_projection, std::uint32_t frame_index) -> void;
+        // OverlayStage::scene record() callback: uploads this frame's lines
+        // into frame_index's host-visible buffer and draws them depth-tested
+        // against the scene. Clears the add_line()/add_aabb() list.
+        auto record(OverlayRecordContext const &context) -> void;
 
         auto clear_lines() -> void override;
 
-        // Appends one line/box to render(), independent of the Bullet-driven
+        // Appends one line/box to record(), independent of the Bullet-driven
         // physics wireframes above -- its own line list, consumed and
-        // cleared by render() every call, so callers just add lines
-        // sometime between one render() and the next (e.g. submit_scene()
+        // cleared by record() every call, so callers just add lines
+        // sometime between one record() and the next (e.g. submit_scene()
         // in main.cxx, which runs once per rendered frame regardless of
         // Application::is_playing/PhysicsWorld::step's own cadence).
         auto add_line(glm::vec3 const &from, glm::vec3 const &to, glm::vec3 const &colour) -> void;

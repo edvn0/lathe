@@ -12,6 +12,7 @@
 #include "core/config.hxx"
 #include "gpu/gpu_resource_table.hxx"
 #include "gpu/image_storage.hxx"
+#include "rendering/overlay.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "core/renderer_error.hxx"
 #include "rendering/shadow_cascades.hxx"
@@ -187,12 +188,6 @@ namespace render_pass {
         PipelineNodeHandle opaque_instanced_pipeline{};
         PipelineNodeHandle blend_instanced_pipeline{};
 
-        bool draw_light_icons = false;
-        PipelineNodeHandle light_icon_pipeline{};
-        std::uint32_t light_icon_texture_index = 0;
-        std::uint32_t linear_sampler_index = 0;
-        float light_icon_world_size = 0.5F;
-
         // Bindless index of the (denoised) GTAO texture, or a fully-white
         // fallback when AO is disabled -- the caller decides which, since
         // that's a renderer-level policy (AoSettings::enabled), not
@@ -246,8 +241,8 @@ namespace render_pass {
     };
 
     // Non-owning, allocation-free callback. The bound callable must outlive the
-    // render-pass call, which is naturally true for the local overlay lambdas in
-    // Renderer::record_frame().
+    // render-pass call, which is naturally true for the local lambdas
+    // Renderer::record_frame() hands the passes to run a stage's overlays.
     struct Callback {
         void *userdata = nullptr;
         void (*invoke)(void *) = nullptr;
@@ -278,8 +273,49 @@ namespace render_pass {
     auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)
             -> std::expected<std::optional<AoTextureIndex>, RendererError>;
 
-    auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback debug_overlay)
+    // scene_overlays runs inside the forward rendering scope after every
+    // scene draw -- see OverlayStage::scene.
+    auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback scene_overlays)
             -> std::expected<HdrTextureIndex, RendererError>;
+
+    // The dynamic state every overlay starts from (see overlay.hxx). Set
+    // by the host before *each* overlay's record():
+    //
+    //   viewport/scissor   the full scope extent. OverlayStage::scene uses
+    //                      the forward pass's flipped-Y, reverse-Z viewport
+    //                      (y = height, height = -height, depth 1..0), so a
+    //                      plain view_projection lines up with the scene;
+    //                      OverlayStage::ui uses an unflipped 0..1 viewport.
+    //   rasterisation      fill, cull none, counter-clockwise front, no
+    //                      depth bias/clamp, no discard, samples =
+    //                      scope.samples with a full sample mask, no
+    //                      alpha-to-coverage.
+    //   input assembly     triangle list, no primitive restart, no vertex
+    //                      bindings/attributes.
+    //   depth/stencil      test on (GREATER_OR_EQUAL) when the scope has
+    //                      depth, off otherwise; writes off; stencil off.
+    //   colour             one attachment, blending off, RGBA write mask,
+    //                      logic op off.
+    //
+    // Descriptor sets and push constants are not part of the baseline:
+    // overlays bind the bindless set against their own layout.
+    auto set_overlay_baseline_state(VkCommandBuffer command_buffer, OverlayStage stage,
+                                    OverlayScope const &scope) noexcept -> void;
+
+    struct LightIconsInfo {
+        VkDeviceAddress lights_address = 0;
+        VkDeviceAddress ubo_address = 0;
+        std::uint32_t light_count = 0;
+
+        PipelineNodeHandle pipeline{};
+        std::uint32_t icon_texture_index = 0;
+        std::uint32_t sampler_index = 0;
+        float icon_world_size = 0.5F;
+    };
+
+    // Billboarded icons at every punctual light. Records draws only, so it
+    // is meant to run as an OverlayStage::scene overlay's record().
+    auto light_icons(Context const &context, LightIconsInfo const &info, OverlayScope const &scope) noexcept -> void;
 
     auto bloom(Context const &context, BloomPassInfo const &info)
             -> std::expected<std::optional<BloomTextureIndex>, RendererError>;

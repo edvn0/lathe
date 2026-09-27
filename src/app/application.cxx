@@ -59,7 +59,6 @@
 #include "physics/physics_world.hxx"
 #include "portable-file-dialogs.h"
 #include "rendering/renderer.hxx"
-#include "rendering/renderer_application_policy.hxx"
 #include "rendering/scene.hxx"
 
 namespace {
@@ -323,11 +322,11 @@ Application::~Application() {
 
 auto Application::on_ui(std::uint32_t frame_index) -> void {
     // Fullscreen play covers the whole swapchain with no editor chrome at
-    // all, exactly like this engine's play mode always has -- see
-    // Renderer::record_frame's matching `fullscreen` branch, which this must
-    // stay in lockstep with: it decides whether the 3D scene lands straight
-    // in the swapchain or in the offscreen viewport_target the Viewport
-    // panel below displays.
+    // all, exactly like this engine's play mode always has -- see the
+    // CompositeTarget main.cxx's draw() passes to Renderer::record_frame,
+    // which this must stay in lockstep with: it decides whether the 3D
+    // scene lands straight in the swapchain or in the offscreen
+    // viewport_target the Viewport panel below displays.
     if (is_playing && play_fullscreen) {
         return;
     }
@@ -1889,6 +1888,33 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
             ImPlot::EndPlot();
         }
+
+        // Overlays run inside the forward/composite passes, so their GPU
+        // time is already part of those stages above; this breaks it out.
+        auto const &overlay_timings = renderer->last_frame_timings().overlays;
+
+        if (!overlay_timings.empty() &&
+            ImGui::BeginTable("Overlay timings", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Overlay");
+            ImGui::TableSetupColumn("Stage");
+            ImGui::TableSetupColumn("Prepare (ms)");
+            ImGui::TableSetupColumn("Record (ms)");
+            ImGui::TableHeadersRow();
+
+            for (auto const &timing: overlay_timings) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(timing.name.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(timing.stage == OverlayStage::scene ? "scene" : "ui");
+                ImGui::TableNextColumn();
+                ImGui::Text("%.3f", static_cast<double>(timing.prepare_milliseconds));
+                ImGui::TableNextColumn();
+                ImGui::Text("%.3f", static_cast<double>(timing.record_milliseconds));
+            }
+
+            ImGui::EndTable();
+        }
     });
 
     widget("Lighting", [&] {
@@ -2093,6 +2119,37 @@ auto Application::update(float delta_time) -> void {
     game->on_update(*active_scene(), delta_time);
     systems::lifetime(active_scene()->get_registry(), *active_scene()->physics_world, delta_time);
 }
+auto Application::register_overlays() -> void {
+    auto add = [this](OverlayDesc desc) {
+        auto const name = desc.name;
+
+        if (auto registration = renderer->register_overlay(std::move(desc)); registration) {
+            overlays.push_back(std::move(*registration));
+        } else {
+            error("Could not register the '{}' overlay: {}", name, describe(registration.error()));
+        }
+    };
+
+    add(OverlayDesc{
+            .name = "Debug lines",
+            .stage = OverlayStage::scene,
+            .order = 0,
+            .prepare = {},
+            .record = [this](OverlayRecordContext const &overlay_context) { debug_renderer->record(overlay_context); },
+    });
+
+    add(OverlayDesc{
+            .name = "ImGui",
+            .stage = OverlayStage::ui,
+            .order = 0,
+            .prepare = {},
+            .record =
+                    [this](OverlayRecordContext const &overlay_context) {
+                        imgui_renderer->render(overlay_context.command_buffer, overlay_context.frame_index);
+                    },
+    });
+}
+
 auto Application::on_startup() -> void {
 
     std::array const shader_directories{
@@ -2107,6 +2164,7 @@ auto Application::on_startup() -> void {
                                .size = 12,
                        });
     editor_icons = std::make_unique<gui::EditorIcons>(*renderer);
+    register_overlays();
     renderer->queue_render_thread_event([this] {
         auto models = create_engine_models(*renderer);
 

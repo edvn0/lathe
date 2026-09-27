@@ -1,9 +1,6 @@
 # ------------------------------------------------------------------------------
 # engine_app -- Application (owns Scene/PhysicsWorld lifecycle, editor/play
-# state) and the renderer_application_policy.cxx impl (its .hxx stays in
-# engine_rendering -- this is the one deliberate header/impl module split in
-# the codebase, needed because RendererApplicationPolicy's .cxx needs the
-# complete Application type).
+# state, and the debug-line/ImGui overlays it registers with the Renderer).
 # ------------------------------------------------------------------------------
 
 add_library(
@@ -11,7 +8,6 @@ add_library(
     STATIC
         application.cxx
         benchmark.cxx
-        renderer_application_policy.cxx
 )
 
 target_include_directories(

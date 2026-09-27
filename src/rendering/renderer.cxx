@@ -17,7 +17,6 @@
 #include <utility>
 #include <vector>
 
-#include "app/application.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/slang_compiler.hxx"
 #include "core/logger.hxx"
@@ -30,7 +29,6 @@
 #include "gpu/vk_barrier.hxx"
 #include "maths/aabb.hxx"
 #include "rendering/render_passes.hxx"
-#include "rendering/renderer_application_policy.hxx"
 #include "rendering/screenshot.hxx"
 
 // ForwardPushConstants, ShadowPushConstants, CompositePushConstants,
@@ -39,6 +37,19 @@
 // corresponding .slang shader's push_constant block -- see the "Shader
 // push-constant reflection" section of CMakeLists.txt.
 #include "shader_push_constants.hxx"
+
+namespace {
+    // Each frame's timestamp pool: the fixed RenderStage pairs, then four
+    // queries per overlay timing slot -- prepare() begin/end and record()
+    // begin/end (see Renderer::record_overlay_prepares/record_overlay_stage).
+    constexpr std::uint32_t queries_per_overlay = 4;
+    constexpr std::uint32_t overlay_query_base = query_count;
+    constexpr std::uint32_t total_query_count = query_count + (OverlayRegistry::max_overlays * queries_per_overlay);
+
+    [[nodiscard]] constexpr auto overlay_query(std::uint32_t slot, std::uint32_t which) noexcept -> std::uint32_t {
+        return overlay_query_base + (slot * queries_per_overlay) + which;
+    }
+} // namespace
 
 namespace {
     [[nodiscard]]
@@ -1232,7 +1243,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .pNext = nullptr,
             .flags = 0,
             .queryType = VK_QUERY_TYPE_TIMESTAMP,
-            .queryCount = static_cast<std::uint32_t>(RenderStage::Count) * 2,
+            .queryCount = total_query_count,
             .pipelineStatistics = 0,
     };
 
@@ -1246,7 +1257,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         timestamp_queries_[frame_index] = FrameTimestamps{.query_pool = query_pool, .has_results = false};
-        vkResetQueryPool(context_.device, query_pool, 0, query_count);
+        vkResetQueryPool(context_.device, query_pool, 0, total_query_count);
     }
 
     pipeline_stat_queries_.resize(frames_in_flight);
@@ -1299,6 +1310,10 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     mark_lights_dirty();
 
+    if (auto light_icons = register_light_icon_overlay(); !light_icons) {
+        return std::unexpected(light_icons.error());
+    }
+
     rollback_on_failure = false;
     initialized_ = true;
 
@@ -1309,6 +1324,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
 auto Renderer::destroy() noexcept -> void {
     debug("[Renderer::destroy] enter");
+
+    light_icon_overlay_.reset();
 
     screenshot_->close();
 
@@ -2064,7 +2081,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     auto &frame_query = timestamp_queries_[frame_index];
 
-    vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, query_count);
+    vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, total_query_count);
 
     auto &frame_pipeline_query = pipeline_stat_queries_[frame_index];
 
@@ -2101,6 +2118,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     }
 
     auto &frame = frames_[frame_index];
+
+    frame.view_projection = matrices.projection * matrices.view;
 
     frame.draws.clear();
     frame.transforms.clear();
@@ -2911,6 +2930,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                         static_cast<float>(end - start) * timestamp_period_ / 1'000'000.0F;
             }
 
+            read_overlay_timings(frame_query);
             last_frame_timings_.valid = true;
         }
 
@@ -3172,7 +3192,7 @@ auto Renderer::record_ambient_occlusion_pass(render_pass::Context const &pass_co
 
 auto Renderer::record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                                    FrameTargets const &targets, std::uint32_t ao_texture_index,
-                                   render_pass::Callback debug_overlay)
+                                   render_pass::Callback scene_overlays)
         -> std::expected<render_pass::HdrTextureIndex, RendererError> {
     TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Forward Pass",
                  tracy::Color::RoyalBlue);
@@ -3201,15 +3221,10 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .blend_pipeline = forward_blend_pipeline_,
                     .opaque_instanced_pipeline = forward_instanced_pipeline_,
                     .blend_instanced_pipeline = forward_blend_instanced_pipeline_,
-                    .draw_light_icons = debug_draw_light_icons_,
-                    .light_icon_pipeline = light_icon_pipeline_,
-                    .light_icon_texture_index = light_icon_texture_.index,
-                    .linear_sampler_index = sampler_storage_.linear_clamp().index,
-                    .light_icon_world_size = light_icon_world_size_,
                     .ao_texture_index = ao_texture_index,
                     .ao_sampler_index = sampler_storage_.linear_clamp().index,
             },
-            debug_overlay);
+            scene_overlays);
 }
 
 auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
@@ -3241,23 +3256,25 @@ auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, Rende
 
 auto Renderer::record_composite_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
                                      SwapchainImage const &swapchain_image, render_pass::HdrTextureIndex hdr,
-                                     std::optional<render_pass::BloomTextureIndex> bloom, bool fullscreen,
-                                     render_pass::Callback ui_overlay) -> std::expected<void, RendererError> {
+                                     std::optional<render_pass::BloomTextureIndex> bloom, CompositeTarget target,
+                                     render_pass::Callback ui_overlays) -> std::expected<void, RendererError> {
     TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Composition",
                  tracy::Color::SeaGreen);
 
     // Fullscreen play covers the whole swapchain with the game exactly like
     // this engine always has -- composite() writes the tonemapped scene
-    // straight into the swapchain image and ui_overlay draws directly on
-    // top of it, all in one pass. Any other time (editing, or playing
+    // straight into the swapchain image and the ui overlays draw directly
+    // on top of it, all in one pass. Any other time (editing, or playing
     // embedded), the scene instead goes into this frame's offscreen
     // viewport_target -- which the editor's Viewport panel samples via
     // ImGui::Image -- and a second, separate pass clears the real swapchain
-    // and draws the full (docked) ImGui frame onto it. See the plan this
-    // shipped under for why: a docked "Viewport" panel is itself a real
-    // ImGui window, so it can't be the thing composite() paints the 3D
-    // scene onto without also being asked to host arbitrary editor chrome
-    // around it.
+    // and runs the ui overlays (the full, docked ImGui frame) onto it. See
+    // the plan this shipped under for why: a docked "Viewport" panel is
+    // itself a real ImGui window, so it can't be the thing composite()
+    // paints the 3D scene onto without also being asked to host arbitrary
+    // editor chrome around it.
+    bool const fullscreen = target == CompositeTarget::swapchain;
+
     auto const result = render_pass::composite(
             pass_context,
             render_pass::CompositePassInfo{
@@ -3273,7 +3290,7 @@ auto Renderer::record_composite_pass(render_pass::Context const &pass_context, F
                     .exposure = 1.0F,
                     .bloom_intensity = bloom_settings_.intensity,
             },
-            fullscreen ? ui_overlay : render_pass::Callback{});
+            fullscreen ? ui_overlays : render_pass::Callback{});
 
     if (!result) {
         return std::unexpected(result.error());
@@ -3291,7 +3308,7 @@ auto Renderer::record_composite_pass(render_pass::Context const &pass_context, F
                                  .target_view = swapchain_image.view,
                                  .extent = swapchain_image.extent,
                          },
-                         ui_overlay);
+                         ui_overlays);
 
     return {};
 }
@@ -3314,11 +3331,204 @@ auto Renderer::record_frame_end(VkCommandBuffer command_buffer, SwapchainImage c
     pipeline_stat_queries_[frame_index].has_results = true;
 }
 
-template<typename OverlayPolicy>
-[[nodiscard]] auto Renderer::record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
-                                          std::uint32_t frame_index, Application const &app, glm::mat4 const &vp)
-        -> std::expected<void, RendererError> {
+auto Renderer::make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> render_pass::Context {
+    return render_pass::Context{
+            .command_buffer = command_buffer,
+            .frame_index = frame_index,
+            .pipeline_graph = pipeline_graph_,
+            .resource_table = gpu_resource_table_,
+            .timestamp_query_pool = timestamp_queries_[frame_index].query_pool,
+    };
+}
+
+auto Renderer::record_overlay_prepares(render_pass::Context const &pass_context) -> void {
+    auto const command_buffer = pass_context.command_buffer;
+    auto &frame_query = timestamp_queries_[pass_context.frame_index];
+
+    frame_query.overlays.clear();
+
+    bool any_gpu_writes = false;
+
+    for (auto &entry: overlays_.all()) {
+        frame_query.overlays.push_back(RecordedOverlay{
+                .name = entry.desc.name,
+                .stage = entry.desc.stage,
+                .slot = entry.slot,
+        });
+
+        // Written even without a prepare() so every recorded overlay's four
+        // queries are always available at readback.
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pass_context.timestamp_query_pool,
+                             overlay_query(entry.slot, 0));
+
+        if (entry.desc.prepare) {
+            ZoneTransientN(cpu_zone, entry.desc.name.c_str(), true);
+            TracyVkZoneTransient(context_.host_query_context.context, gpu_zone, command_buffer, entry.desc.name.c_str(),
+                                 true);
+
+            auto const result = entry.desc.prepare(OverlayPrepareContext{
+                    .command_buffer = command_buffer,
+                    .frame_index = pass_context.frame_index,
+            });
+
+            any_gpu_writes = any_gpu_writes || result == OverlayPrepareResult::recorded_gpu_writes;
+        }
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pass_context.timestamp_query_pool,
+                             overlay_query(entry.slot, 1));
+    }
+
+    if (!any_gpu_writes) {
+        return;
+    }
+
+    // The one synchronisation point the overlay contract promises: every
+    // transfer/compute write any prepare() recorded becomes visible to
+    // every stage an overlay's draw can read it from.
+    VkMemoryBarrier2 const barrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
+                            VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                            VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
+                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT |
+                             VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT,
+    };
+
+    VkDependencyInfo const dependency_info{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 1,
+            .pMemoryBarriers = &barrier,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers = nullptr,
+            .imageMemoryBarrierCount = 0,
+            .pImageMemoryBarriers = nullptr,
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+}
+
+auto Renderer::record_overlay_stage(render_pass::Context const &pass_context, OverlayStage stage,
+                                    OverlayScope const &scope, glm::mat4 const &view_projection) -> void {
+    auto const command_buffer = pass_context.command_buffer;
+
+    for (auto &entry: overlays_.stage(stage)) {
+        ZoneTransientN(cpu_zone, entry.desc.name.c_str(), true);
+        TracyVkZoneTransient(context_.host_query_context.context, gpu_zone, command_buffer, entry.desc.name.c_str(),
+                             true);
+
+        render_pass::set_overlay_baseline_state(command_buffer, stage, scope);
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             pass_context.timestamp_query_pool, overlay_query(entry.slot, 2));
+
+        entry.desc.record(OverlayRecordContext{
+                .command_buffer = command_buffer,
+                .frame_index = pass_context.frame_index,
+                .scope = scope,
+                .view_projection = view_projection,
+        });
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             pass_context.timestamp_query_pool, overlay_query(entry.slot, 3));
+    }
+}
+
+auto Renderer::read_overlay_timings(FrameTimestamps const &frame_query) -> void {
+    last_frame_timings_.overlays.clear();
+
+    auto const to_milliseconds = [&](std::uint64_t begin, std::uint64_t end) {
+        return end > begin ? static_cast<float>(end - begin) * timestamp_period_ / 1'000'000.0F : 0.0F;
+    };
+
+    for (auto const &recorded: frame_query.overlays) {
+        std::array<std::uint64_t, queries_per_overlay> results{};
+
+        auto const query_result = vkGetQueryPoolResults(
+                context_.device, frame_query.query_pool, overlay_query(recorded.slot, 0), queries_per_overlay,
+                sizeof(results), results.data(), sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
+
+        if (query_result != VK_SUCCESS) {
+            continue;
+        }
+
+        last_frame_timings_.overlays.push_back(OverlayTiming{
+                .name = recorded.name,
+                .stage = recorded.stage,
+                .prepare_milliseconds = to_milliseconds(results[0], results[1]),
+                .record_milliseconds = to_milliseconds(results[2], results[3]),
+        });
+    }
+}
+
+auto Renderer::register_overlay(OverlayDesc desc) -> std::expected<OverlayRegistration, RendererError> {
+    auto registration = overlays_.add(std::move(desc));
+
+    if (!registration) {
+        switch (registration.error()) {
+            case OverlayRegistryError::capacity_exceeded:
+                return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+            case OverlayRegistryError::empty_name:
+            case OverlayRegistryError::missing_record_callback:
+            case OverlayRegistryError::invalid_stage:
+                break;
+        }
+
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    return std::move(*registration);
+}
+
+auto Renderer::register_light_icon_overlay() -> std::expected<void, RendererError> {
+    auto registration = register_overlay(OverlayDesc{
+            .name = "Light icons",
+            .stage = OverlayStage::scene,
+            // Before the default-order overlays, as when this was drawn
+            // inline at the end of the forward pass ahead of debug lines.
+            .order = -100,
+            .prepare = {},
+            .record =
+                    [this](OverlayRecordContext const &context) {
+                        if (!debug_draw_light_icons_) {
+                            return;
+                        }
+
+                        auto const &frame = frames_[context.frame_index];
+
+                        render_pass::light_icons(make_pass_context(context.command_buffer, context.frame_index),
+                                                 render_pass::LightIconsInfo{
+                                                         .lights_address = frame.lights_buffer.device_address,
+                                                         .ubo_address = ubos_[context.frame_index].device_address,
+                                                         .light_count = frame.light_count,
+                                                         .pipeline = light_icon_pipeline_,
+                                                         .icon_texture_index = light_icon_texture_.index,
+                                                         .sampler_index = sampler_storage_.linear_clamp().index,
+                                                         .icon_world_size = light_icon_world_size_,
+                                                 },
+                                                 context.scope);
+                    },
+    });
+
+    if (!registration) {
+        return std::unexpected(registration.error());
+    }
+
+    light_icon_overlay_ = std::move(*registration);
+    return {};
+}
+
+auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError> {
     ZoneScopedNC("RecordFrame", tracy::Color::RoyalBlue);
+
+    auto const command_buffer = info.command_buffer;
+    auto const &swapchain_image = info.swapchain_image;
+    auto const frame_index = info.frame_index;
 
     if (!initialized_ || command_buffer == VK_NULL_HANDLE || swapchain_image.image == VK_NULL_HANDLE ||
         swapchain_image.view == VK_NULL_HANDLE || swapchain_image.format == VK_FORMAT_UNDEFINED ||
@@ -3336,16 +3546,33 @@ template<typename OverlayPolicy>
         return std::unexpected(targets.error());
     }
 
-    auto const pass_context = render_pass::Context{
-            .command_buffer = command_buffer,
-            .frame_index = frame_index,
-            .pipeline_graph = pipeline_graph_,
-            .resource_table = gpu_resource_table_,
-            .timestamp_query_pool = timestamp_queries_[frame_index].query_pool,
+    auto const pass_context = make_pass_context(command_buffer, frame_index);
+
+    // One overlay set for the whole frame: registrations made or dropped
+    // by overlay callbacks land once recording is done, so the prepare
+    // snapshot, the stages and the timing readback all agree.
+    auto const overlay_iteration = overlays_.iterate();
+
+    OverlayScope const scene_scope{
+            .extent = targets->extent,
+            .colour_format = frame.forward_target.hdr_format(),
+            .depth_format = frame.forward_target.depth_format(),
+            .samples = samples_,
     };
 
-    auto debug_overlay = [&] { OverlayPolicy::render_debug(app, command_buffer, vp, frame_index); };
-    auto ui_overlay = [&] { OverlayPolicy::render_ui(app, command_buffer, frame_index); };
+    OverlayScope const ui_scope{
+            .extent = swapchain_image.extent,
+            .colour_format = swapchain_image.format,
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    auto scene_overlays = [&] {
+        record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
+    };
+    auto ui_overlays = [&] { record_overlay_stage(pass_context, OverlayStage::ui, ui_scope, frame.view_projection); };
+
+    record_overlay_prepares(pass_context);
 
     if (auto shadows = record_shadow_pass(pass_context, frame, *targets); !shadows) {
         return shadows;
@@ -3361,7 +3588,7 @@ template<typename OverlayPolicy>
     }
 
     auto const hdr = record_forward_pass(pass_context, frame, *targets, *ao_texture_index,
-                                         render_pass::Callback::bind(debug_overlay));
+                                         render_pass::Callback::bind(scene_overlays));
     if (!hdr) {
         return std::unexpected(hdr.error());
     }
@@ -3371,10 +3598,8 @@ template<typename OverlayPolicy>
         return std::unexpected(bloom.error());
     }
 
-    bool const fullscreen = app.is_playing && app.play_fullscreen;
-
-    if (auto composited = record_composite_pass(pass_context, *targets, swapchain_image, *hdr, *bloom, fullscreen,
-                                                render_pass::Callback::bind(ui_overlay));
+    if (auto composited = record_composite_pass(pass_context, *targets, swapchain_image, *hdr, *bloom,
+                                                info.composite_target, render_pass::Callback::bind(ui_overlays));
         !composited) {
         return composited;
     }
@@ -3384,10 +3609,6 @@ template<typename OverlayPolicy>
     TracyVkCollectHost(context_.host_query_context.context);
     return {};
 }
-
-template auto Renderer::record_frame<ApplicationOverlayPolicy>(VkCommandBuffer, SwapchainImage const &, std::uint32_t,
-                                                               Application const &, glm::mat4 const &)
-        -> std::expected<void, RendererError>;
 
 
 auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {

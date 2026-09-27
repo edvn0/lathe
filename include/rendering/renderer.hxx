@@ -112,6 +112,12 @@ struct FogSettings {
 
 struct StageTimings {
     std::array<float, stage_count> milliseconds{};
+
+    // One entry per overlay that ran in the timed frame, in draw order.
+    // Not part of `milliseconds`: scene/ui overlays run inside the forward
+    // and composite passes, so their time is already counted there.
+    std::vector<OverlayTiming> overlays;
+
     bool valid = false;
 };
 
@@ -160,6 +166,25 @@ struct SwapchainImage {
     VkImageView view = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
+};
+
+// Where the tonemapped scene goes this frame.
+enum class CompositeTarget : std::uint8_t {
+    // Fullscreen play: straight into the swapchain image, with the
+    // OverlayStage::ui overlays drawn on top in the same scope.
+    swapchain,
+
+    // Editor (and embedded play): into the frame's viewport_target, which
+    // the editor's Viewport panel samples; a second scope then clears the
+    // swapchain image and runs the OverlayStage::ui overlays against it.
+    viewport_panel,
+};
+
+struct FrameRecordInfo {
+    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    SwapchainImage swapchain_image{};
+    std::uint32_t frame_index = 0;
+    CompositeTarget composite_target = CompositeTarget::viewport_panel;
 };
 
 struct UBO {
@@ -482,10 +507,14 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto prepare_frame(VkCommandBuffer command_buffer, const CameraMatrices &, std::uint32_t frame_index)
             -> std::expected<void, RendererError>;
 
-    template<typename OverlayPolicy>
-    [[nodiscard]] auto record_frame(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
-                                    std::uint32_t frame_index, Application const &app, glm::mat4 const &vp)
-            -> std::expected<void, RendererError>;
+    // Records the frame's passes, running every registered overlay at its
+    // stage. Call after prepare_frame() for the same frame_index.
+    [[nodiscard]] auto record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError>;
+
+    // Registers an overlay (see overlay.hxx for the contract). It runs from
+    // the next record_frame() until the returned registration is destroyed,
+    // which must happen before this Renderer is.
+    [[nodiscard]] auto register_overlay(OverlayDesc desc) -> std::expected<OverlayRegistration, RendererError>;
 
     [[nodiscard]]
     auto resize(VkExtent2D extent) -> std::expected<void, RendererError>;
@@ -508,16 +537,6 @@ struct Renderer final : public IMeshSink, public IModelSink {
                static_cast<float>(frames_[index].forward_target.extent().height);
     }
 
-    // The resolution the forward pass (and thus aspect() above) actually
-    // rendered at this frame -- the editor's embedded Viewport panel size in
-    // non-fullscreen mode, which can differ from the swapchain/window size.
-    // Anything drawn into the same render pass as the forward geometry (e.g.
-    // DebugRenderer's overlay, invoked from within forward_geometry()) must
-    // size its viewport off this, not swapchain().extent(), or its lines
-    // render with the wrong aspect against the projection aspect() built.
-    [[nodiscard]] auto forward_extent(std::uint32_t index) const noexcept -> VkExtent2D {
-        return frames_[index].forward_target.extent();
-    }
 
     // See RendererFrame::viewport_target's doc comment. Valid any time
     // record_frame() has run at least once for this frame_index in embedded
@@ -752,6 +771,10 @@ private:
         Buffer lights_buffer{};
         std::uint32_t light_count = 0;
 
+        // projection * view of the camera prepare_frame() was given; handed
+        // to OverlayStage::scene overlays as OverlayRecordContext::view_projection.
+        glm::mat4 view_projection{1.0F};
+
         ForwardTarget forward_target{};
 
         // LDR copy of forward_target's tonemapped/composited output, sized
@@ -917,6 +940,20 @@ private:
 
     auto clear_submissions() noexcept -> void;
 
+    // An overlay that ran in a frame, copied at record time so the timing
+    // readback frames_in_flight later doesn't depend on it still being
+    // registered.
+    struct RecordedOverlay {
+        std::string name;
+        OverlayStage stage = OverlayStage::scene;
+        std::uint32_t slot = 0;
+    };
+
+    struct FrameTimestamps {
+        VkQueryPool query_pool{VK_NULL_HANDLE};
+        bool has_results{false};
+        std::vector<RecordedOverlay> overlays;
+    };
     // ---- record_frame() and its passes -------------------------------
     //
     // record_frame() is just the frame's pass sequence; each record_*_pass
@@ -984,7 +1021,7 @@ private:
     [[nodiscard]]
     auto record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                              FrameTargets const &targets, std::uint32_t ao_texture_index,
-                             render_pass::Callback debug_overlay)
+                             render_pass::Callback scene_overlays)
             -> std::expected<render_pass::HdrTextureIndex, RendererError>;
 
     [[nodiscard]]
@@ -999,8 +1036,27 @@ private:
     [[nodiscard]]
     auto record_composite_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
                                SwapchainImage const &swapchain_image, render_pass::HdrTextureIndex hdr,
-                               std::optional<render_pass::BloomTextureIndex> bloom, bool fullscreen,
-                               render_pass::Callback ui_overlay) -> std::expected<void, RendererError>;
+                               std::optional<render_pass::BloomTextureIndex> bloom, CompositeTarget target,
+                               render_pass::Callback ui_overlays) -> std::expected<void, RendererError>;
+
+    [[nodiscard]]
+    auto make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> render_pass::Context;
+
+    // Runs every overlay's prepare() ahead of the first pass, snapshots the
+    // overlay list for this frame's timing readback, and records the one
+    // global barrier if any prepare() recorded GPU writes.
+    auto record_overlay_prepares(render_pass::Context const &pass_context) -> void;
+
+    // Runs one stage's overlays inside the host pass's open rendering
+    // scope, resetting the baseline state before each.
+    auto record_overlay_stage(render_pass::Context const &pass_context, OverlayStage stage, OverlayScope const &scope,
+                              glm::mat4 const &view_projection) -> void;
+
+    [[nodiscard]]
+    auto register_light_icon_overlay() -> std::expected<void, RendererError>;
+
+    // Fills last_frame_timings_.overlays from a retired frame's queries.
+    auto read_overlay_timings(FrameTimestamps const &frame_query) -> void;
 
     // Screenshot copy (if one was requested) or the plain present
     // transition, then the end-of-frame timestamp.
@@ -1061,6 +1117,11 @@ private:
 
     ImageHandle light_icon_texture_{};
     bool debug_draw_light_icons_ = false;
+
+    // Declared ahead of every registration it hands out, so it outlives
+    // them (members are destroyed in reverse order).
+    OverlayRegistry overlays_;
+    OverlayRegistration light_icon_overlay_;
     bool meshlet_culling_ = true;
     float light_icon_world_size_ = 0.5F;
 
@@ -1116,10 +1177,6 @@ private:
     std::atomic_uint32_t queued_events_;
     std::mutex queue_mutex_;
 
-    struct FrameTimestamps {
-        VkQueryPool query_pool{VK_NULL_HANDLE};
-        bool has_results{false};
-    };
     std::vector<FrameTimestamps> timestamp_queries_;
     float timestamp_period_{1.0F};
 
