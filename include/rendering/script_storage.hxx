@@ -22,16 +22,11 @@ struct ScriptStorageCreateInfo {
     std::uint32_t capacity = 0;
 };
 
-// Backs ScriptHandle = Handle<ScriptSlotData, 0> (see scene/script_handle.hxx).
 struct ScriptSlotData {
     std::unique_ptr<IScript> script;
 };
 
-// Parallel to MeshStorage: a generational-handle ObjectPool holding CPU-side
-// script instances. Purely CPU-side, no GPU/Vulkan aspect at all -- unlike
-// the other *Storage classes here, this one's only job is to own one shared
-// IScript per handle so many entities can reference the same instance (see
-// script.hxx).
+// Generational pool of script instances. Each handle owns one IScript shared by every entity referencing it.
 class ScriptStorage {
 public:
     ScriptStorage() = default;
@@ -45,10 +40,7 @@ public:
     [[nodiscard]]
     static auto create(ScriptStorageCreateInfo const &create_info) -> std::expected<ScriptStorage, ScriptStorageError>;
 
-    // Allocates ONE shared instance and returns a handle to it -- every
-    // entity that gets this handle via Components::Script resolves to this
-    // same IScript&. Do not call this once per entity; call it once per
-    // logical behavior and share the returned handle.
+    // Creates one shared instance. Call once per behaviour and share the handle, not once per entity.
     template<typename T, typename... Args>
     [[nodiscard]] auto emplace(Args &&...args) -> std::expected<ScriptHandle, ScriptStorageError> {
         auto allocation = slots_.allocate();

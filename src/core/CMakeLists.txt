@@ -1,6 +1,5 @@
 # ------------------------------------------------------------------------------
-# engine_core -- bottom layer: allocators, handles, logging, error plumbing,
-# thread pool. No dependency on any other engine_<module> library.
+# engine_core: allocators, handles, logging, errors, thread pool.
 # ------------------------------------------------------------------------------
 
 add_library(
@@ -20,12 +19,8 @@ target_include_directories(
         "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
 )
 
-# Lets thread_pool.cxx set background worker threads to SCHED_IDLE (see
-# BS::this_thread::set_os_thread_priority) so they never starve the
-# render/main thread of CPU time regardless of core count or what else is
-# running on the system -- PUBLIC so every consumer of engine_core's headers
-# sees the same BS_thread_pool.hpp feature set (this must be defined
-# identically in every translation unit that includes that header).
+# Allows SCHED_IDLE worker threads. PUBLIC because BS_thread_pool.hpp must see
+# the same definition in every translation unit.
 target_compile_definitions(
     engine_core
     PUBLIC

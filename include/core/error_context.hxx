@@ -12,12 +12,8 @@
 
 #include "core/fly_string.hxx"
 
-// Shared error leaf, generalizing what DeviceError already captured
-// (message + VkResult + source_location) so every subsystem can produce the
-// same shape of "why did this actually fail" context. `diagnostics` stays a
-// plain std::string (not FlyString) because Slang compile logs are large and
-// effectively unique -- FlyString's intern pool is never freed, so interning
-// those would leak for the life of the process.
+// The leaf of every error: message, VkResult and source location. `diagnostics` is a std::string because
+// Slang logs are large and unique, and FlyString's intern pool is never freed.
 struct ErrorContext {
     FlyString message;
     std::optional<VkResult> vk_result;
@@ -26,11 +22,7 @@ struct ErrorContext {
     std::source_location location = std::source_location::current();
 };
 
-// Forward declarations only -- ErrorCause below must be able to reference
-// these while they are still incomplete. Their `describe()` overloads (see
-// error_describe.hxx) are the only place these need to be complete, and that
-// lives in a single .cxx that includes every error header. Generated from
-// error_types.def -- add a new subsystem there, not here.
+// Forward declarations generated from error_types.def; add new subsystems there.
 #define X(T) struct T;
 #define NX(ns, T)                                                                                                      \
     namespace ns {                                                                                                     \
@@ -40,10 +32,8 @@ struct ErrorContext {
 #undef X
 #undef NX
 
-// Copyable heap indirection so ErrorCause can hold currently-incomplete /
-// mutually-recursive aggregate error types. shared_ptr (not unique_ptr) is
-// required: std::expected<T, E> copies E by value throughout this codebase,
-// and a unique_ptr member would silently make every *Error type move-only.
+// Copyable indirection for incomplete, mutually recursive error types. shared_ptr because a unique_ptr would
+// make every *Error move-only.
 template<class T>
 struct Boxed {
     std::shared_ptr<const T> ptr;
@@ -63,11 +53,7 @@ struct Boxed {
     }
 };
 
-// The cause of a subsystem error: either a leaf ErrorContext, or a boxed
-// aggregate error one layer down. Aggregates convert to this via their
-// `.cause` field (see e.g. RendererError) rather than holding N
-// always-present nested structs, only one of which was ever meaningful.
-// Alternatives generated from error_types.def -- add a new subsystem there.
+// An error's cause: a leaf ErrorContext or a boxed error one layer down. Generated from error_types.def.
 #define X(T) , Boxed<T>
 #define NX(ns, T) , Boxed<ns::T>
 using ErrorCause = std::variant<ErrorContext

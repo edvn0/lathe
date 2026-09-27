@@ -45,15 +45,7 @@ namespace {
 
         switch (memory) {
             case BufferMemory::device:
-                //
-                // Proper device-local memory.
-                //
-                // There is deliberately no HOST_VISIBLE requirement and no
-                // persistent mapping request here.
-                //
-                // A buffer can still have a valid VkDeviceAddress while residing
-                // entirely in GPU-local, non-host-visible memory.
-                //
+                // Device-local, not host-visible or mapped. Still has a device address if requested.
                 create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
                 create_info.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -61,16 +53,7 @@ namespace {
                 break;
 
             case BufferMemory::upload:
-                //
-                // CPU -> GPU.
-                //
-                // Persistent mapping avoids map/unmap overhead for transient and
-                // streaming uploads.
-                //
-                // SEQUENTIAL_WRITE tells VMA that CPU access primarily consists of
-                // sequential writes, allowing it to pick an appropriate memory
-                // type such as write-combined memory where applicable.
-                //
+                // CPU -> GPU. Persistently mapped; SEQUENTIAL_WRITE lets VMA choose write-combined memory.
                 create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
 
                 create_info.flags =
@@ -83,18 +66,7 @@ namespace {
                 break;
 
             case BufferMemory::readback:
-                //
-                // GPU -> CPU.
-                //
-                // RANDOM is the appropriate VMA host-access mode for memory that
-                // the CPU genuinely reads.
-                //
-                // HOST_CACHED is particularly useful for large readbacks such as
-                // screenshots.
-                //
-                // HOST_COHERENT is not required. invalidate() handles
-                // non-coherent allocations correctly.
-                //
+                // GPU -> CPU. RANDOM access, preferably cached. May be non-coherent; invalidate() handles that.
                 create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
 
                 create_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
@@ -200,7 +172,7 @@ auto Buffer::read(VkDeviceSize offset, std::span<std::byte> destination) -> std:
 
     if (auto invalidated = invalidate(offset, read_size); !invalidated) {
 
-        return std::unexpected{std::move(invalidated.error())};
+        return std::unexpected{invalidated.error()};
     }
 
     std::memcpy(destination.data(), mapped_data() + offset, destination.size_bytes());
@@ -311,11 +283,7 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
         return std::unexpected{make_buffer_error("vmaCreateBuffer failed", vk_result)};
     }
 
-    //
-    // upload/readback explicitly requested persistent mappings.
-    //
-    // device buffers deliberately do not.
-    //
+    // Only upload and readback buffers are mapped.
     if (requires_mapping(create_info.memory) && result.allocation_info.pMappedData == nullptr) {
         result.destroy();
         return std::unexpected{make_buffer_error("VMA returned an unmapped host-visible buffer allocation",
@@ -327,16 +295,10 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
     if (!create_info.debug_name.empty()) {
         auto const debug_name = std::string{create_info.debug_name};
         vmaSetAllocationName(ctx.allocator, result.allocation, debug_name.c_str());
-        static_cast<void>(vk::set_object_name(ctx.device, VK_OBJECT_TYPE_BUFFER, vk::object_handle(result.buffer),
-                                              debug_name.c_str()));
+        vk::set_object_name(ctx.device, VK_OBJECT_TYPE_BUFFER, vk::object_handle(result.buffer), debug_name);
     }
 
-    //
-    // Buffer Device Address is independent of CPU visibility/mapping.
-    //
-    // A fully device-local allocation can and normally should still expose a
-    // VkDeviceAddress when SHADER_DEVICE_ADDRESS usage was requested.
-    //
+    // Device addresses don't depend on host visibility.
     if ((create_info.usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
 
         VkBufferDeviceAddressInfo const address_info{

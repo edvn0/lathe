@@ -193,16 +193,7 @@ auto SlangLibrary::create(std::filesystem::path const &library_path) -> std::exp
                                           "The Slang library path is empty.")};
     }
 
-    /*
-     * Preserve the path exactly. MinGW's std::filesystem normalization can
-     * turn a UNC prefix:
-     *
-     *   \\server\share
-     *
-     * into:
-     *
-     *   \server\share
-     */
+    // Keep the path as given; MinGW's normalization turns \\server\share into \server\share.
     auto resolved_path = library_path;
     auto const &native_path = resolved_path.native();
 
@@ -361,14 +352,7 @@ auto SlangLibrary::destroy() noexcept -> void {
         return;
     }
 
-    /*
-     * All Slang objects created through this DLL must already have been
-     * released before FreeLibrary() is called.
-     *
-     * SlangCompiler should therefore declare SlangLibrary before its
-     * global-session ComPtr, or explicitly reset the global session before
-     * calling SlangLibrary::destroy().
-     */
+    // Every Slang object must be released before FreeLibrary().
     impl_->create_global_session = nullptr;
 
     if (impl_->module != nullptr) {

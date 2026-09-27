@@ -69,9 +69,7 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
                     .pImmutableSamplers = nullptr,
             },
             VkDescriptorSetLayoutBinding{
-                    // Scalar-element view of the same sampled_2d images, for
-                    // SampleCmpLevelZero. See bindless.slang for why this
-                    // can't just alias binding 0.
+                    // Scalar-typed view of the sampled_2d images, which SampleCmpLevelZero requires.
                     .binding = binding_index(GpuResourceBinding::sampled_2d_depth),
                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                     .descriptorCount = table.image_capacity_,
@@ -225,45 +223,15 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
         append_image_write(binding_index(GpuResourceBinding::sampled_2d), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                            sampled_2d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // Same image, same view -- just declared with a scalar element type
-        // for SampleCmpLevelZero. See bindless.slang / sampled_2d_depth.
+        // Same view, declared with a scalar element type for SampleCmpLevelZero.
         append_image_write(binding_index(GpuResourceBinding::sampled_2d_depth), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                            sampled_2d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        /*
-         * A production implementation should use dedicated
-         * fallback cube/array/storage images here. Until
-         * those defaults exist, only write categories for
-         * which a valid view exists.
-         */
-
+        // Cube/array/storage bindings have no fallback images yet, so only write the ones with a view.
         if (record.storage_2d != VK_NULL_HANDLE) {
             append_image_write(binding_index(GpuResourceBinding::storage_2d), index, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                record.storage_2d, VK_IMAGE_LAYOUT_GENERAL);
         }
-
-        /*
-          if (record.sampled_cube != VK_NULL_HANDLE) {
-            append_image_write(binding_index(GpuResourceBinding::sampled_cube),
-          index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, record.sampled_cube,
-                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-          }
-
-          if (record.sampled_2d_array != VK_NULL_HANDLE) {
-            append_image_write(binding_index(GpuResourceBinding::sampled_2d_array),
-                               index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                               record.sampled_2d_array,
-                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-          }
-
-
-
-          if (record.storage_2d_array != VK_NULL_HANDLE) {
-            append_image_write(binding_index(GpuResourceBinding::storage_2d_array),
-                               index, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                               record.storage_2d_array, VK_IMAGE_LAYOUT_GENERAL);
-          }
-          */
 
         frame.image_revisions[index] = record.revision;
     }

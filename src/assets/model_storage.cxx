@@ -3,9 +3,7 @@
 #include <utility>
 
 auto ModelStorage::create(ModelStorageCreateInfo const &create_info) -> std::expected<ModelStorage, ModelStorageError> {
-    // Slot zero is permanently unused -- see model.hxx's comment on
-    // ModelHandle's Sentinel = 0 -- so at least one real slot needs room
-    // beyond it.
+    // Slot zero is never used, so at least one more slot is needed.
     if (create_info.capacity < 2) {
         return std::unexpected(ModelStorageError{.type = ModelStorageErrorType::invalid_argument});
     }
@@ -29,11 +27,7 @@ auto ModelStorage::create_model(ModelSlotData data) -> std::expected<ModelHandle
     auto &[handle, slot] = *allocation;
 
     slot = std::move(data);
-    // A freshly allocated slot always starts with exactly one owner,
-    // regardless of what ref_count the caller's `data` happened to carry
-    // (e.g. create_pending_model() below copies a fallback slot's data
-    // wholesale, which would otherwise also copy the fallback's own
-    // ref_count onto this unrelated new handle).
+    // A new slot has one owner, whatever ref_count `data` carried (e.g. a copied fallback's).
     slot.ref_count = 1;
 
     return handle;
@@ -57,10 +51,7 @@ auto ModelStorage::upgrade_pending_model(ModelHandle handle, ModelSlotData data)
         return std::unexpected(ModelStorageError{.type = ModelStorageErrorType::invalid_handle});
     }
 
-    // Preserve the existing occupant's ref_count -- this replaces a pending
-    // placeholder's data with the real, finished model in place (same
-    // handle identity throughout, see this function's header comment), it
-    // does not change who owns the handle.
+    // Replacing the data doesn't change who owns the handle.
     auto const preserved_ref_count = slot->ref_count;
     *slot = std::move(data);
     slot->ref_count = preserved_ref_count;

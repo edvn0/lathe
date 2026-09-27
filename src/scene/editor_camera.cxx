@@ -10,7 +10,7 @@ namespace {
     constexpr float pitch_limit_degrees = 89.0F;
     constexpr glm::vec3 world_up{0.0F, 1.0F, 0.0F};
 
-    // Core coordinate transformation: standard LH Spherical -> Cartesian Basis
+    // Left-handed spherical to Cartesian basis.
     struct CameraBasis {
         glm::vec3 forward;
         glm::vec3 right;
@@ -24,11 +24,10 @@ namespace {
         glm::vec3 const forward = glm::normalize(
                 glm::vec3{std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw)});
 
-        // Left-Handed convention matching glm::lookAtLH
         glm::vec3 const right = glm::normalize(glm::cross(world_up, forward));
         glm::vec3 const up = glm::normalize(glm::cross(forward, right));
 
-        return {forward, right, up};
+        return {.forward = forward, .right = right, .up = up};
     }
 
     auto is_forward_key(std::int32_t key) noexcept -> bool { return key == GLFW_KEY_W; }
@@ -83,10 +82,10 @@ EditorCamera::EditorCamera(EditorCameraCreateInfo const &create_info) noexcept :
 }
 
 auto EditorCamera::on_mouse_moved(float delta_x, float delta_y, bool dragging) noexcept -> void {
-    if (!dragging)
+    if (!dragging) {
         return;
+    }
 
-    // Subtracting delta_x ensures turning left rotates camera left
     yaw_degrees_ -= delta_x * look_sensitivity_;
     pitch_degrees_ =
             std::clamp(pitch_degrees_ - (delta_y * look_sensitivity_), -pitch_limit_degrees, pitch_limit_degrees);
@@ -127,18 +126,24 @@ auto EditorCamera::rebuild_basis() noexcept -> void {
 auto EditorCamera::update(float delta_time_seconds) noexcept -> void {
     auto const speed = move_speed_ * (sprinting_ ? sprint_multiplier_ : 1.0F) * delta_time_seconds;
 
-    if (moving_forward_)
+    if (moving_forward_) {
         position_ += forward_ * speed;
-    if (moving_backward_)
+    }
+    if (moving_backward_) {
         position_ -= forward_ * speed;
-    if (moving_right_)
-        position_ += right_ * speed; // D key -> Positive right_
-    if (moving_left_)
-        position_ -= right_ * speed; // A key -> Negative right_
-    if (moving_up_)
+    }
+    if (moving_right_) {
+        position_ += right_ * speed;
+    }
+    if (moving_left_) {
+        position_ -= right_ * speed;
+    }
+    if (moving_up_) {
         position_ += up_ * speed;
-    if (moving_down_)
+    }
+    if (moving_down_) {
         position_ -= up_ * speed;
+    }
 }
 
 auto EditorCamera::view() const noexcept -> glm::mat4 { return glm::lookAtLH(position_, position_ + forward_, up_); }

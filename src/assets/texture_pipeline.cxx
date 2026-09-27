@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
 #include <source_location>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -21,20 +23,7 @@
 
 namespace {
 
-    // Bump whenever the cached .ktx2 payload's format/content changes in a
-    // way that makes existing cache files stale -- this is folded into the
-    // cache key (see cache_path_for), so a bump just makes every prior
-    // entry unreachable under its old filename rather than needing an
-    // explicit migration. version 2: the cache now stores the
-    // already-transcoded BC7/BC5 result instead of the pre-transcode UASTC
-    // container (see encode_and_transcode/try_load_cached) -- a warm load
-    // used to pay a full UASTC->BC7 transcode on every hit (BC7 is an
-    // expensive transcode target; this alone measured ~22s of aggregate
-    // worker time across Sponza's 72 textures on an already-warm cache),
-    // which a plain block-data file read avoids entirely. version 3:
-    // dropped to KTX_PACK_UASTC_LEVEL_FASTEST (see encode_uastc) -- the
-    // cache stores encode output now, so a quality change has to bump this
-    // too or old entries would keep serving the previous quality forever.
+    // Folded into the cache key; bump whenever the cached .ktx2 content changes so stale entries are ignored.
     constexpr int texture_pipeline_encoder_version = 3;
 
     auto make_error(TexturePipelineErrorType type, std::string_view message = {},
@@ -58,8 +47,7 @@ namespace {
 
     using KtxTexturePtr = std::unique_ptr<ktxTexture2, KtxTextureDeleter>;
 
-    // FNV-1a. Cache keys only need to be stable and well-distributed on this
-    // machine, not cryptographically strong or portable across processes.
+    // FNV-1a. Keys only need to be stable on this machine.
     [[nodiscard]]
     auto fnv1a(std::string_view data) noexcept -> std::uint64_t {
         auto hash = std::uint64_t{14695981039346656037ULL};
@@ -74,7 +62,7 @@ namespace {
 
     [[nodiscard]]
     auto to_hex(std::uint64_t value) -> std::string {
-        static constexpr char digits[] = "0123456789abcdef";
+        static constexpr std::string_view digits = "0123456789abcdef";
 
         std::string text(16, '0');
 
@@ -94,10 +82,7 @@ namespace {
         return cache_directory / std::format("{}.{}.ktx2", stem, to_hex(fnv1a(key)));
     }
 
-    // DecodedImage hands back either 8-bit RGBA (stb) or RGBA16F (EXR). UASTC
-    // encoding always wants 8-bit input; this project's EXR usage is always
-    // LDR-range PBR data (normals, roughness), never true HDR, so clamping to
-    // [0,1] and rescaling loses nothing that mattered.
+    // UASTC wants 8-bit input. EXR use here is LDR-range PBR data, so clamping to [0,1] loses nothing.
     [[nodiscard]]
     auto to_rgba8(DecodedImage const &decoded) -> std::vector<std::byte> {
         auto const span = decoded.span();
@@ -117,7 +102,7 @@ namespace {
                 auto const value = glm::unpackHalf1x16(halfs[texel * 4 + channel]);
                 auto const clamped = std::clamp(value, 0.0F, 1.0F);
 
-                out[texel * 4 + channel] = static_cast<std::uint8_t>(clamped * 255.0F + 0.5F);
+                out[texel * 4 + channel] = static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
             }
         }
 
@@ -130,9 +115,7 @@ namespace {
         std::vector<std::byte> pixels;
     };
 
-    // Gamma-correct downsampling for colour data, linear for everything else
-    // -- a plain box filter over sRGB-encoded texels darkens mips, which the
-    // runtime GPU blit path this replaces never had to worry about.
+    // Gamma-correct downsampling for colour data, linear for everything else.
     [[nodiscard]]
     auto generate_mip_chain(std::vector<std::byte> base_rgba8, std::uint32_t width, std::uint32_t height,
                             TextureRole role) -> std::vector<RawMip> {
@@ -140,7 +123,7 @@ namespace {
 
         std::vector<RawMip> mips;
         mips.reserve(mip_count);
-        mips.push_back(RawMip{width, height, std::move(base_rgba8)});
+        mips.push_back(RawMip{.width = width, .height = height, .pixels = std::move(base_rgba8)});
 
         for (std::uint32_t level = 1; level < mip_count; ++level) {
             auto const &prev = mips.back();
@@ -161,7 +144,7 @@ namespace {
                                           STBIR_RGBA);
             }
 
-            mips.push_back(RawMip{next_width, next_height, std::move(next)});
+            mips.push_back(RawMip{.width = next_width, .height = next_height, .pixels = std::move(next)});
         }
 
         return mips;
@@ -207,34 +190,12 @@ namespace {
         ktxBasisParams params{};
         params.structSize = sizeof(params);
         params.uastc = KTX_TRUE;
-        // Each call here already runs as its own task on Renderer's shared
-        // thread pool (see TextureStreamer::request), which itself has
-        // hardware_concurrency() worker threads -- so this already gets
-        // full-core parallelism for free whenever more than one texture is
-        // in flight, which is the common case (a model load streams in all
-        // of its textures at once). Letting CompressBasisEx ALSO spin up
-        // its own internal threads per call -- even a small bounded count --
-        // multiplies against however many of those pool workers are
-        // concurrently mid-encode: a burst load of many textures (e.g. a
-        // large model with dozens of materials) can have every pool worker
-        // running an encode at once, each spawning more threads on top,
-        // oversubscribing the CPU by several times over and stalling the
-        // whole process. Single-threaded per call avoids that regardless of
-        // burst size; the only cost is a lone in-flight texture (the rest of
-        // the pool idle) taking a bit longer to finish encoding, which is
-        // invisible -- streamed textures are never waited on synchronously.
+        // Each call already runs as its own thread-pool task, so internal encoder threads would oversubscribe the CPU
+        // during burst loads.
         params.threadCount = 1;
         params.normalMap = role == TextureRole::normal_map ? KTX_TRUE : KTX_FALSE;
-        // Cheapest level ktx.h offers: 43.45dB PSNR vs LEVEL_DEFAULT's
-        // 47.47dB -- a real, visible quality drop, but profiling a
-        // cold-cache Sponza load put aggregate encode time (summed across
-        // all 72 textures) at ~2.2 million ms, by far the single largest
-        // contributor to a cold load's wall-clock time -- an order of
-        // magnitude past every other section combined, including
-        // everything two rounds of scheduling fixes (core reservation,
-        // then SCHED_IDLE worker priority) failed to touch. This is what
-        // actually pays down that cost; the cache means it's a one-time hit
-        // per texture regardless.
+        // Fastest UASTC level: lower quality (43.5 vs 47.5 dB PSNR), but encoding dominated cold-load time. Results
+        // are cached, so it's a one-time cost per texture.
         params.uastcFlags = static_cast<ktx_pack_uastc_flags>(KTX_PACK_UASTC_LEVEL_FASTEST);
 
         if (ktxTexture2_CompressBasisEx(texture.get(), &params) != KTX_SUCCESS) {
@@ -245,8 +206,7 @@ namespace {
         return texture;
     }
 
-    // Best-effort: a failed cache write just means the next load re-encodes
-    // instead of hitting the cache, not a load failure.
+    // Best-effort: a failed write only means the next load re-encodes.
     auto write_cache_atomic(ktxTexture2 *texture, std::filesystem::path const &cache_path) -> void {
         std::error_code ec;
 
@@ -322,16 +282,8 @@ namespace {
         return role == TextureRole::normal_map ? KTX_TTF_BC5_RG : KTX_TTF_BC7_RGBA;
     }
 
-    // Cache hit path: load the cached file and hand its data straight back.
-    // The cache stores the already-transcoded BC7/BC5 result (see
-    // encode_and_transcode -- ktxTexture2_TranscodeBasis mutates its
-    // ktxTexture2 in place, replacing vkFormat/pData/supercompressionScheme
-    // with the transcoded form, so what gets written to disk after that
-    // call needs no further transcoding to read back), so this is just a
-    // file read, not a decode of any kind. Returns nullopt (not an error) on
-    // any miss/corruption so the caller falls back to re-encoding from
-    // source -- a torn or stale cache file is an ordinary condition, not a
-    // load failure.
+    // The cache stores the transcoded BC7/BC5 data, so a hit is just a file read. Returns nullopt on any miss or
+    // corruption so the caller re-encodes.
     [[nodiscard]]
     auto try_load_cached(std::filesystem::path const &cache_path, std::string debug_name, ModelLoadProfile *profile)
             -> std::optional<CompressedTexture> {
@@ -394,11 +346,7 @@ namespace {
 
         ScopedProfileSample transcode_sample{profile != nullptr ? &profile->texture_transcode_ns : nullptr};
 
-        // Mutates `texture` in place -- vkFormat, pData and
-        // supercompressionScheme all get overwritten with the transcoded
-        // BC7/BC5 result, so what write_cache_atomic saves below is already
-        // in its final GPU-ready form. A cache hit later then needs no
-        // transcode step at all, just a file read (see try_load_cached).
+        // Transcodes in place, so the cache file below is already GPU-ready.
         if (ktxTexture2_TranscodeBasis(texture.get(), transcode_target(role), 0) != KTX_SUCCESS) {
             return std::unexpected(
                     make_error(TexturePipelineErrorType::transcode_failed, "ktxTexture2_TranscodeBasis failed"));
@@ -413,10 +361,7 @@ namespace {
         return extract_compressed_texture(texture.get(), std::move(debug_name));
     }
 
-    // Shared tail of load_compressed_texture() and
-    // load_compressed_texture_from_encoded_memory(): both end up with a
-    // decoded image and just need it turned into 8-bit RGBA and run through
-    // the encoder.
+    // Shared tail of the file and memory loaders: convert to 8-bit RGBA and encode.
     [[nodiscard]]
     auto compress_decoded_image(DecodedImage const &decoded, TextureRole role,
                                 std::filesystem::path const &cache_path, std::string debug_name,

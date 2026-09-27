@@ -12,56 +12,35 @@
 #include <utility>
 #include <vector>
 
-// Overlays: draws that ride along inside a rendering scope a real pass has
-// already opened -- debug lines and light icons over the scene, ImGui over
-// the final image. They are registered once and run every frame until their
-// OverlayRegistration is destroyed.
+// Overlays are draws recorded inside a rendering scope a pass has already opened: debug lines and light icons
+// over the scene, ImGui over the final image. They run every frame until their OverlayRegistration is
+// destroyed.
 //
-// The contract, which is what keeps barriers and GPU timing out of an
-// overlay's hands:
+//   record()  runs inside the host pass's vkCmdBeginRendering scope. It may bind shaders and descriptors, set
+//             dynamic state, push constants and draw. It must not begin or end rendering, record barriers or
+//             dispatches, write timestamps or change image layouts. The host resets the baseline dynamic
+//             state (set_overlay_baseline_state() in render_passes.hxx) before each overlay's record().
 //
-//   record()  runs inside an open vkCmdBeginRendering scope owned by the
-//             host pass. It may only bind shaders/descriptors, set dynamic
-//             state, push constants and draw. It must not begin or end
-//             rendering, record barriers or dispatches, write timestamps or
-//             change image layouts. Before *each* overlay's record() the
-//             host resets the baseline dynamic state documented on
-//             set_overlay_baseline_state() (render_passes.hxx), so an
-//             overlay only sets what differs from that baseline and never
-//             inherits state from whatever drew before it.
+//   prepare() optional; runs before the frame's first pass, outside any rendering scope. It may record
+//             transfer/compute writes to buffers the overlay owns and returns whether it did. If any overlay
+//             did, the renderer records one barrier from those writes to every stage a draw can read them
+//             from. Barriers between an overlay's own prepare commands are its own business. Host writes to
+//             mapped memory need no barrier, so memcpy-only overlays return nothing_recorded.
 //
-//   prepare() (optional) runs before the first pass of the frame, outside
-//             any rendering scope. It may record transfer/compute work that
-//             writes buffers the overlay owns, and returns whether it did.
-//             If any overlay did, the renderer records one global memory
-//             barrier from those writes to every stage an overlay's draw
-//             can read them from (indirect, index, vertex, task, mesh,
-//             fragment). Barriers *between* an overlay's own prepare
-//             commands are the overlay's business. Host writes to mapped
-//             memory need neither -- vkQueueSubmit already makes them
-//             visible -- so an overlay that only memcpy's into a mapped
-//             buffer returns nothing_recorded.
+// Per-frame resources must be indexed by frame_index; only that slot's previous use is guaranteed retired.
 //
-// Per-frame resources an overlay writes must be indexed by frame_index:
-// the renderer only guarantees that frame slot's previous use has retired.
+// The renderer times each overlay's prepare() and record() on the GPU and opens a Tracy zone for them (see
+// StageTimings::overlays).
 //
-// The renderer writes a GPU timestamp pair around every overlay's
-// prepare() and record() and opens a Tracy zone named after it, so neither
-// callback times itself. See StageTimings::overlays.
-//
-// Registration is render-thread only. Adding or removing an overlay from
-// inside a prepare()/record() callback is allowed; removals are applied once
-// the frame's recording finishes, additions take effect next frame.
+// Registration is render-thread only. Callbacks may add or remove overlays: removals apply once the frame's
+// recording finishes, additions take effect next frame.
 
 enum class OverlayStage : std::uint8_t {
-    // Inside the forward pass, after every scene draw: HDR colour +
-    // reverse-Z depth (tested GREATER_OR_EQUAL, written by the scene),
-    // MSAA at the forward target's sample count. view_projection is valid.
+    // Inside the forward pass after the scene draws: HDR colour, reverse-Z depth (GREATER_OR_EQUAL, written by
+    // the scene), forward target MSAA. view_projection is valid.
     scene,
 
-    // The last scope that renders into the swapchain image: after
-    // tonemapping in fullscreen play, or the editor's UI pass otherwise.
-    // Swapchain-format colour, no depth, single sample.
+    // The last scope rendering into the swapchain image. Swapchain-format colour, no depth, single sample.
     ui,
 
     count,
@@ -69,9 +48,7 @@ enum class OverlayStage : std::uint8_t {
 
 inline constexpr auto overlay_stage_count = static_cast<std::size_t>(OverlayStage::count);
 
-// Describes the rendering scope an overlay records into. With shader
-// objects nothing is baked against it; it exists so an overlay can check
-// its assumptions and size its draws.
+// The scope an overlay records into, so it can check its assumptions and size its draws.
 struct OverlayScope {
     VkExtent2D extent{};
     VkFormat colour_format = VK_FORMAT_UNDEFINED;
@@ -91,7 +68,7 @@ struct OverlayRecordContext {
     std::uint32_t frame_index = 0;
     OverlayScope scope{};
 
-    // The camera this frame was prepared with (projection * view).
+    // projection * view
     glm::mat4 view_projection{1.0F};
 };
 
@@ -122,9 +99,7 @@ using OverlayId = std::uint32_t;
 
 class OverlayRegistry;
 
-// Owns one registered overlay; destroying (or reset()ing) it unregisters
-// the overlay. Must not outlive the registry it came from -- in practice,
-// the Renderer.
+// Unregisters the overlay when destroyed or reset(). Must not outlive the registry (the Renderer).
 class OverlayRegistration {
 public:
     OverlayRegistration() = default;
@@ -150,13 +125,11 @@ private:
     OverlayId id_ = 0;
 };
 
-// CPU-side bookkeeping for overlays: ordering, stable timing slots and
-// deferred removal. Knows nothing about Vulkan beyond the callback types,
-// so it is unit-testable without a device.
+// CPU-side overlay bookkeeping: ordering, stable timing slots and deferred removal. No Vulkan, so it can be
+// unit tested.
 class OverlayRegistry {
 public:
-    // Upper bound on simultaneously registered overlays; sizes the
-    // per-frame timestamp query range the renderer reserves for them.
+    // Sizes the per-frame timestamp range reserved for overlays.
     static constexpr std::uint32_t max_overlays = 16;
 
     struct Entry {
@@ -190,8 +163,7 @@ public:
 
     [[nodiscard]] auto size() const noexcept -> std::size_t { return entries_.size(); }
 
-    // While the returned guard lives, add()/remove() are queued instead of
-    // touching the entry vector the renderer is iterating.
+    // While the guard lives, add()/remove() are queued instead of touching the entries being iterated.
     class IterationGuard {
     public:
         explicit IterationGuard(OverlayRegistry &registry) noexcept;
@@ -219,7 +191,7 @@ private:
     std::vector<OverlayId> pending_removals_;
     std::uint32_t iteration_depth_ = 0;
 
-    // Bit i set: timing slot i is taken (by a live or pending entry).
+    // Bit i set: timing slot i is taken.
     std::uint32_t used_slots_ = 0;
     static_assert(max_overlays <= 32);
 
@@ -227,7 +199,7 @@ private:
     std::uint64_t next_sequence_ = 0;
 };
 
-// Wall-clock GPU time of one overlay's callbacks in a finished frame.
+// GPU time of one overlay's callbacks in a finished frame.
 struct OverlayTiming {
     std::string name;
     OverlayStage stage = OverlayStage::scene;

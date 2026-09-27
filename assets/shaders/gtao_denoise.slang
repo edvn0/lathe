@@ -3,17 +3,8 @@ module gtao_denoise;
 import bindless;
 import scene_types;
 
-// Depth-aware spatial blur over the raw GTAO output. GTAO's per-pixel
-// dithered slice rotation (see gtao.slang) trades a dense sample count for
-// noise; this pass cleans that noise up in one 5x5 dispatch rather than
-// accumulating over time (this renderer has no TAA/history buffer to
-// accumulate into), weighting neighbours by how close their *linear
-// view-space* depth is to the centre pixel's so the blur doesn't bleed
-// across silhouette edges. Linear (not raw hardware) depth is used for the
-// weight because reverse-Z hardware depth is extremely non-linear -- two
-// points at very different world-space depth can sit almost on top of each
-// other in raw depth value near the far end of the range, which would make
-// a raw-depth bilateral weight blur straight through real edges out there.
+// Depth-aware 5x5 blur over the raw GTAO output. Neighbours are weighted by linear view-space depth, since
+// reverse-Z depth is too non-linear at distance to find edges.
 struct GtaoDenoisePushConstants
 {
     Ptr<UBO> ubo;
@@ -26,7 +17,7 @@ struct GtaoDenoisePushConstants
     float2 inv_extent;
     float depth_sigma;
 
-    // See the matching field's comment in gtao.slang's GtaoPushConstants.
+    // Keeps the generated C++ struct's size aligned, as in gtao.slang.
     uint _padding;
 };
 
@@ -44,7 +35,7 @@ float linear_view_z(float4x4 inv_proj, float2 uv, float depth)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void mainCs(uint3 dispatch_id : SV_DispatchThreadID)
+void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 {
     uint2 pixel = dispatch_id.xy;
 

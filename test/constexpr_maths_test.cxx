@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-
 TEST_SUITE("unit") {
     TEST_CASE("square_root of 2") {
         constexpr auto result = maths::square_root(2.0F);

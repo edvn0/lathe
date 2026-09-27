@@ -1,7 +1,6 @@
 # ------------------------------------------------------------------------------
-# engine_scene -- low-level ECS data (components, editor camera, input
-# events). Not to be confused with Scene/Entity, which live in engine_rendering
-# -- see MODULARIZATION_HANDOFF.md's "Scene/Entity reclassification" note.
+# engine_scene: components, editor camera, input events. Scene/Entity live in
+# engine_rendering.
 # ------------------------------------------------------------------------------
 
 add_library(

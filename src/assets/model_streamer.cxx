@@ -41,12 +41,7 @@ auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path,
 
 namespace {
 
-    // Materials/mesh primitives (see step_model_gpu_upload()) processed per
-    // pending request per process_ready() call. Bounds how much CPU/GPU
-    // upload work a single frame can be made to do by one streamed model --
-    // Sponza's ~25 materials and dozens of mesh primitives finish over
-    // several frames instead of all at once, keeping any one frame's cost
-    // small regardless of how big the model is.
+    // Materials/primitives uploaded per request per frame, bounding one model's per-frame cost.
     constexpr std::uint32_t gpu_upload_items_per_frame = 8;
 
 } // namespace
@@ -86,7 +81,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                 }
 
                 if (!finalized->has_value()) {
-                    return false; // more tangent/LOD work left for a later frame
+                    return false; // more tangent/LOD work for a later frame
                 }
 
                 request.upload = start_model_gpu_upload(std::move(**finalized), sink.image_storage(),
@@ -105,7 +100,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             }
 
             if (!stepped->has_value()) {
-                return false; // more GPU-upload work left for a later frame
+                return false; // more GPU-upload work for a later frame
             }
 
             auto installed = sink.install_model(request.handle, **stepped);
@@ -124,15 +119,8 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             sink.register_model_name(request.handle, request.debug_name);
         }
 
-        // Geometry/materials installing doesn't mean this model is fully
-        // loaded -- its textures stream in independently on thread_pool()
-        // workers (see TextureStreamer) and can still be running well after
-        // this point (as seen in practice: a Sponza-sized load's texture
-        // log lines keep appearing for many frames after its "uploaded to
-        // GPU" line). Keep this request around, still profiled, until every
-        // texture it kicked off has finished, so the profile logged below
-        // covers the whole load instead of whichever few textures happened
-        // to race ahead of the others.
+        // Textures stream independently and can finish long after install. Keep the request until they're all done
+        // so the logged profile covers them.
         if (request.profile != nullptr &&
             request.profile->texture_count.load(std::memory_order_relaxed) <
                     request.profile->expected_texture_count.load(std::memory_order_relaxed)) {

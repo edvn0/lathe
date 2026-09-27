@@ -17,8 +17,7 @@
 
 namespace {
 
-    // A fresh directory per test case avoids cross-test interference and
-    // stale results from a previous run.
+    // A fresh directory per test case.
     auto make_temp_cache_dir(std::string_view label) -> std::filesystem::path {
         auto const dir = std::filesystem::temp_directory_path() /
                          std::format("texture_pipeline_test_{}_{}", label,
@@ -29,15 +28,7 @@ namespace {
         return dir;
     }
 
-    // Independently verifies the on-disk .ktx2 cache file this pipeline run
-    // produced is itself a well-formed, loadable KTX2 container already in
-    // its final GPU-ready block format -- i.e. the atomic
-    // temp-file-then-rename write path actually produced something libktx
-    // can read back directly, with no further transcode step needed (the
-    // cache stores the already-transcoded BC7/BC5 result, not the
-    // pre-transcode UASTC container -- see try_load_cached/
-    // encode_and_transcode), not just bytes this process happens to
-    // interpret correctly from memory.
+    // The cache file must be a valid KTX2 container already in its final block format.
     auto verify_cache_file_round_trips(std::filesystem::path const &cache_dir, VkFormat expected_format) -> void {
         std::vector<std::filesystem::path> ktx2_files;
 
@@ -85,7 +76,7 @@ TEST_SUITE("unit") {
 
         verify_cache_file_round_trips(cache_dir, VK_FORMAT_BC7_SRGB_BLOCK);
 
-        // Second call should be a cache hit: identical transcoded output.
+        // Second call is a cache hit with identical output.
         auto second = load_compressed_texture(source, TextureRole::colour, cache_dir);
         REQUIRE(second.has_value());
 
@@ -113,10 +104,7 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("load_compressed_texture: generic role transcodes to BC7 UNORM") {
-        // dirt_rough_1k.exr uses DWAA compression, which this project's
-        // vendored tinyexr build does not decode (a pre-existing gap,
-        // unrelated to this pipeline) -- use a different EXR asset that
-        // decodes cleanly to exercise the generic-role encode path instead.
+        // dirt_rough_1k.exr uses DWAA compression, which the vendored tinyexr can't decode.
         auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/dirt/dirt_nor_gl_1k_zip.exr";
         auto const cache_dir = make_temp_cache_dir("generic");
 

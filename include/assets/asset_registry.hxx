@@ -6,20 +6,14 @@
 #include <string_view>
 #include <vector>
 
-#include "assets/material.hxx" // MaterialHandle
-#include "assets/model.hxx" // ModelHandle
+#include "assets/material.hxx"
+#include "assets/model.hxx"
 #include "core/logger.hxx"
-#include "gpu/image.hxx" // ImageHandle
-#include "scene/script_handle.hxx" // ScriptHandle
+#include "gpu/image.hxx"
+#include "scene/script_handle.hxx"
 
-// One human-readable name per asset handle, so editor UI (the Inspector's
-// component pickers, the Assets browser panel -- see application.cxx) can
-// let a user pick "the grass material" instead of typing a raw
-// index/generation pair. Deliberately separate from the *Storage classes
-// themselves (ModelStorage, MaterialStorage, ...): those own the actual
-// asset data and know nothing about names -- this is a thin, storage-
-// agnostic naming layer on top, populated by whoever loads/creates a
-// reusable asset (see AssetRegistry below and Renderer::assets()).
+// Human-readable names for asset handles, for the editor's pickers. Separate from the *Storage classes, which
+// don't know about names.
 template<typename HandleT>
 class NamedAssetTable {
 public:
@@ -28,10 +22,7 @@ public:
         HandleT handle;
     };
 
-    // Rejects (returns false, logs a warning) a name already in use --
-    // callers own recovering from that (e.g. falling back to a fuller path
-    // string); the table never silently overwrites one asset's name with
-    // another's.
+    // Returns false and logs a warning if the name is taken; never overwrites.
     auto register_asset(std::string name, HandleT handle) -> bool {
         if (find(name).valid()) {
             warn("AssetRegistry: name '{}' is already registered, ignoring", name);
@@ -53,15 +44,14 @@ public:
         return it != entries_.end() ? it->handle : HandleT{};
     }
 
-    // Empty string_view if `handle` isn't registered under any name.
+    // Empty if `handle` has no name.
     [[nodiscard]]
     auto name_of(HandleT handle) const noexcept -> std::string_view {
         auto const it = std::ranges::find(entries_, handle, &Entry::handle);
         return it != entries_.end() ? std::string_view{it->name} : std::string_view{};
     }
 
-    // Always sorted by name (register_asset inserts in place) -- ready for
-    // UI iteration with no separate sort step.
+    // Sorted by name.
     [[nodiscard]]
     auto entries() const noexcept -> std::span<Entry const> {
         return entries_;
@@ -71,11 +61,7 @@ private:
     std::vector<Entry> entries_;
 };
 
-// Aggregates one NamedAssetTable per asset kind this engine has. Owned by
-// Renderer (see Renderer::assets()) -- lookups are a linear scan over a
-// handful to a few hundred entries, which is fine for editor-scale usage
-// and avoids needing a std::hash<Handle<T,N>> specialization that doesn't
-// exist today.
+// One NamedAssetTable per asset kind. Lookups are linear, which is fine at editor scale.
 class AssetRegistry {
 public:
     [[nodiscard]] auto models() noexcept -> NamedAssetTable<ModelHandle> & { return models_; }

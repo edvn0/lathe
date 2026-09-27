@@ -4,7 +4,6 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
-
 struct PlayerControllerCreateInfo {
     float yaw_degrees = -90.0F;
     float pitch_degrees = 0.0F;
@@ -26,8 +25,7 @@ public:
     auto on_mouse_moved(float delta_x, float delta_y, bool look_enabled) noexcept -> void;
     auto set_sprinting(bool sprinting) noexcept -> void;
 
-    // Horizontal velocity (y = 0) in world space, derived from current
-    // move-intent flags and yaw -- feed straight into PhysicsWorld::set_velocity.
+    // World-space horizontal velocity from the movement input and yaw.
     [[nodiscard]] auto desired_horizontal_velocity() const noexcept -> glm::vec3;
 
     [[nodiscard]] auto yaw_degrees() const noexcept -> float { return yaw_degrees_; }

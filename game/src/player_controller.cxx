@@ -87,14 +87,18 @@ auto PlayerController::desired_horizontal_velocity() const noexcept -> glm::vec3
     auto const right = glm::normalize(glm::cross(world_up, fwd));
 
     glm::vec3 direction{0.0F};
-    if (moving_forward_)
+    if (moving_forward_) {
         direction += fwd;
-    if (moving_backward_)
+    }
+    if (moving_backward_) {
         direction -= fwd;
-    if (moving_right_)
+    }
+    if (moving_right_) {
         direction += right;
-    if (moving_left_)
+    }
+    if (moving_left_) {
         direction -= right;
+    }
 
     if (glm::dot(direction, direction) < 1e-6F) {
         return glm::vec3{0.0F};

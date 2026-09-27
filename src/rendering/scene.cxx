@@ -12,9 +12,7 @@
 #include <unordered_map>
 
 namespace {
-    // ScriptHandle has no std::hash specialization and generation can't
-    // change mid-frame, so group by index alone -- ScriptStorage::get()
-    // below still revalidates the full handle.
+    // ScriptHandle has no std::hash, so group by index; get() revalidates the full handle.
     auto group_entities_by_script(entt::registry &registry)
             -> std::unordered_map<std::uint32_t, std::pair<ScriptHandle, std::vector<entt::entity>>> {
         std::unordered_map<std::uint32_t, std::pair<ScriptHandle, std::vector<entt::entity>>> groups;
@@ -68,13 +66,7 @@ auto Scene::on_transform_changed(entt::registry &reg, entt::entity entity) -> vo
     }
 }
 
-// registry.destroy()/remove<RigidBody>() on a physics entity would otherwise
-// leak its btRigidBody/btCollisionShape in both the arena and Bullet's world
-// forever -- systems::lifetime() already calls physics_world->remove_body()
-// itself before destroying an expired entity, but remove_body() is a no-op
-// for an entity it doesn't know about, so this hook is the safety net for
-// every other path (editor deletion, future gameplay code) rather than the
-// only place cleanup happens.
+// Safety net so a destroyed entity or removed RigidBody never leaks its Bullet body.
 auto Scene::on_rigid_body_destroyed(entt::registry &reg, entt::entity entity) -> void {
     if (physics_world) {
         physics_world->remove_body(reg, entity);
@@ -132,7 +124,7 @@ void systems::lifetime(entt::registry &registry, PhysicsWorld &physics, float dt
     for (auto entity: view) {
         auto &lifetime = view.get<Components::Lifetime>(entity);
         lifetime.remaining_seconds -= dt;
-        if (lifetime.remaining_seconds <= 0.0f) {
+        if (lifetime.remaining_seconds <= 0.0F) {
             expired.push_back(entity);
         }
     }
@@ -171,7 +163,7 @@ auto systems::script_update(entt::registry &registry, Scene &scene, float delta_
     }
 
     for (auto &future: futures) {
-        future.get(); // barrier -- next system stage must see every update applied
+        future.get(); // every update lands before the next stage
     }
 }
 

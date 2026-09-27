@@ -38,34 +38,25 @@ public:
     auto step(float delta_time) -> void;
 
     auto get_registry() noexcept -> entt::registry & { return registry; }
-    auto get_registry() const noexcept -> entt::registry const & { return registry; }
+    [[nodiscard]] auto get_registry() const noexcept -> entt::registry const & { return registry; }
 
     auto attach_debug_renderer(debug_draw::DebugRenderer &renderer) -> void;
     auto detach_debug_renderer() -> void;
 
     auto get_scripts() noexcept -> ScriptStorage &;
-    auto get_scripts() const noexcept -> ScriptStorage const &;
+    [[nodiscard]] auto get_scripts() const noexcept -> ScriptStorage const &;
 
 private:
     entt::registry registry;
     entt::sigh<void()> lights_changed_signal_;
 
 public:
-    // Declared after `registry` above so it is destroyed first (members
-    // destruct in reverse declaration order): PhysicsWorld::~PhysicsWorld
-    // touches `registry` through the reference it was constructed with, so
-    // registry must still be alive when that runs. Public: physics_world is
-    // part of Scene's external API, unlike registry itself.
+    // Declared after `registry` so it is destroyed first; its destructor uses the registry.
     std::unique_ptr<PhysicsWorld> physics_world;
 
 private:
-    // ScriptStorage actually lives on Renderer, not here -- get_scripts()
-    // forwards to it. A Scene-owned ScriptStorage would break ScriptHandle
-    // validity across Application::play(): play() clones entities into a
-    // brand-new runtime Scene, and a handle allocated while populating
-    // editor_scene must still resolve afterwards. Renderer is the one object
-    // shared by both editor_scene and runtime_scene (see EngineModels/
-    // MaterialStorage/ModelStorage, which rely on the exact same fact).
+    // Scripts live on the Renderer, which editor_scene and runtime_scene share, so script handles survive the
+    // play() clone.
     Renderer &renderer_;
 
     auto mark_lights_dirty(entt::registry &, entt::entity) -> void;
@@ -114,15 +105,14 @@ auto clone_registry(entt::registry const &src, entt::registry &dst) -> void {
     snapshot.get<entt::entity>(out);
     (snapshot.get<Components>(out), ...);
 
-    detail::SnapshotInputArchive in{&values};
+    detail::SnapshotInputArchive in{.values = &values};
     entt::snapshot_loader loader{dst};
     loader.get<entt::entity>(in);
     (loader.get<Components>(in), ...);
 }
 
-
 namespace systems {
-    [[nodiscard]] auto get_world_transform(entt::registry const &registry, entt::entity, const Components::Transform &)
+    [[nodiscard]] auto get_world_transform(entt::registry const &registry, entt::entity, Components::Transform const &)
             -> glm::mat4;
     auto lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) -> void;
     auto script_update(entt::registry &registry, Scene &scene, float dt) -> void;

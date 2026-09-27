@@ -14,14 +14,6 @@
 #include <cstdint>
 #include <vector>
 
-//
-// build_meshlet_topology/compute_meshlet_bounds/set_task_group_counts are
-// pure CPU functions, and every scene pass draws exclusively through the
-// meshlets they produce -- a dropped or duplicated triangle here is a hole
-// or z-fight on screen, and a too-small bounding sphere is a meshlet the
-// task shader culls while it's still visible.
-//
-
 namespace {
 
     [[nodiscard]] auto terrain_vertices() -> std::vector<CompressedModelVertex> {
@@ -46,8 +38,7 @@ namespace {
 
     using Triangle = std::array<std::uint32_t, 3>;
 
-    // Rotated so the smallest index comes first -- keeps winding, drops
-    // which corner a triangle happens to start at.
+    // Rotate the smallest index to the front: keeps winding, ignores the start corner.
     [[nodiscard]] auto canonical(Triangle triangle) -> Triangle {
         auto const first = std::ranges::min_element(triangle) - triangle.begin();
         std::ranges::rotate(triangle, triangle.begin() + first);
@@ -193,7 +184,7 @@ TEST_CASE("prepare_primitive_gpu_data builds meshlets exactly for levels with th
     SUBCASE("reduced LODs get their own build, missing ones alias") {
         ModelCpuPrimitive primitive{.vertices = capsule->vertices, .indices = capsule->indices};
 
-        // Every other triangle -- any valid, distinct index buffer will do.
+        // Every other triangle; any distinct index buffer will do.
         std::vector<std::uint32_t> reduced;
         for (std::size_t i = 0; i + 2 < primitive.indices.size(); i += 6) {
             reduced.insert(reduced.end(), primitive.indices.begin() + static_cast<std::ptrdiff_t>(i),
@@ -218,8 +209,7 @@ TEST_CASE("small meshes draw instanced, big ones through meshlets") {
         return static_cast<std::uint32_t>(build_meshlet_topology(indices, vertex_count).meshlets.size());
     };
 
-    // ~20K grass clumps per scene: one task + mesh workgroup per clump for
-    // ~4 meshlets was the regression this threshold exists for.
+    // Small meshes like the grass clump (~4 meshlets, ~20K instances) must use the instanced path.
     auto grass = make_grass_clump_mesh();
     REQUIRE(grass.has_value());
     CHECK_FALSE(uses_meshlet_path(count_meshlets(grass->indices, grass->vertices.size())));

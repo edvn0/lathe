@@ -124,14 +124,10 @@ private:
 
     std::optional<ShaderBinaryCache> binary_cache_;
 
-    auto binary_cache() -> const ShaderBinaryCache * { return binary_cache_ ? &*binary_cache_ : nullptr; }
+    auto binary_cache() -> ShaderBinaryCache const * { return binary_cache_ ? &*binary_cache_ : nullptr; }
 
-    // Guards slots_.allocate()/release() -- see the identical comment on
-    // PipelineStorage::slot_mutex_. ShaderObjectSet creation has no shared
-    // VkPipelineCache-equivalent (confirmed: neither create_linked nor
-    // create_compute touch anything but per-call state and the VkDevice
-    // itself), so this is the only synchronization ShaderObjectStorage needs
-    // for concurrent create_linked/create_compute.
+    // Guards slots_.allocate()/release(). Shader object creation shares no other state, so nothing else needs
+    // locking.
     std::mutex slot_mutex_;
 
     VkDescriptorSetLayout global_descriptor_set_layout_ = VK_NULL_HANDLE;

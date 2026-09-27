@@ -11,26 +11,14 @@
 #include <memory>
 #include <vector>
 
-// Captures the composited swapchain image (scene + ImGui overlay) to a PNG.
+// Captures the composited swapchain image to a PNG in three stages:
 //
-// Capture is split into three stages:
+//   1. record()       records a copy into a mapped readback buffer for the current frame slot.
+//   2. try_resolve()  when that slot comes round again its fence has completed; hands the buffer to a worker.
+//   3. worker thread  invalidates if needed, copies the pixels out, releases the slot, then converts and
+//                     encodes the PNG.
 //
-//   1. record()
-//      Records an asynchronous GPU image -> persistently mapped readback-buffer
-//      copy into the current frame-in-flight slot.
-//
-//   2. try_resolve()
-//      Called when that frame-in-flight slot recurs. At that point the frame
-//      fence has already completed, so the GPU no longer accesses the buffer.
-//      The mapped allocation is handed to a worker thread.
-//
-//   3. worker thread
-//      Invalidates the mapped allocation if necessary, memcpy()s the pixels
-//      into CPU-owned memory, releases the readback slot, then performs channel
-//      conversion and PNG compression entirely independently of Vulkan.
-//
-// request() may be called from any thread.
-// record()/try_resolve() must only be called from the render thread.
+// request() is thread-safe; record() and try_resolve() are render-thread only.
 class ScreenshotCapture {
 public:
     ScreenshotCapture() = default;
@@ -44,26 +32,16 @@ public:
 
     auto request() noexcept -> void { requested_.store(true, std::memory_order_relaxed); }
 
-    // If a capture was requested and the current frame slot is available,
-    // records an image -> buffer copy and transitions the image to
-    // VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
-    //
-    // Returns true when the screenshot path performed the present transition.
-    // The caller must skip its normal swapchain-to-present transition in that
-    // case.
+    // Records the copy if a capture is pending and the slot is free, leaving the image in PRESENT_SRC_KHR. Returns
+    // true in that case, and the caller must skip its own present transition.
     [[nodiscard]]
     auto record(VulkanContext &ctx, VkCommandBuffer command_buffer, VkImage image, VkFormat format, VkExtent2D extent,
                 std::uint32_t frame_index) -> bool;
 
-    // Called once the frame-in-flight slot identified by frame_index has had
-    // its fence waited/reset by the renderer.
-    //
-    // If that slot contains a completed screenshot copy, ownership of its
-    // mapped memory is temporarily handed to a background worker.
+    // Call once frame_index's fence has been waited on. Hands a completed copy to the worker.
     auto try_resolve(std::uint32_t frame_index) -> void;
 
-    // Waits for in-flight PNG writes, then frees every readback buffer --
-    // must run while the device/allocator is still alive.
+    // Waits for pending PNG writes, then frees the readback buffers. The allocator must still be alive.
     auto close() noexcept -> void;
 
 private:

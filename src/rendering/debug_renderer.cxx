@@ -5,9 +5,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <expected>
 #include <memory>
 #include <span>
@@ -44,7 +44,7 @@ namespace debug_draw {
 
         [[nodiscard]]
         constexpr auto to_byte(float value) noexcept -> std::uint32_t {
-            return static_cast<std::uint32_t>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F);
+            return static_cast<std::uint32_t>(std::lround(std::clamp(value, 0.0F, 1.0F) * 255.0F));
         }
 
         [[nodiscard]]
@@ -66,7 +66,7 @@ namespace debug_draw {
         };
 
         struct PC {
-            float view_proj[16];
+            glm::mat4 view_proj;
             VkDeviceAddress vertices;
         };
 
@@ -77,12 +77,12 @@ namespace debug_draw {
                             {
                                     renderer::ShaderCompileRequest{
                                             .source_path = "assets/shaders/debug_draw.slang",
-                                            .entry_point = "vs_main",
+                                            .entry_point = "main_vs",
                                             .stage = renderer::ShaderStage::vertex,
                                     },
                                     renderer::ShaderCompileRequest{
                                             .source_path = "assets/shaders/debug_draw.slang",
-                                            .entry_point = "fs_main",
+                                            .entry_point = "main_fs",
                                             .stage = renderer::ShaderStage::fragment,
                                     },
                             },
@@ -207,13 +207,8 @@ namespace debug_draw {
 
         std::vector<Vertex> pending_lines;
 
-        // Populated by add_line/add_aabb (e.g. submit_scene()'s model-bounds
-        // boxes in main.cxx) rather than Bullet's debug drawer. Kept
-        // separate from pending_lines because its clear point differs: it
-        // must be cleared every rendered frame regardless of whether
-        // PhysicsWorld::step() ran this frame (that only happens while
-        // is_playing -- see Application::on_update), or lines from a paused
-        // frame would keep accumulating onto pending_lines forever.
+        // Lines from add_line/add_aabb. Cleared every rendered frame, unlike the physics lines, which only update
+        // while playing.
         std::vector<Vertex> extra_lines;
 
         std::vector<FrameBuffer> frame_buffers;
@@ -244,8 +239,7 @@ namespace debug_draw {
         auto const cmd = context.command_buffer;
         auto const frame_index = context.frame_index;
 
-        // Shader objects bake no attachment formats or sample count; the
-        // scope is only recorded on the pipeline node as metadata.
+        // Shader objects bake no attachment state; the scope is metadata only.
         if (!impl_->pipeline.valid()) {
             auto created = create_pipeline(impl_->renderer, context.scope);
 
@@ -266,8 +260,7 @@ namespace debug_draw {
 
         auto &frame_buffer = impl_->frame_buffers[frame_index];
 
-        // Host writes into mapped memory: vkQueueSubmit makes them visible,
-        // so this needs no prepare() and no barrier.
+        // Host writes to mapped memory need no prepare() or barrier.
         if (!frame_buffer.vertex->write(0, std::span<const Vertex>{impl_->pending_lines}).has_value()) {
             error("[DebugDraw] Failed to write line buffer");
             return;
@@ -291,21 +284,16 @@ namespace debug_draw {
 
         pipeline->bind(cmd);
 
-        // Viewport, scissor, depth test (GREATER_OR_EQUAL, reverse-Z) with
-        // writes off and the scope's sample count all come from the
-        // OverlayStage::scene baseline; only line-specific state is set here.
+        // Everything else comes from the scene overlay baseline.
         vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
         vkCmdSetLineWidth(cmd, 1.0F);
 
         impl_->renderer.resource_table().bind(cmd, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout());
 
         auto push_constants = PC{
-                .view_proj = {},
+                .view_proj = context.view_projection,
                 .vertices = frame_buffer.vertex->device_address,
         };
-
-        std::memcpy(push_constants.view_proj, glm::value_ptr(context.view_projection),
-                    sizeof(push_constants.view_proj));
         vkCmdPushConstants(cmd, pipeline->layout(), VK_SHADER_STAGE_ALL, 0, sizeof(push_constants), &push_constants);
         vkCmdDraw(cmd, vertex_count, 1, 0, 0);
     }
@@ -331,7 +319,7 @@ namespace debug_draw {
                 {min.x, max.y, max.z},
         }};
 
-        // Bottom face, top face, then the 4 verticals joining them.
+        // Bottom face, top face, then the 4 verticals.
         constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 12> edges{{
                 {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
                 {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7},

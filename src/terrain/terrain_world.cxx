@@ -44,7 +44,7 @@ auto TerrainWorld::chunk_request_for(ChunkKey const &key) const -> TerrainChunkR
 
     return TerrainChunkRequest{
             .world_origin_x = centre.x,
-            .world_origin_z = centre.y, // glm::vec2 here is (world_x, world_z) -- see terrain_quadtree.hxx
+            .world_origin_z = centre.y,
             .cell_size = terrain_cell_size(create_info_.lod_settings, key.lod),
     };
 }
@@ -70,9 +70,7 @@ auto TerrainWorld::request_missing() -> void {
         }
     }
 
-    // Nearest-first, so under the in-flight cap close chunks win over far
-    // ones -- matters most right after a teleport/scene load when many
-    // chunks are missing at once.
+    // Nearest first, so close chunks win under the in-flight cap.
     std::ranges::sort(candidates, {}, [&](ChunkKey const &key) {
         return glm::distance(terrain_chunk_centre(key, create_info_.lod_settings), camera_xz_);
     });
@@ -103,10 +101,8 @@ auto TerrainWorld::upload_ready(IMeshSink &mesh_sink, VkCommandBuffer command_bu
         in_flight_.erase(key);
 
         if (uploaded_this_frame >= create_info_.max_uploads_per_frame) {
-            // Budget exhausted this frame -- the result is dropped, but
-            // it's cheap to regenerate: since this key is neither resident
-            // nor in_flight_ anymore, the next update() call re-requests
-            // it if it's still desired. Simpler than a second queue.
+            // Out of budget: drop the result. The key is no longer tracked, so the next update() requests it again if
+            // it's still wanted.
             return;
         }
 
@@ -179,14 +175,8 @@ auto TerrainWorld::evict(PhysicsWorld *physics) -> void {
 
         ++chunk.frames_undesired;
 
-        // Grace period rather than an atomic parent/child swap -- keeps an
-        // undesired chunk resident for a few extra frames so its
-        // replacement (parent on merge, children on split) has a chance to
-        // load first. Trades a few frames of visible overlap for never
-        // showing a hole; see the terrain streaming plan's "riskiest
-        // parts" for why the full atomic swap was not implemented (fiddly
-        // cross-frame bookkeeping, hard to unit test, and the plan itself
-        // sanctions this exact fallback).
+        // Keep undesired chunks for a few frames so their replacement can load first: a brief overlap instead of a
+        // hole.
         if (chunk.frames_undesired < create_info_.eviction_grace_frames ||
             evictions >= create_info_.max_evictions_per_frame) {
             ++it;
@@ -229,10 +219,7 @@ auto TerrainWorld::on_physics_world_changed(PhysicsWorld *physics) -> void {
         return;
     }
 
-    // Bounded by slots_per_lod, so this is never the limiting factor:
-    // LOD0's own GPU slot count already caps how many LOD0 chunks can be
-    // resident at once. Reserved once per PhysicsWorld instance, never
-    // grown per chunk -- see collider_free_list_'s doc comment.
+    // Reserved once per PhysicsWorld, bounded by slots_per_lod.
     TerrainColliderDesc const desc{
             .samples_x = terrain_chunk_samples,
             .samples_z = terrain_chunk_samples,

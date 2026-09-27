@@ -13,6 +13,7 @@ TARGET=linux-native  ./compile.sh --configure
 ./compile.sh --rebuild   # clean + configure + build
 ./compile.sh --clean
 ./compile.sh --shell     # interactive shell inside the build container
+TARGET=linux-native ./compile.sh --tidy   # build, then clang-tidy (.clang-tidy); CI fails on any finding
 ```
 
 `TARGET` selects `windows-mingw` (cross-compile via mingw-w64) or

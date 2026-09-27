@@ -6,19 +6,13 @@
 namespace {
 
     [[nodiscard]] auto floor_div(std::int32_t value, std::int32_t divisor) -> std::int32_t {
-        // std::int32_t: sufficient range for any chunk index this engine's
-        // view distances produce; a plain integer division truncates
-        // toward zero, which is wrong for negative values (e.g. -1 / 2
-        // should floor to -1, not truncate to 0).
+        // Integer division truncates towards zero; negative values need flooring.
         auto const quotient = value / divisor;
         auto const remainder = value % divisor;
         return (remainder != 0 && ((remainder < 0) != (divisor < 0))) ? quotient - 1 : quotient;
     }
 
-    // Chebyshev (L-infinity) distance from `point` to the axis-aligned box
-    // [min, max), 0 when inside. This is what makes residency rings uniform
-    // in thickness around the camera rather than circular -- see the
-    // terrain streaming plan for why L-infinity was chosen over Euclidean.
+    // Chebyshev distance from `point` to [min, max), 0 inside. Gives square residency rings.
     [[nodiscard]] auto distance_to_aabb(glm::vec2 point, glm::vec2 box_min, glm::vec2 box_max) -> float {
         auto const dx = std::max({box_min.x - point.x, 0.0F, point.x - box_max.x});
         auto const dz = std::max({box_min.y - point.y, 0.0F, point.y - box_max.y});
@@ -39,7 +33,7 @@ namespace {
         auto const distance = distance_to_aabb(camera_xz, box_min, box_max);
 
         if (distance > settings.view_distance) {
-            return; // culled -- entirely outside view distance
+            return; // beyond view distance
         }
 
         if (key.lod == 0) {

@@ -33,14 +33,14 @@ namespace {
     }
 } // namespace
 
-auto ShaderBinaryCache::create(std::filesystem::path directory, std::array<std::uint8_t, VK_UUID_SIZE> binary_uuid,
-                               std::uint32_t binary_version)
+auto ShaderBinaryCache::create(std::filesystem::path const &directory,
+                               std::array<std::uint8_t, VK_UUID_SIZE> binary_uuid, std::uint32_t binary_version)
         -> std::expected<ShaderBinaryCache, ShaderBinaryCacheError> {
     if (directory.empty()) {
         return std::unexpected(ShaderBinaryCacheError{.type = ShaderBinaryCacheErrorType::invalid_argument});
     }
 
-    auto full_directory = std::move(directory) / uuid_directory_name(binary_uuid, binary_version);
+    auto full_directory = directory / uuid_directory_name(binary_uuid, binary_version);
 
     std::error_code error_code;
     std::filesystem::create_directories(full_directory, error_code);
@@ -59,7 +59,7 @@ auto ShaderBinaryCache::create(std::filesystem::path directory, std::array<std::
 }
 
 auto ShaderBinaryCache::path_for(std::string_view cache_key) const -> std::filesystem::path {
-    const auto path = std::format("{}.bin", std::to_string(hash_key(cache_key)));
+    auto const path = std::format("{}.bin", std::to_string(hash_key(cache_key)));
     return directory_ / path;
 }
 

@@ -1,6 +1,5 @@
 # ------------------------------------------------------------------------------
-# engine_gpu -- Vulkan resource/pipeline layer (buffers, images, pipelines,
-# swapchain, RenderDoc integration). Depends only on engine_core.
+# engine_gpu: buffers, images, pipelines, swapchain, RenderDoc.
 # ------------------------------------------------------------------------------
 
 add_library(
@@ -45,12 +44,8 @@ target_precompile_headers(
 )
 
 # ------------------------------------------------------------------------------
-# VMA warning suppression
-#
-# set_source_files_properties() is directory-scoped in CMake -- this must live
-# in vma.cxx's own CMakeLists.txt, not the root one, or it silently stops
-# applying and VMA's (extensive) warnings return, failing the build under
-# -Werror/WERROR=1.
+# VMA warning suppression. set_source_files_properties() is directory-scoped,
+# so this has to live next to vma.cxx.
 # ------------------------------------------------------------------------------
 
 if(MSVC)
@@ -71,12 +66,7 @@ elseif(
 endif()
 
 # ------------------------------------------------------------------------------
-# RenderDoc
-#
-# configure_renderdoc() (defined in cmake/renderdoc_config.cmake, included by
-# the root CMakeLists.txt before any add_subdirectory() call) attaches exactly
-# one of renderdoc.cxx/stub.cxx to engine_gpu, the module that owns
-# renderdoc.hxx/.cxx.
+# RenderDoc: attaches renderdoc.cxx or stub.cxx.
 # ------------------------------------------------------------------------------
 
 configure_renderdoc(

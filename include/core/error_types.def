@@ -1,13 +1,8 @@
-// X-macro list of every subsystem error type that can appear as an
-// ErrorCause. Included multiple times (error_context.hxx, error_describe.hxx)
-// with X/NX redefined by the includer -- this is the one place to touch when
-// adding a new subsystem's error type to the cause chain.
+// X-macro list of every subsystem error type that can be an ErrorCause. Includers define X and NX, include
+// this file, then #undef both.
 //
-// X(Name)        -- type lives in the global namespace
-// NX(ns, Name)   -- type lives in namespace `ns`
-//
-// Adding a system does NOT require touching this file's includers: define
-// X and NX before including, #include this file, then #undef X and NX.
+// X(Name)        -- type in the global namespace
+// NX(ns, Name)   -- type in namespace `ns`
 
 #if !defined(X) || !defined(NX)
 #error "define X(Name) and NX(ns, Name) before including error_types.def"

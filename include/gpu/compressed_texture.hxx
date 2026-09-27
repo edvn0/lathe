@@ -6,13 +6,11 @@
 #include <string>
 #include <vector>
 
-// How a texture's source pixels should be interpreted, which determines both
-// the Basis Universal encode parameters and the block-compressed format it
-// ultimately transcodes to.
+// How source pixels are interpreted; decides the encode parameters and the final block format.
 enum class TextureRole : std::uint8_t {
-    colour, // sRGB albedo/base-colour/emissive -> BC7, sRGB-tagged.
-    generic, // Linear LDR data (metallic-roughness, occlusion, roughness) -> BC7, UNORM.
-    normal_map, // Tangent-space XY normal -> BC5 (2 channels); shaders reconstruct Z.
+    colour, // sRGB albedo/emissive -> BC7 sRGB.
+    generic, // Linear LDR data (metallic-roughness, occlusion) -> BC7 UNORM.
+    normal_map, // Tangent-space XY normal -> BC5; shaders reconstruct Z.
 };
 
 struct CompressedMipLevel {
@@ -22,17 +20,13 @@ struct CompressedMipLevel {
     std::uint32_t byte_length = 0;
 };
 
-// Fully CPU-side, block-compressed, fully-mipped texture, ready to hand to
-// ImageStorage for GPU upload. Holds no Vulkan handles, so it's safe to
-// build on a background thread concurrently with rendering. Split out of
-// texture_pipeline.hxx (which does the CPU decode/encode/cache work that
-// produces one of these) since ImageStorage::upgrade_pending_image needs
-// the type itself without needing any of that.
+// CPU-side, block-compressed, mipped texture ready for ImageStorage. No Vulkan handles, so it can be built on
+// any thread.
 struct CompressedTexture {
     VkFormat format = VK_FORMAT_UNDEFINED;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<CompressedMipLevel> mips;
-    std::vector<std::byte> data; // every mip concatenated, see CompressedMipLevel offsets
+    std::vector<std::byte> data; // all mips concatenated; see CompressedMipLevel
     std::string debug_name;
 };

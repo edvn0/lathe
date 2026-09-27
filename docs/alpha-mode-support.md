@@ -76,7 +76,7 @@ mask:   [opaque_indirect_count, opaque_indirect_count + mask_indirect_count)
 blend:  [opaque_indirect_count + mask_indirect_count, total)
 ```
 
-No changes needed to the frustum-cull compute dispatch (`frustum_cull.slang` / the `mainCs` dispatch in `prepare_frame`) — it operates per-workgroup on batch index and is order-preserving, so `culled_indirect_buffer` inherits the same three contiguous ranges automatically.
+No changes needed to the frustum-cull compute dispatch (`frustum_cull.slang` / the `main_cs` dispatch in `prepare_frame`) — it operates per-workgroup on batch index and is order-preserving, so `culled_indirect_buffer` inherits the same three contiguous ranges automatically.
 
 ## 2. New pipelines
 
@@ -88,9 +88,9 @@ PipelineHandle shadow_mask_pipeline_;
 PipelineHandle forward_blend_pipeline_;
 ```
 
-- `depth_prepass_mask_pipeline_`: `depth_prepass.slang` `mainVs` + new `mainFs` (discard only). Same `depth_format`, `samples`, colour formats (none) as `depth_prepass_pipeline_`.
-- `shadow_mask_pipeline_`: `shadow_depth.slang` `mainVs` + new `mainFs` (discard only). Push constant range for `shadow_pc` needs `VK_SHADER_STAGE_FRAGMENT_BIT` added to `stageFlags` (material buffer address is read in the fragment stage now).
-- `forward_blend_pipeline_`: same shaders as `forward_pipeline_` (`forward_geom.slang` `mainVs`/`mainFs`), but registered with blend enabled (standard alpha-over: `srcColor = SRC_ALPHA`, `dstColor = ONE_MINUS_SRC_ALPHA`) via whichever field `PipelineRegisterInfo` exposes for `VkPipelineColorBlendAttachmentState` — add one if it doesn't exist yet.
+- `depth_prepass_mask_pipeline_`: `depth_prepass.slang` `main_vs` + new `main_fs` (discard only). Same `depth_format`, `samples`, colour formats (none) as `depth_prepass_pipeline_`.
+- `shadow_mask_pipeline_`: `shadow_depth.slang` `main_vs` + new `main_fs` (discard only). Push constant range for `shadow_pc` needs `VK_SHADER_STAGE_FRAGMENT_BIT` added to `stageFlags` (material buffer address is read in the fragment stage now).
+- `forward_blend_pipeline_`: same shaders as `forward_pipeline_` (`forward_geom.slang` `main_vs`/`main_fs`), but registered with blend enabled (standard alpha-over: `srcColor = SRC_ALPHA`, `dstColor = ONE_MINUS_SRC_ALPHA`) via whichever field `PipelineRegisterInfo` exposes for `VkPipelineColorBlendAttachmentState` — add one if it doesn't exist yet.
 
 `forward_pipeline_` itself is unchanged and reused for both opaque and mask draws in the forward pass — the difference between them there is only cull mode, not shader or PSO.
 
@@ -99,7 +99,7 @@ PipelineHandle forward_blend_pipeline_;
 ### `scene_types.slang`
 No changes needed — `AlphaMode` and `alpha_cutoff` already exist on `Material`.
 
-### `forward_geom.slang` — `mainFs`
+### `forward_geom.slang` — `main_fs`
 Add near the top, before shadow/lighting math:
 
 ```slang
@@ -118,12 +118,12 @@ Replace the existing `base_colour` computation (currently samples `.xyz` only, n
 output.colour = float4(fogged_colour, base_sample.a);
 ```
 
-### New: `depth_prepass.slang` `mainFs`
-Needs `material_index` and UV carried from `mainVs` (add a minimal `VertexOutput` if not already present — just `SV_Position`, `nointerpolation uint material_index`, `float2 texture_coordinate`). Body:
+### New: `depth_prepass.slang` `main_fs`
+Needs `material_index` and UV carried from `main_vs` (add a minimal `VertexOutput` if not already present — just `SV_Position`, `nointerpolation uint material_index`, `float2 texture_coordinate`). Body:
 
 ```slang
 [shader("fragment")]
-void mainFs(VertexOutput input, uniform PC pc)
+void main_fs(VertexOutput input, uniform PC pc)
 {
     const var material = pc.materials[input.material_index];
 
@@ -141,7 +141,7 @@ void mainFs(VertexOutput input, uniform PC pc)
 
 Only this pipeline variant needs this fragment shader — `depth_prepass_pipeline_` (opaque) stays vertex-only, unchanged, to preserve early-Z.
 
-### New: `shadow_depth.slang` `mainFs`
+### New: `shadow_depth.slang` `main_fs`
 Same pattern as above, using `ShadowPC`'s embedded `base` (`PC`) for material lookup. Only used by `shadow_mask_pipeline_`; `shadow_pipeline_` (opaque) stays vertex-only.
 
 ## 4. `record_frame` changes

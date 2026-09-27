@@ -3,13 +3,10 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 
-// Free-look editor camera: WASD(+QE) movement, right-mouse-drag look,
-// scroll to adjust move speed. Pure value type -- no GPU/window
-// resources -- so it can be owned directly by Application and fed
-// from GLFW callbacks / your event structs.
+// Free-look editor camera: WASD/QE movement, right-drag look, scroll to change move speed.
 struct EditorCameraCreateInfo {
     glm::vec3 position{0.0F, 2.0F, 6.0F};
-    float yaw_degrees = -90.0F; // -90 faces -Z with the basis below; see rebuild_basis().
+    float yaw_degrees = -90.0F; // faces -Z
     float pitch_degrees = 0.0F;
 
     float field_of_view_degrees = 60.0F;
@@ -32,15 +29,10 @@ public:
     auto on_key_pressed(std::int32_t key) noexcept -> void;
     auto on_key_released(std::int32_t key) noexcept -> void;
 
-    // delta_x/delta_y are raw cursor deltas in pixels since the previous
-    // call. Rotation is only integrated while `dragging` is true (e.g.
-    // right mouse button held) -- callers still call this every frame so
-    // the internal "last cursor position" bookkeeping stays correct, but
-    // pass dragging=false to just track position without turning.
+    // Raw cursor deltas in pixels. Only rotates while `dragging`.
     auto on_mouse_moved(float delta_x, float delta_y, bool dragging) noexcept -> void;
 
-    // Adjusts move_speed_ rather than FOV -- scroll-to-zoom on an editor
-    // camera usually means "walk faster/slower", not a lens change.
+    // Scroll changes move speed, not FOV.
     auto on_mouse_scrolled(float delta_y) noexcept -> void;
 
     auto set_sprinting(bool sprinting) noexcept -> void;
@@ -61,9 +53,8 @@ public:
 
     auto set_position(glm::vec3 const &position) noexcept -> void { position_ = position; }
 
-    // Places the camera at `position` facing `target` (yaw/pitch derived
-    // from the direction, pitch clamped like mouse look). A target equal to
-    // the position leaves the orientation unchanged.
+    // Places the camera at `position` facing `target`, pitch clamped like mouse look. A target equal to the
+    // position keeps the orientation.
     auto look_at(glm::vec3 const &position, glm::vec3 const &target) noexcept -> void;
 
 private:

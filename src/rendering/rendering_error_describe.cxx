@@ -1,7 +1,4 @@
-// describe() overloads for error types owned by the rendering module.
-// Declared in error_describe.hxx (via error_types.def), defined here so
-// this module's error headers stay private to it -- see
-// error_describe.cxx's file comment.
+// describe() overloads for the rendering module's error types.
 #include "core/error_describe.hxx"
 
 #include <format>

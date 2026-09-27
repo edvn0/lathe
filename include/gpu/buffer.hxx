@@ -15,20 +15,13 @@
 #include <type_traits>
 
 enum class BufferMemory : std::uint8_t {
-    // GPU-local memory.
-    //
-    // Not required to be HOST_VISIBLE and normally not CPU mapped.
-    // Populate using transfers from an upload buffer.
+    // GPU-local, normally not mapped. Filled through transfers from an upload buffer.
     device,
 
-    // CPU -> GPU memory.
-    //
-    // Persistently mapped and optimized for sequential CPU writes.
+    // CPU -> GPU. Persistently mapped, for sequential writes.
     upload,
 
-    // GPU -> CPU memory.
-    //
-    // Persistently mapped and preferably HOST_CACHED for efficient CPU reads.
+    // GPU -> CPU. Persistently mapped, preferably cached.
     readback,
 };
 

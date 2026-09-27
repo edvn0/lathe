@@ -45,7 +45,6 @@ namespace {
               gltf_node.name.empty() ? "<unnamed>" : std::string{gltf_node.name},
               gltf_node.lightIndex.has_value() ? static_cast<int>(*gltf_node.lightIndex) : -1);
 
-
         if (gltf_node.lightIndex.has_value()) {
             auto const &gltf_light = asset.lights[*gltf_node.lightIndex];
 
@@ -200,7 +199,7 @@ namespace {
 
     auto mikktspace_get_num_vertices_of_face(SMikkTSpaceContext const *, int) -> int { return 3; }
 
-    auto mikktspace_get_position(SMikkTSpaceContext const *context, float out[3], int face, int vert) -> void {
+    auto mikktspace_get_position(SMikkTSpaceContext const *context, float *out, int face, int vert) -> void {
         auto const *user_data = static_cast<MikktspaceUserData const *>(context->m_pUserData);
         auto const &position = (*user_data->vertices)[mikktspace_vertex_index(face, vert)].position;
 
@@ -209,7 +208,7 @@ namespace {
         out[2] = position.z;
     }
 
-    auto mikktspace_get_normal(SMikkTSpaceContext const *context, float out[3], int face, int vert) -> void {
+    auto mikktspace_get_normal(SMikkTSpaceContext const *context, float *out, int face, int vert) -> void {
         auto const *user_data = static_cast<MikktspaceUserData const *>(context->m_pUserData);
         auto const &normal = (*user_data->vertices)[mikktspace_vertex_index(face, vert)].normal;
 
@@ -218,7 +217,7 @@ namespace {
         out[2] = normal.z;
     }
 
-    auto mikktspace_get_tex_coord(SMikkTSpaceContext const *context, float out[2], int face, int vert) -> void {
+    auto mikktspace_get_tex_coord(SMikkTSpaceContext const *context, float *out, int face, int vert) -> void {
         auto const *user_data = static_cast<MikktspaceUserData const *>(context->m_pUserData);
         auto const &texcoord = (*user_data->vertices)[mikktspace_vertex_index(face, vert)].texcoord;
 
@@ -226,7 +225,7 @@ namespace {
         out[1] = texcoord.y;
     }
 
-    auto mikktspace_set_tspace_basic(SMikkTSpaceContext const *context, float const tangent[3], float sign, int face,
+    auto mikktspace_set_tspace_basic(SMikkTSpaceContext const *context, float const *tangent, float sign, int face,
                                      int vert) -> void {
         auto *user_data = static_cast<MikktspaceUserData *>(context->m_pUserData);
 
@@ -281,7 +280,7 @@ auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint
                                 unique_vertex_count);
 
     meshopt_optimizeOverdraw(welded_indices.data(), welded_indices.data(), welded_indices.size(),
-                             &welded_vertices[0].position.x, unique_vertex_count, sizeof(ModelVertex), 1.05f);
+                             &welded_vertices[0].position.x, unique_vertex_count, sizeof(ModelVertex), 1.05F);
 
     std::vector<ModelVertex> fetch_optimized_vertices(unique_vertex_count);
     auto const fetch_remap_count =
@@ -332,9 +331,7 @@ auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *
 
     ScopedProfileSample const meshlet_sample{profile != nullptr ? &profile->meshlet_build_ns : nullptr};
 
-    // Same per-level index-buffer selection step_model_gpu_upload() uses:
-    // a level without its own reduced indices aliases the previous level's
-    // GPU geometry, so it gets no build of its own.
+    // A level without its own reduced indices aliases the previous level, so it gets no build of its own.
     for (std::uint32_t level = 0; level < lod_count; ++level) {
         auto const *source_indices = level == 0 ? &primitive.indices
                                      : primitive.reduced_indices[level - 1].has_value()
@@ -541,7 +538,7 @@ namespace {
                filter == fastgltf::Filter::NearestMipMapLinear;
     }
 
-    auto select_sampler(const SamplerStorage &sampler_storage, fastgltf::Sampler const *gltf_sampler) -> SamplerHandle {
+    auto select_sampler(SamplerStorage const &sampler_storage, fastgltf::Sampler const *gltf_sampler) -> SamplerHandle {
         bool const nearest =
                 gltf_sampler != nullptr &&
                 (gltf_sampler->minFilter.has_value() ? is_nearest_filter(*gltf_sampler->minFilter)
@@ -797,7 +794,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
             return std::unexpected(material.error());
         }
 
-        cpu_data.materials.push_back(std::move(*material));
+        cpu_data.materials.push_back(*material);
     }
 
     for (auto const &gltf_mesh: asset.meshes) {
@@ -840,7 +837,6 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
 
         cpu_data.nodes.push_back(std::move(node));
     }
-
 
     if (auto const scene_index = asset.defaultScene.value_or(0); scene_index < asset.scenes.size()) {
         auto const &scene = asset.scenes[scene_index];
@@ -960,7 +956,6 @@ auto step_primitive_finalization(ModelPrimitiveFinalization &finalization)
 
     return std::optional<ModelCpuData>{std::move(finalization.cpu_data)};
 }
-
 
 namespace {
 
@@ -1104,10 +1099,8 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
             }
 
             if (upload.primitive_cursor < cpu_mesh.primitives.size()) {
-                // Vertex compression and meshlet building already happened off
-                // the render thread (prepare_primitive_gpu_data). A primitive
-                // from a producer that skipped it still renders, but pays
-                // for it here -- loudly, so the producer gets fixed.
+                // Normally done off the render thread by prepare_primitive_gpu_data(). A producer that skipped it still
+                // renders, but warns.
                 std::optional<ModelCpuPrimitive> late_prepared;
 
                 if (cpu_mesh.primitives[upload.primitive_cursor].compressed_vertices.empty()) {
@@ -1165,10 +1158,7 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
 
                     lods[level].indices = *index_slice;
 
-                    // Every scene pass draws through task/mesh shaders, so
-                    // each distinct index buffer also needs its meshlet
-                    // split (see assets/meshlet.hxx) -- prebuilt for exactly
-                    // the levels that reach this point.
+                    // Scene passes draw through task/mesh shaders, so each distinct index buffer needs meshlets.
                     auto const &meshlet_build = cpu_primitive.meshlets[level];
 
                     if (!meshlet_build.has_value()) {
@@ -1219,7 +1209,7 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                 continue;
             }
 
-            // Empty mesh -- nothing to process, advance without spending budget.
+            // Empty mesh: advance without spending budget.
             ++upload.mesh_cursor;
             upload.primitive_cursor = 0;
             continue;

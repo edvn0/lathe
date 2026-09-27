@@ -29,7 +29,7 @@ public:
     ShaderBinaryCache() = default;
 
     [[nodiscard]]
-    static auto create(std::filesystem::path directory, std::array<std::uint8_t, VK_UUID_SIZE> binary_uuid,
+    static auto create(std::filesystem::path const &directory, std::array<std::uint8_t, VK_UUID_SIZE> binary_uuid,
                        std::uint32_t binary_version) -> std::expected<ShaderBinaryCache, ShaderBinaryCacheError>;
 
     [[nodiscard]]

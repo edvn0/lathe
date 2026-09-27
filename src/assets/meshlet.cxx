@@ -8,10 +8,7 @@
 
 namespace {
 
-    // Meshlet bounds have to be computed from the positions the mesh shader
-    // actually reads, and those are half floats (CompressedModelVertex) --
-    // bounds from the original full-precision ModelVertex could be off by
-    // enough to cull a meshlet whose decoded triangles are still on screen.
+    // Bounds must come from the half-float positions the mesh shader reads, or a visible meshlet could be culled.
     [[nodiscard]] auto decode_positions(std::span<CompressedModelVertex const> vertices) -> std::vector<glm::vec3> {
         std::vector<glm::vec3> positions;
         positions.reserve(vertices.size());
@@ -24,8 +21,7 @@ namespace {
         return positions;
     }
 
-    // Weight towards tight normal cones over pure spatial locality -- the
-    // task shaders cone-cull backfacing meshlets in the opaque main view.
+    // Favour tight normal cones over locality, for backface cone culling.
     constexpr float meshlet_cone_weight = 0.25F;
 
 } // namespace
@@ -107,7 +103,7 @@ auto compute_meshlet_bounds(MeshletTopology const &topology, std::span<Compresse
     result.reserve(topology.meshlets.size());
 
     std::vector<unsigned char> triangles;
-    triangles.reserve(meshlet_max_triangles * 3);
+    triangles.reserve(std::size_t{meshlet_max_triangles} * 3);
 
     for (auto const &range: topology.meshlets) {
         triangles.clear();
@@ -152,8 +148,7 @@ auto upload_meshlet_data(GeometryArena &geometry_arena, VkCommandBuffer command_
 auto upload_meshlet_descriptors(GeometryArena &geometry_arena, VkCommandBuffer command_buffer,
                                 std::span<GpuMeshlet const> meshlets)
         -> std::expected<GeometrySlice, GeometryArenaError> {
-    // 16-byte aligned so the float3/float pairs in each GpuMeshlet line up
-    // with how the shader side reads them.
+    // 16-byte aligned to match the shader-side layout.
     auto slice = geometry_arena.allocate_vertices(command_buffer, std::as_bytes(meshlets),
                                                   static_cast<std::uint32_t>(sizeof(GpuMeshlet)), 16);
 

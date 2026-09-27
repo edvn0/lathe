@@ -487,8 +487,7 @@ namespace render_pass {
             }
         }
 
-        // One scene-geometry draw: which pipeline pair to draw with, and
-        // the attachment state bind_graphics_node needs for it.
+        // One scene draw: the pipeline pair and the attachment state to bind it with.
         struct SceneDraw {
             PipelineNodeHandle meshlet_pipeline{};
             PipelineNodeHandle instanced_pipeline{};
@@ -503,17 +502,10 @@ namespace render_pass {
                    resolve_layout(graph, draw.instanced_pipeline) != VK_NULL_HANDLE;
         }
 
-        // Draws `command_count` GpuDrawCommands starting at `first_command`
-        // down both paths: one vkCmdDrawMeshTasksIndirectEXT through the
-        // task/mesh pipeline, then one vkCmdDrawIndexedIndirect through its
-        // instanced twin. Every command has exactly one live half (see
-        // uses_meshlet_path()), the other draws nothing. Dynamic state is
-        // left to the caller -- with shader objects it survives the rebinds.
+        // Draws `command_count` commands from `first_command` down both paths: vkCmdDrawMeshTasksIndirectEXT with the
+        // task/mesh pipeline, then vkCmdDrawIndexedIndirect with the instanced one. Each command has one live half.
         //
-        // SV_DrawIndex restarts at 0 for every indirect call, so the task
-        // shader's view of the command array (PC::task_commands) is
-        // re-pointed at this call's first command rather than the buffer's
-        // start.
+        // SV_DrawIndex restarts at 0 per indirect call, so PC::task_commands points at this call's first command.
         template<typename PushConstants>
         auto draw_scene_commands(Context const &context, SceneDraw const &draw, DrawBuffers const &buffers,
                                  std::uint32_t first_command, std::uint32_t command_count,
@@ -545,9 +537,8 @@ namespace render_pass {
                                      command_count, sizeof(GpuDrawCommand));
         }
 
-        // Frustum-only for everything drawn without back-face culling
-        // (mask, blend, shadows); opaque main-view draws also cone-cull
-        // backfacing meshlets. Mirrors cull_*_bit in scene_types.slang.
+        // Frustum-only without back-face culling (mask, blend, shadows); opaque main-view draws also cone-cull.
+        // Mirrors cull_*_bit in scene_types.slang.
         constexpr std::uint32_t cull_frustum = 1U;
         constexpr std::uint32_t cull_frustum_and_backface = 1U | 2U;
 
@@ -625,8 +616,7 @@ namespace render_pass {
 
         vkCmdBeginRendering(context.command_buffer, &rendering_info);
 
-        // LOAD keeps every cached tile intact. Explicitly clear only the tiles
-        // that this frame is about to rebuild. Reverse-Z's empty value is zero.
+        // LOAD keeps cached tiles; clear only the ones being redrawn. Reverse-Z clears to zero.
         VkClearAttachment const clear_attachment{
                 .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
                 .colorAttachment = 0,
@@ -832,8 +822,7 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        // depth arrives in DEPTH_ATTACHMENT_OPTIMAL (written by the depth
-        // prepass); both compute passes below only ever read it.
+        // Written by the depth prepass; only read below.
         transition_image_layout(context.command_buffer, info.depth.image(), VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                 VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
@@ -904,8 +893,7 @@ namespace render_pass {
                                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
                                 VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
 
-        // Restore the layout forward_geometry's LOAD_OP_LOAD depth
-        // attachment expects.
+        // Back to what forward_geometry's LOAD_OP_LOAD expects.
         transition_image_layout(
                 context.command_buffer, info.depth.image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1010,8 +998,7 @@ namespace render_pass {
                 .cull_planes_address = info.cull_planes_address,
         };
 
-        // Opaque must cull exactly like the depth prepass's opaque draw
-        // (frustum + backface): this pass depth-tests EQUAL against it.
+        // Must cull exactly like the prepass's opaque draw, since this pass depth-tests EQUAL.
         auto opaque_pc = pc;
         opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface : 0U;
 
@@ -1098,7 +1085,6 @@ namespace render_pass {
             return;
         }
 
-        // Task/mesh pipeline: no vertex input stage to configure.
         detail::bind_graphics_node(context.pipeline_graph, info.pipeline, context.command_buffer, scope.samples, 1,
                                    true, false);
         context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1144,12 +1130,8 @@ namespace render_pass {
         auto const command_buffer = context.command_buffer;
         auto const bloom_image = info.target->image();
 
-        // Every level lives in one of two layouts: GENERAL while a dispatch
-        // writes it through its storage view, SHADER_READ_ONLY_OPTIMAL while
-        // a later dispatch (or composite) samples it -- the layout the
-        // bindless sampled_2d descriptors are written with. Each barrier
-        // below moves exactly one level between the two, so a level is never
-        // sampled and stored within the same dispatch.
+        // A level is GENERAL while written and SHADER_READ_ONLY_OPTIMAL while sampled. Each barrier moves one level,
+        // so no dispatch samples and stores the same level.
         auto const to_storage = [&](std::uint32_t mip) {
             transition_image_layout(command_buffer, bloom_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                     VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1166,18 +1148,13 @@ namespace render_pass {
                                     VK_IMAGE_ASPECT_COLOR_BIT, mip, 1);
         };
 
-        // The whole chain is rebuilt from scratch every frame, so discard
-        // the previous contents. The source scope still has to cover the
-        // last frame's readers of this image (its upsample dispatches and
-        // composite's fragment shader) -- a TOP_OF_PIPE source here would
-        // let this frame's first write race those reads.
+        // Rebuilt every frame, so discard the contents. The source scope still covers last frame's readers.
         transition_image_layout(command_buffer, bloom_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_NONE,
                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, bloom_mip_count);
 
-        // Downsample: HDR -> mip 0 -> mip 1 -> ... one dispatch per level,
-        // each sampling the level above it.
+        // Downsample: HDR -> mip 0 -> mip 1 -> ..., each sampling the level above.
         detail::bind_compute_node(context.pipeline_graph, info.downsample_pipeline, command_buffer);
         context.resource_table.bind(command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     downsample_layout);
@@ -1207,8 +1184,7 @@ namespace render_pass {
             to_sampled(mip);
         }
 
-        // Upsample: walk back up, adding the tent-filtered level below onto
-        // each level in place. mip 0 ends up holding the full bloom.
+        // Upsample: add the tent-filtered level below onto each level. mip 0 ends up with the full bloom.
         detail::bind_compute_node(context.pipeline_graph, info.upsample_pipeline, command_buffer);
         context.resource_table.bind(command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     upsample_layout);

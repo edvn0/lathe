@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------------------
-# engine_terrain -- quadtree streaming, chunk meshing, noise field.
+# engine_terrain: quadtree streaming, chunk meshing, noise.
 # ------------------------------------------------------------------------------
 
 add_library(

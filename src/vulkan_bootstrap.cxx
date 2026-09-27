@@ -26,9 +26,8 @@ namespace {
 #else
     constexpr bool enable_validation = false;
 
-    constexpr std::array<const char *, 0> validation_layers{};
+    constexpr std::array<char const *, 0> validation_layers{};
 #endif
-
 
     auto vk_result_name(VkResult result) noexcept -> std::string_view {
         switch (result) {
@@ -170,7 +169,7 @@ namespace {
         info("Was created via renderdoc: {}", renderdoc.is_active());
 
 #if defined(__linux__)
-        // RenderDoc does not support capturing Wayland surfaces, so force X11 when active.
+        // RenderDoc can't capture Wayland surfaces.
         glfwInitHint(GLFW_PLATFORM, renderdoc.is_active() ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM);
         warn("Chosing: {} as platform.", renderdoc.is_active() ? "X11" : "auto-detected");
 #endif
@@ -224,9 +223,8 @@ namespace {
             return false;
         }
 
-
         auto monitor = selected;
-        const GLFWvidmode *mode = glfwGetVideoMode(monitor);
+        GLFWvidmode const *mode = glfwGetVideoMode(monitor);
         glfwWindowHint(GLFW_RED_BITS, mode->redBits);
         glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
         glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
@@ -234,14 +232,12 @@ namespace {
 
         switch (screen_type) {
             case ScreenType::fullscreen:
-                context.window = glfwCreateWindow(mode->width, mode->height, "VK", monitor, NULL);
+                context.window = glfwCreateWindow(mode->width, mode->height, "VK", monitor, nullptr);
                 break;
 
             case ScreenType::borderless:
-                // Undecorated windowed window sized/positioned to cover the
-                // selected monitor -- no monitor handle passed, so this is a
-                // regular window rather than an exclusive-fullscreen surface.
-                context.window = glfwCreateWindow(mode->width, mode->height, "VK", nullptr, NULL);
+                // Borderless window covering the monitor, not exclusive fullscreen.
+                context.window = glfwCreateWindow(mode->width, mode->height, "VK", nullptr, nullptr);
 
                 if (context.window != nullptr) {
                     std::int32_t monitor_x = 0;
@@ -254,7 +250,7 @@ namespace {
             case ScreenType::windowed:
                 constexpr std::int32_t default_width = 1280;
                 constexpr std::int32_t default_height = 720;
-                context.window = glfwCreateWindow(default_width, default_height, "VK", nullptr, NULL);
+                context.window = glfwCreateWindow(default_width, default_height, "VK", nullptr, nullptr);
                 break;
         }
 
@@ -564,12 +560,7 @@ namespace {
         vkGetPhysicalDeviceProperties(context.physical_device, &properties);
         info("Selected physical device: {}", properties.deviceName);
 
-        // VK_EXT_shader_object is optional: not every target GPU implements
-        // it yet (e.g. some Intel iGPUs), so its absence must not disqualify
-        // an otherwise-suitable device. create_device() only enables the
-        // extension/features below when this is true, and the renderer
-        // falls back to VkPipeline per pipeline registration otherwise --
-        // see PipelineRegisterInfo::use_shader_objects.
+        // VK_EXT_shader_object is optional; without it the renderer falls back to VkPipelines.
         VkPhysicalDeviceExtendedDynamicState3FeaturesEXT extended_dynamic_state3_features{};
         extended_dynamic_state3_features.sType =
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
@@ -612,10 +603,7 @@ namespace {
         info("VK_EXT_shader_object support: {}",
              context.shader_objects_supported ? "yes" : "no (falling back to VkPipeline)");
 
-        // Tracy's "host query" Vulkan context (see host_query_context.hxx)
-        // needs VK_EXT_calibrated_timestamps plus a calibrateable device/host
-        // time domain pair -- absent either, HostQueryContext::initialize
-        // falls back to a calibrated or plain Tracy Vulkan context instead.
+        // Tracy's host-query context needs calibrated timestamps; otherwise it falls back to another context type.
         context.calibrated_timestamps_supported =
                 supports_device_extension(context.physical_device, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
 
@@ -648,8 +636,8 @@ namespace {
                 context.queue_families.present,
         };
 
-        auto const unique_end = std::unique(queue_family_indices.begin(), queue_family_indices.end());
-        auto const queue_count = static_cast<std::size_t>(unique_end - queue_family_indices.begin());
+        auto const duplicates = std::ranges::unique(queue_family_indices);
+        auto const queue_count = static_cast<std::size_t>(duplicates.begin() - queue_family_indices.begin());
 
         std::array<VkDeviceQueueCreateInfo, 2> queue_create_infos{};
         for (std::size_t index = 0; index < queue_count; ++index) {
@@ -880,7 +868,6 @@ namespace {
                 .vsync = true,
         });
     }
-
 
 } // namespace
 

@@ -5,8 +5,8 @@
 #include <glm/vec3.hpp>
 #include <vector>
 
-#include "assets/material.hxx" // MaterialHandle
-#include "assets/model.hxx" // ModelHandle
+#include "assets/material.hxx"
+#include "assets/model.hxx"
 #include "physics/physics_components.hxx"
 #include "core/transform.hxx"
 #include "scene/script_handle.hxx"
@@ -26,7 +26,6 @@ namespace Components {
         float outer_cone_degrees = 30.0F;
     };
 
-
     struct MaterialOverride {
         MaterialHandle material{};
     };
@@ -35,12 +34,8 @@ namespace Components {
         ModelHandle model{};
     };
 
-    // Many instances of one model sharing one material_override, owned by a
-    // single entity instead of one entity per instance (e.g. a grass field's
-    // thousands of blades). Transforms are world-space and computed once at
-    // spawn time -- unlike Model, there's no per-instance Transform, so
-    // Parent/systems::get_world_transform don't apply to individual
-    // instances, only (if ever needed) to the owning entity as a whole.
+    // Many instances of one model with one material_override, owned by a single entity. Transforms are world-space
+    // and fixed at spawn; Parent doesn't apply to individual instances.
     struct InstancedModel {
         ModelHandle model{};
         MaterialHandle material_override{};
@@ -53,23 +48,10 @@ namespace Components {
 
     struct PlayerTag {};
 
-    // Marks entities spawned by BasicGame::shoot_bullet() -- lets UI (the
-    // Hierarchy widget) and any future bullet-specific systems identify them
-    // by a typed marker instead of a name-string convention (bullet names
-    // aren't even unique -- shoot_bullet() restarts its index at 0 every
-    // call, so multiple live bullets can share the same GeneratedMeta name).
+    // Bullets spawned by BasicGame::shoot_bullet(). Their names aren't unique, so they need a tag.
     struct BulletTag {};
 
-    // Marks an entity whose Model handle was obtained through a path-based
-    // cache with real ref-counting (Renderer::load_model's model_cache_,
-    // ModelStreamer's path_cache_/the "Load Model" UI widget) -- every such
-    // handle-hand-out is paired with exactly one eventual
-    // Renderer::destroy_model() call, so it's safe for the Hierarchy
-    // widget's "remove" action to call destroy_model() when deleting one of
-    // these. Deliberately NOT applied to entities sharing a bare, unrefcounted
-    // ModelHandle some other way (e.g. BasicGame's grid/bullets all pointing
-    // at one shared cube_model_) -- destroying those on removal would pull
-    // the model out from under every other entity still using it, since
-    // nothing ever called retain_model() on their behalf.
+    // The entity's Model handle is ref-counted (loaded through a model cache), so removing the entity may call
+    // destroy_model(). Not for entities sharing an unretained handle.
     struct StreamedModelTag {};
 } // namespace Components

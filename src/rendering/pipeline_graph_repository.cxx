@@ -136,15 +136,7 @@ auto PipelineGraphRepository::link_stage_source_files(std::uint32_t stage_index)
         file.dependent_stages.push_back(stage_index);
     }
 
-    /*
-     * This only watches the entry-point file itself, not #include'd
-     * headers. Slang can report a module's file dependencies after a
-     * successful compile (its include graph) -- once SlangCompiler
-     * exposes that list on CompiledShader, feed each path through
-     * find_or_create_source_file() here and link it to stage_index too,
-     * so an edit to a shared .slangh invalidates every stage that
-     * includes it.
-     */
+    // Only the entry-point file is watched, not its includes.
 }
 
 auto PipelineGraphRepository::find_or_create_stage(renderer::ShaderCompileRequest const &request,
@@ -365,8 +357,7 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
         reserved[i] = true;
     }
 
-    // Phase 2 (parallel): every distinct dirty stage across the batch
-    // compiles exactly once, concurrently, on thread_pool.
+    // Phase 2 (parallel): every distinct dirty stage compiles once, on thread_pool.
     std::vector<std::uint32_t> dirty_stage_indices;
     {
         std::vector<bool> seen(stage_nodes_.size(), false);
@@ -386,7 +377,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
         }
     }
 
-
     auto &pool = thread_pool();
 
     if (!dirty_stage_indices.empty()) {
@@ -396,17 +386,14 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
         for (auto const stage_index: dirty_stage_indices) {
             auto const &request = stage_nodes_[stage_index].request;
 
-
             futures.push_back(pool.submit_task([&request] { return Renderer::compiler().compile(request); }));
         }
-
 
         std::optional<PipelineGraphError> first_error;
 
         for (std::size_t i = 0; i < dirty_stage_indices.size(); ++i) {
             auto compiled = futures[i].get();
             auto const stage_index = dirty_stage_indices[i];
-
 
             if (!compiled) {
                 if (!first_error) {
@@ -427,12 +414,7 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
             stage.has_compiled_once = true;
         }
 
-
-        // A compile failure anywhere in the batch is all-or-nothing (unlike
-        // a Phase 3 build failure below): it usually means a shared shader
-        // file is broken, which affects every pipeline in the batch that
-        // depends on it, so free every node this batch reserved and bail
-        // before Phase 3.
+        // A compile failure fails the whole batch: it usually means a shared shader file is broken.
         if (first_error) {
             for (std::size_t i = 0; i < register_infos.size(); ++i) {
                 if (!reserved[i]) {
@@ -449,16 +431,11 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
                 results[i] = std::unexpected(*first_error);
             }
 
-
             return results;
         }
     }
 
-    // Phase 3 (parallel): build every successfully-compiled node's
-    // VkPipeline/ShaderObjectSet concurrently. Safe now that
-    // PipelineStorage/ShaderObjectStorage synchronize their own free-list
-    // bookkeeping internally, and Pipeline::create_graphics/create_compute
-    // synchronize the shared VkPipelineCache internally (see pipeline.cxx).
+    // Phase 3 (parallel): build every compiled node. The storages and the pipeline cache synchronize internally.
     for (std::size_t i = 0; i < register_infos.size(); ++i) {
         if (!reserved[i]) {
             continue;
@@ -482,13 +459,11 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
         }
     }
 
-
     std::vector<std::future<std::expected<BuiltNode, PipelineGraphError>>> build_futures;
     build_futures.reserve(build_order.size());
 
     for (auto const i: build_order) {
         auto const node_index = node_indices[i];
-
 
         build_futures.push_back(
                 pool.submit_task([this, node_index] { return build_node(pipeline_nodes_[node_index]); }));
@@ -500,7 +475,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
         auto &node = pipeline_nodes_[node_index];
 
         auto built = build_futures[k].get();
-
 
         if (!built) {
             node.occupied = false;
@@ -518,7 +492,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
                 .generation = node.generation,
         };
     }
-
 
     return results;
 }
@@ -632,7 +605,7 @@ auto PipelineGraphRepository::process_dirty() -> void {
 
         if (!rebuilt) {
             error("Pipeline rebuild failed for {} after successful shader compile(s)", node.register_info.debug_name);
-            continue; // stays pending_rebuild; will retry next process_dirty() call
+            continue; // stays pending_rebuild; retried on the next call
         }
 
         retire(node.live_shader_object_handle);
@@ -643,7 +616,6 @@ auto PipelineGraphRepository::process_dirty() -> void {
         debug("Recompiled {}", node.register_info.debug_name);
     }
 }
-
 
 auto PipelineGraphRepository::retire(ShaderObjectHandle handle) -> void {
     if (!handle.valid()) {

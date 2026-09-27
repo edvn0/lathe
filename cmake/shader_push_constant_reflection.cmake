@@ -146,7 +146,6 @@ set(
     shader_reflect_arguments
 )
 
-#
 # add_shader_push_constant(
 #     <slang file>
 #     <entry point>
@@ -154,10 +153,8 @@ set(
 #     <generated struct name>
 # )
 #
-# Each shader is compiled independently, allowing Ninja to parallelise Slang
-# compilation. The resulting SPIR-V files are reflected together in one host
-# process below.
-#
+# Each shader compiles separately so Ninja can parallelise; the SPIR-V files
+# are then reflected together in one process.
 macro(
     add_shader_push_constant
     slang_file
@@ -250,7 +247,7 @@ add_shader_push_constant(
 
 add_shader_push_constant(
     composite.slang
-    mainFs
+    main_fs
     fragment
     CompositePushConstants
 )
@@ -264,35 +261,35 @@ add_shader_push_constant(
 
 add_shader_push_constant(
     frustum_cull.slang
-    mainCs
+    main_cs
     compute
     CullPushConstants
 )
 
 add_shader_push_constant(
     bloom_downsample.slang
-    mainCs
+    main_cs
     compute
     DownsamplePushConstants
 )
 
 add_shader_push_constant(
     bloom_upsample.slang
-    mainCs
+    main_cs
     compute
     UpsamplePushConstants
 )
 
 add_shader_push_constant(
     gtao.slang
-    mainCs
+    main_cs
     compute
     GtaoPushConstants
 )
 
 add_shader_push_constant(
     gtao_denoise.slang
-    mainCs
+    main_cs
     compute
     GtaoDenoisePushConstants
 )

@@ -9,13 +9,6 @@
 #include <cmath>
 #include <optional>
 
-//
-// make_terrain_chunk/terrain_chunk_indices are pure CPU functions (no
-// Vulkan/ECS/thread pool), so the seam, layout, and winding invariants the
-// streaming terrain design depends on are directly unit-testable. See the
-// terrain streaming plan for why each of these specifically matters.
-//
-
 namespace {
 
     [[nodiscard]] auto default_field() -> TerrainField {
@@ -30,11 +23,7 @@ namespace {
                          glm::unpackHalf1x16(vertex.position_z)};
     }
 
-    // Which skirt group an index belongs to, and that group's expected
-    // outward face-normal direction -- derived analytically in the terrain
-    // streaming plan (cross(edge_along_boundary, -Y) against each edge's
-    // known outward direction) and re-derived here independently as the
-    // test oracle.
+    // The skirt group an index belongs to and that group's outward normal.
     [[nodiscard]] auto skirt_outward_direction(std::uint32_t index) -> std::optional<glm::vec3> {
         if (index < terrain_chunk_interior_vertex_count) {
             return std::nullopt;
@@ -106,10 +95,7 @@ TEST_SUITE("unit") {
             auto const i1 = indices[i + 1];
             auto const i2 = indices[i + 2];
 
-            // Every skirt quad's two triangles are built entirely from two
-            // interior corners and two same-group skirt corners (see
-            // emit_quad call sites in terrain_chunk.cxx), so any skirt
-            // index present identifies the whole triangle's group.
+            // Skirt triangles use two interior and two same-group skirt corners, so any skirt index gives the group.
             auto outward = skirt_outward_direction(i0);
             if (!outward) {
                 outward = skirt_outward_direction(i1);
@@ -164,16 +150,13 @@ TEST_SUITE("unit") {
                                                                         .world_origin_z = 0.0F,
                                                                         .cell_size = 2.0F});
 
-        // Both chunks are centred on world (0,0), which every LOD's grid
-        // passes through exactly (column/row 32 of 64) regardless of
-        // cell_size -- height() is a pure function of world (x,z) alone,
-        // so the two chunks must agree there exactly.
+        // Both chunks are centred on (0,0), which every LOD's grid passes through, and height() depends only on world
+        // position.
         auto const centre = terrain_chunk_interior_index(32, 32);
         CHECK(lod0.heights[centre] == lod1.heights[centre]);
         CHECK(lod0.heights[centre] == field.height(0.0F, 0.0F));
 
-        // LOD0 column 16 (local_x = -16) and LOD1 column 24 (local_x = -16)
-        // both land on world x = -16.
+        // LOD0 column 16 and LOD1 column 24 are both at world x = -16.
         auto const lod0_point = terrain_chunk_interior_index(16, 32);
         auto const lod1_point = terrain_chunk_interior_index(24, 32);
         CHECK(lod0.heights[lod0_point] == lod1.heights[lod1_point]);
@@ -181,12 +164,8 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("mid_height is invariant across chunks with different observed min/max") {
-        // Two chunks far enough apart to have different observed height
-        // extremes, but the same fixed height_range_min/max -- their
-        // vertex Y at a shared reference height must still agree, since
-        // mid_height depends only on the fixed range (see
-        // make_terrain_chunk's mid_height comment), not on what this
-        // particular chunk's noise happened to produce.
+        // Different observed extremes but the same fixed height range, so vertex Y at a shared reference height must
+        // agree.
         auto const field = default_field();
 
         auto const near = make_terrain_chunk(field, TerrainChunkRequest{.world_origin_x = 0.0F, .cell_size = 1.0F});
@@ -220,10 +199,7 @@ TEST_SUITE("unit") {
 
         for (auto const &vertex: chunk_a.vertices) {
             auto const u = glm::unpackHalf1x16(vertex.texcoord_u);
-            // Bounded by the chunk's own local span in UV space, regardless
-            // of how far world_origin is from the origin -- the bug this
-            // guards against is `world_xz * uv_scale` growing without
-            // bound and losing half-float precision.
+            // UVs stay within the chunk's local span however far it is from the origin, keeping half-float precision.
             CHECK(std::fabs(u) <= span * uv_scale + 1.0F);
         }
 
@@ -241,11 +217,7 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("sample_terrain_height is deterministic and matches TerrainField::height directly") {
-        // sample_terrain_height now delegates to a freshly-built TerrainField
-        // (see terrain_mesh.cxx) -- this pins that the two are exactly
-        // equivalent, and that repeated calls with the same params/position
-        // are deterministic, for every existing caller (house/tree/grass
-        // placement) that relies on both properties.
+        // sample_terrain_height must match TerrainField and be deterministic.
         TerrainParams const params{};
 
         CHECK(sample_terrain_height(params, 0.0F, 0.0F) == sample_terrain_height(params, 0.0F, 0.0F));

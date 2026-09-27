@@ -6,8 +6,8 @@
 #include <vector>
 
 #include "rendering/engine_models.hxx"
-#include "rendering/entity.hxx" // Components::Meta/GeneratedMeta
-#include "rendering/scene.hxx" // clone_registry<>()
+#include "rendering/entity.hxx"
+#include "rendering/scene.hxx"
 #include "scene/camera_path.hxx"
 #include "scene/components.hxx"
 #include "scene/input_events.hxx"
@@ -16,14 +16,8 @@
 class Scene;
 struct Renderer;
 
-// entt::snapshot_loader asserts its destination registry is empty on
-// construction (see basic_snapshot_loader's ctor in entt/entity/snapshot.hpp),
-// so editor_scene -> runtime_scene cloning can only ever run as a single
-// snapshot/loader pass -- there's no way to clone the engine's base component
-// set now and a game's own extra component types later via a second,
-// separate clone_registry<>() call. This helper is that one pass: it always
-// includes the engine's own base set, plus whatever ExtraComponents a game
-// passes in for its own per-entity data (see IGame::clone_into_runtime).
+// entt's snapshot loader requires an empty destination, so the engine's base components and a game's extras
+// have to be cloned in a single pass.
 template<typename... ExtraComponents>
 auto clone_editor_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
     clone_registry<Components::Transform, Components::Model, Components::InstancedModel, Components::RigidBody,
@@ -32,9 +26,7 @@ auto clone_editor_into_runtime(Scene const &editor_scene, Scene &runtime_scene) 
                    ExtraComponents...>(editor_scene.get_registry(), runtime_scene.get_registry());
 }
 
-// View/projection/clip-plane values the engine needs to render a frame --
-// decouples Application/main.cxx from whatever camera type a game uses
-// internally (PlayerCamera, a third-person orbit camera, ...).
+// Decouples the engine from the game's camera type.
 struct CameraParams {
     glm::mat4 view{1.0F};
     glm::mat4 projection{1.0F};
@@ -43,26 +35,16 @@ struct CameraParams {
     float vertical_fov_radians = 1.0F;
 };
 
-// The engine drives this interface; it never constructs or owns a Scene
-// itself -- Application hands one to each call below (editor_scene at
-// startup/on_populate, whichever of editor_scene/runtime_scene is currently
-// active for on_update/on_event). Scene transitions (menu -> level, level ->
-// level) don't need a separate engine mechanism: a game clears and
-// repopulates the Scene it's handed here from inside its own code, the same
-// way build_demo_scene() already does for Ctrl+R reloads today.
+// The interface the engine drives. Application hands in the active Scene on each call; games change levels by
+// clearing and repopulating it.
 class IGame {
 public:
     virtual ~IGame() = default;
 
-    // Called once from Application::on_startup(), and again whenever the
-    // engine is asked to rebuild the editor scene (Ctrl+R). engine_models
-    // holds the built-in primitive models (cube/sphere/capsule/grass_clump)
-    // the engine creates once at startup -- handed in rather than requiring
-    // the game to call create_engine_models() itself.
+    // Called at startup and on Ctrl+R to rebuild the editor scene.
     virtual auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void = 0;
 
-    // Called every frame while the engine is playing, against the active
-    // (runtime) scene.
+    // Called every frame while playing, with the runtime scene.
     virtual auto on_update(Scene &scene, float delta_time) -> void = 0;
 
     virtual auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void { (void) scene; (void) event; }
@@ -77,54 +59,27 @@ public:
         (void) event;
     }
 
-    // Optional game HUD -- drawn separately from the engine's own debug/editor
-    // ImGui panels (Application::on_ui()), but called from inside the same
-    // ImGui frame (see Application::on_ui()'s call site), so implementations
-    // just Begin()/End() their own window(s) (gui::widget() in
-    // rendering/imgui_widget.hxx is the same helper Application::on_ui() uses).
-    // `scene` is always the active scene (editor or runtime, matching
-    // Application::active_scene()); `renderer` is handed in (rather than
-    // requiring the game to have cached one from on_populate()) -- together
-    // they let a panel read back current values (MaterialStorage::get(),
-    // registry state) and call mutators (Renderer::update_material(),
-    // registry.replace<>()) directly.
+    // Optional game UI, drawn inside the engine's ImGui frame. `scene` is the active scene.
     virtual auto on_ui(Scene &scene, Renderer &renderer) -> void {
         (void) scene;
         (void) renderer;
     }
 
-    // Opts into engine-managed streaming terrain (see TerrainWorld): called
-    // once from Application::on_startup(), after on_populate(), on the
-    // render thread with a live one-time command buffer already open (so
-    // implementations needing a MaterialHandle can create one against
-    // `renderer` from inside on_populate() and pass it through here). A
-    // game with no streaming terrain -- or one that builds its own fixed
-    // terrain, as the pre-streaming code did -- leaves this at the default
-    // nullopt, and Application never creates a TerrainWorld.
+    // Opt-in streaming terrain. Called once at startup after on_populate(), on the render thread inside a
+    // one-time command buffer. nullopt means no TerrainWorld.
     [[nodiscard]] virtual auto terrain_create_info(Renderer &renderer) -> std::optional<TerrainWorldCreateInfo> {
         (void) renderer;
         return std::nullopt;
     }
 
-    // The closed loop --benchmark flies the editor camera around (see
-    // app/benchmark.hxx and sample_camera_path()). Should cover what the
-    // game's scene actually stresses -- dense foliage up close, wide
-    // overviews, occluded interiors -- since every perf comparison between
-    // two builds is taken along exactly this path. Empty (the default)
-    // means the game has no benchmark, and --benchmark fails at startup.
+    // The loop --benchmark flies the editor camera along. Empty means the game has no benchmark and --benchmark
+    // fails at startup.
     [[nodiscard]] virtual auto benchmark_camera_path() const -> std::vector<CameraKeyframe> { return {}; }
 
     [[nodiscard]] virtual auto camera(Scene const &scene, float aspect_ratio) const -> CameraParams = 0;
 
-    // Called once from Application::play() to populate runtime_scene's
-    // registry from editor_scene's -- see clone_editor_into_runtime() above
-    // for why this can't be split into an engine-side call plus a separate
-    // game-side one. Default clones just the engine's own base component
-    // set; a game that adds its own component types via on_populate() (e.g.
-    // gameplay/script data) must override this and pass them as
-    // ExtraComponents, or they silently won't exist on the entities
-    // Application actually simulates/renders once playing -- see
-    // BasicGame::clone_into_runtime for Components::Script/CircularMotion.
+    // Populates runtime_scene from editor_scene on play(). Games with their own component types must override
+    // this and pass them as ExtraComponents, or those components won't exist while playing.
     virtual auto clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
         clone_editor_into_runtime<>(editor_scene, runtime_scene);
     }

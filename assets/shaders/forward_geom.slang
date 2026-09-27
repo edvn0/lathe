@@ -31,8 +31,7 @@ VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_stre
     float4 world_position = mul(model, float4(vertex.position, 1.0));
     world_position.xz += wind_offset(vertex.position, world_position.xyz, wind_strength, ubo.time);
 
-    // This is correct for uniform scale and rotation.
-    // Use inverse-transpose when non-uniform scaling is supported.
+    // Valid for uniform scale and rotation; non-uniform scale would need the inverse-transpose.
     float3x3 normal_matrix = (float3x3)model;
 
     float3 world_normal = normalize(mul(normal_matrix, vertex.normal));
@@ -49,11 +48,9 @@ VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_stre
     return output;
 }
 
-// Instanced path for batches too small for meshlets (see
-// uses_meshlet_path() in include/assets/meshlet.hxx) -- same vertex
-// function as main_mesh, so both paths produce identical positions.
+// Instanced path for batches too small for meshlets. Same vertex function as main_mesh.
 [shader("vertex")]
-VertexOutput mainVs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform PC pc)
+VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform PC pc)
 {
     const GpuDraw draw = pc.draws[instance_index];
     const float wind_strength = pc.materials[draw.material_index].wind_strength;
@@ -89,10 +86,8 @@ struct OutputFS
     float4 colour : SV_Target;
 };
 
-// 3x3 hardware-PCF tap. Each tap is clamped to a 1-texel inset of this
-// cascade's tile before the atlas remap: without the inset, taps near a
-// tile edge would leave the tile and CLAMP_TO_BORDER on the wide atlas
-// would silently read the neighbouring cascade in x.
+// 3x3 hardware PCF. Taps are clamped to a 1-texel inset of the cascade's tile, or edge taps would read the
+// neighbouring cascade in the atlas.
 float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float reference)
 {
     const var atlas = sampled_2d_depth[NonUniformResourceIndex(ubo.shadow_atlas_texture)];
@@ -122,14 +117,14 @@ float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float refe
 }
 
 [shader("fragment")]
-OutputFS mainFs(VertexOutput input, uniform PC pc)
+OutputFS main_fs(VertexOutput input, uniform PC pc)
 {
     const var ubo = pc.ubo;
 
     float3 normal = normalize(input.world_normal);
     float3 tangent = normalize(input.world_tangent.xyz);
 
-    // Re-orthogonalize in case interpolation skewed the basis.
+    // Re-orthogonalize after interpolation.
     tangent = normalize(tangent - normal * dot(normal, tangent));
     float3 bitangent = cross(normal, tangent) * input.world_tangent.w;
 
@@ -147,8 +142,7 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
 
     float2 uv = float2(input.texture_coordinate.x, input.texture_coordinate.y);
 
-    // Normal maps are stored BC5 (2 channels, X/Y only) -- Z is reconstructed
-    // here rather than sampled, since BC5 has nowhere to store it.
+    // BC5 normal maps store X/Y only; reconstruct Z.
     float2 tangent_normal_xy = normal_texture.Sample(sampler, uv).xy * 2.0 - 1.0;
     tangent_normal_xy *= material.normal_scale;
     float tangent_normal_z = sqrt(saturate(1.0 - dot(tangent_normal_xy, tangent_normal_xy)));
@@ -160,12 +154,8 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
 
     float view_z = mul(ubo.view, float4(input.world_position, 1.0)).z;
 
-    // Cascade selection and the cascade_view_projection[] lookup are inlined
-    // here rather than factored into a helper: passing Ptr<UBO> into a
-    // non-entry-point function and then dynamically indexing an array of
-    // matrices crashes the Slang SPIR-V backend (assert failure in
-    // slang-ir.cpp, structType). sample_shadow_atlas() below is safe
-    // because it never indexes a matrix array through the pointer.
+    // Inlined on purpose: dynamically indexing a matrix array through Ptr<UBO> in a helper function crashes
+    // Slang's SPIR-V backend.
     uint cascade = ubo.cascade_count;
     [unroll]
     for (uint i = 0; i < shadow_cascade_count; ++i) {
@@ -178,9 +168,8 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
     float shadow = 1.0;
 
     if (ndotl > 0.0 && cascade < ubo.cascade_count) {
-        // Normal-offset bias along the geometric (not normal-mapped) normal
-        // -- a perturbed normal can push the sample through geometry.
-        // sqrt(2) covers a texel footprint's diagonal.
+        // Normal-offset bias along the geometric normal; a normal-mapped one can push the sample through geometry.
+        // sqrt(2) covers a texel's diagonal.
         float texel = ubo.cascade_texel_world[cascade];
         float3 biased = input.world_position + normal * (texel * ubo.shadow_normal_offset_texels * 1.41421356);
 
@@ -199,12 +188,7 @@ OutputFS mainFs(VertexOutput input, uniform PC pc)
     float ambient_occlusion = ambient_occlusion_texture.Sample(sampler, uv).r;
     ambient_occlusion = lerp(1.0, ambient_occlusion, material.occlusion_strength);
 
-    // Screen-space GTAO term (see gtao.slang/gtao_denoise.slang), sampled at
-    // this fragment's own screen position and blended in on top of the
-    // material's baked occlusion texture above -- the two account for
-    // different things (macro-scale, cross-mesh occlusion the baked texture
-    // can't see, vs. per-texel occlusion baked into the asset) and multiply
-    // together rather than replacing one another.
+    // Screen-space GTAO multiplies with the baked occlusion; they capture different scales.
     float2 screen_uv = input.position.xy / pc.screen_size;
     const var gtao_texture = sampled_2d[NonUniformResourceIndex(pc.ao_texture_index)];
     const var gtao_sampler = samplers[NonUniformResourceIndex(pc.ao_sampler_index)];
@@ -220,7 +204,7 @@ if (material.alpha_mode == AlphaMode.mask && base_sample.a < material.alpha_cuto
 var base_colour = base_sample.xyz *
                   float3(material.colour[0], material.colour[1], material.colour[2]);
 
-    // glTF metallic-roughness convention: roughness in G, metallic in B.
+    // glTF: roughness in G, metallic in B.
     float2 metallic_roughness = metallic_roughness_texture.Sample(sampler, uv).bg *
                                 float2(material.metallic_factor, material.roughness_factor);
     float metallic = metallic_roughness.x;
@@ -241,10 +225,7 @@ var base_colour = base_sample.xyz *
         float distance = length(to_light);
         float3 light_dir = to_light / max(distance, 1e-6);
 
-        // Smooth range window on top of inverse-square falloff so lights
-        // reach exactly zero at `range` instead of cutting off with a hard
-        // edge -- same shape as glTF KHR_lights_punctual's recommended
-        // attenuation.
+        // KHR_lights_punctual's smooth window on top of inverse-square, reaching zero at `range`.
         float distance_falloff = clamp(1.0 - pow(distance / max(punctual_light.range, 1e-4), 4.0), 0.0, 1.0);
         distance_falloff = (distance_falloff * distance_falloff) / max(distance * distance, 1e-4);
 
