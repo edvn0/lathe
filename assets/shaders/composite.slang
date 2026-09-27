@@ -77,7 +77,7 @@ FragmentOutput mainFs(VertexOutput input, uniform CompositePC pc)
     float3 hdr_colour = sampled_2d[hdr_index].Sample(samplers[sampler_index], input.uv).rgb;
     float3 bloom_colour = sampled_2d[bloom_index].Sample(samplers[sampler_index], input.uv).rgb;
 
-    float3 combined_hdr = hdr_colour + (bloom_colour * 30*pc.bloom_intensity);
+    float3 combined_hdr = hdr_colour + bloom_colour * pc.bloom_intensity;
 
     float3 mapped = aces_fitted(combined_hdr * pc.exposure);
 

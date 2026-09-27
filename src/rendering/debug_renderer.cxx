@@ -70,7 +70,7 @@ namespace debug_draw {
             VkDeviceAddress vertices;
         };
 
-        auto create_pipeline(Renderer &renderer, VkFormat framebuffer_format, VkFormat depth_format)
+        auto create_pipeline(Renderer &renderer, OverlayScope const &scope)
                 -> std::expected<PipelineNodeHandle, RendererError> {
             return renderer.register_pipeline(PipelineRegisterInfo{
                     .stages =
@@ -87,11 +87,11 @@ namespace debug_draw {
                                     },
                             },
                     .push_constant_ranges = {global_push_constant_range},
-                    .colour_formats = {framebuffer_format},
+                    .colour_formats = {scope.colour_format},
                     .dynamic_states = {},
-                    .depth_format = depth_format,
+                    .depth_format = scope.depth_format,
                     .stencil_format = VK_FORMAT_UNDEFINED,
-                    .samples = renderer.samples(),
+                    .samples = scope.samples,
                     .blending = false,
                     .debug_name = "debug_draw.pipeline",
             });
@@ -219,7 +219,6 @@ namespace debug_draw {
         std::vector<FrameBuffer> frame_buffers;
 
         PipelineNodeHandle pipeline;
-        bool force_recompile = true;
 
         BulletDebugDraw bullet_debug_draw;
         bool model_bounds_debug_enabled = false;
@@ -237,20 +236,18 @@ namespace debug_draw {
 
     auto DebugRenderer::begin_frame() -> void { impl_->pending_lines.clear(); }
 
-    auto DebugRenderer::render(VkCommandBuffer cmd, glm::mat4 const &view_projection, std::uint32_t frame_index)
-            -> void {
-        render(cmd, std::span<const float, 16>{glm::value_ptr(view_projection), 16}, frame_index);
-    }
-
-    auto DebugRenderer::render(VkCommandBuffer cmd, std::span<const float, 16> view_projection,
-                               std::uint32_t frame_index) -> void {
+    auto DebugRenderer::record(OverlayRecordContext const &context) -> void {
         if (impl_->pending_lines.empty() && impl_->extra_lines.empty()) {
             return;
         }
 
-        if (impl_->force_recompile || !impl_->pipeline.valid()) {
-            auto created =
-                    create_pipeline(impl_->renderer, impl_->renderer.hdr_format(), impl_->renderer.depth_format());
+        auto const cmd = context.command_buffer;
+        auto const frame_index = context.frame_index;
+
+        // Shader objects bake no attachment formats or sample count; the
+        // scope is only recorded on the pipeline node as metadata.
+        if (!impl_->pipeline.valid()) {
+            auto created = create_pipeline(impl_->renderer, context.scope);
 
             if (!created) {
                 error("[DebugDraw] Failed to create pipeline");
@@ -258,7 +255,6 @@ namespace debug_draw {
             }
 
             impl_->pipeline = *created;
-            impl_->force_recompile = false;
         }
 
         auto const vertex_count =
@@ -270,6 +266,8 @@ namespace debug_draw {
 
         auto &frame_buffer = impl_->frame_buffers[frame_index];
 
+        // Host writes into mapped memory: vkQueueSubmit makes them visible,
+        // so this needs no prepare() and no barrier.
         if (!frame_buffer.vertex->write(0, std::span<const Vertex>{impl_->pending_lines}).has_value()) {
             error("[DebugDraw] Failed to write line buffer");
             return;
@@ -293,47 +291,10 @@ namespace debug_draw {
 
         pipeline->bind(cmd);
 
-        // Must match the forward pass's own render target size, not the
-        // swapchain -- this draws inside forward_geometry()'s render scope,
-        // which targets forward_target (the editor Viewport panel's
-        // resolution in non-fullscreen mode), and the view_projection we
-        // were handed was built from Renderer::aspect(), itself derived from
-        // that same forward_target extent. Using swapchain extent here
-        // desyncs the viewport from the projection's aspect whenever the
-        // panel and window sizes differ, distorting/flipping the lines.
-        auto const extent = impl_->renderer.forward_extent(frame_index);
-
-        // minDepth/maxDepth inverted to match the reverse-Z convention used by the
-        // rest of the renderer (see set_forward_dynamic_state in renderer.cxx):
-        // the projection matrix itself is left as plain [0,1] NDC depth, and the
-        // viewport flips it so near=1/far=0 matches what's already in the depth buffer.
-        auto const viewport = VkViewport{
-                .x = 0.0F,
-                .y = static_cast<float>(extent.height),
-                .width = static_cast<float>(extent.width),
-                .height = -static_cast<float>(extent.height),
-                .minDepth = 1.0F,
-                .maxDepth = 0.0F,
-        };
-
-        auto const scissor = VkRect2D{
-                .offset = {0, 0},
-                .extent =
-                        {
-                                static_cast<std::uint32_t>(extent.width),
-                                static_cast<std::uint32_t>(extent.height),
-                        },
-        };
-
-        vkCmdSetViewportWithCount(cmd, 1, &viewport);
-        vkCmdSetScissorWithCount(cmd, 1, &scissor);
-
-        vkCmdSetDepthTestEnable(cmd, VK_TRUE);
-        vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
-
-        vkCmdSetDepthCompareOp(cmd, VK_COMPARE_OP_GREATER_OR_EQUAL);
+        // Viewport, scissor, depth test (GREATER_OR_EQUAL, reverse-Z) with
+        // writes off and the scope's sample count all come from the
+        // OverlayStage::scene baseline; only line-specific state is set here.
         vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
-
         vkCmdSetLineWidth(cmd, 1.0F);
 
         impl_->renderer.resource_table().bind(cmd, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout());
@@ -343,7 +304,8 @@ namespace debug_draw {
                 .vertices = frame_buffer.vertex->device_address,
         };
 
-        std::memcpy(push_constants.view_proj, view_projection.data(), view_projection.size_bytes());
+        std::memcpy(push_constants.view_proj, glm::value_ptr(context.view_projection),
+                    sizeof(push_constants.view_proj));
         vkCmdPushConstants(cmd, pipeline->layout(), VK_SHADER_STAGE_ALL, 0, sizeof(push_constants), &push_constants);
         vkCmdDraw(cmd, vertex_count, 1, 0, 0);
     }

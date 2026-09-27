@@ -1,119 +1,147 @@
+module bloom_downsample;
+
 import bindless;
 
+// One level of the bloom mip chain: reads the level above through a
+// sampled view and writes this level through a storage view. The two are
+// always different subresources, and render_pass::bloom() puts a barrier
+// between consecutive levels, so no invocation ever reads a texel another
+// invocation of the same dispatch is writing.
+//
+// The filter is the 13-tap downsample from Jimenez, "Next Generation Post
+// Processing in Call of Duty: Advanced Warfare" (SIGGRAPH 2014): five
+// overlapping 2x2 box footprints around the destination texel, weighted
+// 0.5 (inner) and 4 x 0.125 (corners). The first level additionally uses a
+// Karis average over those five boxes -- each weighted by 1 / (1 + luma) --
+// so single sub-pixel highlights (specular sparkles on the helmet, say)
+// can't dominate a whole bloom texel and pop on and off as the camera
+// moves, and applies the soft-knee brightness threshold.
 struct DownsamplePushConstants
 {
-    uint srcTextureIndex;
-    uint linearSamplerIndex;
-    uint dstMip0StorageIndex;
-    uint dstMip1StorageIndex;
-    uint dstMip2StorageIndex;
-    uint dstMip3StorageIndex;
-    float2 srcTexelSize;
-    int2 mip0Size;
+    uint src_texture_index;
+    uint dst_storage_index;
+    uint linear_sampler_index;
+
+    // Non-zero for the HDR -> mip 0 dispatch only.
+    uint is_first_level;
+
+    float2 src_texel_size;
+    int2 dst_size;
+
     float threshold;
     float knee;
 };
 
-// Bindless storage targets initialized via descriptor indexing
 public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] DownsamplePushConstants pc;
 
-groupshared float3 g_TileCache[8][8];
-
-float3 Downsample13Tap(float2 uv, float2 texelSize)
+float luma(float3 colour)
 {
-    float2 d = texelSize;
-    Texture2D<float4> src = sampled_2d[pc.srcTextureIndex];
-    SamplerState smp = samplers[pc.linearSamplerIndex];
-
-    float3 A = src.SampleLevel(smp, uv, 0).rgb;
-    float3 B = src.SampleLevel(smp, uv + float2(-2.0 * d.x,  2.0 * d.y), 0).rgb;
-    float3 C = src.SampleLevel(smp, uv + float2( 2.0 * d.x,  2.0 * d.y), 0).rgb;
-    float3 D = src.SampleLevel(smp, uv + float2(-2.0 * d.x, -2.0 * d.y), 0).rgb;
-    float3 E = src.SampleLevel(smp, uv + float2( 2.0 * d.x, -2.0 * d.y), 0).rgb;
-
-    float3 F = src.SampleLevel(smp, uv + float2(-d.x,  d.y), 0).rgb;
-    float3 G = src.SampleLevel(smp, uv + float2( d.x,  d.y), 0).rgb;
-    float3 H = src.SampleLevel(smp, uv + float2(-d.x, -d.y), 0).rgb;
-    float3 I = src.SampleLevel(smp, uv + float2( d.x, -d.y), 0).rgb;
-
-    return (A * 0.125) + ((B + C + D + E) * 0.03125) + ((F + G + H + I) * 0.0625);
+    return dot(colour, float3(0.2126, 0.7152, 0.0722));
 }
 
-[numthreads(16, 16, 1)]
-void mainCs(uint3 localID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
+// The HDR target can hold the odd NaN/inf (degenerate normals, a zero
+// roughness specular lobe). Without this one bad texel would be smeared
+// across every bloom level and show up as a flashing black or white block.
+float3 sanitize(float3 colour)
 {
-    // PASS 0: Source -> Mip 0
-    int2 globalCoord = groupID.xy * 16 + localID.xy;
-    float3 color = float3(0.0);
-
-    if (globalCoord.x < pc.mip0Size.x && globalCoord.y < pc.mip0Size.y)
+    if (any(isnan(colour)) || any(isinf(colour)))
     {
-        float2 uv = (float2(globalCoord) + 0.5) / float2(pc.mip0Size);
-        color = Downsample13Tap(uv, pc.srcTexelSize);
-
-        if (pc.threshold >= 0.0)
-        {
-            float luma = dot(color, float3(0.2126, 0.7152, 0.0722));
-            color /= (1.0 + luma); // Partial Karis weighting
-            
-            float soft = clamp(luma - pc.threshold + pc.knee, 0.0, 2.0 * pc.knee);
-            soft = (soft * soft) / (4.0 * pc.knee + 1e-4);
-            float weight = max(soft, luma - pc.threshold) / max(luma, 1e-4);
-            color *= weight;
-        }
-
-        storage_2d[pc.dstMip0StorageIndex][globalCoord] = float4(color, 1.0);
+        return float3(0.0);
     }
 
-    // PASS 1: Mip 0 -> Mip 1 (Subgroup Quad Broadcast In Register)
-    float3 q0 = color;
-    float3 q1 = WaveReadLaneAt(color, WaveGetLaneIndex() ^ 1);
-    float3 q2 = WaveReadLaneAt(color, WaveGetLaneIndex() ^ 2);
-    float3 q3 = WaveReadLaneAt(color, WaveGetLaneIndex() ^ 3);
+    return min(colour, float3(65504.0));
+}
 
-    float3 mip1Color = (q0 + q1 + q2 + q3) * 0.25;
+float3 fetch(float2 uv)
+{
+    Texture2D<float4> src = sampled_2d[pc.src_texture_index];
+    SamplerState smp = samplers[pc.linear_sampler_index];
+    float3 colour = src.SampleLevel(smp, uv, 0).rgb;
+    return pc.is_first_level != 0 ? sanitize(colour) : colour;
+}
 
-    if ((localID.x % 2 == 0) && (localID.y % 2 == 0))
+float3 soft_threshold(float3 colour)
+{
+    float brightness = luma(colour);
+    float soft = clamp(brightness - pc.threshold + pc.knee, 0.0, 2.0 * pc.knee);
+    soft = (soft * soft) / (4.0 * pc.knee + 1e-4);
+    float contribution = max(soft, brightness - pc.threshold) / max(brightness, 1e-4);
+    return colour * contribution;
+}
+
+float3 downsample_13_tap(float2 uv, float2 texel)
+{
+    // a . b . c
+    // . j . k .
+    // d . e . f
+    // . l . m .
+    // g . h . i
+    float3 a = fetch(uv + texel * float2(-2.0,  2.0));
+    float3 b = fetch(uv + texel * float2( 0.0,  2.0));
+    float3 c = fetch(uv + texel * float2( 2.0,  2.0));
+    float3 d = fetch(uv + texel * float2(-2.0,  0.0));
+    float3 e = fetch(uv);
+    float3 f = fetch(uv + texel * float2( 2.0,  0.0));
+    float3 g = fetch(uv + texel * float2(-2.0, -2.0));
+    float3 h = fetch(uv + texel * float2( 0.0, -2.0));
+    float3 i = fetch(uv + texel * float2( 2.0, -2.0));
+    float3 j = fetch(uv + texel * float2(-1.0,  1.0));
+    float3 k = fetch(uv + texel * float2( 1.0,  1.0));
+    float3 l = fetch(uv + texel * float2(-1.0, -1.0));
+    float3 m = fetch(uv + texel * float2( 1.0, -1.0));
+
+    // The five overlapping 2x2 boxes. Written out rather than as a local
+    // array walked by an [unroll]ed loop: that form crashes SPIRV-Tools'
+    // merge-blocks pass (vulkan-sdk-1.4.357.0) in SlangCompiler's
+    // performance-pass run.
+    float3 box_inner = (j + k + l + m) * 0.25;
+    float3 box_top_left = (a + b + d + e) * 0.25;
+    float3 box_top_right = (b + c + e + f) * 0.25;
+    float3 box_bottom_left = (d + e + g + h) * 0.25;
+    float3 box_bottom_right = (e + f + h + i) * 0.25;
+
+    float weight_inner = 0.5;
+    float weight_top_left = 0.125;
+    float weight_top_right = 0.125;
+    float weight_bottom_left = 0.125;
+    float weight_bottom_right = 0.125;
+
+    if (pc.is_first_level != 0)
     {
-        int2 mip1Coord = globalCoord / 2;
-        storage_2d[pc.dstMip1StorageIndex][mip1Coord] = float4(mip1Color, 1.0);
-        g_TileCache[localID.x / 2][localID.y / 2] = mip1Color;
+        weight_inner /= 1.0 + luma(box_inner);
+        weight_top_left /= 1.0 + luma(box_top_left);
+        weight_top_right /= 1.0 + luma(box_top_right);
+        weight_bottom_left /= 1.0 + luma(box_bottom_left);
+        weight_bottom_right /= 1.0 + luma(box_bottom_right);
     }
 
-    GroupMemoryBarrierWithGroupSync();
+    float3 colour = box_inner * weight_inner + box_top_left * weight_top_left + box_top_right * weight_top_right +
+                    box_bottom_left * weight_bottom_left + box_bottom_right * weight_bottom_right;
+    float weight_sum = weight_inner + weight_top_left + weight_top_right + weight_bottom_left + weight_bottom_right;
 
-    // PASS 2: Mip 1 -> Mip 2
-    if ((localID.x % 4 == 0) && (localID.y % 4 == 0))
+    return colour / weight_sum;
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void mainCs(uint3 thread_id : SV_DispatchThreadID)
+{
+    int2 coord = int2(thread_id.xy);
+
+    if (coord.x >= pc.dst_size.x || coord.y >= pc.dst_size.y)
     {
-        uint x = localID.x / 2;
-        uint y = localID.y / 2;
-        float3 c0 = g_TileCache[x][y];
-        float3 c1 = g_TileCache[x + 1][y];
-        float3 c2 = g_TileCache[x][y + 1];
-        float3 c3 = g_TileCache[x + 1][y + 1];
-        float3 mip2Color = (c0 + c1 + c2 + c3) * 0.25;
-
-        int2 mip2Coord = globalCoord / 4;
-        storage_2d[pc.dstMip2StorageIndex][mip2Coord] = float4(mip2Color, 1.0);
-        g_TileCache[localID.x / 4][localID.y / 4] = mip2Color;
+        return;
     }
 
-    GroupMemoryBarrierWithGroupSync();
+    float2 uv = (float2(coord) + 0.5) / float2(pc.dst_size);
+    float3 colour = downsample_13_tap(uv, pc.src_texel_size);
 
-    // PASS 3: Mip 2 -> Mip 3
-    if ((localID.x % 8 == 0) && (localID.y % 8 == 0))
+    if (pc.is_first_level != 0 && pc.threshold >= 0.0)
     {
-        uint x = localID.x / 4;
-        uint y = localID.y / 4;
-        float3 c0 = g_TileCache[x][y];
-        float3 c1 = g_TileCache[x + 1][y];
-        float3 c2 = g_TileCache[x][y + 1];
-        float3 c3 = g_TileCache[x + 1][y + 1];
-        float3 mip3Color = (c0 + c1 + c2 + c3) * 0.25;
-
-        int2 mip3Coord = globalCoord / 8;
-        storage_2d[pc.dstMip3StorageIndex][mip3Coord] = float4(mip3Color, 1.0);
+        colour = soft_threshold(colour);
     }
+
+    storage_2d[pc.dst_storage_index][coord] = float4(colour, 1.0);
 }

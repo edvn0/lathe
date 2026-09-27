@@ -4,6 +4,7 @@
 // than including it itself -- pull it in first via imgui_renderer.hxx's
 // transitive <imgui.h>, which must precede the ImGuizmo.h include below.
 #include "rendering/imgui_renderer.hxx"
+#include "rendering/overlay.hxx"
 
 #include <ImGuizmo.h>
 
@@ -72,6 +73,12 @@ struct Application {
     std::unique_ptr<debug_draw::DebugRenderer> debug_renderer;
     std::unique_ptr<gui::ImGuiRenderer> imgui_renderer;
     std::unique_ptr<gui::EditorIcons> editor_icons;
+
+    // Debug lines (OverlayStage::scene) and the ImGui frame
+    // (OverlayStage::ui), registered in on_startup(). Declared after the
+    // renderers their callbacks capture and after `renderer` itself, so
+    // they unregister before any of those are destroyed.
+    std::vector<OverlayRegistration> overlays;
     ShaderHotReloadWatcher shader_watcher_;
 
     std::unique_ptr<Scene> editor_scene = std::make_unique<Scene>(*renderer);
@@ -218,6 +225,10 @@ struct Application {
     auto update(float delta_time) -> void;
 
     auto on_startup() -> void;
+
+    // Registers the debug-line and ImGui overlays with the renderer. Called
+    // from on_startup() once both renderers exist.
+    auto register_overlays() -> void;
 
     auto on_event(KeyPressedEvent ev) -> bool;
     auto on_event(KeyReleasedEvent ev) -> bool;

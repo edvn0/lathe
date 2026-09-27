@@ -836,15 +836,14 @@ add_subdirectory(src/app)
 # $<LINK_GROUP:RESCAN,...> wraps the 8 libraries the way -Wl,--start-group /
 # --end-group would: a plain left-to-right static-archive link only ever
 # rescans an *earlier* archive for a symbol a *later* one turns out to need,
-# never the reverse, so a strictly-layered link order breaks the two
-# deliberate exceptions to that layering that were fine as a single archive
-# but aren't once it's 8 separate ones -- error_describe.cxx (core) defining
+# never the reverse, so a strictly-layered link order breaks the one
+# deliberate exception to that layering that was fine as a single archive
+# but isn't once it's 8 separate ones -- error_describe.cxx (core) defining
 # the generic describe() dispatcher that calls per-subsystem overloads
-# defined in gpu/assets/rendering (Phase 2 point 9), and renderer.cxx
-# (rendering) instantiating Renderer::record_frame<ApplicationOverlayPolicy>,
-# which calls back into renderer_application_policy.cxx (app) (Phase 3's
-# "one deliberate header/impl module split"). RESCAN makes the linker keep
-# revisiting the whole group until every symbol resolves, in any direction.
+# defined in gpu/assets/rendering (Phase 2 point 9). RESCAN makes the linker
+# keep revisiting the whole group until every symbol resolves, in any
+# direction. (rendering no longer calls back into app: Application hands
+# the Renderer its debug-line/ImGui overlays through register_overlay().)
 # ------------------------------------------------------------------------------
 
 add_library(
