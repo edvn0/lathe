@@ -19,7 +19,7 @@ namespace {
     auto make_device_error(DeviceError error) -> MaterialStorageError {
         return MaterialStorageError{
                 .type = MaterialStorageErrorType::device_error,
-                .cause = ErrorCause{Boxed<DeviceError>{std::move(error)}},
+                .cause = ErrorCause{Boxed<DeviceError>{error}},
         };
     }
 
@@ -58,7 +58,7 @@ auto MaterialStorage::operator=(MaterialStorage &&other) noexcept -> MaterialSto
 
 auto MaterialStorage::create(VulkanContext &context, MaterialStorageCreateInfo const &create_info)
         -> std::expected<MaterialStorage, MaterialStorageError> {
-    // Slot zero is permanently reserved as the default material.
+    // Slot zero is reserved for the default material.
     if (create_info.capacity < 2) {
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_argument));
     }
@@ -108,11 +108,7 @@ auto MaterialStorage::create(VulkanContext &context, MaterialStorageCreateInfo c
     storage.upload_buffer_ = std::move(*upload_buffer);
     storage.slots_ = ObjectPool<MaterialSlotData, 0>::create(create_info.capacity);
 
-    // Slot zero is permanently reserved as the default material: it's the
-    // very first allocation out of a freshly-created pool, so it always
-    // lands on index 0 with generation 1, and this is the only allocate()
-    // call MaterialStorage ever makes without exposing a way to release it
-    // (see the explicit handle.index == 0 guard in destroy_material below).
+    // The pool's first allocation is always index 0, generation 1. It is never released.
     auto &default_slot = storage.slots_.allocate()->second;
 
     default_slot.source = MaterialCreateInfo{};
@@ -155,7 +151,6 @@ auto MaterialStorage::update_material(MaterialHandle handle, MaterialCreateInfo 
 }
 
 auto MaterialStorage::destroy_material(MaterialHandle handle) -> std::expected<void, MaterialStorageError> {
-    // Slot zero is the permanent default material.
     if (handle.index == 0) {
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
     }
@@ -166,10 +161,7 @@ auto MaterialStorage::destroy_material(MaterialHandle handle) -> std::expected<v
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
     }
 
-    // ObjectPool::release() deliberately leaves the payload as-is (see its
-    // doc comment), so zero the published GPU data ourselves before freeing
-    // the slot, matching the pre-refactor behavior of never leaving a freed
-    // slot's last material contents sitting in the GPU buffer.
+    // release() leaves the payload as-is, so clear the GPU data before freeing the slot.
     slot->material = GpuMaterial{};
     slot->source = MaterialCreateInfo{};
     slot->dirty = true;

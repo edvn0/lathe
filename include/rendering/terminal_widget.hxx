@@ -73,18 +73,10 @@ namespace gui {
 
         MessageRing history_;
 
-        //
-        // This vector participates in the swap-based producer/consumer
-        // exchange with TerminalSink.
-        //
-        // Its allocation is recycled rather than recreated every frame.
-        //
+        // Swapped with TerminalSink's buffer each frame, so the allocation is reused.
         std::vector<logger::ConsoleMessage> pending_;
 
-        //
-        // Logical indices into history_, not physical indices into its
-        // underlying ring storage.
-        //
+        // Logical indices into history_.
         std::vector<std::size_t> visible_indices_;
 
         ImGuiTextFilter filter_;
@@ -102,10 +94,7 @@ namespace gui {
         bool wrap_text_{true};
         bool visibility_dirty_{true};
 
-        //
-        // ImGuiListClipper assumes uniform line height. Even with wrapping
-        // disabled, an individual log record could contain '\n'.
-        //
+        // ImGuiListClipper assumes uniform line height, and a message can contain '\n'.
         bool visible_has_multiline_messages_{false};
     };
 

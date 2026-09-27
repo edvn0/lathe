@@ -2,6 +2,7 @@
 
 #include "core/fly_string.hxx"
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <string>
@@ -75,18 +76,18 @@ TEST_SUITE("unit") {
         auto original = FlyString{"hello"};
         auto const *storage = original.c_str();
 
-        auto const moved = std::move(original);
+        auto const moved = std::move(original); // NOLINT(performance-move-const-arg): testing the move itself
 
         CHECK(moved.view() == "hello");
         CHECK(moved.c_str() == storage);
     }
 
     TEST_CASE("FlyString: embedded null characters are preserved") {
-        constexpr char data[] = {'a', '\0', 'b', 'c'};
+        constexpr std::array data{'a', '\0', 'b', 'c'};
 
-        auto const value = FlyString{std::string_view{data, sizeof(data)}};
+        auto const value = FlyString{std::string_view{data.data(), data.size()}};
 
-        REQUIRE(value.view().size() == sizeof(data));
+        REQUIRE(value.view().size() == data.size());
 
         CHECK(value.view()[0] == 'a');
         CHECK(value.view()[1] == '\0');
@@ -103,10 +104,7 @@ TEST_SUITE("unit") {
 
         CHECK(default_value.view() == interned_empty.view());
 
-        // This documents the current implementation.
-        //
-        // Remove/change this test if FlyString{""} is changed to use
-        // nullptr as the canonical representation for an empty string.
+        // Documents the current implementation; update if an empty FlyString becomes nullptr.
         CHECK_FALSE(default_value == interned_empty);
     }
 }
@@ -176,7 +174,7 @@ TEST_SUITE("smoke") {
         constexpr auto repetitions = 100;
 
         std::vector<FlyString> strings;
-        strings.reserve(unique_count * repetitions);
+        strings.reserve(static_cast<std::size_t>(unique_count) * repetitions);
 
         for (auto repetition = 0; repetition < repetitions; ++repetition) {
             for (auto i = 0; i < unique_count; ++i) {

@@ -38,8 +38,7 @@ OverlayRegistry::IterationGuard::~IterationGuard() {
 }
 
 OverlayRegistry::OverlayRegistry() {
-    // remove() is noexcept (it runs from OverlayRegistration's destructor)
-    // and may queue while the renderer iterates; never let that allocate.
+    // remove() is noexcept and may queue during iteration, so it must never allocate.
     pending_removals_.reserve(max_overlays);
 }
 
@@ -82,8 +81,7 @@ auto OverlayRegistry::add(OverlayDesc desc) -> std::expected<OverlayRegistration
 }
 
 auto OverlayRegistry::remove(OverlayId id) noexcept -> void {
-    // A registration that never left the pending queue can go right away;
-    // nothing is iterating over pending_additions_.
+    // Still pending: nothing iterates pending_additions_, so drop it now.
     if (auto const pending = std::ranges::find(pending_additions_, id, &Entry::id);
         pending != pending_additions_.end()) {
         used_slots_ &= ~(1U << pending->slot);
@@ -121,8 +119,7 @@ auto OverlayRegistry::erase(OverlayId id) noexcept -> void {
 }
 
 auto OverlayRegistry::flush_pending() -> void {
-    // clear() rather than swapping in a fresh vector: keep the capacity the
-    // constructor reserved, so remove() never allocates.
+    // clear() keeps the reserved capacity so remove() never allocates.
     for (auto const id: pending_removals_) {
         erase(id);
     }

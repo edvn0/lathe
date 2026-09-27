@@ -99,11 +99,8 @@ struct ModelLoadError {
     std::optional<ErrorCause> cause{std::nullopt};
 };
 
-// Which material slot a glTF texture was first resolved into. Determines
-// both the TextureRole it streams in as (colour/generic -> BC7, normal ->
-// BC5) and which ImageStorage default it renders as while pending -- same
-// "whichever slot hits an image index first wins" dedup quirk load_material_cpu
-// already had for is_srgb, just extended to cover this too.
+// The material slot a glTF texture was first resolved into. Decides its TextureRole (colour/generic -> BC7,
+// normal -> BC5) and the default it renders as while pending. The first slot to reference an image wins.
 enum class ModelTextureSlot : std::uint8_t {
     base_colour,
     normal,
@@ -112,12 +109,8 @@ enum class ModelTextureSlot : std::uint8_t {
     emissive,
 };
 
-// A texture an image_sources entry hasn't been decoded, compressed, or
-// uploaded yet -- only its source is known. Exactly one of `path`/`encoded`
-// is populated: `path` for an external file (streamed straight off disk by
-// TextureStreamer, no bytes read on the CPU pass), `encoded` for an image
-// embedded in the glTF itself (bufferView/data URI, no file to stream from,
-// so its still-compressed bytes are captured here instead).
+// An image not yet decoded or uploaded. Exactly one of `path` (external file, streamed from disk) and
+// `encoded` (embedded in the glTF) is set.
 struct ModelCpuImageSource {
     std::filesystem::path path;
     std::vector<std::byte> encoded;
@@ -149,38 +142,25 @@ struct ModelCpuPrimitive {
     std::vector<ModelVertex> vertices;
     std::vector<std::uint32_t> indices; // LOD0, full detail
 
-    // Simplified index buffers for LOD1..LOD(lod_count-1), sharing
-    // `vertices` above. nullopt means "no distinct simplification
-    // available for this level" (procedural meshes never populate this,
-    // and meshopt_simplify may fail to reduce a level at all) -- the
-    // upload step falls back to reusing the previous LOD's index buffer.
+    // Simplified index buffers for LOD1..LOD(lod_count-1), sharing `vertices`. nullopt means no distinct
+    // simplification; the upload reuses the previous level's buffer.
     std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1> reduced_indices{};
 
     std::optional<std::uint32_t> material_index;
 
-    // GPU-ready derived data, filled by prepare_primitive_gpu_data() off the
-    // render thread so step_model_gpu_upload() only has to copy:
-    // `compressed_vertices` is `vertices` packed for the GPU, and
-    // meshlets[level] is the meshlet split of that level's index buffer
-    // (indices for level 0, reduced_indices[level - 1] otherwise) --
-    // nullopt exactly where the level has no index buffer of its own and
-    // the upload aliases the previous level.
+    // GPU-ready data built off the render thread: packed vertices, and the meshlet split of each level's index
+    // buffer (nullopt where the level aliases the previous one).
     std::vector<CompressedModelVertex> compressed_vertices;
     std::array<std::optional<MeshletBuild>, lod_count> meshlets{};
 
-    // Transient: true if the glTF primitive already carried a TANGENT
-    // accessor. Only meaningful between extract_primitive_cpu() and
-    // finalize_primitive_cpu() -- see load_model_cpu_unfinalized() and
-    // ModelPrimitiveFinalization -- unused (and left at its default) for a
-    // primitive built any other way, since generate_tangents() has either
-    // already run or was never needed by the time one exists elsewhere.
+    // Whether the glTF primitive had a TANGENT accessor. Only used between extract_primitive_cpu() and
+    // finalize_primitive_cpu().
     bool has_tangents = false;
 };
 
 struct ModelCpuMesh {
     std::vector<ModelCpuPrimitive> primitives;
 };
-
 
 struct ModelCpuData {
     std::vector<ModelCpuMesh> meshes;
@@ -190,94 +170,52 @@ struct ModelCpuData {
     std::vector<std::uint32_t> scene_roots;
     std::vector<ModelCpuLight> lights;
 
-    // Null unless load_model_cpu() was given one -- rides along into
-    // start_model_gpu_upload()/step_model_gpu_upload() and every texture job
-    // this model's images kick off, so the whole load's timing breakdown
-    // ends up in one place. See ModelStreamer::request().
+    // Shared by the CPU parse, GPU upload and texture jobs so the whole load's timing ends up in one place.
     std::shared_ptr<ModelLoadProfile> profile;
 };
 
 auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices)
         -> std::expected<void, ModelLoadError>;
 
-// Generates simplified index-buffer variants for LOD1..LOD(lod_count-1)
-// from `vertices`/`indices` (expected to already be the final, welded and
-// optimized LOD0 buffers). Entries stay nullopt when meshopt_simplify
-// can't reduce that level's index count at all.
+// Simplified index buffers for LOD1..LOD(lod_count-1) from the final LOD0 buffers. Levels meshopt_simplify
+// can't reduce stay nullopt.
 auto generate_mesh_lods(std::vector<ModelVertex> const &vertices, std::vector<std::uint32_t> const &indices)
         -> std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1>;
 
-// Fills `primitive.compressed_vertices` and `primitive.meshlets` from its
-// final vertices/indices/reduced_indices. Pure CPU: runs as the last step
-// of per-primitive finalization on thread_pool() (see
-// ModelPrimitiveFinalization), and from to_model_cpu_data() for procedural
-// meshes. `profile`, when non-null, gets vertex_compression_ns and
-// meshlet_build_ns.
+// Fills compressed_vertices and meshlets from the primitive's final geometry. `profile` gets
+// vertex_compression_ns and meshlet_build_ns.
 auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *profile = nullptr) -> void;
 
-// `profile`, when non-null, gets the CPU-parse section of its timing
-// breakdown filled in (see ModelLoadProfile) and is copied into the
-// returned ModelCpuData::profile so later phases (GPU upload, texture
-// pipeline) keep writing into the same instance.
+// `profile` gets the CPU-parse timings and is carried into the returned ModelCpuData.
 [[nodiscard]]
 auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage,
                     std::shared_ptr<ModelLoadProfile> profile = nullptr)
         -> std::expected<ModelCpuData, ModelLoadError>;
 
-// Runs load_model_cpu() on thread_pool() instead of blocking the calling
-// thread. GPU uploads aren't safe to issue off the render thread, so this
-// doesn't create a ModelHandle itself -- pair it with
-// IModelSink::create_pending_model()/finish_model_load() (or just use
-// ModelStreamer, which already does this) to get a handle that's usable
-// immediately and upgrades in place once the background work and GPU
-// upload both finish. Bypasses load_model_cpu()'s caller-side path cache --
-// the caller is responsible for not requesting the same path twice
-// concurrently if that matters for their use case.
+// load_model_cpu() on thread_pool(). Doesn't create a handle, since GPU uploads must happen on the render
+// thread; ModelStreamer pairs this with create_pending_model()/finish_model_load(). Bypasses the path cache.
 //
-// `sampler_storage` must outlive the returned future -- the caller is
-// responsible for waiting on or discarding it before sampler_storage is
-// destroyed.
+// `sampler_storage` must outlive the returned future.
 [[nodiscard]]
 auto load_model_cpu_async(std::filesystem::path path, SamplerStorage &sampler_storage,
                           std::shared_ptr<ModelLoadProfile> profile = nullptr)
         -> std::future<std::expected<ModelCpuData, ModelLoadError>>;
 
-// Everything load_model_cpu() does except each primitive's
-// finalize_primitive_cpu() step (tangent generation + LOD simplification --
-// see ModelCpuPrimitive::has_tangents): primitives come back raw,
-// vertices/indices only. load_model_cpu() itself calls this and then
-// finalizes every primitive sequentially, in place, to keep its existing
-// all-in-one contract; load_model_cpu_async() calls this instead and leaves
-// finalizing to the caller (see ModelPrimitiveFinalization below), so it
-// can run in parallel across thread_pool() rather than one primitive at a
-// time on a single background thread.
+// load_model_cpu() without per-primitive finalization (tangents, LOD simplification), so the caller can
+// finalize primitives in parallel (see ModelPrimitiveFinalization).
 [[nodiscard]]
 auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorage &sampler_storage,
                                 std::shared_ptr<ModelLoadProfile> profile = nullptr)
         -> std::expected<ModelCpuData, ModelLoadError>;
 
-// Parallel per-primitive finalization (tangent generation + LOD
-// simplification) for a ModelCpuData produced by
-// load_model_cpu_unfinalized(), produced by start_primitive_finalization()
-// and advanced by repeated step_primitive_finalization() calls -- one task
-// per primitive across the whole model, submitted to thread_pool() up
-// front (unlike ModelGpuUpload, there's no per-frame budget here: this
-// never touches the render thread or a command buffer, so thread_pool()
-// itself is the only thing pacing it).
+// Parallel per-primitive finalization of a load_model_cpu_unfinalized() result, one thread_pool() task per
+// primitive.
 //
-// Must be started (and stepped) from a thread that is NOT itself a
-// thread_pool() worker -- these tasks run on that same pool, and a worker
-// blocking on a future for another task submitted to its own pool can
-// deadlock if every worker ends up in that same blocked state (see
-// BS::thread_pool's own wait() documentation for the identical warning).
-// ModelStreamer follows this by driving finalization only from
-// process_ready() (the render thread), never from inside
-// load_model_cpu_async()'s own task.
+// Start and step it from outside thread_pool(): a worker blocking on tasks in its own pool can deadlock.
 struct ModelPrimitiveFinalization {
     ModelCpuData cpu_data;
 
-    // Parallel arrays: tasks[i] is the finalized primitive destined for
-    // cpu_data.meshes[targets[i].first].primitives[targets[i].second].
+    // tasks[i] goes to cpu_data.meshes[targets[i].first].primitives[targets[i].second].
     std::vector<std::future<std::expected<ModelCpuPrimitive, ModelLoadError>>> tasks;
     std::vector<std::pair<std::size_t, std::size_t>> targets;
 };
@@ -285,20 +223,12 @@ struct ModelPrimitiveFinalization {
 [[nodiscard]]
 auto start_primitive_finalization(ModelCpuData cpu_data) -> ModelPrimitiveFinalization;
 
-// Moves every one of `finalization`'s now-ready tasks into its target slot.
-// Returns the finished ModelCpuData once every primitive has been
-// finalized, or nullopt if there's more outstanding for a later call.
+// Collects finished tasks. Returns the ModelCpuData once every primitive is done, otherwise nullopt.
 [[nodiscard]]
 auto step_primitive_finalization(ModelPrimitiveFinalization &finalization)
         -> std::expected<std::optional<ModelCpuData>, ModelLoadError>;
 
-// Incremental GPU-upload state for one model, produced by
-// start_model_gpu_upload() and advanced by repeated step_model_gpu_upload()
-// calls -- one call per frame is the intended cadence (see ModelStreamer::
-// process_ready()), so a model with many materials/primitives (e.g. Sponza's
-// ~25 materials and dozens of mesh primitives) spreads its GPU upload cost
-// across several frames instead of spiking a single frame's CPU/GPU work to
-// the size of the whole model.
+// Incremental GPU upload of one model, stepped once per frame so large models spread their cost.
 struct ModelGpuUpload {
     ModelCpuData cpu_data;
     std::vector<ImageHandle> image_handles;
@@ -311,38 +241,22 @@ struct ModelGpuUpload {
     std::size_t primitive_cursor = 0;
 };
 
-// Reserves texture-streamer slots for every image `cpu_data` references --
-// cheap, just queues background decode/encode jobs (see
-// TextureStreamer::request) -- and returns the initial state for
-// step_model_gpu_upload() to advance. Call once per model, on the render
-// thread.
+// Requests every texture `cpu_data` references from the streamer and returns the initial upload state. Render
+// thread only.
 [[nodiscard]]
 auto start_model_gpu_upload(ModelCpuData cpu_data, ImageStorage &image_storage, TextureStreamer &texture_streamer)
         -> ModelGpuUpload;
 
-// Processes up to `item_budget` materials/primitives of `upload` (one
-// material, or one mesh primitive including all its LOD levels, counts as
-// one item), recording any GPU copies into `command_buffer`. Returns the
-// finished Model once every material and primitive has been processed, or
-// nullopt if there's more left for a later call. Must run on the render
-// thread -- `command_buffer` must be a currently-recording command buffer
-// this frame will submit and wait on through the normal frames-in-flight
-// fence discipline (same requirement as ModelStreamer::process_ready()).
+// Processes up to `item_budget` materials/primitives (a primitive with all its LODs is one item), recording
+// copies into `command_buffer`. Returns the Model when done, otherwise nullopt. Render thread only;
+// `command_buffer` must be recording for this frame.
 [[nodiscard]]
 auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
                            ImageStorage &image_storage, MaterialStorage &material_storage,
                            std::uint32_t item_budget) -> std::expected<std::optional<Model>, ModelLoadError>;
 
-// Creates geometry/materials synchronously (needs command_buffer for the
-// former), but textures merely get requested from `texture_streamer` --
-// every material comes back wearing its default textures immediately, with
-// the real BC5/BC7 ones swapping in over the following frames as their
-// background jobs complete, same as any other TextureStreamer consumer.
-// Drives start_model_gpu_upload()/step_model_gpu_upload() to completion in
-// one call -- fine for the small procedurally-generated models this is
-// still used for (see Renderer::create_model_from_cpu_data), but streamed
-// models loaded from disk should go through ModelStreamer instead, which
-// paces step_model_gpu_upload() one bounded slice per frame.
+// Runs the whole GPU upload in one call. Textures are only requested, so materials start with default
+// textures. Meant for small procedural models; streamed models go through ModelStreamer.
 auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer command_buffer,
                              GeometryArena &geometry_arena, ImageStorage &image_storage,
                              TextureStreamer &texture_streamer, MaterialStorage &material_storage)

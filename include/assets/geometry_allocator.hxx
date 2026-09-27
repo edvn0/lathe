@@ -59,13 +59,8 @@ struct std::formatter<GeometryArenaErrorType> : std::formatter<std::string_view>
     }
 };
 
-// A GeometryArenaT<Allocator> defers every offset decision to an Allocator
-// satisfying this concept. `checkpoint()`/`rollback()` exist so
-// GeometryArenaT::allocate_vertices/allocate_indices can undo a successful
-// byte allocation if the subsequent GPU write fails, without that undo being
-// expressible as deallocate() -- for BumpAllocator specifically, rollback
-// also reclaims the alignment padding that a deallocate() of just the
-// requested slice would leave behind.
+// The offset policy behind GeometryArenaT. checkpoint()/rollback() undo an allocation if the following GPU
+// write fails; for BumpAllocator that also reclaims the alignment padding.
 template<typename A>
 concept GeometryAllocatorPolicy = requires(A a, A const &const_a, VkDeviceSize size, VkDeviceSize alignment,
                                             GeometrySlice slice, typename A::Checkpoint checkpoint) {
@@ -80,11 +75,7 @@ concept GeometryAllocatorPolicy = requires(A a, A const &const_a, VkDeviceSize s
     { const_a.capacity() } -> std::same_as<VkDeviceSize>;
 };
 
-// Bump allocator: never frees, offsets only ever advance. This is the exact
-// behavior GeometryArena has always had, lifted verbatim out of what used to
-// be GeometryArena::allocate_bytes. Kept as the default backing allocator
-// because most geometry in this engine is loaded once and never streamed
-// out; see FreeListAllocator for the streaming case.
+// Never frees; offsets only advance.
 class BumpAllocator {
 public:
     using Checkpoint = VkDeviceSize;
@@ -144,7 +135,7 @@ public:
     }
 
     auto deallocate(GeometrySlice const &) noexcept -> void {
-        // Bump allocator: ranges are never reclaimed individually.
+        // Bump allocators never free.
     }
 
     [[nodiscard]]
@@ -171,19 +162,9 @@ private:
 
 static_assert(GeometryAllocatorPolicy<BumpAllocator>);
 
-// Address-ordered, coalescing free-list allocator with alignment-aware
-// best-fit search. Unlike BumpAllocator, deallocate() actually reclaims the
-// range so it can be handed back out by a later allocate() -- the piece
-// streaming (e.g. terrain chunk geometry) needs and BumpAllocator cannot
-// provide. Not currently wired into GeometryArena's default alias; flip
-// `using GeometryArena = GeometryArenaT<FreeListAllocator>;` in
-// geometry_arena.hxx when something needs it.
+// Address-ordered, coalescing free-list with alignment-aware best fit.
 //
-// Callers remain responsible for not calling deallocate() on a range the GPU
-// may still be reading -- this allocator only tracks address space, not
-// in-flight-frame safety. See docs/engine_review_followups.md and
-// TerrainSlotPool's tick_retirement() for the deferred-release discipline
-// that must sit in front of deallocate() in practice.
+// Only tracks address space: callers must not deallocate ranges the GPU may still read.
 class FreeListAllocator {
 public:
     struct FreeRange {
@@ -191,13 +172,8 @@ public:
         VkDeviceSize size = 0;
     };
 
-    // Whole-vector snapshot rather than an allocation log: checkpoint/
-    // rollback here is only ever used the way GeometryArenaT uses it --
-    // checkpoint, allocate, and either commit or immediately rollback with
-    // no other allocate()/deallocate() calls in between -- so the simplest
-    // correct implementation is a full copy of the free-range list. The
-    // free-range count stays small (bounded by fragmentation) so this copy
-    // is cheap relative to the GPU write it brackets.
+    // A full copy of the free list. Only used as checkpoint, allocate, then commit or rollback, and the list stays
+    // short.
     struct Checkpoint {
         std::vector<FreeRange> free_ranges;
         VkDeviceSize used = 0;
@@ -227,7 +203,7 @@ public:
     }
 
 private:
-    // Address-ordered, non-overlapping, non-adjacent (coalesced) at all times.
+    // Address-ordered, non-overlapping and coalesced.
     std::vector<FreeRange> free_ranges_{};
     VkDeviceSize capacity_ = 0;
     VkDeviceSize used_ = 0;

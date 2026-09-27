@@ -46,16 +46,9 @@ static_assert(std::is_trivially_copyable_v<GpuMaterial>);
 static_assert(sizeof(GpuMaterial) % 16 == 0);
 static_assert(alignof(GpuMaterial) == 16);
 
-// Full definition lives in material_storage.hxx, alongside the
-// ObjectPool<MaterialSlotData, 0> it backs (see sampler.hxx's SamplerHandle
-// for why an incomplete forward declaration is enough here).
+// Defined in material_storage.hxx.
 //
-// Sentinel = 0: slot 0 is MaterialStorage's permanently-reserved default
-// material (see MaterialStorage::create()), so MaterialHandle{.index = 0}
-// deliberately reads as invalid -- e.g. Renderer::submit_model/submit_mesh
-// use .valid() to mean "was an explicit material_override given", and a
-// bare MaterialHandle{} (index 0, generation 0) must mean "no override"
-// even though slot 0 itself holds real, live default-material data.
+// Sentinel = 0: slot 0 holds the default material, but MaterialHandle{} must read as "no override".
 struct MaterialSlotData;
 
 using MaterialHandle = Handle<MaterialSlotData, 0>;

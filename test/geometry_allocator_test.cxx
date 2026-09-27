@@ -7,16 +7,6 @@
 #include <random>
 #include <vector>
 
-//
-// BumpAllocator/FreeListAllocator operate purely on offsets (VkDeviceSize),
-// with no Vulkan device or buffer involved, so they're unit-testable in
-// isolation. This suite exists to prove GeometryArenaT<BumpAllocator>'s
-// behavior is byte-identical to the pre-template GeometryArena (BumpAllocator
-// tests), and that FreeListAllocator is safe to substitute in later
-// (round-trip / coalescing / alignment tests) -- see
-// docs/engine_review_followups.md and the terrain streaming plan.
-//
-
 TEST_SUITE("unit") {
     TEST_CASE("BumpAllocator allocates with alignment and never reuses an offset") {
         BumpAllocator allocator;
@@ -66,7 +56,7 @@ TEST_SUITE("unit") {
         allocator.rollback(checkpoint);
         CHECK(allocator.used_size() == 0);
 
-        // The reclaimed space -- including alignment padding -- is reusable.
+        // The freed range, including alignment padding, is reusable.
         auto const reused = allocator.allocate(1024, 4);
         REQUIRE(reused.has_value());
         CHECK(reused->offset == 0);
@@ -80,7 +70,7 @@ TEST_SUITE("unit") {
         REQUIRE(allocation.has_value());
 
         allocator.deallocate(*allocation);
-        CHECK(allocator.used_size() == 16); // still consumed -- bump never frees
+        CHECK(allocator.used_size() == 16); // bump never frees
 
         auto const second = allocator.allocate(1, 4);
         CHECK_FALSE(second.has_value());
@@ -97,9 +87,7 @@ TEST_SUITE("unit") {
         allocator.deallocate(*allocation);
         CHECK(allocator.used_size() == 0);
 
-        // Freed space is immediately reusable, and coalesces back to the
-        // full original capacity (verified indirectly: an allocation the
-        // size of the whole arena now succeeds).
+        // Freed space coalesces back to the full capacity.
         auto const reused = allocator.allocate(1024, 4);
         REQUIRE(reused.has_value());
         CHECK(reused->offset == 0);
@@ -116,8 +104,7 @@ TEST_SUITE("unit") {
         REQUIRE(second.has_value());
         REQUIRE(third.has_value());
 
-        // Free the middle, then the ends -- coalescing must merge all three
-        // back into one contiguous free range no matter the free order.
+        // Coalescing must merge all three ranges regardless of free order.
         allocator.deallocate(*second);
         allocator.deallocate(*first);
         allocator.deallocate(*third);
@@ -133,9 +120,9 @@ TEST_SUITE("unit") {
         FreeListAllocator allocator;
         allocator.reset(4096);
 
-        auto const a = allocator.allocate(20, 4);  // e.g. CompressedModelVertex-ish
-        auto const b = allocator.allocate(3, 2);   // uint16 indices
-        auto const c = allocator.allocate(104, 4); // uint32 indices
+        auto const a = allocator.allocate(20, 4);
+        auto const b = allocator.allocate(3, 2);
+        auto const c = allocator.allocate(104, 4);
 
         REQUIRE(a.has_value());
         REQUIRE(b.has_value());

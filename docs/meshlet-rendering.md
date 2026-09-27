@@ -10,14 +10,14 @@ not scene geometry and are unchanged.
 
 `uses_meshlet_path()` (`assets/meshlet.hxx`): a mesh with at least
 `meshlets_per_task` (32) meshlets goes through task/mesh shaders, anything
-smaller through `mainVs` + `vkCmdDrawIndexedIndirect`. One task workgroup
+smaller through `main_vs` + `vkCmdDrawIndexedIndirect`. One task workgroup
 covers (one instance, up to 32 meshlets), so a small mesh leaves most task
 lanes idle and pays a task + mesh workgroup launch per instance for culling
 that saves almost nothing. Grass made that concrete: ~20K clumps of ~4
 meshlets each took the frame on lavapipe from ~800 ms to ~1900 ms, with the
 depth prepass alone ~7x slower. Terrain chunks and loaded models stay on
 meshlets; primitives and grass are instanced. Instance-level GPU frustum
-culling (`mainCs`) applies to both.
+culling (`main_cs`) applies to both.
 
 ## Data
 
@@ -59,7 +59,7 @@ culling (`mainCs`) applies to both.
 - A batch needs `instance_count * ceil(meshlet_count / 32)` task groups,
   spread over X/Y by `set_task_group_counts` (C++ and `frustum_cull.slang`
   must agree) so no dimension exceeds the guaranteed 65535.
-- Shadow pass: CPU-built, un-culled commands. Main view: `mainCs`
+- Shadow pass: CPU-built, un-culled commands. Main view: `main_cs`
   frustum-culls instances as before, compacts survivors and rewrites the
   group counts for the survivor count.
 - `SV_DrawIndex` restarts at 0 per indirect call, so

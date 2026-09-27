@@ -18,72 +18,30 @@
 #include "assets/model_load_profile.hxx"
 #include "assets/model_sink.hxx"
 
-// Kicks off async CPU-side loading (glTF parse + raw primitive extraction,
-// see load_model_cpu_unfinalized()) for a model on thread_pool(), handing
-// back a handle that renders as `fallback` until the background work and
-// GPU upload both finish and get installed in place -- mirrors
-// TextureStreamer, but the GPU upload half still needs a live command
-// buffer each frame (process_ready), since model uploads aren't staged
-// through a separate per-frame retirement queue the way texture uploads
-// are.
-//
-// The rest of the load happens in two further phases, both driven from
-// process_ready() (i.e. the render thread):
-//   - Finalization: tangent generation + LOD simplification, one task per
-//     primitive, run in parallel across thread_pool() (see
-//     start_primitive_finalization()/step_primitive_finalization()).
-//   - GPU upload: materials + mesh primitives, paced at
-//     gpu_upload_items_per_frame per process_ready() call rather than run
-//     to completion in one shot -- a model with many materials/primitives
-//     (e.g. Sponza's ~25 materials and dozens of mesh primitives) spreads
-//     that cost across several frames instead of spiking a single frame's
-//     CPU/GPU work to the size of the whole model.
+// Loads models on thread_pool() and hands back a handle that renders as `fallback` until the model is
+// installed in place. After the background parse, process_ready() on the render thread drives two phases:
+//   - finalization: tangents and LOD simplification, one parallel task per primitive;
+//   - GPU upload: gpu_upload_items_per_frame materials/primitives per call, so large models spread the cost.
 class ModelStreamer {
 public:
-    // Always profiled -- see ModelLoadProfile. The overhead is a handful of
-    // atomic adds and steady_clock::now() calls per material/primitive/
-    // texture, negligible next to the parse/encode/upload work itself, and
-    // format_model_load_profile()'s breakdown is logged automatically once
-    // the model finishes installing (see process_ready()).
+    // Always profiled; the breakdown is logged once the model installs.
     //
-    // Requests for a `source_path` that already finished loading (compared
-    // by weakly_canonical() path, same key scheme as Renderer::load_model's
-    // model_cache_) return the previously installed handle immediately
-    // instead of re-parsing and re-uploading -- mirrors load_model's cache,
-    // which this streaming path didn't previously have, so re-requesting
-    // the same file (e.g. the "Load Model" UI widget's file dialog) no
-    // longer burns a second GeometryArena allocation for geometry that's
-    // already resident (GeometryArena has no free-list -- see
-    // docs/engine_review_followups.md #1 -- so those never got reclaimed
-    // and a second big model could exhaust it outright). A request that
-    // failed is not cached, so it can be retried.
+    // A `source_path` that already finished loading (by weakly_canonical() path) returns the installed handle
+    // without reloading. Failed requests aren't cached, so they can be retried.
     [[nodiscard]]
     auto request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback, std::string debug_name)
             -> ModelHandle;
 
-    // Erases any path_cache_ entries pointing at `handle` -- call this when
-    // `handle` is actually destroyed (Renderer::destroy_model) so a later
-    // request() for the same path doesn't hand back a now-dangling handle
-    // instead of loading it again.
+    // Drops path_cache_ entries for `handle`. Call when the model is destroyed.
     auto forget(ModelHandle handle) -> void;
 
-    // Advances every pending request by up to gpu_upload_items_per_frame
-    // worth of GPU-upload work: promotes a request whose background
-    // ModelCpuData just finished into its GPU-upload phase, then steps that
-    // phase for every request still in it. Installs the finished Model into
-    // its still-pending handle in place once a request's upload completes.
-    // Call once per frame -- command_buffer must be a currently-recording
-    // command buffer this frame will submit and wait on through the normal
-    // frames-in-flight fence discipline.
+    // Promotes finished background loads into the GPU-upload phase, steps every upload by up to
+    // gpu_upload_items_per_frame, and installs finished models. Call once per frame with a command buffer that is
+    // recording for this frame.
     auto process_ready(IModelSink &sink, VkCommandBuffer command_buffer) -> void;
 
-    // Blocks until every outstanding background job finishes, without
-    // advancing anything still mid GPU-upload -- whatever a request's
-    // upload had already recorded stays valid (its geometry/material slots
-    // get torn down along with the rest of GeometryArena/MaterialStorage
-    // right after this call, same as before), the rest is just discarded.
-    // Call before destroying the Renderer (and its storages) this
-    // streamer's requests point into.
+    // Blocks until background jobs finish; partially uploaded requests are dropped. Call before destroying the
+    // Renderer.
     auto wait_all() -> void;
 
 private:
@@ -92,37 +50,23 @@ private:
         std::string debug_name;
         std::future<std::expected<ModelCpuData, ModelLoadError>> future;
 
-        // Populated once `future` resolves, before `upload` -- see
-        // start_primitive_finalization()/step_primitive_finalization().
-        // Runs tangent generation and LOD simplification in parallel across
-        // thread_pool(), one task per primitive, instead of the single
-        // background thread `future` above did its own CPU parse on.
+        // Set once `future` resolves.
         std::optional<ModelPrimitiveFinalization> finalization;
 
-        // Populated once `finalization` finishes -- see start_model_gpu_upload().
+        // Set once `finalization` finishes.
         std::optional<ModelGpuUpload> upload;
 
-        // Set once install_model() succeeds. A request lingers in `pending_`
-        // after that, still profiled, until every texture it kicked off
-        // finishes (see the texture_count/expected_texture_count check in
-        // process_ready()) -- geometry/materials installing doesn't mean
-        // this model's textures are done, since those stream in
-        // independently on thread_pool() workers.
+        // Set once installed. The request stays in `pending_` until its textures finish so the profile covers them.
         bool installed = false;
 
         std::shared_ptr<ModelLoadProfile> profile;
         std::chrono::steady_clock::time_point requested_at;
 
-        // Recorded from source_path at request() time so process_ready()
-        // can populate path_cache_ once this request installs successfully.
         std::size_t path_hash = 0;
     };
 
     std::vector<PendingRequest> pending_;
 
-    // path -> handle for requests that finished installing, keyed the same
-    // way Renderer::load_model's model_cache_ is (hash_value() of the
-    // weakly_canonical() path). Checked at the top of request(); see its
-    // doc comment.
+    // Keyed like Renderer::load_model's model_cache_: hash_value() of the weakly_canonical() path.
     std::unordered_map<std::size_t, ModelHandle> path_cache_;
 };

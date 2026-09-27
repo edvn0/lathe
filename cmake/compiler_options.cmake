@@ -1,13 +1,7 @@
 # ------------------------------------------------------------------------------
 # engine_options: shared compiler configuration (warnings, exceptions, RTTI,
-# sanitizers) for every project-owned target -- module libraries, the
-# executable, and tests.
-#
-# An INTERFACE library instead of a per-target function call, so the options
-# are defined exactly once. That also matters for target_precompile_headers'
-# REUSE_FROM (see the module library CMakeLists.txt files): reusing a PCH
-# requires the reusing target to have identical compile flags to the target
-# that compiled it, so every module needs the same engine_options.
+# sanitizers) for every project target. Identical flags everywhere are also
+# what lets targets share a PCH through REUSE_FROM.
 # ------------------------------------------------------------------------------
 
 add_library(engine_options INTERFACE)
@@ -62,16 +56,8 @@ elseif(
           -Wshadow
           -Wnon-virtual-dtor
 
-          # The error-context types (ErrorContext and the *Error aggregates'
-          # `.cause`/`.context` fields) are deliberately optional trailing
-          # members with defaults -- callers only ever fill in what's
-          # relevant to that failure. GCC's -Wmissing-field-initializers
-          # fires on every designated-init that omits them even though a
-          # default member initializer exists, which isn't a real bug.
-          #
-          # Formerly applied PRIVATE to mingw-vulkan-core only; folded in
-          # here so it still applies now that project code is split across
-          # multiple libraries.
+          # Error types have optional trailing members with defaults, which
+          # -Wmissing-field-initializers flags on every designated initializer.
           -Wno-missing-field-initializers
           -Wno-old-style-cast
   )
@@ -96,14 +82,10 @@ elseif(
     )
   endif()
 
-  # ASan/UBSan need MinGW's runtime support, which is inconsistent across
-  # cross-compilers, so sanitizers are only offered for native builds.
+  # Sanitizers are native-only; MinGW's runtime support is inconsistent.
   #
-  # -fno-sanitize=alignment: vendored stb_image_resize2 (pulled in by
-  # texture_pipeline.cxx) does intentional misaligned uint64 accesses in
-  # its SIMD-ish coefficient packing; harmless on x86/x86-64 and not
-  # something this project can patch upstream, so alignment UB is excluded
-  # while every other UBSan check stays active.
+  # -fno-sanitize=alignment: stb_image_resize2 does deliberate misaligned
+  # accesses.
   if(MINGW_VULKAN_SANITIZE AND NOT MINGW)
     target_compile_options(
         engine_options

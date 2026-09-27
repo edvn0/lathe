@@ -91,12 +91,8 @@ struct SamplerDescriptorRecord {
     bool occupied = false;
 };
 
-// Backs SamplerHandle = Handle<SamplerSlotData> (see sampler.hxx) and is the
-// payload type of SamplerStorage's ObjectPool. descriptor_revision is
-// deliberately NOT reset by ObjectPool across a release()/allocate() cycle
-// -- it's bumped monotonically by create_sampler()/destroy_sampler() so
-// GpuResourceTable::prepare_frame's per-frame cached revisions never mistake
-// a reused slot for an unchanged one.
+// `descriptor_revision` survives slot reuse and only increases, so GpuResourceTable never mistakes a reused
+// slot for an unchanged one.
 struct SamplerSlotData {
     VkSampler sampler = VK_NULL_HANDLE;
 

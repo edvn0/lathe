@@ -385,7 +385,7 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
     if (!maybe_staging) {
         return std::unexpected(ImageError{
                 .type = ImageErrorType::image_creation_failed,
-                .cause = ErrorCause{Boxed<DeviceError>{std::move(maybe_staging.error())}},
+                .cause = ErrorCause{Boxed<DeviceError>{maybe_staging.error()}},
         });
     }
 
@@ -410,7 +410,11 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.image = image->image();
-        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, create_info.mip_levels, 0, 1};
+        barrier.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                    .baseMipLevel = 0,
+                                    .levelCount = create_info.mip_levels,
+                                    .baseArrayLayer = 0,
+                                    .layerCount = 1};
 
         VkDependencyInfo dep_info{};
         dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -420,16 +424,17 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
         vkCmdPipelineBarrier2(buf, &dep_info);
 
         VkBufferImageCopy copy{};
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.imageExtent = {create_info.extent.width, create_info.extent.height, 1};
+        copy.imageSubresource = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1};
+        copy.imageExtent = {.width = create_info.extent.width, .height = create_info.extent.height, .depth = 1};
         vkCmdCopyBufferToImage(buf, staging.buffer, image->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
-        // 3. Generate Mips
-        std::int32_t mip_width = static_cast<std::int32_t>(create_info.extent.width);
-        std::int32_t mip_height = static_cast<std::int32_t>(create_info.extent.height);
+        // Generate mips.
+        auto mip_width = static_cast<std::int32_t>(create_info.extent.width);
+        auto mip_height = static_cast<std::int32_t>(create_info.extent.height);
 
         for (uint32_t i = 1; i < create_info.mip_levels; i++) {
-            // Transition i-1 to TRANSFER_SRC_OPTIMAL
+            // Level i-1 to TRANSFER_SRC_OPTIMAL.
             barrier.subresourceRange.baseMipLevel = i - 1;
             barrier.subresourceRange.levelCount = 1;
             barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT; // from buffer copy or previous blit
@@ -440,22 +445,23 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
             barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             vkCmdPipelineBarrier2(buf, &dep_info);
 
-            // Calculate next mip dimensions (preventing going below 1)
             std::int32_t next_width = mip_width > 1 ? mip_width / 2 : 1;
             std::int32_t next_height = mip_height > 1 ? mip_height / 2 : 1;
 
             VkImageBlit blit{};
-            blit.srcOffsets[0] = {0, 0, 0};
-            blit.srcOffsets[1] = {mip_width, mip_height, 1};
-            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1};
-            blit.dstOffsets[0] = {0, 0, 0};
-            blit.dstOffsets[1] = {next_width, next_height, 1};
-            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+            blit.srcOffsets[0] = {.x = 0, .y = 0, .z = 0};
+            blit.srcOffsets[1] = {.x = mip_width, .y = mip_height, .z = 1};
+            blit.srcSubresource = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = i - 1, .baseArrayLayer = 0, .layerCount = 1};
+            blit.dstOffsets[0] = {.x = 0, .y = 0, .z = 0};
+            blit.dstOffsets[1] = {.x = next_width, .y = next_height, .z = 1};
+            blit.dstSubresource = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = i, .baseArrayLayer = 0, .layerCount = 1};
 
             vkCmdBlitImage(buf, image->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image->image(),
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
 
-            // Transition i-1 to SHADER_READ_ONLY_OPTIMAL
+            // Level i-1 to SHADER_READ_ONLY_OPTIMAL.
             barrier.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
             barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
             barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -468,7 +474,7 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
             mip_height = next_height;
         }
 
-        // 4. Transition the final mip level
+        // The last level.
         barrier.subresourceRange.baseMipLevel = create_info.mip_levels - 1;
         barrier.subresourceRange.levelCount = 1;
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT;
@@ -601,16 +607,13 @@ namespace {
             }
 
             case EXR_PIXEL_UINT: {
-                // UINT in OpenEXR is an actual integer channel, not a
-                // normalized colour component. We don't silently reinterpret
-                // it as UNORM.
+                // OpenEXR UINT channels are integers, not normalized colour.
                 return std::nullopt;
             }
         }
 
         return std::nullopt;
     }
-
 
 } // namespace
 
@@ -839,9 +842,7 @@ auto DecodedImage::load_from_file(std::string_view path, ImageColourSpace colour
     auto const extension = lowercase_extension(path);
 
     if (extension == ".exr") {
-        //
-        // OpenEXR data is linear. Do not apply an sRGB Vulkan format to it.
-        //
+        // OpenEXR data is linear, so never use an sRGB format.
         if (colour_space == ImageColourSpace::srgb) {
             warn("EXR '{}' requested as sRGB; EXR texture data is loaded as linear", path);
         }

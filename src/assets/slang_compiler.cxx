@@ -213,7 +213,7 @@ namespace renderer {
 
             auto options = spvtools::OptimizerOptions{};
 
-            // Slang already validated via SkipSPIRVValidation=0 above; skip re-validating here.
+            // Slang already validated the SPIR-V.
             options.set_run_validator(false);
 
             if (!optimizer.Run(spirv.data(), spirv.size(), &optimized, options)) {
@@ -228,10 +228,7 @@ namespace renderer {
     struct SlangCompiler::Impl {
         SlangLibrary library;
 
-        // Guards the whole per-call Slang pipeline (createSession through
-        // getEntryPointCode), not just createSession() -- see the comment in
-        // compile() for why this had to be widened from the original,
-        // narrower lock.
+        // Serializes the whole Slang pipeline; see compile().
         std::mutex compile_mutex;
         Slang::ComPtr<slang::IGlobalSession> global_session;
     };
@@ -305,10 +302,7 @@ namespace renderer {
 
         auto source = std::move(*source_result);
 
-        /*
-         * All strings referenced by SessionDesc must remain alive until
-         * createSession() returns. The vectors below provide that storage.
-         */
+        // SessionDesc strings must stay alive until createSession() returns.
         auto search_path_storage = std::vector<std::string>{};
 
         search_path_storage.reserve(request.include_directories.size() + 1);
@@ -331,10 +325,6 @@ namespace renderer {
             search_paths.push_back(search_path.c_str());
         }
 
-        /*
-         * Macro descriptor strings point directly into request.defines.
-         * They remain valid for the duration of this call.
-         */
         auto macros = std::vector<slang::PreprocessorMacroDesc>{};
 
         macros.reserve(request.defines.size());
@@ -399,24 +389,11 @@ namespace renderer {
 
         auto session = Slang::ComPtr<slang::ISession>{};
 
-        // NOTE: this lock now spans the entire Slang pipeline below
-        // (createSession through getEntryPointCode), not just createSession()
-        // as originally planned. Observed in practice: concurrent
-        // loadModuleFromSourceString() calls against *different* ISessions
-        // that share one IGlobalSession returned null modules (and appear to
-        // have gone on to crash) even after giving each call a unique module
-        // name -- so Slang's per-ISession isolation claim doesn't hold for
-        // this build/version beyond session creation. Until that's root-caused
-        // upstream (or SlangCompiler is changed to use one IGlobalSession per
-        // compile() call instead of a shared one), compiles run one at a time.
-        // register_pipelines_parallel's Phase 2 still dedupes and dispatches
-        // every dirty stage to the thread pool -- it just no longer gets
-        // wall-clock parallelism *within* Slang itself, only overlap with
-        // Phase 1/3 bookkeeping and other threads' non-Slang work.
+        // Concurrent loadModuleFromSourceString() calls on separate ISessions sharing one IGlobalSession returned null
+        // modules and crashed, so compiles are serialized. Pipeline registration still overlaps its other work.
         std::lock_guard const compile_lock{impl_->compile_mutex};
 
         auto const session_result = impl_->global_session->createSession(session_description, session.writeRef());
-
 
         if (SLANG_FAILED(session_result) || session == nullptr) {
             return std::unexpected{make_error(ShaderCompileErrorType::slang_session_failed, session_result,
@@ -426,23 +403,7 @@ namespace renderer {
 
         auto diagnostics = std::string{};
 
-        /*
-         * loadModuleFromSourceString() lets the public API use an exact
-         * filesystem path instead of requiring callers to convert paths
-         * into Slang module names.
-         *
-         * A stem-based module name is NOT safe here even though sessions
-         * are per-request: register_pipelines_parallel compiles distinct
-         * entry points of the same source file (e.g. forward_geom.slang's
-         * mainVs and mainFs) concurrently, each on its own ISession but
-         * against the same shared IGlobalSession. Slang appears to key some
-         * state by module name across sessions -- two concurrent
-         * loadModuleFromSourceString() calls sharing a name (same stem, or
-         * plain "shader" for an empty stem) race and return a null module
-         * (observed: loadModuleFromSourceString returned module=0x0). A
-         * process-wide atomic counter guarantees every call gets a unique
-         * name regardless of what compiles concurrently.
-         */
+        // Concurrent loads with the same module name returned null modules, so every call gets a unique name.
         static std::atomic<std::uint64_t> module_name_counter{0};
 
         auto module_name = request.source_path.stem().string();
@@ -462,7 +423,6 @@ namespace renderer {
 
         append_diagnostics(diagnostics, module_diagnostics);
 
-
         if (module == nullptr) {
             return std::unexpected{
                     make_error(ShaderCompileErrorType::module_load_failed, SLANG_FAIL, std::move(diagnostics))};
@@ -476,7 +436,6 @@ namespace renderer {
                                                             entry_point.writeRef(), entry_point_diagnostics.writeRef());
 
         append_diagnostics(diagnostics, entry_point_diagnostics);
-
 
         if (SLANG_FAILED(result) || entry_point == nullptr) {
             if (diagnostics.empty()) {
@@ -503,7 +462,6 @@ namespace renderer {
 
         append_diagnostics(diagnostics, composition_diagnostics);
 
-
         if (SLANG_FAILED(result) || composed_program == nullptr) {
             return std::unexpected{
                     make_error(ShaderCompileErrorType::composition_failed, result, std::move(diagnostics))};
@@ -517,7 +475,6 @@ namespace renderer {
 
         append_diagnostics(diagnostics, link_diagnostics);
 
-
         if (SLANG_FAILED(result) || linked_program == nullptr) {
             return std::unexpected{make_error(ShaderCompileErrorType::link_failed, result, std::move(diagnostics))};
         }
@@ -529,7 +486,6 @@ namespace renderer {
         result = linked_program->getEntryPointCode(0, 0, target_code.writeRef(), target_diagnostics.writeRef());
 
         append_diagnostics(diagnostics, target_diagnostics);
-
 
         if (SLANG_FAILED(result) || target_code == nullptr) {
             return std::unexpected{

@@ -8,9 +8,7 @@ project(
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Global output directories -- set once here rather than per-target, so every
-# one of the 8 engine_<module> static libraries (and the executable) lands in
-# the same place without an explicit set_target_properties() call each.
+# Shared output directories for every module library and the executable.
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
@@ -124,9 +122,7 @@ set(
     "Path to a local Slang release archive"
 )
 
-# engine_options only reads the MINGW_VULKAN_* options above; the shared
-# third-party dependency target (engine_deps) is created later, once every
-# CPMAddPackage() it references has run (see the "Core library" section).
+# engine_deps is created later, once every package it references has been added.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/compiler_options.cmake")
 
 # ------------------------------------------------------------------------------
@@ -289,8 +285,7 @@ CPMAddPackage(
     SYSTEM
 )
 
-# TRACY_ON_DEMAND defers data collection until a profiler actually connects,
-# so an unattached run doesn't buffer an ever-growing history in memory.
+# TRACY_ON_DEMAND only collects data once a profiler connects, so unattached runs don't buffer history.
 CPMAddPackage(
     NAME tracy
     GITHUB_REPOSITORY wolfpld/tracy
@@ -314,19 +309,8 @@ CPMAddPackage(
     GIT_TAG 3.25
     GIT_SHALLOW YES
     OPTIONS
-        # This project uses Bullet's *Mt classes (btCollisionDispatcherMt,
-        # btConstraintSolverPoolMt, btDiscreteDynamicsWorldMt) and installs a
-        # custom btITaskScheduler (see physics_world.cxx), which requires
-        # Bullet's own mutex primitives to be compiled in. Bullet gates that
-        # behind BULLET2_MULTITHREADING (defaults OFF), not a "BT_THREADSAFE"
-        # cache variable -- that name isn't read anywhere in Bullet's
-        # CMakeLists, so setting it here was a no-op. Without the real
-        # option, LinearMath/btThreads.cpp compiles btSpinMutex::lock() as an
-        # assert-and-abort stub, and every *Mt class call that needs it
-        # crashes the moment Bullet's internal dispatch is busy enough to
-        # actually take that lock -- confirmed by test/physics_world_test.cxx
-        # aborting with "unimplemented btSpinMutex::lock() called" before
-        # this option was corrected.
+        # The *Mt Bullet classes and our custom btITaskScheduler need Bullet's real mutexes, which are only compiled
+        # with BULLET2_MULTITHREADING. Without it btSpinMutex::lock() aborts.
         "BULLET2_MULTITHREADING ON"
         "BUILD_SHARED_LIBS OFF"
         "BUILD_BULLET2_DEMOS OFF"
@@ -341,10 +325,7 @@ CPMAddPackage(
 )
 
 if(bullet3_SOURCE_DIR)
-  # Bullet is old code that never sets its own C++ standard, and the
-  # directory-scoped CMAKE_CXX_STANDARD 23 / CMAKE_CXX_EXTENSIONS OFF above
-  # would otherwise leak into it -- pin it back to a standard it's actually
-  # written against.
+  # Bullet doesn't set its own C++ standard; keep it off our C++23 settings.
   foreach(bullet_target IN ITEMS BulletDynamics BulletCollision LinearMath)
     if(TARGET ${bullet_target})
       set_target_properties(
@@ -424,9 +405,8 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # ------------------------------------------------------------------------------
-# portable-file-dialogs: single-header native file/message dialogs (Win32
-# common dialog on windows-mingw, zenity/kdialog on linux-native). Header-only
-# -- its include dir is added to engine_deps below alongside stb/bullet3.
+# portable-file-dialogs: header-only native file dialogs (Win32 on
+# windows-mingw, zenity/kdialog on linux-native).
 # ------------------------------------------------------------------------------
 
 CPMAddPackage(
@@ -438,10 +418,8 @@ CPMAddPackage(
 )
 
 # ------------------------------------------------------------------------------
-# KTX-Software (libktx): KTX2 container read/write plus the Basis Universal
-# UASTC encoder/transcoder used to bake BC5/BC7 textures. Tools, loadtests,
-# and its own GL/Vulkan upload paths are all disabled -- we only need the
-# library, and we do our own Vulkan uploads.
+# KTX-Software (libktx): KTX2 read/write and the Basis Universal UASTC
+# encoder/transcoder. Only the library is needed; we do our own uploads.
 # ------------------------------------------------------------------------------
 
 set(KTX_FEATURE_TESTS OFF CACHE BOOL "" FORCE)
@@ -454,11 +432,7 @@ set(KTX_FEATURE_PY OFF CACHE BOOL "" FORCE)
 set(KTX_FEATURE_GL_UPLOAD OFF CACHE BOOL "" FORCE)
 set(KTX_FEATURE_VK_UPLOAD OFF CACHE BOOL "" FORCE)
 
-# KTX-Software vendors large LFS-tracked test/reference images that are
-# irrelevant with KTX_FEATURE_TESTS/TOOLS_CTS off; skip fetching their real
-# contents (LFS pointer files are fine -- nothing in the ktx target reads
-# them), and skip the tests/cts submodule entirely, since it exists only for
-# KTX_FEATURE_TOOLS_CTS.
+# Skip the LFS test images and the CTS submodule; nothing we build reads them.
 set(ENV{GIT_LFS_SKIP_SMUDGE} "1")
 
 CPMAddPackage(
@@ -523,8 +497,7 @@ if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
     )
   endif()
 
-  # imgui_internal.h trips -Wconversion (ImExponentialMovingAverage), which
-  # the -Werror CI job turns into a hard error in every TU that includes it.
+  # imgui_internal.h trips -Wconversion, which -Werror turns into an error.
   mark_target_includes_system(imgui)
 endif()
 
@@ -726,38 +699,23 @@ include("${CMAKE_SOURCE_DIR}/cmake/shader_push_constant_reflection.cmake")
 # ------------------------------------------------------------------------------
 # Project sources
 #
-# The 8 engine_<module> static libraries are configured by their own
-# src/<module>/CMakeLists.txt (explicit source lists, not file(GLOB) --
-# the point of the split is for each module's source list to document its
-# own contents). This section only resolves what's shared by all of them,
-# plus the sources that stay directly on the executable rather than any
-# module library.
+# Each engine_<module> library lists its own sources in
+# src/<module>/CMakeLists.txt. This section covers what's shared and the
+# sources built directly into the executable.
 # ------------------------------------------------------------------------------
 
+# The global operator new/delete override feeds MemoryTracker for the in-app
+# Memory panel. Not built in Release, which links jemalloc on Linux instead.
 #
-# The global operator new/delete override (global_new_delete.cxx) routes every
-# allocation through MemoryTracker for the in-app Memory panel. That's a
-# per-allocation cost worth paying in Debug/RelWithDebInfo, but not something
-# a Release build should carry -- Release gets no tracking overhead and, on
-# Linux, links jemalloc instead (see the "Release allocator" section below).
-#
-# A global new/delete override inside a static archive can be silently
-# dropped by the linker if nothing else in that archive member is
-# referenced, so this stays a source of the executable itself rather than
-# any engine_<module> library.
-#
+# It's an executable source because the linker may drop an unreferenced
+# override from a static archive.
 set(mingw_vulkan_track_memory ON)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
   set(mingw_vulkan_track_memory OFF)
 endif()
 
-#
-# main.cxx is just the entry point/frame loop/window-event wiring;
-# vulkan_bootstrap.cxx holds the one-time instance/device/swapchain bring-up
-# it calls into. Neither belongs to any engine_<module> library, since
-# nothing else links against them.
-#
+# Entry point and one-time Vulkan bring-up; nothing else links them.
 set(
     mingw_vulkan_main_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cxx"
@@ -781,13 +739,8 @@ if(mingw_vulkan_track_memory)
   )
 endif()
 
-#
-# Game sources -- linked only into the mingw-vulkan executable, never into
-# any engine_<module> library, so the module libraries stay entirely
-# game-agnostic (see include/app/game.hxx). game/include is added as a
-# private include directory on the executable target below, separate from
-# the module libraries' public include/.
-#
+# Game sources are linked only into the executable, keeping the engine
+# libraries game-agnostic.
 file(
     GLOB_RECURSE mingw_vulkan_game_sources
     CONFIGURE_DEPENDS
@@ -799,21 +752,16 @@ list(
     ${mingw_vulkan_game_sources}
 )
 
-# engine_deps needs stb_SOURCE_DIR, bullet3_SOURCE_DIR, shader_reflect_generated_dir
-# and slang_root, all resolved above -- must be included after them.
+# Needs stb_SOURCE_DIR, bullet3_SOURCE_DIR, shader_reflect_generated_dir and
+# slang_root from above.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/engine_deps.cmake")
 
-# configure_renderdoc(), called from src/gpu/CMakeLists.txt below, must be
-# defined before that add_subdirectory() runs.
+# Defines configure_renderdoc() for src/gpu/CMakeLists.txt.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/renderdoc_config.cmake")
 
 # ------------------------------------------------------------------------------
-# Module libraries
-#
-# Added in dependency order (core < gpu < assets < physics < scene < terrain
-# < rendering < app) for readability; CMake itself doesn't require this
-# order since target_link_libraries() may reference a not-yet-defined
-# target as long as it exists by generate time.
+# Module libraries, in dependency order:
+# core < gpu < assets < physics < scene < terrain < rendering < app
 # ------------------------------------------------------------------------------
 
 add_subdirectory(src/core)
@@ -828,22 +776,12 @@ add_subdirectory(src/app)
 # ------------------------------------------------------------------------------
 # Core library
 #
-# mingw-vulkan-core is now a thin INTERFACE umbrella over the 8
-# engine_<module> libraries, so downstream consumers (the executable,
-# test/CMakeLists.txt) don't need to know the module list -- this alias
-# already existed pre-split, this just repoints what it aliases.
+# mingw-vulkan-core is an INTERFACE umbrella over the module libraries so the
+# executable and tests don't need the module list.
 #
-# $<LINK_GROUP:RESCAN,...> wraps the 8 libraries the way -Wl,--start-group /
-# --end-group would: a plain left-to-right static-archive link only ever
-# rescans an *earlier* archive for a symbol a *later* one turns out to need,
-# never the reverse, so a strictly-layered link order breaks the one
-# deliberate exception to that layering that was fine as a single archive
-# but isn't once it's 8 separate ones -- error_describe.cxx (core) defining
-# the generic describe() dispatcher that calls per-subsystem overloads
-# defined in gpu/assets/rendering (Phase 2 point 9). RESCAN makes the linker
-# keep revisiting the whole group until every symbol resolves, in any
-# direction. (rendering no longer calls back into app: Application hands
-# the Renderer its debug-line/ImGui overlays through register_overlay().)
+# $<LINK_GROUP:RESCAN,...> acts like --start-group/--end-group: core's
+# describe() dispatcher (error_describe.cxx) calls overloads defined in higher
+# layers, which a single left-to-right archive pass can't resolve.
 # ------------------------------------------------------------------------------
 
 add_library(
@@ -885,8 +823,6 @@ target_include_directories(
         "${CMAKE_CURRENT_SOURCE_DIR}/game/include"
 )
 
-# If these sources rely on the project PCH, retain the same behaviour they had
-# when all sources belonged to the executable target.
 target_precompile_headers(
     mingw-vulkan
     PRIVATE
@@ -894,11 +830,7 @@ target_precompile_headers(
 )
 
 # ------------------------------------------------------------------------------
-# Platform configuration
-#
-# Keep final executable/link/runtime deployment configuration on the executable.
-#
-# Platform source files themselves are compiled into mingw-vulkan-core above.
+# Platform configuration (link and runtime deployment for the executable)
 # ------------------------------------------------------------------------------
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
@@ -934,17 +866,9 @@ endif()
 # ------------------------------------------------------------------------------
 # Release allocator (Linux only)
 #
-# windows-mingw Release just gets the plain system allocator -- jemalloc's
-# Windows/mingw-w64 support isn't solid enough to depend on for a
-# cross-compiled target. linux-native Release links jemalloc, which overrides
-# malloc/free (and therefore the default operator new/delete, which call
-# through to malloc) via ordinary symbol interposition -- no source changes
-# needed on our side. Requires libjemalloc-dev in the build image; see
-# Dockerfile.
-#
-# Attached to the executable rather than any engine_<module> library: like
-# global_new_delete.cxx, its effect depends on final link-line position, not
-# on which archive happens to reference it.
+# linux-native Release links jemalloc, which replaces malloc/free (and so the
+# default operator new/delete) through symbol interposition. windows-mingw
+# keeps the system allocator. Needs libjemalloc-dev (see Dockerfile).
 # ------------------------------------------------------------------------------
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -991,8 +915,7 @@ endforeach()
 # ------------------------------------------------------------------------------
 # Tests
 #
-# doctest_discover_tests executes the resulting test binary to enumerate
-# TEST_CASEs. For now, only enable automatic discovery for native builds.
+# doctest_discover_tests runs the test binary, so discovery is native-only.
 # ------------------------------------------------------------------------------
 
 if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)

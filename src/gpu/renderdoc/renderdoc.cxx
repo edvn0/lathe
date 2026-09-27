@@ -95,18 +95,21 @@ auto renderdoc_init() -> RenderDocContext {
 }
 
 auto RenderDocContext::is_capturing() const -> bool {
-    if (!api || !api->rdoc)
+    if (!api || !api->rdoc) {
         return false;
+    }
 
     return api->rdoc->IsFrameCapturing() != 0u;
 }
 
 auto RenderDocContext::begin_frame_capture(void *vk_instance, void *wnd_handle) const -> void {
-    if (!api || !api->rdoc)
+    if (!api || !api->rdoc) {
         return;
+    }
 
-    if (api->rdoc->IsFrameCapturing())
+    if (api->rdoc->IsFrameCapturing()) {
         return;
+    }
 
     const RENDERDOC_DevicePointer dev_ptr =
             vk_instance ? RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(vk_instance) : nullptr;
@@ -117,19 +120,21 @@ auto RenderDocContext::begin_frame_capture(void *vk_instance, void *wnd_handle) 
 }
 
 auto RenderDocContext::end_frame_capture(void *vk_instance, void *wnd_handle) const -> void {
-    if (!api || !api->rdoc)
+    if (!api || !api->rdoc) {
         return;
+    }
 
-    if (!api->rdoc->IsFrameCapturing())
+    if (!api->rdoc->IsFrameCapturing()) {
         return;
+    }
 
     const RENDERDOC_DevicePointer dev_ptr =
             vk_instance ? RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(vk_instance) : nullptr;
 
-    const auto ok = api->rdoc->EndFrameCapture(dev_ptr, static_cast<RENDERDOC_WindowHandle>(wnd_handle));
+    auto const ok = api->rdoc->EndFrameCapture(dev_ptr, static_cast<RENDERDOC_WindowHandle>(wnd_handle));
 
     if (ok) {
-        const auto num = api->rdoc->GetNumCaptures();
+        auto const num = api->rdoc->GetNumCaptures();
         info("RenderDoc: frame capture ended. Total captures: {}", num);
     } else {
         warn("RenderDoc: EndFrameCapture reported failure.");
@@ -137,16 +142,18 @@ auto RenderDocContext::end_frame_capture(void *vk_instance, void *wnd_handle) co
 }
 
 auto RenderDocContext::trigger_capture() const -> void {
-    if (!api || !api->rdoc)
+    if (!api || !api->rdoc) {
         return;
+    }
 
     api->rdoc->TriggerCapture();
     info("RenderDoc: one-shot capture triggered.");
 }
 
 auto RenderDocContext::set_capture_path(std::string_view path_template) const -> void {
-    if (!api || !api->rdoc)
+    if (!api || !api->rdoc) {
         return;
+    }
 
     const std::string tmp{path_template};
     api->rdoc->SetCaptureFilePathTemplate(tmp.c_str());

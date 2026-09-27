@@ -26,7 +26,7 @@ struct SwapchainCreateInfo {
     bool vsync = true;
 };
 
-enum class SwapchainFrameResult {
+enum class SwapchainFrameResult : std::uint8_t {
     success,
     recreated,
     device_lost,

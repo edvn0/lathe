@@ -2,20 +2,13 @@ module bloom_downsample;
 
 import bindless;
 
-// One level of the bloom mip chain: reads the level above through a
-// sampled view and writes this level through a storage view. The two are
-// always different subresources, and render_pass::bloom() puts a barrier
-// between consecutive levels, so no invocation ever reads a texel another
-// invocation of the same dispatch is writing.
+// One level of the bloom mip chain: reads the level above through a sampled view and writes this one through a
+// storage view. render_pass::bloom() places a barrier between levels.
 //
-// The filter is the 13-tap downsample from Jimenez, "Next Generation Post
-// Processing in Call of Duty: Advanced Warfare" (SIGGRAPH 2014): five
-// overlapping 2x2 box footprints around the destination texel, weighted
-// 0.5 (inner) and 4 x 0.125 (corners). The first level additionally uses a
-// Karis average over those five boxes -- each weighted by 1 / (1 + luma) --
-// so single sub-pixel highlights (specular sparkles on the helmet, say)
-// can't dominate a whole bloom texel and pop on and off as the camera
-// moves, and applies the soft-knee brightness threshold.
+// The 13-tap downsample from Jimenez, "Next Generation Post Processing in Call of Duty: Advanced Warfare"
+// (SIGGRAPH 2014): five overlapping 2x2 boxes weighted 0.5 (inner) and 4 x 0.125 (corners). The first level
+// also applies the soft-knee threshold and a Karis average (each box weighted 1 / (1 + luma)) so sub-pixel
+// highlights don't flicker.
 struct DownsamplePushConstants
 {
     uint src_texture_index;
@@ -41,9 +34,7 @@ float luma(float3 colour)
     return dot(colour, float3(0.2126, 0.7152, 0.0722));
 }
 
-// The HDR target can hold the odd NaN/inf (degenerate normals, a zero
-// roughness specular lobe). Without this one bad texel would be smeared
-// across every bloom level and show up as a flashing black or white block.
+// The HDR target can contain NaN/inf; one bad texel would otherwise spread across every level.
 float3 sanitize(float3 colour)
 {
     if (any(isnan(colour)) || any(isinf(colour)))
@@ -92,10 +83,8 @@ float3 downsample_13_tap(float2 uv, float2 texel)
     float3 l = fetch(uv + texel * float2(-1.0, -1.0));
     float3 m = fetch(uv + texel * float2( 1.0, -1.0));
 
-    // The five overlapping 2x2 boxes. Written out rather than as a local
-    // array walked by an [unroll]ed loop: that form crashes SPIRV-Tools'
-    // merge-blocks pass (vulkan-sdk-1.4.357.0) in SlangCompiler's
-    // performance-pass run.
+    // Written out: an [unroll]ed loop over a local array crashes SPIRV-Tools' merge-blocks pass
+    // (vulkan-sdk-1.4.357.0).
     float3 box_inner = (j + k + l + m) * 0.25;
     float3 box_top_left = (a + b + d + e) * 0.25;
     float3 box_top_right = (b + c + e + f) * 0.25;
@@ -126,7 +115,7 @@ float3 downsample_13_tap(float2 uv, float2 texel)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void mainCs(uint3 thread_id : SV_DispatchThreadID)
+void main_cs(uint3 thread_id : SV_DispatchThreadID)
 {
     int2 coord = int2(thread_id.xy);
 

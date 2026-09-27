@@ -16,7 +16,7 @@
 
 namespace {
 
-    auto report_vk_error(const char *operation, VkResult result) noexcept -> void {
+    auto report_vk_error(char const *operation, VkResult result) noexcept -> void {
         error("{} failed with VkResult {}", operation, static_cast<int>(result));
     }
 
@@ -46,13 +46,8 @@ namespace {
         };
     }
 
-    // vkDeviceWaitIdle has no timeout parameter -- a genuinely non-responding
-    // GPU hangs it forever with no way to interrupt the wait from this
-    // thread. Running it as an async task and giving up on *waiting for it*
-    // after a bound at least lets the process exit instead of hanging. Once
-    // we've given up, continuing on to call more Vulkan destroy functions
-    // against a device the driver may still be touching is itself unsafe, so
-    // this terminates immediately rather than attempting further cleanup.
+    // vkDeviceWaitIdle can't time out, so wait on it asynchronously and exit immediately if the GPU doesn't
+    // respond; further Vulkan calls against a hung device aren't safe.
     auto wait_idle_bounded(VkDevice device, std::string_view label) noexcept -> VkResult {
         constexpr auto timeout = std::chrono::seconds{3};
 
@@ -72,7 +67,7 @@ namespace {
 
 Swapchain::~Swapchain() { destroy(); }
 
-auto Swapchain::initialize(const SwapchainCreateInfo &create_info) noexcept -> bool {
+auto Swapchain::initialize(SwapchainCreateInfo const &create_info) noexcept -> bool {
     destroy();
 
     if (create_info.physical_device == VK_NULL_HANDLE || create_info.device == VK_NULL_HANDLE ||
@@ -131,11 +126,7 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
 
     auto &frame = frames_[current_frame_];
 
-    // Bounded rather than INT64_MAX: an indefinite wait here can never be
-    // interrupted by shutdown (request_stop()/context.running don't reach
-    // into a blocking Vulkan call), so a stuck fence -- e.g. a driver stall
-    // racing window close -- would hang the process forever instead of
-    // surfacing as the fatal_error this already knows how to handle.
+    // A bounded wait so a stuck fence surfaces as a fatal error instead of hanging shutdown.
     constexpr std::uint64_t frame_wait_timeout_ns = 2'000'000'000ULL;
 
     auto result = vkWaitForFences(device_, 1, &frame.in_flight, VK_TRUE, frame_wait_timeout_ns);
@@ -728,7 +719,7 @@ auto Swapchain::destroy_frame_resources() noexcept -> void {
     }
 }
 
-auto Swapchain::choose_surface_format(const std::vector<VkSurfaceFormatKHR> &formats) const noexcept
+auto Swapchain::choose_surface_format(std::vector<VkSurfaceFormatKHR> const &formats) const noexcept
         -> VkSurfaceFormatKHR {
     constexpr std::array preferred_formats{
             VK_FORMAT_B8G8R8A8_SRGB,
@@ -738,7 +729,7 @@ auto Swapchain::choose_surface_format(const std::vector<VkSurfaceFormatKHR> &for
     };
 
     for (VkFormat preferred_format: preferred_formats) {
-        const auto iterator = std::ranges::find_if(formats, [preferred_format](const VkSurfaceFormatKHR &format) {
+        auto const iterator = std::ranges::find_if(formats, [preferred_format](VkSurfaceFormatKHR const &format) {
             return format.format == preferred_format && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
         });
 
@@ -750,16 +741,16 @@ auto Swapchain::choose_surface_format(const std::vector<VkSurfaceFormatKHR> &for
     return formats.front();
 }
 
-auto Swapchain::choose_present_mode(const std::vector<VkPresentModeKHR> &present_modes) const noexcept
+auto Swapchain::choose_present_mode(std::vector<VkPresentModeKHR> const &present_modes) const noexcept
         -> VkPresentModeKHR {
     if (!vsync_) {
-        const auto mailbox = std::ranges::find(present_modes, VK_PRESENT_MODE_MAILBOX_KHR);
+        auto const mailbox = std::ranges::find(present_modes, VK_PRESENT_MODE_MAILBOX_KHR);
 
         if (mailbox != present_modes.end()) {
             return *mailbox;
         }
 
-        const auto immediate = std::ranges::find(present_modes, VK_PRESENT_MODE_IMMEDIATE_KHR);
+        auto const immediate = std::ranges::find(present_modes, VK_PRESENT_MODE_IMMEDIATE_KHR);
 
         if (immediate != present_modes.end()) {
             return *immediate;
@@ -769,7 +760,7 @@ auto Swapchain::choose_present_mode(const std::vector<VkPresentModeKHR> &present
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-auto Swapchain::choose_extent(const VkSurfaceCapabilitiesKHR &capabilities) const noexcept -> VkExtent2D {
+auto Swapchain::choose_extent(VkSurfaceCapabilitiesKHR const &capabilities) const noexcept -> VkExtent2D {
     if (capabilities.currentExtent.width != std::numeric_limits<std::uint32_t>::max()) {
         return capabilities.currentExtent;
     }

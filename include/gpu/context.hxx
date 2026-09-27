@@ -41,25 +41,15 @@ struct VulkanContext {
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
 
-    // Whether VK_EXT_shader_object + the extended-dynamic-state3 bits it
-    // needs are all present on physical_device. Decided once at device
-    // selection (see select_physical_device in main.cxx) and used both to
-    // gate which extensions/features create_device() enables and to pick
-    // VkPipeline vs ShaderObjectSet at pipeline-registration time -- not
-    // every GPU (e.g. some Intel iGPUs) implements this extension yet.
+    // VK_EXT_shader_object and the dynamic state it needs. Decides the enabled features and VkPipeline vs
+    // ShaderObjectSet.
     bool shader_objects_supported = false;
 
-    // Whether VK_EXT_calibrated_timestamps is present on physical_device,
-    // and whether its calibrateable time domains additionally allow Tracy's
-    // host-calibrated Vulkan context (see host_query_context.hxx). Decided
-    // once at device selection in main.cxx.
+    // VK_EXT_calibrated_timestamps, with time domains usable by Tracy's host-calibrated context.
     bool calibrated_timestamps_supported = false;
     bool host_calibrated_timestamps_supported = false;
 
-    // VkPhysicalDeviceMeshShaderFeaturesEXT::meshShaderQueries -- lets the
-    // renderer's pipeline-statistics query count task/mesh shader
-    // invocations (meshlets tested/drawn). Optional; decided at device
-    // selection.
+    // Lets the pipeline-statistics query count task/mesh invocations.
     bool mesh_shader_queries_supported = false;
 
     HostQueryContext host_query_context{};

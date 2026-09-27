@@ -161,7 +161,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
                     .codeSize = used_binary[index] ? binary_storage[index]->size() : shader.spirv.size_bytes(),
                     .pCode = used_binary[index] ? static_cast<void const *>(binary_storage[index]->data())
                                                 : static_cast<void const *>(shader.spirv.data()),
-                    .pName = shader.entry_point.view().data(),
+                    .pName = shader.entry_point.c_str(),
                     .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
                     .pSetLayouts = layouts.data(),
                     .pushConstantRangeCount = static_cast<std::uint32_t>(create_info.push_constant_ranges.size()),
@@ -217,10 +217,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
         vk::set_object_name(context.device, VK_OBJECT_TYPE_SHADER_EXT, vk::object_handle(created_shaders[index]),
                             object_name);
 
-        // Populate the cache for anything that didn't just come from it --
-        // a first-time SPIR-V compile, or every stage after a retry (the
-        // retry re-caches stages that weren't actually incompatible too;
-        // harmless, just an extra vkGetShaderBinaryDataEXT call).
+        // Cache every stage that didn't come from the cache.
         auto const &shader = create_info.shaders[index];
 
         if (binary_cache != nullptr && !shader.cache_key.empty() && !used_binary[index]) {
@@ -302,7 +299,7 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
                 .codeSize = use_binary ? binary_storage->size() : shader.spirv.size_bytes(),
                 .pCode = use_binary ? static_cast<void const *>(binary_storage->data())
                                     : static_cast<void const *>(shader.spirv.data()),
-                .pName = shader.entry_point.view().data(),
+                .pName = shader.entry_point.c_str(),
                 .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
                 .pSetLayouts = layouts.data(),
                 .pushConstantRangeCount = static_cast<std::uint32_t>(create_info.push_constant_ranges.size()),

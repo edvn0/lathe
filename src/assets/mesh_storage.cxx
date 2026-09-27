@@ -3,9 +3,7 @@
 #include <utility>
 
 auto MeshStorage::create(MeshStorageCreateInfo const &create_info) -> std::expected<MeshStorage, MeshStorageError> {
-    // Slot zero is permanently unused -- see model.hxx's comment on
-    // MeshHandle's Sentinel = 0 -- so at least one real slot needs room
-    // beyond it.
+    // Slot zero is never used, so at least one more slot is needed.
     if (create_info.capacity < 2) {
         return std::unexpected(MeshStorageError{.type = MeshStorageErrorType::invalid_argument});
     }

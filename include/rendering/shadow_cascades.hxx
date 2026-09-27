@@ -7,12 +7,8 @@
 
 #include <glm/glm.hpp>
 
-// Per-cascade shadow-map resolution. Far cascades (2, 3) cover huge
-// world-space areas -- their texel-snapped projection (see
-// fit_shadow_cascades) already produces texels tens of centimetres across at
-// 2048, so halving their resolution costs no visible detail while cutting
-// their fill-rate/bandwidth 4x. Packed side-by-side into one atlas row
-// (variable-width tiles), not a uniform grid -- see shadow_cascade_offset_x.
+// Per-cascade resolution. The far cascades already have texels tens of centimetres wide, so halving them
+// loses nothing visible. Tiles are packed side by side in one atlas row.
 inline constexpr std::array<std::uint32_t, shadow_cascade_count> shadow_cascade_resolutions = {2048, 2048, 1024, 1024};
 
 namespace shadow_atlas_detail {
@@ -57,17 +53,15 @@ namespace shadow_atlas_detail {
 inline constexpr std::uint32_t shadow_atlas_width = shadow_atlas_detail::sum(shadow_cascade_resolutions);
 inline constexpr std::uint32_t shadow_atlas_height = shadow_atlas_detail::max_value(shadow_cascade_resolutions);
 
-// X offset in pixels of each cascade's tile within the atlas -- prefix sum of
-// shadow_cascade_resolutions. Every tile starts at y = 0.
+// X offset of each cascade's tile in the atlas (prefix sum of the resolutions). Every tile starts at y = 0.
 inline constexpr std::array<std::uint32_t, shadow_cascade_count> shadow_cascade_offset_x =
         shadow_atlas_detail::prefix_offsets(shadow_cascade_resolutions);
 
 struct ShadowCascadeSettings {
-    float shadow_distance = 150.0F; // metres covered by the cascades, clamped to camera far
-    float shadow_near = 0.5F; // clamps the camera's near clip -- 0.1 would waste cascade 0
+    float shadow_distance = 150.0F; // metres covered by the cascades, clamped to the camera far plane
+    float shadow_near = 0.5F; // clamps the camera's near plane; 0.1 would waste cascade 0
     float split_lambda = 0.85F; // PSSM lambda: 0 = uniform splits, 1 = logarithmic
-    float caster_extrusion = 100.0F; // pulls the near plane back along the light to catch casters
-                                     // outside the cascade's bounding sphere
+    float caster_extrusion = 100.0F; // catches casters outside the cascade's bounding sphere
 };
 
 struct ShadowCascadeFitInput {
@@ -89,12 +83,7 @@ struct ShadowCascades {
 
 [[nodiscard]] auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowCascades;
 
-// Extracts the 6 world-space view-frustum planes from a combined
-// view_projection matrix (Gribb-Hartmann), for the GPU frustum-culling
-// compute pass. Each plane is (nx, ny, nz, d) with the normal pointing
-// inward and normalized, i.e. dot(normal, point) + d >= 0 for points inside
-// the frustum. Order: left, right, bottom, top, near, far. Assumes a
-// zero-to-one depth range (matches every *_ZO/*_LH_ZO projection in this
-// codebase); handedness of the projection does not matter for this
-// extraction.
+// The 6 world-space frustum planes of `view_projection` (Gribb-Hartmann), normalized and facing inward:
+// dot(normal, point) + d >= 0 inside. Order: left, right, bottom, top, near, far. Assumes a zero-to-one depth
+// range.
 [[nodiscard]] auto extract_frustum_planes(glm::mat4 const &view_projection) noexcept -> std::array<glm::vec4, 6>;

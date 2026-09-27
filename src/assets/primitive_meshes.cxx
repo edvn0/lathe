@@ -16,15 +16,14 @@ namespace {
         glm::vec3 tangent;
     };
 
-    // tangent x bitangent(=cross(normal, tangent)) == normal for each face,
-    // which keeps winding (and outward-facing culling) consistent across faces.
+    // tangent x cross(normal, tangent) == normal for each face, so winding is consistent.
     constexpr std::array<CubeFace, 6> cube_faces{{
-            {{1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}},
-            {{-1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}},
-            {{0.0F, 1.0F, 0.0F}, {1.0F, 0.0F, 0.0F}},
-            {{0.0F, -1.0F, 0.0F}, {1.0F, 0.0F, 0.0F}},
-            {{0.0F, 0.0F, 1.0F}, {1.0F, 0.0F, 0.0F}},
-            {{0.0F, 0.0F, -1.0F}, {1.0F, 0.0F, 0.0F}},
+            {.normal = {1.0F, 0.0F, 0.0F}, .tangent = {0.0F, 1.0F, 0.0F}},
+            {.normal = {-1.0F, 0.0F, 0.0F}, .tangent = {0.0F, 1.0F, 0.0F}},
+            {.normal = {0.0F, 1.0F, 0.0F}, .tangent = {1.0F, 0.0F, 0.0F}},
+            {.normal = {0.0F, -1.0F, 0.0F}, .tangent = {1.0F, 0.0F, 0.0F}},
+            {.normal = {0.0F, 0.0F, 1.0F}, .tangent = {1.0F, 0.0F, 0.0F}},
+            {.normal = {0.0F, 0.0F, -1.0F}, .tangent = {1.0F, 0.0F, 0.0F}},
     }};
 
     constexpr std::array<glm::vec2, 4> corner_signs{{{-0.5F, -0.5F}, {0.5F, -0.5F}, {0.5F, 0.5F}, {-0.5F, 0.5F}}};
@@ -129,8 +128,7 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
     constexpr auto blade_count = 12U;
     constexpr auto row_count = 4U;
 
-    // Roughly matches your current ~0.8 m spacing between clump instances.
-    // The outer blades reach ~0.30 m from the clump origin.
+    // Outer blades reach ~0.30 m from the clump origin.
     constexpr auto clump_radius = 0.30F;
 
     constexpr auto min_height = 0.48F;
@@ -147,15 +145,13 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
     constexpr auto min_curve = 0.015F;
     constexpr auto max_curve = 0.075F;
 
-    // Tiny non-zero tip avoids degenerate triangles and works nicely with
-    // tangent generation.
+    // A small non-zero tip avoids degenerate triangles.
     constexpr auto tip_width_factor = 0.035F;
 
     constexpr auto pi = std::numbers::pi_v<float>;
     constexpr auto two_pi = 2.0F * pi;
 
-    // Golden angle gives much better coverage than independently sampling
-    // every blade position from a uniform random distribution.
+    // Golden angle spreads blades more evenly than uniform random sampling.
     constexpr auto golden_angle = pi * (3.0F - 2.2360679774997896964F);
 
     constexpr std::array<float, row_count> row_heights{
@@ -168,11 +164,9 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
     std::vector<ModelVertex> vertices;
     std::vector<std::uint32_t> indices;
 
-    // 4 rows * 2 vertices, duplicated for front/back.
     constexpr auto vertices_per_side = row_count * 2U;
     constexpr auto vertices_per_blade = vertices_per_side * 2U;
 
-    // Three rectangular sections = 6 triangles per side.
     constexpr auto triangles_per_side = (row_count - 1U) * 2U;
     constexpr auto triangles_per_blade = triangles_per_side * 2U;
 
@@ -180,10 +174,8 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
 
     indices.reserve(static_cast<std::size_t>(blade_count) * triangles_per_blade * 3U);
 
-    // Fixed seed: this function builds a reusable mesh, so the mesh should be
-    // deterministic. Instance rotation/scale/placement can provide the
-    // large-scale variation.
-    std::mt19937 random_engine{0x47524153U}; // "GRAS"
+    // Fixed seed so the mesh is deterministic; instances add the variation.
+    std::mt19937 random_engine{0x47524153U};
 
     std::uniform_real_distribution<float> unit_distribution{0.0F, 1.0F};
     std::uniform_real_distribution<float> signed_distribution{-1.0F, 1.0F};
@@ -201,13 +193,7 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
                     auto const t = row_heights[row];
                     auto const normal = front_face ? normals[row] : -normals[row];
 
-                    // Keep UV.y semantically useful:
-                    //
-                    //   root -> 0
-                    //   tip  -> 1
-                    //
-                    // This can later directly drive wind, colour gradients,
-                    // translucency, etc.
+                    // UV.y runs from 0 at the root to 1 at the tip.
                     vertices.push_back(ModelVertex{
                             .position = centres[row] - across * half_widths[row],
                             .normal = normal,
@@ -250,17 +236,7 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
             };
 
     for (std::uint32_t blade = 0; blade < blade_count; ++blade) {
-        //
-        // Position blades using a sunflower/golden-angle distribution.
-        //
-        // Compared with:
-        //
-        //     x = random(...)
-        //     z = random(...)
-        //
-        // this avoids accidentally creating empty patches or dense clusters
-        // inside this very small reusable mesh.
-        //
+        // Sunflower distribution, avoiding empty patches and clusters.
         auto const radial_fraction = (static_cast<float>(blade) + 0.35F) / static_cast<float>(blade_count);
 
         auto const radius = clump_radius * std::sqrt(radial_fraction);
@@ -274,10 +250,7 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
                 std::sin(position_angle) * radius,
         };
 
-        //
-        // Don't correlate blade facing with its radial position. If we did,
-        // the clump would acquire an obvious flower/star appearance.
-        //
+        // Facing independent of radial position, or the clump looks like a star.
         auto const yaw = unit_distribution(random_engine) * two_pi;
 
         auto const across = glm::normalize(glm::vec3{
@@ -292,10 +265,7 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
                 across.x,
         });
 
-        //
-        // Slightly shorter blades near the edge help give the clump a
-        // natural bunch shape rather than a cylindrical silhouette.
-        //
+        // Shorter blades near the edge give a rounded silhouette.
         auto const edge_factor = radius / clump_radius;
 
         auto height = random_range(min_height, max_height);
@@ -304,11 +274,7 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
 
         auto const half_width = random_range(min_half_width, max_half_width);
 
-        //
-        // Lean mostly normal to the ribbon plane, with some sideways
-        // variation. This creates curved silhouettes without making every
-        // blade bend in exactly the same direction.
-        //
+        // Lean mostly normal to the blade plane, with some sideways variation.
         auto const bend_angle = random_range(-0.65F, 0.65F);
 
         auto bend_direction = face_normal * std::cos(bend_angle) + across * std::sin(bend_angle);
@@ -330,40 +296,21 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
         for (std::uint32_t row = 0; row < row_count; ++row) {
             auto const t = row_heights[row];
 
-            //
-            // Centerline:
-            //
-            // linear term      -> general lean
-            // quadratic term   -> visible curvature towards tip
-            //
+            // Centerline: linear lean plus quadratic curve towards the tip.
             auto const horizontal_offset = bend_direction * (lean_amount * t + curve_amount * t * t);
 
             centres[row] = root_position + glm::vec3{0.0F, height * t, 0.0F} + horizontal_offset;
 
-            //
-            // Taper non-linearly. Keeping some width through the lower
-            // two-thirds reads better than linearly shrinking the entire
-            // blade.
-            //
+            // Non-linear taper keeps the lower blade wide.
             auto const taper = std::pow(std::max(0.0F, 1.0F - t), 0.72F);
 
             half_widths[row] = half_width * std::lerp(tip_width_factor, 1.0F, taper);
 
-            //
-            // Derivative of the blade centerline:
-            //
-            // center(t) =
-            //     y * t +
-            //     dir * (lean*t + curve*t^2)
-            //
+            // Derivative of center(t) = up * height * t + dir * (lean * t + curve * t^2).
             auto const centerline_tangent = glm::normalize(glm::vec3{0.0F, height, 0.0F} +
                                                            bend_direction * (lean_amount + 2.0F * curve_amount * t));
 
-            //
-            // across x vertical_tangent gives our front-facing geometric
-            // normal. Because width changes only along `across`, taper does
-            // not alter this surface normal.
-            //
+            // Width only varies along `across`, so the taper doesn't change the normal.
             normals[row] = glm::normalize(glm::cross(across, centerline_tangent));
         }
 
@@ -391,8 +338,7 @@ auto to_model_cpu_data(PrimitiveMeshData mesh) -> ModelCpuData {
             .material_index = std::nullopt,
     };
 
-    // Procedural meshes never go through finalize_primitive_cpu(), so the
-    // GPU-ready data is built here, on whichever thread generated the mesh.
+    // Procedural meshes skip finalize_primitive_cpu(), so build the GPU data here.
     prepare_primitive_gpu_data(primitive);
 
     cpu_data.meshes.push_back(ModelCpuMesh{
@@ -412,13 +358,12 @@ auto to_model_cpu_data(PrimitiveMeshData mesh) -> ModelCpuData {
 auto make_capsule_mesh(std::uint32_t segments, std::uint32_t rings)
         -> std::expected<PrimitiveMeshData, ModelLoadError> {
     segments = std::max(segments, 3U);
-    rings = std::max(rings, 1U); // Rings per hemisphere
+    rings = std::max(rings, 1U);
 
     constexpr float radius = 0.5F;
-    constexpr float half_cylinder_height = 0.5F; // Total cylinder height = 1.0F, total capsule height = 2.0F
+    constexpr float half_cylinder_height = 0.5F; // Cylinder height 1, capsule height 2.
 
     auto const row_stride = segments + 1;
-    // Total rings = top hemisphere (rings + 1) + bottom hemisphere (rings + 1)
     auto const total_rings = rings * 2 + 1;
 
     std::vector<ModelVertex> vertices;
@@ -429,13 +374,12 @@ auto make_capsule_mesh(std::uint32_t segments, std::uint32_t rings)
         float y_offset = 0.0F;
 
         if (ring <= rings) {
-            // Top hemisphere: theta ranges from 0 (top pole) to PI/2 (equator)
+            // Top hemisphere: theta from 0 (pole) to pi/2 (equator).
             auto const v_hemi = static_cast<float>(ring) / static_cast<float>(rings);
             theta = v_hemi * (std::numbers::pi_v<float> * 0.5F);
             y_offset = half_cylinder_height;
         } else {
-            // Bottom hemisphere: theta ranges from PI/2 (equator) to PI (bottom pole)
-            // Subtract (rings + 1) to start v_hemi correctly at 0.0F
+            // Bottom hemisphere: theta from pi/2 (equator) to pi (pole).
             auto const v_hemi = static_cast<float>(ring - (rings + 1)) / static_cast<float>(rings);
             theta = (std::numbers::pi_v<float> * 0.5F) + v_hemi * (std::numbers::pi_v<float> * 0.5F);
             y_offset = -half_cylinder_height;
@@ -449,10 +393,8 @@ auto make_capsule_mesh(std::uint32_t segments, std::uint32_t rings)
             auto const u = static_cast<float>(segment) / static_cast<float>(segments);
             auto const phi = u * 2.0F * std::numbers::pi_v<float>;
 
-            // Sphere normal at theta/phi
             glm::vec3 const normal{sin_theta * std::cos(phi), cos_theta, sin_theta * std::sin(phi)};
 
-            // Capsule position = normal * radius + cylindrical height offset
             glm::vec3 const position = normal * radius + glm::vec3{0.0F, y_offset, 0.0F};
 
             vertices.push_back(ModelVertex{

@@ -126,7 +126,7 @@ auto SlangLibrary::create(std::filesystem::path const &library_path) -> std::exp
                                           "The Slang library path is empty.")};
     }
 
-    auto resolved_path = library_path;
+    auto const &resolved_path = library_path;
 
     debug("[Slang Library] Path passed to dlopen: {}", resolved_path.string());
 

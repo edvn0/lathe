@@ -16,20 +16,20 @@ namespace gui {
         };
 
         constexpr std::array icon_files{
-                IconFile{EditorIcon::mesh, "mesh"},
-                IconFile{EditorIcon::point_light, "point_light"},
-                IconFile{EditorIcon::spot_light, "spot_light"},
-                IconFile{EditorIcon::script, "script"},
-                IconFile{EditorIcon::player, "player"},
-                IconFile{EditorIcon::bullet, "bullet"},
-                IconFile{EditorIcon::empty, "empty"},
-                IconFile{EditorIcon::folder, "folder"},
-                IconFile{EditorIcon::search, "search"},
-                IconFile{EditorIcon::move, "move"},
-                IconFile{EditorIcon::rotate, "rotate"},
-                IconFile{EditorIcon::scale, "scale"},
-                IconFile{EditorIcon::local, "local"},
-                IconFile{EditorIcon::world, "world"},
+                IconFile{.icon = EditorIcon::mesh, .name = "mesh"},
+                IconFile{.icon = EditorIcon::point_light, .name = "point_light"},
+                IconFile{.icon = EditorIcon::spot_light, .name = "spot_light"},
+                IconFile{.icon = EditorIcon::script, .name = "script"},
+                IconFile{.icon = EditorIcon::player, .name = "player"},
+                IconFile{.icon = EditorIcon::bullet, .name = "bullet"},
+                IconFile{.icon = EditorIcon::empty, .name = "empty"},
+                IconFile{.icon = EditorIcon::folder, .name = "folder"},
+                IconFile{.icon = EditorIcon::search, .name = "search"},
+                IconFile{.icon = EditorIcon::move, .name = "move"},
+                IconFile{.icon = EditorIcon::rotate, .name = "rotate"},
+                IconFile{.icon = EditorIcon::scale, .name = "scale"},
+                IconFile{.icon = EditorIcon::local, .name = "local"},
+                IconFile{.icon = EditorIcon::world, .name = "world"},
         };
     } // namespace
 

@@ -17,7 +17,7 @@ struct VertexOutput
 };
 
 [shader("vertex")]
-VertexOutput mainVs(uint vertex_id: SV_VertexID)
+VertexOutput main_vs(uint vertex_id: SV_VertexID)
 {
     VertexOutput output;
 
@@ -68,7 +68,7 @@ struct FragmentOutput
 };
 
 [shader("fragment")]
-FragmentOutput mainFs(VertexOutput input, uniform CompositePC pc)
+FragmentOutput main_fs(VertexOutput input, uniform CompositePC pc)
 {
     uint hdr_index = NonUniformResourceIndex(pc.hdr_texture_index);
     uint bloom_index = NonUniformResourceIndex(pc.bloom_texture_index);

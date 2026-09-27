@@ -39,9 +39,8 @@ namespace render_pass {
         VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
     };
 
-    // `indirect` holds one GpuDrawCommand (assets/meshlet.hxx) per batch,
-    // partitioned opaque | mask | blend like DrawCounts. `index_buffer` is
-    // the geometry arena's, read by the instanced half of those commands.
+    // `indirect` holds one GpuDrawCommand per batch, ordered opaque | mask | blend like DrawCounts. `index_buffer`
+    // is read by the instanced commands.
     struct DrawBuffers {
         Buffer const &draws;
         Buffer const &transforms;
@@ -62,23 +61,19 @@ namespace render_pass {
         std::array<std::uint32_t, shadow_cascade_count> const &opaque_cascade_counts;
         std::array<std::uint32_t, shadow_cascade_count> const &mask_cascade_counts;
 
-        // Only tiles selected by update_mask are cleared and rendered. On the
-        // first use preserve_contents is false and the old layout is UNDEFINED;
-        // subsequent calls preserve the other atlas tiles across frames.
+        // Only tiles in update_mask are cleared and redrawn; the rest persist across frames.
         std::uint32_t update_mask = (1U << shadow_cascade_count) - 1U;
         bool preserve_contents = false;
 
         bool meshlet_culling = true;
 
-        // First of the 6-planes-per-cascade blocks (cascade 0's left plane)
-        // -- the task shader offsets by cascade_index * 6 from here.
+        // Cascade 0's first plane; the task shader offsets by cascade_index * 6.
         VkDeviceAddress cascade_cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
 
-        // Task/mesh pipelines and their instanced vertex-shader twins
-        // (see uses_meshlet_path() in assets/meshlet.hxx).
+        // Task/mesh pipelines and their instanced vertex-shader variants.
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle mask_pipeline{};
         PipelineNodeHandle opaque_instanced_pipeline{};
@@ -104,34 +99,24 @@ namespace render_pass {
         DrawBuffers draws;
         DrawCounts counts;
 
-        // The camera's 6 world-space frustum planes, for meshlet culling.
+        // The camera's frustum planes, for meshlet culling.
         VkDeviceAddress cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
 
-        // Task/mesh pipelines and their instanced vertex-shader twins
-        // (see uses_meshlet_path() in assets/meshlet.hxx).
+        // Task/mesh pipelines and their instanced vertex-shader variants.
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle mask_pipeline{};
         PipelineNodeHandle opaque_instanced_pipeline{};
         PipelineNodeHandle mask_instanced_pipeline{};
 
-        // Must match ForwardGeometryInfo::meshlet_culling: forward depth
-        // tests EQUAL against what this pass wrote.
+        // Must match ForwardGeometryInfo::meshlet_culling, since forward depth-tests EQUAL.
         bool meshlet_culling = true;
     };
 
-    // GTAO: horizon-based screen-space ambient occlusion computed entirely
-    // from the depth buffer (view-space normals are reconstructed from
-    // neighbouring depth samples inside the shader -- this renderer has no
-    // normal G-buffer to sample instead), then denoised with a depth-aware
-    // spatial blur. Runs as two compute dispatches between the depth
-    // prepass and the forward pass: `depth` must already hold this frame's
-    // single-sample depth (the resolved target when MSAA is on, the main
-    // depth target otherwise) in DEPTH_ATTACHMENT_OPTIMAL layout on entry,
-    // and is left back in that layout on return so forward_geometry's
-    // LOAD_OP_LOAD attachment use is unaffected.
+    // GTAO from depth alone, then a depth-aware blur, as two compute dispatches between the prepass and forward.
+    // `depth` is the single-sample depth in DEPTH_ATTACHMENT_OPTIMAL and is left in that layout.
     struct AmbientOcclusionInfo {
         bool enabled = true;
 
@@ -170,7 +155,7 @@ namespace render_pass {
         DrawBuffers draws;
         DrawCounts counts;
 
-        // The camera's 6 world-space frustum planes, for meshlet culling.
+        // The camera's frustum planes, for meshlet culling.
         VkDeviceAddress cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
@@ -181,29 +166,22 @@ namespace render_pass {
 
         bool meshlet_culling = true;
 
-        // Task/mesh pipelines and their instanced vertex-shader twins
-        // (see uses_meshlet_path() in assets/meshlet.hxx).
+        // Task/mesh pipelines and their instanced vertex-shader variants.
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle blend_pipeline{};
         PipelineNodeHandle opaque_instanced_pipeline{};
         PipelineNodeHandle blend_instanced_pipeline{};
 
-        // Bindless index of the (denoised) GTAO texture, or a fully-white
-        // fallback when AO is disabled -- the caller decides which, since
-        // that's a renderer-level policy (AoSettings::enabled), not
-        // something this pass should branch on.
+        // Denoised GTAO, or white when AO is disabled.
         std::uint32_t ao_texture_index = 0;
         std::uint32_t ao_sampler_index = 0;
     };
 
     inline constexpr std::uint32_t bloom_mip_count = 4;
 
-    // Bloom as a mip chain on `target` (half the HDR resolution at mip 0):
-    // bloom_mip_count downsample dispatches (HDR -> mip 0 -> ... ), then
-    // bloom_mip_count - 1 upsample dispatches back up, each accumulating the
-    // level below into the one above. mip_texture_indices[i] must be a
-    // single-mip view of level i registered as both sampled_2d and
-    // storage_2d. Every level is left in SHADER_READ_ONLY_OPTIMAL.
+    // Bloom mip chain on `target` (mip 0 is half the HDR resolution): bloom_mip_count downsamples, then
+    // bloom_mip_count - 1 upsamples accumulating each level into the one above. mip_texture_indices[i] is a
+    // single-mip view registered as sampled_2d and storage_2d. Every level ends in SHADER_READ_ONLY_OPTIMAL.
     struct BloomPassInfo {
         bool enabled = true;
 
@@ -220,7 +198,7 @@ namespace render_pass {
         float threshold = 1.0F;
         float knee = 0.5F;
 
-        // Upsample tent radius, in texels of the lower level.
+        // Tent radius in texels of the lower level.
         float filter_radius = 1.0F;
     };
 
@@ -240,9 +218,7 @@ namespace render_pass {
         float bloom_intensity = 0.0F;
     };
 
-    // Non-owning, allocation-free callback. The bound callable must outlive the
-    // render-pass call, which is naturally true for the local lambdas
-    // Renderer::record_frame() hands the passes to run a stage's overlays.
+    // Non-owning, allocation-free callback. The callable must outlive the render-pass call.
     struct Callback {
         void *userdata = nullptr;
         void (*invoke)(void *) = nullptr;
@@ -273,32 +249,21 @@ namespace render_pass {
     auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)
             -> std::expected<std::optional<AoTextureIndex>, RendererError>;
 
-    // scene_overlays runs inside the forward rendering scope after every
-    // scene draw -- see OverlayStage::scene.
+    // scene_overlays runs inside the forward rendering scope after the scene draws.
     auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback scene_overlays)
             -> std::expected<HdrTextureIndex, RendererError>;
 
-    // The dynamic state every overlay starts from (see overlay.hxx). Set
-    // by the host before *each* overlay's record():
+    // The dynamic state every overlay starts from, set before each overlay's record():
     //
-    //   viewport/scissor   the full scope extent. OverlayStage::scene uses
-    //                      the forward pass's flipped-Y, reverse-Z viewport
-    //                      (y = height, height = -height, depth 1..0), so a
-    //                      plain view_projection lines up with the scene;
-    //                      OverlayStage::ui uses an unflipped 0..1 viewport.
-    //   rasterisation      fill, cull none, counter-clockwise front, no
-    //                      depth bias/clamp, no discard, samples =
-    //                      scope.samples with a full sample mask, no
-    //                      alpha-to-coverage.
-    //   input assembly     triangle list, no primitive restart, no vertex
-    //                      bindings/attributes.
-    //   depth/stencil      test on (GREATER_OR_EQUAL) when the scope has
-    //                      depth, off otherwise; writes off; stencil off.
-    //   colour             one attachment, blending off, RGBA write mask,
-    //                      logic op off.
+    //   viewport/scissor   the full scope extent. scene uses the forward pass's flipped-Y, reverse-Z viewport
+    //                      (y = height, height = -height, depth 1..0); ui uses an unflipped 0..1 viewport.
+    //   rasterisation      fill, cull none, counter-clockwise front, no depth bias/clamp, no discard,
+    //                      samples = scope.samples with a full mask, no alpha-to-coverage.
+    //   input assembly     triangle list, no primitive restart, no vertex bindings/attributes.
+    //   depth/stencil      GREATER_OR_EQUAL test when the scope has depth, writes off, stencil off.
+    //   colour             one attachment, blending off, RGBA write mask, logic op off.
     //
-    // Descriptor sets and push constants are not part of the baseline:
-    // overlays bind the bindless set against their own layout.
+    // Descriptor sets and push constants are not part of the baseline.
     auto set_overlay_baseline_state(VkCommandBuffer command_buffer, OverlayStage stage,
                                     OverlayScope const &scope) noexcept -> void;
 
@@ -313,8 +278,7 @@ namespace render_pass {
         float icon_world_size = 0.5F;
     };
 
-    // Billboarded icons at every punctual light. Records draws only, so it
-    // is meant to run as an OverlayStage::scene overlay's record().
+    // Billboarded icons at every punctual light, for a scene overlay's record().
     auto light_icons(Context const &context, LightIconsInfo const &info, OverlayScope const &scope) noexcept -> void;
 
     auto bloom(Context const &context, BloomPassInfo const &info)
@@ -323,16 +287,8 @@ namespace render_pass {
     auto composite(Context const &context, CompositePassInfo const &info, Callback ui_overlay)
             -> std::expected<void, RendererError>;
 
-    // Clears `target_view` and runs `ui_overlay` against it -- no pipeline,
-    // no draw of its own. Used for the swapchain pass in embedded/docked
-    // mode, where the 3D scene was already composited into an offscreen
-    // viewport texture (see composite() above, called separately against
-    // that texture) and this pass exists purely to host the ImGui frame
-    // (which draws the dockspace, including the Viewport panel's Image of
-    // that texture) against the real swapchain attachment. ui_overlay is
-    // fully self-sufficient re: dynamic rendering state (viewport/scissor/
-    // blend -- see ImGuiRenderer::render_draw_data), so unlike composite()
-    // this needs no equivalent of set_composite_dynamic_state.
+    // Clears `target_view` and runs `ui_overlay` on it. Used for the swapchain in the editor, where the scene was
+    // already composited into the viewport texture.
     struct UiOnlyPassInfo {
         VkImage target_image = VK_NULL_HANDLE;
         VkImageView target_view = VK_NULL_HANDLE;
@@ -342,11 +298,7 @@ namespace render_pass {
 
     auto ui_only(Context const &context, UiOnlyPassInfo const &info, Callback ui_overlay) noexcept -> void;
 
-    // Exposes detail::transition_hdr_to_shader_read (COLOR_ATTACHMENT_OPTIMAL
-    // -> SHADER_READ_ONLY_OPTIMAL) for callers outside this translation unit
-    // -- Renderer::record_frame uses it to make the offscreen viewport
-    // texture composite() just wrote into sampleable by the ui_only() pass's
-    // ImGui draw later in the same command buffer.
+    // COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL.
     auto transition_to_shader_read(VkCommandBuffer command_buffer, Image const &image) noexcept -> void;
 
     auto present_swapchain(VkCommandBuffer command_buffer, VkImage image) noexcept -> void;

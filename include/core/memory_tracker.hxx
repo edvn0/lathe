@@ -24,13 +24,8 @@ public:
     [[nodiscard]]
     static auto stats() noexcept -> MemoryStats;
 
-    // Allocations made on this thread while an UntrackedScope is alive are left
-    // out of the counters above (though still visible to Tracy) -- for allocator
-    // bookkeeping whose churn isn't itself meaningful engine memory usage.
-    // BS::thread_pool's internal std::promise/shared_ptr machinery is the
-    // motivating case: it heap-allocates per parallelFor submission, which has
-    // nothing to do with the game's actual memory footprint and just adds noise
-    // to the per-frame allocation count.
+    // Allocations on this thread while alive are left out of the counters (Tracy still sees them). For allocator
+    // bookkeeping such as the thread pool's per-submission allocations.
     class UntrackedScope {
     public:
         UntrackedScope() noexcept;

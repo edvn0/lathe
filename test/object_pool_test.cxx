@@ -145,10 +145,7 @@ TEST_SUITE("unit") {
 
         std::vector<PoolHandle> previous_handles{handle};
 
-        // std::uint32_t generation wraps after ~4 billion cycles in
-        // principle; exercise the explicit "skip back to 1" guard directly
-        // by cycling enough times to be confident the invariant holds, and
-        // spot-check a handful of prior generations stay rejected.
+        // Cycle a slot many times; the generation never returns to 0 and stale handles stay rejected.
         for (int i = 0; i < 1000; ++i) {
             auto released = pool.release(handle);
             REQUIRE(released.has_value());
@@ -210,6 +207,7 @@ TEST_SUITE("unit") {
         REQUIRE(moved.get(handle) != nullptr);
         CHECK(moved.get(handle)->value == 5);
 
+        // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move): checks the moved-from state
         CHECK(pool.capacity() == 0);
         CHECK(pool.size() == 0);
     }
@@ -227,6 +225,7 @@ TEST_SUITE("unit") {
 
         REQUIRE(other.get(handle) != nullptr);
         CHECK(other.get(handle)->value == 8);
+        // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move): checks the moved-from state
         CHECK(pool.capacity() == 0);
     }
 
@@ -261,12 +260,7 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("ObjectPool: release leaves the slot's payload untouched rather than resetting it") {
-        // Mirrors how ImageStorage/SamplerStorage track a monotonically
-        // bumped descriptor revision counter alongside the resource: that
-        // counter must survive release()/allocate() cycles unmodified so a
-        // stale per-frame cache never mistakes a reused slot for unchanged.
-        // ObjectPool must not reset the payload to T{} on release(), leaving
-        // that entirely to the wrapper storage.
+        // Wrapper storages keep a revision counter in the payload that must survive release()/allocate().
         struct RevisionedPayload {
             int resource = 0;
             int revision = 1;
@@ -279,7 +273,7 @@ TEST_SUITE("unit") {
         auto first = pool.allocate();
         REQUIRE(first.has_value());
         first->second.resource = 10;
-        first->second.revision = 5; // simulate several prior bumps
+        first->second.revision = 5;
 
         auto released = pool.release(first->first);
         REQUIRE(released.has_value());
@@ -288,17 +282,13 @@ TEST_SUITE("unit") {
         auto second = pool.allocate();
         REQUIRE(second.has_value());
 
-        // The wrapper hasn't touched the payload yet -- ObjectPool itself
-        // must not have reset it back to the RevisionedPayload{} default.
+        // The pool must not reset the payload.
         CHECK(second->second.revision == 5);
     }
 
     TEST_CASE("ObjectPool: a pool sharing Material's reserved-slot-0 policy still resolves index 0 by handle") {
-        // Mirrors MaterialStorage: Sentinel = 0 means MaterialHandle::valid()
-        // deliberately reports false for the permanently-reserved default
-        // slot, but the pool's own get()/release() -- used internally by the
-        // owning storage to manage that slot -- must not gate on valid() or
-        // it could never read/update its own default slot.
+        // Like MaterialStorage: Sentinel = 0 makes the reserved slot's handle report invalid, but the pool's own
+        // get()/release() must still reach it.
         using ReservedZeroPool = ObjectPool<Payload, 0>;
 
         auto pool = ReservedZeroPool::create(2);

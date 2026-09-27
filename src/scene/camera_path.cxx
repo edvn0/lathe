@@ -26,7 +26,7 @@ auto sample_camera_path(std::span<CameraKeyframe const> keyframes, float t) noex
     auto const wrapped = t - std::floor(t);
     auto const scaled = wrapped * static_cast<float>(count);
 
-    // min() guards the float edge where `wrapped` rounds up to exactly 1.
+    // `wrapped` can round up to exactly 1.
     auto const segment = std::min(static_cast<std::size_t>(scaled), count - 1);
     auto const s = scaled - static_cast<float>(segment);
 

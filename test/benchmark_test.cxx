@@ -11,12 +11,8 @@
 #include "rendering/renderer.hxx"
 #include "scene/camera_path.hxx"
 
-//
-// The benchmark only means something if two runs see the same frames: the
-// camera path has to hit its keyframes and loop without a jump, the stats
-// have to be what the comparison script expects, and a fixed seed has to
-// reproduce the scene exactly.
-//
+// Benchmarks are only comparable if every run sees the same frames: a continuous looping camera path, the
+// stats the comparison script expects, and a reproducible seed.
 
 namespace {
 
@@ -62,8 +58,7 @@ TEST_CASE("camera path moves smoothly between keyframes") {
         previous = position;
     }
 
-    // The loop is ~40 m long; a continuous curve moves well under a metre
-    // per 1/400th of it.
+    // The loop is ~40 m long, so each 1/400th step is well under a metre.
     CHECK(largest_step < 0.5F);
 }
 

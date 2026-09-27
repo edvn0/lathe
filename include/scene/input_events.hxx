@@ -12,9 +12,7 @@ struct KeyReleasedEvent {
     std::int32_t modifiers{};
 };
 
-// Raw cursor delta in pixels since the previous callback -- not an
-// absolute position. Application decides whether it counts as a
-// "look" based on whether a drag is currently active.
+// Cursor delta in pixels since the previous callback.
 struct MouseMovedEvent {
     double delta_x{};
     double delta_y{};

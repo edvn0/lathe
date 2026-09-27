@@ -29,11 +29,8 @@ struct IndexSlice {
     VkIndexType index_type = VK_INDEX_TYPE_UINT32;
 };
 
-// Meshlet split of one IndexSlice (see assets/meshlet.hxx): `descriptors`
-// holds meshlet_count GpuMeshlet entries (bounds + ranges into `data`),
-// `data` the meshlet-local vertex indices and packed triangles. This is
-// what every scene pass actually draws from (task/mesh shaders) -- the
-// IndexSlice is kept for triangle counts and LOD bookkeeping.
+// Meshlet split of one IndexSlice: `descriptors` holds meshlet_count GpuMeshlets, `data` their vertex indices
+// and packed triangles. Scene passes draw from this; the IndexSlice is kept for triangle counts and LODs.
 struct MeshletSlice {
     GeometrySlice descriptors{};
     GeometrySlice data{};

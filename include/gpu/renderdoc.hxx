@@ -14,8 +14,8 @@ struct RenderDocContext {
     RenderDocContext(RenderDocContext &&) noexcept;
     auto operator=(RenderDocContext &&) noexcept -> RenderDocContext &;
 
-    RenderDocContext(const RenderDocContext &) = delete;
-    auto operator=(const RenderDocContext &) -> RenderDocContext & = delete;
+    RenderDocContext(RenderDocContext const &) = delete;
+    auto operator=(RenderDocContext const &) -> RenderDocContext & = delete;
 
     [[nodiscard]] auto is_active() const -> bool { return api != nullptr; }
     [[nodiscard]] auto is_capturing() const -> bool;

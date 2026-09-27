@@ -25,8 +25,7 @@ enum class ShaderObjectErrorType : std::uint8_t {
 struct ShaderObjectError {
     ShaderObjectErrorType type = ShaderObjectErrorType::invalid_argument;
 
-    // Carries the debug_name / rejected-argument reason plus, when
-    // applicable, the failing VkResult (see ErrorContext::vk_result).
+    // debug_name or the rejection reason, and the failing VkResult if any.
     std::optional<ErrorContext> context{std::nullopt};
 };
 
@@ -66,9 +65,7 @@ struct ComputeShaderCreateInfo {
     std::string_view debug_name = "compute_shader_object";
 };
 
-// Parallel to Pipeline: a move-only RAII wrapper around a linked group of
-// VkShaderEXT objects (or a single unlinked compute shader) sharing one
-// VkPipelineLayout. See docs/pipeline_to_shader_objects.md Phase 2.
+// Move-only owner of linked VkShaderEXT objects (or one compute shader) sharing a VkPipelineLayout.
 class ShaderObjectSet {
 public:
     static constexpr std::uint32_t max_stages = 4; // task, mesh/vertex, geometry(unused), fragment

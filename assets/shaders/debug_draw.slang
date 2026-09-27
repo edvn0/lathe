@@ -14,7 +14,7 @@ struct VertexOutput {
 }
 
 [shader("vertex")]
-VertexOutput vs_main(uniform PC pc, uint vert_id : SV_VertexID)
+VertexOutput main_vs(uniform PC pc, uint vert_id : SV_VertexID)
 {
     Vertex v = pc.vertices[vert_id];
     var out_colour = unpackUnorm4x8ToFloat(v.rgba);
@@ -23,7 +23,7 @@ VertexOutput vs_main(uniform PC pc, uint vert_id : SV_VertexID)
 }
 
 [shader("fragment")]
-float4 fs_main(VertexOutput input) : SV_Target0
+float4 main_fs(VertexOutput input) : SV_Target0
 {
     return input.colour;
 }

@@ -4,12 +4,13 @@
 
 #include "core/fly_string.hxx"
 
+#include <cstdint>
 #include <format>
 #include <source_location>
 #include <string_view>
 
 struct DeviceError {
-    enum class Type {
+    enum class Type : std::uint8_t {
         Unknown,
         BufferCreation,
         AllocationFailure,

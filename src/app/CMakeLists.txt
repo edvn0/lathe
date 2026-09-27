@@ -1,6 +1,5 @@
 # ------------------------------------------------------------------------------
-# engine_app -- Application (owns Scene/PhysicsWorld lifecycle, editor/play
-# state, and the debug-line/ImGui overlays it registers with the Renderer).
+# engine_app: Application (scene lifecycle, editor/play state, overlays).
 # ------------------------------------------------------------------------------
 
 add_library(
@@ -37,12 +36,8 @@ target_precompile_headers(
         engine_core
 )
 
-# MINGW_VULKAN_TRACK_MEMORY gates the in-app Memory panel (application.cxx,
-# memory_tracking_ui.hxx), the only consumer of this define. It's set from
-# the same mingw_vulkan_track_memory variable the root CMakeLists.txt uses to
-# decide whether global_new_delete.cxx is compiled into the executable, so
-# the two stay in sync: no override without a MemoryTracker actually
-# collecting data.
+# Enables the in-app Memory panel; set together with the global new/delete
+# override so the panel always has data.
 if(mingw_vulkan_track_memory)
   target_compile_definitions(
       engine_app

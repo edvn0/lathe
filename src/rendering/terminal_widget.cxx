@@ -9,13 +9,7 @@
 namespace gui {
 
     TerminalWidget::MessageRing::MessageRing(std::size_t capacity) : capacity_{capacity} {
-        //
-        // Reserve raw storage once, but don't construct 10,000 strings
-        // up front.
-        //
-        // This gives us one allocation for the ConsoleMessage array while
-        // only constructing elements as messages actually arrive.
-        //
+        // One allocation up front; messages are constructed as they arrive.
         storage_.reserve(capacity_);
     }
 
@@ -30,12 +24,7 @@ namespace gui {
             return;
         }
 
-        //
-        // Full ring: replace the oldest message.
-        //
-        // Moving the ConsoleMessage transfers ownership of the message
-        // string without copying its payload.
-        //
+        // Full: replace the oldest message.
         storage_[write_index_] = std::move(message);
 
         ++write_index_;
@@ -46,11 +35,7 @@ namespace gui {
     }
 
     auto TerminalWidget::MessageRing::clear() -> void {
-        //
-        // Destroy all retained strings so their payload allocations are
-        // released, but retain the vector's raw ConsoleMessage allocation
-        // for future use.
-        //
+        // Frees the strings but keeps the vector's allocation.
         storage_.clear();
         write_index_ = 0;
     }
@@ -60,16 +45,12 @@ namespace gui {
     auto TerminalWidget::MessageRing::empty() const noexcept -> bool { return storage_.empty(); }
 
     auto TerminalWidget::MessageRing::operator[](std::size_t index) const noexcept -> logger::ConsoleMessage const & {
-        //
-        // Before reaching capacity the vector is already chronological.
-        //
+        // Not full yet, so storage is already chronological.
         if (storage_.size() < capacity_) {
             return storage_[index];
         }
 
-        //
-        // Once full, write_index_ always points at the oldest element.
-        //
+        // Once full, write_index_ points at the oldest element.
         auto physical_index = write_index_ + index;
 
         if (physical_index >= capacity_) {
@@ -167,11 +148,6 @@ namespace gui {
     }
 
     TerminalWidget::TerminalWidget(std::size_t max_messages) : history_{max_messages} {
-        //
-        // Most frames will contain relatively few log records. This avoids
-        // the first couple of tiny reallocations without reserving anything
-        // significant compared with the retained history.
-        //
         pending_.reserve(64);
         visible_indices_.reserve(max_messages);
     }
@@ -193,10 +169,7 @@ namespace gui {
             history_.push(std::move(message));
         }
 
-        //
-        // Keep the allocation around. On the next drain this vector is
-        // swapped back into the sink and reused by logging threads.
-        //
+        // Kept for reuse; swapped back into the sink on the next drain.
         pending_.clear();
 
         return true;

@@ -3,8 +3,7 @@
 #include <cstdint>
 #include <string_view>
 
-
-enum class RenderStage : std::uint32_t {
+enum class RenderStage : std::uint8_t {
     FullFrame = 0,
     Culling,
     ShadowPass,

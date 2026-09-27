@@ -5,10 +5,7 @@
 #include <glm/vec3.hpp>
 
 namespace Components {
-    // Per-entity orbit state for EnemyAIScript. `angle` is mutated in place
-    // each frame via ScriptEntity::get<CircularMotion>() (never replaced), so
-    // this stays safe to update concurrently across every entity sharing one
-    // EnemyAIScript instance -- see EnemyAIScript::parallelizable().
+    // Per-entity orbit state. Only mutated in place, so entities sharing one script can update concurrently.
     struct CircularMotion {
         glm::vec3 center{0.0F};
         float radius = 3.0F;
@@ -17,10 +14,7 @@ namespace Components {
     };
 } // namespace Components
 
-// One shared instance drives every entity whose Components::Script points at
-// it (see BasicGame::on_populate) -- it holds no per-entity state itself,
-// only Components::CircularMotion does, which is what makes on_update safe to
-// run concurrently across entities.
+// One stateless instance drives every enemy; per-entity state lives in CircularMotion.
 class EnemyAIScript final : public IScript {
 public:
     auto on_update(ScriptEntity entity, float delta_time) -> void override;

@@ -1,8 +1,5 @@
 # ------------------------------------------------------------------------------
-# engine_physics -- Bullet3 wrapper (PhysicsWorld) and physics ECS components.
-# Depends on engine_assets/gpu/core purely by the shared-layering convention;
-# see the root CMakeLists.txt comment on engine_deps for why every module
-# links every layer below it.
+# engine_physics: Bullet wrapper (PhysicsWorld) and physics components.
 # ------------------------------------------------------------------------------
 
 add_library(

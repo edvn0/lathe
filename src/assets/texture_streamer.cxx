@@ -75,10 +75,7 @@ auto TextureStreamer::process_ready(ImageStorage &images, VkCommandBuffer comman
         retiring_staging_.resize(frame_index + 1);
     }
 
-    // By the time this frame_index slot is reused, its fence from
-    // frames_in_flight cycles ago has already been waited on (see
-    // Swapchain's per-frame fence wait before handing back a frame), so
-    // whatever was staged for it last time is now safe to free.
+    // This slot's fence was waited on before the frame began, so last use's staging buffers are free.
     for (auto &buffer: retiring_staging_[frame_index]) {
         buffer.destroy();
     }
