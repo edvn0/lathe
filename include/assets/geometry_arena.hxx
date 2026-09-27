@@ -148,7 +148,7 @@ struct GeometryArenaT {
         return allocator_.capacity() - allocator_.used_size();
     }
 
-    auto bindable_buffer() const -> VkBuffer { return buffer.buffer; }
+    [[nodiscard]] auto bindable_buffer() const -> VkBuffer { return buffer.buffer; }
 
 private:
     [[nodiscard]]

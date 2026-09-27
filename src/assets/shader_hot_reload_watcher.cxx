@@ -23,9 +23,6 @@ struct ShaderHotReloadWatcher::Listener final : efsw::FileWatchListener {
                 change_queue->push(std::filesystem::path{directory} / filename);
                 break;
 
-            case efsw::Actions::Delete:
-                break;
-
             default:
                 break;
         }

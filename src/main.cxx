@@ -391,10 +391,10 @@ namespace {
         // Releases are never swallowed, or a key pressed before ImGui took focus would stay held in the camera or
         // player controller.
         if (action == GLFW_PRESS && !imgui_wants_keyboard()) {
-            app->on_event(KeyPressedEvent{key, mods});
+            app->on_event(KeyPressedEvent{.key = key, .modifiers = mods});
         }
         if (action == GLFW_RELEASE) {
-            app->on_event(KeyReleasedEvent{key, mods});
+            app->on_event(KeyReleasedEvent{.key = key, .modifiers = mods});
         }
     }
 
@@ -415,7 +415,7 @@ namespace {
                 glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
             }
 
-            app->on_event(MouseButtonReleasedEvent{button, mods});
+            app->on_event(MouseButtonReleasedEvent{.button = button, .modifiers = mods});
             return;
         }
 
@@ -433,7 +433,7 @@ namespace {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         }
 
-        app->on_event(MouseButtonPressedEvent{button, mods});
+        app->on_event(MouseButtonPressedEvent{.button = button, .modifiers = mods});
     }
 
     auto cursor_position_callback(GLFWwindow *window, double x_position, double y_position) -> void {
@@ -457,7 +457,7 @@ namespace {
         app->last_mouse_x = x_position;
         app->last_mouse_y = y_position;
 
-        app->on_event(MouseMovedEvent{delta_x, delta_y});
+        app->on_event(MouseMovedEvent{.delta_x = delta_x, .delta_y = delta_y});
     }
 
     auto scroll_callback(GLFWwindow *window, double x_offset, double y_offset) -> void {
@@ -467,7 +467,7 @@ namespace {
             return;
         }
 
-        app->on_event(MouseScrolledEvent{x_offset, y_offset});
+        app->on_event(MouseScrolledEvent{.delta_x = x_offset, .delta_y = y_offset});
     }
 
     auto focus_callback(GLFWwindow *window, int focused) noexcept -> void {

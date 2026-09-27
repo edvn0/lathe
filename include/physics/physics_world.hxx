@@ -81,8 +81,8 @@ public:
 
     auto set_velocity(entt::registry const &registry, entt::entity entity, glm::vec3 const &linear_velocity) -> void;
     auto jump(entt::registry const &registry, entt::entity entity, float jump_velocity) -> void;
-    auto is_grounded(entt::registry const &registry, entt::entity entity, float capsule_half_height,
-                     float capsule_radius) const -> bool;
+    [[nodiscard]] auto is_grounded(entt::registry const &registry, entt::entity entity, float capsule_half_height,
+                                   float capsule_radius) const -> bool;
 
     [[nodiscard]] auto raycast(glm::vec3 const &from, glm::vec3 const &to) const -> std::optional<RaycastHit>;
     [[nodiscard]] auto raycast(glm::vec3 const &origin, glm::vec3 const &direction, float max_distance) const

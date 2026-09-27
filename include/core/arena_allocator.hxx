@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -12,7 +11,7 @@
 // goes away. Chunks are freed in bulk.
 class ArenaAllocator {
 public:
-    explicit ArenaAllocator(std::size_t chunk_size = 64 * 1024) : chunk_size_(chunk_size) {
+    explicit ArenaAllocator(std::size_t chunk_size = std::size_t{64} * 1024) : chunk_size_(chunk_size) {
         allocate_chunk(chunk_size_);
     }
 
@@ -44,13 +43,13 @@ private:
             return allocate(size, alignment);
         }
 
+        void *result = current_chunk_ + offset_ + padding;
         offset_ += padding + size;
-        return reinterpret_cast<void *>(aligned_ptr);
+        return result;
     }
 
     auto allocate_chunk(std::size_t size) -> void {
-        chunks_.push_back(std::make_unique<std::uint8_t[]>(size));
-        current_chunk_ = chunks_.back().get();
+        current_chunk_ = chunks_.emplace_back(size).data();
         offset_ = 0;
         current_chunk_capacity_ = size;
     }
@@ -58,6 +57,7 @@ private:
     std::size_t chunk_size_;
     std::size_t offset_ = 0;
     std::size_t current_chunk_capacity_ = 0;
-    std::uint8_t *current_chunk_ = nullptr;
-    std::vector<std::unique_ptr<std::uint8_t[]>> chunks_;
+    std::byte *current_chunk_ = nullptr;
+    // Chunk buffers never move: growing the outer vector moves the inner vectors, not their storage.
+    std::vector<std::vector<std::byte>> chunks_;
 };

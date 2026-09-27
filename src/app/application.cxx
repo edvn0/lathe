@@ -71,7 +71,7 @@ namespace {
             raw = meta->name.c_str();
         }
         if (raw != nullptr && raw[0] != '\0') {
-            return std::string(raw);
+            return raw;
         }
         return std::format("Entity {}", entt::to_integral(entity));
     }
@@ -195,8 +195,9 @@ namespace {
     // pfd::open_file construction, which is where the fork happens.
     class ScopedLdLibraryPathClear {
     public:
-        ScopedLdLibraryPathClear() : saved_(std::getenv("LD_LIBRARY_PATH") ? std::getenv("LD_LIBRARY_PATH") : "") {
-            if (!saved_.empty()) {
+        ScopedLdLibraryPathClear() {
+            if (auto const *value = std::getenv("LD_LIBRARY_PATH"); value != nullptr && value[0] != '\0') {
+                saved_ = value;
                 unsetenv("LD_LIBRARY_PATH");
             }
         }
@@ -850,24 +851,24 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         auto const visual_for = [&](entt::entity entity) -> EntityVisual {
             if (registry.all_of<Components::PointLight>(entity)) {
-                return {gui::EditorIcon::point_light, ImVec4(1.00F, 0.84F, 0.35F, 1.0F)};
+                return {.icon = gui::EditorIcon::point_light, .tint = ImVec4(1.00F, 0.84F, 0.35F, 1.0F)};
             }
             if (registry.all_of<Components::SpotLight>(entity)) {
-                return {gui::EditorIcon::spot_light, ImVec4(1.00F, 0.84F, 0.35F, 1.0F)};
+                return {.icon = gui::EditorIcon::spot_light, .tint = ImVec4(1.00F, 0.84F, 0.35F, 1.0F)};
             }
             if (registry.all_of<Components::PlayerTag>(entity)) {
-                return {gui::EditorIcon::player, ImVec4(0.47F, 0.86F, 0.55F, 1.0F)};
+                return {.icon = gui::EditorIcon::player, .tint = ImVec4(0.47F, 0.86F, 0.55F, 1.0F)};
             }
             if (registry.all_of<Components::BulletTag>(entity)) {
-                return {gui::EditorIcon::bullet, ImVec4(1.00F, 0.53F, 0.38F, 1.0F)};
+                return {.icon = gui::EditorIcon::bullet, .tint = ImVec4(1.00F, 0.53F, 0.38F, 1.0F)};
             }
             if (registry.all_of<Components::Model>(entity) || registry.all_of<Components::InstancedModel>(entity)) {
-                return {gui::EditorIcon::mesh, ImVec4(0.88F, 0.64F, 0.37F, 1.0F)};
+                return {.icon = gui::EditorIcon::mesh, .tint = ImVec4(0.88F, 0.64F, 0.37F, 1.0F)};
             }
             if (registry.all_of<Components::Script>(entity)) {
-                return {gui::EditorIcon::script, ImVec4(0.42F, 0.70F, 1.00F, 1.0F)};
+                return {.icon = gui::EditorIcon::script, .tint = ImVec4(0.42F, 0.70F, 1.00F, 1.0F)};
             }
-            return {gui::EditorIcon::empty, ImVec4(0.60F, 0.60F, 0.64F, 1.0F)};
+            return {.icon = gui::EditorIcon::empty, .tint = ImVec4(0.60F, 0.60F, 0.64F, 1.0F)};
         };
 
         // Bullets are grouped under one collapsible node since they spawn in bursts.
@@ -961,7 +962,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             auto visual = visual_for(entity);
             if (has_children && visual.icon == gui::EditorIcon::empty) {
                 // Pure grouping entity.
-                visual = {gui::EditorIcon::folder, ImVec4(0.95F, 0.80F, 0.45F, 1.0F)};
+                visual = {.icon = gui::EditorIcon::folder, .tint = ImVec4(0.95F, 0.80F, 0.45F, 1.0F)};
             }
 
             ImGui::PushID(static_cast<int>(entity));
@@ -1593,9 +1594,11 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 spec.Stride = sizeof(ImVec2);
                 spec.FillAlpha = 0.35F;
 
+                std::string const label{to_string(static_cast<RenderStage>(stage))};
+
                 if (stage == first_stage) {
-                    ImPlot::PlotShaded(to_string(static_cast<RenderStage>(stage)).data(), &buf.data[0].x,
-                                       &buf.data[0].y, static_cast<int>(buf.data.size()), 0.0, spec);
+                    ImPlot::PlotShaded(label.c_str(), &buf.data[0].x, &buf.data[0].y, static_cast<int>(buf.data.size()),
+                                       0.0, spec);
                 } else {
                     auto const &prev = timing_buffers[stage - 1];
 
@@ -1603,8 +1606,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     prev_spec.Offset = prev.offset;
                     prev_spec.Stride = sizeof(ImVec2);
 
-                    ImPlot::PlotShaded(to_string(static_cast<RenderStage>(stage)).data(), &buf.data[0].x,
-                                       &buf.data[0].y, &prev.data[0].y, static_cast<int>(buf.data.size()), prev_spec);
+                    ImPlot::PlotShaded(label.c_str(), &buf.data[0].x, &buf.data[0].y, &prev.data[0].y,
+                                       static_cast<int>(buf.data.size()), prev_spec);
                 }
             }
 

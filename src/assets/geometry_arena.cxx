@@ -27,7 +27,7 @@ namespace {
                 .cause =
                         ErrorCause{
                                 Boxed<DeviceError>{
-                                        std::move(error),
+                                        error,
                                 },
                         },
         };
@@ -65,7 +65,7 @@ auto GeometryArenaT<Allocator>::create(VulkanContext &ctx, GeometryArenaCreateIn
                  });
 
     if (!buffer) {
-        return std::unexpected{from_device_error(std::move(buffer.error()))};
+        return std::unexpected{from_device_error(buffer.error())};
     }
 
     auto const upload_name = std::format("{}.upload", create_info.debug_name);
@@ -78,7 +78,7 @@ auto GeometryArenaT<Allocator>::create(VulkanContext &ctx, GeometryArenaCreateIn
 
     if (!upload_buffer) {
         buffer->destroy();
-        return std::unexpected{from_device_error(std::move(upload_buffer.error()))};
+        return std::unexpected{from_device_error(upload_buffer.error())};
     }
 
     GeometryArenaT<Allocator> result{};
@@ -103,7 +103,7 @@ auto GeometryArenaT<Allocator>::write(VkCommandBuffer command_buffer, GeometrySl
 
     if (auto written = upload_buffer.write(slice.offset, data); !written) {
 
-        return std::unexpected{from_device_error(std::move(written.error()))};
+        return std::unexpected{from_device_error(written.error())};
     }
 
     VkBufferCopy2 const region{

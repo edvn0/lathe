@@ -41,7 +41,7 @@ namespace {
 
 SimplexNoise2D::SimplexNoise2D(std::uint32_t seed) {
     std::array<std::uint8_t, 256> base{};
-    std::iota(base.begin(), base.end(), std::uint8_t{0});
+    std::ranges::iota(base, std::uint8_t{0});
 
     std::mt19937 engine{seed};
     std::shuffle(base.begin(), base.end(), engine);

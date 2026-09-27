@@ -164,6 +164,20 @@ jobs:
               --parallel 4 \
               --no-tests=error
 
+      # Reuses this job's compile database and generated headers, so it runs after the build.
+      - name: clang-tidy
+        if: matrix.build_type == 'Debug'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run --rm \
+            --mount type=bind,source="${PWD}",target=/workspace \
+            --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
+            --workdir /workspace \
+            cross-build:latest \
+            tools/run_clang_tidy.sh build/${{ matrix.target }}-debug
+
       - name: ccache statistics
         if: always()
         shell: bash

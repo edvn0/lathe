@@ -53,7 +53,7 @@ namespace {
         std::string buffer(32, '\0');
         std::strftime(buffer.data(), buffer.size(), "%Y%m%d_%H%M%S", &tm_buf);
 
-        return std::string(buffer.data(), std::strlen(buffer.data()));
+        return {buffer.data(), std::strlen(buffer.data())};
     }
 
     // Runs off the render thread on CPU-owned pixels; no Vulkan from here on.

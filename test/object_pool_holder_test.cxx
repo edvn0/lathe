@@ -341,6 +341,7 @@ TEST_SUITE("ObjectPool::Holder") {
 
         Holder second = std::move(first);
 
+        // NOLINTNEXTLINE(bugprone-use-after-move): checks the moved-from state
         CHECK_FALSE(first);
         CHECK(second);
 
@@ -375,6 +376,7 @@ TEST_SUITE("ObjectPool::Holder") {
             {
                 auto second = std::move(first);
 
+                // NOLINTNEXTLINE(bugprone-use-after-move): checks the moved-from state
                 CHECK_FALSE(first);
                 CHECK(state->destruction_count(12) == 0);
             }
@@ -413,6 +415,7 @@ TEST_SUITE("ObjectPool::Holder") {
 
         destination = std::move(source);
 
+        // NOLINTNEXTLINE(bugprone-use-after-move): checks the moved-from state
         CHECK_FALSE(source);
         CHECK(destination);
 

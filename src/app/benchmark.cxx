@@ -53,10 +53,11 @@ auto parse_benchmark_options(std::span<char const *const> args)
     };
 
     std::array const count_flags{
-            CountFlag{"--benchmark-frames=", &options.frame_count, false},
-            CountFlag{"--benchmark-warmup=", &options.warmup_frame_count, true},
-            CountFlag{"--benchmark-max-warmup=", &options.max_warmup_frame_count, true},
-            CountFlag{"--seed=", &options.seed, true},
+            CountFlag{.prefix = "--benchmark-frames=", .value = &options.frame_count, .allow_zero = false},
+            CountFlag{.prefix = "--benchmark-warmup=", .value = &options.warmup_frame_count, .allow_zero = true},
+            CountFlag{
+                    .prefix = "--benchmark-max-warmup=", .value = &options.max_warmup_frame_count, .allow_zero = true},
+            CountFlag{.prefix = "--seed=", .value = &options.seed, .allow_zero = true},
     };
 
     for (auto const *raw: args) {

@@ -37,7 +37,7 @@ struct ImageDescriptorRecord {
     bool occupied = false;
 };
 
-enum class DefaultImage : std::uint32_t {
+enum class DefaultImage : std::uint8_t {
     white = 0,
     black = 1,
     flat_normal = 2,

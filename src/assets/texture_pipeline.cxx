@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
 #include <source_location>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -60,7 +62,7 @@ namespace {
 
     [[nodiscard]]
     auto to_hex(std::uint64_t value) -> std::string {
-        static constexpr char digits[] = "0123456789abcdef";
+        static constexpr std::string_view digits = "0123456789abcdef";
 
         std::string text(16, '0');
 
@@ -100,7 +102,7 @@ namespace {
                 auto const value = glm::unpackHalf1x16(halfs[texel * 4 + channel]);
                 auto const clamped = std::clamp(value, 0.0F, 1.0F);
 
-                out[texel * 4 + channel] = static_cast<std::uint8_t>(clamped * 255.0F + 0.5F);
+                out[texel * 4 + channel] = static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
             }
         }
 
@@ -121,7 +123,7 @@ namespace {
 
         std::vector<RawMip> mips;
         mips.reserve(mip_count);
-        mips.push_back(RawMip{width, height, std::move(base_rgba8)});
+        mips.push_back(RawMip{.width = width, .height = height, .pixels = std::move(base_rgba8)});
 
         for (std::uint32_t level = 1; level < mip_count; ++level) {
             auto const &prev = mips.back();
@@ -142,7 +144,7 @@ namespace {
                                           STBIR_RGBA);
             }
 
-            mips.push_back(RawMip{next_width, next_height, std::move(next)});
+            mips.push_back(RawMip{.width = next_width, .height = next_height, .pixels = std::move(next)});
         }
 
         return mips;

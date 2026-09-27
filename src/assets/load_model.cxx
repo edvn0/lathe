@@ -199,7 +199,7 @@ namespace {
 
     auto mikktspace_get_num_vertices_of_face(SMikkTSpaceContext const *, int) -> int { return 3; }
 
-    auto mikktspace_get_position(SMikkTSpaceContext const *context, float out[3], int face, int vert) -> void {
+    auto mikktspace_get_position(SMikkTSpaceContext const *context, float *out, int face, int vert) -> void {
         auto const *user_data = static_cast<MikktspaceUserData const *>(context->m_pUserData);
         auto const &position = (*user_data->vertices)[mikktspace_vertex_index(face, vert)].position;
 
@@ -208,7 +208,7 @@ namespace {
         out[2] = position.z;
     }
 
-    auto mikktspace_get_normal(SMikkTSpaceContext const *context, float out[3], int face, int vert) -> void {
+    auto mikktspace_get_normal(SMikkTSpaceContext const *context, float *out, int face, int vert) -> void {
         auto const *user_data = static_cast<MikktspaceUserData const *>(context->m_pUserData);
         auto const &normal = (*user_data->vertices)[mikktspace_vertex_index(face, vert)].normal;
 
@@ -217,7 +217,7 @@ namespace {
         out[2] = normal.z;
     }
 
-    auto mikktspace_get_tex_coord(SMikkTSpaceContext const *context, float out[2], int face, int vert) -> void {
+    auto mikktspace_get_tex_coord(SMikkTSpaceContext const *context, float *out, int face, int vert) -> void {
         auto const *user_data = static_cast<MikktspaceUserData const *>(context->m_pUserData);
         auto const &texcoord = (*user_data->vertices)[mikktspace_vertex_index(face, vert)].texcoord;
 
@@ -225,7 +225,7 @@ namespace {
         out[1] = texcoord.y;
     }
 
-    auto mikktspace_set_tspace_basic(SMikkTSpaceContext const *context, float const tangent[3], float sign, int face,
+    auto mikktspace_set_tspace_basic(SMikkTSpaceContext const *context, float const *tangent, float sign, int face,
                                      int vert) -> void {
         auto *user_data = static_cast<MikktspaceUserData *>(context->m_pUserData);
 
@@ -794,7 +794,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
             return std::unexpected(material.error());
         }
 
-        cpu_data.materials.push_back(std::move(*material));
+        cpu_data.materials.push_back(*material);
     }
 
     for (auto const &gltf_mesh: asset.meshes) {

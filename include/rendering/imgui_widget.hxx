@@ -1,6 +1,5 @@
 #pragma once
 
-#include <string_view>
 #include <type_traits>
 
 #include <glm/vec2.hpp>
@@ -8,8 +7,8 @@
 
 namespace gui {
     // Opens window `name` and calls `f` with whichever of (size, position) it accepts. Always calls ImGui::End().
-    inline constexpr auto widget = [](std::string_view name, auto &&f) -> bool {
-        if (!ImGui::Begin(name.data())) {
+    inline constexpr auto widget = [](char const *name, auto &&f) -> bool {
+        if (!ImGui::Begin(name)) {
             ImGui::End();
             return false;
         }

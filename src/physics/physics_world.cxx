@@ -47,8 +47,12 @@ namespace {
 
         // Bullet reserves thread index 0 for the caller and gives workers 1..N, and sizes per-thread scratch arrays
         // from this. Returning only the worker count makes a worker write past the end.
-        auto getMaxNumThreads() const -> int override { return static_cast<int>(pool_.get_thread_count()) + 1; }
-        auto getNumThreads() const -> int override { return static_cast<int>(pool_.get_thread_count()) + 1; }
+        [[nodiscard]] auto getMaxNumThreads() const -> int override {
+            return static_cast<int>(pool_.get_thread_count()) + 1;
+        }
+        [[nodiscard]] auto getNumThreads() const -> int override {
+            return static_cast<int>(pool_.get_thread_count()) + 1;
+        }
         auto setNumThreads(int /*num_threads*/) -> void override {} // pool size is fixed
 
         auto parallelFor(int i_begin, int i_end, int grain_size, btIParallelForBody const &body) -> void override {
@@ -110,7 +114,7 @@ struct PhysicsWorld::Impl {
             }
 
             slot.body->~btRigidBody();
-            slot.shape->~btCollisionShape();
+            slot.shape->~btHeightfieldTerrainShape();
         }
 
         // Walk the world's own object array, always removing the last element so removeRigidBody()'s swap-and-pop
@@ -163,7 +167,7 @@ struct PhysicsWorld::Impl {
         bool active = false; // in `world`
     };
 
-    ArenaAllocator arena{512 * 1024};
+    ArenaAllocator arena{std::size_t{512} * 1024};
 
     std::vector<TerrainColliderSlot> terrain_colliders;
 

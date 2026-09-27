@@ -2,12 +2,13 @@
 
 #include <volk.h>
 
+#include <cstdint>
 #include <string_view>
 
 #include "core/forward.hxx"
 
 // From --screen-type=.
-enum class ScreenType {
+enum class ScreenType : std::uint8_t {
     windowed,
     fullscreen,
     borderless,

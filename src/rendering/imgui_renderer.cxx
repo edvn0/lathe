@@ -157,10 +157,10 @@ namespace gui {
         }
     } // namespace
 
-    ImGuiRenderer::ImGuiRenderer(Renderer &r, FontChoice font) :
+    ImGuiRenderer::ImGuiRenderer(Renderer &r, FontChoice const &font) :
         ImGuiRenderer(r.context().window, r.context().swapchain.frame_count(), r, font) {}
 
-    ImGuiRenderer::ImGuiRenderer(GLFWwindow *w, std::uint32_t initial_slot_count, Renderer &r, FontChoice font) :
+    ImGuiRenderer::ImGuiRenderer(GLFWwindow *w, std::uint32_t initial_slot_count, Renderer &r, FontChoice const &font) :
         renderer(r) {
 
         std::ignore = ImGui::CreateContext();
@@ -182,10 +182,10 @@ namespace gui {
             style.Colors[ImGuiCol_WindowBg].w = 1.0F;
         }
 
-        update_font(std::move(font));
+        update_font(font);
         ImGui_ImplGlfw_InitForVulkan(w, true);
         slots_per_frame = std::max(1u, initial_slot_count);
-        drawables.resize(frames_in_flight * slots_per_frame);
+        drawables.resize(static_cast<std::size_t>(frames_in_flight) * slots_per_frame);
     }
 
     ImGuiRenderer::~ImGuiRenderer() {
@@ -230,7 +230,7 @@ namespace gui {
     auto ImGuiRenderer::acquire_draw_slot() -> DrawableData & {
         if (slot_cursor >= slots_per_frame) {
             std::uint32_t new_slots_per_frame = std::max(slots_per_frame * 2u, slot_cursor + 1u);
-            std::vector<DrawableData> new_drawables(frames_in_flight * new_slots_per_frame);
+            std::vector<DrawableData> new_drawables(static_cast<std::size_t>(frames_in_flight) * new_slots_per_frame);
 
             for (std::uint32_t f = 0; f < frames_in_flight; ++f) {
                 for (std::uint32_t s = 0; s < slots_per_frame; ++s) {
@@ -448,7 +448,7 @@ namespace gui {
         config_path = std::make_unique<std::filesystem::path>(config_name);
     }
 
-    auto ImGuiRenderer::update_font(FontChoice f) -> void {
+    auto ImGuiRenderer::update_font(FontChoice const &f) -> void {
         ImGuiIO &io = ImGui::GetIO();
         ImFontConfig cfg{};
         cfg.FontDataOwnedByAtlas = false;

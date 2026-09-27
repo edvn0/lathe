@@ -79,6 +79,7 @@ Usage:
   ./compile.sh --shell
 
   TARGET=linux-native ./compile.sh --test
+  TARGET=linux-native ./compile.sh --tidy [-- extra run-clang-tidy args, e.g. -fix]
   TARGET=linux-native ./compile.sh --profile [-- extra args to the binary]
 
 Options:
@@ -99,6 +100,10 @@ Options:
 
   --test
       Run CTest for a linux-native build.
+
+  --tidy
+      Build, then run clang-tidy (see .clang-tidy) over the project's sources
+      for a linux-native build. Fails on any finding.
 
   --profile
       Run the linux-native binary under a profiler on the host.
@@ -419,6 +424,18 @@ run_test() {
     "$@"
 }
 
+run_tidy() {
+  if [[ "${target}" != "linux-native" ]]; then
+    echo "--tidy requires TARGET=linux-native" >&2
+    exit 1
+  fi
+
+  # Some sources include headers generated during the build.
+  build
+
+  run_container "${project_dir}/tools/run_clang_tidy.sh" "${project_dir}/${build_dir}" "$@"
+}
+
 profile() {
   if [[ "${target}" != "linux-native" ]]; then
     echo "--profile requires TARGET=linux-native (perf/valgrind run on the host)" >&2
@@ -498,6 +515,11 @@ main() {
 
   --test)
     run_test "$@"
+    ;;
+
+  --tidy)
+    [[ "${1:-}" == "--" ]] && shift
+    run_tidy "$@"
     ;;
 
   --rebuild)

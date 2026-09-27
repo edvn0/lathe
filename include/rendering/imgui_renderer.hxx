@@ -42,13 +42,13 @@ namespace gui {
 
     class ImGuiRenderer {
     public:
-        ImGuiRenderer(Renderer &, FontChoice);
+        ImGuiRenderer(Renderer &, FontChoice const &);
         ~ImGuiRenderer();
 
         ImGuiRenderer(ImGuiRenderer &&) = delete;
         auto operator=(ImGuiRenderer &&) -> ImGuiRenderer & = delete;
 
-        auto update_font(FontChoice) -> void;
+        auto update_font(FontChoice const &) -> void;
         auto set_app_name(std::string_view) -> void;
 
         auto begin_frame(ImGuiFramebuffer main_fb) -> void;
@@ -60,7 +60,7 @@ namespace gui {
         auto set_should_recompile() -> void { force_recompile_primary = true; }
 
     private:
-        ImGuiRenderer(GLFWwindow *main_window, std::uint32_t initial_slot_count, Renderer &, FontChoice);
+        ImGuiRenderer(GLFWwindow *main_window, std::uint32_t initial_slot_count, Renderer &, FontChoice const &);
 
         struct DrawableData {
             std::unique_ptr<Buffer> vertex;

@@ -207,6 +207,7 @@ TEST_SUITE("unit") {
         REQUIRE(moved.get(handle) != nullptr);
         CHECK(moved.get(handle)->value == 5);
 
+        // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move): checks the moved-from state
         CHECK(pool.capacity() == 0);
         CHECK(pool.size() == 0);
     }
@@ -224,6 +225,7 @@ TEST_SUITE("unit") {
 
         REQUIRE(other.get(handle) != nullptr);
         CHECK(other.get(handle)->value == 8);
+        // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move): checks the moved-from state
         CHECK(pool.capacity() == 0);
     }
 

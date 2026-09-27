@@ -6,6 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # --benchmark runs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    clang-tidy \
     mingw-w64 \
     g++-mingw-w64-x86-64 \
     gcc-mingw-w64-x86-64 \

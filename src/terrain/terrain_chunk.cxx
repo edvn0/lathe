@@ -95,7 +95,7 @@ auto make_terrain_chunk(TerrainField const &field, TerrainChunkRequest const &re
     auto const &params = field.params();
 
     auto const cell_size = request.cell_size;
-    auto const half_span = static_cast<float>(terrain_chunk_cells / 2) * cell_size;
+    auto const half_span = static_cast<float>(terrain_chunk_cells) / 2.0F * cell_size;
 
     auto const local_x = [&](std::uint32_t column) { return static_cast<float>(column) * cell_size - half_span; };
     auto const local_z = [&](std::uint32_t row) { return static_cast<float>(row) * cell_size - half_span; };

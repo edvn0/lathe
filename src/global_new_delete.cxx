@@ -10,7 +10,8 @@
 namespace {
 
     [[noreturn]] auto abort_out_of_memory(std::size_t size) -> void {
-        std::fprintf(stderr, "out of memory allocating %zu bytes\n", size);
+        // std::println can allocate, which would recurse into operator new.
+        std::fprintf(stderr, "out of memory allocating %zu bytes\n", size); // NOLINT(modernize-use-std-print)
         std::abort();
     }
 

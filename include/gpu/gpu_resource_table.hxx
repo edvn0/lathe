@@ -15,7 +15,7 @@
 #include "gpu/image_storage.hxx"
 #include "gpu/sampler_storage.hxx"
 
-enum class GpuResourceBinding : std::uint32_t {
+enum class GpuResourceBinding : std::uint8_t {
     sampled_2d = 0,
     samplers = 1,
     comparison_samplers = 2,

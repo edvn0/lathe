@@ -38,13 +38,13 @@ public:
     auto step(float delta_time) -> void;
 
     auto get_registry() noexcept -> entt::registry & { return registry; }
-    auto get_registry() const noexcept -> entt::registry const & { return registry; }
+    [[nodiscard]] auto get_registry() const noexcept -> entt::registry const & { return registry; }
 
     auto attach_debug_renderer(debug_draw::DebugRenderer &renderer) -> void;
     auto detach_debug_renderer() -> void;
 
     auto get_scripts() noexcept -> ScriptStorage &;
-    auto get_scripts() const noexcept -> ScriptStorage const &;
+    [[nodiscard]] auto get_scripts() const noexcept -> ScriptStorage const &;
 
 private:
     entt::registry registry;
@@ -105,7 +105,7 @@ auto clone_registry(entt::registry const &src, entt::registry &dst) -> void {
     snapshot.get<entt::entity>(out);
     (snapshot.get<Components>(out), ...);
 
-    detail::SnapshotInputArchive in{&values};
+    detail::SnapshotInputArchive in{.values = &values};
     entt::snapshot_loader loader{dst};
     loader.get<entt::entity>(in);
     (loader.get<Components>(in), ...);

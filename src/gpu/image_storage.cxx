@@ -43,7 +43,7 @@ namespace {
     auto make_device_error(DeviceError error) noexcept -> ImageStorageError {
         return ImageStorageError{
                 .type = ImageStorageErrorType::device_error,
-                .cause = ErrorCause{Boxed<DeviceError>{std::move(error)}},
+                .cause = ErrorCause{Boxed<DeviceError>{error}},
         };
     }
 } // namespace

@@ -18,12 +18,12 @@ namespace {
 
     // tangent x cross(normal, tangent) == normal for each face, so winding is consistent.
     constexpr std::array<CubeFace, 6> cube_faces{{
-            {{1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}},
-            {{-1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}},
-            {{0.0F, 1.0F, 0.0F}, {1.0F, 0.0F, 0.0F}},
-            {{0.0F, -1.0F, 0.0F}, {1.0F, 0.0F, 0.0F}},
-            {{0.0F, 0.0F, 1.0F}, {1.0F, 0.0F, 0.0F}},
-            {{0.0F, 0.0F, -1.0F}, {1.0F, 0.0F, 0.0F}},
+            {.normal = {1.0F, 0.0F, 0.0F}, .tangent = {0.0F, 1.0F, 0.0F}},
+            {.normal = {-1.0F, 0.0F, 0.0F}, .tangent = {0.0F, 1.0F, 0.0F}},
+            {.normal = {0.0F, 1.0F, 0.0F}, .tangent = {1.0F, 0.0F, 0.0F}},
+            {.normal = {0.0F, -1.0F, 0.0F}, .tangent = {1.0F, 0.0F, 0.0F}},
+            {.normal = {0.0F, 0.0F, 1.0F}, .tangent = {1.0F, 0.0F, 0.0F}},
+            {.normal = {0.0F, 0.0F, -1.0F}, .tangent = {1.0F, 0.0F, 0.0F}},
     }};
 
     constexpr std::array<glm::vec2, 4> corner_signs{{{-0.5F, -0.5F}, {0.5F, -0.5F}, {0.5F, 0.5F}, {-0.5F, 0.5F}}};

@@ -12,7 +12,7 @@ struct SamplerSlotData;
 
 using SamplerHandle = Handle<SamplerSlotData>;
 
-enum class DefaultSampler : std::uint32_t {
+enum class DefaultSampler : std::uint8_t {
     linear_repeat = 0,
     linear_clamp = 1,
     nearest_repeat = 2,

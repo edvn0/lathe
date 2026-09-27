@@ -125,7 +125,7 @@ namespace {
     auto make_device_error(DeviceError error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::device_error,
-                .cause = ErrorCause{Boxed<DeviceError>{std::move(error)}},
+                .cause = ErrorCause{Boxed<DeviceError>{error}},
         };
     }
 
@@ -1735,7 +1735,7 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
 
     model_submissions_.push_back(ModelSubmission{
             .model = model,
-            .transform = std::move(transform),
+            .transform = transform,
             .material_override = material_override,
     });
 
@@ -1889,7 +1889,7 @@ namespace {
     // LODs share the vertex slice and may alias an earlier level's indices/meshlets. Retire each distinct range
     // once, or GeometryArena's free-list gets the same range twice.
     auto retire_submesh_geometry(GeometryArena &geometry_arena, Submesh const &submesh) -> void {
-        std::array<VkDeviceSize, lod_count * 4> retired_offsets{};
+        std::array<VkDeviceSize, std::size_t{lod_count} * 4> retired_offsets{};
         std::size_t retired_count = 0;
 
         auto retire_once = [&](GeometrySlice const &slice) {
@@ -2312,10 +2312,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     constexpr std::size_t parallel_blend_sort_threshold = 4'096;
 
     auto sort_blend_batches = [this] {
-        std::sort(blend_batches_.begin(), blend_batches_.end(),
-                  [](PendingBlendBatch const &lhs, PendingBlendBatch const &rhs) {
-                      return lhs.camera_distance_sq > rhs.camera_distance_sq;
-                  });
+        std::ranges::sort(blend_batches_, [](PendingBlendBatch const &lhs, PendingBlendBatch const &rhs) {
+            return lhs.camera_distance_sq > rhs.camera_distance_sq;
+        });
     };
 
     std::future<void> blend_sort_future;
@@ -2589,7 +2588,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
         std::ranges::copy(extract_frustum_planes(resolved_view_projection[cascade]),
-                          cull_planes.begin() + 6 * (1 + cascade));
+                          cull_planes.begin() + (static_cast<std::ptrdiff_t>(1 + cascade) * 6));
     }
 
     if (!frame.frustum_planes_buffer.write(0, std::span{cull_planes})) {
@@ -2648,7 +2647,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     {
         TracyVkZoneC(context_.host_query_context.context, command_buffer, "Culling", tracy::Color::SlateBlue);
 
-        constexpr auto stage = std::to_underlying(RenderStage::Culling);
+        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Culling);
         constexpr auto start_query = stage * 2;
         constexpr auto end_query = start_query + 1;
 
@@ -2855,8 +2854,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
         if (query_result == VK_SUCCESS) {
             for (std::uint32_t i = 0; i < stage_count; ++i) {
-                auto const start = results[i * 2];
-                auto const end = results[i * 2 + 1];
+                auto const start = results[static_cast<std::size_t>(i) * 2];
+                auto const end = results[(static_cast<std::size_t>(i) * 2) + 1];
                 last_frame_timings_.milliseconds[i] =
                         static_cast<float>(end - start) * timestamp_period_ / 1'000'000.0F;
             }

@@ -93,7 +93,7 @@ public:
     [[nodiscard]]
     auto to_json(BenchmarkEnvironment const &environment) const -> std::string;
 
-    auto write(BenchmarkEnvironment const &environment) const -> std::expected<void, std::string>;
+    [[nodiscard]] auto write(BenchmarkEnvironment const &environment) const -> std::expected<void, std::string>;
 
 private:
     BenchmarkOptions options_;

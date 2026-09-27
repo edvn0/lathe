@@ -636,8 +636,8 @@ namespace {
                 context.queue_families.present,
         };
 
-        auto const unique_end = std::unique(queue_family_indices.begin(), queue_family_indices.end());
-        auto const queue_count = static_cast<std::size_t>(unique_end - queue_family_indices.begin());
+        auto const duplicates = std::ranges::unique(queue_family_indices);
+        auto const queue_count = static_cast<std::size_t>(duplicates.begin() - queue_family_indices.begin());
 
         std::array<VkDeviceQueueCreateInfo, 2> queue_create_infos{};
         for (std::size_t index = 0; index < queue_count; ++index) {

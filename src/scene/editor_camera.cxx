@@ -27,7 +27,7 @@ namespace {
         glm::vec3 const right = glm::normalize(glm::cross(world_up, forward));
         glm::vec3 const up = glm::normalize(glm::cross(forward, right));
 
-        return {forward, right, up};
+        return {.forward = forward, .right = right, .up = up};
     }
 
     auto is_forward_key(std::int32_t key) noexcept -> bool { return key == GLFW_KEY_W; }

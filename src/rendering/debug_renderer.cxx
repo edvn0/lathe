@@ -5,9 +5,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <expected>
 #include <memory>
 #include <span>
@@ -44,7 +44,7 @@ namespace debug_draw {
 
         [[nodiscard]]
         constexpr auto to_byte(float value) noexcept -> std::uint32_t {
-            return static_cast<std::uint32_t>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F);
+            return static_cast<std::uint32_t>(std::lround(std::clamp(value, 0.0F, 1.0F) * 255.0F));
         }
 
         [[nodiscard]]
@@ -66,7 +66,7 @@ namespace debug_draw {
         };
 
         struct PC {
-            float view_proj[16];
+            glm::mat4 view_proj;
             VkDeviceAddress vertices;
         };
 
@@ -291,12 +291,9 @@ namespace debug_draw {
         impl_->renderer.resource_table().bind(cmd, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout());
 
         auto push_constants = PC{
-                .view_proj = {},
+                .view_proj = context.view_projection,
                 .vertices = frame_buffer.vertex->device_address,
         };
-
-        std::memcpy(push_constants.view_proj, glm::value_ptr(context.view_projection),
-                    sizeof(push_constants.view_proj));
         vkCmdPushConstants(cmd, pipeline->layout(), VK_SHADER_STAGE_ALL, 0, sizeof(push_constants), &push_constants);
         vkCmdDraw(cmd, vertex_count, 1, 0, 0);
     }

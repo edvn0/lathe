@@ -1,29 +1,39 @@
-# Curated for a C++23 Vulkan/Bullet engine with substantial manual
-# lifetime/ownership code (ArenaAllocator placement-new, raw Vulkan handles,
-# Bullet rigid body pointers). Checks that would fire constantly on
-# deliberate, reviewed patterns here (reinterpret_cast for Vulkan/entt
-# handle interop, raw non-owning pointers, literal graphics/physics
-# constants) are left disabled rather than suppressed inline everywhere.
+# Enforced in CI (the clang-tidy job in .github/workflows/build.yml) and runnable locally with
+# `TARGET=linux-native ./compile.sh --tidy`; clangd also picks this file up.
 #
-# Not wired into CI -- this is for local/editor use (clangd picks it up
-# automatically) until someone has triaged a first full run's findings.
+# Every modernize-* check is on. The exclusions below are checks that conflict with deliberate patterns here:
+#
+#   bugprone-unchecked-optional-access  doesn't model std::expected, so every std::expected<std::optional<T>>
+#                                       access after a check is flagged, as is every doctest REQUIRE().
+#   readability-redundant-member-init   members are initialized with `{}` uniformly, whatever their type.
+#   clang-analyzer-optin.core.EnumCastOutOfRange
+#                                       flags every bit-flag enum combined with `|`, including in fastgltf and
+#                                       Tracy headers.
 Checks: >
   -*,
   bugprone-*,
   -bugprone-easily-swappable-parameters,
+  -bugprone-unchecked-optional-access,
   clang-analyzer-*,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  modernize-*,
   performance-*,
-  modernize-use-nodiscard,
-  modernize-use-override,
-  modernize-use-equals-default,
-  modernize-use-equals-delete,
   readability-container-size-empty,
   readability-redundant-*,
+  -readability-redundant-member-init,
   readability-simplify-boolean-expr,
   readability-static-accessed-through-instance,
 
-WarningsAsErrors: ''
+WarningsAsErrors: '*'
 
-HeaderFilterRegex: '(include|src)/.*'
+HeaderFilterRegex: '.*/(include|src|game|test)/.*'
+
+ExcludeHeaderFilterRegex: '.*/(_deps|cpm|CPM|cpm-cache)/.*'
 
 FormatStyle: file
+
+CheckOptions:
+  # Results are discarded deliberately with static_cast<void>(...).
+  bugprone-unused-return-value.AllowCastToVoid: true
+  # Mirror `uint` fields in the shaders.
+  performance-enum-size.EnumIgnoreList: 'AlphaMode;GpuLightType'

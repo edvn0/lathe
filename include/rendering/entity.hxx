@@ -81,7 +81,7 @@ namespace detail {
         }
 
         template<typename T>
-        auto has() const -> bool {
+        [[nodiscard]] auto has() const -> bool {
             return scene->registry.all_of<T>(entity);
         }
 
@@ -110,12 +110,12 @@ namespace detail {
         ~ReadOnlyEntity() = default;
 
         template<typename T>
-        auto has() const -> bool {
+        [[nodiscard]] auto has() const -> bool {
             return scene->registry.all_of<T>(entity);
         }
 
         template<typename T>
-        auto get() const -> T const & {
+        [[nodiscard]] auto get() const -> T const & {
             return scene->registry.get<T>(entity);
         }
 
@@ -134,12 +134,12 @@ namespace detail {
         ~ScriptEntity() = default;
 
         template<typename T>
-        auto has() const -> bool {
+        [[nodiscard]] auto has() const -> bool {
             return scene->registry.all_of<T>(entity);
         }
 
         template<typename T>
-        auto get() const -> T & {
+        [[nodiscard]] auto get() const -> T & {
             return scene->registry.get<T>(entity);
         }
 

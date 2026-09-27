@@ -318,14 +318,30 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     };
 
     constexpr std::array<HouseStyle, 4> house_styles{{
-            {glm::vec3{-10.0F, 0.0F, -8.0F}, 6.0F, 5.0F, 3.0F, glm::vec3{0.85F, 0.78F, 0.65F},
-             glm::vec3{0.45F, 0.2F, 0.18F}},
-            {glm::vec3{9.0F, 0.0F, -10.0F}, 5.0F, 5.0F, 2.6F, glm::vec3{0.75F, 0.72F, 0.68F},
-             glm::vec3{0.3F, 0.3F, 0.32F}},
-            {glm::vec3{10.0F, 0.0F, 9.0F}, 7.0F, 5.5F, 3.4F, glm::vec3{0.88F, 0.6F, 0.45F},
-             glm::vec3{0.25F, 0.22F, 0.2F}},
-            {glm::vec3{-9.0F, 0.0F, 10.0F}, 5.5F, 5.0F, 3.0F, glm::vec3{0.7F, 0.68F, 0.6F},
-             glm::vec3{0.4F, 0.35F, 0.3F}},
+            {.position = glm::vec3{-10.0F, 0.0F, -8.0F},
+             .width = 6.0F,
+             .depth = 5.0F,
+             .wall_height = 3.0F,
+             .wall_colour = glm::vec3{0.85F, 0.78F, 0.65F},
+             .roof_colour = glm::vec3{0.45F, 0.2F, 0.18F}},
+            {.position = glm::vec3{9.0F, 0.0F, -10.0F},
+             .width = 5.0F,
+             .depth = 5.0F,
+             .wall_height = 2.6F,
+             .wall_colour = glm::vec3{0.75F, 0.72F, 0.68F},
+             .roof_colour = glm::vec3{0.3F, 0.3F, 0.32F}},
+            {.position = glm::vec3{10.0F, 0.0F, 9.0F},
+             .width = 7.0F,
+             .depth = 5.5F,
+             .wall_height = 3.4F,
+             .wall_colour = glm::vec3{0.88F, 0.6F, 0.45F},
+             .roof_colour = glm::vec3{0.25F, 0.22F, 0.2F}},
+            {.position = glm::vec3{-9.0F, 0.0F, 10.0F},
+             .width = 5.5F,
+             .depth = 5.0F,
+             .wall_height = 3.0F,
+             .wall_colour = glm::vec3{0.7F, 0.68F, 0.6F},
+             .roof_colour = glm::vec3{0.4F, 0.35F, 0.3F}},
     }};
 
     for (auto house_index = 0; house_index < static_cast<int>(house_styles.size()); ++house_index) {
@@ -389,9 +405,18 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         };
 
         constexpr std::array<TreeStyle, 3> tree_styles{{
-                {glm::vec3{0.0F, 0.0F, -13.0F}, 2.2F, 0.2F, 1.4F},
-                {glm::vec3{-13.0F, 0.0F, 1.0F}, 2.6F, 0.22F, 1.6F},
-                {glm::vec3{13.0F, 0.0F, -1.5F}, 2.0F, 0.18F, 1.2F},
+                {.position = glm::vec3{0.0F, 0.0F, -13.0F},
+                 .trunk_height = 2.2F,
+                 .trunk_radius = 0.2F,
+                 .canopy_radius = 1.4F},
+                {.position = glm::vec3{-13.0F, 0.0F, 1.0F},
+                 .trunk_height = 2.6F,
+                 .trunk_radius = 0.22F,
+                 .canopy_radius = 1.6F},
+                {.position = glm::vec3{13.0F, 0.0F, -1.5F},
+                 .trunk_height = 2.0F,
+                 .trunk_radius = 0.18F,
+                 .canopy_radius = 1.2F},
         }};
 
         for (auto tree_index = 0; tree_index < static_cast<int>(tree_styles.size()); ++tree_index) {

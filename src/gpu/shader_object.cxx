@@ -161,7 +161,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
                     .codeSize = used_binary[index] ? binary_storage[index]->size() : shader.spirv.size_bytes(),
                     .pCode = used_binary[index] ? static_cast<void const *>(binary_storage[index]->data())
                                                 : static_cast<void const *>(shader.spirv.data()),
-                    .pName = shader.entry_point.view().data(),
+                    .pName = shader.entry_point.c_str(),
                     .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
                     .pSetLayouts = layouts.data(),
                     .pushConstantRangeCount = static_cast<std::uint32_t>(create_info.push_constant_ranges.size()),
@@ -299,7 +299,7 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
                 .codeSize = use_binary ? binary_storage->size() : shader.spirv.size_bytes(),
                 .pCode = use_binary ? static_cast<void const *>(binary_storage->data())
                                     : static_cast<void const *>(shader.spirv.data()),
-                .pName = shader.entry_point.view().data(),
+                .pName = shader.entry_point.c_str(),
                 .setLayoutCount = static_cast<std::uint32_t>(layouts.size()),
                 .pSetLayouts = layouts.data(),
                 .pushConstantRangeCount = static_cast<std::uint32_t>(create_info.push_constant_ranges.size()),

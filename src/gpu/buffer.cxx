@@ -172,7 +172,7 @@ auto Buffer::read(VkDeviceSize offset, std::span<std::byte> destination) -> std:
 
     if (auto invalidated = invalidate(offset, read_size); !invalidated) {
 
-        return std::unexpected{std::move(invalidated.error())};
+        return std::unexpected{invalidated.error()};
     }
 
     std::memcpy(destination.data(), mapped_data() + offset, destination.size_bytes());
@@ -295,8 +295,7 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
     if (!create_info.debug_name.empty()) {
         auto const debug_name = std::string{create_info.debug_name};
         vmaSetAllocationName(ctx.allocator, result.allocation, debug_name.c_str());
-        static_cast<void>(vk::set_object_name(ctx.device, VK_OBJECT_TYPE_BUFFER, vk::object_handle(result.buffer),
-                                              debug_name.c_str()));
+        vk::set_object_name(ctx.device, VK_OBJECT_TYPE_BUFFER, vk::object_handle(result.buffer), debug_name);
     }
 
     // Device addresses don't depend on host visibility.

@@ -103,7 +103,7 @@ auto compute_meshlet_bounds(MeshletTopology const &topology, std::span<Compresse
     result.reserve(topology.meshlets.size());
 
     std::vector<unsigned char> triangles;
-    triangles.reserve(meshlet_max_triangles * 3);
+    triangles.reserve(std::size_t{meshlet_max_triangles} * 3);
 
     for (auto const &range: topology.meshlets) {
         triangles.clear();
