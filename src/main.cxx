@@ -395,6 +395,15 @@ namespace {
         return ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse;
     }
 
+    // True while the 3D view holds the mouse. viewport_hovered alone isn't
+    // enough: once right-drag look or embedded-play mouselook disables the
+    // cursor, ImGui's GLFW backend reports no mouse position at all, so the
+    // Viewport window stops being hovered even though the mouse is still
+    // very much driving it.
+    auto viewport_has_mouse(Application const &app) -> bool {
+        return app.viewport_hovered || app.mouse_dragging || app.game_mouse_captured;
+    }
+
     auto key_callback(GLFWwindow *window, int key, int, int action, int mods) -> void {
         auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
@@ -431,18 +440,32 @@ namespace {
         // hovered even though ImGui itself would otherwise claim it, same
         // as the pre-docking "not over any panel" case this is standing in
         // for. See scroll_callback below for the same override.
-        if (imgui_wants_mouse() && !app->viewport_hovered) {
+        //
+        // Releases are never swallowed, same as key_callback. A right-drag
+        // disables the cursor, which drops viewport_hovered to false (see
+        // viewport_has_mouse) while WantCaptureMouse stays true -- ImGui
+        // still owns the button it saw pressed over the Viewport window. So
+        // gating the release like the press dropped it, leaving the cursor
+        // disabled and mouse_dragging latched on: stuck in mouse-look until
+        // another right click happened to get through.
+        if (action == GLFW_RELEASE) {
+            if (!app->is_playing && button == GLFW_MOUSE_BUTTON_RIGHT && app->mouse_dragging) {
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            }
+
+            app->on_event(MouseButtonReleasedEvent{button, mods});
+            return;
+        }
+
+        if (action != GLFW_PRESS || (imgui_wants_mouse() && !viewport_has_mouse(*app))) {
             return;
         }
 
         if (!app->is_playing) {
-            if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_RIGHT) {
+            if (button == GLFW_MOUSE_BUTTON_RIGHT) {
                 glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-            } else if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_RIGHT) {
-                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
             }
-        } else if (!app->play_fullscreen && action == GLFW_PRESS && app->viewport_hovered &&
-                   !app->game_mouse_captured) {
+        } else if (!app->play_fullscreen && app->viewport_hovered && !app->game_mouse_captured) {
             // Embedded play leaves the cursor alone (see Application::play())
             // until a click inside the Viewport panel captures it for the
             // game's raw-delta mouselook -- see on_event(KeyPressedEvent)'s
@@ -451,11 +474,7 @@ namespace {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         }
 
-        if (action == GLFW_PRESS) {
-            app->on_event(MouseButtonPressedEvent{button, mods});
-        } else if (action == GLFW_RELEASE) {
-            app->on_event(MouseButtonReleasedEvent{button, mods});
-        }
+        app->on_event(MouseButtonPressedEvent{button, mods});
     }
 
     auto cursor_position_callback(GLFWwindow *window, double x_position, double y_position) -> void {
@@ -485,7 +504,7 @@ namespace {
     auto scroll_callback(GLFWwindow *window, double x_offset, double y_offset) -> void {
         auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
 
-        if (app == nullptr || (imgui_wants_mouse() && !app->viewport_hovered)) {
+        if (app == nullptr || (imgui_wants_mouse() && !viewport_has_mouse(*app))) {
             return;
         }
 
