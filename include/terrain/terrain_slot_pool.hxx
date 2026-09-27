@@ -31,38 +31,23 @@ struct TerrainSlotHandle {
 
 struct TerrainSlotPoolCreateInfo {
     std::uint8_t lod_levels = 5;
-    std::uint32_t slots_per_lod = 48; // see the terrain streaming plan's residency-count estimate
+    std::uint32_t slots_per_lod = 48;
 
     MaterialHandle material{};
     TerrainLodSettings lod_settings{};
 
-    // Must match the TerrainParams::height_range_min/max every chunk in
-    // this pool is generated with -- used once, at creation, to compute
-    // each slot's fixed local-space AABB (see TerrainSlotPool's class
-    // comment).
+    // Must match the height range every chunk is generated with; sets each slot's fixed AABB.
     float height_range_min = -2.0F;
     float height_range_max = 2.0F;
 };
 
-// A fixed set of GPU mesh slots, `slots_per_lod` per LOD level, created once
-// and recycled in place for the lifetime of the pool -- never
-// created/destroyed per chunk. This is what lets terrain streaming avoid
-// GeometryArena's lack of a free-list (see docs/engine_review_followups.md
-// and the terrain streaming plan): every chunk at every LOD has exactly
-// terrain_chunk_vertex_count vertices, so a "new" chunk is just new vertex
-// data written into an existing slot's GPU range via
-// GeometryArena::rewrite_slice, never a new allocation.
+// A fixed set of GPU mesh slots, `slots_per_lod` per LOD, created once and recycled. Every chunk has exactly
+// terrain_chunk_vertex_count vertices, so streaming a chunk in rewrites an existing slot's vertex range
+// instead of allocating.
 //
-// A slot's local-space AABB (Submesh::bounds_min/max) is a constant of its
-// LOD -- height_range_min/max is fixed across every chunk (see
-// TerrainParams), and every slot at a given LOD has the same span -- so it
-// is set once at creation and never updated, even though the slot's vertex
-// contents change every time a chunk streams in.
+// A slot's local AABB depends only on its LOD (fixed height range, fixed span), so it is set once.
 //
-// All index/vertex slices for a slot are permanent GeometryArena
-// allocations; only their contents are rewritten. The single index slice
-// (terrain_chunk_indices()) is shared read-only across every slot at every
-// LOD and allocated once regardless of slots_per_lod.
+// The index slice (terrain_chunk_indices()) is allocated once and shared by every slot.
 class TerrainSlotPool {
 public:
     TerrainSlotPool() = default;
@@ -71,28 +56,18 @@ public:
                                      TerrainSlotPoolCreateInfo const &create_info)
             -> std::expected<TerrainSlotPool, TerrainSlotPoolError>;
 
-    // Reserves a free slot for `lod`. Returns nullopt if that LOD's pool is
-    // exhausted -- callers must treat this loudly (a warning, not a silent
-    // skip): the symptom of under-provisioning slots_per_lod is a hole in
-    // the terrain, not a performance hiccup.
+    // Reserves a free slot for `lod`, or nullopt if that LOD is exhausted. Callers should warn: running out
+    // leaves a hole in the terrain.
     [[nodiscard]] auto acquire(std::uint8_t lod) -> std::optional<TerrainSlotHandle>;
 
-    // Uploads `vertices` (must be exactly terrain_chunk_vertex_count
-    // entries) into `handle`'s existing GPU vertex range in place. Safe to
-    // call repeatedly on the same handle; each call fully overwrites the
-    // slot's previous contents.
+    // Overwrites `handle`'s vertex range with `vertices` (exactly terrain_chunk_vertex_count entries).
     [[nodiscard]] auto write(IMeshSink &mesh_sink, VkCommandBuffer command_buffer, TerrainSlotHandle handle,
                              std::span<CompressedModelVertex const> vertices) -> bool;
 
-    // Marks `handle` free again after frames_in_flight further
-    // tick_retirement() calls -- never handed back out by acquire() before
-    // then, so any draw already submitted against it (up to the frame this
-    // was called from) has finished being read by the GPU first. See the
-    // terrain streaming plan for why frames_in_flight is exactly sufficient
-    // (not just conservative) given where this is called from in the frame.
+    // Frees `handle` after frames_in_flight tick_retirement() calls, once the GPU is done reading it.
     auto release_deferred(TerrainSlotHandle handle) -> void;
 
-    // Must be called exactly once per frame -- see TerrainWorld::process_ready.
+    // Call exactly once per frame.
     auto tick_retirement() -> void;
 
     [[nodiscard]] auto mesh(TerrainSlotHandle handle) const -> MeshHandle;
@@ -105,9 +80,7 @@ private:
         MeshHandle mesh{};
         GeometrySlice vertex_bytes{};
 
-        // This slot's own GpuMeshlet array -- the meshlet topology (and its
-        // data slice) is shared by every slot, but the bounds depend on the
-        // vertex heights, so write() rewrites these alongside the vertices.
+        // Per-slot meshlet bounds; the topology is shared, but bounds depend on the heights.
         GeometrySlice meshlet_bytes{};
         std::uint8_t lod = 0;
     };
@@ -118,10 +91,9 @@ private:
     };
 
     std::vector<SlotRecord> slots_{};
-    std::vector<std::vector<std::uint32_t>> free_by_lod_{}; // indices into slots_, one free-list per LOD
+    std::vector<std::vector<std::uint32_t>> free_by_lod_{}; // indices into slots_, per LOD
     std::vector<RetiringSlot> retiring_{};
     std::uint32_t slots_per_lod_ = 0;
 
-    // Meshlet split of terrain_chunk_indices(), built once in create().
     MeshletTopology meshlet_topology_{};
 };

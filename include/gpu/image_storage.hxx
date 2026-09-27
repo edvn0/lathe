@@ -107,11 +107,8 @@ struct ImageViewRegistration {
     VkImageView storage_2d = VK_NULL_HANDLE;
 };
 
-// Backs ImageHandle = Handle<ImageSlotData> (see image.hxx). revision is
-// deliberately NOT reset by ObjectPool across a release()/allocate() cycle
-// -- it's bumped monotonically so GpuResourceTable::prepare_frame's
-// per-frame cached revisions never mistake a reused slot for an unchanged
-// one (see SamplerSlotData's identical comment in sampler_storage.hxx).
+// `revision` survives slot reuse and only increases, so GpuResourceTable never mistakes a reused slot for an
+// unchanged one.
 struct ImageSlotData {
     Image image{};
 
@@ -137,14 +134,8 @@ public:
     static auto create(VulkanContext &context, ImageStorageCreateInfo const &create_info)
             -> std::expected<ImageStorage, ImageStorageError>;
 
-    /*
-     * Reserves a bindless slot backed by a view the caller already
-     * owns (e.g. Image::mip_layer_view() of some other slot's
-     * image), rather than creating a new VkImage. The caller is
-     * responsible for keeping the source image alive at least as
-     * long as this handle, and must destroy_image() this handle
-     * before (or without ever) destroying the source image.
-     */
+    // Reserves a bindless slot for a view the caller already owns (e.g. another image's mip_layer_view()). The
+    // source image must outlive this handle.
     [[nodiscard]]
     auto register_view(ImageViewRegistration const &registration) -> std::expected<ImageHandle, ImageStorageError>;
     [[nodiscard]]
@@ -156,28 +147,14 @@ public:
     [[nodiscard]] auto create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
                                     VkCommandBuffer command_buffer) -> std::expected<ImageHandle, ImageStorageError>;
 
-    /*
-     * Reserves a slot immediately, aliased onto `fallback`'s own descriptor
-     * views (normally one of this storage's default images), and returns a
-     * handle the caller can bind into materials right away. The real GPU
-     * image is installed later via upgrade_pending_image() -- every
-     * consumer holding this handle transparently starts sampling the real
-     * texture once that happens, with no handle churn.
-     */
+    // Reserves a slot aliasing `fallback`'s views, usable right away. upgrade_pending_image() later installs the
+    // real image under the same handle.
     [[nodiscard]]
     auto create_pending_image(ImageHandle fallback) -> std::expected<ImageHandle, ImageStorageError>;
 
-    /*
-     * Uploads a fully block-compressed, pre-mipped texture (see
-     * texture_pipeline.hxx) and installs it into `handle`'s slot, replacing
-     * whatever occupied it before (typically the fallback alias from
-     * create_pending_image()). The handle's index/generation are unchanged.
-     *
-     * Returns the staging buffer the upload commands reference. It must be
-     * kept alive (and eventually destroy()ed) by the caller until the GPU
-     * has finished executing `command_buffer` -- this call only records
-     * commands, it does not know when they complete.
-     */
+    // Uploads a block-compressed, pre-mipped texture into `handle`'s slot under the same handle.
+    //
+    // Returns the staging buffer, which the caller must keep alive until `command_buffer` has executed.
     [[nodiscard]]
     auto upgrade_pending_image(ImageHandle handle, CompressedTexture const &texture, VkCommandBuffer command_buffer)
             -> std::expected<Buffer, ImageStorageError>;
@@ -187,12 +164,7 @@ public:
     [[nodiscard]]
     auto destroy_image(ImageHandle handle) -> std::expected<void, ImageStorageError>;
 
-    /*
-     * Records the initial six 1x1 uploads once.
-     *
-     * Call from Renderer::prepare_frame() before any
-     * shader samples the default images.
-     */
+    // Records the six 1x1 default image uploads. Call before any shader samples them.
     [[nodiscard]]
     auto prepare_frame(VkCommandBuffer command_buffer) -> std::expected<void, ImageStorageError>;
 

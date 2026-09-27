@@ -4,14 +4,9 @@
 
 #include "core/handle.hxx"
 
-// Full definitions live in model_storage.hxx/mesh_storage.hxx, alongside the
-// ObjectPool<..., 0> instances they back (see sampler.hxx's SamplerHandle
-// for why an incomplete forward declaration is enough here).
+// Defined in model_storage.hxx and mesh_storage.hxx.
 //
-// Sentinel = 0: index 0 is permanently wasted (never allocated -- see
-// ModelStorage::create()/MeshStorage::create()) purely so a
-// default-constructed handle's index can never collide with a real slot,
-// matching MaterialHandle's convention.
+// Sentinel = 0: index 0 is never allocated, so a default handle never names a real slot.
 struct ModelSlotData;
 struct MeshSlotData;
 

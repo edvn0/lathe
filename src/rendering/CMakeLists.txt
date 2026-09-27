@@ -1,7 +1,6 @@
 # ------------------------------------------------------------------------------
-# engine_rendering -- Renderer, render passes, Scene/Entity (see
-# MODULARIZATION_HANDOFF.md's "Scene/Entity reclassification" note for why
-# those two live here and not in engine_scene), debug/imgui/terminal overlays.
+# engine_rendering: Renderer, render passes, Scene/Entity, debug/ImGui/terminal
+# overlays.
 # ------------------------------------------------------------------------------
 
 add_library(
@@ -50,10 +49,8 @@ target_precompile_headers(
         engine_core
 )
 
-# renderer.cxx and render_passes.cxx are the only two includers of the
-# generated shader_push_constants.hxx; the include dir itself comes for free
-# via engine_deps, but the codegen must still be ordered before this library
-# builds.
+# renderer.cxx and render_passes.cxx include the generated
+# shader_push_constants.hxx.
 add_dependencies(
     engine_rendering
     generate_shader_push_constants

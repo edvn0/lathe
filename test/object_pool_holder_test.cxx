@@ -26,15 +26,8 @@ namespace {
         }
     };
 
-    /*
-     * Models an actual RAII resource such as Image, Buffer, Pipeline, etc.
-     *
-     * A default-constructed pool slot owns nothing.
-     *
-     * Moving transfers ownership and leaves the source inert. This is important:
-     * ObjectPool::release() moves the payload out of the slot before the returned
-     * T is destroyed.
-     */
+    // Models an RAII resource. A default-constructed slot owns nothing, and moving leaves the source inert, which
+    // matters because release() moves the payload out before it is destroyed.
     struct TrackedResource {
         std::shared_ptr<LifetimeState> state;
 
@@ -687,7 +680,7 @@ TEST_SUITE("ObjectPool::Holder") {
 
         std::vector<TestHolder> holders;
 
-        // Intentionally force multiple reallocations.
+        // Force several reallocations.
         for (std::uint32_t id = 1; id <= 20; ++id) {
             holders.push_back(acquire_resource(pool, state, id));
 
@@ -1047,8 +1040,7 @@ TEST_SUITE("ObjectPool::Holder") {
 
         CHECK(released->id == 100);
 
-        // Object has been removed from the pool but the returned value still
-        // owns the underlying resource.
+        // Removed from the pool, but the returned value still owns the resource.
         CHECK(state->destruction_count(100) == 0);
         CHECK(pool.size() == 0);
 
@@ -1070,8 +1062,7 @@ TEST_SUITE("ObjectPool::Holder") {
             CHECK(state->destruction_count(101) == 1);
         }
 
-        // Destroying ObjectPool destroys the moved-from T stored inside the
-        // slot, but that T no longer owns the resource.
+        // Destroying the pool destroys the moved-from value, which owns nothing.
         CHECK(state->destruction_count(101) == 1);
     }
 

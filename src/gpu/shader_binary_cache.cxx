@@ -59,7 +59,7 @@ auto ShaderBinaryCache::create(std::filesystem::path directory, std::array<std::
 }
 
 auto ShaderBinaryCache::path_for(std::string_view cache_key) const -> std::filesystem::path {
-    const auto path = std::format("{}.bin", std::to_string(hash_key(cache_key)));
+    auto const path = std::format("{}.bin", std::to_string(hash_key(cache_key)));
     return directory_ / path;
 }
 

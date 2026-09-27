@@ -58,14 +58,10 @@ void main_mesh(in payload Payload payload, uint3 group_id : SV_GroupID,
     const GpuLight light = pc.lights[payload.light_index[group_id.x]];
     const UBO ubo = pc.ubo[0];
 
-    // Spherical billboard: face directly at the camera regardless of the
-    // view matrix's element layout/convention (row- vs column-major
-    // indexing was ambiguous and untested -- this sidesteps it entirely).
+    // Spherical billboard facing the camera.
     const float3 forward = normalize(ubo.camera_position - light.position);
 
-    // Guard against the light sitting on the world-up axis relative to the
-    // camera (forward nearly parallel to world_up), where cross() below
-    // would degenerate towards zero and the quad would collapse/flip.
+    // Fall back to another up vector when looking straight along world up, where cross() degenerates.
     float3 world_up = float3(0.0, 1.0, 0.0);
     if (abs(dot(forward, world_up)) > 0.999) {
         world_up = float3(1.0, 0.0, 0.0);

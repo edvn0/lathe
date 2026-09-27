@@ -91,9 +91,7 @@ auto ImageStorage::create(VulkanContext &context, ImageStorageCreateInfo const &
 
     storage.slots_ = ObjectPool<ImageSlotData>::create(create_info.capacity);
 
-    // The six default images are allocated first, in order, out of a
-    // freshly-created pool, so they always land on indices 0-5 -- matching
-    // default_image_handle()'s hard-coded indices.
+    // Allocated first from a fresh pool, so they land on indices 0-5 as default_image_handle() expects.
     auto defaults = storage.create_default_images();
 
     if (!defaults) {
@@ -431,7 +429,6 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<co
         mip_height = next_height;
     }
 
-
     mip_barrier.subresourceRange = VkImageSubresourceRange{
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel = mip_levels - 1,
@@ -448,7 +445,6 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<co
     mip_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     vkCmdPipelineBarrier2(command_buffer, &mip_dependency_info);
-
 
     pending_uploads_.push_back(std::move(*staging));
 
@@ -671,8 +667,7 @@ auto ImageStorage::create_pending_image(ImageHandle fallback) -> std::expected<I
         return std::unexpected(make_error(ImageStorageErrorType::capacity_exceeded));
     }
 
-    // slots_'s backing storage is sized once at create() and never resized
-    // by allocate()/release(), so fallback_slot stays valid across this call.
+    // The slot storage never resizes, so fallback_slot stays valid.
     auto [handle, slot] = *slots_.allocate();
 
     if (fallback_slot->is_alias) {

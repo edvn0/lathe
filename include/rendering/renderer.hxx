@@ -28,7 +28,7 @@
 #include "assets/asset_registry.hxx"
 #include "assets/geometry_arena.hxx"
 #include "assets/load_model.hxx"
-#include "assets/material_storage.hxx" // TextureHandle, MaterialCreateInfo now live here
+#include "assets/material_storage.hxx"
 #include "assets/mesh_create_info.hxx"
 #include "assets/mesh_sink.hxx"
 #include "assets/mesh_storage.hxx"
@@ -60,49 +60,35 @@ struct BloomSettings {
     float threshold = 1.0F;
     float knee = 0.5F;
 
-    // Upsample tent radius in texels of the lower mip; 1.0 is the standard
-    // 3x3 tent.
+    // Upsample tent radius in texels of the lower mip; 1.0 is the standard 3x3 tent.
     float filter_radius = 1.0F;
 
-    // Scale applied to the accumulated bloom before it is added to the HDR
-    // colour in composite.slang.
+    // Scale applied to the bloom before it is added to the HDR colour.
     float intensity = 0.1F;
 };
 
-// GTAO (Ground-Truth Ambient Occlusion, Jimenez et al. 2016): a screen-space
-// horizon-based AO term computed from the depth buffer alone (this renderer
-// has no normal G-buffer -- view-space normals are reconstructed from
-// neighbouring depth samples inside the GTAO pass itself), denoised with a
-// depth-aware spatial blur, then multiplied into the ambient term in
-// forward_geom.slang alongside each material's baked occlusion texture.
+// GTAO (Jimenez et al. 2016): screen-space horizon-based AO from depth alone, denoised with a depth-aware blur
+// and multiplied into the ambient term alongside the material's baked occlusion.
 struct AoSettings {
     bool enabled = true;
 
-    // View-space sampling radius, in world units (view space is a rigid
-    // transform of world space, so the units match).
+    // View-space sampling radius in world units.
     float radius = 0.5F;
 
-    // Fraction of `radius` over which a sample's contribution fades to zero
-    // rather than being cut off hard at the radius boundary.
+    // Fraction of `radius` over which a sample's contribution fades out.
     float falloff_range = 0.615F;
 
     std::uint32_t slice_count = 2;
     std::uint32_t step_count = 6;
 
-    // Blend factor written into UBO::ao_intensity -- see that field's
-    // comment for what it does.
+    // 0 disables screen-space AO, 1 applies it at full strength.
     float intensity = 1.0F;
 
-    // Bilateral denoise pass: larger values tolerate bigger view-space depth
-    // differences between neighbours before down-weighting them, trading
-    // edge sharpness for noise reduction.
+    // Larger values blur across bigger depth differences: less noise, softer edges.
     float denoise_depth_sigma = 40.0F;
 };
 
-
-// Exponential distance fog, applied in forward_geom.slang after shading.
-// Disabled by default -- opt in via Application::on_ui() or by calling
-// Renderer::set_fog_settings() directly.
+// Exponential distance fog, applied after shading.
 struct FogSettings {
     bool enabled = false;
     glm::vec3 colour{0.5F};
@@ -113,9 +99,7 @@ struct FogSettings {
 struct StageTimings {
     std::array<float, stage_count> milliseconds{};
 
-    // One entry per overlay that ran in the timed frame, in draw order.
-    // Not part of `milliseconds`: scene/ui overlays run inside the forward
-    // and composite passes, so their time is already counted there.
+    // Overlays that ran in the timed frame, in draw order. Their time is already included in `milliseconds`.
     std::vector<OverlayTiming> overlays;
 
     bool valid = false;
@@ -130,11 +114,8 @@ struct FrameStats {
     std::uint32_t mask_indirect_count = 0;
     std::uint32_t blend_indirect_count = 0;
 
-    // Sum of instanceCount across every culled_indirect_buffer command from
-    // the GPU frustum-culling pass -- i.e. how many of submitted_instance_count
-    // actually survived culling and got drawn. Read back a frames_in_flight
-    // cycle behind the rest of this struct (see RendererFrame::
-    // culled_readback_buffer's comment); 0 until the first readback lands.
+    // Instances that survived GPU culling. Lags a frames-in-flight cycle behind the rest; 0 until the first
+    // readback.
     std::uint32_t visible_instance_count = 0;
 
     std::uint32_t model_submission_count = 0;
@@ -146,11 +127,7 @@ struct FrameStats {
 
 inline constexpr std::uint32_t pipeline_stat_count = 4;
 
-// Forward pass only. Scene geometry is drawn with task/mesh shaders, which
-// never touch input assembly, so there are no input-assembly counts: the
-// meshlet-level picture comes from task/mesh shader invocations instead
-// (only when VulkanContext::mesh_shader_queries_supported -- otherwise
-// mesh_stats_valid stays false).
+// Forward pass only. Task/mesh counts are valid only when mesh_stats_valid is set.
 struct PipelineStats {
     std::uint64_t clipped_primitive_count = 0;
     std::uint64_t fragment_shader_invocation_count = 0;
@@ -170,13 +147,10 @@ struct SwapchainImage {
 
 // Where the tonemapped scene goes this frame.
 enum class CompositeTarget : std::uint8_t {
-    // Fullscreen play: straight into the swapchain image, with the
-    // OverlayStage::ui overlays drawn on top in the same scope.
+    // Fullscreen play: straight into the swapchain, UI overlays on top.
     swapchain,
 
-    // Editor (and embedded play): into the frame's viewport_target, which
-    // the editor's Viewport panel samples; a second scope then clears the
-    // swapchain image and runs the OverlayStage::ui overlays against it.
+    // Editor and embedded play: into the frame's viewport_target, which the Viewport panel samples.
     viewport_panel,
 };
 
@@ -192,25 +166,20 @@ struct UBO {
     glm::mat4 view;
     glm::mat4 projection;
 
-    // Inverse of `projection` -- see the mirrored field's comment in
-    // assets/shaders/scene_types.slang.
     glm::mat4 inverse_projection;
 
     glm::vec3 camera_position;
     glm::vec3 fog_colour;
-    float fog_extinction = 0.0F; // 0 = disabled; see Renderer::set_fog_settings
+    float fog_extinction = 0.0F; // 0 = disabled.
     float fog_inscattering = 1.0F;
 
-    // ---- PSSM cascades ----
+    // PSSM cascades.
     std::array<glm::mat4, shadow_cascade_count> cascade_view_projection{};
     glm::vec4 cascade_split_far{}; // view-space far distance per cascade
     glm::vec4 cascade_texel_world{}; // world-space size of one shadow texel per cascade
     glm::vec4 cascade_depth_scale{}; // 1 / (z_far - z_near) per cascade
 
-    // Atlas tiles are packed side-by-side at variable width (see
-    // shadow_cascade_resolutions) rather than a uniform grid, so the shader
-    // can't derive a cascade's placement from cascade_count alone -- these
-    // remap a cascade-local [0,1] tile UV into the shared atlas texture.
+    // Atlas tiles have variable widths, so these map a cascade-local [0,1] UV into the atlas.
     glm::vec4 cascade_atlas_offset_u{}; // atlas-normalized U of each tile's left edge
     glm::vec4 cascade_atlas_scale_u{}; // tile width / atlas width, per cascade
     glm::vec4 cascade_atlas_scale_v{}; // tile height / atlas height, per cascade
@@ -230,18 +199,12 @@ struct UBO {
     float shadow_atlas_texel_v = 1.0F / static_cast<float>(shadow_atlas_height);
     std::uint32_t shadow_debug_cascade_tint = 0;
 
-    float time = 0.0F; // seconds since startup -- drives wind sway in vertex shaders
+    float time = 0.0F; // Seconds since startup; drives wind sway.
 
-    // Flat multiplier on the (already-albedo-scaled) ambient term. A real
-    // Lambert BRDF (albedo/pi, see pbr.slang) is noticeably darker than the
-    // old ambient = albedo term this replaced, so this exists purely to let
-    // the scene be re-tuned back to a sane brightness without an IBL/skybox.
+    // Flat multiplier on the ambient term, standing in for IBL.
     float ambient_intensity = 0.15F;
 
-    // Blend factor between "no screen-space AO" (1.0 everywhere) and the
-    // GTAO pass's output, applied on top of the material's baked occlusion
-    // texture in forward_geom.slang. 0 disables the screen-space term
-    // entirely (pure baked AO); 1 applies it at full strength.
+    // 0 disables screen-space AO, 1 applies it at full strength. Baked occlusion always applies.
     float ao_intensity = 1.0F;
 };
 
@@ -250,7 +213,6 @@ static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 288);
 static_assert(offsetof(UBO, cascade_atlas_offset_u) == 592);
 static_assert(offsetof(UBO, light_direction) == 640);
-
 
 static_assert(std::is_copy_constructible_v<RendererError>,
               "RendererError must stay copyable -- std::expected<T, RendererError> copies it throughout this codebase");
@@ -297,43 +259,26 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto load_model(std::filesystem::path const &path) -> std::expected<ModelHandle, RendererError>;
 
-    // Reserves a model handle as a copy of `fallback`'s data -- usable
-    // immediately (renders and reports bounds as the fallback) -- to be
-    // installed into later via finish_model_load(). See ModelStorage::create_pending_model.
+    // Reserves a handle that renders as `fallback` until finish_model_load() installs the real model.
     [[nodiscard]]
     auto create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, RendererError> override;
 
-    // Installs a Model that ModelStreamer finished uploading (via
-    // start_model_gpu_upload()/step_model_gpu_upload()) into `pending` in
-    // place. Must run on the render thread. On failure `pending` is left
-    // showing its original fallback content rather than being torn down.
+    // Installs a model ModelStreamer finished uploading into `pending`. Render thread only. On failure `pending`
+    // keeps its fallback content.
     [[nodiscard]]
     auto install_model(ModelHandle pending, Model const &model) -> std::expected<void, RendererError> override;
 
-    // See IModelSink::retain_model. No-op (besides a warning log) if
-    // `handle` isn't currently a live model -- callers only ever pass a
-    // handle a cache just looked up, but a defensive no-op is cheaper than
-    // a crash if that ever stops being true.
+    // See IModelSink::retain_model. Logs and does nothing if `handle` isn't live.
     auto retain_model(ModelHandle handle) -> void override;
 
-    // See IModelSink::register_model_name.
     auto register_model_name(ModelHandle handle, std::string_view name) -> void override;
 
-    // Decrements the model's ModelSlotData::ref_count and, once it reaches
-    // zero, actually tears it down: destroy_mesh()s every mesh it draws
-    // (which retires their GeometryArena ranges -- see destroy_mesh's
-    // comment), forgets it from load_model's model_cache_ and
-    // ModelStreamer's path_cache_ so neither hands out the now-dead handle
-    // again, and releases the ModelStorage slot. Safe to call on a handle
-    // still referenced elsewhere (e.g. via retain_model()) -- that just
-    // decrements the count without touching anything else.
+    // Drops a reference; the last one destroys the model's meshes, evicts it from the model caches and frees its
+    // slot.
     [[nodiscard]]
     auto destroy_model(ModelHandle handle) -> std::expected<void, RendererError>;
 
-    // Uploads already-CPU-side geometry (e.g. procedurally generated engine
-    // primitives — see primitive_meshes.hxx / engine_models.hxx) through the
-    // same GPU upload path as load_model, without touching disk or a glTF
-    // parser. Skips the path-based model cache load_model uses.
+    // Uploads CPU-side geometry, e.g. procedural primitives. Bypasses the path-based model cache.
     [[nodiscard]]
     auto create_model_from_cpu_data(ModelCpuData const &cpu_data) -> std::expected<ModelHandle, RendererError>;
 
@@ -344,9 +289,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto create_model(Model const &model) -> std::expected<ModelHandle, RendererError>;
 
-    // material_override, when valid(), replaces every submesh material for
-    // this submission -- e.g. force an entity to render solid red regardless
-    // of what its model's submeshes normally use.
+    // A valid material_override replaces every submesh material for this submission.
     [[nodiscard]]
     auto submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override = {})
             -> std::expected<void, RendererError>;
@@ -354,49 +297,25 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto submit_model(ModelHandle model, glm::mat4 &&, MaterialHandle material_override = {})
             -> std::expected<void, RendererError>;
 
-    // Bulk form of submit_model() for many instances of the same model
-    // sharing one material_override (e.g. a grass field's blades) -- lets a
-    // single entity own the whole instance array instead of needing one ECS
-    // entity per instance. Instances still batch with any other submission
-    // of the same (mesh, submesh, material, LOD) -- this only saves the
-    // per-instance entity/Transform/Model overhead, not draw calls, which
-    // were already merged by prepare_frame()'s batching regardless of
-    // submission source.
+    // Submits many instances of one model sharing a material_override, without an entity per instance. Batching is
+    // the same as for individual submissions.
     [[nodiscard]]
     auto submit_model_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
                                 MaterialHandle material_override = {}) -> std::expected<void, RendererError>;
 
-    // Model-space AABB across every vertex of the model, as loaded --
-    // callers can use this to size collision volumes/gizmos to the actual
-    // geometry instead of guessing.
+    // Model-space AABB over every vertex.
     [[nodiscard]]
     auto model_bounds(ModelHandle model) const -> std::optional<std::pair<glm::vec3, glm::vec3>>;
 
-    // Model-space AABB for every submesh this model draws (one entry per
-    // (draw, submesh) pair, in draw order), instead of one box over the
-    // whole model like model_bounds() above. Each submesh's own local AABB
-    // is folded through its draw's local_transform using the same
-    // axis-aligned "sum of abs(scaled basis vectors)" trick as
-    // transform_aabb in frustum_cull.slang, so a rotated/scaled node still
-    // gets a tight (if conservative) box in model space.
-    //
-    // Meant for approximating a large multi-submesh model (e.g. a Sponza-
-    // like glTF scene, one primitive per wall/column) with many small boxes
-    // -- see Components::RigidBody::from_submesh_boxes -- rather than a
-    // single box over the whole model that would let the player walk
-    // through every gap and alcove.
+    // One model-space AABB per (draw, submesh), in draw order, each folded through its draw's local transform.
+    // Used to approximate large multi-part models with many boxes (see RigidBody::from_submesh_boxes).
     [[nodiscard]]
     auto model_submesh_bounds(ModelHandle model) const -> std::optional<std::vector<std::pair<glm::vec3, glm::vec3>>>;
 
     [[nodiscard]]
     auto model_lights(ModelHandle model) const -> std::span<ModelCpuLight const>;
 
-    // `debug_name`, when non-empty, registers the new material in assets()
-    // (see AssetRegistry) so editor UI can offer it by name later -- the
-    // same debug_name/register_asset pattern request_texture() uses for
-    // textures. Empty by default: most materials created internally (e.g.
-    // per-submesh materials baked out of a loaded glTF, see load_model.cxx)
-    // have no single meaningful name and stay anonymous.
+    // A non-empty `debug_name` registers the material in assets() so the editor can offer it by name.
     [[nodiscard]]
     auto create_material(MaterialCreateInfo const &create_info, std::string debug_name = {})
             -> std::expected<MaterialHandle, RendererError>;
@@ -425,7 +344,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
         float far_clip = 10000.0F;
         float vertical_fov_radians = 1.0471976F;
         float aspect_ratio = 1.7777778F;
-        float time = 0.0F; // seconds since startup -- forwarded to UBO.time for wind sway
+        float time = 0.0F; // Seconds since startup.
     };
 
     struct DirectionalLight {
@@ -434,10 +353,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
         float intensity = 3.0F;
     };
 
-    // Punctual lights -- submitted per frame like submit_model/submit_mesh,
-    // not sticky settings. Unlike DirectionalLight, these never cast
-    // shadows (see the plan this shipped under: BRDF + point/spot lights,
-    // no shadows yet).
+    // Punctual lights are submitted per frame and never cast shadows.
     struct PointLight {
         glm::vec3 position{0.0F};
         glm::vec3 colour{1.0F};
@@ -461,8 +377,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto submit_spot_light(SpotLight const &light) -> std::expected<void, RendererError>;
 
-    // Multiplies the ambient term (albedo * AO), standing in for IBL/skybox
-    // ambient lighting until one exists.
+    // Multiplies the ambient term (albedo * AO), standing in for IBL.
     auto set_ambient_intensity(float intensity) noexcept -> void { ambient_intensity_ = intensity; }
     [[nodiscard]] auto ambient_intensity() const noexcept -> float { return ambient_intensity_; }
 
@@ -479,10 +394,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
         float depth_bias_constant = -1.0F; // negative: reverse-Z
         float depth_bias_slope = -2.5F;
 
-        // A cascade may only adopt a new fitted matrix when it is actually
-        // redrawn. These periods are minimum update intervals: the near
-        // cascade refreshes every frame, while farther cascades can reuse
-        // their previous atlas tiles for 2/4/8 frames.
+        // Minimum redraw interval per cascade, in frames. A cascade only adopts a new matrix when it is redrawn.
         std::array<std::uint32_t, shadow_cascade_count> cache_update_periods{1U, 2U, 4U, 8U};
         bool cache_enabled = true;
         bool debug_cascade_tint = false;
@@ -494,26 +406,22 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto set_shadow_settings(ShadowSettings const &settings) noexcept -> void { shadow_settings_ = settings; }
     [[nodiscard]] auto shadow_settings() const noexcept -> ShadowSettings const & { return shadow_settings_; }
 
-    // Call this after an add/remove/material change that affects shadow
-    // casters. It forces every cached cascade to be refreshed immediately.
+    // Forces every cached cascade to redraw. Call after caster add/remove/material changes.
     auto mark_shadow_casters_dirty() noexcept -> void;
 
-    // Call once per frame while any caster outside the always-fresh near
-    // cascade is moving. Far cascades still respect cache_update_periods, so
-    // this does not turn caching off; it merely guarantees bounded staleness.
+    // Call once per frame while casters outside the near cascade move. Far cascades still honour
+    // cache_update_periods.
     auto mark_dynamic_shadow_casters_dirty() noexcept -> void { dynamic_shadow_casters_dirty_ = true; }
 
     [[nodiscard]]
-    auto prepare_frame(VkCommandBuffer command_buffer, const CameraMatrices &, std::uint32_t frame_index)
+    auto prepare_frame(VkCommandBuffer command_buffer, CameraMatrices const &, std::uint32_t frame_index)
             -> std::expected<void, RendererError>;
 
-    // Records the frame's passes, running every registered overlay at its
-    // stage. Call after prepare_frame() for the same frame_index.
+    // Records the frame's passes and overlays. Call after prepare_frame() for the same frame_index.
     [[nodiscard]] auto record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError>;
 
-    // Registers an overlay (see overlay.hxx for the contract). It runs from
-    // the next record_frame() until the returned registration is destroyed,
-    // which must happen before this Renderer is.
+    // Registers an overlay (see overlay.hxx). It runs until the registration is destroyed, which must happen before
+    // the Renderer is.
     [[nodiscard]] auto register_overlay(OverlayDesc desc) -> std::expected<OverlayRegistration, RendererError>;
 
     [[nodiscard]]
@@ -531,25 +439,18 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     [[nodiscard]] auto shader_change_queue() noexcept -> ShaderChangeQueue & { return shader_change_queue_; }
 
-
     [[nodiscard]] auto aspect(std::uint32_t index) const -> float {
         return static_cast<float>(frames_[index].forward_target.extent().width) /
                static_cast<float>(frames_[index].forward_target.extent().height);
     }
 
-
-    // See RendererFrame::viewport_target's doc comment. Valid any time
-    // record_frame() has run at least once for this frame_index in embedded
-    // mode -- the editor's Viewport panel reads this the same frame it was
-    // written (frame_index is known before Application::on_ui() runs; see
-    // main.cxx's draw()), so there is no extra latency versus what's on
-    // screen.
+    // Valid once record_frame() has run for this frame_index in embedded mode.
     [[nodiscard]] auto viewport_target(std::uint32_t index) const noexcept -> ImageHandle {
         return frames_[index].viewport_target;
     }
 
-    void queue_render_thread_event(std::move_only_function<void()> &&);
-    void drain_event_queue();
+    auto queue_render_thread_event(std::move_only_function<void()> &&) -> void;
+    auto drain_event_queue() -> void;
 
     [[nodiscard]] auto context() noexcept -> VulkanContext & { return context_; }
     [[nodiscard]] auto depth_format() const noexcept { return frames_[0].forward_target.depth_format(); }
@@ -559,28 +460,18 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto image_storage() noexcept -> ImageStorage & override { return image_storage_; }
     [[nodiscard]] auto material_storage() noexcept -> MaterialStorage & override { return material_storage_; }
     [[nodiscard]] auto sampler_storage() noexcept -> SamplerStorage & override { return sampler_storage_; }
-    // Shared across editor_scene/runtime_scene -- Scene::get_scripts() forwards here so a
-    // ScriptHandle allocated while populating editor_scene still resolves after
-    // Application::play() clones entities into the fresh runtime_scene (see
-    // Scene::Scene(Renderer&)).
+    // Shared by editor_scene and runtime_scene so script handles survive the play() clone.
     [[nodiscard]] auto script_storage() noexcept -> ScriptStorage & { return script_storage_; }
     [[nodiscard]] auto script_storage() const noexcept -> ScriptStorage const & { return script_storage_; }
     [[nodiscard]] auto texture_streamer() noexcept -> TextureStreamer & override { return texture_streamer_; }
     [[nodiscard]] auto model_streamer() noexcept -> ModelStreamer & { return model_streamer_; }
     [[nodiscard]] auto resource_table() noexcept -> GpuResourceTable & { return gpu_resource_table_; }
 
-    // Name -> handle bookkeeping for the Inspector/Assets-panel UI (see
-    // application.cxx) -- see asset_registry.hxx for why this is a separate
-    // layer from the *Storage classes above.
+    // Name -> handle lookup for the editor UI.
     [[nodiscard]] auto assets() noexcept -> AssetRegistry & { return assets_; }
     [[nodiscard]] auto assets() const noexcept -> AssetRegistry const & { return assets_; }
 
-    // Thin wrapper over texture_streamer().request() that also registers
-    // `debug_name` in assets().textures(), for standalone textures a user
-    // should be able to pick by name later (e.g. from the Assets browser
-    // panel). Internal texture loads that are implementation details of a
-    // model/material load keep calling texture_streamer() directly and stay
-    // unnamed.
+    // texture_streamer().request() plus registering `debug_name` in assets().textures().
     [[nodiscard]]
     auto request_texture(std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
                          std::string debug_name) -> ImageHandle;
@@ -611,10 +502,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto debug_draw_light_icons() const noexcept -> bool { return debug_draw_light_icons_; }
     auto set_debug_draw_light_icons(bool enabled) noexcept -> void { debug_draw_light_icons_ = enabled; }
 
-    // Per-meshlet frustum + backface-cone culling in the task shaders (see
-    // assets/shaders/meshlet_task.slang). On by default; turning it off
-    // draws every meshlet of every instance that survived instance culling
-    // -- a debugging aid for telling culling artefacts from other bugs.
+    // Per-meshlet frustum and backface-cone culling in the task shader. Turning it off is a debugging aid.
     [[nodiscard]] auto meshlet_culling() const noexcept -> bool { return meshlet_culling_; }
     auto set_meshlet_culling(bool enabled) noexcept -> void { meshlet_culling_ = enabled; }
 
@@ -631,9 +519,7 @@ private:
         MaterialHandle material_override{};
     };
 
-    // Mirrors GpuDraw in assets/shaders/scene_types.slang. meshlet_address/
-    // meshlet_data_address are the batch geometry's MeshletSlice
-    // descriptors/data (see assets/meshlet.hxx).
+    // Mirrors GpuDraw in scene_types.slang.
     struct alignas(16) GpuDraw {
         VkDeviceAddress vertex_address = 0;
         VkDeviceAddress meshlet_address = 0;
@@ -647,13 +533,8 @@ private:
 
     static_assert(sizeof(GpuDraw) == 32);
 
-    // Local-space AABB for one batch (mesh+submesh+material), used by the
-    // GPU frustum-culling compute pass. Mirrors GpuCullBounds in
-    // assets/shaders/frustum_cull.slang. wind_padding conservatively grows
-    // the world-space AABB (in transform_aabb) along X/Z to cover the
-    // maximum sway wind_offset() (wind.slang) can apply to this batch's
-    // material -- without it, wind-swaying foliage can visibly pop as it
-    // sways past its static bounds at the frustum edge.
+    // Local-space AABB for one batch. Mirrors GpuCullBounds in frustum_cull.slang. wind_padding grows the X/Z
+    // extents to cover the maximum wind sway, so swaying foliage doesn't pop at the frustum edge.
     struct alignas(16) GpuCullBounds {
         glm::vec3 bounds_min{-0.5F};
         float wind_padding = 0.0F;
@@ -670,10 +551,8 @@ private:
         spot = 1,
     };
 
-    // One punctual light as uploaded to lights_buffer. Mirrors GpuLight in
-    // assets/shaders/scene_types.slang. spot_scale/spot_offset are the
-    // glTF-style precomputed cone-falloff terms (KHR_lights_punctual),
-    // computed once here rather than per-pixel in the shader.
+    // Mirrors GpuLight in scene_types.slang. spot_scale/spot_offset are the precomputed KHR_lights_punctual cone
+    // falloff terms.
     struct alignas(16) GpuLight {
         glm::vec3 position{0.0F};
         float range = 10.0F;
@@ -695,8 +574,7 @@ private:
 
     static constexpr std::uint32_t maximum_light_count = 256;
 
-    // Camera frustum + one frustum per shadow cascade, 6 planes each -- see
-    // RendererFrame::frustum_planes_buffer.
+    // Camera frustum plus one per shadow cascade, 6 planes each.
     static constexpr std::uint32_t cull_plane_count = 6 * (1 + shadow_cascade_count);
 
     using ShadowCascadeMask = std::uint32_t;
@@ -718,71 +596,35 @@ private:
         Buffer transform_buffer{};
         Buffer indirect_buffer{};
 
-        // GPU frustum-culling inputs/outputs. One compute workgroup handles
-        // one batch (see mainCs in assets/shaders/frustum_cull.slang):
-        // batch_bounds gives that batch's local-space AABB + wind padding;
-        // indirect_buffer is read as the source [firstInstance,
-        // firstInstance + instanceCount) range for that batch;
-        // culled_indirect_buffer receives the same command with a
-        // recomputed instanceCount. visible_draw_buffer/
-        // visible_transform_buffer are the compaction destination that the
-        // main-view passes (depth prepass, forward) read instead of
-        // draw_buffer/transform_buffer. The shadow pass is untouched -- it
-        // keeps reading draw_buffer/transform_buffer/indirect_buffer
-        // directly (see prepare_frame).
+        // GPU culling, one workgroup per batch: reads indirect_buffer and batch_bounds, writes culled_indirect_buffer
+        // and compacts visible instances into visible_draw_buffer/visible_transform_buffer for the main view. The
+        // shadow pass draws the un-culled buffers.
         Buffer batch_bounds_buffer{};
         Buffer culled_indirect_buffer{};
         Buffer visible_draw_buffer{};
         Buffer visible_transform_buffer{};
 
-        // Host-visible copy of culled_indirect_buffer's first
-        // culled_readback_count commands, for FrameStats::visible_instance_count
-        // -- grown on demand (see ensure_culled_readback_capacity in
-        // renderer.cxx) rather than sized for maximum_draw_count_ like the
-        // buffers above, since it only ever needs to hold this frame's
-        // actual batch count. Written by the copy recorded in prepare_frame
-        // right after the cull dispatch; read back at the start of
-        // record_frame for this same frame_index, the same "safe once this
-        // frame-in-flight slot's fence has been waited on" point
-        // screenshot_.try_resolve() relies on -- so the counts it produces
-        // are one full frames_in_flight cycle behind the rest of FrameStats,
-        // same lag as last_frame_pipeline_stats_.
+        // Host-visible copy of culled_indirect_buffer, grown on demand. Read at the start of record_frame for the same
+        // frame_index, so it lags a frames-in-flight cycle.
         Buffer culled_readback_buffer{};
         std::uint32_t culled_readback_capacity = 0;
         std::uint32_t culled_readback_count = 0;
         bool culled_readback_pending = false;
 
-        // cull_plane_count world-space frustum planes (vec4 each), written
-        // fresh every frame in prepare_frame: the camera's 6 first (read by
-        // mainCs and the main-view task shaders), then 6 per shadow cascade
-        // (read by the shadow pass's task shader, see ShadowPassInfo). Deliberately its own tiny buffer rather
-        // than a field on the shared UBO -- a Ptr<float4> array has an
-        // unambiguous 16-byte stride under every struct-layout convention,
-        // whereas a trailing array field on UBO would depend on exactly
-        // which packing rule the Slang compiler applies to that struct,
-        // which is not worth staking correctness on.
+        // Camera planes first, then 6 per shadow cascade. A separate buffer rather than a UBO array to get an
+        // unambiguous 16-byte stride.
         Buffer frustum_planes_buffer{};
 
-        // Punctual (point/spot) lights this frame, fixed capacity
-        // (maximum_light_count), host-written every frame in prepare_frame
-        // just like frustum_planes_buffer above -- same reasoning applies.
-        // light_count is how many of lights_buffer's slots are populated;
-        // read back in record_frame when filling push constants.
+        // Punctual lights, maximum_light_count capacity. light_count slots are populated.
         Buffer lights_buffer{};
         std::uint32_t light_count = 0;
 
-        // projection * view of the camera prepare_frame() was given; handed
-        // to OverlayStage::scene overlays as OverlayRecordContext::view_projection.
+        // Handed to scene overlays as OverlayRecordContext::view_projection.
         glm::mat4 view_projection{1.0F};
 
         ForwardTarget forward_target{};
 
-        // LDR copy of forward_target's tonemapped/composited output, sized
-        // 1:1 with it -- see Renderer::viewport_target(). Written by the
-        // embedded-mode composite() call in record_frame() and sampled by
-        // the editor's Viewport panel (ImGui::Image); unused (and left
-        // untouched) while playing fullscreen, where composite() writes
-        // straight to the swapchain instead, same as before this existed.
+        // LDR composite output sampled by the editor's Viewport panel. Unused in fullscreen play.
         ImageHandle viewport_target{};
 
         struct BloomTarget {
@@ -791,22 +633,14 @@ private:
         };
         BloomTarget bloom_target{};
 
-        // GTAO output at full render resolution: `raw` is the horizon-search
-        // pass's noisy output, `denoised` is the depth-aware blur's output
-        // and the texture actually sampled by forward_geom.slang. Both are
-        // per-frame-in-flight (like bloom_target) rather than shared, since
-        // they're written and read entirely within one frame's command
-        // buffer with no cross-frame history.
+        // Per-frame GTAO targets: `raw` from the horizon search, `denoised` sampled by the forward pass.
         struct AoTarget {
             ImageHandle raw;
             ImageHandle denoised;
         };
         AoTarget ao_target{};
 
-        // Bit i means cascade i must be cleared and redrawn into the shared,
-        // persistent atlas this frame. The atlas itself intentionally does
-        // not live in RendererFrame: temporal reuse must survive frame-index
-        // rotation.
+        // Bit i means cascade i is redrawn into the persistent atlas this frame.
         ShadowCascadeMask shadow_update_mask = all_shadow_cascades_mask;
         std::array<ShadowCascadeCacheEntry, shadow_cascade_count> pending_shadow_cache{};
         glm::vec3 pending_shadow_light_direction{0.0F};
@@ -823,38 +657,22 @@ private:
         std::vector<GpuDraw> draws;
         std::vector<glm::mat4> transforms;
 
-        // One GpuDrawCommand per batch, un-culled (every instance) -- the
-        // shadow pass draws these directly; mainCs culls them into
-        // culled_indirect_buffer for the main view.
+        // One un-culled command per batch; the shadow pass draws these directly.
         std::vector<GpuDrawCommand> indirect_commands;
 
-        // Per-batch local-space AABB + wind padding, parallel to
-        // indirect_commands. culled_indirect_buffer is written entirely by
-        // the compute pass (mainCs copies each batch's source command and
-        // overwrites instanceCount) -- no CPU-side seed vector is needed.
+        // Parallel to indirect_commands.
         std::vector<GpuCullBounds> batch_bounds;
 
-        // Number of GpuDrawCommand entries in indirect_commands (one per
-        // unique (mesh, submesh) batch this frame) — NOT the number of
-        // GpuDraw / instance entries in `draws`. This is the value that
-        // must be passed as drawCount to vkCmdDrawMeshTasksIndirectEXT.
+        // Number of batches, not instances. This is the drawCount for vkCmdDrawMeshTasksIndirectEXT.
         std::uint32_t indirect_command_count = 0;
 
-        // indirect_commands (and therefore culled_indirect_buffer, since GPU
-        // culling is order-preserving) is partitioned into three contiguous
-        // ranges, in this order: [0, opaque_indirect_count), then
-        // [opaque_indirect_count, opaque_indirect_count + mask_indirect_count),
-        // then the remainder is blend. See prepare_frame's batch partition.
+        // Batches are ordered opaque, mask, blend; culling preserves the order.
         std::uint32_t opaque_indirect_count = 0;
         std::uint32_t mask_indirect_count = 0;
         std::uint32_t blend_indirect_count = 0;
 
-        // Per-cascade drawCount for the shadow pass -- a prefix of
-        // [0, opaque_indirect_count) / [0, mask_indirect_count) respectively,
-        // since prepare_frame sorts opaque/mask batches by descending
-        // material max_shadow_cascade before emitting them. Lets a batch
-        // (e.g. grass) opt out of the farther cascades instead of being
-        // rasterized into all shadow_cascade_count of them unconditionally.
+        // Per-cascade prefix of the opaque/mask ranges. Batches are sorted by descending max_shadow_cascade, so a
+        // material can skip the far cascades.
         std::array<std::uint32_t, shadow_cascade_count> shadow_opaque_indirect_count{};
         std::array<std::uint32_t, shadow_cascade_count> shadow_mask_indirect_count{};
     };
@@ -880,7 +698,6 @@ private:
         BatchEntry const *entry = nullptr;
         float camera_distance_sq = 0.0F;
     };
-
 
     struct BatchKey {
         std::uint32_t mesh_index;
@@ -922,13 +739,8 @@ private:
     [[nodiscard]]
     auto model_slot(ModelHandle handle) const noexcept -> ModelSlotData const *;
 
-    // Shared by create_model() and finish_model_load(): creates every mesh
-    // `model` references, flattens its scene graph into a draw list, and
-    // hands the resulting ModelSlotData to `install` -- create_model()
-    // passes model_storage_.create_model (a fresh handle), finish_model_load()
-    // passes model_storage_.upgrade_pending_model (installs into an
-    // already-issued pending handle in place). Rolls back every mesh it
-    // created if `install` itself fails (e.g. capacity_exceeded).
+    // Shared by create_model() and finish_model_load(): creates the model's meshes, flattens its draws and hands the
+    // ModelSlotData to `install`. Rolls back the meshes if `install` fails.
     [[nodiscard]]
     auto
     create_model_common(Model const &model, MaterialHandle fallback_material,
@@ -940,9 +752,7 @@ private:
 
     auto clear_submissions() noexcept -> void;
 
-    // An overlay that ran in a frame, copied at record time so the timing
-    // readback frames_in_flight later doesn't depend on it still being
-    // registered.
+    // Copied at record time so the timing readback doesn't depend on the overlay still being registered.
     struct RecordedOverlay {
         std::string name;
         OverlayStage stage = OverlayStage::scene;
@@ -954,19 +764,11 @@ private:
         bool has_results{false};
         std::vector<RecordedOverlay> overlays;
     };
-    // ---- record_frame() and its passes -------------------------------
-    //
-    // record_frame() is just the frame's pass sequence; each record_*_pass
-    // below owns one stage end to end (profiler zone, info struct, error
-    // propagation, any renderer state the pass commits). Passes run in
-    // declaration order, and each one's output feeds the next through its
-    // return value rather than through shared locals.
+    // record_frame() and its passes. Each record_*_pass owns one stage and passes its output to the next through
+    // its return value.
 
-    // The images this frame's passes read and write, looked up from their
-    // handles and validated once up front. resolved_hdr/resolved_depth are
-    // the single-sample targets later passes sample from -- the MSAA
-    // resolve targets when multisampled, otherwise the same images as
-    // hdr/depth.
+    // The frame's images, resolved and validated once. resolved_hdr/resolved_depth are the MSAA resolve targets
+    // when multisampled, otherwise hdr/depth.
     struct FrameTargets {
         Image const *hdr = nullptr;
         Image const *depth = nullptr;
@@ -991,14 +793,11 @@ private:
     [[nodiscard]]
     auto resolve_frame_targets(RendererFrame const &frame) const -> std::expected<FrameTargets, RendererError>;
 
-    // The culled, compacted buffers the camera-view passes (depth prepass,
-    // forward) draw from.
+    // The culled, compacted buffers the camera passes draw from.
     [[nodiscard]]
     auto main_view_draws(RendererFrame const &frame) const -> render_pass::DrawBuffers;
 
-    // Opaque/mask/blend batch counts. The culled and un-culled indirect
-    // buffers share this partitioning, so it serves both the main-view
-    // passes and the shadow pass.
+    // Opaque/mask/blend batch counts, shared by the culled and un-culled buffers.
     [[nodiscard]]
     static auto batch_counts(RendererFrame const &frame) noexcept -> render_pass::DrawCounts;
 
@@ -1006,14 +805,12 @@ private:
     auto record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                             FrameTargets const &targets) -> std::expected<void, RendererError>;
 
-    // Also transitions the forward targets into attachment layouts, since
-    // this is the first pass to render into them.
+    // Also transitions the forward targets into attachment layouts.
     [[nodiscard]]
     auto record_depth_prepass(render_pass::Context const &pass_context, RendererFrame const &frame,
                               FrameTargets const &targets) -> std::expected<void, RendererError>;
 
-    // Returns the bindless index the forward pass should sample AO from --
-    // the denoised GTAO output, or the white texture when AO is disabled.
+    // Returns the AO texture's bindless index: denoised GTAO, or white when disabled.
     [[nodiscard]]
     auto record_ambient_occlusion_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                                        FrameTargets const &targets) -> std::expected<std::uint32_t, RendererError>;
@@ -1029,10 +826,7 @@ private:
                            FrameTargets const &targets, render_pass::HdrTextureIndex hdr)
             -> std::expected<std::optional<render_pass::BloomTextureIndex>, RendererError>;
 
-    // Tonemaps hdr + bloom. Fullscreen play writes straight into the
-    // swapchain with ui_overlay on top; otherwise the scene goes into the
-    // frame's viewport target and a second pass draws the docked editor UI
-    // onto the swapchain.
+    // Tonemaps hdr + bloom into the swapchain (fullscreen play) or the viewport target, then draws the UI.
     [[nodiscard]]
     auto record_composite_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
                                SwapchainImage const &swapchain_image, render_pass::HdrTextureIndex hdr,
@@ -1042,13 +836,11 @@ private:
     [[nodiscard]]
     auto make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> render_pass::Context;
 
-    // Runs every overlay's prepare() ahead of the first pass, snapshots the
-    // overlay list for this frame's timing readback, and records the one
-    // global barrier if any prepare() recorded GPU writes.
+    // Runs every overlay's prepare(), snapshots the overlay list for timing, and records one barrier if any
+    // prepare() wrote GPU data.
     auto record_overlay_prepares(render_pass::Context const &pass_context) -> void;
 
-    // Runs one stage's overlays inside the host pass's open rendering
-    // scope, resetting the baseline state before each.
+    // Runs one stage's overlays inside the host pass's rendering scope.
     auto record_overlay_stage(render_pass::Context const &pass_context, OverlayStage stage, OverlayScope const &scope,
                               glm::mat4 const &view_projection) -> void;
 
@@ -1058,20 +850,15 @@ private:
     // Fills last_frame_timings_.overlays from a retired frame's queries.
     auto read_overlay_timings(FrameTimestamps const &frame_query) -> void;
 
-    // Screenshot copy (if one was requested) or the plain present
-    // transition, then the end-of-frame timestamp.
+    // Screenshot copy or present transition, then the end-of-frame timestamp.
     auto record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
                           std::uint32_t frame_index) -> void;
-
 
     VulkanContext &context_;
 
     VkFormat hdr_format_ = VK_FORMAT_UNDEFINED;
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
-    // RendererCreateInfo::swapchain_format, kept around (rather than just
-    // read once at composite_pipeline_ registration, as before this field
-    // existed) so resize() can create/recreate each frame's viewport_target
-    // in a format that matches what composite() actually produces.
+    // Kept so resize() can create viewport targets in the composite output format.
     VkFormat swapchain_format_ = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
     VkExtent2D extent_{};
@@ -1095,8 +882,7 @@ private:
     PipelineNodeHandle forward_pipeline_;
     PipelineNodeHandle forward_blend_pipeline_;
 
-    // Vertex-shader twins of the six scene pipelines above, for batches
-    // drawn with plain instancing (see uses_meshlet_path()).
+    // Vertex-shader variants of the scene pipelines for plain-instanced batches.
     PipelineNodeHandle shadow_instanced_pipeline_;
     PipelineNodeHandle shadow_mask_instanced_pipeline_;
     PipelineNodeHandle depth_prepass_instanced_pipeline_;
@@ -1118,16 +904,13 @@ private:
     ImageHandle light_icon_texture_{};
     bool debug_draw_light_icons_ = false;
 
-    // Declared ahead of every registration it hands out, so it outlives
-    // them (members are destroyed in reverse order).
+    // Declared before any registration it hands out, so it outlives them.
     OverlayRegistry overlays_;
     OverlayRegistration light_icon_overlay_;
     bool meshlet_culling_ = true;
     float light_icon_world_size_ = 0.5F;
 
-    // One atlas for the renderer, not one atlas per frame in flight. Queue
-    // ordering plus the shadow-pass barriers serialize writes/sampling while
-    // letting unchanged tiles persist across frames.
+    // Shared across frames in flight so unchanged tiles persist.
     ImageHandle shadow_atlas_{};
     std::array<ShadowCascadeCacheEntry, shadow_cascade_count> shadow_cascade_cache_{};
     std::uint64_t shadow_frame_ = 0;

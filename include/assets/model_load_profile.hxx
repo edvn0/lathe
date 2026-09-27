@@ -5,32 +5,15 @@
 #include <cstdint>
 #include <string>
 
-// Nanosecond accumulator. Fields of this type on ModelLoadProfile below get
-// added to from more than one thread concurrently -- the texture pipeline
-// runs many jobs in parallel across thread_pool() workers for a single
-// model load (see TextureStreamer::request) -- so every accumulator has to
-// tolerate concurrent writes rather than just being a plain std::int64_t.
+// Texture jobs for one model run concurrently, so the accumulators are atomic.
 using ProfileNanos = std::atomic<std::int64_t>;
 
-// Wall-clock breakdown of one streamed model's load, from ModelStreamer::
-// request() to the frame its Model gets installed. Threaded through as an
-// optional std::shared_ptr<ModelLoadProfile> (see ModelCpuData::profile) --
-// a null profile makes every ScopedProfileSample a no-op, so leaving it
-// unset costs nothing. Grouped by which thread the work happens on:
-//
-//   - CPU parse fields are filled in by load_model_cpu() on a single
-//     thread_pool() background thread (one model load, one thread -- no
-//     concurrent writers, but ProfileNanos is used uniformly anyway).
-//   - GPU upload fields are filled in by step_model_gpu_upload() on the
-//     render thread, one call per frame until the model finishes.
-//   - Texture fields are filled in by the texture pipeline
-//     (texture_pipeline.cxx), with one job per texture running concurrently
-//     on its own thread_pool() worker -- these genuinely need the atomics.
-//
-// See format_model_load_profile() to turn this into something loggable.
+// Timing breakdown of one streamed model load, from ModelStreamer::request() to install. A null profile makes
+// every ScopedProfileSample a no-op. CPU parse runs on one background thread, GPU upload on the render thread
+// across frames, and texture jobs concurrently on thread_pool().
 struct ModelLoadProfile {
-    // ---- CPU parse (load_model_cpu, one background thread) ----
-    ProfileNanos gltf_parse_ns{0}; // fastgltf parser: reading + validating the file
+    // CPU parse
+    ProfileNanos gltf_parse_ns{0}; // fastgltf: reading and validating the file
     ProfileNanos material_resolve_ns{0}; // load_material_cpu: image source resolution, sampler selection
     ProfileNanos primitive_extract_ns{0}; // load_primitive_cpu: reading vertex/index accessors
     ProfileNanos tangent_generation_ns{0}; // generate_tangents: MikkTSpace + weld/optimize
@@ -38,12 +21,12 @@ struct ModelLoadProfile {
     ProfileNanos vertex_compression_ns{0}; // prepare_primitive_gpu_data: compress_vertices
     ProfileNanos meshlet_build_ns{0}; // prepare_primitive_gpu_data: build_meshlets per LOD
 
-    // ---- GPU upload (step_model_gpu_upload, render thread, spread across frames) ----
+    // GPU upload
     ProfileNanos material_creation_ns{0}; // to_gpu_material + MaterialStorage::create_material
     ProfileNanos geometry_upload_ns{0}; // GeometryArena vertex/index/meshlet uploads
-    std::atomic<std::uint32_t> gpu_upload_frames{0}; // how many process_ready() calls it took
+    std::atomic<std::uint32_t> gpu_upload_frames{0}; // number of process_ready() calls
 
-    // ---- Texture pipeline (thread_pool workers, one job per texture, concurrent) ----
+    // Texture pipeline
     ProfileNanos texture_cache_lookup_ns{0}; // try_load_cached: stat + ktxTexture2_CreateFromNamedFile
     ProfileNanos texture_decode_ns{0}; // DecodedImage::load_from_file/memory (cache misses only)
     ProfileNanos texture_mip_generation_ns{0}; // generate_mip_chain (cache misses only)
@@ -54,28 +37,15 @@ struct ModelLoadProfile {
     std::atomic<std::uint32_t> texture_cache_hits{0};
     std::atomic<std::uint32_t> texture_cache_misses{0};
 
-    // How many texture jobs TextureStreamer actually queued for this model
-    // (set as each TextureStreamer::request()/request_from_memory() call
-    // succeeds -- see texture_streamer.cxx). ModelStreamer compares this
-    // against texture_count to know when every one of them has finished --
-    // textures stream in independently of the model's own GPU upload and
-    // can finish well after it installs, so this is what lets the final
-    // logged profile cover every texture instead of whichever few happened
-    // to finish first.
+    // Texture jobs queued for this model. ModelStreamer waits until texture_count reaches this before logging, so
+    // textures finishing after install are included.
     std::atomic<std::uint32_t> expected_texture_count{0};
 
-    // Stamped once by ModelStreamer across the whole request()-to-installed
-    // span -- the only field that isn't a sum of some thread's busy time, so
-    // it's what actually tells you how long the caller waited. Necessarily
-    // >= every other field's wall-clock contribution, since those all
-    // happen inside this span, often overlapping across threads.
+    // request() to installed. The only field that isn't a sum of busy time.
     ProfileNanos total_wall_ns{0};
 };
 
-// RAII sample: adds the elapsed time since construction to `*target` on
-// scope exit. `target` may be null (profiling off for this load) -- every
-// operation becomes a no-op in that case, including skipping the now() call,
-// so an unprofiled model load pays nothing for this.
+// Adds the elapsed time to `*target` on scope exit. A null `target` makes it a no-op.
 class ScopedProfileSample {
 public:
     explicit ScopedProfileSample(ProfileNanos *target) noexcept
@@ -85,11 +55,7 @@ public:
     ScopedProfileSample(ScopedProfileSample const &) = delete;
     auto operator=(ScopedProfileSample const &) -> ScopedProfileSample & = delete;
 
-    // Adds the elapsed time so far and disarms the destructor -- lets a
-    // sample cover a prefix of its enclosing scope (e.g. "everything up to
-    // here is section A, the rest is section B") without a nested block.
-    // Safe to call at most once; a second call or the destructor afterward
-    // is a no-op.
+    // Adds the elapsed time now and disarms the destructor. Later calls are no-ops.
     auto stop() noexcept -> void {
         if (target_ == nullptr) {
             return;
@@ -110,8 +76,6 @@ private:
     std::chrono::steady_clock::time_point start_;
 };
 
-// Multi-line, milliseconds-and-percentages breakdown of `profile`, grouped
-// into its CPU parse / GPU upload / texture sections -- see ModelStreamer::
-// process_ready for where this gets logged once a streamed model finishes.
+// Multi-line breakdown in milliseconds and percentages.
 [[nodiscard]]
 auto format_model_load_profile(ModelLoadProfile const &profile) -> std::string;

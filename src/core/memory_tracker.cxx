@@ -14,7 +14,6 @@ auto MemoryTracker::on_allocate(std::size_t const size) noexcept -> void {
     }
 }
 
-
 auto MemoryTracker::on_free(std::size_t const size) noexcept -> void {
     live_bytes_.fetch_sub(size, std::memory_order_relaxed);
     total_freed_bytes_.fetch_add(size, std::memory_order_relaxed);

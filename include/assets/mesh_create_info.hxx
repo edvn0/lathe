@@ -9,18 +9,13 @@
 #include "assets/geometry.hxx"
 #include "assets/material.hxx"
 
-// Description of one submesh (one LOD chain + material) passed to
-// Renderer::create_mesh / IMeshSink::create_mesh.
+// One submesh (an LOD chain plus material) for Renderer::create_mesh.
 struct SubmeshCreateInfo {
-    // One MeshGeometry per LOD level (lods[0] is full detail, always
-    // required). Levels without a distinct simplification may alias an
-    // earlier level's geometry.
+    // lods[0] is full detail and required. Levels without their own simplification may alias an earlier one.
     std::array<MeshGeometry, lod_count> lods{};
     MaterialHandle material{};
 
-    // Local-space (untransformed) AABB over this submesh's own vertices,
-    // used as the culling volume for GPU frustum culling. Shared across all
-    // LODs.
+    // Local-space AABB of the submesh, shared by all LODs; used for GPU culling.
     glm::vec3 bounds_min{-0.5F};
     glm::vec3 bounds_max{0.5F};
 };

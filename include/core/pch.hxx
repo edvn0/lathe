@@ -1,10 +1,6 @@
 #pragma once
 
-// Precompiled header: stable, heavyweight headers used across most
-// translation units. Deliberately excludes project-internal headers
-// (context.hxx, forward.hxx, renderer.hxx, ...) since those change
-// often and would force a PCH rebuild -- and therefore a full rebuild
-// of every TU -- on every edit.
+// Stable, heavy headers only; project headers change too often.
 
 // C++ standard library
 #include <algorithm>
@@ -33,10 +29,10 @@
 #include <utility>
 #include <vector>
 
-// Vulkan loader (VK_NO_PROTOTYPES is set via target_compile_definitions)
+// Vulkan loader (VK_NO_PROTOTYPES is defined by the build)
 #include <volk.h>
 
-// Windowing (GLFW_INCLUDE_NONE is set via target_compile_definitions)
+// Windowing (GLFW_INCLUDE_NONE is defined by the build)
 #include <GLFW/glfw3.h>
 
 // Math
@@ -51,5 +47,5 @@
 // Thread pool
 #include <BS_thread_pool.hpp>
 
-// Profiling (no-ops throughout when TRACY_ENABLE isn't defined)
+// Profiling (no-ops without TRACY_ENABLE)
 #include <tracy/Tracy.hpp>

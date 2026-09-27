@@ -1,5 +1,10 @@
 #pragma once
 
+#include <format>
+#include <string>
+#include <string_view>
+#include <utility>
+
 #include "core/fly_string.hxx"
 #include "rendering/scene.hxx"
 
@@ -49,7 +54,7 @@ namespace detail {
         }
 
         template<typename T>
-        auto get() const -> const T & {
+        auto get() const -> T const & {
             return scene->registry.get<T>(entity);
         }
 
@@ -63,20 +68,8 @@ namespace detail {
         friend class Scene;
     };
 
-    // Handed to IScript::on_attach/on_detach. Unlike Entity/GeneratedEntity,
-    // this never binds or creates a name component -- an entity may already
-    // be named via either Meta or GeneratedMeta (or neither) by the time a
-    // script attaches to it, and Entity's get_or_emplace<Meta> used to add a
-    // spurious *empty* Components::Meta alongside an entity's real
-    // GeneratedMeta name the moment Components::Script was emplaced (every
-    // enemy in BasicGame::on_populate hit this), leaving it with both name
-    // components at once. Unlike ScriptEntity (on_update's counterpart),
-    // this does expose emplace<T>() -- on_attach/on_detach always run
-    // synchronously on the main thread the instant Components::Script is
-    // emplaced/removed (see Scene::on_script_attached/on_script_detached),
-    // never concurrently across the thread pool like a parallelizable()
-    // script's on_update can, so the structural-mutation hazard ScriptEntity
-    // is deliberately avoiding doesn't apply here.
+    // Handed to IScript::on_attach/on_detach. Never adds a name component, since the entity may already be named
+    // either way. Allows emplace<T>(): attach/detach always run on the main thread.
     class AttachedEntity {
     public:
         AttachedEntity(Scene *s, entt::entity e) noexcept : scene(s), entity(e) {}
@@ -98,7 +91,7 @@ namespace detail {
         }
 
         template<typename T>
-        auto get() const -> const T & {
+        auto get() const -> T const & {
             return scene->registry.get<T>(entity);
         }
 
@@ -122,7 +115,7 @@ namespace detail {
         }
 
         template<typename T>
-        auto get() const -> const T & {
+        auto get() const -> T const & {
             return scene->registry.get<T>(entity);
         }
 
@@ -133,14 +126,8 @@ namespace detail {
         friend class Scene;
     };
 
-    // Handed to IScript::on_update, which may run concurrently (once per
-    // entity referencing a parallelizable() script) across thread_pool() --
-    // see script.hxx. Deliberately exposes neither Entity's lazy
-    // get_or_emplace<Meta> name resolution (a registry-structural mutation)
-    // nor emplace<T>(): no path here can add/remove components or
-    // create/destroy entities, which entt::registry only allows safely from
-    // the main thread. get<T>() in-place mutation of a component the entity
-    // already has is fine to do concurrently across *different* entities.
+    // Handed to IScript::on_update, which may run concurrently across the thread pool. No structural changes
+    // (adding/removing components or entities); mutating an existing component in place is fine.
     class ScriptEntity {
     public:
         ScriptEntity(Scene *s, entt::entity e) noexcept : scene(s), entity(e) {}
@@ -167,11 +154,10 @@ namespace detail {
 
 } // namespace detail
 
-
-// For UUID, bullet_i etc, we use std::string.
+// Runtime-generated names.
 using GeneratedEntity = detail::Entity<std::string>;
 
-// Else, for named entities, we use FlyString.
+// Authored names, interned.
 using Entity = detail::Entity<FlyString>;
 
 using ReadOnlyEntity = detail::ReadOnlyEntity;

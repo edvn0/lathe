@@ -16,9 +16,7 @@ namespace {
                params.amplitude;
     }
 
-    // True when height_range_min/max were explicitly set to a real range
-    // (see TerrainParams::height_range_min/max) rather than left at the
-    // "unset" {0,0} sentinel.
+    // False for the {0,0} "unset" sentinel.
     [[nodiscard]] auto has_fixed_height_range(TerrainParams const &params) -> bool {
         return params.height_range_max > params.height_range_min;
     }
@@ -47,20 +45,14 @@ auto make_terrain_mesh(TerrainParams const &params) -> std::expected<TerrainMesh
     auto const half_width = static_cast<float>(samples_x - 1) * cell_size_x * 0.5F;
     auto const half_depth = static_cast<float>(samples_z - 1) * cell_size_z * 0.5F;
 
-    // World-space position of the local (0,0) sample -- i.e. the corner
-    // opposite half_width/half_depth. Adding this to every local coordinate
-    // below is what lets a chunk with world_origin_x/z != 0 sample the same
-    // continuous noise field its neighbours do.
+    // World position of the local (0,0) sample, so offset patches sample one continuous field.
     auto const origin_x = params.world_origin_x - half_width;
     auto const origin_z = params.world_origin_z - half_depth;
 
     float min_height = std::numeric_limits<float>::max();
     float max_height = std::numeric_limits<float>::lowest();
 
-    // Sample noise at the *centered* local coordinates the vertices below
-    // end up at (not the raw 0..world_width grid position), so this matches
-    // world space exactly as sample_terrain_height() does for callers
-    // placing houses/trees/grass on the surface.
+    // Sample at the centred local coordinates, matching sample_terrain_height().
     for (std::uint32_t row = 0; row < samples_z; ++row) {
         for (std::uint32_t column = 0; column < samples_x; ++column) {
             auto const world_x = origin_x + static_cast<float>(column) * cell_size_x;
@@ -74,21 +66,12 @@ auto make_terrain_mesh(TerrainParams const &params) -> std::expected<TerrainMesh
         }
     }
 
-    // Fixed range (when set) makes mid_height identical for every chunk at
-    // every LOD, so adjacent chunks never disagree about where local Y = 0
-    // sits in world space -- see TerrainMeshResult::mid_height. Falls back
-    // to this patch's own observed extremes when unset, preserving the
-    // exact legacy value for every existing caller.
+    // A fixed range gives every chunk the same mid_height; otherwise use this patch's own extremes.
     auto const mid_height = has_fixed_height_range(params) ? (params.height_range_min + params.height_range_max) * 0.5F
                                                             : (min_height + max_height) * 0.5F;
 
-    // Central-difference normals sampled directly against the noise field
-    // at true world coordinates, one ring beyond the patch's own vertices.
-    // Unlike a clamped lookup into `heights`, this gives edge vertices a
-    // real two-sided derivative -- so two adjacent same-LOD chunks, which
-    // evaluate this same field at the same world coordinates just past
-    // their shared edge, compute bit-identical normals there instead of a
-    // one-sided lighting seam.
+    // Central differences against the field, one ring past the patch, so edge vertices get two-sided derivatives
+    // and neighbouring chunks compute identical normals.
     auto const height_at = [&](int column, int row) {
         auto const world_x = origin_x + static_cast<float>(column) * cell_size_x;
         auto const world_z = origin_z + static_cast<float>(row) * cell_size_z;
@@ -114,29 +97,15 @@ auto make_terrain_mesh(TerrainParams const &params) -> std::expected<TerrainMesh
             auto const local_x = static_cast<float>(column) * cell_size_x - half_width;
             auto const local_z = static_cast<float>(row) * cell_size_z - half_depth;
 
-            // World-space UV wrapped into [0,1) at the patch origin, then
-            // offset by the (bounded) local coordinate. Numerically
-            // equivalent to `world_xz * uv_scale` modulo 1, which is all
-            // that matters under REPEAT addressing, but keeps the value
-            // small regardless of how far world_origin is from (0,0) --
-            // `world_xz * uv_scale` alone would grow without bound and lose
-            // precision once these are packed into half floats. At
-            // world_origin == 0 this is exactly `local_xz * uv_scale`,
-            // matching every existing caller bit-for-bit.
+            // Equivalent to `world_xz * uv_scale` under REPEAT addressing, but stays small far from the origin so it
+            // survives half-float packing.
             auto const uv_origin_x = glm::fract(params.world_origin_x * params.uv_scale);
             auto const uv_origin_z = glm::fract(params.world_origin_z * params.uv_scale);
 
             vertices[row * samples_x + column] = ModelVertex{
                     .position = glm::vec3{local_x, height - mid_height, local_z},
                     .normal = normal,
-                    // Placeholder handedness; generate_tangents() below
-                    // overwrites this for make_terrain_mesh's own output.
-                    // Streamed chunk generation (which skips
-                    // generate_tangents -- see make_terrain_chunk) uses
-                    // -1.0F directly: with u along +X and v along +Z, the
-                    // shader computes bitangent = cross(normal, tangent) *
-                    // w, and cross(+Y, +X) = -Z, so w must be -1 for the
-                    // bitangent to point along +Z.
+                    // Placeholder; generate_tangents() overwrites it.
                     .tangent = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F},
                     .texcoord = glm::vec2{uv_origin_x + local_x * params.uv_scale,
                                           uv_origin_z + local_z * params.uv_scale},

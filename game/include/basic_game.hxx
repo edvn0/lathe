@@ -5,7 +5,7 @@
 
 #include "app/game.hxx"
 #include "assets/material.hxx"
-#include "assets/material_storage.hxx" // MaterialCreateInfo
+#include "assets/material_storage.hxx"
 #include "assets/model.hxx"
 #include "player_camera.hxx"
 #include "player_controller.hxx"
@@ -42,7 +42,6 @@ public:
 
 private:
     auto shoot_bullet(Scene &scene, std::size_t n = 1) -> void;
-
 
     auto rebuild_grass_field(Scene &scene) -> void;
 

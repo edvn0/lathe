@@ -22,9 +22,7 @@
 
 inline constexpr auto invalid_image_index = std::numeric_limits<std::uint32_t>::max();
 
-// Full definition lives in image_storage.hxx, alongside the
-// ObjectPool<ImageSlotData> it backs (see sampler.hxx's SamplerHandle for
-// why an incomplete forward declaration is enough here).
+// Defined in image_storage.hxx.
 struct ImageSlotData;
 
 using ImageHandle = Handle<ImageSlotData>;
@@ -77,16 +75,10 @@ struct ImageCreateInfo {
 
     VkImageType image_type = VK_IMAGE_TYPE_2D;
 
-    /*
-     * The primary view used for attachments and ordinary
-     * CPU-side access through Image::view().
-     */
+    // The primary view, used for attachments and Image::view().
     VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_2D;
 
-    /*
-     * Additional views exposed through the global GPU
-     * resource table.
-     */
+    // Extra views registered in the GPU resource table.
     ImageDescriptorViewFlags descriptor_views = 0;
 
     VkImageCreateFlags flags = 0;
@@ -133,10 +125,7 @@ public:
         return image_;
     }
 
-    /*
-     * Primary full-resource view. This remains suitable
-     * for colour/depth attachments.
-     */
+    // Full-resource view, usable as an attachment.
     [[nodiscard]]
     auto view() const noexcept -> VkImageView {
         return view_;

@@ -240,10 +240,7 @@ auto SamplerStorage::create(VulkanContext &context, std::uint32_t capacity, std:
             return std::unexpected(sampler.error());
         }
 
-        // The default samplers are allocated first, in order, out of a
-        // freshly-created pool, so this always lands on index == `index`
-        // with generation == 1 -- matching linear_repeat()/linear_clamp()/
-        // etc.'s hard-coded handles below.
+        // Allocated first from a fresh pool, so this lands on `index` with generation 1, matching the handles below.
         auto &slot = storage.slots_.allocate()->second;
 
         slot.sampler = *sampler;

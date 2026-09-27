@@ -6,11 +6,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
-// Pure-data ECS components with no dependency on any other subsystem --
-// usable from the lowest layers of the engine (physics needs Transform for
-// its rigid-body sync, for instance). See components.hxx for the rest of
-// the Components namespace, including the physics-specific components in
-// physics_components.hxx.
+// Dependency-free components usable from the lowest layers, e.g. physics.
 namespace Components {
     struct Lifetime {
         float remaining_seconds{0.0F};

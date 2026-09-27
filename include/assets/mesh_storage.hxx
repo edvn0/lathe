@@ -16,11 +16,7 @@
 #include "assets/model.hxx"
 #include "core/object_pool.hxx"
 
-// Renderer's persistent, GPU-upload-free record of one submesh: the
-// GeometryArena ranges for each LOD, plus the material and local bounds a
-// draw call needs. Built by Renderer::create_mesh (which owns the
-// GeometryArena/MaterialStorage validation MeshStorage deliberately doesn't
-// know about) and stored verbatim.
+// One submesh: GeometryArena ranges per LOD, material and local bounds. Validated by Renderer::create_mesh.
 struct Submesh {
     std::array<MeshGeometry, lod_count> lods{};
     MaterialHandle material{};
@@ -29,7 +25,6 @@ struct Submesh {
     glm::vec3 bounds_max{0.5F};
 };
 
-// Backs MeshHandle = Handle<MeshSlotData, 0> (see model.hxx).
 struct MeshSlotData {
     std::vector<Submesh> submeshes;
 };
@@ -68,11 +63,7 @@ struct MeshStorageCreateInfo {
     std::uint32_t capacity = 0;
 };
 
-// Parallel to PipelineStorage/MaterialStorage: a generational-handle
-// ObjectPool holding CPU-side mesh records. Unlike the other storages this
-// one owns no Vulkan resources at all -- the actual vertex/index data lives
-// in GeometryArena, referenced by Submesh::lods -- so there's nothing here
-// that needs a VulkanContext or a destroy() beyond dropping its containers.
+// Generational pool of mesh records. The geometry itself lives in GeometryArena, so no Vulkan resources here.
 class MeshStorage {
 public:
     MeshStorage() = default;

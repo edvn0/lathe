@@ -14,13 +14,8 @@ namespace {
         std::abort();
     }
 
-    // Every allocation carries its own header recording its real size and whether
-    // it was tracked. That makes freeing correct regardless of which delete
-    // overload the compiler ends up choosing (deleting through a polymorphic base
-    // pointer can't pass a size, so the *un*sized overload runs instead) and
-    // regardless of which thread frees it (relevant for MemoryTracker::UntrackedScope,
-    // whose thread_local flag is read once here at allocation time -- never at
-    // free time, since the freeing thread may not be the allocating one).
+    // Each allocation records its size and whether it was tracked, so frees are correct whichever delete overload
+    // runs and whichever thread frees it.
     struct AllocHeader {
         std::size_t size;
         bool tracked;

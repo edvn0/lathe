@@ -84,7 +84,6 @@ auto ShaderObjectStorage::create(VulkanContext &context, ShaderObjectStorageCrea
         }
     }
 
-
     return storage;
 }
 
@@ -94,9 +93,7 @@ auto ShaderObjectStorage::create_linked(ShaderObjectCreateInfo const &create_inf
         return std::unexpected(make_error(ShaderObjectStorageErrorType::invalid_argument));
     }
 
-    // vkCreateShadersEXT (called inside ShaderObjectSet::create_linked) has
-    // no shared cache to synchronize -- see the comment on slot_mutex_ --
-    // so it runs unlocked; only the free-list bookkeeping below needs it.
+    // Creation shares no state, so it runs unlocked; only the free list needs the mutex.
     auto shader_object =
             ShaderObjectSet::create_linked(*context_, create_info, global_descriptor_set_layout(), binary_cache());
 

@@ -13,9 +13,7 @@ float distribution_ggx(float ndoth, float roughness)
     return a2 / max(denom, 1e-6);
 }
 
-// Height-correlated Smith visibility term (already divided by the BRDF's
-// 4 * ndotv * ndotl denominator, so callers multiply it straight into the
-// specular term with no extra division).
+// Height-correlated Smith visibility, already divided by 4 * ndotv * ndotl.
 float visibility_smith_ggx_correlated(float ndotv, float ndotl, float roughness)
 {
     float a2 = roughness * roughness * roughness * roughness;
@@ -31,13 +29,8 @@ float3 fresnel_schlick(float vdoth, float3 f0)
     return f0 + (float3(1.0) - f0) * t5;
 }
 
-// Direct lighting contribution from one light with incoming radiance
-// `radiance` (already attenuated/cone-masked by the caller) and direction
-// `light_dir` (points from the surface toward the light), for a surface with
-// the given shading normal, view direction, albedo, metallic and roughness.
-// Returns the outgoing radiance contribution (not yet multiplied by any
-// shadow term -- callers apply that separately, since only the directional
-// light in this renderer casts shadows).
+// Outgoing radiance from one light. `radiance` is already attenuated and `light_dir` points towards the
+// light. Shadowing is applied by the caller.
 public float3 shade_punctual(float3 normal, float3 view_dir, float3 light_dir, float3 radiance, float3 albedo,
                       float metallic, float roughness)
 {
@@ -52,11 +45,7 @@ public float3 shade_punctual(float3 normal, float3 view_dir, float3 light_dir, f
     float ndoth = max(dot(normal, half_vector), 0.0);
     float vdoth = max(dot(view_dir, half_vector), 0.0);
 
-    // distribution_ggx and visibility_smith_ggx_correlated each do their own
-    // perceptually-linear roughness -> alpha remap internally, so the raw
-    // roughness is passed straight through here (not pre-squared). Clamp
-    // away from 0 so those terms never divide by zero for mirror-smooth
-    // materials.
+    // The terms remap roughness to alpha themselves. Clamped to avoid division by zero.
     float safe_roughness = max(roughness, 1e-3);
 
     float3 f0 = lerp(float3(0.04), albedo, metallic);
@@ -67,8 +56,7 @@ public float3 shade_punctual(float3 normal, float3 view_dir, float3 light_dir, f
 
     float3 specular = d * vis * f;
 
-    // Metals have no diffuse response; kd removes the fraction of light
-    // already accounted for by the specular Fresnel reflectance.
+    // Metals have no diffuse; kd also removes what Fresnel already reflects.
     float3 kd = (float3(1.0) - f) * (1.0 - metallic);
     float3 diffuse = kd * albedo / pi;
 

@@ -31,17 +31,11 @@
 #include "rendering/render_passes.hxx"
 #include "rendering/screenshot.hxx"
 
-// ForwardPushConstants, ShadowPushConstants, CompositePushConstants,
-// LightIconPushConstants, CullPushConstants, DownsamplePushConstants, and
-// UpsamplePushConstants are generated at build time by reflecting the
-// corresponding .slang shader's push_constant block -- see the "Shader
-// push-constant reflection" section of CMakeLists.txt.
+// Generated at build time from the shaders' push_constant blocks (see CMakeLists.txt).
 #include "shader_push_constants.hxx"
 
 namespace {
-    // Each frame's timestamp pool: the fixed RenderStage pairs, then four
-    // queries per overlay timing slot -- prepare() begin/end and record()
-    // begin/end (see Renderer::record_overlay_prepares/record_overlay_stage).
+    // Per overlay timing slot: prepare() begin/end and record() begin/end.
     constexpr std::uint32_t queries_per_overlay = 4;
     constexpr std::uint32_t overlay_query_base = query_count;
     constexpr std::uint32_t total_query_count = query_count + (OverlayRegistry::max_overlays * queries_per_overlay);
@@ -81,9 +75,7 @@ namespace {
         ~FinalAction() { action(); }
     };
 
-    // GpuDrawCommand's leading three fields are read by Vulkan itself as a
-    // VkDrawMeshTasksIndirectCommandEXT (the rest is task-shader payload,
-    // see assets/meshlet.hxx) -- pin that prefix explicitly.
+    // GpuDrawCommand's leading fields are read by Vulkan as a VkDrawMeshTasksIndirectCommandEXT.
     static_assert(sizeof(VkDrawMeshTasksIndirectCommandEXT) == 12);
     static_assert(offsetof(GpuDrawCommand, group_count_x) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountX));
     static_assert(offsetof(GpuDrawCommand, group_count_y) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountY));
@@ -319,23 +311,15 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         return std::unexpected(make_pipeline_graph_error(pipeline_graph.error()));
     }
 
-
     pipeline_graph_ = std::move(*pipeline_graph);
     image_storage_ = std::move(*image_storage);
     sampler_storage_ = std::move(*sampler_storage);
     geometry_arena_ = std::move(*geometry_arena);
     material_storage_ = std::move(*material_storage);
 
-    // Every scene-geometry pipeline (forward, shadow, depth prepass and their
-    // mask/blend variants) is task + mesh (+ fragment): meshlets are culled
-    // per instance in main_task (see assets/shaders/meshlet_task.slang) and
-    // expanded in main_mesh. Each also gets an instanced vertex-shader twin
-    // (registered after the rest) for batches too small for meshlets.
-    //
-    // Registers every startup pipeline in one batched, parallel call rather
-    // than 9 sequential register_pipeline() calls -- see
-    // docs/parallel-pipeline.md. Indices below must stay in sync with the
-    // pipeline_infos.push_back() order.
+    // Scene pipelines are task + mesh (+ fragment), each with an instanced vertex-shader variant registered after
+    // the rest for batches too small for meshlets. All startup pipelines are registered in one parallel batch;
+    // the indices below must match the push_back() order.
     std::vector<PipelineRegisterInfo> pipeline_infos;
     pipeline_infos.reserve(13);
 
@@ -358,7 +342,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/forward_geom.slang",
-                                    .entry_point = "mainFs",
+                                    .entry_point = "main_fs",
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -373,9 +357,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.forward_pipeline",
     }); // index 0: forward
 
-    // Same shaders/layout as forward, blending enabled -- see
-    // PipelineRegisterInfo::blending, which pipeline.cxx turns into
-    // standard alpha-over (SRC_ALPHA / ONE_MINUS_SRC_ALPHA) factors.
+    // Forward with alpha blending.
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -395,7 +377,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/forward_geom.slang",
-                                    .entry_point = "mainFs",
+                                    .entry_point = "main_fs",
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -492,7 +474,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/shadow_depth.slang",
-                                    .entry_point = "mainFs",
+                                    .entry_point = "main_fs",
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -553,7 +535,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/depth_prepass.slang",
-                                    .entry_point = "mainFs",
+                                    .entry_point = "main_fs",
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -573,14 +555,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/composite.slang",
-                                    .entry_point = "mainVs",
+                                    .entry_point = "main_vs",
                                     .stage = renderer::ShaderStage::vertex,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/composite.slang",
-                                    .entry_point = "mainFs",
+                                    .entry_point = "main_fs",
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -600,7 +582,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/frustum_cull.slang",
-                                    .entry_point = "mainCs",
+                                    .entry_point = "main_cs",
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -615,13 +597,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.frustum_cull_pipeline",
     }); // index 8: frustum_cull
 
-
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/bloom_downsample.slang",
-                                    .entry_point = "mainCs",
+                                    .entry_point = "main_cs",
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -641,7 +622,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/bloom_upsample.slang",
-                                    .entry_point = "mainCs",
+                                    .entry_point = "main_cs",
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -661,7 +642,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/gtao.slang",
-                                    .entry_point = "mainCs",
+                                    .entry_point = "main_cs",
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -681,7 +662,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/gtao_denoise.slang",
-                                    .entry_point = "mainCs",
+                                    .entry_point = "main_cs",
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -696,10 +677,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.gtao_denoise_pipeline",
     }); // index 12: gtao_denoise
 
-    // Instanced twins of the scene-geometry pipelines (indices 13..18):
-    // identical, except main_task + main_mesh become mainVs. Batches too
-    // small for meshlets draw through these -- see uses_meshlet_path() in
-    // assets/meshlet.hxx.
+    // Instanced variants of the scene pipelines (indices 13..18): main_task + main_mesh become main_vs.
     for (std::size_t const meshlet_index: {0U, 1U, 3U, 4U, 5U, 6U}) {
         auto instanced = pipeline_infos[meshlet_index];
 
@@ -710,7 +688,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         for (auto &stage: instanced.stages) {
             if (stage.stage == renderer::ShaderStage::mesh) {
                 stage.stage = renderer::ShaderStage::vertex;
-                stage.entry_point = "mainVs";
+                stage.entry_point = "main_vs";
             }
         }
 
@@ -980,11 +958,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.batch_bounds_buffer = std::move(*batch_bounds);
 
-        // No TRANSFER_DST: unlike indirect_buffer above, this is never
-        // host-seeded -- mainCs is its sole writer, one thread (lane 0)
-        // per batch, no atomics needed. TRANSFER_SRC is needed though: the
-        // FrameStats::visible_instance_count readback below copies out of
-        // this buffer every frame.
+        // main_cs is the only writer. TRANSFER_SRC for the visible-instance readback.
         auto culled_indirect = Buffer::create(
                 context_, BufferCreateInfo{
                                   .size = culled_indirect_size,
@@ -1028,13 +1002,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.visible_transform_buffer = std::move(*visible_transforms);
 
-        // BufferMemory::upload, not ::device: this is written every frame
-        // by a host memcpy (Buffer::write in prepare_frame below), never by
-        // the GPU, so its memory class should say so honestly. It happened
-        // to work under BufferMemory::device too, because every memory
-        // class here requests VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT (see
-        // make_allocation_create_info in buffer.cxx) -- but that's an
-        // accident of this allocator's current policy, not a guarantee.
+        // Host-written every frame.
         auto frustum_planes_buffer =
                 Buffer::create(context_, BufferCreateInfo{
                                                  .size = sizeof(glm::vec4) * cull_plane_count,
@@ -1064,7 +1032,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.lights_buffer = std::move(*lights_buffer);
 
-        const auto target_name = std::format("renderer.forward_target_{}", frame_index);
+        auto const target_name = std::format("renderer.forward_target_{}", frame_index);
         auto forward_target = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
                                                                             .extent = create_info.extent,
                                                                             .hdr_format = create_info.hdr_format,
@@ -1267,9 +1235,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .flags = 0,
             .queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS,
             .queryCount = 1,
-            // Results come back in bit order: clipping primitives, fragment
-            // invocations, then (if enabled) task and mesh invocations --
-            // see PipelineStats.
+            // Results come back in bit order: clipping primitives, fragment, then task and mesh invocations if enabled.
             .pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
                                   VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT |
                                   (context_.mesh_shader_queries_supported
@@ -1427,7 +1393,6 @@ auto Renderer::destroy() noexcept -> void {
     shadow_atlas_initialized_ = false;
     dynamic_shadow_casters_dirty_ = false;
 
-
     model_streamer_.wait_all();
 
     material_storage_.destroy();
@@ -1470,7 +1435,7 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
 
     if (auto it = model_cache_.find(file_hash); it != model_cache_.end()) {
         retain_model(it->second);
-        return it->second; // Return cached handle
+        return it->second;
     }
 
     auto cpu_data = load_model_cpu(path, sampler_storage_);
@@ -1512,7 +1477,6 @@ auto Renderer::create_model_from_cpu_data(ModelCpuData const &cpu_data) -> std::
 
     return create_model(*imported_model, default_material_handle_);
 }
-
 
 auto Renderer::create_model(Model const &model) -> std::expected<ModelHandle, RendererError> {
     return create_model(model, default_material_handle_);
@@ -1597,7 +1561,7 @@ auto Renderer::create_model_common(
         submesh_infos.reserve(source_mesh.primitives.size());
 
         for (auto const &source_submesh: source_mesh.primitives) {
-            const auto index = source_submesh.material_index;
+            auto const index = source_submesh.material_index;
 
             if (source_submesh.material_index >= model.materials.size()) {
                 rollback_meshes();
@@ -1813,9 +1777,7 @@ auto Renderer::create_material(MaterialCreateInfo const &create_info, std::strin
     }
 
     if (!debug_name.empty()) {
-        // A no-op collision (name already taken) is fine -- the material is
-        // still usable, just not name-addressable a second way, same as
-        // register_model_name's collision handling.
+        // A name collision is fine; the material just isn't registered under that name.
         static_cast<void>(assets_.materials().register_asset(std::move(debug_name), *material));
     }
 
@@ -1857,14 +1819,7 @@ auto Renderer::destroy_material(MaterialHandle handle) -> std::expected<void, Re
 
 auto Renderer::request_texture(std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
                                std::string debug_name) -> ImageHandle {
-    // Registered immediately rather than once the background decode
-    // finishes, unlike register_model_name() (see ModelStreamer::
-    // process_ready()) -- TextureStreamer::process_ready() only takes an
-    // ImageStorage&, with no sink/registry hook for "this request just
-    // finished". The handle itself is stable across the pending-to-real
-    // transition (it renders as `fallback` until then, then upgrades in
-    // place), so the name is valid immediately; it just may briefly point
-    // at fallback content, same as any other still-streaming handle.
+    // The handle is stable across the pending-to-loaded upgrade, so it can be named right away.
     auto const handle = texture_streamer_.request(image_storage_, std::move(source_path), role, fallback, debug_name);
 
     static_cast<void>(assets_.textures().register_asset(std::move(debug_name), handle));
@@ -1892,8 +1847,7 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
             return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
 
-        // Every LOD is drawn through task/mesh shaders -- a level without
-        // its meshlet split (see assets/meshlet.hxx) could never render.
+        // Every LOD is drawn through task/mesh shaders and needs meshlets.
         if (!std::ranges::all_of(submesh_info.lods, [](MeshGeometry const &lod) { return lod.meshlets.valid(); })) {
             return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
@@ -1932,14 +1886,8 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
 
 namespace {
 
-    // Submesh::lods[level].vertices is always the exact same GeometrySlice
-    // across every LOD (load_model.cxx only ever allocates one vertex
-    // buffer per primitive, copied into every lods[] entry) and .indices/
-    // .meshlets can alias an earlier level's allocation too (load_model.cxx:
-    // "no simplified index buffer for this level, reuse the previous one").
-    // Retiring the same GeometrySlice twice would hand the same range back
-    // to GeometryArena's free-list twice, corrupting it -- so this retires
-    // each distinct offset in `submesh` exactly once.
+    // LODs share the vertex slice and may alias an earlier level's indices/meshlets. Retire each distinct range
+    // once, or GeometryArena's free-list gets the same range twice.
     auto retire_submesh_geometry(GeometryArena &geometry_arena, Submesh const &submesh) -> void {
         std::array<VkDeviceSize, lod_count * 4> retired_offsets{};
         std::size_t retired_count = 0;
@@ -2284,9 +2232,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             });
         }
 
-        // Un-culled command (every instance) -- drawn as-is by the shadow
-        // pass, and the source mainCs culls into culled_indirect_buffer.
-        // Exactly one of its two halves is live, see uses_meshlet_path().
+        // Un-culled command: drawn as-is by the shadow pass and culled by main_cs for the main view. Exactly one of its
+        // halves is live, see uses_meshlet_path().
         GpuDrawCommand command{
                 .instance_count = instance_count,
                 .first_instance = first_instance,
@@ -2384,11 +2331,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return cascade == GpuMaterial::no_shadow_cascade ? -1 : static_cast<std::int32_t>(cascade);
     };
 
-    // Deliberately exclude transform matrices from this signature. Hashing 16
-    // floats for every submitted instance would make the cache expensive on
-    // the CPU. This catches structural changes (batch identity, LOD, material,
-    // instance count); moving far-away casters use
-    // mark_dynamic_shadow_casters_dirty() instead.
+    // Transforms are left out to keep this cheap; moving casters use mark_dynamic_shadow_casters_dirty().
     std::uint64_t current_shadow_scene_signature = 0;
     std::uint64_t shadow_caster_batch_count = 0;
     bool has_animated_shadow_casters = false;
@@ -2410,9 +2353,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(batch->transforms.size()));
         batch_signature = shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(max_cascade));
 
-        // XOR makes the aggregate insensitive to submission/batch iteration
-        // order. Include the count separately so duplicated signatures do not
-        // trivially cancel each other out.
+        // XOR makes the result independent of batch order. The count is mixed in separately so duplicates don't
+        // cancel.
         current_shadow_scene_signature ^= shadow_signature_mix(batch_signature);
         ++shadow_caster_batch_count;
 
@@ -2422,12 +2364,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     current_shadow_scene_signature =
             shadow_signature_combine(current_shadow_scene_signature, shadow_caster_batch_count);
 
-    // Opaque and masked batches only have shadow_cascade_count + 1 possible
-    // ordering keys: max cascade 3..0 plus "does not cast shadows". A general
-    // O(n log n) sort is unnecessary. Repeated in-place partitions form those
-    // buckets in descending cascade order with no temporary allocations. The
-    // partition boundaries are exactly the indirect-command prefix counts
-    // needed by each shadow cascade, so there is no later find_if scan either.
+    // There are only shadow_cascade_count + 1 keys (max cascade 3..0, or no shadows), so repeated in-place
+    // partitions replace a sort. The partition boundaries are the per-cascade indirect prefix counts.
     auto const order_shadow_batches = [&batch_max_shadow_cascade](auto &batches) {
         std::array<std::uint32_t, shadow_cascade_count> prefix_counts{};
         auto bucket_begin = batches.begin();
@@ -2550,9 +2488,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         auto const matrix_changed =
                 !cached.valid || !nearly_equal(candidate_cascades.view_projection[cascade], cached.view_projection);
 
-        // Cascade zero is intentionally always fresh. Far cascades update on
-        // a snapped-matrix change once their minimum interval has elapsed, or
-        // periodically while explicit/vertex-animation caster motion exists.
+        // Cascade 0 is always fresh. Far cascades update when their snapped matrix changes or casters move, once
+        // their minimum interval has elapsed.
         auto const dynamic_due = (dynamic_shadow_casters_dirty_ || has_animated_shadow_casters) && period_due;
         auto const update = force_all_cascades || cascade == 0U || (matrix_changed && period_due) || dynamic_due;
 
@@ -2573,9 +2510,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
     }
 
-    // Commit this state only after record_frame() successfully records the
-    // tile updates. That way a failed shadow pass cannot leave CPU cache
-    // metadata describing atlas contents that were never produced.
+    // Committed only after record_frame() records the tile updates, so a failed shadow pass leaves the cache
+    // metadata untouched.
     frame.pending_shadow_light_direction = light_direction;
     frame.pending_shadow_depth_bias_constant = shadow_settings_.depth_bias_constant;
     frame.pending_shadow_depth_bias_slope = shadow_settings_.depth_bias_slope;
@@ -2646,10 +2582,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
-    // Camera planes first, then each cascade's -- the matrices the shadow
-    // pass actually renders with (resolved_view_projection), so a cascade
-    // reusing its cached tile also culls against the frustum it was drawn
-    // with.
+    // Cascade planes come from the matrices the shadow pass renders with, so a reused tile culls against the
+    // frustum it was drawn with.
     std::array<glm::vec4, cull_plane_count> cull_planes{};
     std::ranges::copy(frustum_planes, cull_planes.begin());
 
@@ -2790,8 +2724,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                             .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            // Read both as the indirect command and, by the
-                            // task shader, as its per-batch payload.
+                            // Read as the indirect command and as the task shader's per-batch payload.
                             .dstStageMask =
                                     VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
                             .dstAccessMask =
@@ -2802,9 +2735,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                             .offset = 0,
                             .size = VK_WHOLE_SIZE,
                     },
-                    // Also readable by the readback copy below (FrameStats::
-                    // visible_instance_count) -- a second, independent
-                    // consumer of the same compute-shader write.
+                    // Also read by the visible-instance readback copy.
                     VkBufferMemoryBarrier2{
                             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -2964,11 +2895,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 }
 
 auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
-    // Same "safe once this frame-in-flight slot's fence has been waited on"
-    // point screenshot_.try_resolve() relies on -- the copy recorded in
-    // prepare_frame's Culling region the last time this frame_index was
-    // used has long since completed on the GPU by now. See
-    // RendererFrame::culled_readback_buffer's comment for the resulting lag.
+    // This frame slot's fence has been waited on, so last use's readback copy has completed.
     if (!frame.culled_readback_pending) {
         return;
     }
@@ -3062,8 +2989,7 @@ auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, Rend
 
     auto const frame_index = pass_context.frame_index;
 
-    // Shadows draw every caster, not just what the camera sees, so this
-    // reads the un-culled draw/transform/indirect buffers.
+    // Shadows draw every caster, so this uses the un-culled buffers.
     auto const result = render_pass::shadow(
             pass_context,
             render_pass::ShadowPassInfo{
@@ -3101,8 +3027,6 @@ auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, Rend
         return {};
     }
 
-    // The cascades were re-rendered, so what prepare_frame staged for them
-    // is now what the atlas holds.
     for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
         if ((frame.shadow_update_mask & (ShadowCascadeMask{1} << cascade)) != 0) {
             shadow_cascade_cache_[cascade] = frame.pending_shadow_cache[cascade];
@@ -3261,18 +3185,8 @@ auto Renderer::record_composite_pass(render_pass::Context const &pass_context, F
     TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Composition",
                  tracy::Color::SeaGreen);
 
-    // Fullscreen play covers the whole swapchain with the game exactly like
-    // this engine always has -- composite() writes the tonemapped scene
-    // straight into the swapchain image and the ui overlays draw directly
-    // on top of it, all in one pass. Any other time (editing, or playing
-    // embedded), the scene instead goes into this frame's offscreen
-    // viewport_target -- which the editor's Viewport panel samples via
-    // ImGui::Image -- and a second, separate pass clears the real swapchain
-    // and runs the ui overlays (the full, docked ImGui frame) onto it. See
-    // the plan this shipped under for why: a docked "Viewport" panel is
-    // itself a real ImGui window, so it can't be the thing composite()
-    // paints the 3D scene onto without also being asked to host arbitrary
-    // editor chrome around it.
+    // Fullscreen play composites straight into the swapchain with the UI on top. Otherwise the scene goes into the
+    // viewport target the editor's Viewport panel samples, and a second pass draws the UI onto the swapchain.
     bool const fullscreen = target == CompositeTarget::swapchain;
 
     auto const result = render_pass::composite(
@@ -3283,7 +3197,6 @@ auto Renderer::record_composite_pass(render_pass::Context const &pass_context, F
                     .extent = fullscreen ? swapchain_image.extent : targets.extent,
                     .hdr = hdr,
                     .bloom = bloom,
-                    // The default emissive texture is the renderer's valid black texture.
                     .bloom_fallback_texture_index = image_storage_.emissive().index,
                     .linear_sampler_index = sampler_storage_.linear_clamp().index,
                     .pipeline = composite_pipeline_,
@@ -3356,8 +3269,7 @@ auto Renderer::record_overlay_prepares(render_pass::Context const &pass_context)
                 .slot = entry.slot,
         });
 
-        // Written even without a prepare() so every recorded overlay's four
-        // queries are always available at readback.
+        // Written even without a prepare() so all four queries are always available.
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pass_context.timestamp_query_pool,
                              overlay_query(entry.slot, 0));
 
@@ -3382,9 +3294,7 @@ auto Renderer::record_overlay_prepares(render_pass::Context const &pass_context)
         return;
     }
 
-    // The one synchronisation point the overlay contract promises: every
-    // transfer/compute write any prepare() recorded becomes visible to
-    // every stage an overlay's draw can read it from.
+    // Makes every prepare() write visible to the stages an overlay's draw can read from.
     VkMemoryBarrier2 const barrier{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
             .pNext = nullptr,
@@ -3489,8 +3399,7 @@ auto Renderer::register_light_icon_overlay() -> std::expected<void, RendererErro
     auto registration = register_overlay(OverlayDesc{
             .name = "Light icons",
             .stage = OverlayStage::scene,
-            // Before the default-order overlays, as when this was drawn
-            // inline at the end of the forward pass ahead of debug lines.
+            // Before the default-order overlays.
             .order = -100,
             .prepare = {},
             .record =
@@ -3548,9 +3457,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
     auto const pass_context = make_pass_context(command_buffer, frame_index);
 
-    // One overlay set for the whole frame: registrations made or dropped
-    // by overlay callbacks land once recording is done, so the prepare
-    // snapshot, the stages and the timing readback all agree.
+    // Registration changes made by overlay callbacks land after recording, so prepare, stages and timing all see
+    // the same set.
     auto const overlay_iteration = overlays_.iterate();
 
     OverlayScope const scene_scope{
@@ -3610,7 +3518,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     return {};
 }
 
-
 auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
     if (extent.width == 0 || extent.height == 0) {
         return {};
@@ -3620,13 +3527,7 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         return {};
     }
 
-    // Destroying frames_[i].forward_target below is only safe once the GPU is
-    // done with it. The caller (main.cxx) currently only ever calls resize()
-    // right after Swapchain::recreate(), which itself does a full
-    // vkDeviceWaitIdle -- but that ordering isn't enforced here, so a future
-    // caller (or a reordering of the resize path) could destroy an image the
-    // GPU is still rendering into. Wait unconditionally so this function is
-    // correct on its own.
+    // The forward targets below are destroyed, so wait for the GPU regardless of what the caller did.
     if (auto waited = wait_idle(); !waited) {
         return std::unexpected(waited.error());
     }
@@ -3848,13 +3749,13 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
     return {};
 }
 
-void Renderer::queue_render_thread_event(std::move_only_function<void()> &&task) {
+auto Renderer::queue_render_thread_event(std::move_only_function<void()> &&task) -> void {
     std::lock_guard lock(queue_mutex_);
     event_queue_.push(std::move(task));
     queued_events_.fetch_add(1);
 }
 
-void Renderer::drain_event_queue() {
+auto Renderer::drain_event_queue() -> void {
     if (queued_events_.load(std::memory_order_relaxed) == 0) [[likely]] {
         return;
     }
@@ -3872,7 +3773,6 @@ void Renderer::drain_event_queue() {
     }
 }
 
-
 auto Renderer::mark_shadow_casters_dirty() noexcept -> void {
     ++shadow_caster_revision_;
 
@@ -3885,7 +3785,6 @@ auto Renderer::mark_shadow_casters_dirty() noexcept -> void {
         shadow_atlas_initialized_ = false;
     }
 }
-
 
 auto Renderer::request_screenshot() noexcept -> void { screenshot_->request(); }
 auto Renderer::wait_idle() -> std::expected<void, RendererError> {
@@ -4069,11 +3968,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         };
     }
 
-    // Read by three consumers: the shadow pass's vkCmdDrawMeshTasksIndirectEXT
-    // and vkCmdDrawIndexedIndirect (DRAW_INDIRECT / INDIRECT_COMMAND_READ),
-    // its task shader (which reads its own command's first_instance/
-    // meshlet_count), and mainCs's src_indirect Ptr<> (COMPUTE_SHADER /
-    // SHADER_STORAGE_READ).
+    // Read by the shadow pass's indirect draws, its task shader and main_cs.
     if (indirect_size != 0) {
         barriers[barrier_count++] = VkBufferMemoryBarrier2{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -4091,11 +3986,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         };
     }
 
-    // batch_bounds_buffer is a read-only input to the frustum-cull compute
-    // pass. culled_indirect_buffer and visible_draw_buffer/
-    // visible_transform_buffer need no transfer barrier here -- they are
-    // never host-uploaded; mainCs is their sole writer (see the dispatch's
-    // own post-cull barrier in prepare_frame).
+    // The culled and visible buffers are written only by main_cs, so only batch_bounds_buffer needs a barrier.
     if (batch_bounds_size != 0) {
         barriers[barrier_count++] = VkBufferMemoryBarrier2{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,

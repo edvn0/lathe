@@ -2,18 +2,12 @@ module meshlet_task;
 
 import scene_types;
 
-// Shared task (amplification) stage for every meshlet scene pass --
-// forward_geom, depth_prepass and shadow_depth all call run_meshlet_task()
-// from their own main_task entry point, so the three passes cull meshlets
-// identically. That matters beyond tidiness: the forward pass depth-tests
-// EQUAL against the prepass, so a meshlet the prepass skipped but forward
-// drew (or vice versa) would show up as holes or z-fighting.
+// Task stage shared by every meshlet scene pass, so all passes cull identically; forward depth-tests EQUAL
+// against the prepass, so any mismatch shows up as holes.
 //
-// One task workgroup covers up to meshlets_per_task consecutive meshlets of
-// ONE instance: SV_GroupID (flattened over X/Y, see DrawCommand) picks the
-// (instance, meshlet chunk), each lane tests one meshlet, and the survivors
-// are compacted into the payload in lane order (deterministic, unlike an
-// atomic append) before a single DispatchMesh.
+// One workgroup covers up to meshlets_per_task meshlets of one instance. SV_GroupID (flattened over X/Y)
+// picks the (instance, meshlet chunk), each lane tests one meshlet, and survivors are compacted in lane order
+// before a single DispatchMesh.
 
 public struct MeshletPayload
 {
@@ -25,16 +19,12 @@ public struct MeshletPayload
 groupshared MeshletPayload s_payload;
 groupshared uint s_visible[meshlets_per_task];
 
-// wind_offset() (wind.slang) moves a vertex by at most wind_strength along
-// each of X and Z (sum of sines weighted 0.7/0.3, height weight <= 1), so
-// sqrt(2) * wind_strength bounds the displacement length.
+// wind_offset() moves a vertex at most wind_strength along each of X and Z, so sqrt(2) * wind_strength bounds
+// the displacement.
 static const float wind_radius_scale = 1.41421356;
 
-// Relative spread between the largest and smallest axis scale below which
-// a transform counts as uniformly scaled -- cone culling rotates the cone
-// axis with the model matrix directly (no inverse-transpose), which is only
-// exact for rotation + uniform scale, same assumption forward_geom makes
-// for normals.
+// Max/min axis scale ratio below which a transform counts as uniform. Cone culling rotates the axis with the
+// model matrix, which is only exact for uniform scale.
 static const float uniform_scale_tolerance = 1.01;
 
 bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet_index)
@@ -67,9 +57,8 @@ bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet
         }
     }
 
-    // Wind-swayed meshlets are skipped: sway bends individual triangles, so
-    // the cone baked from the rest pose no longer bounds their normals.
-    // Mirrored transforms (negative determinant) flip which side is front.
+    // Skip wind-swayed meshlets (the rest-pose cone no longer bounds their normals). Mirrored transforms flip the
+    // front face.
     if ((pc.cull_flags & cull_backface_bit) != 0 && meshlet.cone_cutoff < 1.0 && wind_strength <= 0.0 &&
         max_scale <= min_scale * uniform_scale_tolerance && dot(cross(axis_x, axis_y), axis_z) > 0.0) {
         const float3 cone_axis = normalize(mul(model, float4(meshlet.cone_axis, 0.0)).xyz);
@@ -83,8 +72,8 @@ bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet
     return true;
 }
 
-// `plane_offset`: index of this view's first plane in pc.cull_planes (0 for
-// the main camera, cascade_index * 6 for a shadow cascade).
+// `plane_offset`: this view's first plane in pc.cull_planes (0 for the camera, cascade_index * 6 for a
+// cascade).
 public void run_meshlet_task(PC pc, uint plane_offset, uint draw_index, uint3 group_id, uint lane)
 {
     const DrawCommand command = pc.task_commands[draw_index];

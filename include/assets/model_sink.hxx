@@ -5,8 +5,8 @@
 
 #include <volk.h>
 
-#include "assets/load_model.hxx" // ModelCpuData, ModelLoadError, Model
-#include "assets/model.hxx" // ModelHandle
+#include "assets/load_model.hxx"
+#include "assets/model.hxx"
 #include "core/renderer_error.hxx"
 
 class SamplerStorage;
@@ -18,33 +18,20 @@ struct IModelSink {
     [[nodiscard]]
     virtual auto create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, RendererError> = 0;
 
-    // Installs a Model finished by step_model_gpu_upload() into `pending` in
-    // place. Must run on the render thread.
+    // Installs a finished Model into `pending` in place. Render thread only.
     [[nodiscard]]
     virtual auto install_model(ModelHandle pending, Model const &model) -> std::expected<void, RendererError> = 0;
 
-    // Bumps `handle`'s ModelSlotData::ref_count -- called by ModelStreamer
-    // when its path_cache_ hands the same handle out to a second caller
-    // instead of loading a fresh copy, so a later destroy_model() call from
-    // either caller doesn't tear the model down while the other still
-    // references it.
+    // Adds a reference, for a cache handing the same handle to another caller.
     virtual auto retain_model(ModelHandle handle) -> void = 0;
 
-    // Registers `handle` under `name` in the sink's AssetRegistry (see
-    // asset_registry.hxx), so editor UI can offer it by name later --
-    // called by ModelStreamer::process_ready() once a request finishes
-    // installing, using the same debug_name the request was made with. A
-    // no-op collision (name already taken) is fine here; the model is still
-    // usable, just not name-addressable a second way.
+    // Registers `handle` under `name` in the AssetRegistry. A name collision is ignored.
     virtual auto register_model_name(ModelHandle handle, std::string_view name) -> void = 0;
 
     [[nodiscard]]
     virtual auto sampler_storage() noexcept -> SamplerStorage & = 0;
 
-    // Resource providers ModelStreamer needs to drive
-    // start_model_gpu_upload()/step_model_gpu_upload() itself, spreading a
-    // model's GPU upload across multiple frames instead of doing it all in
-    // one process_ready() call.
+    // Resources ModelStreamer needs to run the GPU upload itself across frames.
     [[nodiscard]]
     virtual auto image_storage() noexcept -> ImageStorage & = 0;
     [[nodiscard]]

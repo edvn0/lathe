@@ -38,11 +38,7 @@ auto ForwardTarget::operator=(ForwardTarget &&other) noexcept -> ForwardTarget &
         return *this;
     }
 
-    /*
-     * ForwardTarget does not directly own ImageStorage,
-     * so the current handles must already have been
-     * destroyed before move-assignment.
-     */
+    // The current handles must already be destroyed; ForwardTarget doesn't own the ImageStorage.
     hdr_ = std::exchange(other.hdr_, ImageHandle{});
     depth_ = std::exchange(other.depth_, ImageHandle{});
     resolved_hdr_ = std::exchange(other.resolved_hdr_, ImageHandle{});
@@ -65,8 +61,7 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
 
     bool const is_msaa = create_info.samples > VK_SAMPLE_COUNT_1_BIT;
 
-    // Always create the single-sample HDR image: it's the render target when
-    // there's no MSAA, and the resolve destination when there is.
+    // The single-sample HDR image is the render target without MSAA and the resolve target with it.
     auto const resolved_hdr_name = std::string{create_info.debug_name} + ".hdr";
 
     auto resolved_hdr = image_storage.create_image(ImageCreateInfo{
@@ -95,8 +90,7 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
         return std::unexpected(make_image_error(resolved_hdr.error()));
     }
 
-    // Only create a distinct multisample render target when MSAA is on. It's
-    // never sampled directly, so no SAMPLED usage / descriptor view for it.
+    // The MSAA target is never sampled, so it gets no SAMPLED usage or descriptor view.
     std::expected<ImageHandle, ImageStorageError> msaa_hdr;
 
     if (is_msaa) {

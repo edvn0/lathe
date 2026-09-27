@@ -7,11 +7,7 @@
 
 inline constexpr auto invalid_sampler_index = std::numeric_limits<std::uint32_t>::max();
 
-// Full definition lives in sampler_storage.hxx, where SamplerStorage's
-// ObjectPool<SamplerSlotData> is actually instantiated. Handle<T> never
-// stores or otherwise needs a complete T, so an incomplete forward
-// declaration here is enough to name SamplerHandle without pulling Vulkan
-// headers into every file that just needs the handle type.
+// Defined in sampler_storage.hxx. Handle<T> doesn't need a complete T.
 struct SamplerSlotData;
 
 using SamplerHandle = Handle<SamplerSlotData>;
@@ -23,7 +19,6 @@ enum class DefaultSampler : std::uint32_t {
     nearest_clamp = 3,
     shadow_compare = 4,
 };
-
 
 enum class SamplerClass : std::uint8_t {
     regular,

@@ -8,16 +8,8 @@
 
 namespace maths {
 
-    // Transforms an axis-aligned min/max box through `matrix` and returns the
-    // tightest axis-aligned box around the result, without assuming anything
-    // about how the matrix's rows/columns map to glm's mul convention: each
-    // local axis, scaled by its half-extent, is pushed through the matrix and
-    // the transformed axes' absolute values are summed. Mirrors
-    // transform_aabb in assets/shaders/frustum_cull.slang and is used
-    // everywhere else in the engine that needs to fold a local-space AABB
-    // through a node/world transform (Renderer::model_submesh_bounds, debug
-    // AABB visualization) -- kept as one shared implementation so those
-    // stay consistent with what the GPU culling pass actually tests against.
+    // Tightest axis-aligned box around `matrix` applied to a min/max box: sums the absolute transformed half-extent
+    // axes. Mirrors transform_aabb in frustum_cull.slang.
     [[nodiscard]]
     inline auto transform_aabb(glm::mat4 const &matrix, glm::vec3 const &min, glm::vec3 const &max)
             -> std::pair<glm::vec3, glm::vec3> {

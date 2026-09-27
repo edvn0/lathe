@@ -24,8 +24,7 @@ namespace {
         return result;
     }
 
-    // Escapes the two characters a JSON string can't hold literally; device
-    // names are the only free text written.
+    // Device names are the only free text written.
     [[nodiscard]] auto json_escape(std::string_view text) -> std::string {
         std::string escaped;
         escaped.reserve(text.size());
@@ -115,8 +114,7 @@ auto summarise_timings(std::span<float const> samples_ms) -> TimingSummary {
     std::vector<float> sorted{samples_ms.begin(), samples_ms.end()};
     std::ranges::sort(sorted);
 
-    // Nearest rank: the smallest sample with at least `fraction` of the
-    // samples at or below it.
+    // Nearest rank: the smallest sample with at least `fraction` of the samples at or below it.
     auto const percentile = [&](float fraction) {
         auto const rank = static_cast<std::size_t>(std::ceil(fraction * static_cast<float>(sorted.size())));
         return sorted[std::clamp(rank, std::size_t{1}, sorted.size()) - 1];
@@ -178,8 +176,7 @@ auto BenchmarkRun::at_keyframe() const noexcept -> bool {
         return false;
     }
 
-    // Which keyframe-to-keyframe segment measured frame `i` sits in; a
-    // keyframe is crossed where that changes.
+    // The keyframe segment frame `i` is in; a keyframe is crossed where it changes.
     auto const segment = [&](std::uint32_t frame) {
         return static_cast<std::uint64_t>(frame) * keyframes_.size() / options_.frame_count;
     };
@@ -243,8 +240,7 @@ auto BenchmarkRun::to_json(BenchmarkEnvironment const &environment) const -> std
 
     json += "  ],\n";
 
-    // Full-frame time of every measured frame, in path order -- enough to
-    // plot where along the loop a regression sits.
+    // Every measured frame's time, in path order.
     json += "  \"full_frame_ms\": [";
 
     auto const &full_frame = samples_ms_[static_cast<std::uint32_t>(RenderStage::FullFrame)];

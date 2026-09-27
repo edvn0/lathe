@@ -11,9 +11,7 @@ struct VertexOutput
     float2 texture_coordinate;
 };
 
-// Culls against the cascade's own frustum (cull_planes is the cascade
-// plane block, see ShadowPassInfo) -- casters outside the camera frustum
-// still get drawn when they're inside the cascade.
+// Culls against the cascade's frustum, so casters outside the camera view are still drawn.
 [shader("amplification")]
 [numthreads(meshlets_per_task, 1, 1)]
 void main_task(uint3 group_id: SV_GroupID, uint lane: SV_GroupIndex, uint draw_index: SV_DrawIndex,
@@ -37,11 +35,9 @@ VertexOutput shadow_vertex(ShadowPC pc, GpuDraw draw, float4x4 model, float wind
     return output;
 }
 
-// Instanced path for batches too small for meshlets (see
-// uses_meshlet_path() in include/assets/meshlet.hxx) -- same vertex
-// function as main_mesh, so both paths produce identical positions.
+// Instanced path for batches too small for meshlets. Same vertex function as main_mesh.
 [shader("vertex")]
-VertexOutput mainVs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform ShadowPC pc)
+VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform ShadowPC pc)
 {
     const GpuDraw draw = pc.base.draws[instance_index];
     const float wind_strength = pc.base.materials[draw.material_index].wind_strength;
@@ -72,10 +68,9 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
     }
 }
 
-// Only used by shadow_mask_pipeline_ and its instanced twin -- the opaque shadow
-// PSOs have no mainFs, to preserve early-Z / cheap depth-only rendering.
+// Only for the masked shadow pipelines; opaque shadows have no fragment shader.
 [shader("fragment")]
-void mainFs(VertexOutput input, uniform ShadowPC pc)
+void main_fs(VertexOutput input, uniform ShadowPC pc)
 {
     const var material = pc.base.materials[input.material_index];
 

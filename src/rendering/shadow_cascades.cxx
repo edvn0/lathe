@@ -7,11 +7,8 @@
 
 namespace {
 
-    // Bounding sphere of the view-frustum slice [near_distance, far_distance],
-    // expressed in view space (centre offset along the forward axis, radius).
-    // Using a sphere rather than the exact frustum box makes the cascade
-    // rotation-invariant, which is what lets us snap the light-space origin to
-    // texel increments without shimmer.
+    // View-space bounding sphere of the frustum slice [near_distance, far_distance]. A sphere keeps the cascade
+    // rotation-invariant, so snapping to texels doesn't shimmer.
     struct FrustumSliceSphere {
         float centre_distance = 0.0F;
         float radius = 0.0F;
@@ -105,10 +102,7 @@ auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowC
         auto const z_near = snapped_z - sphere.radius - input.settings.caster_extrusion;
         auto const z_far = snapped_z + sphere.radius;
 
-        // Near/far swapped so the reverse-Z convention used everywhere else in
-        // the renderer (nearest-to-light = 1.0) is baked into the matrix
-        // itself, rather than relying on an inverted viewport as the main
-        // pass does.
+        // Near/far swapped to bake reverse-Z into the matrix.
         auto const projection = glm::orthoLH_ZO(snapped_x - sphere.radius, snapped_x + sphere.radius,
                                                 snapped_y - sphere.radius, snapped_y + sphere.radius, z_far, z_near);
 
@@ -124,9 +118,7 @@ auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowC
 }
 
 auto extract_frustum_planes(glm::mat4 const &view_projection) noexcept -> std::array<glm::vec4, 6> {
-    // GLM matrices transform column vectors (clip = M * v), so clip.x is the
-    // dot product of v with row 0 of M (not column 0) -- glm::mat4's
-    // operator[] indexes columns, so rows are gathered manually below.
+    // glm::mat4's operator[] returns columns, so gather rows manually.
     auto const row = [&](int index) noexcept {
         return glm::vec4{view_projection[0][index], view_projection[1][index], view_projection[2][index],
                          view_projection[3][index]};
@@ -137,9 +129,7 @@ auto extract_frustum_planes(glm::mat4 const &view_projection) noexcept -> std::a
     auto const row2 = row(2);
     auto const row3 = row(3);
 
-    // Inside-frustum inequalities: -w <= x <= w, -w <= y <= w, 0 <= z <= w
-    // (zero-to-one depth). Each plane below is the corresponding
-    // rearranged inequality, giving an inward-facing normal directly.
+    // Each plane is one of -w <= x <= w, -w <= y <= w, 0 <= z <= w rearranged, so the normal faces inward.
     return std::array<glm::vec4, 6>{
             normalize_plane(row3 + row0), // left:   x >= -w
             normalize_plane(row3 - row0), // right:  x <= w

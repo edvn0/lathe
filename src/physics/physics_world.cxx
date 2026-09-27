@@ -1,4 +1,3 @@
-// physics_world.cxx
 #include "physics/physics_world.hxx"
 
 #include <btBulletDynamicsCommon.h>
@@ -28,13 +27,7 @@ namespace {
     auto to_bt(glm::quat const &q) -> btQuaternion { return btQuaternion{q.x, q.y, q.z, q.w}; }
     auto to_glm(btQuaternion const &q) -> glm::quat { return glm::quat{q.w(), q.x(), q.y(), q.z()}; }
 
-    // Arena-placement-new'd shapes are never freed individually (the whole
-    // arena goes away with PhysicsWorld) -- only their destructors need
-    // calling, same as every other shape teardown in this file. A
-    // btCompoundShape (BodyShape::compound) additionally owns child shape
-    // pointers it never destructs itself, so its children need the same
-    // treatment first, recursively -- a compound-of-compounds isn't
-    // something this codebase builds, but the recursion costs nothing.
+    // Shapes live in the arena, so only destructors run. A compound doesn't destroy its children, so recurse.
     auto destroy_shape(btCollisionShape *shape) -> void {
         if (shape->getShapeType() == COMPOUND_SHAPE_PROXYTYPE) {
             auto *compound = static_cast<btCompoundShape *>(shape);
@@ -52,15 +45,11 @@ namespace {
         explicit ThreadPoolTaskScheduler(BS::priority_thread_pool &pool) :
             btITaskScheduler{"bs_thread_pool"}, pool_{pool} {}
 
-        // Bullet indexes per-thread scratch arrays (e.g. btCollisionDispatcherMt's
-        // m_batchManifoldsPtr) by btGetCurrentThreadIndex(), which reserves index 0 for
-        // the calling thread and assigns worker threads 1..N. getNumThreads() must report
-        // that total (workers + caller), or Bullet undersizes those arrays and a worker
-        // thread writes one past the end -- silent heap corruption that crashes later,
-        // somewhere unrelated.
+        // Bullet reserves thread index 0 for the caller and gives workers 1..N, and sizes per-thread scratch arrays
+        // from this. Returning only the worker count makes a worker write past the end.
         auto getMaxNumThreads() const -> int override { return static_cast<int>(pool_.get_thread_count()) + 1; }
         auto getNumThreads() const -> int override { return static_cast<int>(pool_.get_thread_count()) + 1; }
-        auto setNumThreads(int /*num_threads*/) -> void override {} // pool size is fixed at construction
+        auto setNumThreads(int /*num_threads*/) -> void override {} // pool size is fixed
 
         auto parallelFor(int i_begin, int i_end, int grain_size, btIParallelForBody const &body) -> void override {
             if (i_end - i_begin <= grain_size) {
@@ -70,13 +59,7 @@ namespace {
 
             auto const num_chunks = std::max(1, (i_end - i_begin) / grain_size);
 
-            // submit_blocks() itself heap-allocates task/promise bookkeeping on this
-            // thread for every call -- real memory traffic, but it's thread-pool
-            // plumbing, not engine state, and it fires every substep regardless of
-            // what body actually does. Left tracked, it swamps the "this frame"
-            // allocation count with noise unrelated to what the game is doing. Only
-            // the submission itself is untracked; body.forLoop() below still runs
-            // under the worker threads' own (tracked) state.
+            // Keep the pool's per-call bookkeeping allocations out of the per-frame allocation stats.
             auto const untracked = MemoryTracker::UntrackedScope{};
 
             auto future = pool_.submit_blocks(
@@ -89,7 +72,7 @@ namespace {
 
         auto parallelSum(int i_begin, int i_end, int /*grain_size*/, btIParallelSumBody const &body)
                 -> btScalar override {
-            return body.sumLoop(i_begin, i_end); // Bullet rarely hits this path — serial fallback is fine
+            return body.sumLoop(i_begin, i_end); // Bullet rarely uses this; serial is fine.
         }
 
     private:
@@ -119,12 +102,7 @@ struct PhysicsWorld::Impl {
     }
 
     ~Impl() {
-        // Terrain-collider slots are never entity-backed (see
-        // TerrainColliderHandle) and are torn down explicitly here, before
-        // the generic loop below -- removeRigidBody() first means the
-        // generic loop's walk over getCollisionObjectArray() never sees
-        // them, so there's no risk of the two teardown paths double-
-        // destructing the same body/shape.
+        // Terrain colliders have no entity, so remove them before the entity loop below.
         for (auto &slot: terrain_colliders) {
             if (slot.active) {
                 world->removeRigidBody(slot.body);
@@ -135,12 +113,8 @@ struct PhysicsWorld::Impl {
             slot.shape->~btCollisionShape();
         }
 
-        // No entity-keyed container of our own to walk here -- world's own
-        // collision object array already lists every body add_body() put
-        // in, so teardown reads that instead of duplicating it. Removing
-        // the current last element each iteration (by always indexing from
-        // the current end and counting down) stays valid across whatever
-        // removeRigidBody()'s internal swap-and-pop does to the array.
+        // Walk the world's own object array, always removing the last element so removeRigidBody()'s swap-and-pop
+        // doesn't skip anything.
         auto &collision_objects = world->getCollisionObjectArray();
 
         for (auto i = collision_objects.size() - 1; i >= 0; --i) {
@@ -152,21 +126,8 @@ struct PhysicsWorld::Impl {
 
             auto *shape = rigid_body->getCollisionShape();
 
-            // Every body still in the world at this point only ever got
-            // here via add_body(), which always paired it with a
-            // Components::PhysicsBody on this same entity -- remove that
-            // now too, or it's left pointing at memory this destructor is
-            // about to free.
-            //
-            // Deliberately no null-user-pointer guard here: entt::entity{0}
-            // (a real, legitimate entity -- entt numbers entities from 0)
-            // bit-casts to a null pointer, so a null check can't
-            // distinguish "entity 0's own body" from "no entity backing"
-            // -- it would incorrectly skip entity 0's own teardown instead.
-            // The actual safety net for non-entity-backed bodies (terrain
-            // colliders) is structural: they're removed from `world` in the
-            // loop above, before this one runs, so they're never among
-            // `collision_objects` here at all.
+            // Every remaining body came from add_body() and has a PhysicsBody to remove. No null check on the user
+            // pointer: entity 0 bit-casts to null.
             auto const entity = static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(rigid_body->getUserPointer()));
 
             if (registry.valid(entity)) {
@@ -187,25 +148,19 @@ struct PhysicsWorld::Impl {
         dispatcher->~btCollisionDispatcherMt();
         collision_configuration->~btDefaultCollisionConfiguration();
 
-        // btSetTaskScheduler(other) calls the *previous* scheduler's deactivate() before
-        // switching. task_scheduler is about to be destroyed along with this Impl, so the
-        // global must be cleared now -- otherwise the next PhysicsWorld's constructor calls
-        // btSetTaskScheduler() and dereferences this now-dangling pointer.
+        // Setting a new scheduler calls the previous one's deactivate(), so clear the global before ours dies.
         if (btGetTaskScheduler() == &task_scheduler) {
             btSetTaskScheduler(nullptr);
         }
     }
 
     struct TerrainColliderSlot {
-        // Permanently owned so the raw float* Bullet's
-        // btHeightfieldTerrainShape retains (captured once at construction,
-        // see reserve_terrain_collider) can never dangle. Sized once and
-        // never resized -- only ever overwritten in place.
+        // Bullet's heightfield keeps a raw pointer into this, so it is sized once and only overwritten in place.
         std::vector<float> heights;
 
         btHeightfieldTerrainShape *shape = nullptr;
         btRigidBody *body = nullptr;
-        bool active = false; // currently added to `world`
+        bool active = false; // in `world`
     };
 
     ArenaAllocator arena{512 * 1024};
@@ -214,9 +169,9 @@ struct PhysicsWorld::Impl {
 
     IDebugLines *debug_lines = nullptr;
 
-    ThreadPoolTaskScheduler task_scheduler; // must outlive world; declared before it, constructed first
+    ThreadPoolTaskScheduler task_scheduler; // must outlive world, so declared first
 
-    entt::registry &registry; // outlives this PhysicsWorld -- see the constructor's doc comment
+    entt::registry &registry;
 
     btDefaultCollisionConfiguration *collision_configuration{nullptr};
     btCollisionDispatcherMt *dispatcher{nullptr};
@@ -230,7 +185,7 @@ PhysicsWorld::PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_th
                            entt::registry &registry) :
     impl_{std::make_unique<Impl>(settings, thread_pool, registry)} {}
 
-PhysicsWorld::~PhysicsWorld() = default; // Impl is complete here, so the default destructor is fine
+PhysicsWorld::~PhysicsWorld() = default;
 
 auto PhysicsWorld::populate_from(entt::registry &registry) -> void {
     auto view = registry.view<Components::Transform const, Components::RigidBody const>();
@@ -252,10 +207,7 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
         case Components::BodyShape::heightfield: {
             auto const &heightfield = *body.heightfield;
 
-            // Bullet keeps a raw pointer into heightfield.heights for as
-            // long as this shape lives -- safe here because that vector is
-            // owned by the shared_ptr in the entity's RigidBody component,
-            // which outlives the shape (removed together in remove_body()).
+            // Bullet keeps a raw pointer into heightfield.heights; the RigidBody owning it outlives the shape.
             shape = impl_->arena.construct_with_base<btHeightfieldTerrainShape, btCollisionShape>(
                     static_cast<int>(heightfield.width), static_cast<int>(heightfield.length),
                     heightfield.heights->data(), heightfield.min_height, heightfield.max_height,
@@ -264,9 +216,7 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
             break;
         }
         case Components::BodyShape::compound: {
-            // See Components::RigidBody::from_submesh_boxes: one btBoxShape
-            // child per submesh, each already axis-aligned in the compound's
-            // local space, so every child transform is translation-only.
+            // Children are already axis-aligned in compound space, so their transforms are translation-only.
             auto *compound = impl_->arena.construct<btCompoundShape>();
 
             if (body.compound_boxes) {
@@ -319,8 +269,8 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
         rigid_body->setActivationState(DISABLE_DEACTIVATION);
     }
 
-    rigid_body->setSleepingThresholds(/*linear=*/0.8f, /*angular=*/1.0f);
-    rigid_body->setDeactivationTime(0.8f);
+    rigid_body->setSleepingThresholds(/*linear=*/0.8F, /*angular=*/1.0F);
+    rigid_body->setDeactivationTime(0.8F);
 
     impl_->world->addRigidBody(rigid_body);
 
@@ -366,8 +316,8 @@ auto PhysicsWorld::is_grounded(entt::registry const &registry, entt::entity enti
     auto const &origin = physics_body->rigid_body->getWorldTransform().getOrigin();
     glm::vec3 const start = to_glm(origin);
 
-    float const ray_length = capsule_half_height + capsule_radius + 0.1f;
-    glm::vec3 const end = start - glm::vec3{0.0f, ray_length, 0.0f};
+    float const ray_length = capsule_half_height + capsule_radius + 0.1F;
+    glm::vec3 const end = start - glm::vec3{0.0F, ray_length, 0.0F};
 
     auto hit = raycast(start, end);
     return hit.has_value() && hit->entity != entity;
@@ -424,17 +374,12 @@ auto PhysicsWorld::bind_terrain_collider(TerrainColliderHandle handle, glm::vec3
     auto &slot = impl_->terrain_colliders[handle.index];
 
     if (heights.size() != slot.heights.size()) {
-        return; // sample count must match what this slot was reserved with
+        return; // must match the slot's reserved sample count
     }
 
     std::ranges::copy(heights, slot.heights.begin());
 
-    // Rebinding an already-active slot repositions the same physical
-    // surface in place (e.g. a streamed chunk shifting under a floating
-    // origin) rather than swapping in an unrelated one, so any body
-    // currently resting on it must move by the same delta -- otherwise it's
-    // left floating in the empty space the terrain vacated, or embedded in
-    // the terrain if the slot moved up through it.
+    // Rebinding an active slot moves the same surface, so bodies resting on it move by the same delta.
     if (slot.active) {
         glm::vec3 const delta = centre - to_glm(slot.body->getWorldTransform().getOrigin());
 
@@ -474,12 +419,7 @@ auto PhysicsWorld::bind_terrain_collider(TerrainColliderHandle handle, glm::vec3
     transform.setOrigin(to_bt(centre));
     slot.body->setWorldTransform(transform);
 
-    // Remove-then-add rather than an in-place AABB refresh: a static body
-    // that already has contact manifolds against dynamic bodies can leave
-    // stale contacts behind if just teleported, and this makes Bullet
-    // clean the broadphase pair cache for us. Costs microseconds; this is
-    // called at most a couple of times per frame (see the terrain
-    // streaming plan's per-frame collider-update budget).
+    // Remove and re-add rather than teleport, so Bullet drops stale contacts and broadphase pairs.
     if (slot.active) {
         impl_->world->removeRigidBody(slot.body);
     }
@@ -521,11 +461,6 @@ auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
     constexpr int max_substeps = 2;
     impl_->world->stepSimulation(delta_time, max_substeps, fixed_dt);
 
-    // A view instead of walking our own entity-keyed container: entt
-    // already guarantees every iterated entity is alive and has both
-    // components, and packs Transform/PhysicsBody contiguously per its own
-    // storage layout, so this no longer pays a hash lookup per body per
-    // step just to find what a view already hands over directly.
     auto view = registry.view<Components::Transform, Components::PhysicsBody const>();
 
     for (auto &&[entity, transform, physics_body]: view.each()) {

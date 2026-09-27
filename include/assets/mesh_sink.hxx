@@ -6,14 +6,11 @@
 
 #include "assets/geometry_arena.hxx"
 #include "assets/mesh_create_info.hxx"
-#include "assets/model.hxx" // MeshHandle
+#include "assets/model.hxx"
 #include "core/renderer_error.hxx"
 
-// Narrow surface of Renderer that terrain streaming needs to create and
-// submit GPU meshes. terrain_streamer.hxx/terrain_slot_pool.cxx/
-// terrain_world.cxx depend on this instead of the full Renderer -- Renderer
-// consumes terrain's output (it sits above terrain in the module layering),
-// so terrain calling back into it directly would be a cycle.
+// The part of Renderer terrain streaming needs. Renderer sits above terrain, so depending on it directly would
+// be a cycle.
 struct IMeshSink {
     [[nodiscard]]
     virtual auto create_mesh(MeshCreateInfo const &create_info) -> std::expected<MeshHandle, RendererError> = 0;

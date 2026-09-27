@@ -7,19 +7,10 @@ readonly build_type="${CMAKE_BUILD_TYPE:-Debug}"
 readonly renderdoc_include_path="${RENDERDOC_INCLUDE_PATH:-}"
 readonly cpm_cache_dir="${HOME}/.cache/CPM"
 
-# The image has no non-root user, so without --user every file a rootful
-# daemon's container writes into a bind mount (build/, ~/.cache/CPM) ends up
-# root-owned on the host. Running as the invoking host user instead avoids
-# that; HOME is repointed at a writable, persistent dir since root's HOME
-# (/root) isn't accessible to this UID and isn't a real passwd entry either.
-#
-# A rootless daemon needs the opposite: it already maps container root (uid
-# 0) back to the host user that started it, so bind-mounted writes as root
-# come out correctly owned without any --user. Passing --user "<uid>:<gid>"
-# there instead asks for a *different* container uid, which the daemon maps
-# to some unrelated, unmapped subordinate host uid -- one that doesn't own
-# the bind-mounted directories -- so every write fails with EACCES. See
-# add_docker_user_args below.
+# With a rootful daemon, run as the invoking user so files written into the bind mounts (build/,
+# ~/.cache/CPM) aren't root-owned; HOME then points at a writable directory. A rootless daemon already maps
+# container root to the invoking user, and --user there would map to an unrelated uid that can't write the
+# mounts. See add_docker_user_args.
 readonly container_home="${HOME}/.cache/cross-build-container-home"
 
 # windows-mingw: cross-compile to Windows via mingw-w64.
@@ -218,7 +209,7 @@ validate_renderdoc_path() {
   fi
 }
 
-# Cached in _rootless_docker so `docker info` only runs once per invocation.
+# Cached so `docker info` runs at most once.
 _rootless_docker=""
 
 is_rootless_docker() {
@@ -233,9 +224,7 @@ is_rootless_docker() {
   [[ "${_rootless_docker}" == 1 ]]
 }
 
-# Appends --user to the named array (a nameref) only for a rootful daemon --
-# see container_home's doc comment above for why a rootless one must not get
-# it.
+# Appends --user to the named array for a rootful daemon only (see container_home).
 add_docker_user_args() {
   local -n out_args="$1"
 
@@ -415,9 +404,7 @@ run_test() {
     exit 1
   fi
 
-  # mingw-vulkan-tests is EXCLUDE_FROM_ALL (see test/CMakeLists.txt) so a
-  # plain --build doesn't pay for compiling it or for doctest's build-time
-  # test discovery. Build it explicitly here instead.
+  # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.
   run_container \
     cmake \
     --build "${project_dir}/${build_dir}" \

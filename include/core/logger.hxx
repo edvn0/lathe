@@ -30,14 +30,7 @@ namespace logger {
 
         auto message(Level level, std::string_view message) -> void;
 
-        //
-        // Moves all currently pending console messages into `output`.
-        //
-        // `output` is intended to be reused between frames. Internally the
-        // sink swaps its pending vector with this vector, making the critical
-        // section constant-time and allowing the allocations to be recycled
-        // between the logger and consumer.
-        //
+        // Swaps the pending console messages into `output`. Reuse `output` between frames to recycle allocations.
         auto drain_console(std::vector<ConsoleMessage> &output) -> void;
 
     private:
@@ -88,15 +81,7 @@ namespace logger {
 
 } // namespace logger
 
-//
-// Preserve your existing unqualified:
-//
-//     info(...);
-//     warn(...);
-//     error(...);
-//
-// usage throughout the engine.
-//
+// Unqualified info()/warn()/error() throughout the engine.
 using logger::debug;
 using logger::error;
 using logger::fatal;

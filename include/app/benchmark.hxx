@@ -15,22 +15,16 @@
 
 struct StageTimings;
 
-// --benchmark mode: fly the editor camera around the game's
-// benchmark_camera_path() loop at a fixed timestep with a fixed scene seed,
-// record every frame's per-stage GPU timings, write a JSON summary and
-// exit. Two builds benchmarked on the same machine are then directly
-// comparable (tools/perf/compare_benchmarks.py, .github/workflows/perf.yml).
+// --benchmark mode: fly the editor camera around the game's benchmark_camera_path() at a fixed timestep with
+// a fixed seed, record per-stage GPU timings for every frame, write a JSON summary and exit. Runs of two
+// builds on one machine are directly comparable (tools/perf/compare_benchmarks.py).
 //
 //   --benchmark=<out.json>        enables it; where the results go
 //   --benchmark-frames=<n>        measured frames, one lap of the loop (600)
-//   --benchmark-warmup=<n>        minimum frames parked at the first
-//                                 keyframe before measuring (60)
-//   --benchmark-max-warmup=<n>    measure anyway after this many, even if
-//                                 streaming hasn't settled (1200)
+//   --benchmark-warmup=<n>        minimum frames at the first keyframe before measuring (60)
+//   --benchmark-max-warmup=<n>    measure anyway after this many, even if streaming hasn't settled (1200)
 //   --seed=<n>                    scene seed (1337), see core/random.hxx
-//   --benchmark-screenshots       also screenshot (F12-style, into
-//                                 screenshots/) the first frame at or past
-//                                 each keyframe -- what the run looked at
+//   --benchmark-screenshots       screenshot the first frame at or past each keyframe
 struct BenchmarkOptions {
     std::filesystem::path output_path;
     std::uint32_t frame_count = 600;
@@ -40,14 +34,12 @@ struct BenchmarkOptions {
     bool keyframe_screenshots = false;
 };
 
-// std::nullopt when --benchmark= isn't given (the other flags are then
-// ignored); an error message for a malformed or zero value.
+// nullopt without --benchmark= (the other flags are then ignored); an error for a malformed or zero value.
 [[nodiscard]]
 auto parse_benchmark_options(std::span<char const *const> args)
         -> std::expected<std::optional<BenchmarkOptions>, std::string>;
 
-// Simulated seconds per benchmark frame -- wind, enemy motion etc. advance
-// by exactly this, so frame N shows the same scene in every run.
+// Simulated seconds per frame, so frame N shows the same scene in every run.
 inline constexpr float benchmark_timestep = 1.0F / 60.0F;
 
 struct TimingSummary {
@@ -76,19 +68,15 @@ class BenchmarkRun {
 public:
     BenchmarkRun(BenchmarkOptions options, std::vector<CameraKeyframe> keyframes);
 
-    // Where the camera goes for the frame about to be drawn: the first
-    // keyframe while warming up, then one lap of the loop.
+    // The camera for the frame about to be drawn: the first keyframe while warming up, then one lap.
     [[nodiscard]]
     auto camera() const noexcept -> CameraKeyframe;
 
-    // After each drawn frame. `timings` lag the drawn frame by the frames
-    // in flight -- harmless, the camera moves continuously. `streaming_idle`
-    // gates the end of warmup: nothing may still be loading when
-    // measurement starts.
+    // Call after each drawn frame. `timings` lag by the frames in flight. Warmup ends only once
+    // `streaming_idle`.
     auto on_frame_drawn(StageTimings const &timings, bool streaming_idle) -> void;
 
-    // True for the frame about to be drawn if it's the first measured
-    // frame at or past a keyframe (one per keyframe per lap).
+    // True if the frame about to be drawn is the first measured one at or past a keyframe.
     [[nodiscard]]
     auto at_keyframe() const noexcept -> bool;
 

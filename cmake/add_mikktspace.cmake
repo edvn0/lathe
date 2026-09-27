@@ -1,8 +1,6 @@
 # ------------------------------------------------------------------------------
-# MikkTSpace tangent-space generation library
-#
-# Public-domain single-file C library with no upstream CMakeLists, so we
-# fetch the source via CPM and hand-roll a static target for it.
+# MikkTSpace: single-file C library without a CMakeLists, so it gets a
+# hand-written static target.
 # ------------------------------------------------------------------------------
 
 function(add_mikktspace_dependency)
@@ -44,9 +42,7 @@ function(add_mikktspace_dependency)
         POSITION_INDEPENDENT_CODE ON
     )
 
-    # Upstream ships with -Wall-hostile code (implicit conversions,
-    # comparison warnings); suppress rather than fight it, matching how
-    # vma.cxx is already handled below.
+    # Upstream code is warning-heavy; suppress rather than patch.
     if(MSVC)
         target_compile_options(mikktspace_library PRIVATE /W0)
     elseif(

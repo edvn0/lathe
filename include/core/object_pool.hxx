@@ -8,26 +8,11 @@
 #include "core/handle.hxx"
 #include "core/holder.hxx"
 
-/*
- * Generic fixed-capacity, generation-checked free-list pool ("bindless
- * arena") shared by every *Storage class that hands out a generational
- * handle to a slot it owns (ImageStorage, MaterialStorage, SamplerStorage,
- * PipelineStorage, ShaderObjectStorage, MeshStorage, ModelStorage).
- *
- * Deliberately knows nothing about Vulkan or domain-specific cleanup:
- * release() moves the payload back out to the caller instead of destroying
- * it in place, so a wrapper storage can run vkDestroySampler, Pipeline's own
- * destroy(), etc. on the returned value. This keeps ObjectPool a plain data
- * structure
- * that's fully unit-testable without a VulkanContext -- see
- * test/object_pool_test.cxx.
- *
- * Thread safety, "protected"/permanently-reserved slots, and dirty/revision
- * bits are likewise left to the wrapper: T carries whatever extra
- * bookkeeping a given domain needs, and a wrapper that mutates the pool from
- * multiple threads (PipelineStorage, ShaderObjectStorage) supplies its own
- * mutex around allocate()/release().
- */
+// Fixed-capacity, generation-checked free-list pool behind every *Storage class that hands out generational
+// handles.
+//
+// Knows nothing about Vulkan: release() moves the payload out so the wrapper can destroy it. Thread safety,
+// reserved slots and dirty tracking are also left to the wrapper.
 template<typename T, std::uint32_t Sentinel = std::numeric_limits<std::uint32_t>::max()>
 class ObjectPool {
 public:
@@ -70,13 +55,8 @@ public:
         return pool;
     }
 
-    // Reserves a slot and returns a handle plus a reference to the slot's
-    // value for the caller to fill in. The value starts at T{} the first
-    // time a given slot is ever used, and otherwise holds whatever a prior
-    // release() left behind (see release()'s comment) -- the caller is
-    // responsible for overwriting every field a fresh occupant needs.
-    // std::nullopt means the free list is exhausted -- translating that into
-    // a domain-specific capacity_exceeded error is the caller's job.
+    // Reserves a slot and returns its handle and value. The value is T{} on a slot's first use, otherwise
+    // whatever release() left behind, so the caller must overwrite every field it needs. nullopt when full.
     [[nodiscard]]
     auto allocate() -> std::optional<std::pair<HandleT, T &>> {
         if (free_head_ >= slots_.size()) {
@@ -113,18 +93,11 @@ public:
         };
     }
 
-    // Validates handle, moves its payload out, bumps the slot's generation
-    // (skipping the 0 wraparound so generation 0 always stays "never
-    // allocated"), and returns the slot to the free list. std::nullopt for a
-    // stale or out-of-range handle -- the pool never double-frees.
+    // Moves the payload out, bumps the generation (never back to 0, which means "never allocated") and frees the
+    // slot. nullopt for a stale or out-of-range handle.
     //
-    // Deliberately leaves whatever std::move() left behind in the slot's
-    // value untouched (rather than resetting it to T{}) -- some payloads
-    // carry fields that must survive a release/reuse cycle unmodified (e.g.
-    // a monotonically-bumped descriptor revision counter that must never
-    // collide with a value some in-flight frame already cached). It is the
-    // wrapper storage's job to overwrite every field a fresh occupant needs
-    // on its next allocate(), exactly as it already does today.
+    // The moved-from value stays in the slot rather than being reset, so fields like a descriptor revision counter
+    // survive reuse.
     [[nodiscard]]
     auto release(HandleT handle) -> std::optional<T> {
         auto *slot = slot_for(handle);
@@ -168,9 +141,7 @@ public:
         return get(handle) != nullptr;
     }
 
-    // Raw-index accessors for call sites that iterate every slot by GPU
-    // index rather than through a validated handle (e.g.
-    // ImageStorage::descriptor_record / SamplerStorage::descriptor_record).
+    // Raw-index access for code that iterates every slot by GPU index.
     [[nodiscard]]
     auto get_at(std::uint32_t index) noexcept -> T * {
         return index < slots_.size() ? &slots_[index].value : nullptr;

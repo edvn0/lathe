@@ -9,24 +9,10 @@
 template<typename T, std::uint32_t Sentinel>
 class ObjectPool;
 
-/*
- * Move-only RAII owner for an allocation in ObjectPool<T, Sentinel>.
- *
- * Holder does not physically store T. ObjectPool owns the storage while
- * Holder owns the lifetime of the allocation.
- *
- * Destroying or resetting a Holder:
- *
- *   1. calls ObjectPool::release(handle)
- *   2. release() moves T out of the pool slot
- *   3. the returned T is destroyed
- *   4. the slot becomes available for reuse
- *
- * Handle<T> remains the cheap, copyable, non-owning reference to the
- * allocation. Holder<T> is the unique owner of that allocation's lifetime.
- *
- * The ObjectPool must outlive every Holder referring to it.
- */
+// Move-only owner of an ObjectPool allocation. The pool stores the T; destroying or resetting the Holder
+// releases the slot and destroys the value. Handle<T> stays the copyable, non-owning reference.
+//
+// The ObjectPool must outlive every Holder referring to it.
 template<typename T, std::uint32_t Sentinel = std::numeric_limits<std::uint32_t>::max()>
 class Holder {
 public:
@@ -104,13 +90,7 @@ public:
         return pool_ != nullptr && pool_->contains(handle_);
     }
 
-    /*
-     * Releases and destroys the owned T.
-     *
-     * ObjectPool::release() returns optional<T>. The temporary returned here
-     * owns the moved-out value and is destroyed at the end of this statement,
-     * invoking T::~T().
-     */
+    // Releases the slot and destroys the value.
     auto reset() noexcept -> void {
         if (pool_ == nullptr) {
             return;
@@ -122,14 +102,7 @@ public:
         handle_ = {};
     }
 
-    /*
-     * Relinquishes ownership without releasing the ObjectPool allocation.
-     *
-     * The returned HandleT remains valid and whoever receives it becomes
-     * responsible for eventually calling ObjectPool::release().
-     *
-     * Analogous to std::unique_ptr::release().
-     */
+    // Gives up ownership without releasing the slot; the caller must release it. Like std::unique_ptr::release().
     [[nodiscard]]
     auto detach() noexcept -> HandleT {
         pool_ = nullptr;

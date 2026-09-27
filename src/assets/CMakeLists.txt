@@ -18,9 +18,7 @@ set(
     texture_streamer.cxx
 )
 
-# Exactly one platform's slang_library.cxx is compiled in, matching the
-# platform this project is being built for -- not the host running CMake
-# (relevant when cross-compiling windows-mingw from a Linux host).
+# Picks the target platform's slang_library.cxx, not the host's.
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   list(APPEND engine_assets_sources platform/windows/slang_library.cxx)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")

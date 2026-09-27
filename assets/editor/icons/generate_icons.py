@@ -50,8 +50,7 @@ def poly(draw, pts, alpha=255):
 def line(draw, x0, y0, x1, y1, width, alpha=255):
     lw = max(1, round(width * SS))
     draw.line([(px(x0), px(y0)), (px(x1), px(y1))], fill=w(alpha), width=lw)
-    # Round caps: PIL's line() gives flat ends, so stamp a disc at each
-    # endpoint to match the rounded-stroke look used throughout this set.
+    # PIL's line() has flat ends; stamp a disc at each endpoint for round caps.
     r = lw / 2.0
     for (x, y) in [(x0, y0), (x1, y1)]:
         draw.ellipse([px(x) - r, px(y) - r, px(x) + r, px(y) + r], fill=w(alpha))
@@ -87,8 +86,7 @@ def arc(draw, cx, cy, r, a0, a1, width, alpha=255):
 
 # ---------------------------------------------------------------- mesh
 def icon_mesh():
-    # Isometric cube with per-face alpha so a single white texture still
-    # reads as shaded once tinted -- top brightest, left mid, right darkest.
+    # Isometric cube with per-face alpha so the white texture still reads as shaded once tinted.
     img = new_canvas()
     d = ImageDraw.Draw(img)
     cx, cy = 12, 13
@@ -126,9 +124,7 @@ def icon_point_light():
 
 # ----------------------------------------------------------- spot light
 def icon_spot_light():
-    # Frustum-shaped shade (narrow mount at top, wide light-spread at
-    # bottom) with fan rays below -- reads as a spotlight/flashlight rather
-    # than a pin when the mount and shade are clearly separated.
+    # A shade with rays below, so it reads as a spotlight.
     img = new_canvas()
     d = ImageDraw.Draw(img)
     tl, tr = (10.2, 6.6), (13.8, 6.6)
@@ -231,9 +227,7 @@ def icon_move():
 
 # ---------------------------------------------------------------- rotate
 def icon_rotate():
-    # PIL's arc() angles run clockwise from 3 o'clock (screen convention,
-    # y-down) -- the arrowhead is built in that same frame, at the arc's
-    # end angle, pointing along the circle's clockwise tangent there.
+    # PIL's arc() angles run clockwise from 3 o'clock; the arrowhead uses the same frame at the arc's end.
     img = new_canvas()
     d = ImageDraw.Draw(img)
     cx, cy = 12, 12.5

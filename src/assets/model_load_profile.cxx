@@ -18,9 +18,7 @@ auto format_model_load_profile(ModelLoadProfile const &profile) -> std::string {
 
     auto const gpu_upload_total_ms = to_ms(profile.material_creation_ns) + to_ms(profile.geometry_upload_ns);
 
-    // Summed across every texture job, which run concurrently on separate
-    // thread_pool() workers -- this is aggregate CPU-seconds spent, not
-    // wall-clock time, and can (and usually will) exceed total_wall_ns.
+    // Summed over concurrent jobs, so this is CPU time and usually exceeds total_wall_ns.
     auto const texture_cpu_total_ms = to_ms(profile.texture_cache_lookup_ns) + to_ms(profile.texture_decode_ns) +
                                       to_ms(profile.texture_mip_generation_ns) + to_ms(profile.texture_encode_ns) +
                                       to_ms(profile.texture_transcode_ns) + to_ms(profile.texture_cache_write_ns);

@@ -9,23 +9,9 @@
 #include <memory>
 #include <vector>
 
-//
-// PhysicsWorld needs no live GPU/window -- only a thread pool and Bullet --
-// so its play/stop lifecycle is unit-testable in isolation. This suite
-// specifically covers repeated construct/destroy cycles: Application::play()
-// creates a fresh PhysicsWorld and Application::stop() destroys it, once per
-// simulation run, exactly like the loop below.
-//
-// Bullet's task scheduler is a process-global (btSetTaskScheduler /
-// btGetTaskScheduler in LinearMath/btThreads.h) that PhysicsWorld::Impl
-// installs from its own ThreadPoolTaskScheduler member. A prior bug left
-// that global dangling once the owning PhysicsWorld was destroyed: the next
-// PhysicsWorld's constructor called btSetTaskScheduler() again, which
-// dereferences the *previous* scheduler to call deactivate() on it first --
-// a use-after-free that crashed on the second play(). This test reproduces
-// that exact construct/step/destroy/reconstruct sequence so a regression
-// fails here under plain CTest, and fails loudly under ASan (SANITIZE=1).
-//
+// Repeated construct/step/destroy cycles, as play()/stop() do. Bullet's task scheduler is a process global,
+// and setting a new one calls deactivate() on the previous one, so a PhysicsWorld that doesn't clear it
+// leaves the next one dereferencing a dangling pointer.
 TEST_SUITE("unit") {
     TEST_CASE("PhysicsWorld survives repeated stop/start cycles") {
         BS::priority_thread_pool pool{2};
@@ -47,7 +33,7 @@ TEST_SUITE("unit") {
 
             CHECK(registry.get<Components::Transform>(entity).position.y < 5.0F);
 
-            world.reset(); // mirrors Scene::on_scene_stop()'s physics_world.reset()
+            world.reset(); // as Scene::on_scene_stop() does
         }
     }
 
@@ -68,7 +54,7 @@ TEST_SUITE("unit") {
         world.remove_body(registry, entity);
         world.step(registry, 1.0F / 60.0F);
 
-        CHECK(true); // reaching here without crashing/UB is the assertion
+        CHECK(true); // not crashing is the assertion
     }
 
     namespace {
@@ -88,9 +74,7 @@ TEST_SUITE("unit") {
         PhysicsWorldSettings const settings{};
         PhysicsWorld world{settings, pool, registry};
 
-        // Flat heightfield (all zero samples), centred in its own local
-        // AABB since min/max are symmetric -- see
-        // PhysicsWorld::bind_terrain_collider's doc comment.
+        // Flat heightfield centred in its symmetric AABB.
         TerrainColliderDesc const desc{
                 .samples_x = 5, .samples_z = 5, .cell_size_x = 1.0F, .cell_size_z = 1.0F, .min_height = -1.0F, .max_height = 1.0F,
         };
@@ -138,10 +122,7 @@ TEST_SUITE("unit") {
         settle(world, registry);
         REQUIRE(registry.get<Components::Transform>(entity).position.y == doctest::Approx(5.5F).epsilon(0.1));
 
-        // Rebind the same handle to a new centre and re-settle -- proves
-        // the height rewrite and the shape's AABB (derived once from
-        // desc.min_height/max_height, never from the data) both still work
-        // after the move.
+        // Rebinding to a new centre must keep the shape working.
         world.bind_terrain_collider(handle, glm::vec3{0.0F, 10.0F, 0.0F}, flat_heights);
         world.set_velocity(registry, entity, glm::vec3{0.0F, 0.0F, 0.0F});
         settle(world, registry);
@@ -172,11 +153,9 @@ TEST_SUITE("unit") {
 
             world->step(registry, 1.0F / 60.0F);
 
-            world.reset(); // mirrors Scene::on_scene_stop()'s physics_world.reset()
+            world.reset(); // as Scene::on_scene_stop() does
 
-            // entity 0's own body is torn down along with its PhysicsWorld,
-            // same as any other entity -- the terrain collider's coexisting
-            // null-user-pointer body must not have changed that.
+            // Entity 0's body is torn down normally despite the terrain collider's null user pointer.
             CHECK(registry.valid(entity_zero));
             CHECK_FALSE(registry.all_of<Components::PhysicsBody>(entity_zero));
         }

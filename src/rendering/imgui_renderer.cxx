@@ -41,7 +41,7 @@ namespace gui {
             std::uint32_t base_vertex;
             std::uint32_t texture_id;
             std::uint32_t sampler_id{0};
-            // See gui::linear_source_texture_id's doc comment.
+            // See gui::linear_source_texture_bit.
             std::uint32_t already_linear{0};
         };
 
@@ -49,85 +49,85 @@ namespace gui {
             ImGui::StyleColorsDark();
             ImGuiStyle &style = ImGui::GetStyle();
 
-            style.WindowPadding = {8.f, 8.f};
-            style.FramePadding = {6.f, 4.f};
-            style.CellPadding = {6.f, 4.f};
-            style.ItemSpacing = {8.f, 4.f};
-            style.ItemInnerSpacing = {4.f, 4.f};
-            style.IndentSpacing = 16.f;
-            style.ScrollbarSize = 12.f;
-            style.GrabMinSize = 8.f;
+            style.WindowPadding = {8.F, 8.F};
+            style.FramePadding = {6.F, 4.F};
+            style.CellPadding = {6.F, 4.F};
+            style.ItemSpacing = {8.F, 4.F};
+            style.ItemInnerSpacing = {4.F, 4.F};
+            style.IndentSpacing = 16.F;
+            style.ScrollbarSize = 12.F;
+            style.GrabMinSize = 8.F;
 
-            style.WindowRounding = 4.f;
-            style.ChildRounding = 4.f;
-            style.FrameRounding = 3.f;
-            style.PopupRounding = 4.f;
-            style.ScrollbarRounding = 6.f;
-            style.GrabRounding = 3.f;
-            style.TabRounding = 4.f;
+            style.WindowRounding = 4.F;
+            style.ChildRounding = 4.F;
+            style.FrameRounding = 3.F;
+            style.PopupRounding = 4.F;
+            style.ScrollbarRounding = 6.F;
+            style.GrabRounding = 3.F;
+            style.TabRounding = 4.F;
 
-            style.WindowBorderSize = 1.f;
-            style.ChildBorderSize = 1.f;
-            style.PopupBorderSize = 1.f;
-            style.FrameBorderSize = 0.f;
-            style.TabBorderSize = 0.f;
+            style.WindowBorderSize = 1.F;
+            style.ChildBorderSize = 1.F;
+            style.PopupBorderSize = 1.F;
+            style.FrameBorderSize = 0.F;
+            style.TabBorderSize = 0.F;
 
             auto *c = style.Colors;
-            c[ImGuiCol_Text] = {0.82f, 0.82f, 0.82f, 1.00f};
-            c[ImGuiCol_TextDisabled] = {0.42f, 0.42f, 0.44f, 1.00f};
-            c[ImGuiCol_WindowBg] = {0.13f, 0.13f, 0.14f, 1.00f};
-            c[ImGuiCol_ChildBg] = {0.10f, 0.10f, 0.11f, 1.00f};
-            c[ImGuiCol_PopupBg] = {0.11f, 0.11f, 0.12f, 0.96f};
-            c[ImGuiCol_Border] = {0.25f, 0.25f, 0.27f, 0.60f};
-            c[ImGuiCol_BorderShadow] = {0.00f, 0.00f, 0.00f, 0.00f};
-            c[ImGuiCol_FrameBg] = {0.18f, 0.18f, 0.20f, 1.00f};
-            c[ImGuiCol_FrameBgHovered] = {0.24f, 0.24f, 0.26f, 1.00f};
-            c[ImGuiCol_FrameBgActive] = {0.28f, 0.28f, 0.31f, 1.00f};
-            c[ImGuiCol_TitleBg] = {0.09f, 0.09f, 0.10f, 1.00f};
-            c[ImGuiCol_TitleBgActive] = {0.09f, 0.09f, 0.10f, 1.00f};
-            c[ImGuiCol_TitleBgCollapsed] = {0.09f, 0.09f, 0.10f, 0.75f};
-            c[ImGuiCol_MenuBarBg] = {0.11f, 0.11f, 0.12f, 1.00f};
-            c[ImGuiCol_ScrollbarBg] = {0.00f, 0.00f, 0.00f, 0.00f};
-            c[ImGuiCol_ScrollbarGrab] = {0.28f, 0.28f, 0.30f, 1.00f};
-            c[ImGuiCol_ScrollbarGrabHovered] = {0.34f, 0.34f, 0.37f, 1.00f};
-            c[ImGuiCol_ScrollbarGrabActive] = {0.40f, 0.40f, 0.44f, 1.00f};
-            c[ImGuiCol_CheckMark] = {0.26f, 0.59f, 0.98f, 1.00f};
-            c[ImGuiCol_SliderGrab] = {0.26f, 0.59f, 0.98f, 0.90f};
-            c[ImGuiCol_SliderGrabActive] = {0.46f, 0.54f, 0.80f, 1.00f};
-            c[ImGuiCol_Button] = {0.24f, 0.24f, 0.27f, 1.00f};
-            c[ImGuiCol_ButtonHovered] = {0.26f, 0.59f, 0.98f, 0.55f};
-            c[ImGuiCol_ButtonActive] = {0.26f, 0.59f, 0.98f, 1.00f};
-            c[ImGuiCol_Header] = {0.26f, 0.59f, 0.98f, 0.25f};
-            c[ImGuiCol_HeaderHovered] = {0.26f, 0.59f, 0.98f, 0.50f};
-            c[ImGuiCol_HeaderActive] = {0.26f, 0.59f, 0.98f, 0.90f};
-            c[ImGuiCol_Separator] = {0.25f, 0.25f, 0.27f, 0.60f};
-            c[ImGuiCol_SeparatorHovered] = {0.26f, 0.59f, 0.98f, 0.60f};
-            c[ImGuiCol_SeparatorActive] = {0.26f, 0.59f, 0.98f, 1.00f};
-            c[ImGuiCol_ResizeGrip] = {0.26f, 0.59f, 0.98f, 0.20f};
-            c[ImGuiCol_ResizeGripHovered] = {0.26f, 0.59f, 0.98f, 0.67f};
-            c[ImGuiCol_ResizeGripActive] = {0.26f, 0.59f, 0.98f, 0.95f};
-            c[ImGuiCol_Tab] = {0.09f, 0.09f, 0.10f, 1.00f};
-            c[ImGuiCol_TabHovered] = {0.30f, 0.30f, 0.34f, 1.00f};
-            c[ImGuiCol_TabActive] = {0.20f, 0.20f, 0.23f, 1.00f};
-            c[ImGuiCol_TabUnfocused] = {0.09f, 0.09f, 0.10f, 1.00f};
-            c[ImGuiCol_TabUnfocusedActive] = {0.14f, 0.14f, 0.16f, 1.00f};
-            c[ImGuiCol_DockingPreview] = {0.26f, 0.59f, 0.98f, 0.60f};
-            c[ImGuiCol_DockingEmptyBg] = {0.10f, 0.10f, 0.11f, 1.00f};
-            c[ImGuiCol_PlotLines] = {0.61f, 0.61f, 0.61f, 1.00f};
-            c[ImGuiCol_PlotLinesHovered] = {1.00f, 0.43f, 0.35f, 1.00f};
-            c[ImGuiCol_PlotHistogram] = {0.26f, 0.59f, 0.98f, 1.00f};
-            c[ImGuiCol_PlotHistogramHovered] = {1.00f, 0.43f, 0.35f, 1.00f};
-            c[ImGuiCol_TableHeaderBg] = {0.13f, 0.13f, 0.15f, 1.00f};
-            c[ImGuiCol_TableBorderStrong] = {0.25f, 0.25f, 0.27f, 1.00f};
-            c[ImGuiCol_TableBorderLight] = {0.20f, 0.20f, 0.22f, 1.00f};
-            c[ImGuiCol_TableRowBg] = {0.00f, 0.00f, 0.00f, 0.00f};
-            c[ImGuiCol_TableRowBgAlt] = {1.00f, 1.00f, 1.00f, 0.03f};
-            c[ImGuiCol_TextSelectedBg] = {0.26f, 0.59f, 0.98f, 0.35f};
-            c[ImGuiCol_DragDropTarget] = {0.26f, 0.59f, 0.98f, 0.90f};
-            c[ImGuiCol_NavHighlight] = {0.26f, 0.59f, 0.98f, 1.00f};
-            c[ImGuiCol_NavWindowingHighlight] = {1.00f, 1.00f, 1.00f, 0.70f};
-            c[ImGuiCol_NavWindowingDimBg] = {0.80f, 0.80f, 0.80f, 0.20f};
-            c[ImGuiCol_ModalWindowDimBg] = {0.10f, 0.10f, 0.10f, 0.45f};
+            c[ImGuiCol_Text] = {0.82F, 0.82F, 0.82F, 1.00F};
+            c[ImGuiCol_TextDisabled] = {0.42F, 0.42F, 0.44F, 1.00F};
+            c[ImGuiCol_WindowBg] = {0.13F, 0.13F, 0.14F, 1.00F};
+            c[ImGuiCol_ChildBg] = {0.10F, 0.10F, 0.11F, 1.00F};
+            c[ImGuiCol_PopupBg] = {0.11F, 0.11F, 0.12F, 0.96F};
+            c[ImGuiCol_Border] = {0.25F, 0.25F, 0.27F, 0.60F};
+            c[ImGuiCol_BorderShadow] = {0.00F, 0.00F, 0.00F, 0.00F};
+            c[ImGuiCol_FrameBg] = {0.18F, 0.18F, 0.20F, 1.00F};
+            c[ImGuiCol_FrameBgHovered] = {0.24F, 0.24F, 0.26F, 1.00F};
+            c[ImGuiCol_FrameBgActive] = {0.28F, 0.28F, 0.31F, 1.00F};
+            c[ImGuiCol_TitleBg] = {0.09F, 0.09F, 0.10F, 1.00F};
+            c[ImGuiCol_TitleBgActive] = {0.09F, 0.09F, 0.10F, 1.00F};
+            c[ImGuiCol_TitleBgCollapsed] = {0.09F, 0.09F, 0.10F, 0.75F};
+            c[ImGuiCol_MenuBarBg] = {0.11F, 0.11F, 0.12F, 1.00F};
+            c[ImGuiCol_ScrollbarBg] = {0.00F, 0.00F, 0.00F, 0.00F};
+            c[ImGuiCol_ScrollbarGrab] = {0.28F, 0.28F, 0.30F, 1.00F};
+            c[ImGuiCol_ScrollbarGrabHovered] = {0.34F, 0.34F, 0.37F, 1.00F};
+            c[ImGuiCol_ScrollbarGrabActive] = {0.40F, 0.40F, 0.44F, 1.00F};
+            c[ImGuiCol_CheckMark] = {0.26F, 0.59F, 0.98F, 1.00F};
+            c[ImGuiCol_SliderGrab] = {0.26F, 0.59F, 0.98F, 0.90F};
+            c[ImGuiCol_SliderGrabActive] = {0.46F, 0.54F, 0.80F, 1.00F};
+            c[ImGuiCol_Button] = {0.24F, 0.24F, 0.27F, 1.00F};
+            c[ImGuiCol_ButtonHovered] = {0.26F, 0.59F, 0.98F, 0.55F};
+            c[ImGuiCol_ButtonActive] = {0.26F, 0.59F, 0.98F, 1.00F};
+            c[ImGuiCol_Header] = {0.26F, 0.59F, 0.98F, 0.25F};
+            c[ImGuiCol_HeaderHovered] = {0.26F, 0.59F, 0.98F, 0.50F};
+            c[ImGuiCol_HeaderActive] = {0.26F, 0.59F, 0.98F, 0.90F};
+            c[ImGuiCol_Separator] = {0.25F, 0.25F, 0.27F, 0.60F};
+            c[ImGuiCol_SeparatorHovered] = {0.26F, 0.59F, 0.98F, 0.60F};
+            c[ImGuiCol_SeparatorActive] = {0.26F, 0.59F, 0.98F, 1.00F};
+            c[ImGuiCol_ResizeGrip] = {0.26F, 0.59F, 0.98F, 0.20F};
+            c[ImGuiCol_ResizeGripHovered] = {0.26F, 0.59F, 0.98F, 0.67F};
+            c[ImGuiCol_ResizeGripActive] = {0.26F, 0.59F, 0.98F, 0.95F};
+            c[ImGuiCol_Tab] = {0.09F, 0.09F, 0.10F, 1.00F};
+            c[ImGuiCol_TabHovered] = {0.30F, 0.30F, 0.34F, 1.00F};
+            c[ImGuiCol_TabActive] = {0.20F, 0.20F, 0.23F, 1.00F};
+            c[ImGuiCol_TabUnfocused] = {0.09F, 0.09F, 0.10F, 1.00F};
+            c[ImGuiCol_TabUnfocusedActive] = {0.14F, 0.14F, 0.16F, 1.00F};
+            c[ImGuiCol_DockingPreview] = {0.26F, 0.59F, 0.98F, 0.60F};
+            c[ImGuiCol_DockingEmptyBg] = {0.10F, 0.10F, 0.11F, 1.00F};
+            c[ImGuiCol_PlotLines] = {0.61F, 0.61F, 0.61F, 1.00F};
+            c[ImGuiCol_PlotLinesHovered] = {1.00F, 0.43F, 0.35F, 1.00F};
+            c[ImGuiCol_PlotHistogram] = {0.26F, 0.59F, 0.98F, 1.00F};
+            c[ImGuiCol_PlotHistogramHovered] = {1.00F, 0.43F, 0.35F, 1.00F};
+            c[ImGuiCol_TableHeaderBg] = {0.13F, 0.13F, 0.15F, 1.00F};
+            c[ImGuiCol_TableBorderStrong] = {0.25F, 0.25F, 0.27F, 1.00F};
+            c[ImGuiCol_TableBorderLight] = {0.20F, 0.20F, 0.22F, 1.00F};
+            c[ImGuiCol_TableRowBg] = {0.00F, 0.00F, 0.00F, 0.00F};
+            c[ImGuiCol_TableRowBgAlt] = {1.00F, 1.00F, 1.00F, 0.03F};
+            c[ImGuiCol_TextSelectedBg] = {0.26F, 0.59F, 0.98F, 0.35F};
+            c[ImGuiCol_DragDropTarget] = {0.26F, 0.59F, 0.98F, 0.90F};
+            c[ImGuiCol_NavHighlight] = {0.26F, 0.59F, 0.98F, 1.00F};
+            c[ImGuiCol_NavWindowingHighlight] = {1.00F, 1.00F, 1.00F, 0.70F};
+            c[ImGuiCol_NavWindowingDimBg] = {0.80F, 0.80F, 0.80F, 0.20F};
+            c[ImGuiCol_ModalWindowDimBg] = {0.10F, 0.10F, 0.10F, 0.45F};
         }
 
         auto create_pipeline(Renderer &r, VkFormat fb) -> std::expected<PipelineNodeHandle, RendererError> {
@@ -136,12 +136,12 @@ namespace gui {
                             {
                                     renderer::ShaderCompileRequest{
                                             .source_path = "assets/shaders/gui.slang",
-                                            .entry_point = "vs_main",
+                                            .entry_point = "main_vs",
                                             .stage = renderer::ShaderStage::vertex,
                                     },
                                     renderer::ShaderCompileRequest{
                                             .source_path = "assets/shaders/gui.slang",
-                                            .entry_point = "fs_main",
+                                            .entry_point = "main_fs",
                                             .stage = renderer::ShaderStage::fragment,
                                     },
                             },
@@ -201,7 +201,7 @@ namespace gui {
     }
 
     auto ImGuiRenderer::begin_frame(ImGuiFramebuffer fb) -> void {
-        const auto &dim = std::get<VkExtent2D>(fb);
+        auto const &dim = std::get<VkExtent2D>(fb);
 
         ImGuiIO &io = ImGui::GetIO();
         io.DisplaySize =
@@ -286,9 +286,7 @@ namespace gui {
         vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
         vkCmdSetViewportWithCount(cmd, 1, &vp);
 
-        // Shader objects have no baked pipeline state, so blending is command-buffer
-        // dynamic state that must be set explicitly here rather than carried from
-        // whatever the previous draw in this command buffer left it as.
+        // Shader objects bake no blend state, so set it here.
         VkBool32 const blend_enable = VK_TRUE;
         VkColorBlendEquationEXT const blend_equation{
                 .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
@@ -314,8 +312,8 @@ namespace gui {
         DrawableData &drawable = acquire_draw_slot();
 
         if (std::cmp_less(drawable.index_count, dd->TotalIdxCount)) {
-            const auto size = static_cast<std::size_t>(dd->TotalIdxCount * 4) * sizeof(ImDrawIdx);
-            const auto actual_size = next_power_of_two(size);
+            auto const size = static_cast<std::size_t>(dd->TotalIdxCount * 4) * sizeof(ImDrawIdx);
+            auto const actual_size = next_power_of_two(size);
             info("[ImGui] Reallocating index buffer to {} bytes", actual_size);
 
             auto created = Buffer::create(renderer.context(), BufferCreateInfo{
@@ -335,8 +333,8 @@ namespace gui {
         }
 
         if (static_cast<std::int32_t>(drawable.vertex_count) < dd->TotalVtxCount) {
-            const auto size = static_cast<std::size_t>(dd->TotalVtxCount * 4) * sizeof(ImDrawVert);
-            const auto actual_size = next_power_of_two(size);
+            auto const size = static_cast<std::size_t>(dd->TotalVtxCount * 4) * sizeof(ImDrawVert);
+            auto const actual_size = next_power_of_two(size);
             info("[ImGui] Reallocating vertex buffer to {} bytes", actual_size);
 
             auto created =
@@ -365,7 +363,7 @@ namespace gui {
             all_itx.reserve(static_cast<std::size_t>(dd->TotalIdxCount));
 
             for (int n = 0; n < dd->CmdListsCount; n++) {
-                const auto *imgui_cmd = dd->CmdLists[n];
+                auto const *imgui_cmd = dd->CmdLists[n];
                 all_vtx.insert(all_vtx.end(), imgui_cmd->VtxBuffer.Data,
                                imgui_cmd->VtxBuffer.Data + imgui_cmd->VtxBuffer.Size);
                 all_itx.insert(all_itx.end(), imgui_cmd->IdxBuffer.Data,
@@ -389,10 +387,10 @@ namespace gui {
         std::uint32_t vertex_offset = 0;
 
         for (int n = 0; n < dd->CmdListsCount; n++) {
-            const auto *command_list = dd->CmdLists[n];
+            auto const *command_list = dd->CmdLists[n];
 
             for (int cmd_i = 0; cmd_i < command_list->CmdBuffer.Size; cmd_i++) {
-                const auto &imgui_cmd = command_list->CmdBuffer[cmd_i];
+                auto const &imgui_cmd = command_list->CmdBuffer[cmd_i];
 
                 ImVec2 clip_min((imgui_cmd.ClipRect.x - clip_offset.x) * clip_scale.x,
                                 (imgui_cmd.ClipRect.y - clip_offset.y) * clip_scale.y);
@@ -408,10 +406,7 @@ namespace gui {
                     continue;
                 }
 
-                // See gui::linear_source_texture_id's doc comment
-                // (imgui_renderer.hxx) -- the flag bit lives above the
-                // bindless index range (indices fit comfortably in 32 bits),
-                // so it's masked back off before use as texture_id.
+                // Strip gui::linear_source_texture_bit to get the bindless index.
                 auto const raw_tex_id = static_cast<std::uint64_t>(imgui_cmd.GetTexID());
                 bool const already_linear = (raw_tex_id & linear_source_texture_bit) != 0;
 
@@ -457,8 +452,8 @@ namespace gui {
         ImGuiIO &io = ImGui::GetIO();
         ImFontConfig cfg{};
         cfg.FontDataOwnedByAtlas = false;
-        cfg.RasterizerMultiply = 1.5f;
-        cfg.SizePixels = std::ceilf(f.size);
+        cfg.RasterizerMultiply = 1.5F;
+        cfg.SizePixels = std::ceil(f.size);
         cfg.PixelSnapH = true;
         cfg.OversampleH = 4;
         cfg.OversampleV = 4;
@@ -468,7 +463,7 @@ namespace gui {
         std::filesystem::path const font_path{f.font_path};
 
         if (std::filesystem::exists(font_path)) {
-            const auto path_str = font_path.string();
+            auto const path_str = font_path.string();
             font = io.Fonts->AddFontFromFileTTF(path_str.c_str(), cfg.SizePixels, &cfg);
         }
 
@@ -479,7 +474,7 @@ namespace gui {
         int height;
         io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
 
-        const auto *as_bytes = std::bit_cast<const std::byte *>(pixels);
+        auto const *as_bytes = std::bit_cast<std::byte const *>(pixels);
 
         info("Font atlas size: {} x {}", width, height);
 

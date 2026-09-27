@@ -6,14 +6,6 @@
 #include <set>
 #include <vector>
 
-//
-// select_chunks/terrain_chunk_children/terrain_chunk_parent are pure
-// functions over plain data (no Vulkan/ECS/thread pool), so the residency
-// invariants the streaming terrain design depends on -- no gaps, no
-// overlaps, bounded flip count under hysteresis -- are directly
-// unit-testable. See the terrain streaming plan for why each matters.
-//
-
 namespace {
 
     [[nodiscard]] auto footprint(ChunkKey const &key, TerrainLodSettings const &settings)
@@ -52,9 +44,7 @@ TEST_SUITE("unit") {
                     CHECK(child_max.y <= parent_max.y);
                 }
 
-                // No two children overlap, and together they cover exactly
-                // the parent's area (checked via area sum, since each
-                // child covers 1/4 of the parent's footprint with no gaps).
+                // Children don't overlap and their areas add up to the parent's.
                 for (std::size_t i = 0; i < children.size(); ++i) {
                     for (std::size_t j = i + 1; j < children.size(); ++j) {
                         CHECK_FALSE(overlaps(footprint(children[i], settings), footprint(children[j], settings)));
@@ -140,7 +130,7 @@ TEST_SUITE("unit") {
 
             for (int step = 0; step <= 200; ++step) {
                 auto const t = static_cast<float>(step) / 200.0F;
-                auto const x = threshold * (0.9F + 0.2F * t); // sweeps from 0.9x to 1.1x threshold
+                auto const x = threshold * (0.9F + 0.2F * t); // 0.9x to 1.1x the threshold
 
                 select_chunks({x, 0.0F}, settings, split_state, desired);
 

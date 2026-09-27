@@ -24,12 +24,7 @@ struct GeometryArenaCreateInfo {
     std::string_view debug_name = "geometry_arena";
 };
 
-// Backed by an Allocator satisfying GeometryAllocatorPolicy (see
-// geometry_allocator.hxx), which owns every offset decision; this class
-// owns the GPU buffers and the upload-then-copy-then-barrier mechanics.
-// `using GeometryArena = GeometryArenaT<BumpAllocator>` below is the type
-// every other file names -- swapping the allocator is a one-line change
-// here with zero call-site impact.
+// The Allocator decides offsets; this class owns the GPU buffers and the upload, copy and barrier.
 template<GeometryAllocatorPolicy Allocator>
 struct GeometryArenaT {
     GeometryArenaT() = default;
@@ -110,22 +105,11 @@ struct GeometryArenaT {
         };
     }
 
-    // Overwrites an already-allocated slice in place -- `data` must be
-    // exactly `slice.size` bytes, and this never touches allocator state
-    // (no allocate/deallocate). The caller owns the in-flight discipline:
-    // the GPU must be done reading whatever was last submitted against this
-    // range (frames_in_flight frames since its last use in a draw), and
-    // this must be recorded before any draw in `command_buffer` that reads
-    // it -- the barrier this records is write-after-write/read, not the
-    // other direction. See TerrainSlotPool::tick_retirement() for the
-    // deferred-release discipline this depends on.
+    // Overwrites an allocated slice in place without touching allocator state. `data` must be exactly
+    // `slice.size` bytes. The GPU must be done reading the range, and this must be recorded before any draw in
+    // `command_buffer` that reads it.
     //
-    // Safe against staging-buffer aliasing only because `upload_buffer` is
-    // currently a full 1:1 mirror of the device buffer (see create()) --
-    // every slice has a dedicated staging offset. If that ever changes to a
-    // rotating ring (docs/engine_review_followups.md), a rewrite through a
-    // reused ring slot needs its own in-flight deferral on the staging side
-    // too.
+    // Relies on `upload_buffer` mirroring the device buffer 1:1, so every slice has its own staging range.
     [[nodiscard]]
     auto rewrite_slice(VkCommandBuffer command_buffer, GeometrySlice const &slice, std::span<const std::byte> data)
             -> std::expected<void, GeometryArenaError> {
@@ -133,23 +117,11 @@ struct GeometryArenaT {
         return write(command_buffer, slice, data);
     }
 
-    // Defers the actual reclaim until tick_retirement() has been called
-    // frames_in_flight times after this -- the GPU may still be reading
-    // draws recorded against `slice` in an already-submitted, not-yet-
-    // fenced frame, so handing this range back out immediately (i.e. a
-    // plain allocator_.deallocate()) could let a new allocate() overwrite
-    // it out from under those draws. Same discipline as
-    // TerrainSlotPool::tick_retirement()/PipelineGraphRepository::
-    // tick_retirement() -- see docs/engine_review_followups.md #1. A no-op
-    // slice (GeometrySlice::valid() == false) is silently ignored so
-    // callers can pass e.g. an unused MeshGeometry::indices without
-    // special-casing it.
+    // Frees `slice` after frames_in_flight tick_retirement() calls, since in-flight frames may still read it.
+    // Invalid slices are ignored.
     auto retire(GeometrySlice const &slice) -> void;
 
-    // Call once per frame (see Renderer::prepare_frame, alongside
-    // pipeline_graph_.tick_retirement()) -- actually calls
-    // allocator_.deallocate() for every retire()d range whose
-    // frames_in_flight countdown has reached zero.
+    // Call once per frame; frees every retired range whose countdown has expired.
     auto tick_retirement() -> void;
 
     [[nodiscard]]
@@ -196,9 +168,4 @@ private:
     std::vector<RetiringRange> retiring_;
 };
 
-// FreeListAllocator-backed: mesh/model geometry can be retire()d and
-// actually reclaimed (see Renderer::destroy_mesh/destroy_model). Was
-// BumpAllocator (never frees) before GeometryArena grew a real free path --
-// see docs/engine_review_followups.md #1 and geometry_allocator.hxx for
-// BumpAllocator if something ever needs arena-never-shrinks behavior back.
 using GeometryArena = GeometryArenaT<FreeListAllocator>;

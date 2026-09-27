@@ -2,12 +2,8 @@ module bloom_upsample;
 
 import bindless;
 
-// One step back up the bloom mip chain: tent-filters the (already
-// accumulated) level below and adds it onto this level's downsampled
-// contents in place. The level below is read through its sampled view
-// while this level is read-modified-written through its storage view --
-// different subresources, and each invocation touches only its own texel
-// of the storage view, so the in-place add is race free.
+// One step up the bloom chain: tent-filters the accumulated level below and adds it onto this level in place.
+// Each invocation only touches its own texel, so the in-place add is race free.
 struct UpsamplePushConstants
 {
     uint lower_texture_index;
@@ -17,10 +13,8 @@ struct UpsamplePushConstants
     float2 lower_texel_size;
     int2 target_size;
 
-    // Tent radius in texels of the lower level. 1.0 is the classic 3x3
-    // tent; much smaller collapses all nine taps onto one bilinear sample,
-    // which leaves the upsampled bloom blocky and makes it crawl as the
-    // camera moves.
+    // Tent radius in texels of the lower level; 1.0 is the classic 3x3 tent. Much smaller values collapse the taps
+    // and make the bloom blocky.
     float filter_radius;
 };
 
@@ -30,7 +24,7 @@ public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void mainCs(uint3 thread_id : SV_DispatchThreadID)
+void main_cs(uint3 thread_id : SV_DispatchThreadID)
 {
     int2 coord = int2(thread_id.xy);
 

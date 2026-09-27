@@ -72,7 +72,7 @@ namespace {
         { t.width };
     };
 
-    constexpr auto compare = []<typename A, typename B>(const A &a, const B &b) -> bool {
+    constexpr auto compare = []<typename A, typename B>(A const &a, B const &b) -> bool {
         if constexpr (HasDepth<A> && HasDepth<B>) {
             return a.width == b.width && a.height == b.height && a.depth == b.depth;
         } else if constexpr ((HasHeight<A> && !HasDepth<A>) && (HasHeight<B> && !HasDepth<B>) ) {
@@ -84,7 +84,6 @@ namespace {
         }
     };
 
-
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
         ZoneScopedNC("SubmitScene", tracy::Color::RoyalBlue);
 
@@ -92,10 +91,7 @@ namespace {
 
         auto view = registry.view<Components::Transform const, Components::Model const>();
 
-        // Opt-in via Application::on_ui() (see set_model_bounds_debug_enabled)
-        // -- one wireframe box per submesh, drawn from the same per-submesh
-        // AABBs the GPU frustum-culling pass tests against, so this shows
-        // exactly what's being culled rather than a coarse per-model guess.
+        // One wireframe box per submesh, from the same AABBs GPU culling tests.
         auto const draw_model_bounds = application.debug_renderer->model_bounds_debug_enabled();
         constexpr auto model_bounds_debug_colour = glm::vec3{0.2F, 1.0F, 0.4F};
 
@@ -230,12 +226,7 @@ namespace {
         }
 
         if (application.terrain) {
-            // Before submit_scene(): puts the vertex rewrite copy before any
-            // draw recorded into this command buffer, so the only hazard
-            // direction is write-then-read -- which GeometryArena::write's
-            // existing barrier already covers (see the terrain streaming
-            // plan). Also gives a chunk zero-frame residency latency
-            // instead of one.
+            // Before submit_scene(), so the vertex copies precede every draw in this command buffer.
             application.terrain->process_ready(*application.renderer, frame->command_buffer,
                                                application.active_scene()->physics_world.get());
         }
@@ -299,7 +290,6 @@ namespace {
                 }
             }
 
-
             auto record_result = application.renderer->record_frame(FrameRecordInfo{
                     .command_buffer = frame->command_buffer,
                     .swapchain_image =
@@ -322,17 +312,8 @@ namespace {
             }
         }
 
-        // Always retire the frame we began, whether or not its content ended
-        // up being usable -- this is what keeps image_available's
-        // signal/wait balanced and in_flight's state honest, regardless of
-        // which step above failed.
-        //
-        // Caveat: this assumes prepare_frame()/record_frame() never return
-        // failure while frame->command_buffer still has an open dynamic
-        // rendering scope (vkCmdBeginRendering without a matching
-        // vkCmdEndRendering) -- ending a command buffer with one open is
-        // itself invalid. If that assumption doesn't hold on the renderer
-        // side, this needs a matching fix there too.
+        // Always retire the frame we began, so image_available and in_flight stay balanced whatever failed above.
+        // This assumes the renderer never fails with a rendering scope still open.
         auto const end_result = context.swapchain.end_frame(*frame);
 
         if (!frame_ok) {
@@ -386,7 +367,6 @@ namespace {
         context->framebuffer_dirty.store(true, std::memory_order_relaxed);
     }
 
-
     auto imgui_wants_keyboard() -> bool {
         return ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureKeyboard;
     }
@@ -395,11 +375,8 @@ namespace {
         return ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse;
     }
 
-    // True while the 3D view holds the mouse. viewport_hovered alone isn't
-    // enough: once right-drag look or embedded-play mouselook disables the
-    // cursor, ImGui's GLFW backend reports no mouse position at all, so the
-    // Viewport window stops being hovered even though the mouse is still
-    // very much driving it.
+    // viewport_hovered goes false once the cursor is disabled, since ImGui's GLFW backend then reports no mouse
+    // position.
     auto viewport_has_mouse(Application const &app) -> bool {
         return app.viewport_hovered || app.mouse_dragging || app.game_mouse_captured;
     }
@@ -411,13 +388,8 @@ namespace {
             return;
         }
 
-        // Releases must never be swallowed, even when ImGui currently wants
-        // the keyboard (e.g. clicking a panel mid-stride) -- a key that was
-        // pressed while ImGui didn't have focus still needs its release
-        // delivered, or EditorCamera/PlayerController's moving_forward_-style
-        // latches get stuck on until the key happens to be pressed and
-        // released again while ImGui isn't capturing. Only presses are
-        // gated, so ImGui text entry can't also start camera movement.
+        // Releases are never swallowed, or a key pressed before ImGui took focus would stay held in the camera or
+        // player controller.
         if (action == GLFW_PRESS && !imgui_wants_keyboard()) {
             app->on_event(KeyPressedEvent{key, mods});
         }
@@ -433,21 +405,11 @@ namespace {
             return;
         }
 
-        // Docking a real "Viewport" window into the central dockspace node
-        // means WantCaptureMouse is true while hovering it (unlike the
-        // fullscreen 3D backdrop this replaced, which wasn't an ImGui window
-        // at all) -- so let input through when it's the Viewport being
-        // hovered even though ImGui itself would otherwise claim it, same
-        // as the pre-docking "not over any panel" case this is standing in
-        // for. See scroll_callback below for the same override.
+        // The Viewport is an ImGui window, so WantCaptureMouse is true over it; let its input through anyway.
         //
-        // Releases are never swallowed, same as key_callback. A right-drag
-        // disables the cursor, which drops viewport_hovered to false (see
-        // viewport_has_mouse) while WantCaptureMouse stays true -- ImGui
-        // still owns the button it saw pressed over the Viewport window. So
-        // gating the release like the press dropped it, leaving the cursor
-        // disabled and mouse_dragging latched on: stuck in mouse-look until
-        // another right click happened to get through.
+        // Releases are never swallowed. A right-drag disables the cursor, after which WantCaptureMouse stays true
+        // (ImGui owns the button) while viewport_hovered reads false, so gating the release would leave mouse-look
+        // stuck on.
         if (action == GLFW_RELEASE) {
             if (!app->is_playing && button == GLFW_MOUSE_BUTTON_RIGHT && app->mouse_dragging) {
                 glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
@@ -466,10 +428,7 @@ namespace {
                 glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
             }
         } else if (!app->play_fullscreen && app->viewport_hovered && !app->game_mouse_captured) {
-            // Embedded play leaves the cursor alone (see Application::play())
-            // until a click inside the Viewport panel captures it for the
-            // game's raw-delta mouselook -- see on_event(KeyPressedEvent)'s
-            // Escape handling for how it's released again.
+            // Embedded play captures the cursor on the first Viewport click; Escape releases it.
             app->game_mouse_captured = true;
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         }
@@ -522,7 +481,6 @@ namespace {
             app->stop();
         }
     }
-
 
     auto install_window_callbacks(VulkanContext &context, Application &app) noexcept -> void {
         static WindowData wd{};
@@ -590,8 +548,7 @@ auto main(int argc, char **argv) -> int {
         return EXIT_FAILURE;
     }
 
-    // Before on_startup(): the seed has to be in place when the game
-    // populates the scene.
+    // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
         set_fixed_random_seed((*benchmark_options)->seed);
     }
@@ -604,7 +561,6 @@ auto main(int argc, char **argv) -> int {
 
         return EXIT_FAILURE;
     }
-
 
     Application application{context};
     application.game = create_game();
@@ -627,11 +583,8 @@ auto main(int argc, char **argv) -> int {
             return EXIT_FAILURE;
         }
 
-        // The editor layout decides the Viewport panel's size and so the
-        // render resolution -- a saved imgui.ini from an earlier session
-        // would make two runs render at different sizes. Always start from
-        // the default layout, and don't save it back. ImGui only reads the
-        // file on its first frame, so this is still in time.
+        // The layout sets the Viewport size and thus the render resolution, so benchmarks ignore imgui.ini to render at
+        // the same size every run.
         ImGui::GetIO().IniFilename = nullptr;
 
         info("Benchmark: {} frames along {} keyframes, seed {}, writing {}", (*benchmark_options)->frame_count,
@@ -673,8 +626,7 @@ auto main(int argc, char **argv) -> int {
         }
 
         auto const now = std::chrono::steady_clock::now();
-        // Fixed step under --benchmark, so frame N simulates the same moment
-        // in every run however slow the device is.
+        // Fixed step under --benchmark, so frame N simulates the same moment on every device.
         auto const delta_time =
                 benchmark ? benchmark_timestep : std::chrono::duration<float>(now - last_frame_time).count();
         last_frame_time = now;
@@ -683,7 +635,7 @@ auto main(int argc, char **argv) -> int {
 
         application.camera.update(std::min(delta_time, 0.1F));
 
-        // Before update(): terrain streaming follows the camera position.
+        // Terrain streaming follows the camera.
         if (benchmark) {
             auto const keyframe = benchmark->camera();
             application.camera.look_at(keyframe.position, keyframe.target);
@@ -730,13 +682,7 @@ auto main(int argc, char **argv) -> int {
             }
         }
 
-        // Render resolution tracks the Viewport panel's size, not the
-        // window's -- fullscreen play is the one exception, since there the
-        // 3D scene covers the whole swapchain with no panel involved (see
-        // Application::on_ui()'s early return and the matching
-        // CompositeTarget::swapchain passed to Renderer::record_frame). The swapchain itself still always
-        // resizes to the real framebuffer size regardless, via
-        // request_resize_if_needed() above.
+        // Render resolution follows the Viewport panel, except in fullscreen play where the scene covers the swapchain.
         auto const desired_render_extent = [&]() -> VkExtent2D {
             if (application.is_playing && application.play_fullscreen) {
                 return context.swapchain.extent();
@@ -744,9 +690,7 @@ auto main(int argc, char **argv) -> int {
 
             auto const &size = application.viewport_content_size;
             if (size.x <= 0.0F || size.y <= 0.0F) {
-                // Panel collapsed/not laid out yet this frame -- keep
-                // whatever the render targets are already sized to rather
-                // than asking Renderer::resize() for a 0x0 extent.
+                // Panel not laid out this frame; keep the current size.
                 return renderer_extent;
             }
 

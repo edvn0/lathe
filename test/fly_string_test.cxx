@@ -103,10 +103,7 @@ TEST_SUITE("unit") {
 
         CHECK(default_value.view() == interned_empty.view());
 
-        // This documents the current implementation.
-        //
-        // Remove/change this test if FlyString{""} is changed to use
-        // nullptr as the canonical representation for an empty string.
+        // Documents the current implementation; update if an empty FlyString becomes nullptr.
         CHECK_FALSE(default_value == interned_empty);
     }
 }

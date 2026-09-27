@@ -1,9 +1,11 @@
+#pragma once
+
 #include <imgui.h>
 
 #include <cstdint>
 
 #include "core/memory_tracker.hxx"
-auto on_memory_ui() -> void {
+inline auto on_memory_ui() -> void {
     static auto previous = MemoryTracker::stats();
 
     auto const stats = MemoryTracker::stats();

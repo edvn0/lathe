@@ -70,8 +70,7 @@ auto ShaderHotReloadWatcher::start(ShaderChangeQueue &change_queue, std::span<st
             continue;
         }
 
-        // recursive = true: catches shaders under nested subfolders
-        // (e.g. assets/shaders/post/, assets/shaders/common/).
+        // recursive, to include subfolders
         auto const watch_id = watcher_->addWatch(directory.string(), listener_.get(), /*recursive*/ true);
 
         if (watch_id < 0) {

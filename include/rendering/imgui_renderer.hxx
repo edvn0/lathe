@@ -31,22 +31,9 @@ namespace gui {
 
     using ImGuiFramebuffer = std::tuple<VkExtent2D, VkFormat>;
 
-    // gui.slang's fragment shader unconditionally applies its own manual
-    // sRGB->linear decode, matching every bindless texture ImGui normally
-    // displays (font atlas, asset thumbnails, ...): those are plain UNORM
-    // images, so that manual decode is the *only* decode applied before the
-    // result is written to the (SRGB-format) render target, which
-    // hardware-encodes it back on store -- a deliberate round trip that
-    // displays the stored bytes unchanged.
-    //
-    // A texture that's itself SRGB-format (e.g. Renderer::viewport_target,
-    // which must stay SRGB to match what the composite pass's
-    // auto-encode-on-write already assumes -- see composite.slang, which
-    // relies on the same trick and does no manual encoding of its own) is
-    // *already* hardware-decoded to linear by the sampler read. Tag such a
-    // texture's ImTextureID with this bit so ImGuiRenderer::render_draw_data
-    // can tell it apart and skip the redundant manual decode -- otherwise
-    // the value gets decoded twice and the image renders too dark.
+    // gui.slang decodes sRGB manually, which suits the UNORM textures ImGui normally shows. Textures that are
+    // themselves sRGB (e.g. the viewport target) are already decoded by the sampler; tag their ImTextureID with
+    // this bit to skip the second decode, or they render too dark.
     inline constexpr std::uint64_t linear_source_texture_bit = std::uint64_t{1} << 32;
 
     [[nodiscard]] constexpr auto linear_source_texture_id(std::uint32_t bindless_index) noexcept -> ImTextureID {
@@ -66,10 +53,7 @@ namespace gui {
 
         auto begin_frame(ImGuiFramebuffer main_fb) -> void;
 
-        // frame_index must match whatever index Renderer::record_frame()
-        // is using this frame -- it's forwarded straight to
-        // GpuResourceTable::bind() so the bindless set matches what
-        // prepare_frame() populated for that frame.
+        // frame_index must match the one Renderer::record_frame() uses this frame.
         auto render(VkCommandBuffer cmd, std::uint32_t frame_index) -> void;
         auto end_frame() -> void;
 

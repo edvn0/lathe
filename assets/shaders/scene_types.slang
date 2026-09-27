@@ -2,9 +2,7 @@ module scene_types;
 
 public static const uint shadow_cascade_count = 4;
 
-// Meshlet limits -- mirror meshlet_max_vertices/meshlet_max_triangles/
-// meshlets_per_task in include/assets/meshlet.hxx. The mesh shaders size
-// their output arrays from these.
+// Mirror meshlet_max_vertices/meshlet_max_triangles/meshlets_per_task in include/assets/meshlet.hxx.
 public static const uint meshlet_max_vertices = 64;
 public static const uint meshlet_max_triangles = 124;
 
@@ -14,9 +12,8 @@ public static const uint meshlets_per_task = 32;
 // Mesh workgroup size: lanes stride over a meshlet's vertices/triangles.
 public static const uint mesh_group_size = 32;
 
-// One meshlet. Mirrors GpuMeshlet in include/assets/meshlet.hxx. Bounds are
-// local space; cone_cutoff >= 1 disables cone (backface) culling for it.
-// vertex_offset/triangle_offset index GpuDraw::meshlet_data (uint units).
+// Mirrors GpuMeshlet in meshlet.hxx. Bounds are local space; cone_cutoff >= 1 disables cone culling.
+// vertex_offset/triangle_offset index GpuDraw::meshlet_data in uints.
 public struct Meshlet
 {
     public float3 centre;
@@ -29,18 +26,11 @@ public struct Meshlet
     public uint triangle_count;
 };
 
-// One batch's indirect draw in both forms -- a
-// VkDrawMeshTasksIndirectCommandEXT at offset 0 and a
-// VkDrawIndexedIndirectCommand at offset 12 -- of which each batch uses
-// one and zeroes the other (index_count 0 for meshlet batches,
-// meshlet_count 0 and so zero task groups for instanced ones; see
-// uses_meshlet_path() in include/assets/meshlet.hxx). Mirrors
-// GpuDrawCommand there.
+// Mirrors GpuDrawCommand in meshlet.hxx: a VkDrawMeshTasksIndirectCommandEXT at offset 0 and a
+// VkDrawIndexedIndirectCommand at offset 12. Each batch uses one and zeroes the other.
 //
-// A meshlet batch needs instance_count * ceil(meshlet_count /
-// meshlets_per_task) task groups, spread over X and Y (see
-// set_task_group_counts()) so neither dimension exceeds the guaranteed
-// 65535 minimum of maxTaskWorkGroupCount; groups past that total are no-ops.
+// A meshlet batch needs instance_count * ceil(meshlet_count / meshlets_per_task) task groups, spread over X and
+// Y so neither exceeds the guaranteed 65535 limit; groups past the total are no-ops.
 public struct DrawCommand
 {
     public uint group_count_x;
@@ -59,10 +49,8 @@ public struct DrawCommand
 
 // PC::cull_flags bits.
 public static const uint cull_frustum_bit = 1u;
-// Normal-cone culling of backfacing meshlets -- only valid for passes that
-// also rasterize with back-face culling (opaque prepass/forward), and must
-// be identical between the prepass and forward pass: forward depth-tests
-// EQUAL against the prepass.
+// Normal-cone culling. Only valid with back-face culling, and must match between prepass and forward, which
+// depth-tests EQUAL.
 public static const uint cull_backface_bit = 2u;
 
 public struct GpuDraw
@@ -101,8 +89,7 @@ public struct Material {
     public AlphaMode alpha_mode = AlphaMode.opaque;
     public float alpha_cutoff = 0.5F;
 
-    // Blade sway amplitude driven by UBO.time in the vertex shader; 0 for
-    // every ordinary (non-foliage) material -- see wind.slang.
+    // Sway amplitude; 0 for non-foliage materials.
     public float wind_strength = 0.0F;
     public float _pad0 = 0.0F;
     public float _pad1 = 0.0F;
@@ -114,11 +101,8 @@ public enum class LightType : uint {
     spot,
 };
 
-// One punctual light. Mirrors GpuLight in include/renderer.hxx. direction is
-// unused for point lights. spot_scale/spot_offset are the glTF-style
-// precomputed cone falloff terms (see KHR_lights_punctual):
-// angular_attenuation = saturate(dot(spot_dir, -light_to_surface) * spot_scale + spot_offset),
-// computed on the CPU so the shader never evaluates cos()/acos() per pixel.
+// Mirrors GpuLight in renderer.hxx. direction is unused for point lights. Spot falloff is precomputed
+// (KHR_lights_punctual): saturate(dot(spot_dir, -light_to_surface) * spot_scale + spot_offset).
 public struct GpuLight {
     public float3 position;
     public float range;
@@ -126,7 +110,7 @@ public struct GpuLight {
     public float3 colour;
     public float intensity;
 
-    public float3 direction; // normalized, points from the light outward -- spot lights only
+    public float3 direction; // normalized, points from the light outward; spot lights only
     public float spot_scale;
 
     public float spot_offset;
@@ -140,27 +124,21 @@ public struct UBO {
     public float4x4 view;
     public float4x4 projection;
 
-    // Inverse of `projection` -- lets screen-space passes (GTAO) unproject a
-    // depth-buffer sample back to a view-space position without assuming
-    // any particular perspective-matrix convention (LH/RH, Z range, jitter):
-    // `view_space = inverse_projection * float4(ndc, 1.0); view_space /= view_space.w;`
-    // always recovers the exact position for whatever `projection` actually is.
+    // Lets screen-space passes unproject depth without assuming a projection convention.
     public float4x4 inverse_projection;
 
     public float3 camera_position;
     public float3 fog_colour;
-    public float fog_extinction;     // A
-    public float fog_inscattering;   // B
+    public float fog_extinction;
+    public float fog_inscattering;
 
-    // ---- PSSM cascades ----
+    // PSSM cascades.
     public float4x4 cascade_view_projection[shadow_cascade_count];
     public float4 cascade_split_far;   // view-space far distance per cascade
     public float4 cascade_texel_world; // world-space size of one shadow texel per cascade
     public float4 cascade_depth_scale; // 1 / (z_far - z_near) per cascade
 
-    // Atlas tiles are packed side-by-side at variable width, not a uniform
-    // grid -- see shadow_cascade_resolutions in shadow_cascades.hxx. These
-    // remap a cascade-local [0,1] tile UV into the shared atlas texture.
+    // Atlas tiles have variable widths, so these map a cascade-local [0,1] UV into the atlas.
     public float4 cascade_atlas_offset_u; // atlas-normalized U of each tile's left edge
     public float4 cascade_atlas_scale_u;  // tile width / atlas width, per cascade
     public float4 cascade_atlas_scale_v;  // tile height / atlas height, per cascade
@@ -180,15 +158,12 @@ public struct UBO {
     public float shadow_atlas_texel_v;
     public uint shadow_debug_cascade_tint;
 
-    public float time; // seconds since startup -- drives wind sway in vertex shaders
+    public float time; // seconds since startup
 
-    // Flat multiplier on the (already-albedo-scaled) ambient term -- see the
-    // comment on this field in include/renderer.hxx for why it exists.
+    // Flat multiplier on the ambient term, standing in for IBL.
     public float ambient_intensity;
 
-    // Blend factor between "no screen-space AO" (1.0 everywhere) and the
-    // GTAO pass's output -- see the comment on this field in
-    // include/renderer.hxx.
+    // 0 disables screen-space AO, 1 applies it at full strength.
     public float ao_intensity;
 };
 
@@ -199,29 +174,19 @@ public struct PC
     public Ptr<Material> materials;
     public Ptr<UBO> ubo;
 
-    // Punctual (point/spot) lights, in a standalone buffer rather than a
-    // trailing UBO array -- same reasoning as frustum_planes_buffer (see
-    // include/renderer.hxx): unambiguous 16-byte-stride Ptr<> indexing
-    // instead of staking correctness on Slang's struct-array packing.
+    // A pointer rather than a UBO array for an unambiguous 16-byte stride.
     public Ptr<GpuLight> lights;
     public uint light_count;
     public uint _padding;
 
-    // Bindless indices for the GTAO output, and the render-target
-    // resolution (needed to turn SV_Position into a screen UV to sample
-    // it) -- all unused (zero) by every pass except forward_geom's
-    // fragment shader. Living on the shared PC rather than a forward-only
-    // wrapper struct keeps every PC-typed push constant (shadow, depth
-    // prepass) binary compatible with the reflected struct these fields
-    // are added to.
+    // GTAO texture and render resolution; only read by the forward fragment shader. Kept on the shared PC so every
+    // pass's push constants stay layout-compatible.
     public uint ao_texture_index;
     public uint ao_sampler_index;
     public float2 screen_size;
 
-    // Meshlet task-shader inputs (see meshlet_task.slang): the indirect
-    // commands this draw was issued from (indexed by SV_DrawIndex), the
-    // world-space planes to cull against (6 per view -- ShadowPC indexes
-    // cascade_index * 6 into it), and which culling tests are enabled.
+    // Task-shader inputs: the indirect commands (indexed by SV_DrawIndex), the cull planes (6 per view) and the
+    // enabled culling tests.
     public Ptr<DrawCommand> task_commands;
     public Ptr<float4> cull_planes;
     public uint cull_flags;

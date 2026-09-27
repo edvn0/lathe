@@ -14,18 +14,6 @@
 #include "core/forward.hxx"
 #include "gpu/image_storage.hxx"
 #include "gpu/sampler_storage.hxx"
-/*
-enum class GpuResourceBinding :
-    std::uint32_t {
-    sampled_2d = 0,
-    sampled_cube = 1,
-    sampled_2d_array = 2,
-    storage_2d = 3,
-    storage_2d_array = 4,
-    samplers = 5,
-    comparison_samplers = 6,
-};
- */
 
 enum class GpuResourceBinding : std::uint32_t {
     sampled_2d = 0,
@@ -99,10 +87,7 @@ public:
     static auto create(VulkanContext &context, GpuResourceTableCreateInfo const &create_info)
             -> std::expected<GpuResourceTable, GpuResourceTableError>;
 
-    /*
-     * Call only after the frame fence associated with
-     * frame_index has completed.
-     */
+    // Call only after frame_index's fence has completed.
     [[nodiscard]]
     auto prepare_frame(std::uint32_t frame_index, ImageStorage const &images, SamplerStorage const &samplers)
             -> std::expected<void, GpuResourceTableError>;

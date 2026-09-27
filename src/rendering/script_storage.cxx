@@ -2,9 +2,7 @@
 
 auto ScriptStorage::create(ScriptStorageCreateInfo const &create_info)
         -> std::expected<ScriptStorage, ScriptStorageError> {
-    // Slot zero is permanently unused -- see script_handle.hxx's comment on
-    // ScriptHandle's Sentinel = 0 -- so at least one real slot needs room
-    // beyond it (same reasoning as MeshStorage::create()).
+    // Slot zero is never used, so at least one more slot is needed.
     if (create_info.capacity < 2) {
         return std::unexpected(ScriptStorageError{.type = ScriptStorageErrorType::invalid_argument});
     }

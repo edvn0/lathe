@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <string_view>
 
-
 enum class RenderStage : std::uint32_t {
     FullFrame = 0,
     Culling,

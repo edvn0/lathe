@@ -175,10 +175,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     player.emplace<Components::Model>(Components::Model{.model = engine_models.capsule});
     player_entity_ = player;
 
-    // 10 enemy capsules orbiting the player's spawn point, all sharing one
-    // EnemyAIScript instance -- each entity only carries its own
-    // Components::CircularMotion (center/radius/phase), demonstrating the
-    // shared-script-instance/per-entity-data pattern (see enemy_ai_script.hxx).
+    // Enemies share one EnemyAIScript instance; each carries its own CircularMotion.
     constexpr auto enemy_count = 10U;
     constexpr float enemy_orbit_radius = 6.0F;
     constexpr float enemy_capsule_radius = 0.3F;
@@ -219,12 +216,8 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     auto const cube_bounds = renderer.model_bounds(cube_model_);
     cube_half_extents_ = cube_bounds.has_value() ? (cube_bounds->second - cube_bounds->first) * 0.5F : glm::vec3{0.5F};
 
-    // Terrain generation parameters, kept around for the rest of on_populate
-    // so houses/trees/grass below can sample the same noise field and sit on
-    // the actual generated surface instead of a flat plane. The actual mesh
-    // is no longer generated here -- see terrain_create_info(), which hands
-    // these same params to a streaming TerrainWorld created once on_populate()
-    // (and this material) are ready.
+    // Kept so houses, trees and grass can sit on the generated surface. The mesh itself streams through
+    // terrain_create_info().
     terrain_params_ = TerrainParams{
             .samples_x = 129,
             .samples_z = 129,
@@ -246,10 +239,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     auto &samplers = renderer.sampler_storage();
     auto &streamer = renderer.texture_streamer();
 
-    // Handles come back immediately, sampling their fallback default
-    // texture; the real BC5/BC7 KTX2 texture streams in asynchronously (see
-    // texture_pipeline.hxx / TextureStreamer) and swaps in in place once
-    // decoded, cached, and uploaded.
+    // Handles render their fallback until the compressed texture streams in.
     auto const dirt_normal_index = streamer.request(images, "assets/textures/dirt/dirt_nor_gl_1k_zip.exr",
                                                     TextureRole::normal_map, images.flat_normal(), "dirt.normal");
 
@@ -269,9 +259,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .emissive_texture = images.emissive(),
             .sampler = samplers.linear_repeat(),
     },
-            // Named so the Inspector's Material Override picker / the Assets
-            // browser panel can offer it -- see AssetRegistry
-            // (asset_registry.hxx) and Renderer::create_material's debug_name.
+            // Named so the editor can offer it.
             "terrain");
 
     if (terrain_material) {
@@ -282,10 +270,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
     constexpr auto village_radius = 14.0F;
 
-    // Houses and trees are built from the engine's box/sphere primitives
-    // rather than external assets -- walls, split doorways, overhanging
-    // roofs, and chimneys give GTAO real corners and eaves to shade, which a
-    // flat floor and scattered cubes did not.
+    // Houses and trees are built from engine primitives; walls, doorways and eaves give GTAO corners to shade.
     auto const flat_material = [&](glm::vec3 const &colour) -> MaterialHandle {
         auto material = renderer.create_material(MaterialCreateInfo{
                 .base_colour_factor = glm::vec4{colour, 1.0F},
@@ -304,14 +289,8 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         return material.value();
     };
 
-    // `parent`, when not null, only adds a Components::Parent link for
-    // grouping this part under a container entity in the Hierarchy panel
-    // (and, since get_world_transform() composes it, for rendering) --
-    // `position` is still world-space and unaffected by it, and physics
-    // (PhysicsWorld::add_body) reads Components::Transform directly and
-    // ignores Parent entirely, so a static box's collider always stays
-    // exactly where `position` puts it even if its parent entity is later
-    // moved.
+    // `parent` only groups the part in the Hierarchy. `position` stays world-space and physics ignores Parent, so
+    // the parent must keep an identity transform.
     auto const add_static_box = [&](std::string const &name, glm::vec3 const &position, glm::vec3 const &half_extents,
                                     MaterialHandle material, entt::entity parent = entt::null) {
         auto entity = GeneratedEntity{&scene, "{}", name};
@@ -369,15 +348,11 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
         auto const part_name = [&](char const *part) { return std::format("house_{}_{}", house_index, part); };
 
-        // Groups this house's 7 parts under one Hierarchy-panel entity --
-        // see add_static_box's comment for why an identity Transform here
-        // is required (parts stay world-space, so a non-identity parent
-        // transform would double-apply on top of them when rendered).
+        // Must keep an identity Transform; see add_static_box.
         auto house_entity = GeneratedEntity{&scene, "house_{}", house_index};
         house_entity.emplace<Components::Transform>();
 
-        // Back and side walls span the full footprint; the front wall is
-        // split in two to leave a doorway gap between them.
+        // The front wall is split to leave a doorway.
         add_static_box(part_name("wall_back"), base + glm::vec3{0.0F, half_h, -half_d},
                        {half_w, half_h, wall_thickness * 0.5F}, wall_material, house_entity);
         add_static_box(part_name("wall_left"), base + glm::vec3{-half_w, half_h, 0.0F},
@@ -481,7 +456,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         });
     }
 
-
     grass_material_info_ = MaterialCreateInfo{
             .base_colour_factor = glm::vec4{0.25F, 0.55F, 0.18F, 1.0F},
             .base_colour_texture = images.white(),
@@ -500,12 +474,8 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     } else {
         grass_material_ = *grass_material_result;
 
-        // One entity owning every blade's transform, rather than one entity
-        // per blade -- ~17.7k entities each carrying Transform/Model/
-        // MaterialOverride made entity spawn, ECS iteration, and
-        // Application::play()'s per-entity clone_registry() all pay for
-        // bookkeeping that this field never needs (blades never move
-        // individually or get selected/edited on their own).
+        // One entity owns every blade's transform; per-blade entities made spawning, iteration and the play() clone
+        // expensive.
         auto const grass_field_entity = GeneratedEntity{&scene, "grass_field"};
         grass_field_entity.emplace<Components::InstancedModel>(Components::InstancedModel{
                 .model = engine_models.grass_clump,
@@ -535,8 +505,7 @@ auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
     std::uniform_real_distribution<float> spawn_roll(0.0F, 1.0F);
 
     std::vector<glm::mat4> grass_transforms;
-    // Upper bound only -- blotchiness can never spawn more than the raw
-    // grid, only fewer, so this reservation is still correct.
+    // Upper bound; blotchiness only removes blades.
     grass_transforms.reserve(static_cast<std::size_t>(grass_cells) * static_cast<std::size_t>(grass_cells));
 
     for (auto cell_x = 0; cell_x < grass_cells; ++cell_x) {
@@ -572,11 +541,7 @@ auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
 }
 
 auto BasicGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
-    // Components::Script/Components::CircularMotion need to ride along with
-    // the engine's base clone (see clone_editor_into_runtime()) -- without
-    // this, the enemy capsules would keep their Transform/Model but lose the
-    // data EnemyAIScript::on_update needs, so they'd stop moving the moment
-    // Play starts.
+    // Enemies need their Script and CircularMotion in the runtime scene to keep moving.
     clone_editor_into_runtime<Components::Script, Components::CircularMotion>(editor_scene, runtime_scene);
 }
 
@@ -660,7 +625,7 @@ auto BasicGame::on_update(Scene &scene, float delta_time) -> void {
             physics_world.is_grounded(registry, player_entity_, capsule_half_height, body.capsule_radius);
 
     if (player_controller_.consumes_jump() && is_grounded) {
-        constexpr float jump_velocity = 6.5F; // Adjust to match gravity
+        constexpr float jump_velocity = 6.5F; // tuned to gravity
         physics_world.jump(registry, player_entity_, jump_velocity);
     }
 
@@ -721,18 +686,11 @@ auto BasicGame::on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent co
 }
 
 [[nodiscard]] auto BasicGame::terrain_create_info(Renderer & /*renderer*/) -> std::optional<TerrainWorldCreateInfo> {
-    // terrain_params_/terrain_material_/terrain_ground_y_ are set in
-    // on_populate(), which always runs first (see Application::on_startup).
+    // on_populate() has already set terrain_params_ and terrain_material_.
     //
-    // TerrainLodSettings' own defaults (view_distance = 2048) assume a much
-    // larger world than this one; left as-is, the quadtree keeps a steady-state
-    // 64 LOD0 chunks split out around the camera (a fixed function of
-    // split_factor/split_hysteresis vs. the LOD0 chunk span, independent of
-    // view_distance) against a slots_per_lod of 48, so LOD0 permanently runs
-    // 16 chunks over budget -- see the "slot pool exhausted" warning spam this
-    // fixes. view_distance is cut down to match this small terrain, and
-    // slots_per_lod raised past that 64-chunk floor with headroom for the
-    // eviction grace period's transient parent/child overlap.
+    // The defaults assume a far larger world: the quadtree keeps ~64 LOD0 chunks around the camera regardless of
+    // view_distance, over the default 48 slots. Shrink view_distance to this terrain and give LOD0 headroom for
+    // the eviction grace period.
     return TerrainWorldCreateInfo{
             .params = terrain_params_,
             .lod_settings = TerrainLodSettings{.view_distance = 512.0F},
@@ -757,7 +715,7 @@ auto BasicGame::shoot_bullet(Scene &scene, std::size_t n) -> void {
     constexpr auto bullet_mass = 0.2F;
     constexpr auto bullet_lifetime_seconds = 3.0F;
     constexpr auto max_aim_distance = 1000.0F;
-    constexpr auto player_eye_height = 1.5F; // Height offset from player base position
+    constexpr auto player_eye_height = 1.5F; // above the player's base position
 
     auto const &position = ReadOnlyEntity{&scene, player_entity_}.get<Components::Transform>().position;
     auto const muzzle_position = position + glm::vec3{0.0F, player_eye_height, 0.0F};
@@ -797,12 +755,8 @@ auto BasicGame::shoot_bullet(Scene &scene, std::size_t n) -> void {
 }
 
 auto BasicGame::benchmark_camera_path() const -> std::vector<CameraKeyframe> {
-    // A loop around the village (houses at ~(+-10, +-9), trees at ~13 m,
-    // enemies orbiting the centre) mixing grass-level shots through the
-    // densest foliage, close-ups against walls and canopies, and high
-    // overviews that put the whole grass field and far terrain on screen.
-    // Heights stay above the terrain's +1.6 m amplitude everywhere along
-    // the spline.
+    // A loop around the village mixing grass-level shots, close-ups against walls and canopies, and high overviews.
+    // Heights stay above the terrain's +1.6 m amplitude.
     return {
             {.position = {0.0F, 2.2F, 6.0F}, .target = {0.0F, 2.0F, -10.0F}},
             {.position = {-6.0F, 2.0F, 2.0F}, .target = {-10.0F, 1.5F, -8.0F}},

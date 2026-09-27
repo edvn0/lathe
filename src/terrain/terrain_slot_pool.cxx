@@ -42,9 +42,8 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
         });
     }
 
-    // One index-order meshlet split shared by every slot -- no vertex
-    // positions exist yet to guide a spatial split, and the canonical grid's
-    // index order is already vertex-cache optimized (see terrain_chunk.cxx).
+    // One index-order split shared by every slot; there are no positions yet, and the index order is already
+    // cache-optimized.
     pool.meshlet_topology_ = build_meshlet_topology(std::span{canonical_indices}, terrain_chunk_vertex_count);
 
     auto meshlet_data = upload_meshlet_data(mesh_sink.geometry_arena(), command_buffer, pool.meshlet_topology_);
@@ -55,9 +54,7 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
         });
     }
 
-    // Placeholder contents for a freshly-allocated slot -- never rendered,
-    // since a slot is only handed out by acquire() and only submitted by
-    // TerrainWorld once write() has installed real chunk data.
+    // Never rendered: slots are only drawn after write().
     std::vector<CompressedModelVertex> const placeholder(terrain_chunk_vertex_count);
     auto const placeholder_meshlets = compute_meshlet_bounds(pool.meshlet_topology_, placeholder);
 
@@ -100,7 +97,7 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
                     .bounds_min = bounds_min,
                     .bounds_max = bounds_max,
             };
-            submesh.lods.fill(geometry); // no per-LOD simplification -- chunk LOD is the only LOD (see the plan)
+            submesh.lods.fill(geometry); // chunks have a single LOD each
 
             auto mesh = mesh_sink.create_mesh(MeshCreateInfo{.submeshes = std::span{&submesh, 1}});
 

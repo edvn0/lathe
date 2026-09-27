@@ -22,7 +22,6 @@
 #include "gpu/image.hxx"
 #include "gpu/sampler.hxx"
 
-
 struct MaterialCreateInfo {
     glm::vec4 base_colour_factor{1.0F};
     glm::vec3 emissive_factor{0.0F};
@@ -46,13 +45,8 @@ struct MaterialCreateInfo {
 
     float wind_strength = 0.0F;
 
-    // See GpuMaterial::max_shadow_cascade -- defaults to casting into every
-    // cascade. Lower this for foliage/detail geometry whose shadow contrib
-    // is invisible past a certain cascade (sub-pixel at that texel density)
-    // to skip it in the shadow pass's farther cascades entirely, or set it
-    // to GpuMaterial::no_shadow_cascade to make this material never cast a
-    // shadow at all (e.g. grass, decals, other geometry too thin/cheap to
-    // be worth shadowing).
+    // The farthest cascade this material casts into. Lower it for detail geometry whose shadow disappears at
+    // distance, or use GpuMaterial::no_shadow_cascade to never cast.
     std::uint32_t max_shadow_cascade = shadow_cascade_count - 1;
 };
 
@@ -100,16 +94,10 @@ struct MaterialStorageCreateInfo {
     std::string_view debug_name = "material_storage";
 };
 
-// Backs MaterialHandle = Handle<MaterialSlotData, 0> (see material.hxx).
 struct MaterialSlotData {
     GpuMaterial material{};
 
-    // The CPU-side create info this slot's `material` was last built from --
-    // kept alongside the baked GpuMaterial (which only stores raw texture
-    // *indices*, see to_gpu_material) so editor UI (the Inspector's Assets
-    // panel, application.cxx) can read back a material's real ImageHandles/
-    // SamplerHandle to populate an edit form, and diff/round-trip through
-    // update_material() without the caller needing to keep its own copy.
+    // The create info the material was last built from, so the editor can read back its handles.
     MaterialCreateInfo source{};
 
     bool dirty = false;
@@ -141,9 +129,7 @@ struct MaterialStorage {
     [[nodiscard]]
     auto get(MaterialHandle handle) const noexcept -> GpuMaterial const *;
 
-    // The MaterialCreateInfo a live slot's baked GpuMaterial was last built
-    // from -- see MaterialSlotData::source. nullptr for an invalid/released
-    // handle, same as get() above.
+    // The slot's MaterialSlotData::source, or nullptr for an invalid handle.
     [[nodiscard]]
     auto create_info(MaterialHandle handle) const noexcept -> MaterialCreateInfo const *;
 

@@ -11,9 +11,7 @@ struct Renderer;
 
 namespace gui {
 
-    // Every entry here needs a same-named PNG under assets/editor/icons/
-    // (see EditorIcons::EditorIcons) -- keep this list and that directory in
-    // sync.
+    // Each entry needs a same-named PNG in assets/editor/icons/.
     enum class EditorIcon : std::uint8_t {
         mesh,
         point_light,
@@ -32,12 +30,7 @@ namespace gui {
         count,
     };
 
-    // Loads the small white-silhouette icons used by editor panels (e.g. the
-    // Hierarchy widget) once, via the same DecodedImage -> ImageStorage
-    // pipeline the light-bulb debug icon uses (see renderer.cxx). Icons are
-    // plain white with alpha rather than pre-coloured, so callers recolour
-    // them per entity type with ImGui::ImageWithBg's tint_col instead of
-    // needing a separate texture per colour.
+    // White editor icons with alpha, loaded once. Callers tint them per use.
     class EditorIcons {
     public:
         explicit EditorIcons(Renderer &renderer);
