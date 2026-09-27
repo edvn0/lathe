@@ -50,7 +50,6 @@
 #include "rendering/entity.hxx"
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/renderer.hxx"
-#include "rendering/renderer_application_policy.hxx"
 #include "rendering/scene.hxx"
 #include "scene/components.hxx"
 #include "scene/editor_camera.hxx"
@@ -301,15 +300,20 @@ namespace {
             }
 
 
-            auto record_result = application.renderer->record_frame<ApplicationOverlayPolicy>(
-                    frame->command_buffer,
-                    SwapchainImage{
-                            .image = frame->image,
-                            .view = frame->image_view,
-                            .format = frame->format,
-                            .extent = frame->extent,
-                    },
-                    frame->frame_index, application, active_camera.projection * active_camera.view);
+            auto record_result = application.renderer->record_frame(FrameRecordInfo{
+                    .command_buffer = frame->command_buffer,
+                    .swapchain_image =
+                            SwapchainImage{
+                                    .image = frame->image,
+                                    .view = frame->image_view,
+                                    .format = frame->format,
+                                    .extent = frame->extent,
+                            },
+                    .frame_index = frame->frame_index,
+                    .composite_target = application.is_playing && application.play_fullscreen
+                                                ? CompositeTarget::swapchain
+                                                : CompositeTarget::viewport_panel,
+            });
 
             if (!record_result) {
                 error("Could not record renderer frame: {}", describe(record_result.error()));
@@ -710,8 +714,8 @@ auto main(int argc, char **argv) -> int {
         // Render resolution tracks the Viewport panel's size, not the
         // window's -- fullscreen play is the one exception, since there the
         // 3D scene covers the whole swapchain with no panel involved (see
-        // Application::on_ui()'s early return and Renderer::record_frame's
-        // matching `fullscreen` branch). The swapchain itself still always
+        // Application::on_ui()'s early return and the matching
+        // CompositeTarget::swapchain passed to Renderer::record_frame). The swapchain itself still always
         // resizes to the real framebuffer size regardless, via
         // request_resize_if_needed() above.
         auto const desired_render_extent = [&]() -> VkExtent2D {

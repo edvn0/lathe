@@ -920,7 +920,7 @@ namespace render_pass {
         return std::optional<AoTextureIndex>{AoTextureIndex{.index = info.denoised_ao_texture_index}};
     }
 
-    auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback debug_overlay)
+    auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback scene_overlays)
             -> std::expected<HdrTextureIndex, RendererError> {
         detail::SceneDraw const opaque_draw{
                 .meshlet_pipeline = info.opaque_pipeline,
@@ -1042,35 +1042,7 @@ namespace render_pass {
 
         vkCmdEndQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0);
 
-        if (info.draw_light_icons && info.light_count != 0) {
-            if (auto const light_icon_layout = detail::resolve_layout(context.pipeline_graph, info.light_icon_pipeline);
-                light_icon_layout != VK_NULL_HANDLE) {
-                detail::bind_graphics_node(context.pipeline_graph, info.light_icon_pipeline, context.command_buffer,
-                                           info.samples, 1, true, false);
-                context.resource_table.bind(context.command_buffer, context.frame_index,
-                                            VK_PIPELINE_BIND_POINT_GRAPHICS, light_icon_layout);
-
-                vkCmdSetDepthTestEnable(context.command_buffer, VK_TRUE);
-                vkCmdSetDepthWriteEnable(context.command_buffer, VK_FALSE);
-                vkCmdSetDepthCompareOp(context.command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
-                vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
-
-                LightIconPushConstants const light_pc{
-                        .lights_address = info.lights_address,
-                        .ubo_address = info.ubo_address,
-                        .light_count = info.light_count,
-                        .icon_texture_index = info.light_icon_texture_index,
-                        .sampler_index = info.linear_sampler_index,
-                        .icon_world_size = info.light_icon_world_size,
-                };
-
-                vkCmdPushConstants(context.command_buffer, light_icon_layout, VK_SHADER_STAGE_ALL, 0, sizeof(light_pc),
-                                   &light_pc);
-                vkCmdDrawMeshTasksEXT(context.command_buffer, (info.light_count + 31U) / 32U, 1, 1);
-            }
-        }
-
-        debug_overlay();
+        scene_overlays();
 
         vkCmdEndRendering(context.command_buffer);
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1079,6 +1051,70 @@ namespace render_pass {
         detail::transition_hdr_to_shader_read(context.command_buffer,
                                               info.resolved_hdr != nullptr ? *info.resolved_hdr : info.hdr);
         return info.output_hdr;
+    }
+
+    auto set_overlay_baseline_state(VkCommandBuffer command_buffer, OverlayStage stage,
+                                    OverlayScope const &scope) noexcept -> void {
+        auto const width = static_cast<float>(scope.extent.width);
+        auto const height = static_cast<float>(scope.extent.height);
+
+        VkViewport const viewport =
+                stage == OverlayStage::scene
+                        ? VkViewport{.x = 0.0F, .y = height, .width = width, .height = -height, .minDepth = 1.0F,
+                                     .maxDepth = 0.0F}
+                        : VkViewport{.x = 0.0F, .y = 0.0F, .width = width, .height = height, .minDepth = 0.0F,
+                                     .maxDepth = 1.0F};
+
+        VkRect2D const scissor{.offset = {0, 0}, .extent = scope.extent};
+
+        vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
+        vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
+
+        detail::set_shader_object_vertex_input(command_buffer, {}, {});
+        detail::set_shader_object_raster_state(command_buffer, VK_POLYGON_MODE_FILL, scope.samples, false);
+        detail::set_shader_object_color_blend_state(command_buffer, 1, false);
+
+        vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+        vkCmdSetPrimitiveRestartEnable(command_buffer, VK_FALSE);
+        vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
+        vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+        vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+        vkCmdSetDepthBiasEnable(command_buffer, VK_FALSE);
+        vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
+
+        vkCmdSetDepthTestEnable(command_buffer, scope.has_depth() ? VK_TRUE : VK_FALSE);
+        vkCmdSetDepthWriteEnable(command_buffer, VK_FALSE);
+        vkCmdSetDepthCompareOp(command_buffer,
+                               scope.has_depth() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_ALWAYS);
+    }
+
+    auto light_icons(Context const &context, LightIconsInfo const &info, OverlayScope const &scope) noexcept -> void {
+        if (info.light_count == 0) {
+            return;
+        }
+
+        auto const layout = detail::resolve_layout(context.pipeline_graph, info.pipeline);
+        if (layout == VK_NULL_HANDLE) {
+            return;
+        }
+
+        // Task/mesh pipeline: no vertex input stage to configure.
+        detail::bind_graphics_node(context.pipeline_graph, info.pipeline, context.command_buffer, scope.samples, 1,
+                                   true, false);
+        context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    layout);
+
+        LightIconPushConstants const pc{
+                .lights_address = info.lights_address,
+                .ubo_address = info.ubo_address,
+                .light_count = info.light_count,
+                .icon_texture_index = info.icon_texture_index,
+                .sampler_index = info.sampler_index,
+                .icon_world_size = info.icon_world_size,
+        };
+
+        vkCmdPushConstants(context.command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+        vkCmdDrawMeshTasksEXT(context.command_buffer, (info.light_count + 31U) / 32U, 1, 1);
     }
 
     auto bloom(Context const &context, BloomPassInfo const &info)
@@ -1094,7 +1130,7 @@ namespace render_pass {
             return std::optional<BloomTextureIndex>{};
         }
 
-        if (info.target == nullptr || !info.target->valid()) {
+        if (info.target == nullptr || !info.target->valid() || info.target->mip_levels() < bloom_mip_count) {
             return std::unexpected(detail::make_error(RendererErrorType::image_error));
         }
 
@@ -1105,55 +1141,88 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        transition_image_layout(context.command_buffer, info.target->image(), VK_IMAGE_LAYOUT_UNDEFINED,
-                                VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0, VK_ACCESS_2_SHADER_WRITE_BIT,
-                                VK_IMAGE_ASPECT_COLOR_BIT, 0, 4);
+        auto const command_buffer = context.command_buffer;
+        auto const bloom_image = info.target->image();
 
-        detail::bind_compute_node(context.pipeline_graph, info.downsample_pipeline, context.command_buffer);
-        context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    downsample_layout);
-
-        auto const mip0_extent = info.target->mip_extent(0);
-
-        DownsamplePushConstants const downsample_pc{
-                .src_texture_index = info.input_hdr.index,
-                .linear_sampler_index = info.linear_sampler_index,
-                .dst_mip0_storage_index = info.mip_texture_indices[0],
-                .dst_mip1_storage_index = info.mip_texture_indices[1],
-                .dst_mip2_storage_index = info.mip_texture_indices[2],
-                .dst_mip3_storage_index = info.mip_texture_indices[3],
-                .src_texel_size_x = 1.0F / static_cast<float>(info.input_extent.width),
-                .src_texel_size_y = 1.0F / static_cast<float>(info.input_extent.height),
-                .mip0_size_x = static_cast<std::int32_t>(mip0_extent.width),
-                .mip0_size_y = static_cast<std::int32_t>(mip0_extent.height),
-                .threshold = info.threshold,
-                .knee = info.knee,
+        // Every level lives in one of two layouts: GENERAL while a dispatch
+        // writes it through its storage view, SHADER_READ_ONLY_OPTIMAL while
+        // a later dispatch (or composite) samples it -- the layout the
+        // bindless sampled_2d descriptors are written with. Each barrier
+        // below moves exactly one level between the two, so a level is never
+        // sampled and stored within the same dispatch.
+        auto const to_storage = [&](std::uint32_t mip) {
+            transition_image_layout(command_buffer, bloom_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_NONE,
+                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                    VK_IMAGE_ASPECT_COLOR_BIT, mip, 1);
         };
 
-        vkCmdPushConstants(context.command_buffer, downsample_layout, VK_SHADER_STAGE_ALL, 0, sizeof(downsample_pc),
-                           &downsample_pc);
-        vkCmdDispatch(context.command_buffer, (mip0_extent.width + 15U) / 16U, (mip0_extent.height + 15U) / 16U, 1);
+        auto const to_sampled = [&](std::uint32_t mip) {
+            transition_image_layout(command_buffer, bloom_image, VK_IMAGE_LAYOUT_GENERAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                    VK_IMAGE_ASPECT_COLOR_BIT, mip, 1);
+        };
 
-        transition_image_layout(context.command_buffer, info.target->image(), VK_IMAGE_LAYOUT_GENERAL,
-                                VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
-                                VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
-                                0, 4);
+        // The whole chain is rebuilt from scratch every frame, so discard
+        // the previous contents. The source scope still has to cover the
+        // last frame's readers of this image (its upsample dispatches and
+        // composite's fragment shader) -- a TOP_OF_PIPE source here would
+        // let this frame's first write race those reads.
+        transition_image_layout(command_buffer, bloom_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_NONE,
+                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, bloom_mip_count);
 
-        detail::bind_compute_node(context.pipeline_graph, info.upsample_pipeline, context.command_buffer);
-        context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
+        // Downsample: HDR -> mip 0 -> mip 1 -> ... one dispatch per level,
+        // each sampling the level above it.
+        detail::bind_compute_node(context.pipeline_graph, info.downsample_pipeline, command_buffer);
+        context.resource_table.bind(command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    downsample_layout);
+
+        for (std::uint32_t mip = 0; mip < bloom_mip_count; ++mip) {
+            bool const first_level = mip == 0;
+            auto const src_extent = first_level ? info.input_extent : info.target->mip_extent(mip - 1);
+            auto const dst_extent = info.target->mip_extent(mip);
+
+            DownsamplePushConstants const downsample_pc{
+                    .src_texture_index = first_level ? info.input_hdr.index : info.mip_texture_indices[mip - 1],
+                    .dst_storage_index = info.mip_texture_indices[mip],
+                    .linear_sampler_index = info.linear_sampler_index,
+                    .is_first_level = first_level ? 1U : 0U,
+                    .src_texel_size_x = 1.0F / static_cast<float>(src_extent.width),
+                    .src_texel_size_y = 1.0F / static_cast<float>(src_extent.height),
+                    .dst_size_x = static_cast<std::int32_t>(dst_extent.width),
+                    .dst_size_y = static_cast<std::int32_t>(dst_extent.height),
+                    .threshold = info.threshold,
+                    .knee = info.knee,
+            };
+
+            vkCmdPushConstants(command_buffer, downsample_layout, VK_SHADER_STAGE_ALL, 0, sizeof(downsample_pc),
+                               &downsample_pc);
+            vkCmdDispatch(command_buffer, (dst_extent.width + 7U) / 8U, (dst_extent.height + 7U) / 8U, 1);
+
+            to_sampled(mip);
+        }
+
+        // Upsample: walk back up, adding the tent-filtered level below onto
+        // each level in place. mip 0 ends up holding the full bloom.
+        detail::bind_compute_node(context.pipeline_graph, info.upsample_pipeline, command_buffer);
+        context.resource_table.bind(command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     upsample_layout);
 
-        for (std::int32_t i = 2; i >= 0; --i) {
-            auto const target_mip = static_cast<std::uint32_t>(i);
+        for (auto target_mip = bloom_mip_count - 1U; target_mip-- > 0U;) {
             auto const lower_mip = target_mip + 1U;
             auto const lower_extent = info.target->mip_extent(lower_mip);
             auto const target_extent = info.target->mip_extent(target_mip);
 
+            to_storage(target_mip);
+
             UpsamplePushConstants const upsample_pc{
-                    .lower_mip_texture_index = info.mip_texture_indices[lower_mip],
-                    .target_mip_storage_index = info.mip_texture_indices[target_mip],
+                    .lower_texture_index = info.mip_texture_indices[lower_mip],
+                    .target_storage_index = info.mip_texture_indices[target_mip],
                     .linear_sampler_index = info.linear_sampler_index,
                     .lower_texel_size_x = 1.0F / static_cast<float>(lower_extent.width),
                     .lower_texel_size_y = 1.0F / static_cast<float>(lower_extent.height),
@@ -1162,25 +1231,15 @@ namespace render_pass {
                     .filter_radius = info.filter_radius,
             };
 
-            vkCmdPushConstants(context.command_buffer, upsample_layout, VK_SHADER_STAGE_ALL, 0, sizeof(upsample_pc),
+            vkCmdPushConstants(command_buffer, upsample_layout, VK_SHADER_STAGE_ALL, 0, sizeof(upsample_pc),
                                &upsample_pc);
-            vkCmdDispatch(context.command_buffer, (target_extent.width + 15U) / 16U, (target_extent.height + 15U) / 16U,
-                          1);
+            vkCmdDispatch(command_buffer, (target_extent.width + 7U) / 8U, (target_extent.height + 7U) / 8U, 1);
 
-            transition_image_layout(context.command_buffer, info.target->image(), VK_IMAGE_LAYOUT_GENERAL,
-                                    VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
-                                    VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
-                                    VK_IMAGE_ASPECT_COLOR_BIT, target_mip, 1);
+            to_sampled(target_mip);
         }
 
-        transition_image_layout(context.command_buffer, info.target->image(), VK_IMAGE_LAYOUT_GENERAL,
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
-                                VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
-
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                             context.timestamp_query_pool, stage * 2 + 1);
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, context.timestamp_query_pool,
+                             stage * 2 + 1);
 
         return std::optional<BloomTextureIndex>{BloomTextureIndex{.index = info.mip_texture_indices[0]}};
     }
