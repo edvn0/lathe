@@ -92,31 +92,34 @@ float3 downsample_13_tap(float2 uv, float2 texel)
     float3 l = fetch(uv + texel * float2(-1.0, -1.0));
     float3 m = fetch(uv + texel * float2( 1.0, -1.0));
 
-    float3 boxes[5] = {
-        (j + k + l + m) * 0.25,
-        (a + b + d + e) * 0.25,
-        (b + c + e + f) * 0.25,
-        (d + e + g + h) * 0.25,
-        (e + f + h + i) * 0.25,
-    };
-    const float box_weights[5] = { 0.5, 0.125, 0.125, 0.125, 0.125 };
+    // The five overlapping 2x2 boxes. Written out rather than as a local
+    // array walked by an [unroll]ed loop: that form crashes SPIRV-Tools'
+    // merge-blocks pass (vulkan-sdk-1.4.357.0) in SlangCompiler's
+    // performance-pass run.
+    float3 box_inner = (j + k + l + m) * 0.25;
+    float3 box_top_left = (a + b + d + e) * 0.25;
+    float3 box_top_right = (b + c + e + f) * 0.25;
+    float3 box_bottom_left = (d + e + g + h) * 0.25;
+    float3 box_bottom_right = (e + f + h + i) * 0.25;
 
-    float3 colour = float3(0.0);
-    float weight_sum = 0.0;
+    float weight_inner = 0.5;
+    float weight_top_left = 0.125;
+    float weight_top_right = 0.125;
+    float weight_bottom_left = 0.125;
+    float weight_bottom_right = 0.125;
 
-    [unroll]
-    for (int box = 0; box < 5; ++box)
+    if (pc.is_first_level != 0)
     {
-        float weight = box_weights[box];
-
-        if (pc.is_first_level != 0)
-        {
-            weight /= 1.0 + luma(boxes[box]);
-        }
-
-        colour += boxes[box] * weight;
-        weight_sum += weight;
+        weight_inner /= 1.0 + luma(box_inner);
+        weight_top_left /= 1.0 + luma(box_top_left);
+        weight_top_right /= 1.0 + luma(box_top_right);
+        weight_bottom_left /= 1.0 + luma(box_bottom_left);
+        weight_bottom_right /= 1.0 + luma(box_bottom_right);
     }
+
+    float3 colour = box_inner * weight_inner + box_top_left * weight_top_left + box_top_right * weight_top_right +
+                    box_bottom_left * weight_bottom_left + box_bottom_right * weight_bottom_right;
+    float weight_sum = weight_inner + weight_top_left + weight_top_right + weight_bottom_left + weight_bottom_right;
 
     return colour / weight_sum;
 }
