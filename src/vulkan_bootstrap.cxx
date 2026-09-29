@@ -168,11 +168,18 @@ namespace {
 
         info("Was created via renderdoc: {}", renderdoc.is_active());
 
+        if (screen_type == ScreenType::headless) {
+            // The null platform needs no display server; GLFW creates its Vulkan surfaces with
+            // VK_EXT_headless_surface.
+            glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_NULL);
+            info("Headless: using GLFW's null platform.");
+        } else {
 #if defined(__linux__)
-        // RenderDoc can't capture Wayland surfaces.
-        glfwInitHint(GLFW_PLATFORM, renderdoc.is_active() ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM);
-        warn("Chosing: {} as platform.", renderdoc.is_active() ? "X11" : "auto-detected");
+            // RenderDoc can't capture Wayland surfaces.
+            glfwInitHint(GLFW_PLATFORM, renderdoc.is_active() ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM);
+            warn("Chosing: {} as platform.", renderdoc.is_active() ? "X11" : "auto-detected");
 #endif
+        }
 
         if (glfwInit() != GLFW_TRUE) {
             error("glfwInit failed");
@@ -247,6 +254,7 @@ namespace {
                 }
                 break;
 
+            case ScreenType::headless:
             case ScreenType::windowed:
                 constexpr std::int32_t default_width = 1280;
                 constexpr std::int32_t default_height = 720;
@@ -895,6 +903,9 @@ auto parse_screen_type(int argc, char **argv) noexcept -> ScreenType {
         }
         if (value == "borderless") {
             return ScreenType::borderless;
+        }
+        if (value == "headless") {
+            return ScreenType::headless;
         }
 
         warn("Unknown --screen-type value '{}'; falling back to fullscreen", value);

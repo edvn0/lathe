@@ -12,6 +12,9 @@ enum class ScreenType : std::uint8_t {
     windowed,
     fullscreen,
     borderless,
+    // A windowed-size window on GLFW's null platform, presented through VK_EXT_headless_surface: no display server,
+    // for benchmarks on headless machines and in containers.
+    headless,
 };
 
 [[nodiscard]] auto parse_screen_type(int argc, char **argv) noexcept -> ScreenType;
