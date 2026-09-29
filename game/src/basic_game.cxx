@@ -446,6 +446,51 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     }
 
     {
+        // A dense scan (~189K triangles) shown with its meshlets colour-coded. The flag goes on the model's own
+        // material so its baked occlusion stays; it is registered by name so the editor's material panel can toggle
+        // it.
+        constexpr auto skull_position = glm::vec3{0.0F, 0.0F, -8.5F};
+        constexpr float skull_scale = 8.0F;
+
+        auto const skull_model = load_or_fallback("assets/models/scattering_skull.glb");
+
+        // On a failed load this is the shared engine cube, whose materials must not be touched.
+        if (skull_model != engine_models.cube) {
+            for (auto const material: renderer.model_materials(skull_model)) {
+                auto const *source = renderer.material_storage().create_info(material);
+
+                if (source == nullptr) {
+                    continue;
+                }
+
+                auto debug_info = *source;
+                debug_info.debug_meshlet_colours = true;
+
+                if (auto const updated = renderer.update_material(material, debug_info); !updated) {
+                    error("Could not enable meshlet colours on the skull material: {}", describe(updated.error()));
+                }
+
+                // The model is cached across repopulates, so its material may already be registered.
+                auto &named_materials = renderer.assets().materials();
+                if (named_materials.name_of(material).empty()) {
+                    static_cast<void>(named_materials.register_asset("scattering_skull", material));
+                }
+            }
+        }
+
+        // The model's lowest point is at y = 0; sink it slightly so terrain bumps don't leave it floating.
+        auto const base_y = scene.physics_settings.ground_y +
+                            sample_terrain_height(terrain_params_, skull_position.x, skull_position.z) - 0.1F;
+
+        auto skull = Entity{&scene, "meshlet_debug_skull"};
+        skull.emplace<Components::Transform>(Components::Transform{
+                .position = glm::vec3{skull_position.x, base_y, skull_position.z},
+                .scale = glm::vec3{skull_scale},
+        });
+        skull.emplace<Components::Model>(Components::Model{.model = skull_model});
+    }
+
+    {
         constexpr std::array<glm::vec3, 4> point_light_colours{
                 glm::vec3{1.0F, 0.35F, 0.25F},
                 glm::vec3{0.25F, 0.55F, 1.0F},

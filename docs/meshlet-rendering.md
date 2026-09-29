@@ -85,3 +85,15 @@ One task workgroup = up to 32 meshlets of one instance, one lane each:
 (task shader)") disables per-meshlet culling for A/B debugging. With
 `meshShaderQueries` available, Scene stats shows task/mesh shader
 invocations for the forward pass.
+
+## Debug colours
+
+`MaterialCreateInfo::debug_meshlet_colours` (editor: material panel > "Debug meshlet colours") is a per-material
+switch: the forward fragment shader replaces the base colour with a PCG hash of the meshlet index (passed down from
+`main_mesh` as `debug_cluster_id`), keeping lighting, normal maps and AO so the surface still reads. Instanced
+(non-meshlet) draws have no meshlets and get one colour per instance instead. Only the forward pass reads it; the
+prepass and shadows are unaffected. Because it is a material parameter it only applies where that material draws --
+a `MaterialOverride` with a flagged material colours any entity.
+
+`BasicGame` loads `assets/models/scattering_skull.glb` (~189K triangles, roughly 2K meshlets at LOD 0) and enables the
+flag on its own material, so LOD switches and task-shader culling are visible on a dense mesh.

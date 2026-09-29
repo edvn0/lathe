@@ -14,7 +14,14 @@ struct VertexOutput
     float2 texture_coordinate;
 
     nointerpolation uint material_index;
+
+    // Meshlet index within the mesh on the meshlet path, a salted instance index on the instanced path. Only read
+    // for materials with debug_meshlet_colours set.
+    nointerpolation uint debug_cluster_id;
 };
+
+// Keeps instanced-path ids from hashing to the same colours as meshlet ids.
+static const uint debug_instance_salt = 0x9E3779B9u;
 
 [shader("amplification")]
 [numthreads(meshlets_per_task, 1, 1)]
@@ -44,6 +51,7 @@ VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_stre
     output.world_tangent = float4(world_tangent, vertex.tangent.w);
     output.texture_coordinate = vertex.uvs;
     output.material_index = draw.material_index;
+    output.debug_cluster_id = 0;
 
     return output;
 }
@@ -54,7 +62,10 @@ VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_
 {
     const GpuDraw draw = pc.draws[instance_index];
     const float wind_strength = pc.materials[draw.material_index].wind_strength;
-    return forward_vertex(pc, draw, pc.transforms[instance_index], wind_strength, vertex_id);
+
+    VertexOutput output = forward_vertex(pc, draw, pc.transforms[instance_index], wind_strength, vertex_id);
+    output.debug_cluster_id = instance_index ^ debug_instance_salt;
+    return output;
 }
 
 [shader("mesh")]
@@ -65,7 +76,8 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
                out indices uint3 tris[meshlet_max_triangles])
 {
     const GpuDraw draw = pc.draws[payload.instance_index];
-    const Meshlet meshlet = draw.meshlets[payload_meshlet_index(payload, group_id.x)];
+    const uint meshlet_index = payload_meshlet_index(payload, group_id.x);
+    const Meshlet meshlet = draw.meshlets[meshlet_index];
 
     SetMeshOutputCounts(meshlet.vertex_count, meshlet.triangle_count);
 
@@ -73,7 +85,9 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
     const float wind_strength = pc.materials[draw.material_index].wind_strength;
 
     for (uint v = lane; v < meshlet.vertex_count; v += mesh_group_size) {
-        verts[v] = forward_vertex(pc, draw, model, wind_strength, meshlet_vertex_index(draw, meshlet, v));
+        VertexOutput output = forward_vertex(pc, draw, model, wind_strength, meshlet_vertex_index(draw, meshlet, v));
+        output.debug_cluster_id = meshlet_index;
+        verts[v] = output;
     }
 
     for (uint t = lane; t < meshlet.triangle_count; t += mesh_group_size) {
@@ -85,6 +99,27 @@ struct OutputFS
 {
     float4 colour : SV_Target;
 };
+
+// PCG hash: meshoptimizer emits spatially coherent meshlets in order, so consecutive ids must map to unrelated
+// colours or neighbours become indistinguishable.
+uint pcg_hash(uint value)
+{
+    const uint state = value * 747796405u + 2891336453u;
+    const uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// Saturated, bright hue per id, so every cluster reads clearly under lighting.
+float3 debug_meshlet_colour(uint cluster_id)
+{
+    const uint hash = pcg_hash(cluster_id);
+    const float hue = float(hash & 0xFFFFu) / 65535.0;
+    const float value = 0.75 + 0.25 * (float((hash >> 16u) & 0xFFu) / 255.0);
+    const float saturation = 0.65;
+
+    const float3 hue_rgb = saturate(abs(frac(hue + float3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0);
+    return value * lerp(float3(1.0), hue_rgb, saturation);
+}
 
 // 3x3 hardware PCF. Taps are clamped to a 1-texel inset of the cascade's tile, or edge taps would read the
 // neighbouring cascade in the atlas.
@@ -203,6 +238,10 @@ if (material.alpha_mode == AlphaMode.mask && base_sample.a < material.alpha_cuto
 
 var base_colour = base_sample.xyz *
                   float3(material.colour[0], material.colour[1], material.colour[2]);
+
+    if (material.debug_meshlet_colours != 0) {
+        base_colour = debug_meshlet_colour(input.debug_cluster_id);
+    }
 
     // glTF: roughness in G, metallic in B.
     float2 metallic_roughness = metallic_roughness_texture.Sample(sampler, uv).bg *

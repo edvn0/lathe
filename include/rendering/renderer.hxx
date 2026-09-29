@@ -318,6 +318,11 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto model_lights(ModelHandle model) const -> std::span<ModelCpuLight const>;
 
+    // Each distinct submesh material, in draw order. Edit them with update_material() to change the model itself
+    // rather than overriding it per entity.
+    [[nodiscard]]
+    auto model_materials(ModelHandle model) const -> std::vector<MaterialHandle>;
+
     // A non-empty `debug_name` registers the material in assets() so the editor can offer it by name.
     [[nodiscard]]
     auto create_material(MaterialCreateInfo const &create_info, std::string debug_name = {})
