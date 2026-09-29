@@ -7,9 +7,12 @@
 # e.g.  tools/perf/run_benchmark.sh build/linux-native-relwithdebinfo perf/head.json --benchmark-frames=240
 #
 # Runs from <build_dir>/bin, where the build copies assets/. With no
-# DISPLAY it starts a private Xvfb via xvfb-run, so it works headless (CI,
-# containers) -- on a machine with no GPU, Mesa's lavapipe does the
-# rendering. BENCHMARK_TIMEOUT (seconds, default 3600) bounds the run.
+# display (CI, containers, headless machines) it runs with
+# --screen-type=headless: GLFW's null platform and VK_EXT_headless_surface,
+# so no X server is involved and any GPU the process can see is usable
+# (in a container, pass e.g. --device /dev/dri). With no GPU, Mesa's
+# lavapipe does the rendering. BENCHMARK_TIMEOUT (seconds, default 3600)
+# bounds the run.
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
@@ -29,11 +32,12 @@ fi
 
 mkdir -p "$(dirname "${out_json}")"
 
-run=(timeout "${BENCHMARK_TIMEOUT:-3600}" ./mingw-vulkan --screen-type=windowed "--benchmark=${out_json}" "$@")
-
-if [[ -z "${DISPLAY:-}" ]]; then
-  run=(xvfb-run --auto-servernum --server-args="-screen 0 1600x900x24" "${run[@]}")
+screen_type=windowed
+if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+  screen_type=headless
 fi
+
+run=(timeout "${BENCHMARK_TIMEOUT:-3600}" ./mingw-vulkan "--screen-type=${screen_type}" "--benchmark=${out_json}" "$@")
 
 cd "${bin_dir}"
 rm -rf screenshots

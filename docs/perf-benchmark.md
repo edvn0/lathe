@@ -43,13 +43,16 @@ tools/perf/run_benchmark.sh build/linux-native-relwithdebinfo perf/head.json
 tools/perf/compare_benchmarks.py --base perf/base.json --head perf/head.json
 ```
 
-`run_benchmark.sh` starts a private Xvfb when there's no `DISPLAY`. On a
-real GPU, compare runs from the same machine, with nothing else loading it.
+With no display (`DISPLAY` and `WAYLAND_DISPLAY` unset), `run_benchmark.sh`
+runs the app with `--screen-type=headless`: GLFW's null platform, presenting
+through `VK_EXT_headless_surface`. No X server is involved, and the app picks
+the best GPU it can see, falling back to lavapipe. On a real GPU, compare runs
+from the same machine, with nothing else loading it.
 
 ## In CI (`.github/workflows/perf.yml`)
 
 1. Builds the PR (merge commit) and its base, both RelWithDebInfo.
-2. Benchmarks each with 240 frames under Xvfb + lavapipe.
+2. Benchmarks each with 240 frames, headless (see above).
 3. Posts the comparison table as a PR comment, updated in place on later
    pushes. It also goes into the job summary.
 4. Uploads the JSON results and head's keyframe screenshots as the
@@ -62,7 +65,8 @@ real GPU, compare runs from the same machine, with nothing else loading it.
 - **Old bases**: a base branch older than benchmark mode gets a head-only
   report.
 
-Hosted runners have no GPU, so lavapipe does the rendering. It is good at
+Unless the job's container is given a GPU (below), lavapipe does the
+rendering. It is good at
 catching large regressions, such as the meshlet change that doubled frame
 time (see [meshlet-rendering.md](meshlet-rendering.md)), but it is not a
 stand-in for profiling on real hardware. The relative costs of passes can
@@ -70,20 +74,23 @@ differ a lot between a software rasterizer and a GPU.
 
 ### On a real GPU
 
-The workflow reads three repository variables (Actions > Variables):
-`PERF_RUNNER` (runner label), `PERF_DOCKER_GPU_ARGS` (extra `docker create`
-options for the job's container, which the whole job runs in) and
-`PERF_BENCHMARK_ARGS`. For a self-hosted
-Linux box with an NVIDIA card:
+The job runs on the `[self-hosted, linux]` runners, inside the toolchain
+container. The container only sees a GPU that is passed in, through the
+repository variable `PERF_DOCKER_GPU_ARGS` (Actions > Variables), which
+becomes the job container's `docker create` options. `PERF_BENCHMARK_ARGS`
+overrides the benchmark arguments.
 
-- **Container GPU access**: install nvidia-container-toolkit and pass
-  `--gpus all --env NVIDIA_DRIVER_CAPABILITIES=all`. The `graphics`
-  capability is what mounts the NVIDIA Vulkan ICD into the container.
-- **A real X session**: NVIDIA's Vulkan driver can't present to Xvfb, so
-  point the run at an X server on the box with `--env DISPLAY=:0 --volume
-  /tmp/.X11-unix:/tmp/.X11-unix`, which also needs `xhost +local:` or an
-  Xauthority mount. `run_benchmark.sh` only starts Xvfb when `DISPLAY` is
-  unset.
+- **AMD or Intel (Mesa)**: `--device /dev/dri`. The image's
+  `mesa-vulkan-drivers` has RADV and ANV, and headless presentation works
+  without any display, so this also works on a headless runner.
+- **NVIDIA**: install nvidia-container-toolkit and pass `--gpus all --env
+  NVIDIA_DRIVER_CAPABILITIES=all`; the `graphics` capability mounts the
+  NVIDIA Vulkan ICD into the container. Headless mode needs the driver to
+  support `VK_EXT_headless_surface`. If it doesn't, give the run a real X
+  server instead (`--env DISPLAY=:0 --volume /tmp/.X11-unix:/tmp/.X11-unix`,
+  plus `xhost +local:`), which makes `run_benchmark.sh` open a normal window.
+- **Check the device**: the report's first lines name the device each build
+  ran on; `llvmpipe` means the GPU wasn't visible.
 - **More frames**: a GPU finishes the 240-frame lap in about a second.
   Use e.g. `--benchmark-frames=3000 --benchmark-warmup=300`, so per-frame
   noise averages out and each keyframe segment spans a few seconds.

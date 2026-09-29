@@ -3,18 +3,18 @@ name: perf
 # Benchmarks the PR against its base: both builds fly the same seeded scene
 # along the game's benchmark camera loop (--benchmark, see
 # include/app/benchmark.hxx), and tools/perf/compare_benchmarks.py turns the
-# two JSON results into a per-stage table posted on the PR. Hosted runners
-# have no GPU, so this renders with Mesa's lavapipe: reliable for large
-# regressions, not a substitute for profiling on real hardware.
+# two JSON results into a per-stage table posted on the PR. The app runs
+# headless (VK_EXT_headless_surface, no X server) and uses the best GPU the
+# container can see; with none it renders with Mesa's lavapipe: reliable for
+# large regressions, not a substitute for profiling on real hardware.
 #
-# To benchmark on a real GPU instead, set repository variables (Settings >
+# To benchmark on a real GPU, set repository variables (Settings >
 # Secrets and variables > Actions > Variables):
-#   PERF_RUNNER             runner label, e.g. a self-hosted GPU box
 #   PERF_DOCKER_GPU_ARGS    extra `docker create` options for the job's
-#                           container, e.g. for NVIDIA with
-#                           nvidia-container-toolkit and an X session on :0:
+#                           container, e.g. `--device /dev/dri` for AMD or
+#                           Intel (Mesa), or for NVIDIA with
+#                           nvidia-container-toolkit:
 #                             --gpus all --env NVIDIA_DRIVER_CAPABILITIES=all
-#                             --env DISPLAY=:0 --volume /tmp/.X11-unix:/tmp/.X11-unix
 #   PERF_BENCHMARK_ARGS     overrides BENCHMARK_ARGS below (a GPU runs the
 #                           lap in seconds -- use more frames)
 # See docs/perf-benchmark.md.
