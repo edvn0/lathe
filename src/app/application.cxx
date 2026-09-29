@@ -49,6 +49,7 @@
 #include "rendering/imgui_widget.hxx"
 #include "scene/components.hxx"
 #include "scene/editor_camera.hxx"
+#include "scene/selection_context.hxx"
 #if MINGW_VULKAN_TRACK_MEMORY
 #include "core/memory_tracking_ui.hxx"
 #endif
@@ -189,6 +190,87 @@ namespace {
                 ...);
     }
 
+    template<std::size_t N>
+    auto copy_to_buffer(std::array<char, N> &buffer, std::string_view text) -> void {
+        auto const length = std::min(text.size(), N - 1);
+        std::copy_n(text.begin(), length, buffer.begin());
+        buffer[length] = '\0';
+    }
+
+    // Writes to GeneratedMeta when the entity has one, since it wins in entity_display_name(), else to Meta.
+    // Surrounding whitespace is trimmed; an empty name is ignored.
+    auto rename_entity(entt::registry &registry, entt::entity entity, std::string_view name) -> void {
+        auto const is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+        while (!name.empty() && is_space(static_cast<unsigned char>(name.front()))) {
+            name.remove_prefix(1);
+        }
+        while (!name.empty() && is_space(static_cast<unsigned char>(name.back()))) {
+            name.remove_suffix(1);
+        }
+
+        if (name.empty() || !registry.valid(entity)) {
+            return;
+        }
+
+        if (registry.all_of<Components::GeneratedMeta>(entity)) {
+            registry.patch<Components::GeneratedMeta>(
+                    entity, [&](Components::GeneratedMeta &meta) { meta.name = std::string{name}; });
+        } else {
+            registry.emplace_or_replace<Components::Meta>(entity, Components::Meta{.name = FlyString{name}});
+        }
+    }
+
+    // `entities` without the ones that have a selected ancestor, order kept. Moving, duplicating or deleting an
+    // entity carries its subtree, so acting on those descendants as well would repeat the work.
+    [[nodiscard]] auto selection_roots(entt::registry const &registry, std::span<entt::entity const> entities)
+            -> std::vector<entt::entity> {
+        // Bounds the walk, so a cyclic Parent chain terminates.
+        constexpr std::size_t max_parent_depth = 1024;
+
+        std::vector<entt::entity> roots;
+        roots.reserve(entities.size());
+
+        for (auto const entity: entities) {
+            if (!registry.valid(entity)) {
+                continue;
+            }
+
+            bool has_selected_ancestor = false;
+            std::size_t depth = 0;
+            for (auto const *parent = registry.try_get<Components::Parent>(entity);
+                 parent != nullptr && registry.valid(parent->entity) && depth++ < max_parent_depth;
+                 parent = registry.try_get<Components::Parent>(parent->entity)) {
+                if (std::ranges::find(entities, parent->entity) != entities.end()) {
+                    has_selected_ancestor = true;
+                    break;
+                }
+            }
+
+            if (!has_selected_ancestor) {
+                roots.push_back(entity);
+            }
+        }
+
+        return roots;
+    }
+
+    // Splits an affine matrix into position, rotation and scale; shear is dropped.
+    auto set_transform_from_matrix(entt::registry &registry, entt::entity entity, glm::mat4 const &matrix) -> void {
+        auto const translation = glm::vec3{matrix[3]};
+        glm::vec3 const scale{glm::length(glm::vec3{matrix[0]}), glm::length(glm::vec3{matrix[1]}),
+                              glm::length(glm::vec3{matrix[2]})};
+        glm::mat3 const rotation_matrix{glm::vec3{matrix[0]} / scale.x, glm::vec3{matrix[1]} / scale.y,
+                                        glm::vec3{matrix[2]} / scale.z};
+        auto const rotation = glm::quat_cast(rotation_matrix);
+
+        // patch<>() so Scene::on_transform_changed fires.
+        registry.patch<Components::Transform>(entity, [&](Components::Transform &transform) {
+            transform.position = translation;
+            transform.rotation = rotation;
+            transform.scale = scale;
+        });
+    }
+
     // Filters for the model file browser.
     [[nodiscard]] auto model_file_filters() -> std::vector<gui::FileBrowser::Filter> {
         return {
@@ -290,6 +372,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         if (!is_playing && has_room) {
             auto &registry = active_scene()->get_registry();
 
+            // The gizmo sits on the primary entity; the rest of the selection follows its change.
+            auto const selected_entity = selection_context().primary();
+
             if (selected_entity != entt::null && registry.valid(selected_entity) &&
                 registry.all_of<Components::Transform>(selected_entity)) {
                 ImGuizmo::SetOrthographic(false);
@@ -302,23 +387,24 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 auto const view = camera.view();
                 auto const projection = camera.projection(aspect);
 
-                auto matrix = registry.get<Components::Transform>(selected_entity).matrix();
+                auto const previous_matrix = registry.get<Components::Transform>(selected_entity).matrix();
+                auto matrix = previous_matrix;
 
                 if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection), gizmo_operation, gizmo_mode,
                                          glm::value_ptr(matrix))) {
-                    auto const translation = glm::vec3{matrix[3]};
-                    glm::vec3 const scale{glm::length(glm::vec3{matrix[0]}), glm::length(glm::vec3{matrix[1]}),
-                                          glm::length(glm::vec3{matrix[2]})};
-                    glm::mat3 const rotation_matrix{glm::vec3{matrix[0]} / scale.x, glm::vec3{matrix[1]} / scale.y,
-                                                    glm::vec3{matrix[2]} / scale.z};
-                    auto const rotation = glm::quat_cast(rotation_matrix);
+                    // Applied to each entity's own Transform, like the primary's, so the selection moves, turns and
+                    // scales as a group. Descendants of selected entities follow their parent instead.
+                    auto const delta = matrix * glm::inverse(previous_matrix);
+                    auto const snapshot = selection_context().snapshot();
 
-                    // patch<>() so Scene::on_transform_changed fires.
-                    registry.patch<Components::Transform>(selected_entity, [&](Components::Transform &transform) {
-                        transform.position = translation;
-                        transform.rotation = rotation;
-                        transform.scale = scale;
-                    });
+                    for (auto const entity: selection_roots(registry, snapshot.entities)) {
+                        if (entity == selected_entity) {
+                            set_transform_from_matrix(registry, entity, matrix);
+                        } else if (registry.all_of<Components::Transform>(entity)) {
+                            set_transform_from_matrix(registry, entity,
+                                                      delta * registry.get<Components::Transform>(entity).matrix());
+                        }
+                    }
 
                     renderer->mark_dynamic_shadow_casters_dirty();
                 }
@@ -868,12 +954,29 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         enum class HierarchyAction : std::uint8_t { none, add_child, duplicate, remove, reparent };
         HierarchyAction pending_action = HierarchyAction::none;
         // add_child: the new entity's parent (entt::null = root).
-        // duplicate/remove: the entity acted on.
+        // duplicate/remove: unused; they act on the selection.
         // reparent: the new parent (entt::null = root); the moved entity is drag_reparent_source.
         entt::entity action_target = entt::null;
         entt::entity drag_reparent_source = entt::null;
 
         std::size_t row_index = 0;
+
+        auto &selection = selection_context();
+        // The selection can outlive its entities (deleted, or the registry swapped by play/stop).
+        selection.retain_if([&](entt::entity entity) { return registry.valid(entity); });
+
+        // Rows in draw order. ImGui's multi-select identifies each row by its index here, and reports shift-click
+        // ranges in those indices.
+        std::vector<entt::entity> drawn_rows;
+        drawn_rows.reserve(listed_entities.size() + bullet_count);
+        // Row clicked this frame; becomes the primary entity so the Inspector follows the click.
+        entt::entity clicked_entity = entt::null;
+
+        auto const begin_rename = [&](entt::entity entity) {
+            renaming_entity = entity;
+            copy_to_buffer(rename_buffer, entity_display_name(registry, entity));
+            rename_needs_focus = true;
+        };
 
         // Draws one row, plus a tree node with the entity's children if it has any.
         std::function<void(entt::entity)> draw_entity_node = [&](entt::entity entity) {
@@ -905,7 +1008,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         ImGui::GetColorU32(ImGuiCol_TableRowBgAlt));
             }
 
-            bool const is_selected = selected_entity == entity;
+            bool const is_selected = selection.contains(entity);
             float label_x = row_pos.x + style.FramePadding.x;
             ImVec2 next_row_pos;
             bool open = false;
@@ -915,30 +1018,38 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                                  ImGuiTreeNodeFlags_FramePadding |
                                                  (is_selected ? ImGuiTreeNodeFlags_Selected : ImGuiTreeNodeFlags_None);
                 // The leading space and FramePadding give the node the same height as the Selectable rows.
-                open = ImGui::TreeNodeEx(" ##node", flags);
                 // OpenOnArrow: clicking the row selects, only the arrow expands.
-                if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-                    selected_entity = entity;
-                }
+                ImGui::SetNextItemSelectionUserData(static_cast<ImGuiSelectionUserData>(drawn_rows.size()));
+                drawn_rows.push_back(entity);
+                open = ImGui::TreeNodeEx(" ##node", flags);
                 next_row_pos = ImGui::GetCursorPos();
                 label_x = row_pos.x + ImGui::GetTreeNodeToLabelSpacing();
             } else {
-                if (ImGui::Selectable("##row", is_selected, ImGuiSelectableFlags_None,
-                                      ImVec2(avail_width, row_height))) {
-                    selected_entity = entity;
-                }
+                // Selection changes arrive as multi-select requests, so the return value isn't needed.
+                ImGui::SetNextItemSelectionUserData(static_cast<ImGuiSelectionUserData>(drawn_rows.size()));
+                drawn_rows.push_back(entity);
+                static_cast<void>(ImGui::Selectable("##row", is_selected, ImGuiSelectableFlags_None,
+                                                    ImVec2(avail_width, row_height)));
                 next_row_pos = ImGui::GetCursorPos();
             }
 
-            // OpenPopupOnItemClick returns void in this imgui version, so select on right-click separately.
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-                selected_entity = entity;
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+                clicked_entity = entity;
             }
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                begin_rename(entity);
+            }
+
+            // Multi-select already selects an unselected row on right-click, so the menu acts on the selection.
             ImGui::OpenPopupOnItemClick("entity_context", ImGuiPopupFlags_MouseButtonRight);
 
             if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
                 ImGui::SetDragDropPayload("HIERARCHY_ENTITY", &entity, sizeof(entity));
-                ImGui::TextUnformatted(name.c_str());
+                if (auto const count = selection.size(); is_selected && count > 1) {
+                    ImGui::Text("%zu entities", count);
+                } else {
+                    ImGui::TextUnformatted(name.c_str());
+                }
                 ImGui::EndDragDropSource();
             }
 
@@ -958,9 +1069,29 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::ImageWithBg(editor_icons->texture(visual.icon), ImVec2(icon_size, icon_size), ImVec2(0, 0),
                                ImVec2(1, 1), ImVec4(0, 0, 0, 0), visual.tint);
 
-            ImGui::SetCursorPos(ImVec2(label_x + icon_size + style.ItemInnerSpacing.x,
-                                       row_pos.y + (row_height - ImGui::GetTextLineHeight()) * 0.5F));
-            ImGui::TextUnformatted(name.c_str());
+            float const text_x = label_x + icon_size + style.ItemInnerSpacing.x;
+            if (renaming_entity == entity) {
+                ImGui::SetCursorPos(ImVec2(text_x, row_pos.y));
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (rename_needs_focus) {
+                    ImGui::SetKeyboardFocusHere();
+                    rename_needs_focus = false;
+                }
+
+                bool const submitted =
+                        ImGui::InputText("##rename", rename_buffer.data(), rename_buffer.size(),
+                                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+                // Enter or clicking away commits; Escape cancels.
+                if (submitted || (ImGui::IsItemDeactivated() && !ImGui::IsKeyPressed(ImGuiKey_Escape))) {
+                    rename_entity(registry, entity, rename_buffer.data());
+                    renaming_entity = entt::null;
+                } else if (ImGui::IsItemDeactivated()) {
+                    renaming_entity = entt::null;
+                }
+            } else {
+                ImGui::SetCursorPos(ImVec2(text_x, row_pos.y + (row_height - ImGui::GetTextLineHeight()) * 0.5F));
+                ImGui::TextUnformatted(name.c_str());
+            }
 
             ImGui::SetCursorPos(next_row_pos);
 
@@ -972,18 +1103,22 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
 
             if (ImGui::BeginPopup("entity_context")) {
+                auto const count = selection.size();
+
                 if (ImGui::MenuItem("Add Child Entity")) {
                     pending_action = HierarchyAction::add_child;
                     action_target = entity;
                 }
-                if (ImGui::MenuItem("Duplicate")) {
+                if (ImGui::MenuItem("Rename", "F2")) {
+                    begin_rename(entity);
+                }
+                // Duplicate and Delete act on the whole selection, which includes this row.
+                if (ImGui::MenuItem(count > 1 ? "Duplicate Selected" : "Duplicate", "Ctrl+D")) {
                     pending_action = HierarchyAction::duplicate;
-                    action_target = entity;
                 }
                 ImGui::Separator();
-                if (ImGui::MenuItem("Delete")) {
+                if (ImGui::MenuItem(count > 1 ? "Delete Selected" : "Delete", "Del")) {
                     pending_action = HierarchyAction::remove;
-                    action_target = entity;
                 }
                 ImGui::EndPopup();
             }
@@ -992,7 +1127,61 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         };
 
         auto const total_count = bullet_count + static_cast<std::uint32_t>(listed_entities.size());
-        ImGui::TextDisabled("%u %s", total_count, total_count == 1 ? "entity" : "entities");
+        if (auto const selected_count = selection.size(); selected_count > 1) {
+            ImGui::TextDisabled("%u %s, %zu selected", total_count, total_count == 1 ? "entity" : "entities",
+                                selected_count);
+        } else {
+            ImGui::TextDisabled("%u %s", total_count, total_count == 1 ? "entity" : "entities");
+        }
+
+        // Applies one BeginMultiSelect()/EndMultiSelect() batch as a single selection change.
+        auto const apply_selection_requests = [&](ImGuiMultiSelectIO const *io) {
+            if (io == nullptr || io->Requests.empty()) {
+                return;
+            }
+            // Focusing the rename field moves keyboard nav onto an item that isn't selectable, which multi-select
+            // answers by clearing the selection. Only a click changes the selection while a row is being renamed.
+            if (renaming_entity != entt::null && !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                return;
+            }
+
+            selection.modify([&](SelectionContext::Transaction &transaction) {
+                for (auto const &request: io->Requests) {
+                    if (request.Type == ImGuiSelectionRequestType_SetAll) {
+                        transaction.clear();
+                        if (!request.Selected) {
+                            continue;
+                        }
+                        // Ctrl+A: everything the filter shows, collapsed children and bullets included.
+                        for (auto const entity: listed_entities) {
+                            if (matches_filter(entity_display_name(registry, entity).c_str())) {
+                                transaction.set(entity, true);
+                            }
+                        }
+                        for (auto const entity: bullet_view) {
+                            if (matches_filter(registry.get<Components::GeneratedMeta>(entity).name.c_str())) {
+                                transaction.set(entity, true);
+                            }
+                        }
+                    } else if (request.Type == ImGuiSelectionRequestType_SetRange) {
+                        auto const first = std::max<ImGuiSelectionUserData>(
+                                std::min(request.RangeFirstItem, request.RangeLastItem), 0);
+                        auto const last = std::min<ImGuiSelectionUserData>(
+                                std::max(request.RangeFirstItem, request.RangeLastItem),
+                                static_cast<ImGuiSelectionUserData>(drawn_rows.size()) - 1);
+                        for (auto row = first; row <= last; ++row) {
+                            transaction.set(drawn_rows[static_cast<std::size_t>(row)], request.Selected);
+                        }
+                    }
+                }
+            });
+        };
+
+        constexpr ImGuiMultiSelectFlags multi_select_flags = ImGuiMultiSelectFlags_ClearOnEscape |
+                                                             ImGuiMultiSelectFlags_ClearOnClickVoid |
+                                                             ImGuiMultiSelectFlags_BoxSelect1d;
+        apply_selection_requests(ImGui::BeginMultiSelect(multi_select_flags, static_cast<int>(selection.size()),
+                                                         static_cast<int>(total_count)));
 
         bool const any_bullet_matches =
                 search_lower.empty() || std::ranges::any_of(bullet_view, [&](entt::entity e) {
@@ -1049,6 +1238,28 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::EndDragDropTarget();
         }
 
+        apply_selection_requests(ImGui::EndMultiSelect());
+        if (clicked_entity != entt::null) {
+            selection.modify([&](SelectionContext::Transaction &transaction) {
+                transaction.set_primary(clicked_entity);
+            });
+        }
+
+        // Shortcuts while the Hierarchy is focused and no text field has the keyboard.
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput) {
+            if (auto const primary = selection.primary();
+                ImGui::IsKeyPressed(ImGuiKey_F2, false) && primary != entt::null) {
+                begin_rename(primary);
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !selection.empty()) {
+                pending_action = HierarchyAction::remove;
+            }
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_D) && !selection.empty()) {
+                pending_action = HierarchyAction::duplicate;
+            }
+        }
+
+
         // NoOpenOverItems: rows have their own "entity_context" popup.
         if (ImGui::BeginPopupContextWindow("hierarchy_bg_context",
                                            ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
@@ -1059,6 +1270,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::EndPopup();
         }
 
+        auto const selected_roots = [&] { return selection_roots(registry, selection.snapshot().entities); };
+
         switch (pending_action) {
             case HierarchyAction::add_child: {
                 auto new_entity = GeneratedEntity{active_scene(), "Entity"};
@@ -1067,82 +1280,96 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 if (action_target != entt::null && registry.valid(action_target)) {
                     new_entity.emplace<Components::Parent>(Components::Parent{.entity = action_target});
                 }
-                selected_entity = new_entity;
+                selection.select(new_entity);
                 break;
             }
             case HierarchyAction::duplicate: {
-                if (registry.valid(action_target)) {
-                    // Recreates `source`'s subtree under `parent` (entt::null = root).
-                    std::function<entt::entity(entt::entity, entt::entity)> duplicate_subtree =
-                            [&](entt::entity source, entt::entity parent) -> entt::entity {
-                        auto const clone = registry.create();
+                // Recreates `source`'s subtree under `parent` (entt::null = root).
+                std::function<entt::entity(entt::entity, entt::entity)> duplicate_subtree =
+                        [&](entt::entity source, entt::entity parent) -> entt::entity {
+                    auto const clone = registry.create();
 
-                        copy_components<Components::Transform, Components::Model, Components::InstancedModel,
-                                        Components::RigidBody, Components::MaterialOverride, Components::PlayerTag,
-                                        Components::Lifetime, Components::PointLight, Components::SpotLight,
-                                        Components::Script, Components::BulletTag>(registry, source, clone);
+                    copy_components<Components::Transform, Components::Model, Components::InstancedModel,
+                                    Components::RigidBody, Components::MaterialOverride, Components::PlayerTag,
+                                    Components::Lifetime, Components::PointLight, Components::SpotLight,
+                                    Components::Script, Components::BulletTag>(registry, source, clone);
 
-                        // The clone takes its own reference, so deleting either one leaves the other's model alive.
-                        if (auto const *model = registry.try_get<Components::Model>(clone);
-                            model != nullptr && registry.all_of<Components::StreamedModelTag>(source)) {
-                            renderer->retain_model(model->model);
-                            registry.emplace<Components::StreamedModelTag>(clone);
+                    // The clone takes its own reference, so deleting either one leaves the other's model alive.
+                    if (auto const *model = registry.try_get<Components::Model>(clone);
+                        model != nullptr && registry.all_of<Components::StreamedModelTag>(source)) {
+                        renderer->retain_model(model->model);
+                        registry.emplace<Components::StreamedModelTag>(clone);
+                    }
+
+                    // Duplicates are always named through GeneratedMeta.
+                    registry.emplace<Components::GeneratedMeta>(
+                            clone,
+                            Components::GeneratedMeta{.name = entity_display_name(registry, source) + " (Copy)"});
+
+                    if (parent != entt::null) {
+                        registry.emplace<Components::Parent>(clone, Components::Parent{.entity = parent});
+                    }
+
+                    if (auto const it = children_of.find(source); it != children_of.end()) {
+                        for (auto const child: it->second) {
+                            duplicate_subtree(child, clone);
                         }
+                    }
 
-                        // Duplicates are always named through GeneratedMeta.
-                        registry.emplace<Components::GeneratedMeta>(
-                                clone,
-                                Components::GeneratedMeta{.name = entity_display_name(registry, source) + " (Copy)"});
+                    return clone;
+                };
 
-                        if (parent != entt::null) {
-                            registry.emplace<Components::Parent>(clone, Components::Parent{.entity = parent});
-                        }
-
-                        if (auto const it = children_of.find(source); it != children_of.end()) {
-                            for (auto const child: it->second) {
-                                duplicate_subtree(child, clone);
-                            }
-                        }
-
-                        return clone;
-                    };
-
-                    auto const *source_parent = registry.try_get<Components::Parent>(action_target);
-                    selected_entity = duplicate_subtree(action_target,
-                                                        source_parent != nullptr ? source_parent->entity : entt::null);
+                // The copies replace the originals in the selection, so they can be moved straight away.
+                std::vector<entt::entity> clones;
+                for (auto const source: selected_roots()) {
+                    auto const *source_parent = registry.try_get<Components::Parent>(source);
+                    clones.push_back(
+                            duplicate_subtree(source, source_parent != nullptr ? source_parent->entity : entt::null));
                 }
+                selection.assign(clones);
                 break;
             }
             case HierarchyAction::remove: {
-                if (registry.valid(action_target)) {
-                    std::function<void(entt::entity)> delete_subtree = [&](entt::entity target) {
-                        if (auto const it = children_of.find(target); it != children_of.end()) {
-                            for (auto const child: it->second) {
-                                delete_subtree(child);
-                            }
+                std::function<void(entt::entity)> delete_subtree = [&](entt::entity target) {
+                    if (!registry.valid(target)) {
+                        return;
+                    }
+                    if (auto const it = children_of.find(target); it != children_of.end()) {
+                        for (auto const child: it->second) {
+                            delete_subtree(child);
                         }
-                        if (selected_entity == target) {
-                            selected_entity = entt::null;
-                        }
+                    }
 
-                        // Only StreamedModelTag entities own a model reference that can be released.
-                        if (auto const *model = registry.try_get<Components::Model>(target);
-                            model != nullptr && registry.all_of<Components::StreamedModelTag>(target)) {
-                            static_cast<void>(renderer->destroy_model(model->model));
-                        }
+                    // Only StreamedModelTag entities own a model reference that can be released.
+                    if (auto const *model = registry.try_get<Components::Model>(target);
+                        model != nullptr && registry.all_of<Components::StreamedModelTag>(target)) {
+                        renderer->release_model(model->model);
+                    }
 
-                        registry.destroy(target);
-                    };
-                    delete_subtree(action_target);
+                    registry.destroy(target);
+                };
+
+                for (auto const target: selected_roots()) {
+                    delete_subtree(target);
                 }
+                selection.clear();
                 break;
             }
             case HierarchyAction::reparent: {
-                if (registry.valid(drag_reparent_source) && drag_reparent_source != action_target) {
+                // Dragging a selected row moves the whole selection; an unselected row moves alone.
+                auto const sources = selection.contains(drag_reparent_source)
+                                             ? selected_roots()
+                                             : std::vector<entt::entity>{drag_reparent_source};
+
+                for (auto const source: sources) {
+                    if (!registry.valid(source) || source == action_target) {
+                        continue;
+                    }
+
                     // Reject drops onto one of the dragged entity's own descendants.
                     bool creates_cycle = false;
                     for (auto walk = action_target; walk != entt::null && registry.valid(walk);) {
-                        if (walk == drag_reparent_source) {
+                        if (walk == source) {
                             creates_cycle = true;
                             break;
                         }
@@ -1150,13 +1377,15 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         walk = walk_parent != nullptr ? walk_parent->entity : entt::null;
                     }
 
-                    if (!creates_cycle) {
-                        if (action_target == entt::null) {
-                            registry.remove<Components::Parent>(drag_reparent_source);
-                        } else {
-                            registry.emplace_or_replace<Components::Parent>(
-                                    drag_reparent_source, Components::Parent{.entity = action_target});
-                        }
+                    if (creates_cycle) {
+                        continue;
+                    }
+
+                    if (action_target == entt::null) {
+                        registry.remove<Components::Parent>(source);
+                    } else {
+                        registry.emplace_or_replace<Components::Parent>(source,
+                                                                        Components::Parent{.entity = action_target});
                     }
                 }
                 break;
@@ -1165,20 +1394,40 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 break;
         }
 
-        if (selected_entity != entt::null && !registry.valid(selected_entity)) {
-            selected_entity = entt::null;
+        if (renaming_entity != entt::null && !registry.valid(renaming_entity)) {
+            renaming_entity = entt::null;
         }
     });
 
     widget("Inspector", [&] {
         auto &registry = active_scene()->get_registry();
+        // Edits apply to the primary entity: the one selected last.
+        auto const selected_entity = selection_context().primary();
 
         if (selected_entity == entt::null || !registry.valid(selected_entity)) {
             ImGui::TextDisabled("No entity selected");
             return;
         }
 
-        ImGui::TextUnformatted(entity_display_name(registry, selected_entity).c_str());
+        if (auto const count = selection_context().size(); count > 1) {
+            ImGui::TextDisabled("%zu entities selected -- editing the last one", count);
+        }
+
+        // Refilled from the entity whenever the field isn't being edited, so it follows the selection and renames
+        // made elsewhere. An edit is committed to the entity it was typed for once the field loses focus.
+        auto const name_id = ImGui::GetID("##entity_name");
+        if (ImGui::GetActiveID() != name_id) {
+            if (inspector_name_dirty) {
+                rename_entity(registry, inspector_name_entity, inspector_name_buffer.data());
+                inspector_name_dirty = false;
+            }
+            inspector_name_entity = selected_entity;
+            copy_to_buffer(inspector_name_buffer, entity_display_name(registry, selected_entity));
+        }
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputText("##entity_name", inspector_name_buffer.data(), inspector_name_buffer.size())) {
+            inspector_name_dirty = true;
+        }
         ImGui::Separator();
 
         // One collapsible section per present component. `draw_fields` edits in place and returns whether it changed,
@@ -1683,7 +1932,7 @@ auto Application::spawn_streamed_model(std::filesystem::path const &path) -> voi
     entity.emplace<Components::Model>(Components::Model{.model = model});
     // Lets the entity's reference be released when it's removed or its model is swapped.
     entity.emplace<Components::StreamedModelTag>();
-    selected_entity = entity;
+    selection_context().select(entity);
 
     model_loads.push_back(StreamedModelLoad{
             .scene = active_scene(),
@@ -1766,7 +2015,10 @@ auto Application::set_entity_model(entt::registry &registry, entt::entity entity
 }
 
 auto Application::play() -> void {
-    selected_entity = entt::null;
+    // The runtime registry has its own entities.
+    selection_context().clear();
+    renaming_entity = entt::null;
+    inspector_name_dirty = false;
 
     runtime_scene = std::make_unique<Scene>(*renderer);
     runtime_scene->physics_settings = editor_scene->physics_settings;
@@ -1795,7 +2047,9 @@ auto Application::play() -> void {
 }
 
 auto Application::stop() -> void {
-    selected_entity = entt::null;
+    selection_context().clear();
+    renaming_entity = entt::null;
+    inspector_name_dirty = false;
 
     // Before on_scene_stop() destroys the runtime PhysicsWorld.
     if (terrain) {

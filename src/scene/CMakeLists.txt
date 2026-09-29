@@ -8,6 +8,7 @@ add_library(
     STATIC
         camera_path.cxx
         editor_camera.cxx
+        selection_context.cxx
 )
 
 target_include_directories(

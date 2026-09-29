@@ -9,6 +9,7 @@
 #include "rendering/editor_icons.hxx"
 #include "rendering/file_browser.hxx"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -84,6 +85,10 @@ struct Application {
     enum class ModelBrowseTarget : std::uint8_t { spawn_entity, inspector };
     ModelBrowseTarget model_browse_target = ModelBrowseTarget::spawn_entity;
 
+    // The rename field takes keyboard focus on its first frame.
+    bool rename_needs_focus = false;
+    bool inspector_name_dirty = false;
+
     [[nodiscard]] auto active_scene() const noexcept -> Scene * {
         return is_playing ? runtime_scene.get() : editor_scene.get();
     }
@@ -109,10 +114,19 @@ struct Application {
 
     EditorCamera camera;
 
-    // Cleared on play()/stop(), since the active registry changes.
-    entt::entity selected_entity = entt::null;
+    // The selection itself lives in selection_context(); it's cleared on play()/stop(), since the active registry
+    // changes.
+
     // Inspector model picker: the entity whose Model the picked file replaces.
     entt::entity model_browse_entity = entt::null;
+
+    // Hierarchy inline rename: the row showing a text field, and that field's text.
+    entt::entity renaming_entity = entt::null;
+    std::array<char, 128> rename_buffer{};
+
+    // Inspector name field: the entity its text belongs to, and whether it holds an uncommitted edit.
+    entt::entity inspector_name_entity = entt::null;
+    std::array<char, 128> inspector_name_buffer{};
     ImGuizmo::OPERATION gizmo_operation = ImGuizmo::TRANSLATE;
     ImGuizmo::MODE gizmo_mode = ImGuizmo::WORLD;
 
