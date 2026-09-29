@@ -7,8 +7,13 @@
 #include <ImGuizmo.h>
 
 #include "rendering/editor_icons.hxx"
+#include "rendering/file_browser.hxx"
 
+#include <cstdint>
+#include <filesystem>
 #include <functional>
+#include <string>
+#include <vector>
 
 #include "assets/material_storage.hxx"
 #include "gpu/context.hxx"
@@ -22,10 +27,6 @@
 #include "assets/shader_hot_reload_watcher.hxx"
 #include "rendering/terminal_widget.hxx"
 #include "terrain/terrain_world.hxx"
-
-namespace pfd {
-    class open_file;
-} // namespace pfd
 
 struct ScrollingBuffer {
     std::int32_t max_size;
@@ -80,6 +81,9 @@ struct Application {
     // Embedded play only: set by a click in the Viewport, cleared by Escape or stop().
     bool game_mouse_captured = false;
 
+    enum class ModelBrowseTarget : std::uint8_t { spawn_entity, inspector };
+    ModelBrowseTarget model_browse_target = ModelBrowseTarget::spawn_entity;
+
     [[nodiscard]] auto active_scene() const noexcept -> Scene * {
         return is_playing ? runtime_scene.get() : editor_scene.get();
     }
@@ -107,6 +111,8 @@ struct Application {
 
     // Cleared on play()/stop(), since the active registry changes.
     entt::entity selected_entity = entt::null;
+    // Inspector model picker: the entity whose Model the picked file replaces.
+    entt::entity model_browse_entity = entt::null;
     ImGuizmo::OPERATION gizmo_operation = ImGuizmo::TRANSLATE;
     ImGuizmo::MODE gizmo_mode = ImGuizmo::WORLD;
 
@@ -128,14 +134,31 @@ struct Application {
 
     gui::TerminalWidget terminal_widget;
 
-    // Result of the last "Load Model" browse.
-    std::string model_load_status;
+    // Shared by the "Load Model" panel and the Inspector's model picker; `model_browse_target` says which opened it.
+    gui::FileBrowser model_browser;
 
-    // Open "Load Model" file picker, polled with ready(0) so the frame loop doesn't block.
-    std::unique_ptr<pfd::open_file> model_load_dialog;
+    // Models spawned from the "Load Model" panel, newest last, so it can report how each load went.
+    struct StreamedModelLoad {
+        Scene *scene = nullptr;
+        entt::entity entity = entt::null;
+        ModelHandle model{};
+        std::string file_name;
+        // Set once the load installed or failed.
+        bool settled = false;
+        std::string status;
+    };
+    static constexpr std::size_t max_listed_model_loads = 8;
+    std::vector<StreamedModelLoad> model_loads;
 
-    // Open file picker for the Inspector's "Change Model" control.
-    std::unique_ptr<pfd::open_file> inspector_model_dialog;
+    // Streams `path` in and spawns an entity for it in the active scene.
+    auto spawn_streamed_model(std::filesystem::path const &path) -> void;
+
+    // Settles finished entries of `model_loads`: records the outcome and gives installed models their collider.
+    auto update_model_loads() -> void;
+
+    // Points `entity`'s Model at `model`, taking over one reference the caller holds on `model` and releasing the
+    // entity's reference on its previous model, if it owned one.
+    auto set_entity_model(entt::registry &registry, entt::entity entity, ModelHandle model) -> void;
 
     // State of the "New Material" popup, kept across frames.
     MaterialCreateInfo new_material_info{};

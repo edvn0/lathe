@@ -259,7 +259,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto load_model(std::filesystem::path const &path) -> std::expected<ModelHandle, RendererError>;
 
-    // Reserves a handle that renders as `fallback` until finish_model_load() installs the real model.
+    // Reserves a handle that renders as `fallback` until install_model() installs the real model.
     [[nodiscard]]
     auto create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, RendererError> override;
 
@@ -270,6 +270,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     // See IModelSink::retain_model. Logs and does nothing if `handle` isn't live.
     auto retain_model(ModelHandle handle) -> void override;
+
+    // See IModelSink::release_model. destroy_model() with the result discarded.
+    auto release_model(ModelHandle handle) -> void override;
 
     auto register_model_name(ModelHandle handle, std::string_view name) -> void override;
 

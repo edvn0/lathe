@@ -30,6 +30,10 @@ struct ModelSlotData {
     // frees the slot once it reaches zero. create_model()/upgrade_pending_model() handle it explicitly rather than
     // overwriting it.
     std::uint32_t ref_count = 1;
+
+    // Set on a pending slot, whose draws are a copy of this model's and point at its meshes. The pending slot holds
+    // a reference on it, so those meshes outlive the copy, and must never destroy them itself.
+    ModelHandle borrowed_from{};
 };
 
 enum class ModelStorageErrorType : std::uint8_t {
@@ -83,11 +87,13 @@ public:
     [[nodiscard]]
     auto create_model(ModelSlotData data) -> std::expected<ModelHandle, ModelStorageError>;
 
-    // Reserves a slot holding a copy of `fallback`'s data until upgrade_pending_model() installs the real model.
+    // Reserves a slot holding a copy of `fallback`'s data until upgrade_pending_model() installs the real model. The
+    // copy shares `fallback`'s meshes, so it records `fallback` in borrowed_from and retains it.
     [[nodiscard]]
     auto create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, ModelStorageError>;
 
-    // Replaces a slot's data in place; the handle stays the same.
+    // Replaces a slot's data in place; the handle stays the same. The caller releases the slot's previous
+    // borrowed_from, if any.
     [[nodiscard]]
     auto upgrade_pending_model(ModelHandle handle, ModelSlotData data) -> std::expected<ModelHandle, ModelStorageError>;
 

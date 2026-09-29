@@ -23,6 +23,7 @@
 #include <glm/gtc/random.hpp>
 #include <glm/vec2.hpp>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string_view>
 #include <type_traits>
@@ -56,7 +57,6 @@
 #include "gpu/swapchain.hxx"
 #include "physics/physics.hxx"
 #include "physics/physics_world.hxx"
-#include "portable-file-dialogs.h"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 
@@ -189,55 +189,12 @@ namespace {
                 ...);
     }
 
-#if !defined(_WIN32)
-    // pfd forks kdialog/zenity with this process's environment. If LD_LIBRARY_PATH points at a different Qt build,
-    // the child loads mismatched libraries and dies, which looks like a cancelled dialog. Clear it only around the
-    // pfd::open_file construction, which is where the fork happens.
-    class ScopedLdLibraryPathClear {
-    public:
-        ScopedLdLibraryPathClear() {
-            if (auto const *value = std::getenv("LD_LIBRARY_PATH"); value != nullptr && value[0] != '\0') {
-                saved_ = value;
-                unsetenv("LD_LIBRARY_PATH");
-            }
-        }
-
-        ~ScopedLdLibraryPathClear() {
-            if (!saved_.empty()) {
-                setenv("LD_LIBRARY_PATH", saved_.c_str(), 1);
-            }
-        }
-
-        ScopedLdLibraryPathClear(ScopedLdLibraryPathClear const &) = delete;
-        auto operator=(ScopedLdLibraryPathClear const &) -> ScopedLdLibraryPathClear & = delete;
-
-    private:
-        std::string saved_;
-    };
-#endif
-
-    auto open_model_dialog(std::unique_ptr<pfd::open_file> &dialog) -> void {
-        // Logs the helper command pfd resolves to.
-        pfd::settings::verbose(true);
-
-#if !defined(_WIN32)
-        ScopedLdLibraryPathClear const scoped_ld_library_path_clear;
-#endif
-        dialog = std::make_unique<pfd::open_file>(
-                "Load model", ".", std::vector<std::string>{"glTF models", "*.gltf *.glb", "All files", "*"});
-    }
-
-    // Call only once `dialog->ready(0)` is true. Resets `dialog`; nullopt means the picker was cancelled.
-    [[nodiscard]] auto consume_model_dialog(std::unique_ptr<pfd::open_file> &dialog)
-            -> std::optional<std::filesystem::path> {
-        auto const selection = dialog->result();
-        dialog.reset();
-
-        if (selection.empty()) {
-            return std::nullopt;
-        }
-
-        return std::filesystem::path{selection.front()};
+    // Filters for the model file browser.
+    [[nodiscard]] auto model_file_filters() -> std::vector<gui::FileBrowser::Filter> {
+        return {
+                {.label = "glTF models (*.gltf, *.glb)", .extensions = {".gltf", ".glb"}},
+                {.label = "All files", .extensions = {}},
+        };
     }
 
     using gui::widget;
@@ -381,51 +338,20 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     widget("Load Model", [&] {
         ImGui::TextUnformatted("glTF / GLB model");
 
-        if (!model_load_dialog) {
-            if (ImGui::Button("Browse...")) {
-                open_model_dialog(model_load_dialog);
-            }
-        } else {
-            ImGui::BeginDisabled();
-            ImGui::Button("Browse...");
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            ImGui::TextDisabled("Waiting for file dialog...");
-
-            if (!model_load_dialog->ready(0)) {
-                return;
-            }
-
-            auto const selected_path = consume_model_dialog(model_load_dialog);
-            if (!selected_path) {
-                return;
-            }
-
-            auto const &path = *selected_path;
-            auto const model =
-                    renderer->model_streamer().request(*renderer, path, engine_models.cube, path.filename().string());
-
-            if (model.valid()) {
-                auto entity = Entity{active_scene(), path.stem().string()};
-                entity.emplace<Components::Transform>();
-                entity.emplace<Components::Model>(Components::Model{.model = model});
-                // Lets Renderer::destroy_model() run when the entity is removed.
-                entity.emplace<Components::StreamedModelTag>();
-                auto const submesh_bounds = renderer->model_submesh_bounds(model);
-                if (submesh_bounds) {
-                    entity.emplace<Components::RigidBody>(Components::RigidBody::from_submesh_boxes(*submesh_bounds));
-                }
-                // A path that already finished loading resolves immediately, which shows up as bounds being available.
-                model_load_status = submesh_bounds ? std::format("Reused already-loaded '{}'", path.filename().string())
-                                                   : std::format("Loading '{}'...", path.filename().string());
-            } else {
-                model_load_status =
-                        std::format("Failed to load '{}': could not reserve a model slot", path.filename().string());
-            }
+        ImGui::BeginDisabled(model_browser.is_open());
+        if (ImGui::Button("Browse...")) {
+            model_browse_target = ModelBrowseTarget::spawn_entity;
+            model_browser.open("Load Model", model_file_filters());
         }
+        ImGui::EndDisabled();
 
-        if (!model_load_status.empty()) {
-            ImGui::TextUnformatted(model_load_status.c_str());
+        // Newest first.
+        for (auto const &load: std::views::reverse(model_loads)) {
+            if (!load.settled) {
+                ImGui::TextDisabled("Loading '%s'...", load.file_name.c_str());
+            } else {
+                ImGui::TextUnformatted(load.status.c_str());
+            }
         }
     });
 
@@ -1156,6 +1082,13 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                         Components::Lifetime, Components::PointLight, Components::SpotLight,
                                         Components::Script, Components::BulletTag>(registry, source, clone);
 
+                        // The clone takes its own reference, so deleting either one leaves the other's model alive.
+                        if (auto const *model = registry.try_get<Components::Model>(clone);
+                            model != nullptr && registry.all_of<Components::StreamedModelTag>(source)) {
+                            renderer->retain_model(model->model);
+                            registry.emplace<Components::StreamedModelTag>(clone);
+                        }
+
                         // Duplicates are always named through GeneratedMeta.
                         registry.emplace<Components::GeneratedMeta>(
                                 clone,
@@ -1269,6 +1202,13 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::PopID();
 
             if (!open) {
+                // An owned model's reference goes with the component.
+                if constexpr (std::is_same_v<T, Components::Model>) {
+                    if (registry.all_of<Components::StreamedModelTag>(selected_entity)) {
+                        renderer->release_model(registry.get<Components::Model>(selected_entity).model);
+                        registry.remove<Components::StreamedModelTag>(selected_entity);
+                    }
+                }
                 registry.remove<T>(selected_entity);
             }
         };
@@ -1299,30 +1239,26 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 ImGui::Text("Embedded lights: %u", static_cast<std::uint32_t>(lights.size()));
             }
 
-            bool changed = false;
+            if (auto const state = renderer->model_streamer().state(model.model); state == ModelRequestState::loading) {
+                ImGui::TextDisabled("Loading -- showing the placeholder model");
+            } else if (state == ModelRequestState::failed) {
+                auto const reason = renderer->model_streamer().failure_reason(model.model);
+                ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.40F, 1.0F),
+                                   "Load failed: %.*s -- showing the placeholder model", static_cast<int>(reason.size()),
+                                   reason.data());
+            }
+
             auto &models = renderer->assets().models();
             auto const current_name = models.name_of(model.model);
 
-            // Reassigns model.model, releasing the old handle first if this entity owns it.
-            auto const reassign = [&](ModelHandle new_handle) {
-                if (new_handle == model.model || !new_handle.valid()) {
-                    return;
-                }
-                if (registry.all_of<Components::StreamedModelTag>(selected_entity)) {
-                    static_cast<void>(renderer->destroy_model(model.model));
-                }
-                model.model = new_handle;
-                registry.emplace_or_replace<Components::StreamedModelTag>(selected_entity);
-                changed = true;
-            };
-
+            // set_entity_model() patches the component itself, so the section's patch isn't needed.
             if (ImGui::BeginCombo("Asset", current_name.empty() ? "(unnamed)" : std::string(current_name).c_str())) {
                 for (auto const &entry: models.entries()) {
                     bool const is_selected = entry.handle == model.model;
-                    if (ImGui::Selectable(entry.name.c_str(), is_selected)) {
-                        // The combo shares an already-owned handle, so retain it.
+                    if (ImGui::Selectable(entry.name.c_str(), is_selected) && !is_selected && entry.handle.valid()) {
+                        // The combo shares an already-owned handle, so the entity needs its own reference.
                         renderer->retain_model(entry.handle);
-                        reassign(entry.handle);
+                        set_entity_model(registry, selected_entity, entry.handle);
                     }
                     if (is_selected) {
                         ImGui::SetItemDefaultFocus();
@@ -1332,26 +1268,15 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
 
             ImGui::SameLine();
-            if (!inspector_model_dialog) {
-                if (ImGui::Button("Browse...##model")) {
-                    open_model_dialog(inspector_model_dialog);
-                }
-            } else {
-                ImGui::BeginDisabled();
-                ImGui::Button("Browse...##model");
-                ImGui::EndDisabled();
-                ImGui::TextDisabled("Waiting for file dialog...");
-
-                if (inspector_model_dialog->ready(0)) {
-                    if (auto const path = consume_model_dialog(inspector_model_dialog)) {
-                        // request() does its own ref-counting.
-                        reassign(renderer->model_streamer().request(*renderer, *path, engine_models.cube,
-                                                                    path->filename().string()));
-                    }
-                }
+            ImGui::BeginDisabled(model_browser.is_open());
+            if (ImGui::Button("Browse...##model")) {
+                model_browse_target = ModelBrowseTarget::inspector;
+                model_browse_entity = selected_entity;
+                model_browser.open("Change Model", model_file_filters());
             }
+            ImGui::EndDisabled();
 
-            return changed;
+            return false;
         });
         section.operator()<Components::MaterialOverride>("Material Override", [&](Components::MaterialOverride &mat) {
             ImGui::Text("Handle: index %u, generation %u (%s)", mat.material.index, mat.material.generation,
@@ -1726,6 +1651,118 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                   registry.view<Components::Transform, Components::SpotLight, Components::GeneratedMeta>(),
                   draw_spot_light);
     });
+
+
+    if (auto const picked = model_browser.draw(editor_icons.get())) {
+        switch (model_browse_target) {
+            case ModelBrowseTarget::spawn_entity:
+                spawn_streamed_model(*picked);
+                break;
+
+            case ModelBrowseTarget::inspector: {
+                auto &registry = active_scene()->get_registry();
+                if (registry.valid(model_browse_entity) && registry.all_of<Components::Model>(model_browse_entity)) {
+                    // request() returns a reference for us, which set_entity_model() hands to the entity.
+                    auto const model = renderer->model_streamer().request(*renderer, *picked, engine_models.cube,
+                                                                          gui::path_to_utf8(picked->filename()));
+                    set_entity_model(registry, model_browse_entity, model);
+                }
+                break;
+            }
+        }
+        model_browse_entity = entt::null;
+    }
+}
+
+auto Application::spawn_streamed_model(std::filesystem::path const &path) -> void {
+    auto file_name = gui::path_to_utf8(path.filename());
+    auto const model = renderer->model_streamer().request(*renderer, path, engine_models.cube, file_name);
+
+    auto entity = Entity{active_scene(), gui::path_to_utf8(path.stem())};
+    entity.emplace<Components::Transform>();
+    entity.emplace<Components::Model>(Components::Model{.model = model});
+    // Lets the entity's reference be released when it's removed or its model is swapped.
+    entity.emplace<Components::StreamedModelTag>();
+    selected_entity = entity;
+
+    model_loads.push_back(StreamedModelLoad{
+            .scene = active_scene(),
+            .entity = entity,
+            .model = model,
+            .file_name = std::move(file_name),
+    });
+
+    // Only settled entries are dropped, so a long-running load keeps reporting.
+    while (model_loads.size() > max_listed_model_loads) {
+        auto const settled = std::ranges::find_if(model_loads, &StreamedModelLoad::settled);
+        if (settled == model_loads.end()) {
+            break;
+        }
+        model_loads.erase(settled);
+    }
+}
+
+auto Application::update_model_loads() -> void {
+    auto &streamer = renderer->model_streamer();
+
+    for (auto &load: model_loads) {
+        if (load.settled) {
+            continue;
+        }
+
+        auto const state = streamer.state(load.model);
+        if (state == ModelRequestState::loading) {
+            continue;
+        }
+
+        load.settled = true;
+
+        if (state == ModelRequestState::failed) {
+            load.status = std::format("Failed to load '{}': {}. Showing the placeholder cube.", load.file_name,
+                                      streamer.failure_reason(load.model));
+            continue;
+        }
+
+        if (load.model == engine_models.cube) {
+            load.status = std::format("Could not reserve a model slot for '{}'. Showing the placeholder cube.",
+                                      load.file_name);
+            continue;
+        }
+
+        load.status = std::format("Loaded '{}'", load.file_name);
+
+        // The collider is built from the real submesh bounds, which only exist once the model installed.
+        if (load.scene != active_scene()) {
+            continue;
+        }
+        auto &registry = load.scene->get_registry();
+        if (!registry.valid(load.entity) || registry.all_of<Components::RigidBody>(load.entity)) {
+            continue;
+        }
+        auto const *component = registry.try_get<Components::Model>(load.entity);
+        if (component == nullptr || component->model != load.model) {
+            continue;
+        }
+        if (auto const submesh_bounds = renderer->model_submesh_bounds(load.model)) {
+            registry.emplace<Components::RigidBody>(load.entity,
+                                                    Components::RigidBody::from_submesh_boxes(*submesh_bounds));
+        }
+    }
+}
+
+auto Application::set_entity_model(entt::registry &registry, entt::entity entity, ModelHandle model) -> void {
+    auto const previous = registry.get<Components::Model>(entity).model;
+    bool const owned_previous = registry.all_of<Components::StreamedModelTag>(entity);
+
+    registry.patch<Components::Model>(entity, [&](Components::Model &component) { component.model = model; });
+    registry.emplace_or_replace<Components::StreamedModelTag>(entity);
+
+    // Released after the swap: if `model` == `previous`, the caller's reference replaces the entity's.
+    if (owned_previous) {
+        renderer->release_model(previous);
+    }
+
+    renderer->mark_dynamic_shadow_casters_dirty();
 }
 
 auto Application::play() -> void {
@@ -1770,6 +1807,8 @@ auto Application::stop() -> void {
     active_scene()->on_scene_stop();
     is_playing = false;
     game_mouse_captured = false;
+
+    std::erase_if(model_loads, [&](StreamedModelLoad const &load) { return load.scene == runtime_scene.get(); });
     runtime_scene.reset();
 
     glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
@@ -1778,6 +1817,10 @@ auto Application::stop() -> void {
 
 auto Application::update(float delta_time) -> void {
     ZoneScopedNC("ApplicationUpdate", tracy::Color::Firebrick);
+
+    // Here rather than in the "Load Model" panel, which doesn't run while hidden or during fullscreen play.
+    update_model_loads();
+
 
     // Keyed off the player's Transform rather than the follow camera, which springs and would jitter residency.
     if (terrain) {

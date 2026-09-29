@@ -25,6 +25,9 @@ struct IModelSink {
     // Adds a reference, for a cache handing the same handle to another caller.
     virtual auto retain_model(ModelHandle handle) -> void = 0;
 
+    // Drops a reference taken by retain_model() or create_pending_model(); the last one destroys the model.
+    virtual auto release_model(ModelHandle handle) -> void = 0;
+
     // Registers `handle` under `name` in the AssetRegistry. A name collision is ignored.
     virtual auto register_model_name(ModelHandle handle, std::string_view name) -> void = 0;
 

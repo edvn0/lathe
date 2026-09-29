@@ -405,19 +405,6 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # ------------------------------------------------------------------------------
-# portable-file-dialogs: header-only native file dialogs (Win32 on
-# windows-mingw, zenity/kdialog on linux-native).
-# ------------------------------------------------------------------------------
-
-CPMAddPackage(
-    NAME portable_file_dialogs
-    GITHUB_REPOSITORY samhocevar/portable-file-dialogs
-    GIT_TAG 0.1.0
-    GIT_SHALLOW YES
-    DOWNLOAD_ONLY YES
-)
-
-# ------------------------------------------------------------------------------
 # KTX-Software (libktx): KTX2 read/write and the Basis Universal UASTC
 # encoder/transcoder. Only the library is needed; we do our own uploads.
 # ------------------------------------------------------------------------------

@@ -1516,12 +1516,25 @@ auto Renderer::install_model(ModelHandle pending, Model const &model) -> std::ex
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
+    auto const *pending_slot = model_storage_.get(pending);
+
+    if (pending_slot == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_model));
+    }
+
+    auto const borrowed_from = pending_slot->borrowed_from;
+
     auto handle = create_model_common(model, default_material_handle_, [this, pending](ModelSlotData data) {
         return model_storage_.upgrade_pending_model(pending, std::move(data));
     });
 
     if (!handle) {
         return std::unexpected(handle.error());
+    }
+
+    // The slot owns its own meshes now, so it no longer needs the fallback it was drawing.
+    if (borrowed_from.valid()) {
+        static_cast<void>(destroy_model(borrowed_from));
     }
 
     return {};
@@ -1945,6 +1958,8 @@ auto Renderer::retain_model(ModelHandle handle) -> void {
     ++slot->ref_count;
 }
 
+auto Renderer::release_model(ModelHandle handle) -> void { static_cast<void>(destroy_model(handle)); }
+
 auto Renderer::register_model_name(ModelHandle handle, std::string_view name) -> void {
     static_cast<void>(assets_.models().register_asset(std::string{name}, handle));
 }
@@ -1961,8 +1976,13 @@ auto Renderer::destroy_model(ModelHandle handle) -> std::expected<void, Renderer
         return {};
     }
 
-    for (auto const &draw: slot->draws) {
-        static_cast<void>(destroy_mesh(draw.mesh));
+    // A pending slot's draws are its fallback's meshes; only the reference on the fallback is its to drop.
+    auto const borrowed_from = slot->borrowed_from;
+
+    if (!borrowed_from.valid()) {
+        for (auto const &draw: slot->draws) {
+            static_cast<void>(destroy_mesh(draw.mesh));
+        }
     }
 
     model_streamer_.forget(handle);
@@ -1971,6 +1991,10 @@ auto Renderer::destroy_model(ModelHandle handle) -> std::expected<void, Renderer
 
     if (auto released = model_storage_.release(handle); !released) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
+    }
+
+    if (borrowed_from.valid()) {
+        static_cast<void>(destroy_model(borrowed_from));
     }
 
     mark_shadow_casters_dirty();
@@ -2132,10 +2156,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     for (auto const &model_submission: model_submissions_) {
         auto const *model = model_slot(model_submission.model);
 
+        // Destroyed after it was submitted this frame, e.g. by the editor swapping an entity's model.
         if (model == nullptr) {
-            clear_submissions();
-
-            return std::unexpected(make_error(RendererErrorType::invalid_model));
+            continue;
         }
 
         for (auto const &model_draw: model->draws) {
