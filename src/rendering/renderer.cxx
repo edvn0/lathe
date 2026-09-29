@@ -1717,6 +1717,32 @@ auto Renderer::model_lights(ModelHandle model) const -> std::span<ModelCpuLight 
     return slot->lights;
 }
 
+auto Renderer::model_materials(ModelHandle model) const -> std::vector<MaterialHandle> {
+    auto const *slot = model_slot(model);
+
+    if (slot == nullptr) {
+        return {};
+    }
+
+    std::vector<MaterialHandle> materials;
+
+    for (auto const &draw: slot->draws) {
+        auto const *mesh = mesh_slot(draw.mesh);
+
+        if (mesh == nullptr) {
+            continue;
+        }
+
+        for (auto const &submesh: mesh->submeshes) {
+            if (submesh.material.valid() && std::ranges::find(materials, submesh.material) == materials.end()) {
+                materials.push_back(submesh.material);
+            }
+        }
+    }
+
+    return materials;
+}
+
 auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override)
         -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {

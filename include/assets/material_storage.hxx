@@ -48,6 +48,11 @@ struct MaterialCreateInfo {
     // The farthest cascade this material casts into. Lower it for detail geometry whose shadow disappears at
     // distance, or use GpuMaterial::no_shadow_cascade to never cast.
     std::uint32_t max_shadow_cascade = shadow_cascade_count - 1;
+
+    // Shade with one flat colour per meshlet instead of the base colour, to inspect how meshoptimizer split the
+    // geometry. Lighting still applies so the surface stays readable. Instanced (non-meshlet) draws get one colour
+    // per instance.
+    bool debug_meshlet_colours = false;
 };
 
 auto to_gpu_material(MaterialCreateInfo const &) noexcept -> GpuMaterial;
