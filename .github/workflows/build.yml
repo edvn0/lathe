@@ -6,11 +6,30 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
+  toolchain:
+    name: toolchain image
+    uses: ./.github/workflows/toolchain-image.yml
+    permissions:
+      contents: read
+      packages: write
+
   build:
     name: ${{ matrix.target }} / ${{ matrix.build_type }}
 
+    needs: toolchain
     runs-on: [self-hosted, linux]
+
+    # Every step runs inside the toolchain image, pulled once per job.
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     strategy:
       fail-fast: false
@@ -22,34 +41,48 @@ jobs:
           - Debug
           - RelWithDebInfo
 
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 500M
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      # Caches live under $HOME, which is also where actions/cache resolves `~` inside the container.
+      - name: Set up environment
+        run: |
+          set -euo pipefail
 
-      - name: Build toolchain image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          tags: cross-build:latest
-          load: true
-          cache-from: type=gha,scope=toolchain
-          cache-to: type=gha,mode=max,scope=toolchain
+          {
+            echo "CPM_SOURCE_CACHE=${HOME}/.cache/CPM"
+            echo "CCACHE_DIR=${HOME}/.cache/ccache"
+            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+          } >> "${GITHUB_ENV}"
 
-      # One key for every job: the fetched sources don't depend on the configuration, and per-job keys stored the
-      # same ~1.3 GB once per job. Jobs finishing after the first to save just skip saving.
+          # The workspace is owned by the runner's user, not the container's root, so git would refuse it.
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+      # One key for every job: the fetched sources don't depend on the configuration. Jobs finishing after the first
+      # to save just skip saving.
+      #
+      # v2 in every cache key: actions/cache stores paths relative to the workspace, and inside the container both the
+      # workspace and $HOME moved, so archives saved by the old docker-run jobs would unpack to the wrong place.
       - name: Restore CPM cache
         uses: actions/cache@v4
         with:
           path: ~/.cache/CPM
           key: >-
-            cpm-${{
+            cpm-v2-${{
               hashFiles('**/CMakeLists.txt', '**/*.cmake')
             }}
           restore-keys: |
-            cpm-
+            cpm-v2-
 
       # Separate caches per target and configuration. ccache hashes compiler options, so restoring another
       # configuration's cache only costs misses. The run id makes every run save: actions/cache never overwrites an
@@ -60,7 +93,7 @@ jobs:
         with:
           path: ~/.cache/ccache
           key: >-
-            ccache-${{ matrix.target }}-${{ matrix.build_type }}-${{
+            ccache-v2-${{ matrix.target }}-${{ matrix.build_type }}-${{
               hashFiles(
                 'Dockerfile',
                 'cmake/toolchains/**',
@@ -69,206 +102,157 @@ jobs:
               )
             }}-${{ github.run_id }}
           restore-keys: |
-            ccache-${{ matrix.target }}-${{ matrix.build_type }}-${{ hashFiles('Dockerfile', 'cmake/toolchains/**', '**/CMakeLists.txt', '**/*.cmake') }}-
-            ccache-${{ matrix.target }}-${{ matrix.build_type }}-
-            ccache-${{ matrix.target }}-
+            ccache-v2-${{ matrix.target }}-${{ matrix.build_type }}-${{ hashFiles('Dockerfile', 'cmake/toolchains/**', '**/CMakeLists.txt', '**/*.cmake') }}-
+            ccache-v2-${{ matrix.target }}-${{ matrix.build_type }}-
+            ccache-v2-${{ matrix.target }}-
 
       # The shader reflection tool (tools/shader_reflect) otherwise downloads and compiles its crates, including
-      # SPIRV-Cross, in every job. The registry is mounted over the image's CARGO_HOME registry; the target
-      # directory lives in the build tree, so the key is per job.
+      # SPIRV-Cross, in every job. The registry is the image's CARGO_HOME registry; the target directory lives in the
+      # build tree, so the key is per job.
       - name: Restore cargo cache
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/cargo-registry
+            /opt/cargo/registry
             build/*/generated/cargo
           key: >-
-            cargo-${{ matrix.target }}-${{ matrix.build_type }}-${{
+            cargo-v2-${{ matrix.target }}-${{ matrix.build_type }}-${{
               hashFiles('Dockerfile', 'tools/shader_reflect/**')
             }}
           restore-keys: |
-            cargo-${{ matrix.target }}-${{ matrix.build_type }}-
+            cargo-v2-${{ matrix.target }}-${{ matrix.build_type }}-
 
       # Content-addressed (see tools/clang_tidy_cached.py), so one shared key prefix is safe; the run id makes every
-      # run save its new entries.
+      # run save its new entries. run_clang_tidy.sh defaults to ~/.cache/clang-tidy.
       - name: Restore clang-tidy cache
         if: matrix.build_type == 'Debug'
         uses: actions/cache@v4
         with:
           path: ~/.cache/clang-tidy
-          key: clang-tidy-${{ github.run_id }}
+          key: clang-tidy-v2-${{ github.run_id }}
           restore-keys: |
-            clang-tidy-
+            clang-tidy-v2-
 
       - name: Configure
-        shell: bash
         run: |
           set -euo pipefail
 
           target="${{ matrix.target }}"
           build_type="${{ matrix.build_type }}"
-          build_type_lower="${build_type,,}"
-          build_dir="build/${target}-${build_type_lower}"
+          build_dir="build/${target}-${build_type,,}"
 
-          mkdir -p "${HOME}/.cache/CPM"
-          mkdir -p "${HOME}/.cache/ccache"
-
-          # mold links the Debug executable in seconds; the default ld took ~1 minute.
+          # mold links the executables in seconds.
           linker_args=()
           if [[ "${target}" == "linux-native" ]]; then
             linker_args+=(-DCMAKE_LINKER_TYPE=MOLD)
           fi
 
-          docker run --rm \
-            --mount type=bind,source="${PWD}",target=/workspace \
-            --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
-            --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
-            --env CPM_SOURCE_CACHE=/cpm-cache \
-            --env CCACHE_DIR=/ccache \
-            --env CCACHE_BASEDIR=/workspace \
-            --env CCACHE_NOHASHDIR=true \
-            --env CCACHE_COMPILERCHECK=content \
-            --env CCACHE_MAXSIZE=500M \
-            --workdir /workspace \
-            cross-build:latest \
-            cmake \
-              -S . \
-              -B "${build_dir}" \
-              -G Ninja \
-              -DCMAKE_BUILD_TYPE="${build_type}" \
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-              "${linker_args[@]}"
+          cmake \
+            -S . \
+            -B "${build_dir}" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE="${build_type}" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            "${linker_args[@]}"
 
       - name: Reset ccache statistics
-        shell: bash
-        run: |
-          set -euo pipefail
+        run: ccache --zero-stats
 
-          docker run --rm \
-            --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
-            --env CCACHE_DIR=/ccache \
-            cross-build:latest \
-            ccache --zero-stats
-
+      # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.
       - name: Build
-        shell: bash
         run: |
           set -euo pipefail
 
-          target="${{ matrix.target }}"
           build_type="${{ matrix.build_type }}"
-          build_type_lower="${build_type,,}"
-          build_dir="build/${target}-${build_type_lower}"
 
-          mkdir -p "${HOME}/.cache/cargo-registry"
-
-          # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.
-          docker run --rm \
-            --mount type=bind,source="${PWD}",target=/workspace \
-            --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
-            --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
-            --mount type=bind,source="${HOME}/.cache/cargo-registry",target=/opt/cargo/registry \
-            --env CPM_SOURCE_CACHE=/cpm-cache \
-            --env CCACHE_DIR=/ccache \
-            --env CCACHE_BASEDIR=/workspace \
-            --env CCACHE_NOHASHDIR=true \
-            --env CCACHE_COMPILERCHECK=content \
-            --env CCACHE_MAXSIZE=500M \
-            --workdir /workspace \
-            cross-build:latest \
-            cmake \
-              --build "${build_dir}" \
-              --parallel \
-              --target all mingw-vulkan-tests
+          cmake \
+            --build "build/${{ matrix.target }}-${build_type,,}" \
+            --parallel \
+            --target all mingw-vulkan-tests
 
       - name: Test
-        shell: bash
         run: |
           set -euo pipefail
 
-          target="${{ matrix.target }}"
           build_type="${{ matrix.build_type }}"
-          build_type_lower="${build_type,,}"
-          build_dir="build/${target}-${build_type_lower}"
 
-          docker run --rm \
-            --mount type=bind,source="${PWD}",target=/workspace \
-            --workdir /workspace \
-            cross-build:latest \
-            ctest \
-              --test-dir "${build_dir}" \
-              --output-on-failure \
-              --parallel 4 \
-              --no-tests=error
+          ctest \
+            --test-dir "build/${{ matrix.target }}-${build_type,,}" \
+            --output-on-failure \
+            --parallel 4 \
+            --no-tests=error
 
       # Reuses this job's compile database and generated headers, so it runs after the build.
       - name: clang-tidy
         if: matrix.build_type == 'Debug'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p "${HOME}/.cache/clang-tidy"
-
-          docker run --rm \
-            --mount type=bind,source="${PWD}",target=/workspace \
-            --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
-            --mount type=bind,source="${HOME}/.cache/clang-tidy",target=/clang-tidy-cache \
-            --env CLANG_TIDY_CACHE_DIR=/clang-tidy-cache \
-            --workdir /workspace \
-            cross-build:latest \
-            tools/run_clang_tidy.sh build/${{ matrix.target }}-debug
+        run: tools/run_clang_tidy.sh "build/${{ matrix.target }}-debug"
 
       - name: ccache statistics
         if: always()
-        shell: bash
-        run: |
-          docker run --rm \
-            --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
-            --env CCACHE_DIR=/ccache \
-            cross-build:latest \
-            ccache --show-stats
+        run: ccache --show-stats
+
+      # The container runs as root, so everything it wrote into the shared workspace is root-owned. Hand it back to the
+      # runner's user, or the next job that runs on the host (e.g. the toolchain image publish) can't clean it.
+      - name: Return workspace ownership to the runner
+        if: always()
+        run: chown -R "$(stat -c '%u:%g' "${GITHUB_WORKSPACE}")" "${GITHUB_WORKSPACE}"
 
   sanitize:
     name: linux-native / Debug / ASan+UBSan / -Werror
 
+    needs: toolchain
     runs-on: [self-hosted, linux]
+
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 500M
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up environment
+        run: |
+          set -euo pipefail
 
-      - name: Build toolchain image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          tags: cross-build:latest
-          load: true
-          cache-from: type=gha,scope=toolchain
-          cache-to: type=gha,mode=max,scope=toolchain
+          {
+            echo "CPM_SOURCE_CACHE=${HOME}/.cache/CPM"
+            echo "CCACHE_DIR=${HOME}/.cache/ccache"
+            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+          } >> "${GITHUB_ENV}"
+
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
       - name: Restore CPM cache
         uses: actions/cache@v4
         with:
           path: ~/.cache/CPM
           key: >-
-            cpm-${{
+            cpm-v2-${{
               hashFiles('**/CMakeLists.txt', '**/*.cmake')
             }}
           restore-keys: |
-            cpm-
+            cpm-v2-
 
       - name: Restore ccache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
           key: >-
-            ccache-sanitize-${{
+            ccache-v2-sanitize-${{
               hashFiles(
                 'Dockerfile',
                 'cmake/toolchains/**',
@@ -277,94 +261,58 @@ jobs:
               )
             }}-${{ github.run_id }}
           restore-keys: |
-            ccache-sanitize-${{ hashFiles('Dockerfile', 'cmake/toolchains/**', '**/CMakeLists.txt', '**/*.cmake') }}-
-            ccache-sanitize-
+            ccache-v2-sanitize-${{ hashFiles('Dockerfile', 'cmake/toolchains/**', '**/CMakeLists.txt', '**/*.cmake') }}-
+            ccache-v2-sanitize-
 
       - name: Restore cargo cache
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/cargo-registry
+            /opt/cargo/registry
             build/*/generated/cargo
           key: >-
-            cargo-sanitize-${{
+            cargo-v2-sanitize-${{
               hashFiles('Dockerfile', 'tools/shader_reflect/**')
             }}
           restore-keys: |
-            cargo-sanitize-
+            cargo-v2-sanitize-
 
       - name: Configure
-        shell: bash
         run: |
-          set -euo pipefail
+          cmake \
+            -S . \
+            -B build/linux-native-debug \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DMINGW_VULKAN_SANITIZE=ON \
+            -DMINGW_VULKAN_WERROR=ON \
+            -DCMAKE_LINKER_TYPE=MOLD
 
-          mkdir -p "${HOME}/.cache/CPM"
-          mkdir -p "${HOME}/.cache/ccache"
-
-          docker run --rm \
-            --mount type=bind,source="${PWD}",target=/workspace \
-            --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
-            --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
-            --env CPM_SOURCE_CACHE=/cpm-cache \
-            --env CCACHE_DIR=/ccache \
-            --env CCACHE_BASEDIR=/workspace \
-            --env CCACHE_NOHASHDIR=true \
-            --env CCACHE_COMPILERCHECK=content \
-            --env CCACHE_MAXSIZE=500M \
-            --workdir /workspace \
-            cross-build:latest \
-            cmake \
-              -S . \
-              -B build/linux-native-debug \
-              -G Ninja \
-              -DCMAKE_BUILD_TYPE=Debug \
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-              -DMINGW_VULKAN_SANITIZE=ON \
-              -DMINGW_VULKAN_WERROR=ON \
-              -DCMAKE_LINKER_TYPE=MOLD
-
+      # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.
       - name: Build
-        shell: bash
         run: |
-          set -euo pipefail
-
-          mkdir -p "${HOME}/.cache/cargo-registry"
-
-          # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.
-          docker run --rm \
-            --mount type=bind,source="${PWD}",target=/workspace \
-            --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
-            --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
-            --mount type=bind,source="${HOME}/.cache/cargo-registry",target=/opt/cargo/registry \
-            --env CPM_SOURCE_CACHE=/cpm-cache \
-            --env CCACHE_DIR=/ccache \
-            --env CCACHE_BASEDIR=/workspace \
-            --env CCACHE_NOHASHDIR=true \
-            --env CCACHE_COMPILERCHECK=content \
-            --env CCACHE_MAXSIZE=500M \
-            --workdir /workspace \
-            cross-build:latest \
-            cmake \
-              --build build/linux-native-debug \
-              --parallel \
-              --target all mingw-vulkan-tests
+          cmake \
+            --build build/linux-native-debug \
+            --parallel \
+            --target all mingw-vulkan-tests
 
       # Sanitizer errors abort with a nonzero exit, which ctest reports as a failure.
       - name: Test
-        shell: bash
+        env:
+          ASAN_OPTIONS: halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
-          set -euo pipefail
+          ctest \
+            --test-dir build/linux-native-debug \
+            --output-on-failure \
+            --parallel 4 \
+            --no-tests=error
 
-          docker run --rm \
-            --mount type=bind,source="${PWD}",target=/workspace \
-            --env ASAN_OPTIONS=halt_on_error=1:abort_on_error=1 \
-            --env UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-            --workdir /workspace \
-            cross-build:latest \
-            ctest \
-              --test-dir build/linux-native-debug \
-              --output-on-failure \
-              --parallel 4 \
-              --no-tests=error
+      # The container runs as root, so everything it wrote into the shared workspace is root-owned. Hand it back to the
+      # runner's user, or the next job that runs on the host (e.g. the toolchain image publish) can't clean it.
+      - name: Return workspace ownership to the runner
+        if: always()
+        run: chown -R "$(stat -c '%u:%g' "${GITHUB_WORKSPACE}")" "${GITHUB_WORKSPACE}"

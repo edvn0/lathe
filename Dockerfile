@@ -3,7 +3,7 @@ FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # xvfb/xauth/libvulkan1/mesa-vulkan-drivers: headless X server and lavapipe for the perf workflow's
-# --benchmark runs.
+# --benchmark runs. zstd: CI jobs run inside this image, and actions/cache compresses with it when present.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     clang-tidy \
@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     unzip \
+    zstd \
     ccache \
     python3 \
     wayland-protocols \
