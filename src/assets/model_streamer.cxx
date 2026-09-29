@@ -1,6 +1,8 @@
 #include "assets/model_streamer.hxx"
 
+#include <algorithm>
 #include <chrono>
+#include <format>
 
 #include "core/logger.hxx"
 
@@ -21,8 +23,13 @@ auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path,
 
     if (!pending_handle) {
         warn("model_streamer: could not reserve a slot for '{}', staying on its fallback model", debug_name);
+        // Every returned handle carries a reference for the caller.
+        sink.retain_model(fallback);
         return fallback;
     }
+
+    // The streamer's own reference, dropped once the request installs or fails.
+    sink.retain_model(*pending_handle);
 
     auto profile = std::make_shared<ModelLoadProfile>();
     auto future = load_model_cpu_async(std::move(source_path), sink.sampler_storage(), profile);
@@ -61,9 +68,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                 auto cpu_data = request.future.get();
 
                 if (!cpu_data) {
-                    error("model_streamer: '{}' failed to load ({}); staying on its fallback model",
-                          request.debug_name, cpu_data.error().type);
-
+                    fail(sink, request, std::format("{} while loading", cpu_data.error().type));
                     return true;
                 }
 
@@ -74,9 +79,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                 auto finalized = step_primitive_finalization(*request.finalization);
 
                 if (!finalized) {
-                    error("model_streamer: '{}' failed to finalize ({}); staying on its fallback model",
-                          request.debug_name, finalized.error().type);
-
+                    fail(sink, request, std::format("{} while finalizing", finalized.error().type));
                     return true;
                 }
 
@@ -93,9 +96,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                                                  gpu_upload_items_per_frame);
 
             if (!stepped) {
-                error("model_streamer: '{}' failed to finish loading ({}); staying on its fallback model",
-                      request.debug_name, stepped.error().type);
-
+                fail(sink, request, std::format("{} while uploading", stepped.error().type));
                 return true;
             }
 
@@ -106,9 +107,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             auto installed = sink.install_model(request.handle, **stepped);
 
             if (!installed) {
-                error("model_streamer: '{}' failed to install ({}); staying on its fallback model",
-                      request.debug_name, installed.error().type);
-
+                fail(sink, request, std::format("{} while installing", installed.error().type));
                 return true;
             }
 
@@ -117,6 +116,9 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             request.installed = true;
             path_cache_[request.path_hash] = request.handle;
             sink.register_model_name(request.handle, request.debug_name);
+
+            // Last, since this destroys the model if every caller already dropped it.
+            sink.release_model(request.handle);
         }
 
         // Textures stream independently and can finish long after install. Keep the request until they're all done
@@ -141,8 +143,35 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
     });
 }
 
+auto ModelStreamer::fail(IModelSink &sink, PendingRequest const &request, std::string reason) -> void {
+    error("model_streamer: '{}' failed: {}; staying on its fallback model", request.debug_name, reason);
+
+    failed_.push_back(FailedRequest{.handle = request.handle, .reason = std::move(reason)});
+    sink.release_model(request.handle);
+}
+
 auto ModelStreamer::forget(ModelHandle handle) -> void {
     std::erase_if(path_cache_, [handle](auto const &entry) { return entry.second == handle; });
+    std::erase_if(failed_, [handle](FailedRequest const &failed) { return failed.handle == handle; });
+}
+
+auto ModelStreamer::state(ModelHandle handle) const -> ModelRequestState {
+    if (std::ranges::any_of(pending_, [handle](PendingRequest const &request) {
+            return request.handle == handle && !request.installed;
+        })) {
+        return ModelRequestState::loading;
+    }
+
+    if (!failure_reason(handle).empty()) {
+        return ModelRequestState::failed;
+    }
+
+    return ModelRequestState::none;
+}
+
+auto ModelStreamer::failure_reason(ModelHandle handle) const -> std::string_view {
+    auto const it = std::ranges::find(failed_, handle, &FailedRequest::handle);
+    return it != failed_.end() ? std::string_view{it->reason} : std::string_view{};
 }
 
 auto ModelStreamer::wait_all() -> void {

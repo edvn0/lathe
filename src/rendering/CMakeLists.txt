@@ -9,6 +9,7 @@ add_library(
         debug_renderer.cxx
         editor_icons.cxx
         engine_models.cxx
+        file_browser.cxx
         forward_target.cxx
         imgui_renderer.cxx
         overlay.cxx

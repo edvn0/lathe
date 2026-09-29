@@ -4,12 +4,14 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <future>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -18,8 +20,19 @@
 #include "assets/model_load_profile.hxx"
 #include "assets/model_sink.hxx"
 
+enum class ModelRequestState : std::uint8_t {
+    // Installed, or never requested through this streamer.
+    none,
+    loading,
+    // Stays on its fallback model; failure_reason() says why.
+    failed,
+};
+
 // Loads models on thread_pool() and hands back a handle that renders as `fallback` until the model is
-// installed in place. After the background parse, process_ready() on the render thread drives two phases:
+// installed in place. The streamer holds its own reference on the handle until the request settles, so a caller
+// may drop the handle mid-load; the model is then destroyed once it installs or fails.
+//
+// After the background parse, process_ready() on the render thread drives two phases:
 //   - finalization: tangents and LOD simplification, one parallel task per primitive;
 //   - GPU upload: gpu_upload_items_per_frame materials/primitives per call, so large models spread the cost.
 class ModelStreamer {
@@ -27,21 +40,29 @@ public:
     // Always profiled; the breakdown is logged once the model installs.
     //
     // A `source_path` that already finished loading (by weakly_canonical() path) returns the installed handle
-    // without reloading. Failed requests aren't cached, so they can be retried.
+    // without reloading. Failed requests aren't cached, so they can be retried. The returned handle always carries
+    // one reference for the caller, released with IModelSink::release_model().
     [[nodiscard]]
     auto request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback, std::string debug_name)
             -> ModelHandle;
 
-    // Drops path_cache_ entries for `handle`. Call when the model is destroyed.
+    // Drops path_cache_ and failure entries for `handle`. Call when the model is destroyed.
     auto forget(ModelHandle handle) -> void;
+
+    [[nodiscard]]
+    auto state(ModelHandle handle) const -> ModelRequestState;
+
+    // Empty unless state(handle) is ModelRequestState::failed.
+    [[nodiscard]]
+    auto failure_reason(ModelHandle handle) const -> std::string_view;
 
     // Promotes finished background loads into the GPU-upload phase, steps every upload by up to
     // gpu_upload_items_per_frame, and installs finished models. Call once per frame with a command buffer that is
     // recording for this frame.
     auto process_ready(IModelSink &sink, VkCommandBuffer command_buffer) -> void;
 
-    // Blocks until background jobs finish; partially uploaded requests are dropped. Call before destroying the
-    // Renderer.
+    // Blocks until background jobs finish; partially uploaded requests are dropped, leaving their slots to the
+    // Renderer's teardown. Call before destroying the Renderer.
     auto wait_all() -> void;
 
 private:
@@ -65,7 +86,16 @@ private:
         std::size_t path_hash = 0;
     };
 
+    struct FailedRequest {
+        ModelHandle handle;
+        std::string reason;
+    };
+
+    // Settles a request that won't install: records why and drops the streamer's reference.
+    auto fail(IModelSink &sink, PendingRequest const &request, std::string reason) -> void;
+
     std::vector<PendingRequest> pending_;
+    std::vector<FailedRequest> failed_;
 
     // Keyed like Renderer::load_model's model_cache_: hash_value() of the weakly_canonical() path.
     std::unordered_map<std::size_t, ModelHandle> path_cache_;
