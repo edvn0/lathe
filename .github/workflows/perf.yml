@@ -43,7 +43,7 @@ jobs:
     name: benchmark / base vs head
 
     needs: toolchain
-    runs-on: ${{ vars.PERF_RUNNER || 'ubuntu-latest' }}
+    runs-on: [self-hosted, linux]
     timeout-minutes: 150
 
     # Every step runs inside the toolchain image, pulled once per job.
