@@ -38,8 +38,8 @@ jobs:
           cache-from: type=gha,scope=toolchain
           cache-to: type=gha,mode=max,scope=toolchain
 
-      # Per-job save keys so parallel jobs don't race; the shared restore prefix lets any job's cache seed the
-      # others.
+      # One key for every job: the fetched sources don't depend on the configuration, and per-job keys stored the
+      # same ~1.3 GB once per job. Jobs finishing after the first to save just skip saving.
       - name: Restore CPM cache
         uses: actions/cache@v4
         with:
@@ -47,13 +47,14 @@ jobs:
           key: >-
             cpm-${{
               hashFiles('**/CMakeLists.txt', '**/*.cmake')
-            }}-${{ matrix.target }}-${{ matrix.build_type }}
+            }}
           restore-keys: |
-            cpm-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}-
             cpm-
 
       # Separate caches per target and configuration. ccache hashes compiler options, so restoring another
-      # configuration's cache only costs misses.
+      # configuration's cache only costs misses. The run id makes every run save: actions/cache never overwrites an
+      # existing key, so a key without it would freeze the cache until the CMake files next change. CCACHE_MAXSIZE
+      # bounds what that accumulates.
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -66,10 +67,38 @@ jobs:
                 '**/CMakeLists.txt',
                 '**/*.cmake'
               )
-            }}
+            }}-${{ github.run_id }}
           restore-keys: |
+            ccache-${{ matrix.target }}-${{ matrix.build_type }}-${{ hashFiles('Dockerfile', 'cmake/toolchains/**', '**/CMakeLists.txt', '**/*.cmake') }}-
             ccache-${{ matrix.target }}-${{ matrix.build_type }}-
             ccache-${{ matrix.target }}-
+
+      # The shader reflection tool (tools/shader_reflect) otherwise downloads and compiles its crates, including
+      # SPIRV-Cross, in every job. The registry is mounted over the image's CARGO_HOME registry; the target
+      # directory lives in the build tree, so the key is per job.
+      - name: Restore cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cargo-registry
+            build/*/generated/cargo
+          key: >-
+            cargo-${{ matrix.target }}-${{ matrix.build_type }}-${{
+              hashFiles('Dockerfile', 'tools/shader_reflect/**')
+            }}
+          restore-keys: |
+            cargo-${{ matrix.target }}-${{ matrix.build_type }}-
+
+      # Content-addressed (see tools/clang_tidy_cached.py), so one shared key prefix is safe; the run id makes every
+      # run save its new entries.
+      - name: Restore clang-tidy cache
+        if: matrix.build_type == 'Debug'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/clang-tidy
+          key: clang-tidy-${{ github.run_id }}
+          restore-keys: |
+            clang-tidy-
 
       - name: Configure
         shell: bash
@@ -84,6 +113,12 @@ jobs:
           mkdir -p "${HOME}/.cache/CPM"
           mkdir -p "${HOME}/.cache/ccache"
 
+          # mold links the Debug executable in seconds; the default ld took ~1 minute.
+          linker_args=()
+          if [[ "${target}" == "linux-native" ]]; then
+            linker_args+=(-DCMAKE_LINKER_TYPE=MOLD)
+          fi
+
           docker run --rm \
             --mount type=bind,source="${PWD}",target=/workspace \
             --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
@@ -93,7 +128,7 @@ jobs:
             --env CCACHE_BASEDIR=/workspace \
             --env CCACHE_NOHASHDIR=true \
             --env CCACHE_COMPILERCHECK=content \
-            --env CCACHE_MAXSIZE=2G \
+            --env CCACHE_MAXSIZE=500M \
             --workdir /workspace \
             cross-build:latest \
             cmake \
@@ -103,7 +138,8 @@ jobs:
               -DCMAKE_BUILD_TYPE="${build_type}" \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+              "${linker_args[@]}"
 
       - name: Reset ccache statistics
         shell: bash
@@ -126,17 +162,20 @@ jobs:
           build_type_lower="${build_type,,}"
           build_dir="build/${target}-${build_type_lower}"
 
+          mkdir -p "${HOME}/.cache/cargo-registry"
+
           # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.
           docker run --rm \
             --mount type=bind,source="${PWD}",target=/workspace \
             --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
             --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
+            --mount type=bind,source="${HOME}/.cache/cargo-registry",target=/opt/cargo/registry \
             --env CPM_SOURCE_CACHE=/cpm-cache \
             --env CCACHE_DIR=/ccache \
             --env CCACHE_BASEDIR=/workspace \
             --env CCACHE_NOHASHDIR=true \
             --env CCACHE_COMPILERCHECK=content \
-            --env CCACHE_MAXSIZE=2G \
+            --env CCACHE_MAXSIZE=500M \
             --workdir /workspace \
             cross-build:latest \
             cmake \
@@ -171,9 +210,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p "${HOME}/.cache/clang-tidy"
+
           docker run --rm \
             --mount type=bind,source="${PWD}",target=/workspace \
             --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
+            --mount type=bind,source="${HOME}/.cache/clang-tidy",target=/clang-tidy-cache \
+            --env CLANG_TIDY_CACHE_DIR=/clang-tidy-cache \
             --workdir /workspace \
             cross-build:latest \
             tools/run_clang_tidy.sh build/${{ matrix.target }}-debug
@@ -216,9 +259,8 @@ jobs:
           key: >-
             cpm-${{
               hashFiles('**/CMakeLists.txt', '**/*.cmake')
-            }}-sanitize
+            }}
           restore-keys: |
-            cpm-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}-
             cpm-
 
       - name: Restore ccache
@@ -233,9 +275,23 @@ jobs:
                 '**/CMakeLists.txt',
                 '**/*.cmake'
               )
+            }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-sanitize-${{ hashFiles('Dockerfile', 'cmake/toolchains/**', '**/CMakeLists.txt', '**/*.cmake') }}-
+            ccache-sanitize-
+
+      - name: Restore cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cargo-registry
+            build/*/generated/cargo
+          key: >-
+            cargo-sanitize-${{
+              hashFiles('Dockerfile', 'tools/shader_reflect/**')
             }}
           restore-keys: |
-            ccache-sanitize-
+            cargo-sanitize-
 
       - name: Configure
         shell: bash
@@ -254,7 +310,7 @@ jobs:
             --env CCACHE_BASEDIR=/workspace \
             --env CCACHE_NOHASHDIR=true \
             --env CCACHE_COMPILERCHECK=content \
-            --env CCACHE_MAXSIZE=2G \
+            --env CCACHE_MAXSIZE=500M \
             --workdir /workspace \
             cross-build:latest \
             cmake \
@@ -266,24 +322,28 @@ jobs:
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
               -DMINGW_VULKAN_SANITIZE=ON \
-              -DMINGW_VULKAN_WERROR=ON
+              -DMINGW_VULKAN_WERROR=ON \
+              -DCMAKE_LINKER_TYPE=MOLD
 
       - name: Build
         shell: bash
         run: |
           set -euo pipefail
 
+          mkdir -p "${HOME}/.cache/cargo-registry"
+
           # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.
           docker run --rm \
             --mount type=bind,source="${PWD}",target=/workspace \
             --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
             --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
+            --mount type=bind,source="${HOME}/.cache/cargo-registry",target=/opt/cargo/registry \
             --env CPM_SOURCE_CACHE=/cpm-cache \
             --env CCACHE_DIR=/ccache \
             --env CCACHE_BASEDIR=/workspace \
             --env CCACHE_NOHASHDIR=true \
             --env CCACHE_COMPILERCHECK=content \
-            --env CCACHE_MAXSIZE=2G \
+            --env CCACHE_MAXSIZE=500M \
             --workdir /workspace \
             cross-build:latest \
             cmake \
