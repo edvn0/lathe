@@ -92,7 +92,9 @@ public struct Material {
     // Sway amplitude; 0 for non-foliage materials.
     public float wind_strength = 0.0F;
     public float _pad0 = 0.0F;
-    public float _pad1 = 0.0F;
+
+    // Non-zero shades with a per-meshlet colour instead of the base colour.
+    public uint debug_meshlet_colours = 0;
     public float _pad2 = 0.0F;
 };
 

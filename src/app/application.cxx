@@ -583,6 +583,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 changed = true;
             }
 
+            changed |= ImGui::Checkbox("Debug meshlet colours", &info.debug_meshlet_colours);
+
             // "(default)" means the slot's engine fallback image.
             auto const texture_picker = [&](char const *label, ImageHandle &slot, ImageHandle default_handle) {
                 auto const &textures = assets.textures();

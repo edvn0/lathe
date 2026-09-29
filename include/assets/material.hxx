@@ -36,7 +36,10 @@ struct alignas(16) GpuMaterial {
     float wind_strength = 0.0F;
 
     std::uint32_t max_shadow_cascade = shadow_cascade_count - 1;
-    float _pad1 = 0.0F;
+
+    // Non-zero replaces the base colour with a per-meshlet hash colour; see debug_meshlet_colour() in
+    // forward_geom.slang.
+    std::uint32_t debug_meshlet_colours = 0;
     float _pad2 = 0.0F;
 
     static constexpr std::uint32_t no_shadow_cascade = ~0U;
