@@ -256,33 +256,14 @@ just about `cube_model`.
 
 ---
 
-## 5. CI cache permissions — worth checking, not confirmed broken
+## 5. CI cache permissions — resolved
 
 **File**: `.github/workflows/build.yml`.
 
-This session fixed `compile.sh`'s local Docker invocation to run as the
-host user instead of root (`run_container()`), because the image's
-`Dockerfile` has no `USER` directive and files written into bind mounts
-were coming out root-owned on the host — this broke `ctest` (couldn't
-write `Testing/Temporary/LastTest.log`) and blocked direct edits to
-`CMakeCache.txt`.
-
-**CI's own `docker run` invocations were *not* updated** (there are 8 of
-them across the `build` and `sanitize` jobs, none pass `--user`) — this
-was out of scope for this session and was not verified against a real CI
-run. The theoretical risk: CI writes `~/.cache/CPM` and `~/.cache/ccache`
-from inside the root-running container, then `actions/cache@v4`'s save
-step runs as the GitHub Actions runner's own (non-root) user *outside* the
-container — if that step can't read root-owned files to tar them up, cache
-saves could be silently failing (or already are, unnoticed, since a
-restore-miss just means a slower rebuild rather than a hard failure).
-**This needs someone to actually check a CI run's cache-save step output**
-(or reproduce locally with `act` or similar) before deciding whether it's
-worth mirroring the `--user`/`HOME` fix from `compile.sh` into the
-workflow file too. Don't assume it's broken and "fix" it speculatively —
-confirm first, since getting the `HOME`/`--user` combination wrong in CI
-specifically (where the runner's UID may differ from what's assumed) has
-its own failure modes.
+The concern was that `actions/cache` (running as the runner's user) couldn't read the root-owned files the
+`docker run` steps wrote. CI logs show the saves succeeding (`Cache saved with key: ...`), and CI no longer uses
+`docker run` at all: jobs run inside the toolchain image (`container:`, published to GHCR by
+`.github/workflows/toolchain-image.yml`), so the build and `actions/cache` run as the same user.
 
 ---
 
