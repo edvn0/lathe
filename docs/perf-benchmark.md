@@ -71,8 +71,9 @@ differ a lot between a software rasterizer and a GPU.
 ### On a real GPU
 
 The workflow reads three repository variables (Actions > Variables):
-`PERF_RUNNER` (runner label), `PERF_DOCKER_GPU_ARGS` (extra `docker run`
-args for the benchmark steps) and `PERF_BENCHMARK_ARGS`. For a self-hosted
+`PERF_RUNNER` (runner label), `PERF_DOCKER_GPU_ARGS` (extra `docker create`
+options for the job's container, which the whole job runs in) and
+`PERF_BENCHMARK_ARGS`. For a self-hosted
 Linux box with an NVIDIA card:
 
 - **Container GPU access**: install nvidia-container-toolkit and pass
