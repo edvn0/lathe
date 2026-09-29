@@ -34,7 +34,7 @@ jobs:
   benchmark:
     name: benchmark / base vs head
 
-    runs-on: ${{ vars.PERF_RUNNER || 'ubuntu-latest' }}
+    runs-on: [self-hosted, linux]
     timeout-minutes: 150
 
     env:
