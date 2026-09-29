@@ -8,6 +8,9 @@
 #
 # The build must have run first: some sources include headers generated at build time. Exits nonzero on any
 # finding, since .clang-tidy treats every warning as an error.
+#
+# Files that already passed with identical input are skipped (see tools/clang_tidy_cached.py). The cache lives in
+# CLANG_TIDY_CACHE_DIR (default ${XDG_CACHE_HOME:-~/.cache}/clang-tidy); CLANG_TIDY_CACHE_DIR=off disables it.
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -48,9 +51,22 @@ find_tool() {
 run_clang_tidy="${RUN_CLANG_TIDY:-$(find_tool run-clang-tidy)}"
 clang_tidy="${CLANG_TIDY:-$(find_tool clang-tidy)}"
 
+cache_dir="${CLANG_TIDY_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME}/.cache}/clang-tidy}"
+tidy_binary="${clang_tidy}"
+
+if [[ "${cache_dir}" != "off" ]]; then
+  mkdir -p "${cache_dir}"
+  # Hits refresh their entry's mtime, so this only drops keys no file has produced for a month.
+  find "${cache_dir}" -type f -mtime +30 -delete
+
+  export CLANG_TIDY_CACHE_DIR="${cache_dir}"
+  export CLANG_TIDY_REAL="${clang_tidy}"
+  tidy_binary="${project_dir}/tools/clang_tidy_cached.py"
+fi
+
 args=(
   -p "${build_dir}"
-  -clang-tidy-binary "${clang_tidy}"
+  -clang-tidy-binary "${tidy_binary}"
   -quiet
   -j "$(nproc)"
 )

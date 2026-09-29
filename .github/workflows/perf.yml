@@ -70,15 +70,15 @@ jobs:
           key: >-
             cpm-${{
               hashFiles('**/CMakeLists.txt', '**/*.cmake')
-            }}-perf
+            }}
           restore-keys: |
-            cpm-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake') }}-
             cpm-
 
       - name: Restore ccache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
+          # The run id makes every run save; see the ccache step in build.yml.
           key: >-
             ccache-perf-${{
               hashFiles(
@@ -86,10 +86,25 @@ jobs:
                 '**/CMakeLists.txt',
                 '**/*.cmake'
               )
-            }}
+            }}-${{ github.run_id }}
           restore-keys: |
+            ccache-perf-${{ hashFiles('Dockerfile', '**/CMakeLists.txt', '**/*.cmake') }}-
             ccache-perf-
             ccache-linux-native-RelWithDebInfo-
+
+      # See the cargo step in build.yml. Covers both build/perf-head and build/perf-base.
+      - name: Restore cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cargo-registry
+            build/*/generated/cargo
+          key: >-
+            cargo-perf-${{
+              hashFiles('Dockerfile', 'tools/shader_reflect/**')
+            }}
+          restore-keys: |
+            cargo-perf-
 
       # A plain export rather than a git worktree: a worktree's .git file
       # points at a host path the build container can't see.
@@ -118,19 +133,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p "${HOME}/.cache/CPM" "${HOME}/.cache/ccache"
+          mkdir -p "${HOME}/.cache/CPM" "${HOME}/.cache/ccache" "${HOME}/.cache/cargo-registry"
 
           in_container() {
             docker run --rm \
               --mount type=bind,source="${PWD}",target=/workspace \
               --mount type=bind,source="${HOME}/.cache/CPM",target=/cpm-cache \
               --mount type=bind,source="${HOME}/.cache/ccache",target=/ccache \
+              --mount type=bind,source="${HOME}/.cache/cargo-registry",target=/opt/cargo/registry \
               --env CPM_SOURCE_CACHE=/cpm-cache \
               --env CCACHE_DIR=/ccache \
               --env CCACHE_BASEDIR=/workspace \
               --env CCACHE_NOHASHDIR=true \
               --env CCACHE_COMPILERCHECK=content \
-              --env CCACHE_MAXSIZE=2G \
+              --env CCACHE_MAXSIZE=500M \
               --workdir /workspace \
               cross-build:latest \
               "$@"
@@ -145,7 +161,8 @@ jobs:
               -G Ninja \
               -DCMAKE_BUILD_TYPE=RelWithDebInfo \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_LINKER_TYPE=MOLD
 
             in_container cmake --build "${build_dir}" --parallel --target mingw-vulkan
           }
