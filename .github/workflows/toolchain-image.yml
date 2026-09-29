@@ -68,9 +68,13 @@ jobs:
             echo "${IMAGE} is not published yet; building it."
           fi
 
+      # The docker driver builds in the runner's own Docker daemon, whose build cache persists on the self-hosted
+      # runner: unchanged layers are reused without storing them in the actions/cache quota.
       - name: Set up Docker Buildx
         if: steps.published.outputs.exists != 'true'
         uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
 
       - name: Build and push
         if: steps.published.outputs.exists != 'true'
@@ -81,5 +85,3 @@ jobs:
           tags: ${{ steps.reference.outputs.image }}
           # Links the package to this repository, so it inherits the repository's access.
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          cache-from: type=gha,scope=toolchain
-          cache-to: type=gha,mode=max,scope=toolchain

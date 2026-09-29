@@ -30,6 +30,10 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+      # Build caches that persist on the runner; see tools/ci_cache.sh. The cargo registry keeps the image's path.
+      volumes:
+        - test-cross-compile-ci-cache:/ci-cache
+        - test-cross-compile-cargo-registry:/opt/cargo/registry
 
     strategy:
       fail-fast: false
@@ -45,93 +49,30 @@ jobs:
       run:
         shell: bash
 
+    # One ccache on the cache volume serves every job and configuration: ccache hashes compiler options, so they
+    # don't collide, and CCACHE_MAXSIZE bounds the total.
     env:
       CCACHE_NOHASHDIR: "true"
       CCACHE_COMPILERCHECK: content
-      CCACHE_MAXSIZE: 500M
+      CCACHE_MAXSIZE: 5G
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Caches live under $HOME, which is also where actions/cache resolves `~` inside the container.
       - name: Set up environment
         run: |
           set -euo pipefail
 
-          {
-            echo "CPM_SOURCE_CACHE=${HOME}/.cache/CPM"
-            echo "CCACHE_DIR=${HOME}/.cache/ccache"
-            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
-          } >> "${GITHUB_ENV}"
-
           # The workspace is owned by the runner's user, not the container's root, so git would refuse it.
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
-      # One key for every job: the fetched sources don't depend on the configuration. Jobs finishing after the first
-      # to save just skip saving.
-      #
-      # v2 in every cache key: actions/cache stores paths relative to the workspace, and inside the container both the
-      # workspace and $HOME moved, so archives saved by the old docker-run jobs would unpack to the wrong place.
-      - name: Restore CPM cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/CPM
-          key: >-
-            cpm-v2-${{
-              hashFiles('**/CMakeLists.txt', '**/*.cmake')
-            }}
-          restore-keys: |
-            cpm-v2-
-
-      # Separate caches per target and configuration. ccache hashes compiler options, so restoring another
-      # configuration's cache only costs misses. The run id makes every run save: actions/cache never overwrites an
-      # existing key, so a key without it would freeze the cache until the CMake files next change. CCACHE_MAXSIZE
-      # bounds what that accumulates.
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: >-
-            ccache-v2-${{ matrix.target }}-${{ matrix.build_type }}-${{
-              hashFiles(
-                'Dockerfile',
-                'cmake/toolchains/**',
-                '**/CMakeLists.txt',
-                '**/*.cmake'
-              )
-            }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-v2-${{ matrix.target }}-${{ matrix.build_type }}-${{ hashFiles('Dockerfile', 'cmake/toolchains/**', '**/CMakeLists.txt', '**/*.cmake') }}-
-            ccache-v2-${{ matrix.target }}-${{ matrix.build_type }}-
-            ccache-v2-${{ matrix.target }}-
-
-      # The shader reflection tool (tools/shader_reflect) otherwise downloads and compiles its crates, including
-      # SPIRV-Cross, in every job. The registry is the image's CARGO_HOME registry; the target directory lives in the
-      # build tree, so the key is per job.
-      - name: Restore cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            /opt/cargo/registry
-            build/*/generated/cargo
-          key: >-
-            cargo-v2-${{ matrix.target }}-${{ matrix.build_type }}-${{
-              hashFiles('Dockerfile', 'tools/shader_reflect/**')
-            }}
-          restore-keys: |
-            cargo-v2-${{ matrix.target }}-${{ matrix.build_type }}-
-
-      # Content-addressed (see tools/clang_tidy_cached.py), so one shared key prefix is safe; the run id makes every
-      # run save its new entries. run_clang_tidy.sh defaults to ~/.cache/clang-tidy.
-      - name: Restore clang-tidy cache
-        if: matrix.build_type == 'Debug'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/clang-tidy
-          key: clang-tidy-v2-${{ github.run_id }}
-          restore-keys: |
-            clang-tidy-v2-
+          tools/ci_cache.sh env
+          cargo_target_dir="$(tools/ci_cache.sh cargo-target-dir HEAD)"
+          {
+            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+            echo "SHADER_REFLECT_CARGO_TARGET_DIR=${cargo_target_dir}"
+          } >> "${GITHUB_ENV}"
 
       - name: Configure
         run: |
@@ -155,6 +96,7 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DMINGW_VULKAN_CARGO_TARGET_DIR="${SHADER_REFLECT_CARGO_TARGET_DIR}" \
             "${linker_args[@]}"
 
       - name: Reset ccache statistics
@@ -210,6 +152,10 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+      # Build caches that persist on the runner; see tools/ci_cache.sh. The cargo registry keeps the image's path.
+      volumes:
+        - test-cross-compile-ci-cache:/ci-cache
+        - test-cross-compile-cargo-registry:/opt/cargo/registry
 
     defaults:
       run:
@@ -218,7 +164,7 @@ jobs:
     env:
       CCACHE_NOHASHDIR: "true"
       CCACHE_COMPILERCHECK: content
-      CCACHE_MAXSIZE: 500M
+      CCACHE_MAXSIZE: 5G
 
     steps:
       - name: Checkout
@@ -228,54 +174,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          {
-            echo "CPM_SOURCE_CACHE=${HOME}/.cache/CPM"
-            echo "CCACHE_DIR=${HOME}/.cache/ccache"
-            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
-          } >> "${GITHUB_ENV}"
-
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
-      - name: Restore CPM cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/CPM
-          key: >-
-            cpm-v2-${{
-              hashFiles('**/CMakeLists.txt', '**/*.cmake')
-            }}
-          restore-keys: |
-            cpm-v2-
-
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: >-
-            ccache-v2-sanitize-${{
-              hashFiles(
-                'Dockerfile',
-                'cmake/toolchains/**',
-                '**/CMakeLists.txt',
-                '**/*.cmake'
-              )
-            }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-v2-sanitize-${{ hashFiles('Dockerfile', 'cmake/toolchains/**', '**/CMakeLists.txt', '**/*.cmake') }}-
-            ccache-v2-sanitize-
-
-      - name: Restore cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            /opt/cargo/registry
-            build/*/generated/cargo
-          key: >-
-            cargo-v2-sanitize-${{
-              hashFiles('Dockerfile', 'tools/shader_reflect/**')
-            }}
-          restore-keys: |
-            cargo-v2-sanitize-
+          tools/ci_cache.sh env
+          cargo_target_dir="$(tools/ci_cache.sh cargo-target-dir HEAD)"
+          {
+            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+            echo "SHADER_REFLECT_CARGO_TARGET_DIR=${cargo_target_dir}"
+          } >> "${GITHUB_ENV}"
 
       - name: Configure
         run: |
@@ -289,6 +195,7 @@ jobs:
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DMINGW_VULKAN_SANITIZE=ON \
             -DMINGW_VULKAN_WERROR=ON \
+            -DMINGW_VULKAN_CARGO_TARGET_DIR="${SHADER_REFLECT_CARGO_TARGET_DIR}" \
             -DCMAKE_LINKER_TYPE=MOLD
 
       # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.

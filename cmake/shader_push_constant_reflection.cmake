@@ -84,10 +84,26 @@ set(
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/shader_reflect/src/main.rs"
 )
 
+# CI points this at a directory that outlives the build tree, so the crates (SPIRV-Cross among them) aren't rebuilt
+# for every fresh build. Builds of differing tools/shader_reflect sources must not share one.
 set(
-    shader_reflect_cargo_target_dir
-    "${shader_reflect_generated_dir}/cargo/shader_reflect"
+    MINGW_VULKAN_CARGO_TARGET_DIR
+    ""
+    CACHE PATH
+    "Cargo target directory for tools/shader_reflect (empty: inside the build tree)"
 )
+
+if(MINGW_VULKAN_CARGO_TARGET_DIR)
+    set(
+        shader_reflect_cargo_target_dir
+        "${MINGW_VULKAN_CARGO_TARGET_DIR}"
+    )
+else()
+    set(
+        shader_reflect_cargo_target_dir
+        "${shader_reflect_generated_dir}/cargo/shader_reflect"
+    )
+endif()
 
 if(CMAKE_HOST_WIN32)
     set(shader_reflect_host_executable_suffix ".exe")
