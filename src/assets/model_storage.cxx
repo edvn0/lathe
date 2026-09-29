@@ -27,8 +27,9 @@ auto ModelStorage::create_model(ModelSlotData data) -> std::expected<ModelHandle
     auto &[handle, slot] = *allocation;
 
     slot = std::move(data);
-    // A new slot has one owner, whatever ref_count `data` carried (e.g. a copied fallback's).
+    // A new slot has one owner and owns its meshes, whatever `data` carried (e.g. a copied fallback's).
     slot.ref_count = 1;
+    slot.borrowed_from = {};
 
     return handle;
 }
@@ -40,7 +41,16 @@ auto ModelStorage::create_pending_model(ModelHandle fallback) -> std::expected<M
         return std::unexpected(ModelStorageError{.type = ModelStorageErrorType::invalid_handle});
     }
 
-    return create_model(*fallback_slot);
+    auto handle = create_model(*fallback_slot);
+
+    if (!handle) {
+        return handle;
+    }
+
+    slots_.get(*handle)->borrowed_from = fallback;
+    ++slots_.get(fallback)->ref_count;
+
+    return handle;
 }
 
 auto ModelStorage::upgrade_pending_model(ModelHandle handle, ModelSlotData data)
