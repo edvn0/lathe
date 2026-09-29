@@ -2,8 +2,8 @@ FROM debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# xvfb/xauth/libvulkan1/mesa-vulkan-drivers: headless X server and lavapipe for the perf workflow's
-# --benchmark runs. zstd: CI jobs run inside this image, and actions/cache compresses with it when present.
+# libvulkan1/mesa-vulkan-drivers: lets the app run inside the container, on lavapipe unless a GPU is passed in.
+# zstd: CI jobs run inside this image, and actions/cache compresses with it when present.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     clang-tidy \
@@ -30,8 +30,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-dev \
     libjemalloc-dev \
     mold \
-    xvfb \
-    xauth \
     libvulkan1 \
     mesa-vulkan-drivers \
     && update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix \

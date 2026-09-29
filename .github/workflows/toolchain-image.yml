@@ -1,8 +1,8 @@
 name: toolchain image
 
 # Publishes the build container (Dockerfile) to GitHub Container Registry, tagged with the Dockerfile's hash, and
-# returns its reference. ci and perf call this, then run their jobs inside the image (`container:`), so each job
-# pulls a finished image instead of re-exporting it from the build cache and loading it into the runner's Docker.
+# returns its reference. ci calls this, then runs its jobs inside the image (`container:`), so each job pulls a
+# finished image instead of re-exporting it from the build cache and loading it into the runner's Docker.
 #
 # The image is only built when its tag is missing: the first run after a Dockerfile change, including on the PR that
 # changes it. Fork PRs can't push (their GITHUB_TOKEN is read-only), so a fork PR that changes the Dockerfile fails
@@ -68,9 +68,13 @@ jobs:
             echo "${IMAGE} is not published yet; building it."
           fi
 
+      # The docker driver builds in the runner's own Docker daemon, whose build cache persists on the self-hosted
+      # runner: unchanged layers are reused without storing them in the actions/cache quota.
       - name: Set up Docker Buildx
         if: steps.published.outputs.exists != 'true'
         uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
 
       - name: Build and push
         if: steps.published.outputs.exists != 'true'
@@ -81,5 +85,3 @@ jobs:
           tags: ${{ steps.reference.outputs.image }}
           # Links the package to this repository, so it inherits the repository's access.
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          cache-from: type=gha,scope=toolchain
-          cache-to: type=gha,mode=max,scope=toolchain

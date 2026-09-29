@@ -6,13 +6,11 @@
                           [--markdown out.md]
 
 Prints a Markdown table of per-stage median/p95 GPU times, base vs head.
-Without --base (or when the file doesn't exist -- e.g. the base branch
-predates benchmark mode) it reports head alone.
+Without --base (or when the file doesn't exist) it reports head alone.
 
 A stage whose median moves by more than --threshold percent is flagged.
 Exits 1 when the full-frame median regresses by more than --fail-threshold
-percent, so CI can gate on it; per-stage numbers are informational, since
-small stages are noisy on a software rasterizer.
+percent.
 """
 
 from __future__ import annotations
@@ -134,8 +132,7 @@ def comparison_report(base: dict, head: dict, threshold: float) -> tuple[str, fl
 
     footer = f"Flagged: median moved more than {threshold:.0f}% (stages under {MIN_FLAGGED_MS} ms never are)."
     if "llvmpipe" in head["device"]:
-        footer += (" Timings come from a software rasterizer (lavapipe): good at catching large regressions, "
-                   "not a stand-in for a real GPU.")
+        footer += " Timings come from a software rasterizer (lavapipe), not a GPU: don't read much into them."
 
     lines += ["", footer]
     return "\n".join(lines) + "\n", full_frame_change

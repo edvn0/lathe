@@ -1,7 +1,8 @@
 # Perf benchmark
 
-`--benchmark` turns the app into a repeatable GPU benchmark, and the `perf`
-workflow runs it for every PR against the PR's base.
+`--benchmark` turns the app into a repeatable GPU benchmark. It is run by
+hand, on real hardware: CI runners have no GPU, and lavapipe's timings say
+little about how passes compare on one.
 
 ## What a run does
 
@@ -43,58 +44,26 @@ tools/perf/run_benchmark.sh build/linux-native-relwithdebinfo perf/head.json
 tools/perf/compare_benchmarks.py --base perf/base.json --head perf/head.json
 ```
 
-`run_benchmark.sh` starts a private Xvfb when there's no `DISPLAY`. On a
-real GPU, compare runs from the same machine, with nothing else loading it.
+With no display (`DISPLAY` and `WAYLAND_DISPLAY` unset), `run_benchmark.sh`
+runs the app with `--screen-type=headless`: GLFW's null platform, presenting
+through `VK_EXT_headless_surface`. No X server is involved, and the app picks
+the best GPU it can see, falling back to lavapipe. On a real GPU, compare runs
+from the same machine, with nothing else loading it.
 
-## In CI (`.github/workflows/perf.yml`)
-
-1. Builds the PR (merge commit) and its base, both RelWithDebInfo.
-2. Benchmarks each with 240 frames under Xvfb + lavapipe.
-3. Posts the comparison table as a PR comment, updated in place on later
-   pushes. It also goes into the job summary.
-4. Uploads the JSON results and head's keyframe screenshots as the
-   `perf-benchmark` artifact.
-
-- **Flags**: a stage is flagged when its median moves more than 10%. Stages
-  under 0.5 ms are never flagged.
-- **Failure**: the job fails when the full-frame median regresses more than
-  20%.
-- **Old bases**: a base branch older than benchmark mode gets a head-only
-  report.
-
-Hosted runners have no GPU, so lavapipe does the rendering. It is good at
-catching large regressions, such as the meshlet change that doubled frame
-time (see [meshlet-rendering.md](meshlet-rendering.md)), but it is not a
-stand-in for profiling on real hardware. The relative costs of passes can
-differ a lot between a software rasterizer and a GPU.
-
-### On a real GPU
-
-The workflow reads three repository variables (Actions > Variables):
-`PERF_RUNNER` (runner label), `PERF_DOCKER_GPU_ARGS` (extra `docker create`
-options for the job's container, which the whole job runs in) and
-`PERF_BENCHMARK_ARGS`. For a self-hosted
-Linux box with an NVIDIA card:
-
-- **Container GPU access**: install nvidia-container-toolkit and pass
-  `--gpus all --env NVIDIA_DRIVER_CAPABILITIES=all`. The `graphics`
-  capability is what mounts the NVIDIA Vulkan ICD into the container.
-- **A real X session**: NVIDIA's Vulkan driver can't present to Xvfb, so
-  point the run at an X server on the box with `--env DISPLAY=:0 --volume
-  /tmp/.X11-unix:/tmp/.X11-unix`, which also needs `xhost +local:` or an
-  Xauthority mount. `run_benchmark.sh` only starts Xvfb when `DISPLAY` is
-  unset.
-- **More frames**: a GPU finishes the 240-frame lap in about a second.
-  Use e.g. `--benchmark-frames=3000 --benchmark-warmup=300`, so per-frame
-  noise averages out and each keyframe segment spans a few seconds.
-- **Noise**: boost clocks move with temperature. Base and head run back to
-  back, which helps. `nvidia-smi -lgc` can pin clocks when numbers wobble.
-- **Security**: a self-hosted runner executes the PR's code. Keep it to
-  private repos or trusted contributors.
-
-The workflow is Linux + Docker only; a Windows runner would need its own
-job built around the windows-mingw target.
+- **Check the device**: the comparison's first lines name the device each
+  run used; `llvmpipe` means the GPU wasn't visible.
+- **More frames**: a GPU finishes a 240-frame lap in about a second. Use e.g.
+  `--benchmark-frames=3000 --benchmark-warmup=300`, so per-frame noise
+  averages out and each keyframe segment spans a few seconds.
+- **Noise**: boost clocks move with temperature, so run base and head back to
+  back. `nvidia-smi -lgc` can pin clocks when numbers wobble.
+- **Flags**: `compare_benchmarks.py` flags a stage whose median moves more
+  than 10% (stages under 0.5 ms never are), and exits 1 when the full-frame
+  median regresses more than 20%.
+- **In the build container**: `./compile.sh --shell` passes no GPU through,
+  so the app renders on lavapipe there. That shows a run works, not how fast
+  it is.
 
 To change what gets measured, edit `BasicGame::benchmark_camera_path()`.
-Base and head then fly different loops until the change is merged, so
-expect one noisy comparison.
+Runs from before and after that change fly different loops, so they don't
+compare.
