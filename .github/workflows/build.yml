@@ -193,6 +193,12 @@ jobs:
         if: always()
         run: ccache --show-stats
 
+      # The container runs as root, so everything it wrote into the shared workspace is root-owned. Hand it back to the
+      # runner's user, or the next job that runs on the host (e.g. the toolchain image publish) can't clean it.
+      - name: Return workspace ownership to the runner
+        if: always()
+        run: chown -R "$(stat -c '%u:%g' "${GITHUB_WORKSPACE}")" "${GITHUB_WORKSPACE}"
+
   sanitize:
     name: linux-native / Debug / ASan+UBSan / -Werror
 
@@ -304,3 +310,9 @@ jobs:
             --output-on-failure \
             --parallel 4 \
             --no-tests=error
+
+      # The container runs as root, so everything it wrote into the shared workspace is root-owned. Hand it back to the
+      # runner's user, or the next job that runs on the host (e.g. the toolchain image publish) can't clean it.
+      - name: Return workspace ownership to the runner
+        if: always()
+        run: chown -R "$(stat -c '%u:%g' "${GITHUB_WORKSPACE}")" "${GITHUB_WORKSPACE}"

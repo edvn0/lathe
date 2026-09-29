@@ -247,3 +247,9 @@ jobs:
         run: |
           echo "Full-frame median regressed past the threshold -- see the report above." >&2
           exit 1
+
+      # The container runs as root, so everything it wrote into the shared workspace is root-owned. Hand it back to the
+      # runner's user, or the next job that runs on the host (e.g. the toolchain image publish) can't clean it.
+      - name: Return workspace ownership to the runner
+        if: always()
+        run: chown -R "$(stat -c '%u:%g' "${GITHUB_WORKSPACE}")" "${GITHUB_WORKSPACE}"
