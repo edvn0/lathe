@@ -169,8 +169,9 @@ namespace {
         info("Was created via renderdoc: {}", renderdoc.is_active());
 
         if (screen_type == ScreenType::headless) {
-            // The null platform needs no display server; GLFW creates its Vulkan surfaces with
-            // VK_EXT_headless_surface.
+            // The null platform needs no display server. It still provides the window for input and framebuffer
+            // size, but has no Vulkan surface support in GLFW 3.4: create_instance() and create_surface() handle
+            // VK_EXT_headless_surface themselves.
             glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_NULL);
             info("Headless: using GLFW's null platform.");
         } else {
@@ -272,7 +273,7 @@ namespace {
         return true;
     }
 
-    auto create_instance(VulkanContext &context) noexcept -> bool {
+    auto create_instance(VulkanContext &context, ScreenType screen_type) noexcept -> bool {
         auto const volk_result = volkInitialize();
 
         if (volk_result != VK_SUCCESS) {
@@ -295,18 +296,24 @@ namespace {
 
         constexpr auto requested_version = VK_API_VERSION_1_4;
 
-        std::uint32_t extension_count = 0;
+        std::vector<char const *> instance_extensions;
 
-        auto const *required_extensions = glfwGetRequiredInstanceExtensions(&extension_count);
+        if (screen_type == ScreenType::headless) {
+            instance_extensions = {VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME};
+        } else {
+            std::uint32_t extension_count = 0;
 
-        if (required_extensions == nullptr || extension_count == 0) {
-            error("glfwGetRequiredInstanceExtensions "
-                  "returned no extensions");
+            auto const *required_extensions = glfwGetRequiredInstanceExtensions(&extension_count);
 
-            return false;
+            if (required_extensions == nullptr || extension_count == 0) {
+                error("glfwGetRequiredInstanceExtensions "
+                      "returned no extensions");
+
+                return false;
+            }
+
+            instance_extensions.assign(required_extensions, required_extensions + extension_count);
         }
-
-        std::vector<char const *> instance_extensions(required_extensions, required_extensions + extension_count);
 
         auto validation_enabled = enable_validation;
         info("Validation is {}", validation_enabled ? "on" : "off");
@@ -374,7 +381,27 @@ namespace {
         return true;
     }
 
-    auto create_surface(VulkanContext &context) noexcept -> bool {
+    auto create_surface(VulkanContext &context, ScreenType screen_type) noexcept -> bool {
+        if (screen_type == ScreenType::headless) {
+            VkHeadlessSurfaceCreateInfoEXT const create_info{
+                    .sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT,
+                    .pNext = nullptr,
+                    .flags = 0,
+            };
+
+            auto const result = vkCreateHeadlessSurfaceEXT(context.instance, &create_info, nullptr, &context.surface);
+
+            if (result != VK_SUCCESS) {
+                report_vk_error("vkCreateHeadlessSurfaceEXT", result);
+
+                return false;
+            }
+
+            info("Headless Vulkan surface created");
+
+            return true;
+        }
+
         auto const result = glfwCreateWindowSurface(context.instance, context.window, nullptr, &context.surface);
 
         if (result != VK_SUCCESS) {
@@ -915,7 +942,7 @@ auto parse_screen_type(int argc, char **argv) noexcept -> ScreenType {
 }
 
 auto initialize_vulkan(VulkanContext &context, ScreenType screen_type) noexcept -> bool {
-    return initialize_glfw(context, screen_type) && create_instance(context) && create_surface(context) &&
-           select_physical_device(context) && create_device(context) && create_host_query_context(context) &&
-           create_allocator(context) && create_swapchain(context);
+    return initialize_glfw(context, screen_type) && create_instance(context, screen_type) &&
+           create_surface(context, screen_type) && select_physical_device(context) && create_device(context) &&
+           create_host_query_context(context) && create_allocator(context) && create_swapchain(context);
 }
