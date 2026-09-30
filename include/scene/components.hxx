@@ -26,8 +26,31 @@ namespace Components {
         float outer_cone_degrees = 30.0F;
     };
 
+    // Every handle here is retained by the Scene while the component exists, so a material made just for this
+    // entity needs no name and is freed with the last entity using it. Change an existing override through
+    // Scene::set_material_override(), which keeps those references balanced; emplace and remove work directly.
     struct MaterialOverride {
+        // Replaces every submesh material when valid.
         MaterialHandle material{};
+
+        // Replaces single model materials, winning over `material`. At most one entry per source.
+        std::vector<MaterialSlotOverride> slots;
+
+        // What `source` draws with on this entity, or an invalid handle if nothing replaces it.
+        [[nodiscard]]
+        auto replacement_for(MaterialHandle source) const noexcept -> MaterialHandle {
+            for (auto const &slot: slots) {
+                if (slot.source == source) {
+                    return slot.material;
+                }
+            }
+            return material;
+        }
+
+        [[nodiscard]]
+        auto empty() const noexcept -> bool {
+            return !material.valid() && slots.empty();
+        }
     };
 
     struct Model {

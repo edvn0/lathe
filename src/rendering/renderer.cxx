@@ -1743,7 +1743,8 @@ auto Renderer::model_materials(ModelHandle model) const -> std::vector<MaterialH
     return materials;
 }
 
-auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override)
+auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override,
+                            std::span<MaterialSlotOverride const> slot_overrides)
         -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
@@ -1753,16 +1754,22 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, Mater
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
     }
 
+    auto const slot_override_first = static_cast<std::uint32_t>(slot_override_submissions_.size());
+    slot_override_submissions_.insert(slot_override_submissions_.end(), slot_overrides.begin(), slot_overrides.end());
+
     model_submissions_.push_back(ModelSubmission{
             .model = model,
             .transform = transform,
             .material_override = material_override,
+            .slot_override_first = slot_override_first,
+            .slot_override_count = static_cast<std::uint32_t>(slot_overrides.size()),
     });
 
     return {};
 }
 
-auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHandle material_override)
+auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHandle material_override,
+                            std::span<MaterialSlotOverride const> slot_overrides)
         -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
@@ -1772,10 +1779,15 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
     }
 
+    auto const slot_override_first = static_cast<std::uint32_t>(slot_override_submissions_.size());
+    slot_override_submissions_.insert(slot_override_submissions_.end(), slot_overrides.begin(), slot_overrides.end());
+
     model_submissions_.push_back(ModelSubmission{
             .model = model,
             .transform = transform,
             .material_override = material_override,
+            .slot_override_first = slot_override_first,
+            .slot_override_count = static_cast<std::uint32_t>(slot_overrides.size()),
     });
 
     return {};
@@ -1823,6 +1835,17 @@ auto Renderer::create_material(MaterialCreateInfo const &create_info, std::strin
     return *material;
 }
 
+auto Renderer::duplicate_material(MaterialHandle source, std::string debug_name)
+        -> std::expected<MaterialHandle, RendererError> {
+    auto const *source_info = material_storage_.create_info(source);
+
+    if (source_info == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_material));
+    }
+
+    return create_material(*source_info, std::move(debug_name));
+}
+
 auto Renderer::update_material(MaterialHandle handle, MaterialCreateInfo const &create_info)
         -> std::expected<void, RendererError> {
     if (!initialized_) {
@@ -1839,21 +1862,63 @@ auto Renderer::update_material(MaterialHandle handle, MaterialCreateInfo const &
     return {};
 }
 
+auto Renderer::retain_material(MaterialHandle handle) -> void {
+    if (!initialized_ || !handle.valid()) {
+        return;
+    }
+
+    if (!material_storage_.retain_material(handle)) {
+        warn("Renderer::retain_material: handle is not a live material");
+    }
+}
+
+auto Renderer::release_material(MaterialHandle handle) -> void {
+    // Scenes outlive destroy(), which already freed every material.
+    if (!initialized_ || !handle.valid() || handle == default_material_handle_) {
+        return;
+    }
+
+    bool const last_reference = material_storage_.ref_count(handle) == 1;
+
+    if (auto const result = material_storage_.destroy_material(handle); !result) {
+        warn("Renderer::release_material: handle is not a live material");
+        return;
+    }
+
+    if (last_reference) {
+        assets_.materials().unregister(handle);
+        mark_shadow_casters_dirty();
+    }
+}
+
 auto Renderer::destroy_material(MaterialHandle handle) -> std::expected<void, RendererError> {
     if (handle == default_material_handle_) {
         return std::unexpected(make_error(RendererErrorType::invalid_material));
     }
 
-    auto result = material_storage_.destroy_material(handle);
-
-    if (!result) {
-        return std::unexpected(make_material_error(result.error()));
+    if (material_storage_.get(handle) == nullptr) {
+        return std::unexpected(make_material_error(MaterialStorageError{
+                .type = MaterialStorageErrorType::invalid_handle,
+        }));
     }
 
     assets_.materials().unregister(handle);
+    release_material(handle);
 
-    mark_shadow_casters_dirty();
     return {};
+}
+
+auto Renderer::register_material_name(MaterialHandle handle, std::string name) -> bool {
+    if (material_storage_.get(handle) == nullptr || !assets_.materials().name_of(handle).empty()) {
+        return false;
+    }
+
+    if (!assets_.materials().register_asset(std::move(name), handle)) {
+        return false;
+    }
+
+    retain_material(handle);
+    return true;
 }
 
 auto Renderer::request_texture(std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
@@ -2187,6 +2252,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             continue;
         }
 
+        auto const slot_overrides = std::span{slot_override_submissions_}.subspan(
+                model_submission.slot_override_first, model_submission.slot_override_count);
+
         for (auto const &model_draw: model->draws) {
             auto const *mesh = mesh_slot(model_draw.mesh);
             if (mesh == nullptr) {
@@ -2197,8 +2265,15 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             auto const lod_index = select_lod_index(glm::vec3(instance_transform[3]));
             for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
                 auto const &submesh = mesh->submeshes[submesh_index];
-                auto const material = model_submission.material_override.valid() ? model_submission.material_override
-                                                                                 : submesh.material;
+                auto material = model_submission.material_override.valid() ? model_submission.material_override
+                                                                           : submesh.material;
+
+                for (auto const &slot_override: slot_overrides) {
+                    if (slot_override.source == submesh.material && slot_override.material.valid()) {
+                        material = slot_override.material;
+                        break;
+                    }
+                }
                 auto const key = BatchKey{
                         .mesh_index = model_draw.mesh.index,
                         .submesh_index = submesh_index,
@@ -4071,6 +4146,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
 auto Renderer::clear_submissions() noexcept -> void {
     submissions_.clear();
     model_submissions_.clear();
+    slot_override_submissions_.clear();
     point_light_submissions_.clear();
     spot_light_submissions_.clear();
 }

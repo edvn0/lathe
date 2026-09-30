@@ -130,6 +130,7 @@ auto MaterialStorage::create_material(MaterialCreateInfo const &create_info)
 
     slot.source = create_info;
     slot.material = to_gpu_material(create_info);
+    slot.ref_count = 1;
     slot.dirty = true;
 
     return handle;
@@ -150,6 +151,23 @@ auto MaterialStorage::update_material(MaterialHandle handle, MaterialCreateInfo 
     return {};
 }
 
+auto MaterialStorage::retain_material(MaterialHandle handle) -> std::expected<void, MaterialStorageError> {
+    // The default material is never freed, so it isn't counted.
+    if (handle.index == 0) {
+        return {};
+    }
+
+    auto *slot = slots_.get(handle);
+
+    if (slot == nullptr) {
+        return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
+    }
+
+    ++slot->ref_count;
+
+    return {};
+}
+
 auto MaterialStorage::destroy_material(MaterialHandle handle) -> std::expected<void, MaterialStorageError> {
     if (handle.index == 0) {
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
@@ -161,9 +179,15 @@ auto MaterialStorage::destroy_material(MaterialHandle handle) -> std::expected<v
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
     }
 
+    if (slot->ref_count > 1) {
+        --slot->ref_count;
+        return {};
+    }
+
     // release() leaves the payload as-is, so clear the GPU data before freeing the slot.
     slot->material = GpuMaterial{};
     slot->source = MaterialCreateInfo{};
+    slot->ref_count = 0;
     slot->dirty = true;
 
     static_cast<void>(slots_.release(handle));
@@ -181,6 +205,12 @@ auto MaterialStorage::create_info(MaterialHandle handle) const noexcept -> Mater
     auto const *slot = slots_.get(handle);
 
     return slot != nullptr ? &slot->source : nullptr;
+}
+
+auto MaterialStorage::ref_count(MaterialHandle handle) const noexcept -> std::uint32_t {
+    auto const *slot = slots_.get(handle);
+
+    return slot != nullptr ? slot->ref_count : 0;
 }
 
 auto MaterialStorage::gpu_index(MaterialHandle handle) const noexcept -> std::uint32_t {

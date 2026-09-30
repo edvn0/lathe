@@ -99,9 +99,13 @@ namespace {
             auto const *override_component = registry.try_get<Components::MaterialOverride const>(entity);
             auto const material_override =
                     override_component != nullptr ? override_component->material : MaterialHandle{};
+            auto const slot_overrides = override_component != nullptr
+                                                ? std::span<MaterialSlotOverride const>{override_component->slots}
+                                                : std::span<MaterialSlotOverride const>{};
 
             auto const world_transform = systems::get_world_transform(registry, entity, transform);
-            auto result = application.renderer->submit_model(model.model, world_transform, material_override);
+            auto result = application.renderer->submit_model(model.model, world_transform, material_override,
+                                                             slot_overrides);
 
             if (!result) {
                 error("Could not submit scene object (model index {}): {}", model.model.index,

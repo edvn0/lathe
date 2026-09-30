@@ -292,13 +292,14 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto create_model(Model const &model) -> std::expected<ModelHandle, RendererError>;
 
-    // A valid material_override replaces every submesh material for this submission.
+    // A valid material_override replaces every submesh material for this submission. A slot override replaces just
+    // the submeshes drawn with its source material, and wins over material_override.
     [[nodiscard]]
-    auto submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override = {})
-            -> std::expected<void, RendererError>;
+    auto submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override = {},
+                      std::span<MaterialSlotOverride const> slot_overrides = {}) -> std::expected<void, RendererError>;
     [[nodiscard]]
-    auto submit_model(ModelHandle model, glm::mat4 &&, MaterialHandle material_override = {})
-            -> std::expected<void, RendererError>;
+    auto submit_model(ModelHandle model, glm::mat4 &&, MaterialHandle material_override = {},
+                      std::span<MaterialSlotOverride const> slot_overrides = {}) -> std::expected<void, RendererError>;
 
     // Submits many instances of one model sharing a material_override, without an entity per instance. Batching is
     // the same as for individual submissions.
@@ -323,17 +324,36 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto model_materials(ModelHandle model) const -> std::vector<MaterialHandle>;
 
-    // A non-empty `debug_name` registers the material in assets() so the editor can offer it by name.
+    // The returned handle carries one reference. A non-empty `debug_name` registers the material in assets() so the
+    // editor can offer it by name; a name is optional, since overrides keep their materials alive on their own (see
+    // Scene::set_material_override).
     [[nodiscard]]
     auto create_material(MaterialCreateInfo const &create_info, std::string debug_name = {})
+            -> std::expected<MaterialHandle, RendererError>;
+
+    // A new material with `source`'s create info, e.g. to give one entity its own copy of a shared material.
+    [[nodiscard]]
+    auto duplicate_material(MaterialHandle source, std::string debug_name = {})
             -> std::expected<MaterialHandle, RendererError>;
 
     [[nodiscard]]
     auto update_material(MaterialHandle handle, MaterialCreateInfo const &create_info)
             -> std::expected<void, RendererError>;
 
+    // Takes another reference. Logs and does nothing if `handle` isn't live; the default material isn't counted.
+    auto retain_material(MaterialHandle handle) -> void;
+
+    // Drops a reference; the last one destroys the material. Does nothing once the renderer is destroyed.
+    auto release_material(MaterialHandle handle) -> void;
+
+    // Removes the material from assets() and drops the reference its creator (or its name) holds. Entities still
+    // overriding with it keep it alive, unnamed, until they let go.
     [[nodiscard]]
     auto destroy_material(MaterialHandle handle) -> std::expected<void, RendererError>;
+
+    // Names an unnamed material in assets(). The name takes its own reference, so the material outlives the
+    // entities using it until destroy_material() drops it. False if the name is taken or the handle is dead.
+    auto register_material_name(MaterialHandle handle, std::string name) -> bool;
 
     [[nodiscard]]
     auto create_mesh(MeshCreateInfo const &create_info) -> std::expected<MeshHandle, RendererError> override;
@@ -689,6 +709,10 @@ private:
         ModelHandle model{};
         glm::mat4 transform{1.0F};
         MaterialHandle material_override{};
+
+        // A range of slot_override_submissions_.
+        std::uint32_t slot_override_first = 0;
+        std::uint32_t slot_override_count = 0;
     };
 
     struct BatchEntry {
@@ -949,6 +973,7 @@ private:
 
     std::vector<Submission> submissions_;
     std::vector<ModelSubmission> model_submissions_;
+    std::vector<MaterialSlotOverride> slot_override_submissions_;
 
     std::vector<RendererFrame> frames_;
 

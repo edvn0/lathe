@@ -46,6 +46,10 @@ public:
     auto get_scripts() noexcept -> ScriptStorage &;
     [[nodiscard]] auto get_scripts() const noexcept -> ScriptStorage const &;
 
+    // Replaces the entity's MaterialOverride, or removes it if `material_override` is empty. Handles in both the old
+    // and new overrides survive the swap.
+    auto set_material_override(entt::entity entity, Components::MaterialOverride material_override) -> void;
+
 private:
     entt::registry registry;
     entt::sigh<void()> lights_changed_signal_;
@@ -64,6 +68,8 @@ private:
     auto on_rigid_body_destroyed(entt::registry &, entt::entity entity) -> void;
     auto on_script_attached(entt::registry &, entt::entity) -> void;
     auto on_script_detached(entt::registry &, entt::entity) -> void;
+    auto on_material_override_attached(entt::registry &, entt::entity) -> void;
+    auto on_material_override_detached(entt::registry &, entt::entity) -> void;
     auto connect_light_signals() -> void;
 
     template<typename T>
