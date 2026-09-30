@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <future>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "gpu/buffer.hxx"
@@ -16,7 +17,8 @@
 // uploaded. Never blocks.
 class TextureStreamer {
 public:
-    // `profile` gets this texture's share of the texture timings.
+    // `profile` gets this texture's share of the texture timings. Requesting a path again with the same role returns
+    // the image already made for it, even one that failed to load and stays on its fallback.
     [[nodiscard]]
     auto request(ImageStorage &images, std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
                 std::string debug_name, std::shared_ptr<ModelLoadProfile> profile = nullptr) -> ImageHandle;
@@ -46,5 +48,6 @@ private:
     };
 
     std::vector<PendingRequest> pending_;
+    std::unordered_map<std::string, ImageHandle> path_requests_;
     std::vector<std::vector<Buffer>> retiring_staging_; // indexed by frame_index
 };
