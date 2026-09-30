@@ -2040,11 +2040,8 @@ auto Application::play() -> void {
 
     // Embedded play captures the cursor on the first Viewport click instead (see main.cxx).
     if (play_fullscreen) {
-        glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-        has_last_mouse_position = false;
-
-        // The disabled cursor's position is a virtual accumulator; keep ImGui from hit-testing against it.
-        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard;
+        capture_mouse();
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoKeyboard;
     }
 }
 
@@ -2067,8 +2064,30 @@ auto Application::stop() -> void {
     std::erase_if(model_loads, [&](StreamedModelLoad const &load) { return load.scene == runtime_scene.get(); });
     runtime_scene.reset();
 
+    release_mouse();
+    ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoKeyboard;
+}
+
+auto Application::capture_mouse() -> void {
+    glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    has_last_mouse_position = false;
+
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;
+}
+
+auto Application::release_mouse() -> void {
     glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-    ImGui::GetIO().ConfigFlags &= ~(ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard);
+    has_last_mouse_position = false;
+
+    auto &io = ImGui::GetIO();
+    io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+
+    // GLFW moves the cursor back to where it was captured, but X11 reports no motion for that warp, so ImGui would
+    // hover and click at the last virtual position until the mouse next moves.
+    double x = 0.0;
+    double y = 0.0;
+    glfwGetCursorPos(context.window, &x, &y);
+    io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
 }
 
 auto Application::update(float delta_time) -> void {
@@ -2206,7 +2225,7 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
         if (ev.key == GLFW_KEY_ESCAPE) {
             if (game_mouse_captured) {
                 game_mouse_captured = false;
-                glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                release_mouse();
                 return true;
             }
 
