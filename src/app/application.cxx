@@ -1468,8 +1468,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         };
 
         // Materials made for one entity are unnamed: the MaterialOverride holding them keeps them alive, so they never
-        // need a place in the Assets panel. `created_materials` collects the creation references, dropped once the override
-        // has retained what it keeps.
+        // need a place in the Assets panel. `created_materials` collects the creation references, dropped once the
+        // override has retained what it keeps.
         std::vector<MaterialHandle> created_materials;
 
         // nullopt (and a warning) if the material pool is full.
