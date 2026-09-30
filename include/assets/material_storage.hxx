@@ -105,7 +105,6 @@ struct MaterialSlotData {
     // The create info the material was last built from, so the editor can read back its handles.
     MaterialCreateInfo source{};
 
-    // create_material() hands out the first reference; destroy_material() frees the slot when it drops the last.
     std::uint32_t ref_count = 0;
 
     bool dirty = false;
@@ -131,15 +130,13 @@ struct MaterialStorage {
     auto update_material(MaterialHandle handle, MaterialCreateInfo const &create_info)
             -> std::expected<void, MaterialStorageError>;
 
-    // Takes another reference, so the material outlives the caller that created it while this one is held.
     [[nodiscard]]
     auto retain_material(MaterialHandle handle) -> std::expected<void, MaterialStorageError>;
 
-    // Drops a reference taken by create_material() or retain_material(); the last one frees the slot.
+    // Drops a reference; the last one frees the slot.
     [[nodiscard]]
     auto destroy_material(MaterialHandle handle) -> std::expected<void, MaterialStorageError>;
 
-    // 0 for an invalid handle.
     [[nodiscard]]
     auto ref_count(MaterialHandle handle) const noexcept -> std::uint32_t;
 

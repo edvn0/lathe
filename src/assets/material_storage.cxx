@@ -152,7 +152,6 @@ auto MaterialStorage::update_material(MaterialHandle handle, MaterialCreateInfo 
 }
 
 auto MaterialStorage::retain_material(MaterialHandle handle) -> std::expected<void, MaterialStorageError> {
-    // The default material is never freed, so it isn't counted.
     if (handle.index == 0) {
         return {};
     }

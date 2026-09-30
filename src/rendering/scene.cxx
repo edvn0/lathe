@@ -47,7 +47,7 @@ Scene::Scene(Renderer &renderer) : renderer_(renderer) {
     entt::sink{lights_changed_signal_}.connect<&Renderer::mark_lights_dirty>(renderer);
 }
 
-// entt doesn't signal on_destroy while tearing the registry down, so the override references are dropped here.
+// entt doesn't signal on_destroy when the registry is destroyed.
 Scene::~Scene() { registry.clear<Components::MaterialOverride>(); }
 
 auto Scene::on_scene_start() -> void {
@@ -112,8 +112,7 @@ auto Scene::set_material_override(entt::entity entity, Components::MaterialOverr
         return;
     }
 
-    // Held across the swap, so a material in both overrides isn't freed by the removal. An empty override has no
-    // valid handles, so nothing is held for it.
+    // Held across the swap so a material in both overrides isn't freed by the removal.
     for_each_material(material_override, [this](MaterialHandle handle) { renderer_.retain_material(handle); });
 
     registry.remove<Components::MaterialOverride>(entity);

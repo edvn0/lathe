@@ -183,7 +183,6 @@ struct Application {
     MaterialCreateInfo new_material_info{};
     std::string new_material_name;
 
-    // Name typed into the Inspector's "Save as asset" popup.
     std::string save_material_name;
 
     // Deleting from the Assets panel queues `commit` to run once elapsed_time reaches `delete_at`. Until then the

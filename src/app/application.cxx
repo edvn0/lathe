@@ -441,8 +441,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    // Shared by the Assets panel's material editors and the Inspector's material overrides. Returns whether anything
-    // changed.
+    // Returns whether anything changed.
     auto const draw_material_fields = [&](MaterialCreateInfo &info) -> bool {
         bool changed = false;
 
@@ -707,8 +706,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     if (is_default) {
                         ImGui::TextDisabled("The default material can't be deleted.");
                     } else if (ImGui::Button("Delete")) {
-                        // Unnamed once the grace period elapses, and destroyed then unless an entity still overrides
-                        // with it; until then it stays fully usable.
+                        // Committed once the grace period elapses; entities still using it keep it alive.
                         pending_deletions.push_back(PendingDeletion{
                                 .label = material_deletion_label(entry.name),
                                 .delete_at = elapsed_time + deletion_grace_seconds,
@@ -1467,12 +1465,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
         };
 
-        // Materials made for one entity are unnamed: the MaterialOverride holding them keeps them alive, so they never
-        // need a place in the Assets panel. `created_materials` collects the creation references, dropped once the
-        // override has retained what it keeps.
         std::vector<MaterialHandle> created_materials;
 
-        // nullopt (and a warning) if the material pool is full.
         auto const make_material_copy = [&](MaterialHandle source) -> std::optional<MaterialHandle> {
             auto copy = renderer->duplicate_material(source.valid() ? source : renderer->default_material());
             if (!copy) {
@@ -1483,7 +1477,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             return *copy;
         };
 
-        // A combo over `none_label` (an invalid handle), a new copy of what's shown, and the named materials.
         auto const material_picker = [&](char const *label, MaterialHandle current, char const *none_label,
                                          MaterialHandle copy_source) -> std::optional<MaterialHandle> {
             auto const &materials = renderer->assets().materials();
@@ -1507,8 +1500,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
             for (auto const &entry: materials.entries()) {
                 bool const is_selected = entry.handle == current;
-                // The default material's handle reads as invalid, i.e. as "none". Materials queued for deletion
-                // aren't offered as new picks.
+                // The default material's handle reads as invalid, i.e. as "none".
                 if (!entry.handle.valid() ||
                     (!is_selected && is_material_pending_deletion(pending_deletions, entry.name))) {
                     continue;
@@ -1524,7 +1516,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             return picked;
         };
 
-        // Edits `handle` in place. Returns a replacement when the user asks for a copy of their own.
         auto const draw_material_editor = [&](MaterialHandle handle) -> std::optional<MaterialHandle> {
             auto const *info = renderer->material_storage().create_info(handle);
             if (info == nullptr) {
@@ -1594,8 +1585,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             return replacement;
         };
 
-        // The entity's material overrides, one row per material of `model` (none for an invalid handle) plus one that
-        // covers every submesh. Adds the MaterialOverride on the first override and removes it after the last.
         auto const draw_material_overrides = [&](entt::entity entity, ModelHandle model) {
             auto const *existing = registry.try_get<Components::MaterialOverride>(entity);
             auto edited = existing != nullptr ? *existing : Components::MaterialOverride{};
@@ -1610,7 +1599,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 changed = true;
             };
 
-            // A loading model's materials are its placeholder's, so overrides keyed on them would never apply.
+            // A loading model's materials are its placeholder's.
             bool const loading = renderer->model_streamer().state(model) == ModelRequestState::loading;
             auto const sources = loading ? std::vector<MaterialHandle>{} : renderer->model_materials(model);
             if (loading) {
@@ -1632,7 +1621,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
             ImGui::PopID();
 
-            // The material a slot override puts on `source`, or an invalid handle if it has none.
             auto const slot_material = [&](MaterialHandle source) {
                 auto const it = std::ranges::find(edited.slots, source, &MaterialSlotOverride::source);
                 return it != edited.slots.end() ? it->material : MaterialHandle{};
@@ -1643,7 +1631,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
                 ImGui::PushID(static_cast<int>(index));
 
-                // A swatch of what this slot currently draws with.
                 auto const replacement = edited.replacement_for(source);
                 if (auto const *shown =
                             renderer->material_storage().create_info(replacement.valid() ? replacement : source)) {
@@ -1666,7 +1653,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         set_slot(source, MaterialHandle{});
                     }
                 } else if (ImGui::SmallButton("Override")) {
-                    // One click: a copy of the model's material, owned by this entity and ready to edit.
                     if (auto const copy = make_material_copy(source)) {
                         set_slot(source, *copy);
                         ImGui::SetNextItemOpen(true);
@@ -1683,7 +1669,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 ImGui::PopID();
             }
 
-            // Left over from a previous model; they apply again if the entity goes back to it.
             auto const stale = std::ranges::count_if(edited.slots, [&](MaterialSlotOverride const &slot) {
                 return std::ranges::find(sources, slot.source) == sources.end();
             });
@@ -1702,7 +1687,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 active_scene()->set_material_override(entity, std::move(edited));
             }
 
-            // The override now holds its own references to the copies it kept.
+            // The override holds its own references now.
             for (auto const handle: created_materials) {
                 renderer->release_material(handle);
             }
@@ -1777,7 +1762,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
             return false;
         });
-        // With a Model, overrides are edited per slot under Model > Materials.
         section.operator()<Components::MaterialOverride>("Material Override", [&](Components::MaterialOverride &mat) {
             if (registry.all_of<Components::Model>(selected_entity)) {
                 ImGui::TextDisabled("%zu slot override(s)%s -- edit them under Model > Materials.", mat.slots.size(),
@@ -1880,7 +1864,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                                        Components::Lifetime{.remaining_seconds = 5.0F});
             }
 
-            // Nothing to pick up front: the section offers a new material or any named one.
             if (!registry.all_of<Components::MaterialOverride>(selected_entity) &&
                 ImGui::MenuItem("Material Override")) {
                 registry.emplace<Components::MaterialOverride>(selected_entity);

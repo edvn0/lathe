@@ -56,8 +56,6 @@ struct MaterialSlotData;
 
 using MaterialHandle = Handle<MaterialSlotData, 0>;
 
-// Draws `material` wherever a model would have drawn `source`, one of its own materials (see
-// Renderer::model_materials()).
 struct MaterialSlotOverride {
     MaterialHandle source{};
     MaterialHandle material{};

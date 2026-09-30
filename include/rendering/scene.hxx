@@ -46,8 +46,7 @@ public:
     auto get_scripts() noexcept -> ScriptStorage &;
     [[nodiscard]] auto get_scripts() const noexcept -> ScriptStorage const &;
 
-    // Replaces the entity's MaterialOverride, or removes it if `material_override` is empty. Handles in both the old
-    // and new overrides survive the swap.
+    // Removes the component if `material_override` is empty.
     auto set_material_override(entt::entity entity, Components::MaterialOverride material_override) -> void;
 
 private:
