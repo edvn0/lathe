@@ -50,7 +50,7 @@
 #include "scene/components.hxx"
 #include "scene/editor_camera.hxx"
 #include "scene/selection_context.hxx"
-#if MINGW_VULKAN_TRACK_MEMORY
+#if LATHE_TRACK_MEMORY
 #include "core/memory_tracking_ui.hxx"
 #endif
 #include "assets/shader_hot_reload_watcher.hxx"
@@ -416,7 +416,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     if (game) {
         game->on_ui(*active_scene(), *renderer);
     }
-#if MINGW_VULKAN_TRACK_MEMORY
+#if LATHE_TRACK_MEMORY
     widget("Memory", [] { on_memory_ui(); });
 #endif
     widget("Console", [&] { terminal_widget.draw(); });

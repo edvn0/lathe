@@ -32,8 +32,8 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
       # Build caches that persist on the runner; see tools/ci_cache.sh. The cargo registry keeps the image's path.
       volumes:
-        - test-cross-compile-ci-cache:/ci-cache
-        - test-cross-compile-cargo-registry:/opt/cargo/registry
+        - lathe-ci-cache:/ci-cache
+        - lathe-cargo-registry:/opt/cargo/registry
 
     strategy:
       fail-fast: false
@@ -96,13 +96,13 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DMINGW_VULKAN_CARGO_TARGET_DIR="${SHADER_REFLECT_CARGO_TARGET_DIR}" \
+            -DLATHE_CARGO_TARGET_DIR="${SHADER_REFLECT_CARGO_TARGET_DIR}" \
             "${linker_args[@]}"
 
       - name: Reset ccache statistics
         run: ccache --zero-stats
 
-      # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.
+      # lathe-tests is EXCLUDE_FROM_ALL, so build it explicitly.
       - name: Build
         run: |
           set -euo pipefail
@@ -112,7 +112,7 @@ jobs:
           cmake \
             --build "build/${{ matrix.target }}-${build_type,,}" \
             --parallel \
-            --target all mingw-vulkan-tests
+            --target all lathe-tests
 
       - name: Test
         run: |
@@ -154,8 +154,8 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
       # Build caches that persist on the runner; see tools/ci_cache.sh. The cargo registry keeps the image's path.
       volumes:
-        - test-cross-compile-ci-cache:/ci-cache
-        - test-cross-compile-cargo-registry:/opt/cargo/registry
+        - lathe-ci-cache:/ci-cache
+        - lathe-cargo-registry:/opt/cargo/registry
 
     defaults:
       run:
@@ -193,18 +193,18 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DMINGW_VULKAN_SANITIZE=ON \
-            -DMINGW_VULKAN_WERROR=ON \
-            -DMINGW_VULKAN_CARGO_TARGET_DIR="${SHADER_REFLECT_CARGO_TARGET_DIR}" \
+            -DLATHE_SANITIZE=ON \
+            -DLATHE_WERROR=ON \
+            -DLATHE_CARGO_TARGET_DIR="${SHADER_REFLECT_CARGO_TARGET_DIR}" \
             -DCMAKE_LINKER_TYPE=MOLD
 
-      # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.
+      # lathe-tests is EXCLUDE_FROM_ALL, so build it explicitly.
       - name: Build
         run: |
           cmake \
             --build build/linux-native-debug \
             --parallel \
-            --target all mingw-vulkan-tests
+            --target all lathe-tests
 
       # Sanitizer errors abort with a nonzero exit, which ctest reports as a failure.
       - name: Test

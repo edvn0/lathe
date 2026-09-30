@@ -27,7 +27,7 @@ little about how passes compare on one.
   order.
 
 ```
-./mingw-vulkan --benchmark=perf/head.json [--benchmark-frames=600]
+./lathe --benchmark=perf/head.json [--benchmark-frames=600]
                [--benchmark-warmup=60] [--benchmark-max-warmup=1200]
                [--seed=1337] [--benchmark-screenshots]
 ```

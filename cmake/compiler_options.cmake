@@ -16,11 +16,11 @@ if(MSVC)
           /Zc:__cplusplus
   )
 
-  if(MINGW_VULKAN_WERROR)
+  if(LATHE_WERROR)
     target_compile_options(engine_options INTERFACE /WX)
   endif()
 
-  if(MINGW_VULKAN_ENABLE_EXCEPTIONS)
+  if(LATHE_ENABLE_EXCEPTIONS)
     target_compile_options(
         engine_options
         INTERFACE
@@ -62,11 +62,11 @@ elseif(
           -Wno-old-style-cast
   )
 
-  if(MINGW_VULKAN_WERROR)
+  if(LATHE_WERROR)
     target_compile_options(engine_options INTERFACE -Werror)
   endif()
 
-  if(MINGW_VULKAN_ENABLE_EXCEPTIONS)
+  if(LATHE_ENABLE_EXCEPTIONS)
     target_compile_options(
         engine_options
         INTERFACE
@@ -86,7 +86,7 @@ elseif(
   #
   # -fno-sanitize=alignment: stb_image_resize2 does deliberate misaligned
   # accesses.
-  if(MINGW_VULKAN_SANITIZE AND NOT MINGW)
+  if(LATHE_SANITIZE AND NOT MINGW)
     target_compile_options(
         engine_options
         INTERFACE
@@ -103,7 +103,7 @@ elseif(
   endif()
 endif()
 
-if(NOT MINGW_VULKAN_ENABLE_EXCEPTIONS)
+if(NOT LATHE_ENABLE_EXCEPTIONS)
   target_compile_definitions(
       engine_options
       INTERFACE

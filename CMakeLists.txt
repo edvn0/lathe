@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(
-    mingw-vulkan
+    lathe
     VERSION 0.1.0
     LANGUAGES C CXX
 )
@@ -72,32 +72,32 @@ endfunction()
 # ------------------------------------------------------------------------------
 
 option(
-    MINGW_VULKAN_ENABLE_VALIDATION
+    LATHE_ENABLE_VALIDATION
     "Enable Vulkan validation support"
     ON
 )
 
 option(
-    MINGW_VULKAN_ENABLE_EXCEPTIONS
+    LATHE_ENABLE_EXCEPTIONS
     "Enable C++ exceptions"
     OFF
 )
 
 option(
-    MINGW_VULKAN_ENABLE_TRACY
+    LATHE_ENABLE_TRACY
     "Enable Tracy profiler instrumentation"
     ON
 )
 
 option(
-    MINGW_VULKAN_SANITIZE
+    LATHE_SANITIZE
     "Build with AddressSanitizer + UndefinedBehaviorSanitizer (native builds only)"
     OFF
 )
 
 option(
-    MINGW_VULKAN_WERROR
-    "Treat warnings as errors on this project's own targets (mingw-vulkan-core/mingw-vulkan/mingw-vulkan-tests)"
+    LATHE_WERROR
+    "Treat warnings as errors on this project's own targets (lathe-core/lathe/lathe-tests)"
     OFF
 )
 
@@ -291,7 +291,7 @@ CPMAddPackage(
     GITHUB_REPOSITORY wolfpld/tracy
     GIT_TAG v0.14.1
     OPTIONS
-        "TRACY_ENABLE ${MINGW_VULKAN_ENABLE_TRACY}"
+        "TRACY_ENABLE ${LATHE_ENABLE_TRACY}"
         "TRACY_ON_DEMAND ON"
 )
 
@@ -696,32 +696,32 @@ include("${CMAKE_SOURCE_DIR}/cmake/shader_push_constant_reflection.cmake")
 #
 # It's an executable source because the linker may drop an unreferenced
 # override from a static archive.
-set(mingw_vulkan_track_memory ON)
+set(lathe_track_memory ON)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
-  set(mingw_vulkan_track_memory OFF)
+  set(lathe_track_memory OFF)
 endif()
 
 # Entry point and one-time Vulkan bring-up; nothing else links them.
 set(
-    mingw_vulkan_main_sources
+    lathe_main_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cxx"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan_bootstrap.cxx"
 )
 
-foreach(mingw_vulkan_main_source ${mingw_vulkan_main_sources})
-  if(NOT EXISTS "${mingw_vulkan_main_source}")
+foreach(lathe_main_source ${lathe_main_sources})
+  if(NOT EXISTS "${lathe_main_source}")
     message(
         FATAL_ERROR
         "Expected application entry point source at "
-        "${mingw_vulkan_main_source}"
+        "${lathe_main_source}"
     )
   endif()
 endforeach()
 
-if(mingw_vulkan_track_memory)
+if(lathe_track_memory)
   list(
-      APPEND mingw_vulkan_main_sources
+      APPEND lathe_main_sources
       "${CMAKE_CURRENT_SOURCE_DIR}/src/global_new_delete.cxx"
   )
 endif()
@@ -729,14 +729,14 @@ endif()
 # Game sources are linked only into the executable, keeping the engine
 # libraries game-agnostic.
 file(
-    GLOB_RECURSE mingw_vulkan_game_sources
+    GLOB_RECURSE lathe_game_sources
     CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/game/src/*.cxx"
 )
 
 list(
-    APPEND mingw_vulkan_main_sources
-    ${mingw_vulkan_game_sources}
+    APPEND lathe_main_sources
+    ${lathe_game_sources}
 )
 
 # Needs stb_SOURCE_DIR, bullet3_SOURCE_DIR, shader_reflect_generated_dir and
@@ -763,7 +763,7 @@ add_subdirectory(src/app)
 # ------------------------------------------------------------------------------
 # Core library
 #
-# mingw-vulkan-core is an INTERFACE umbrella over the module libraries so the
+# lathe-core is an INTERFACE umbrella over the module libraries so the
 # executable and tests don't need the module list.
 #
 # $<LINK_GROUP:RESCAN,...> acts like --start-group/--end-group: core's
@@ -772,20 +772,20 @@ add_subdirectory(src/app)
 # ------------------------------------------------------------------------------
 
 add_library(
-    mingw-vulkan-core
+    lathe-core
     INTERFACE
 )
 
 target_link_libraries(
-    mingw-vulkan-core
+    lathe-core
     INTERFACE
         "$<LINK_GROUP:RESCAN,engine_app,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_assets,engine_gpu,engine_core>"
 )
 
 add_library(
-    mingw-vulkan::core
+    lathe::core
     ALIAS
-    mingw-vulkan-core
+    lathe-core
 )
 
 # ------------------------------------------------------------------------------
@@ -793,25 +793,25 @@ add_library(
 # ------------------------------------------------------------------------------
 
 add_executable(
-    mingw-vulkan
-    ${mingw_vulkan_main_sources}
+    lathe
+    ${lathe_main_sources}
 )
 
 target_link_libraries(
-    mingw-vulkan
+    lathe
     PRIVATE
-        mingw-vulkan::core
+        lathe::core
         engine_options
 )
 
 target_include_directories(
-    mingw-vulkan
+    lathe
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/game/include"
 )
 
 target_precompile_headers(
-    mingw-vulkan
+    lathe
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/core/pch.hxx"
 )
@@ -826,7 +826,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   )
 
   configure_windows_target(
-      mingw-vulkan
+      lathe
       "${slang_bin_dir}"
   )
 
@@ -836,7 +836,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   )
 
   configure_linux_target(
-      mingw-vulkan
+      lathe
       "${slang_lib_dir}"
       "${slang_bin_dir}"
   )
@@ -859,13 +859,13 @@ endif()
 # ------------------------------------------------------------------------------
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "Release")
-  find_library(MINGW_VULKAN_JEMALLOC_LIBRARY jemalloc)
+  find_library(LATHE_JEMALLOC_LIBRARY jemalloc)
 
-  if(MINGW_VULKAN_JEMALLOC_LIBRARY)
+  if(LATHE_JEMALLOC_LIBRARY)
     target_link_libraries(
-        mingw-vulkan
+        lathe
         PRIVATE
-            "${MINGW_VULKAN_JEMALLOC_LIBRARY}"
+            "${LATHE_JEMALLOC_LIBRARY}"
     )
   else()
     message(
@@ -888,12 +888,12 @@ set(
 foreach(asset_directory IN LISTS project_asset_directories)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${asset_directory}")
     add_custom_command(
-        TARGET mingw-vulkan
+        TARGET lathe
         POST_BUILD
         COMMAND
             "${CMAKE_COMMAND}" -E copy_directory_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/${asset_directory}"
-            "$<TARGET_FILE_DIR:mingw-vulkan>/${asset_directory}"
+            "$<TARGET_FILE_DIR:lathe>/${asset_directory}"
         VERBATIM
     )
   endif()
@@ -939,7 +939,7 @@ message(
 
 message(
     STATUS
-    "C++ exceptions enabled: ${MINGW_VULKAN_ENABLE_EXCEPTIONS}"
+    "C++ exceptions enabled: ${LATHE_ENABLE_EXCEPTIONS}"
 )
 
 if(SLANG_ROOT)

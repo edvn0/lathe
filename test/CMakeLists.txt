@@ -5,33 +5,33 @@ file(
 )
 
 add_executable(
-    mingw-vulkan-tests
+    lathe-tests
     EXCLUDE_FROM_ALL
     ${test_sources}
 )
 
 target_include_directories(
-    mingw-vulkan-tests
+    lathe-tests
     PRIVATE
         "${PROJECT_SOURCE_DIR}/include"
 )
 
 target_compile_definitions(
-    mingw-vulkan-tests
+    lathe-tests
     PRIVATE
         DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}"
 )
 
 target_link_libraries(
-    mingw-vulkan-tests
+    lathe-tests
     PRIVATE
-        mingw-vulkan::core
+        lathe::core
         doctest::doctest_with_main
         engine_options
 )
 
 doctest_discover_tests(
-    mingw-vulkan-tests
+    lathe-tests
     ADD_LABELS 1
 )

@@ -38,16 +38,16 @@ target_precompile_headers(
 
 # Enables the in-app Memory panel; set together with the global new/delete
 # override so the panel always has data.
-if(mingw_vulkan_track_memory)
+if(lathe_track_memory)
   target_compile_definitions(
       engine_app
       PRIVATE
-          MINGW_VULKAN_TRACK_MEMORY=1
+          LATHE_TRACK_MEMORY=1
   )
 else()
   target_compile_definitions(
       engine_app
       PRIVATE
-          MINGW_VULKAN_TRACK_MEMORY=0
+          LATHE_TRACK_MEMORY=0
   )
 endif()

@@ -87,16 +87,16 @@ set(
 # CI points this at a directory that outlives the build tree, so the crates (SPIRV-Cross among them) aren't rebuilt
 # for every fresh build. Builds of differing tools/shader_reflect sources must not share one.
 set(
-    MINGW_VULKAN_CARGO_TARGET_DIR
+    LATHE_CARGO_TARGET_DIR
     ""
     CACHE PATH
     "Cargo target directory for tools/shader_reflect (empty: inside the build tree)"
 )
 
-if(MINGW_VULKAN_CARGO_TARGET_DIR)
+if(LATHE_CARGO_TARGET_DIR)
     set(
         shader_reflect_cargo_target_dir
-        "${MINGW_VULKAN_CARGO_TARGET_DIR}"
+        "${LATHE_CARGO_TARGET_DIR}"
     )
 else()
     set(

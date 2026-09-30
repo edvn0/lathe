@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs one --benchmark pass of a built mingw-vulkan (see
+# Runs one --benchmark pass of a built lathe (see
 # include/app/benchmark.hxx) and writes its JSON.
 #
 #   tools/perf/run_benchmark.sh <build_dir> <out.json> [extra app args...]
@@ -25,8 +25,8 @@ out_json=$(realpath -m "$2")
 shift 2
 
 bin_dir="${build_dir}/bin"
-if [[ ! -x "${bin_dir}/mingw-vulkan" ]]; then
-  echo "error: ${bin_dir}/mingw-vulkan not found -- build the mingw-vulkan target first" >&2
+if [[ ! -x "${bin_dir}/lathe" ]]; then
+  echo "error: ${bin_dir}/lathe not found -- build the lathe target first" >&2
   exit 2
 fi
 
@@ -37,7 +37,7 @@ if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
   screen_type=headless
 fi
 
-run=(timeout "${BENCHMARK_TIMEOUT:-3600}" ./mingw-vulkan "--screen-type=${screen_type}" "--benchmark=${out_json}" "$@")
+run=(timeout "${BENCHMARK_TIMEOUT:-3600}" ./lathe "--screen-type=${screen_type}" "--benchmark=${out_json}" "$@")
 
 cd "${bin_dir}"
 rm -rf screenshots

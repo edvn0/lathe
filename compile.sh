@@ -29,7 +29,7 @@ readonly linker="${LINKER:-default}"
 readonly profiler="${PROFILER:-perf}"
 
 # Binary name/path relative to ${build_dir}/bin.
-readonly executable_name="${EXECUTABLE_NAME:-mingw-vulkan}"
+readonly executable_name="${EXECUTABLE_NAME:-lathe}"
 
 toolchain_file=""
 build_dir=""
@@ -161,7 +161,7 @@ SANITIZE=1 configures a linux-native build with AddressSanitizer and
 UndefinedBehaviorSanitizer enabled.
 
 WERROR=1 treats warnings as errors on this project's own targets
-(mingw-vulkan-core, mingw-vulkan, mingw-vulkan-tests) -- not on vendored
+(lathe-core, lathe, lathe-tests) -- not on vendored
 dependencies.
 
 Examples:
@@ -334,13 +334,13 @@ configure() {
     fi
 
     cmake_args+=(
-      -DMINGW_VULKAN_SANITIZE=ON
+      -DLATHE_SANITIZE=ON
     )
   fi
 
   if [[ "${WERROR:-0}" == "1" ]]; then
     cmake_args+=(
-      -DMINGW_VULKAN_WERROR=ON
+      -DLATHE_WERROR=ON
     )
   fi
 
@@ -409,11 +409,11 @@ run_test() {
     exit 1
   fi
 
-  # mingw-vulkan-tests is EXCLUDE_FROM_ALL, so build it explicitly.
+  # lathe-tests is EXCLUDE_FROM_ALL, so build it explicitly.
   run_container \
     cmake \
     --build "${project_dir}/${build_dir}" \
-    --target mingw-vulkan-tests \
+    --target lathe-tests \
     -j20
 
   run_container \

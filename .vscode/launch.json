@@ -8,7 +8,7 @@
             "name": "Launch",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceRoot}/build/bin/mingw-vulkan",
+            "program": "${workspaceRoot}/build/bin/lathe",
             "args": [],
             "cwd": "${workspaceRoot}"
         }
