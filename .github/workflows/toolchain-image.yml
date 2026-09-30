@@ -1,8 +1,8 @@
 name: toolchain image
 
 # Publishes the build container (Dockerfile) to GitHub Container Registry, tagged with the Dockerfile's hash, and
-# returns its reference. ci and perf call this, then run their jobs inside the image (`container:`), so each job
-# pulls a finished image instead of re-exporting it from the build cache and loading it into the runner's Docker.
+# returns its reference. ci calls this, then runs its jobs inside the image (`container:`), so each job pulls a
+# finished image instead of re-exporting it from the build cache and loading it into the runner's Docker.
 #
 # The image is only built when its tag is missing: the first run after a Dockerfile change, including on the PR that
 # changes it. Fork PRs can't push (their GITHUB_TOKEN is read-only), so a fork PR that changes the Dockerfile fails
