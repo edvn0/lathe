@@ -53,6 +53,10 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
       options: ${{ vars.PERF_DOCKER_GPU_ARGS || '' }}
+      # Build caches that persist on the runner; see build.yml and tools/ci_cache.sh.
+      volumes:
+        - test-cross-compile-ci-cache:/ci-cache
+        - test-cross-compile-cargo-registry:/opt/cargo/registry
 
     defaults:
       run:
@@ -66,7 +70,7 @@ jobs:
       BENCHMARK_TIMEOUT: "2700"
       CCACHE_NOHASHDIR: "true"
       CCACHE_COMPILERCHECK: content
-      CCACHE_MAXSIZE: 500M
+      CCACHE_MAXSIZE: 5G
 
     steps:
       - name: Checkout
@@ -74,63 +78,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Caches live under $HOME, which is also where actions/cache resolves `~` inside the container.
       - name: Set up environment
         run: |
           set -euo pipefail
 
-          {
-            echo "CPM_SOURCE_CACHE=${HOME}/.cache/CPM"
-            echo "CCACHE_DIR=${HOME}/.cache/ccache"
-            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
-          } >> "${GITHUB_ENV}"
-
           # The workspace is owned by the runner's user, not the container's root, so git would refuse it.
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
-      # v2 in the cache keys: see the CPM cache step in build.yml.
-      - name: Restore CPM cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/CPM
-          key: >-
-            cpm-v2-${{
-              hashFiles('**/CMakeLists.txt', '**/*.cmake')
-            }}
-          restore-keys: |
-            cpm-v2-
-
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          # The run id makes every run save; see the ccache step in build.yml.
-          key: >-
-            ccache-v2-perf-${{
-              hashFiles(
-                'Dockerfile',
-                '**/CMakeLists.txt',
-                '**/*.cmake'
-              )
-            }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-v2-perf-${{ hashFiles('Dockerfile', '**/CMakeLists.txt', '**/*.cmake') }}-
-            ccache-v2-perf-
-            ccache-v2-linux-native-RelWithDebInfo-
-
-      # See the cargo step in build.yml. Covers both build/perf-head and build/perf-base.
-      - name: Restore cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            /opt/cargo/registry
-            build/*/generated/cargo
-          key: >-
-            cargo-v2-perf-${{
-              hashFiles('Dockerfile', 'tools/shader_reflect/**')
-            }}
-          restore-keys: |
-            cargo-v2-perf-
+          tools/ci_cache.sh env
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
 
       - name: Export base sources
         id: base
@@ -153,8 +109,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Base and head get the cargo target directory of their own tools/shader_reflect.
           build() {
-            local source_dir="$1" build_dir="$2"
+            local source_dir="$1" build_dir="$2" revision="$3"
+            local cargo_target_dir
+            cargo_target_dir="$(tools/ci_cache.sh cargo-target-dir "${revision}")"
 
             cmake \
               -S "${source_dir}" \
@@ -163,15 +122,16 @@ jobs:
               -DCMAKE_BUILD_TYPE=RelWithDebInfo \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DMINGW_VULKAN_CARGO_TARGET_DIR="${cargo_target_dir}" \
               -DCMAKE_LINKER_TYPE=MOLD
 
             cmake --build "${build_dir}" --parallel --target mingw-vulkan
           }
 
-          build . build/perf-head
+          build . build/perf-head HEAD
 
           if [[ "${{ steps.base.outputs.has_benchmark }}" == "true" ]]; then
-            build build/perf-base-src build/perf-base
+            build build/perf-base-src build/perf-base "${BASE_SHA}"
           fi
 
       # Base first, then head, back to back on the same runner. The base
