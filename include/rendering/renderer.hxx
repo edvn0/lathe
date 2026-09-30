@@ -292,13 +292,13 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto create_model(Model const &model) -> std::expected<ModelHandle, RendererError>;
 
-    // A valid material_override replaces every submesh material for this submission.
+    // A valid material_override replaces every submesh material for this submission. Slot overrides win over it.
     [[nodiscard]]
-    auto submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override = {})
-            -> std::expected<void, RendererError>;
+    auto submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override = {},
+                      std::span<MaterialSlotOverride const> slot_overrides = {}) -> std::expected<void, RendererError>;
     [[nodiscard]]
-    auto submit_model(ModelHandle model, glm::mat4 &&, MaterialHandle material_override = {})
-            -> std::expected<void, RendererError>;
+    auto submit_model(ModelHandle model, glm::mat4 &&, MaterialHandle material_override = {},
+                      std::span<MaterialSlotOverride const> slot_overrides = {}) -> std::expected<void, RendererError>;
 
     // Submits many instances of one model sharing a material_override, without an entity per instance. Batching is
     // the same as for individual submissions.
@@ -329,11 +329,23 @@ struct Renderer final : public IMeshSink, public IModelSink {
             -> std::expected<MaterialHandle, RendererError>;
 
     [[nodiscard]]
+    auto duplicate_material(MaterialHandle source, std::string debug_name = {})
+            -> std::expected<MaterialHandle, RendererError>;
+
+    [[nodiscard]]
     auto update_material(MaterialHandle handle, MaterialCreateInfo const &create_info)
             -> std::expected<void, RendererError>;
 
+    auto retain_material(MaterialHandle handle) -> void;
+
+    auto release_material(MaterialHandle handle) -> void;
+
+    // Unnames the material and drops its creator's reference; entities still using it keep it alive.
     [[nodiscard]]
     auto destroy_material(MaterialHandle handle) -> std::expected<void, RendererError>;
+
+    // The name holds its own reference, dropped by destroy_material().
+    auto register_material_name(MaterialHandle handle, std::string name) -> bool;
 
     [[nodiscard]]
     auto create_mesh(MeshCreateInfo const &create_info) -> std::expected<MeshHandle, RendererError> override;
@@ -689,6 +701,10 @@ private:
         ModelHandle model{};
         glm::mat4 transform{1.0F};
         MaterialHandle material_override{};
+
+        // A range of slot_override_submissions_.
+        std::uint32_t slot_override_first = 0;
+        std::uint32_t slot_override_count = 0;
     };
 
     struct BatchEntry {
@@ -949,6 +965,7 @@ private:
 
     std::vector<Submission> submissions_;
     std::vector<ModelSubmission> model_submissions_;
+    std::vector<MaterialSlotOverride> slot_override_submissions_;
 
     std::vector<RendererFrame> frames_;
 

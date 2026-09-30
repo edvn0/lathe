@@ -441,6 +441,78 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
+    // Returns whether anything changed.
+    auto const draw_material_fields = [&](MaterialCreateInfo &info) -> bool {
+        bool changed = false;
+
+        changed |= ImGui::ColorEdit4("Base colour", &info.base_colour_factor.x);
+        changed |= ImGui::ColorEdit3("Emissive", &info.emissive_factor.x);
+        changed |= ImGui::DragFloat("Emissive strength", &info.emissive_strength, 0.05F, 0.0F, 100.0F);
+        changed |= ImGui::SliderFloat("Metallic", &info.metallic_factor, 0.0F, 1.0F);
+        changed |= ImGui::SliderFloat("Roughness", &info.roughness_factor, 0.0F, 1.0F);
+        changed |= ImGui::DragFloat("Normal scale", &info.normal_scale, 0.01F, 0.0F, 4.0F);
+        changed |= ImGui::SliderFloat("Occlusion strength", &info.occlusion_strength, 0.0F, 1.0F);
+        changed |= ImGui::DragFloat("Wind strength", &info.wind_strength, 0.01F, 0.0F, 4.0F, "%.2f",
+                                    ImGuiSliderFlags_AlwaysClamp);
+
+        int alpha_mode_index = static_cast<int>(info.alpha_mode);
+        constexpr std::array<char const *, 3> alpha_mode_names{"Opaque", "Mask", "Blend"};
+        if (ImGui::Combo("Alpha mode", &alpha_mode_index, alpha_mode_names.data(),
+                         static_cast<int>(alpha_mode_names.size()))) {
+            info.alpha_mode = static_cast<AlphaMode>(alpha_mode_index);
+            changed = true;
+        }
+        if (info.alpha_mode == AlphaMode::mask) {
+            changed |= ImGui::SliderFloat("Alpha cutoff", &info.alpha_cutoff, 0.0F, 1.0F);
+        }
+
+        bool casts_shadows = info.max_shadow_cascade != GpuMaterial::no_shadow_cascade;
+        if (ImGui::Checkbox("Casts shadows", &casts_shadows)) {
+            info.max_shadow_cascade = casts_shadows ? shadow_cascade_count - 1 : GpuMaterial::no_shadow_cascade;
+            changed = true;
+        }
+
+        changed |= ImGui::Checkbox("Debug meshlet colours", &info.debug_meshlet_colours);
+
+        // "(default)" means the slot's engine fallback image.
+        auto const texture_picker = [&](char const *label, ImageHandle &slot, ImageHandle default_handle) {
+            auto const &textures = renderer->assets().textures();
+            bool const is_default = slot == default_handle;
+            auto const current_name = textures.name_of(slot);
+            std::string const preview =
+                    is_default ? "(default)" : (current_name.empty() ? "(unnamed)" : std::string(current_name));
+
+            if (!ImGui::BeginCombo(label, preview.c_str())) {
+                return;
+            }
+
+            if (ImGui::Selectable("(default)", is_default)) {
+                slot = default_handle;
+                changed = true;
+            }
+            for (auto const &entry: textures.entries()) {
+                bool const is_selected = entry.handle == slot;
+                if (ImGui::Selectable(entry.name.c_str(), is_selected)) {
+                    slot = entry.handle;
+                    changed = true;
+                }
+                if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        };
+
+        auto &images = renderer->image_storage();
+        texture_picker("Base colour tex", info.base_colour_texture, images.white());
+        texture_picker("Normal tex", info.normal_texture, images.flat_normal());
+        texture_picker("Metallic/roughness tex", info.metallic_roughness_texture, images.metallic_roughness());
+        texture_picker("Occlusion tex", info.occlusion_texture, images.occlusion());
+        texture_picker("Emissive tex", info.emissive_texture, images.emissive());
+
+        return changed;
+    };
+
     widget("Assets", [&] {
         auto &assets = renderer->assets();
 
@@ -552,77 +624,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
         };
 
-        // Shared by the "New Material" popup and each material's inline editor. Returns whether anything changed.
-        auto const draw_material_fields = [&](MaterialCreateInfo &info) -> bool {
-            bool changed = false;
-
-            changed |= ImGui::ColorEdit4("Base colour", &info.base_colour_factor.x);
-            changed |= ImGui::ColorEdit3("Emissive", &info.emissive_factor.x);
-            changed |= ImGui::DragFloat("Emissive strength", &info.emissive_strength, 0.05F, 0.0F, 100.0F);
-            changed |= ImGui::SliderFloat("Metallic", &info.metallic_factor, 0.0F, 1.0F);
-            changed |= ImGui::SliderFloat("Roughness", &info.roughness_factor, 0.0F, 1.0F);
-            changed |= ImGui::DragFloat("Normal scale", &info.normal_scale, 0.01F, 0.0F, 4.0F);
-            changed |= ImGui::SliderFloat("Occlusion strength", &info.occlusion_strength, 0.0F, 1.0F);
-            changed |= ImGui::DragFloat("Wind strength", &info.wind_strength, 0.01F, 0.0F, 4.0F, "%.2f",
-                                        ImGuiSliderFlags_AlwaysClamp);
-
-            int alpha_mode_index = static_cast<int>(info.alpha_mode);
-            constexpr std::array<char const *, 3> alpha_mode_names{"Opaque", "Mask", "Blend"};
-            if (ImGui::Combo("Alpha mode", &alpha_mode_index, alpha_mode_names.data(),
-                             static_cast<int>(alpha_mode_names.size()))) {
-                info.alpha_mode = static_cast<AlphaMode>(alpha_mode_index);
-                changed = true;
-            }
-            if (info.alpha_mode == AlphaMode::mask) {
-                changed |= ImGui::SliderFloat("Alpha cutoff", &info.alpha_cutoff, 0.0F, 1.0F);
-            }
-
-            bool casts_shadows = info.max_shadow_cascade != GpuMaterial::no_shadow_cascade;
-            if (ImGui::Checkbox("Casts shadows", &casts_shadows)) {
-                info.max_shadow_cascade = casts_shadows ? shadow_cascade_count - 1 : GpuMaterial::no_shadow_cascade;
-                changed = true;
-            }
-
-            changed |= ImGui::Checkbox("Debug meshlet colours", &info.debug_meshlet_colours);
-
-            // "(default)" means the slot's engine fallback image.
-            auto const texture_picker = [&](char const *label, ImageHandle &slot, ImageHandle default_handle) {
-                auto const &textures = assets.textures();
-                bool const is_default = slot == default_handle;
-                auto const current_name = textures.name_of(slot);
-                std::string const preview =
-                        is_default ? "(default)" : (current_name.empty() ? "(unnamed)" : std::string(current_name));
-
-                if (!ImGui::BeginCombo(label, preview.c_str())) {
-                    return;
-                }
-
-                if (ImGui::Selectable("(default)", is_default)) {
-                    slot = default_handle;
-                    changed = true;
-                }
-                for (auto const &entry: textures.entries()) {
-                    bool const is_selected = entry.handle == slot;
-                    if (ImGui::Selectable(entry.name.c_str(), is_selected)) {
-                        slot = entry.handle;
-                        changed = true;
-                    }
-                    if (is_selected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            };
-
-            auto &images = renderer->image_storage();
-            texture_picker("Base colour tex", info.base_colour_texture, images.white());
-            texture_picker("Normal tex", info.normal_texture, images.flat_normal());
-            texture_picker("Metallic/roughness tex", info.metallic_roughness_texture, images.metallic_roughness());
-            texture_picker("Occlusion tex", info.occlusion_texture, images.occlusion());
-            texture_picker("Emissive tex", info.emissive_texture, images.emissive());
-
-            return changed;
-        };
 
         if (ImGui::CollapsingHeader("Materials", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (ImGui::Button("New Material")) {
@@ -705,7 +706,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     if (is_default) {
                         ImGui::TextDisabled("The default material can't be deleted.");
                     } else if (ImGui::Button("Delete")) {
-                        // Destroyed only once the grace period elapses; until then the material stays fully usable.
+                        // Committed once the grace period elapses; entities still using it keep it alive.
                         pending_deletions.push_back(PendingDeletion{
                                 .label = material_deletion_label(entry.name),
                                 .delete_at = elapsed_time + deletion_grace_seconds,
@@ -1464,6 +1465,235 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
         };
 
+        std::vector<MaterialHandle> created_materials;
+
+        auto const make_material_copy = [&](MaterialHandle source) -> std::optional<MaterialHandle> {
+            auto copy = renderer->duplicate_material(source.valid() ? source : renderer->default_material());
+            if (!copy) {
+                warn("Inspector: failed to create a material: {}", describe(copy.error()));
+                return std::nullopt;
+            }
+            created_materials.push_back(*copy);
+            return *copy;
+        };
+
+        auto const material_picker = [&](char const *label, MaterialHandle current, char const *none_label,
+                                         MaterialHandle copy_source) -> std::optional<MaterialHandle> {
+            auto const &materials = renderer->assets().materials();
+            auto const current_name = materials.name_of(current);
+            std::string const preview = !current.valid()         ? none_label
+                                        : current_name.empty() ? "(own material)"
+                                                               : std::string(current_name);
+
+            std::optional<MaterialHandle> picked;
+            if (!ImGui::BeginCombo(label, preview.c_str())) {
+                return picked;
+            }
+
+            if (ImGui::Selectable(none_label, !current.valid()) && current.valid()) {
+                picked = MaterialHandle{};
+            }
+            if (ImGui::Selectable("New material (copy)")) {
+                picked = make_material_copy(current.valid() ? current : copy_source);
+            }
+            ImGui::Separator();
+
+            for (auto const &entry: materials.entries()) {
+                bool const is_selected = entry.handle == current;
+                // The default material's handle reads as invalid, i.e. as "none".
+                if (!entry.handle.valid() ||
+                    (!is_selected && is_material_pending_deletion(pending_deletions, entry.name))) {
+                    continue;
+                }
+                if (ImGui::Selectable(entry.name.c_str(), is_selected) && !is_selected) {
+                    picked = entry.handle;
+                }
+                if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+            return picked;
+        };
+
+        auto const draw_material_editor = [&](MaterialHandle handle) -> std::optional<MaterialHandle> {
+            auto const *info = renderer->material_storage().create_info(handle);
+            if (info == nullptr) {
+                ImGui::TextDisabled("(material data unavailable)");
+                return std::nullopt;
+            }
+
+            auto &materials = renderer->assets().materials();
+            auto const name = materials.name_of(handle);
+            bool const shared = !name.empty() || renderer->material_storage().ref_count(handle) > 1;
+
+            if (!name.empty()) {
+                ImGui::TextDisabled("Asset \"%.*s\" -- edits show everywhere it's used.", static_cast<int>(name.size()),
+                                    name.data());
+            } else if (shared) {
+                ImGui::TextDisabled("Unnamed, also used elsewhere.");
+            } else {
+                ImGui::TextDisabled("Unnamed, owned by this entity.");
+            }
+
+            std::optional<MaterialHandle> replacement;
+            if (shared) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Make unique")) {
+                    replacement = make_material_copy(handle);
+                }
+            }
+            if (name.empty()) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Save as asset...")) {
+                    save_material_name.clear();
+                    ImGui::OpenPopup("save_material_asset");
+                }
+            }
+
+            if (ImGui::BeginPopup("save_material_asset")) {
+                std::array<char, 64> name_buffer{};
+                copy_to_buffer(name_buffer, save_material_name);
+                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0F);
+                if (ImGui::InputTextWithHint("Name", "material name", name_buffer.data(), name_buffer.size())) {
+                    save_material_name.assign(name_buffer.data());
+                }
+
+                bool const name_taken = !save_material_name.empty() && materials.find(save_material_name).valid();
+                if (name_taken) {
+                    ImGui::TextColored(ImVec4(0.95F, 0.45F, 0.35F, 1.0F), "That name is already registered.");
+                }
+
+                ImGui::BeginDisabled(save_material_name.empty() || name_taken);
+                if (ImGui::Button("Save")) {
+                    static_cast<void>(renderer->register_material_name(handle, save_material_name));
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel")) {
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+
+            auto edited = *info;
+            if (draw_material_fields(edited)) {
+                static_cast<void>(renderer->update_material(handle, edited));
+            }
+
+            return replacement;
+        };
+
+        auto const draw_material_overrides = [&](entt::entity entity, ModelHandle model) {
+            auto const *existing = registry.try_get<Components::MaterialOverride>(entity);
+            auto edited = existing != nullptr ? *existing : Components::MaterialOverride{};
+            bool changed = false;
+
+            auto const set_slot = [&](MaterialHandle source, MaterialHandle material) {
+                std::erase_if(edited.slots,
+                              [&](MaterialSlotOverride const &slot) { return slot.source == source; });
+                if (material.valid()) {
+                    edited.slots.push_back(MaterialSlotOverride{.source = source, .material = material});
+                }
+                changed = true;
+            };
+
+            // A loading model's materials are its placeholder's.
+            bool const loading = renderer->model_streamer().state(model) == ModelRequestState::loading;
+            auto const sources = loading ? std::vector<MaterialHandle>{} : renderer->model_materials(model);
+            if (loading) {
+                ImGui::TextDisabled("Per-slot materials appear once the model has loaded.");
+            }
+
+            ImGui::PushID("all_submeshes");
+            if (auto const picked = material_picker("All submeshes", edited.material, "(none)",
+                                                    sources.empty() ? MaterialHandle{} : sources.front())) {
+                edited.material = *picked;
+                changed = true;
+            }
+            if (edited.material.valid() && ImGui::TreeNode("Edit")) {
+                if (auto const replacement = draw_material_editor(edited.material)) {
+                    edited.material = *replacement;
+                    changed = true;
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+
+            auto const slot_material = [&](MaterialHandle source) {
+                auto const it = std::ranges::find(edited.slots, source, &MaterialSlotOverride::source);
+                return it != edited.slots.end() ? it->material : MaterialHandle{};
+            };
+
+            for (std::size_t index = 0; index < sources.size(); ++index) {
+                auto const source = sources[index];
+
+                ImGui::PushID(static_cast<int>(index));
+
+                auto const replacement = edited.replacement_for(source);
+                if (auto const *shown =
+                            renderer->material_storage().create_info(replacement.valid() ? replacement : source)) {
+                    auto const &colour = shown->base_colour_factor;
+                    ImGui::ColorButton("##swatch", ImVec4(colour.r, colour.g, colour.b, colour.a),
+                                       ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_AlphaPreview);
+                    ImGui::SameLine();
+                }
+
+                auto const label = std::format("Slot {}", index);
+                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0F);
+                if (auto const picked = material_picker(label.c_str(), slot_material(source), "(model material)",
+                                                        source)) {
+                    set_slot(source, *picked);
+                }
+
+                ImGui::SameLine();
+                if (slot_material(source).valid()) {
+                    if (ImGui::SmallButton("Revert")) {
+                        set_slot(source, MaterialHandle{});
+                    }
+                } else if (ImGui::SmallButton("Override")) {
+                    if (auto const copy = make_material_copy(source)) {
+                        set_slot(source, *copy);
+                        ImGui::SetNextItemOpen(true);
+                    }
+                }
+
+                if (auto const current = slot_material(source); current.valid() && ImGui::TreeNode("Edit")) {
+                    if (auto const copy = draw_material_editor(current)) {
+                        set_slot(source, *copy);
+                    }
+                    ImGui::TreePop();
+                }
+
+                ImGui::PopID();
+            }
+
+            auto const stale = std::ranges::count_if(edited.slots, [&](MaterialSlotOverride const &slot) {
+                return std::ranges::find(sources, slot.source) == sources.end();
+            });
+            if (model.valid() && !loading && stale > 0) {
+                ImGui::TextDisabled("%d override(s) for materials this model doesn't have.", static_cast<int>(stale));
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove")) {
+                    std::erase_if(edited.slots, [&](MaterialSlotOverride const &slot) {
+                        return std::ranges::find(sources, slot.source) == sources.end();
+                    });
+                    changed = true;
+                }
+            }
+
+            if (changed) {
+                active_scene()->set_material_override(entity, std::move(edited));
+            }
+
+            // The override holds its own references now.
+            for (auto const handle: created_materials) {
+                renderer->release_material(handle);
+            }
+            created_materials.clear();
+        };
+
         section.operator()<Components::Transform>("Transform", draw_transform);
         section.operator()<Components::PointLight>("Point Light", draw_point_light);
         section.operator()<Components::SpotLight>("Spot Light", draw_spot_light);
@@ -1527,38 +1757,19 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
             ImGui::EndDisabled();
 
+            ImGui::SeparatorText("Materials");
+            draw_material_overrides(selected_entity, model.model);
+
             return false;
         });
         section.operator()<Components::MaterialOverride>("Material Override", [&](Components::MaterialOverride &mat) {
-            ImGui::Text("Handle: index %u, generation %u (%s)", mat.material.index, mat.material.generation,
-                        mat.material.valid() ? "valid" : "invalid");
-
-            auto &materials = renderer->assets().materials();
-            if (materials.entries().empty()) {
-                ImGui::TextDisabled("No named materials registered yet.");
-                return false;
+            if (registry.all_of<Components::Model>(selected_entity)) {
+                ImGui::TextDisabled("%zu slot override(s)%s -- edit them under Model > Materials.", mat.slots.size(),
+                                    mat.material.valid() ? ", all submeshes overridden" : "");
+            } else {
+                draw_material_overrides(selected_entity, ModelHandle{});
             }
-
-            bool changed = false;
-            auto const current_name = materials.name_of(mat.material);
-            if (ImGui::BeginCombo("Asset", current_name.empty() ? "(unnamed)" : std::string(current_name).c_str())) {
-                for (auto const &entry: materials.entries()) {
-                    bool const is_selected = entry.handle == mat.material;
-                    // Materials queued for deletion aren't offered as new picks.
-                    if (!is_selected && is_material_pending_deletion(pending_deletions, entry.name)) {
-                        continue;
-                    }
-                    if (ImGui::Selectable(entry.name.c_str(), is_selected) && entry.handle != mat.material) {
-                        mat.material = entry.handle;
-                        changed = true;
-                    }
-                    if (is_selected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-            return changed;
+            return false;
         });
         section.operator()<Components::Script>("Script", [&](Components::Script &script) {
             ImGui::Text("Handle: index %u, generation %u (%s)", script.script.index, script.script.generation,
@@ -1654,17 +1865,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
 
             if (!registry.all_of<Components::MaterialOverride>(selected_entity) &&
-                !renderer->assets().materials().entries().empty() && ImGui::BeginMenu("Material Override")) {
-                for (auto const &entry: renderer->assets().materials().entries()) {
-                    if (is_material_pending_deletion(pending_deletions, entry.name)) {
-                        continue;
-                    }
-                    if (ImGui::MenuItem(entry.name.c_str())) {
-                        registry.emplace<Components::MaterialOverride>(
-                                selected_entity, Components::MaterialOverride{.material = entry.handle});
-                    }
-                }
-                ImGui::EndMenu();
+                ImGui::MenuItem("Material Override")) {
+                registry.emplace<Components::MaterialOverride>(selected_entity);
             }
 
             if (!registry.all_of<Components::Script>(selected_entity) &&

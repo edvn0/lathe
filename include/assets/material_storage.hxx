@@ -105,6 +105,8 @@ struct MaterialSlotData {
     // The create info the material was last built from, so the editor can read back its handles.
     MaterialCreateInfo source{};
 
+    std::uint32_t ref_count = 0;
+
     bool dirty = false;
 };
 
@@ -129,7 +131,14 @@ struct MaterialStorage {
             -> std::expected<void, MaterialStorageError>;
 
     [[nodiscard]]
+    auto retain_material(MaterialHandle handle) -> std::expected<void, MaterialStorageError>;
+
+    // Drops a reference; the last one frees the slot.
+    [[nodiscard]]
     auto destroy_material(MaterialHandle handle) -> std::expected<void, MaterialStorageError>;
+
+    [[nodiscard]]
+    auto ref_count(MaterialHandle handle) const noexcept -> std::uint32_t;
 
     [[nodiscard]]
     auto get(MaterialHandle handle) const noexcept -> GpuMaterial const *;

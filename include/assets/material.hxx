@@ -55,3 +55,8 @@ static_assert(alignof(GpuMaterial) == 16);
 struct MaterialSlotData;
 
 using MaterialHandle = Handle<MaterialSlotData, 0>;
+
+struct MaterialSlotOverride {
+    MaterialHandle source{};
+    MaterialHandle material{};
+};

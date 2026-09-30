@@ -26,8 +26,26 @@ namespace Components {
         float outer_cone_degrees = 30.0F;
     };
 
+    // The Scene holds a reference to every material here. Change an existing override through
+    // Scene::set_material_override() so those references stay balanced.
     struct MaterialOverride {
         MaterialHandle material{};
+        std::vector<MaterialSlotOverride> slots;
+
+        [[nodiscard]]
+        auto replacement_for(MaterialHandle source) const noexcept -> MaterialHandle {
+            for (auto const &slot: slots) {
+                if (slot.source == source) {
+                    return slot.material;
+                }
+            }
+            return material;
+        }
+
+        [[nodiscard]]
+        auto empty() const noexcept -> bool {
+            return !material.valid() && slots.empty();
+        }
     };
 
     struct Model {

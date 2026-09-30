@@ -10,6 +10,7 @@
 
 #include <future>
 #include <unordered_map>
+#include <utility>
 
 namespace {
     // ScriptHandle has no std::hash, so group by index; get() revalidates the full handle.
@@ -31,6 +32,14 @@ namespace {
 
         return groups;
     }
+
+    template<typename F>
+    auto for_each_material(Components::MaterialOverride const &material_override, F &&visit) -> void {
+        visit(material_override.material);
+        for (auto const &slot: material_override.slots) {
+            visit(slot.material);
+        }
+    }
 } // namespace
 
 Scene::Scene(Renderer &renderer) : renderer_(renderer) {
@@ -38,7 +47,8 @@ Scene::Scene(Renderer &renderer) : renderer_(renderer) {
     entt::sink{lights_changed_signal_}.connect<&Renderer::mark_lights_dirty>(renderer);
 }
 
-Scene::~Scene() = default;
+// entt doesn't signal on_destroy when the registry is destroyed.
+Scene::~Scene() { registry.clear<Components::MaterialOverride>(); }
 
 auto Scene::on_scene_start() -> void {
     physics_world = std::make_unique<PhysicsWorld>(physics_settings, thread_pool(), registry);
@@ -87,6 +97,33 @@ auto Scene::on_script_detached(entt::registry &reg, entt::entity entity) -> void
     }
 }
 
+auto Scene::on_material_override_attached(entt::registry &reg, entt::entity entity) -> void {
+    for_each_material(reg.get<Components::MaterialOverride>(entity),
+                      [this](MaterialHandle handle) { renderer_.retain_material(handle); });
+}
+
+auto Scene::on_material_override_detached(entt::registry &reg, entt::entity entity) -> void {
+    for_each_material(reg.get<Components::MaterialOverride>(entity),
+                      [this](MaterialHandle handle) { renderer_.release_material(handle); });
+}
+
+auto Scene::set_material_override(entt::entity entity, Components::MaterialOverride material_override) -> void {
+    if (!registry.valid(entity)) {
+        return;
+    }
+
+    // Held across the swap so a material in both overrides isn't freed by the removal.
+    for_each_material(material_override, [this](MaterialHandle handle) { renderer_.retain_material(handle); });
+
+    registry.remove<Components::MaterialOverride>(entity);
+    if (material_override.empty()) {
+        return;
+    }
+
+    auto const &stored = registry.emplace<Components::MaterialOverride>(entity, std::move(material_override));
+    for_each_material(stored, [this](MaterialHandle handle) { renderer_.release_material(handle); });
+}
+
 auto Scene::attach_debug_renderer(debug_draw::DebugRenderer &renderer) -> void {
     if (physics_world) {
         physics_world->attach_debug_drawer(renderer);
@@ -114,6 +151,9 @@ auto Scene::connect_light_signals() -> void {
 
     registry.on_construct<Components::Script>().connect<&Scene::on_script_attached>(*this);
     registry.on_destroy<Components::Script>().connect<&Scene::on_script_detached>(*this);
+
+    registry.on_construct<Components::MaterialOverride>().connect<&Scene::on_material_override_attached>(*this);
+    registry.on_destroy<Components::MaterialOverride>().connect<&Scene::on_material_override_detached>(*this);
 }
 
 void systems::lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) {

@@ -301,7 +301,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         entity.emplace<Components::Model>(Components::Model{.model = cube_model_});
         entity.emplace<Components::RigidBody>(Components::RigidBody{.half_extents = half_extents, .is_static = true});
         if (material.valid()) {
-            entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{material});
+            entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{.material = material});
         }
         if (parent != entt::null) {
             entity.emplace<Components::Parent>(Components::Parent{.entity = parent});
@@ -439,7 +439,8 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             });
             canopy_entity.emplace<Components::Model>(Components::Model{.model = engine_models.sphere});
             if (canopy_material.valid()) {
-                canopy_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{canopy_material});
+                canopy_entity.emplace<Components::MaterialOverride>(
+                        Components::MaterialOverride{.material = canopy_material});
             }
             canopy_entity.emplace<Components::Parent>(Components::Parent{.entity = tree_entity});
         }

@@ -16,6 +16,7 @@ struct Renderer;
 
 namespace Components {
     struct Transform;
+    struct MaterialOverride;
 }
 
 class ScreenshotCapture;
