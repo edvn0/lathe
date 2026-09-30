@@ -1919,10 +1919,10 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         };
 
         if (pipeline_stats.valid) {
-            ImGui::Text("Triangles rendered (post-clip): %s (%llu)", fmt(pipeline_stats.clipped_primitive_count),
-                        static_cast<unsigned long long>(pipeline_stats.clipped_primitive_count));
-
-            if (pipeline_stats.mesh_stats_valid) {
+            if (!pipeline_stats.mesh_stats_valid) {
+                ImGui::Text("Triangles rendered (post-clip): %s (%llu)", fmt(pipeline_stats.clipped_primitive_count),
+                            static_cast<unsigned long long>(pipeline_stats.clipped_primitive_count));
+            } else {
                 ImGui::Text("Task shader invocations: %s (%llu)", fmt(pipeline_stats.task_shader_invocation_count),
                             static_cast<unsigned long long>(pipeline_stats.task_shader_invocation_count));
                 ImGui::Text("Mesh shader invocations: %s (%llu)", fmt(pipeline_stats.mesh_shader_invocation_count),

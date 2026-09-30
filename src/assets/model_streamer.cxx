@@ -4,6 +4,7 @@
 #include <chrono>
 #include <format>
 
+#include "core/error_describe.hxx"
 #include "core/logger.hxx"
 
 auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback,
@@ -68,7 +69,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                 auto cpu_data = request.future.get();
 
                 if (!cpu_data) {
-                    fail(sink, request, std::format("{} while loading", cpu_data.error().type));
+                    fail(sink, request, std::format("{} while loading", describe(cpu_data.error())));
                     return true;
                 }
 
@@ -79,7 +80,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                 auto finalized = step_primitive_finalization(*request.finalization);
 
                 if (!finalized) {
-                    fail(sink, request, std::format("{} while finalizing", finalized.error().type));
+                    fail(sink, request, std::format("{} while finalizing", describe(finalized.error())));
                     return true;
                 }
 
@@ -96,7 +97,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                                                  gpu_upload_items_per_frame);
 
             if (!stepped) {
-                fail(sink, request, std::format("{} while uploading", stepped.error().type));
+                fail(sink, request, std::format("{} while uploading", describe(stepped.error())));
                 return true;
             }
 
@@ -107,7 +108,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             auto installed = sink.install_model(request.handle, **stepped);
 
             if (!installed) {
-                fail(sink, request, std::format("{} while installing", installed.error().type));
+                fail(sink, request, std::format("{} while installing", describe(installed.error())));
                 return true;
             }
 

@@ -1235,13 +1235,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .flags = 0,
             .queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS,
             .queryCount = 1,
-            // Results come back in bit order: clipping primitives, fragment, then task and mesh invocations if enabled.
-            .pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
-                                  VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT |
+            // Results come back in bit order. Clipping primitives is incompatible with mesh draws
+            // (VUID-vkCmdDrawMeshTasksIndirectEXT-pipelineStatistics-07076), so it is only used without mesh support.
+            .pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT |
                                   (context_.mesh_shader_queries_supported
                                            ? VK_QUERY_PIPELINE_STATISTIC_TASK_SHADER_INVOCATIONS_BIT_EXT |
                                                      VK_QUERY_PIPELINE_STATISTIC_MESH_SHADER_INVOCATIONS_BIT_EXT
-                                           : 0U),
+                                           : static_cast<VkQueryPipelineStatisticFlags>(
+                                                     VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT)),
     };
 
     for (std::uint32_t frame_index = 0; frame_index < frames_in_flight; ++frame_index) {
@@ -2995,7 +2996,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         last_frame_pipeline_stats_.valid = false;
         std::array<std::uint64_t, pipeline_stat_count> results{};
 
-        auto const result_count = context_.mesh_shader_queries_supported ? pipeline_stat_count : 2U;
+        auto const mesh_queries = context_.mesh_shader_queries_supported;
+        auto const result_count = mesh_queries ? 3U : 2U;
         auto const result_size = static_cast<std::size_t>(result_count) * sizeof(std::uint64_t);
 
         auto const query_result =
@@ -3003,11 +3005,16 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                       results.data(), result_size, VK_QUERY_RESULT_64_BIT);
 
         if (query_result == VK_SUCCESS) {
-            last_frame_pipeline_stats_.clipped_primitive_count = results[0];
-            last_frame_pipeline_stats_.fragment_shader_invocation_count = results[1];
-            last_frame_pipeline_stats_.task_shader_invocation_count = results[2];
-            last_frame_pipeline_stats_.mesh_shader_invocation_count = results[3];
-            last_frame_pipeline_stats_.mesh_stats_valid = context_.mesh_shader_queries_supported;
+            last_frame_pipeline_stats_ = PipelineStats{};
+            if (mesh_queries) {
+                last_frame_pipeline_stats_.fragment_shader_invocation_count = results[0];
+                last_frame_pipeline_stats_.task_shader_invocation_count = results[1];
+                last_frame_pipeline_stats_.mesh_shader_invocation_count = results[2];
+            } else {
+                last_frame_pipeline_stats_.clipped_primitive_count = results[0];
+                last_frame_pipeline_stats_.fragment_shader_invocation_count = results[1];
+            }
+            last_frame_pipeline_stats_.mesh_stats_valid = mesh_queries;
             last_frame_pipeline_stats_.valid = true;
         }
 

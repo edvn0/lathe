@@ -1,7 +1,9 @@
 #include "assets/geometry_arena.hxx"
 
+#include "core/logger.hxx"
 #include "gpu/context.hxx"
 
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <utility>
@@ -40,6 +42,13 @@ auto GeometryArenaT<Allocator>::destroy(VulkanContext &) -> void {
     upload_buffer.destroy();
     buffer.destroy();
 
+    for (auto &retired: retired_buffers_) {
+        retired.device.destroy();
+        retired.upload.destroy();
+    }
+
+    retired_buffers_.clear();
+
     allocator_.reset(0);
     retiring_.clear();
 }
@@ -59,7 +68,8 @@ auto GeometryArenaT<Allocator>::create(VulkanContext &ctx, GeometryArenaCreateIn
             ctx, BufferCreateInfo{
                          .size = create_info.capacity,
                          .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                          .memory = BufferMemory::device,
                          .debug_name = create_info.debug_name,
                  });
@@ -82,6 +92,8 @@ auto GeometryArenaT<Allocator>::create(VulkanContext &ctx, GeometryArenaCreateIn
     }
 
     GeometryArenaT<Allocator> result{};
+    result.context_ = &ctx;
+    result.debug_name_ = std::string{create_info.debug_name};
     result.buffer = std::move(*buffer);
     result.upload_buffer = std::move(*upload_buffer);
     result.allocator_.reset(create_info.capacity);
@@ -182,7 +194,7 @@ auto GeometryArenaT<Allocator>::allocate_vertices(VkCommandBuffer command_buffer
 
     auto const checkpoint = allocator_.checkpoint();
 
-    auto allocation = allocator_.allocate(static_cast<VkDeviceSize>(data.size_bytes()), alignment);
+    auto allocation = allocate_bytes(command_buffer, static_cast<VkDeviceSize>(data.size_bytes()), alignment);
 
     if (!allocation) {
         return std::unexpected(allocation.error());
@@ -232,7 +244,7 @@ auto GeometryArenaT<Allocator>::allocate_indices(VkCommandBuffer command_buffer,
 
     auto const checkpoint = allocator_.checkpoint();
 
-    auto allocation = allocator_.allocate(static_cast<VkDeviceSize>(data.size_bytes()), element_size);
+    auto allocation = allocate_bytes(command_buffer, static_cast<VkDeviceSize>(data.size_bytes()), element_size);
 
     if (!allocation) {
         return std::unexpected(allocation.error());
@@ -254,6 +266,160 @@ auto GeometryArenaT<Allocator>::allocate_indices(VkCommandBuffer command_buffer,
 }
 
 template<GeometryAllocatorPolicy Allocator>
+auto GeometryArenaT<Allocator>::allocate_bytes(VkCommandBuffer command_buffer, VkDeviceSize size,
+                                               VkDeviceSize alignment)
+        -> std::expected<GeometrySlice, GeometryArenaError> {
+
+    auto allocation = allocator_.allocate(size, alignment);
+
+    if (allocation || allocation.error().type != GeometryArenaErrorType::out_of_memory) {
+        return allocation;
+    }
+
+    // Room for the allocation plus worst-case alignment padding.
+    if (auto grown = grow(command_buffer, size + std::max(alignment, VkDeviceSize{4})); !grown) {
+        return std::unexpected(grown.error());
+    }
+
+    return allocator_.allocate(size, alignment);
+}
+
+template<GeometryAllocatorPolicy Allocator>
+auto GeometryArenaT<Allocator>::grow(VkCommandBuffer command_buffer, VkDeviceSize required_free)
+        -> std::expected<void, GeometryArenaError> {
+
+    if (context_ == nullptr || command_buffer == VK_NULL_HANDLE) {
+        return std::unexpected{GeometryArenaError{
+                .type = GeometryArenaErrorType::invalid_argument,
+                .cause = std::nullopt,
+        }};
+    }
+
+    auto const old_capacity = allocator_.capacity();
+    auto const new_capacity = std::max(old_capacity * 2, old_capacity + required_free);
+
+    auto new_buffer = Buffer::create(
+            *context_, BufferCreateInfo{
+                               .size = new_capacity,
+                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                               .memory = BufferMemory::device,
+                               .debug_name = debug_name_,
+                       });
+
+    if (!new_buffer) {
+        return std::unexpected{from_device_error(new_buffer.error())};
+    }
+
+    auto const upload_name = std::format("{}.upload", debug_name_);
+    auto new_upload = Buffer::create(*context_, BufferCreateInfo{
+                                                        .size = new_capacity,
+                                                        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                        .memory = BufferMemory::upload,
+                                                        .debug_name = upload_name,
+                                                });
+
+    if (!new_upload) {
+        new_buffer->destroy();
+        return std::unexpected{from_device_error(new_upload.error())};
+    }
+
+    // Earlier uploads recorded into this command buffer wrote the old buffer; they must land before the copy reads it.
+    VkBufferMemoryBarrier2 const old_barrier{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = buffer.buffer,
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+    };
+
+    VkDependencyInfo const before_copy{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &old_barrier,
+            .imageMemoryBarrierCount = 0,
+            .pImageMemoryBarriers = nullptr,
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &before_copy);
+
+    VkBufferCopy2 const region{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+            .pNext = nullptr,
+            .srcOffset = 0,
+            .dstOffset = 0,
+            .size = old_capacity,
+    };
+
+    VkCopyBufferInfo2 const copy_info{
+            .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+            .pNext = nullptr,
+            .srcBuffer = buffer.buffer,
+            .dstBuffer = new_buffer->buffer,
+            .regionCount = 1,
+            .pRegions = &region,
+    };
+
+    vkCmdCopyBuffer2(command_buffer, &copy_info);
+
+    VkBufferMemoryBarrier2 const new_barrier{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                            VK_PIPELINE_STAGE_2_COPY_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = new_buffer->buffer,
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+    };
+
+    VkDependencyInfo const after_copy{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &new_barrier,
+            .imageMemoryBarrierCount = 0,
+            .pImageMemoryBarriers = nullptr,
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &after_copy);
+
+    // Copies already recorded this frame still read the old staging buffer, so it's retired along with the old buffer.
+    retired_buffers_.push_back(RetiredBuffers{
+            .device = std::move(buffer),
+            .upload = std::move(upload_buffer),
+            .frames_remaining = frames_in_flight,
+    });
+
+    buffer = std::move(*new_buffer);
+    upload_buffer = std::move(*new_upload);
+    allocator_.grow(new_capacity);
+
+    info("geometry arena '{}' grew from {} MiB to {} MiB", debug_name_, old_capacity / (1024 * 1024),
+         new_capacity / (1024 * 1024));
+
+    return {};
+}
+
+template<GeometryAllocatorPolicy Allocator>
 auto GeometryArenaT<Allocator>::retire(GeometrySlice const &slice) -> void {
     if (!slice.valid()) {
         return;
@@ -264,6 +430,22 @@ auto GeometryArenaT<Allocator>::retire(GeometrySlice const &slice) -> void {
 
 template<GeometryAllocatorPolicy Allocator>
 auto GeometryArenaT<Allocator>::tick_retirement() -> void {
+    for (auto &retired: retired_buffers_) {
+        if (retired.frames_remaining > 0) {
+            --retired.frames_remaining;
+        }
+    }
+
+    std::erase_if(retired_buffers_, [](RetiredBuffers &retired) {
+        if (retired.frames_remaining > 0) {
+            return false;
+        }
+
+        retired.device.destroy();
+        retired.upload.destroy();
+        return true;
+    });
+
     for (auto &retiring: retiring_) {
         if (retiring.frames_remaining > 0) {
             --retiring.frames_remaining;

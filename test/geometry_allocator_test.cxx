@@ -174,6 +174,53 @@ TEST_SUITE("unit") {
         CHECK(third->offset == second->offset);
     }
 
+    TEST_CASE("FreeListAllocator grow adds space that merges with a free tail") {
+        FreeListAllocator allocator;
+        allocator.reset(1024);
+
+        REQUIRE(allocator.allocate(1000, 4).has_value());
+        CHECK_FALSE(allocator.allocate(100, 4).has_value());
+
+        allocator.grow(2048);
+        CHECK(allocator.capacity() == 2048);
+
+        // The 24 free bytes at the old tail and the new space form one range.
+        auto const big = allocator.allocate(1048, 4);
+        REQUIRE(big.has_value());
+        CHECK(big->offset == 1000);
+
+        allocator.grow(16);
+        CHECK(allocator.capacity() == 2048);
+    }
+
+    TEST_CASE("FreeListAllocator rollback to before a grow keeps the added space") {
+        FreeListAllocator allocator;
+        allocator.reset(1024);
+
+        REQUIRE(allocator.allocate(512, 4).has_value());
+        auto const checkpoint = allocator.checkpoint();
+
+        REQUIRE(allocator.allocate(512, 4).has_value());
+        allocator.grow(2048);
+        REQUIRE(allocator.allocate(1024, 4).has_value());
+
+        allocator.rollback(checkpoint);
+        CHECK(allocator.used_size() == 512);
+        CHECK(allocator.capacity() == 2048);
+        CHECK(allocator.allocate(1536, 4).has_value());
+    }
+
+    TEST_CASE("BumpAllocator grow extends capacity") {
+        BumpAllocator allocator;
+        allocator.reset(16);
+
+        REQUIRE(allocator.allocate(16, 4).has_value());
+        CHECK_FALSE(allocator.allocate(4, 4).has_value());
+
+        allocator.grow(32);
+        CHECK(allocator.allocate(16, 4).has_value());
+    }
+
     TEST_CASE("FreeListAllocator survives a randomized alloc/free soak with no overlap and full reclaim") {
         constexpr VkDeviceSize capacity = 1U << 16U;
 

@@ -15,6 +15,7 @@
 #include <expected>
 #include <format>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <vector>
@@ -25,6 +26,10 @@ struct GeometryArenaCreateInfo {
 };
 
 // The Allocator decides offsets; this class owns the GPU buffers and the upload, copy and barrier.
+//
+// Grows when an allocation doesn't fit: the device and upload buffers are reallocated larger, the device contents are
+// copied across on the GPU, and the old pair is freed after frames_in_flight tick_retirement() calls. Slice offsets stay
+// valid, but bindable_buffer() and device_address() change, so callers must not cache them across allocations.
 template<GeometryAllocatorPolicy Allocator>
 struct GeometryArenaT {
     GeometryArenaT() = default;
@@ -150,15 +155,42 @@ struct GeometryArenaT {
 
     [[nodiscard]] auto bindable_buffer() const -> VkBuffer { return buffer.buffer; }
 
+    [[nodiscard]]
+    auto capacity() const noexcept -> VkDeviceSize {
+
+        return allocator_.capacity();
+    }
+
 private:
+    // Allocates from allocator_, growing the buffers once if it's out of memory.
+    [[nodiscard]]
+    auto allocate_bytes(VkCommandBuffer command_buffer, VkDeviceSize size, VkDeviceSize alignment)
+            -> std::expected<GeometrySlice, GeometryArenaError>;
+
+    // Reallocates the buffers to fit at least `required_free` more bytes and copies the old contents across.
+    [[nodiscard]]
+    auto grow(VkCommandBuffer command_buffer, VkDeviceSize required_free) -> std::expected<void, GeometryArenaError>;
+
     [[nodiscard]]
     auto write(VkCommandBuffer command_buffer, GeometrySlice const &slice, std::span<const std::byte> data)
             -> std::expected<void, GeometryArenaError>;
+
+    VulkanContext *context_ = nullptr;
+    std::string debug_name_;
 
     Buffer upload_buffer{};
     Buffer buffer{};
 
     Allocator allocator_{};
+
+    // Buffers replaced by grow(); in-flight frames and this frame's copies may still read them.
+    struct RetiredBuffers {
+        Buffer device;
+        Buffer upload;
+        std::uint32_t frames_remaining = frames_in_flight;
+    };
+
+    std::vector<RetiredBuffers> retired_buffers_;
 
     struct RetiringRange {
         GeometrySlice slice;

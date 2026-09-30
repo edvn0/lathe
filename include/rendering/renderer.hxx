@@ -127,7 +127,7 @@ struct FrameStats {
 
 inline constexpr std::uint32_t pipeline_stat_count = 4;
 
-// Forward pass only. Task/mesh counts are valid only when mesh_stats_valid is set.
+// Forward pass only. Task/mesh counts are valid only when mesh_stats_valid is set; otherwise the clipped count is.
 struct PipelineStats {
     std::uint64_t clipped_primitive_count = 0;
     std::uint64_t fragment_shader_invocation_count = 0;

@@ -55,7 +55,8 @@ namespace {
                         gltf_light.type == fastgltf::LightType::Spot ? ModelLightType::spot : ModelLightType::point;
 
                 light.position = glm::vec3{local_to_model[3]};
-                light.direction = glm::normalize(glm::mat3{local_to_model} * glm::vec3{0.0F, 0.0F, -1.0F});
+                // glTF lights point down local -Z; local_to_model is already Z-mirrored, which maps that to +Z.
+                light.direction = glm::normalize(glm::mat3{local_to_model} * glm::vec3{0.0F, 0.0F, 1.0F});
 
                 light.colour = glm::vec3{gltf_light.color[0], gltf_light.color[1], gltf_light.color[2]};
                 light.intensity = gltf_light.intensity;
@@ -135,7 +136,13 @@ namespace {
         return {bounds_min, bounds_max};
     }
 
-    auto to_glm(fastgltf::math::fmat4x4 const &matrix) noexcept -> glm::mat4 { return glm::make_mat4(matrix.data()); }
+    // glTF is right-handed and the renderer left-handed, so imported data is mirrored across Z (else models render as
+    // their mirror image). Triangle winding is reversed to match, and node transforms become S * M * S.
+    auto to_glm(fastgltf::math::fmat4x4 const &matrix) noexcept -> glm::mat4 {
+        constexpr glm::mat4 mirror_z{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+                                     0.0F, 0.0F, -1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
+        return mirror_z * glm::make_mat4(matrix.data()) * mirror_z;
+    }
 
     auto find_attribute(fastgltf::Primitive const &primitive, std::string_view name) -> std::optional<std::size_t> {
         auto const iterator = primitive.findAttribute(name);
@@ -372,7 +379,7 @@ namespace {
         std::vector<ModelVertex> vertices(positions.size());
 
         for (std::size_t index = 0; index < positions.size(); ++index) {
-            vertices[index].position = positions[index];
+            vertices[index].position = glm::vec3{positions[index].x, positions[index].y, -positions[index].z};
 
             vertices[index].normal = glm::vec3{0.0F, 1.0F, 0.0F};
             vertices[index].tangent = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F};
@@ -389,7 +396,7 @@ namespace {
             }
 
             for (std::size_t index = 0; index < vertices.size(); ++index) {
-                vertices[index].normal = normals[index];
+                vertices[index].normal = glm::vec3{normals[index].x, normals[index].y, -normals[index].z};
             }
         }
 
@@ -405,7 +412,9 @@ namespace {
             }
 
             for (std::size_t index = 0; index < vertices.size(); ++index) {
-                vertices[index].tangent = tangents[index];
+                // A reflection also flips the bitangent sign.
+                vertices[index].tangent = glm::vec4{tangents[index].x, tangents[index].y, -tangents[index].z,
+                                                    -tangents[index].w};
             }
 
             has_tangents = true;
@@ -432,6 +441,10 @@ namespace {
         }
 
         auto indices = std::move(*indices_result);
+
+        for (std::size_t triangle = 0; triangle + 2 < indices.size(); triangle += 3) {
+            std::swap(indices[triangle + 1], indices[triangle + 2]);
+        }
 
         return ModelCpuPrimitive{
                 .vertices = std::move(vertices),

@@ -67,6 +67,7 @@ concept GeometryAllocatorPolicy = requires(A a, A const &const_a, VkDeviceSize s
     typename A::Checkpoint;
 
     { a.reset(size) } -> std::same_as<void>;
+    { a.grow(size) } -> std::same_as<void>;
     { a.allocate(size, alignment) } -> std::same_as<std::expected<GeometrySlice, GeometryArenaError>>;
     { a.deallocate(slice) } -> std::same_as<void>;
     { a.checkpoint() } -> std::same_as<typename A::Checkpoint>;
@@ -74,6 +75,9 @@ concept GeometryAllocatorPolicy = requires(A a, A const &const_a, VkDeviceSize s
     { const_a.used_size() } -> std::same_as<VkDeviceSize>;
     { const_a.capacity() } -> std::same_as<VkDeviceSize>;
 };
+
+// grow(new_capacity) extends the address space in place (no-op unless larger); existing offsets stay valid, and a
+// rollback() to a checkpoint from before the growth keeps the added space.
 
 // Never frees; offsets only advance.
 class BumpAllocator {
@@ -84,6 +88,8 @@ public:
         capacity_ = capacity;
         next_offset_ = 0;
     }
+
+    auto grow(VkDeviceSize new_capacity) noexcept -> void { capacity_ = std::max(capacity_, new_capacity); }
 
     [[nodiscard]]
     auto allocate(VkDeviceSize allocation_size, VkDeviceSize alignment) noexcept
@@ -177,9 +183,12 @@ public:
     struct Checkpoint {
         std::vector<FreeRange> free_ranges;
         VkDeviceSize used = 0;
+        VkDeviceSize capacity = 0;
     };
 
     auto reset(VkDeviceSize capacity) -> void;
+
+    auto grow(VkDeviceSize new_capacity) -> void;
 
     [[nodiscard]]
     auto allocate(VkDeviceSize allocation_size, VkDeviceSize alignment)
@@ -203,6 +212,9 @@ public:
     }
 
 private:
+    // Marks [from, capacity_) free, merging with a free range that ends at `from`.
+    auto add_free_tail(VkDeviceSize from) -> void;
+
     // Address-ordered, non-overlapping and coalesced.
     std::vector<FreeRange> free_ranges_{};
     VkDeviceSize capacity_ = 0;

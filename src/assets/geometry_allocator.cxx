@@ -24,6 +24,29 @@ auto FreeListAllocator::reset(VkDeviceSize capacity) -> void {
     used_ = 0;
 }
 
+auto FreeListAllocator::add_free_tail(VkDeviceSize from) -> void {
+    if (from >= capacity_) {
+        return;
+    }
+
+    if (!free_ranges_.empty() && free_ranges_.back().offset + free_ranges_.back().size == from) {
+        free_ranges_.back().size = capacity_ - free_ranges_.back().offset;
+        return;
+    }
+
+    free_ranges_.push_back(FreeRange{.offset = from, .size = capacity_ - from});
+}
+
+auto FreeListAllocator::grow(VkDeviceSize new_capacity) -> void {
+    if (new_capacity <= capacity_) {
+        return;
+    }
+
+    auto const old_capacity = capacity_;
+    capacity_ = new_capacity;
+    add_free_tail(old_capacity);
+}
+
 auto FreeListAllocator::allocate(VkDeviceSize allocation_size, VkDeviceSize alignment)
         -> std::expected<GeometrySlice, GeometryArenaError> {
 
@@ -128,10 +151,11 @@ auto FreeListAllocator::deallocate(GeometrySlice const &slice) -> void {
 }
 
 auto FreeListAllocator::checkpoint() const -> Checkpoint {
-    return Checkpoint{.free_ranges = free_ranges_, .used = used_};
+    return Checkpoint{.free_ranges = free_ranges_, .used = used_, .capacity = capacity_};
 }
 
 auto FreeListAllocator::rollback(Checkpoint const &checkpoint) -> void {
     free_ranges_ = checkpoint.free_ranges;
     used_ = checkpoint.used;
+    add_free_tail(checkpoint.capacity);
 }

@@ -6,8 +6,6 @@
 #include <glm/gtc/packing.hpp>
 #include <glm/geometric.hpp>
 
-#include "core/thread_pool.hxx"
-
 namespace {
     constexpr auto pack_sign_into_snorm2x16(glm::vec2 value, bool sign_bit) -> glm::uint32 {
         auto const packed = glm::packSnorm2x16(value);
@@ -60,16 +58,10 @@ auto compress_vertex(ModelVertex const &vertex) -> CompressedModelVertex {
 }
 
 auto compress_vertices(std::span<ModelVertex const> vertices) -> std::vector<CompressedModelVertex> {
+    // Serial on purpose: this runs inside per-primitive tasks on thread_pool(), and blocking one of those workers on
+    // nested pool tasks deadlocks once every worker is inside such a task.
     std::vector<CompressedModelVertex> compressed(vertices.size());
-
-    auto &pool = thread_pool();
-
-    auto blocks = pool.submit_blocks(std::size_t{0}, vertices.size(), [&](std::size_t begin, std::size_t end) {
-        for (std::size_t i = begin; i < end; ++i) {
-            compressed[i] = compress_vertex(vertices[i]);
-        }
-    });
-    blocks.wait();
+    std::ranges::transform(vertices, compressed.begin(), compress_vertex);
 
     return compressed;
 }
