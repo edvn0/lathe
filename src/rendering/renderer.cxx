@@ -1059,7 +1059,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                 .depth = 1,
                         },
                 .format = swapchain_format_,
-                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                 .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
                 .image_type = VK_IMAGE_TYPE_2D,
                 .view_type = VK_IMAGE_VIEW_TYPE_2D,
@@ -3357,12 +3358,45 @@ auto Renderer::record_composite_pass(render_pass::Context const &pass_context, F
 }
 
 auto Renderer::record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
-                                std::uint32_t frame_index) -> void {
-    bool const screenshot_recorded = screenshot_->record(context_, command_buffer, swapchain_image.image,
-                                                         swapchain_image.format, swapchain_image.extent, frame_index);
+                                Image const *viewport, std::uint32_t frame_index) -> void {
+    auto const pending = screenshot_->pending_source();
 
-    if (!screenshot_recorded) {
+    // The viewport target is left sampled by the UI pass; hand it back the same way so the next frame is unaffected.
+    if (pending == ScreenshotSource::viewport && viewport != nullptr) {
+        // The swapchain is presented as usual; the capture never touches it.
+        (void) screenshot_->record(context_, command_buffer,
+                                   ScreenshotImage{
+                                           .image = viewport->image(),
+                                           .format = viewport->format(),
+                                           .extent = {viewport->extent().width, viewport->extent().height},
+                                           .layout_before = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                           .stage_before = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                           .access_before = VK_ACCESS_2_NONE,
+                                           .layout_after = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                           .stage_after = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                           .access_after = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                   },
+                                   frame_index);
         render_pass::present_swapchain(command_buffer, swapchain_image.image);
+    } else {
+        bool const screenshot_recorded =
+                pending.has_value() &&
+                screenshot_->record(context_, command_buffer,
+                                    ScreenshotImage{
+                                            .image = swapchain_image.image,
+                                            .format = swapchain_image.format,
+                                            .extent = swapchain_image.extent,
+                                            .layout_before = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                            .stage_before = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                            .access_before = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                            .layout_after = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                    },
+                                    frame_index);
+
+        if (!screenshot_recorded) {
+            render_pass::present_swapchain(command_buffer, swapchain_image.image);
+        }
     }
 
     auto &frame_query = timestamp_queries_[frame_index];
@@ -3642,7 +3676,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         return composited;
     }
 
-    record_frame_end(command_buffer, swapchain_image, frame_index);
+    record_frame_end(command_buffer, swapchain_image,
+                     info.composite_target == CompositeTarget::swapchain ? nullptr : targets->viewport, frame_index);
 
     TracyVkCollectHost(context_.host_query_context.context);
     return {};
@@ -3719,7 +3754,8 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         auto viewport_target_replacement = image_storage_.create_image(ImageCreateInfo{
                 .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
                 .format = swapchain_format_,
-                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                 .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
                 .image_type = VK_IMAGE_TYPE_2D,
                 .view_type = VK_IMAGE_VIEW_TYPE_2D,
@@ -3916,7 +3952,7 @@ auto Renderer::mark_shadow_casters_dirty() noexcept -> void {
     }
 }
 
-auto Renderer::request_screenshot() noexcept -> void { screenshot_->request(); }
+auto Renderer::request_screenshot(ScreenshotSource source) noexcept -> void { screenshot_->request(source); }
 auto Renderer::wait_idle() -> std::expected<void, RendererError> {
     auto result = vkDeviceWaitIdle(context_.device);
     return result == VK_SUCCESS ? std::expected<void, RendererError>{}

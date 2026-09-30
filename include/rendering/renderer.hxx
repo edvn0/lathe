@@ -526,7 +526,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto meshlet_culling() const noexcept -> bool { return meshlet_culling_; }
     auto set_meshlet_culling(bool enabled) noexcept -> void { meshlet_culling_ = enabled; }
 
-    auto request_screenshot() noexcept -> void;
+    // Captures the viewport target (the scene alone) or the whole composited window. The viewport is only there in the
+    // editor; fullscreen play falls back to the window.
+    auto request_screenshot(ScreenshotSource source) noexcept -> void;
     auto mark_lights_dirty() -> void { lights_dirty_mask_ = frames_.empty() ? 0U : ((1U << frames_.size()) - 1U); }
     auto wait_idle() -> std::expected<void, RendererError>;
 
@@ -875,8 +877,9 @@ private:
     auto read_overlay_timings(FrameTimestamps const &frame_query) -> void;
 
     // Screenshot copy or present transition, then the end-of-frame timestamp.
+    // viewport is null when the scene was composited straight into the swapchain.
     auto record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
-                          std::uint32_t frame_index) -> void;
+                          Image const *viewport, std::uint32_t frame_index) -> void;
 
     VulkanContext &context_;
 

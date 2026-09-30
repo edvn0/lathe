@@ -5,15 +5,24 @@
 #include <glm/glm.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace {
 
     auto noise_height(SimplexNoise2D const &noise, TerrainParams const &params, float world_x, float world_z)
             -> float {
-        return noise.fbm(world_x * params.frequency, world_z * params.frequency, params.octaves, params.lacunarity,
-                         params.persistence) *
-               params.amplitude;
+        auto height = noise.fbm(world_x * params.frequency, world_z * params.frequency, params.octaves,
+                                params.lacunarity, params.persistence) *
+                      params.amplitude;
+
+        for (auto const &hill: params.hills) {
+            auto const dx = world_x - hill.world_x;
+            auto const dz = world_z - hill.world_z;
+            height += hill.height * std::exp(-(dx * dx + dz * dz) / (2.0F * hill.radius * hill.radius));
+        }
+
+        return height;
     }
 
     // False for the {0,0} "unset" sentinel.

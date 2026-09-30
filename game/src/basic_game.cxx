@@ -10,6 +10,7 @@
 #include <optional>
 #include <random>
 #include <ranges>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -93,6 +94,39 @@ namespace {
 
         auto const axis = glm::normalize(glm::cross(local_forward, direction));
         return glm::angleAxis(std::acos(dot), axis);
+    }
+
+    // Uniform Catmull-Rom through `control`, sampled about every `step` metres. Closed loops don't repeat the first
+    // point at the end.
+    auto sample_spline(std::span<glm::vec2 const> control, bool closed, float step) -> std::vector<glm::vec2> {
+        auto const count = static_cast<int>(control.size());
+        auto const point = [&](int index) {
+            return closed ? control[static_cast<std::size_t>((index % count + count) % count)]
+                          : control[static_cast<std::size_t>(std::clamp(index, 0, count - 1))];
+        };
+
+        std::vector<glm::vec2> samples;
+
+        for (int segment = 0; segment < (closed ? count : count - 1); ++segment) {
+            auto const p0 = point(segment - 1);
+            auto const p1 = point(segment);
+            auto const p2 = point(segment + 1);
+            auto const p3 = point(segment + 2);
+
+            auto const steps = std::max(1, static_cast<int>(std::ceil(glm::distance(p1, p2) / step)));
+
+            for (int k = 0; k < steps; ++k) {
+                auto const t = static_cast<float>(k) / static_cast<float>(steps);
+                samples.push_back(0.5F * ((2.0F * p1) + (p2 - p0) * t + (2.0F * p0 - 5.0F * p1 + 4.0F * p2 - p3) * t * t +
+                                          (3.0F * p1 - p0 - 3.0F * p2 + p3) * t * t * t));
+            }
+        }
+
+        if (!closed) {
+            samples.push_back(control.back());
+        }
+
+        return samples;
     }
 
 } // namespace
@@ -245,8 +279,26 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .persistence = 0.5F,
             .seed = 1337U,
             .uv_scale = 0.08F,
+            // Kept outside the village ring (radius 14) so the houses stay on gentle ground.
+            .hills = {
+                    {.world_x = 48.0F, .world_z = -30.0F, .height = 16.0F, .radius = 14.0F},
+                    {.world_x = -55.0F, .world_z = 28.0F, .height = 20.0F, .radius = 16.0F},
+                    {.world_x = 22.0F, .world_z = 58.0F, .height = 11.0F, .radius = 12.0F},
+                    {.world_x = -32.0F, .world_z = -58.0F, .height = 14.0F, .radius = 13.0F},
+                    {.world_x = 72.0F, .world_z = 28.0F, .height = 18.0F, .radius = 15.0F},
+                    {.world_x = -78.0F, .world_z = -22.0F, .height = 24.0F, .radius = 18.0F},
+                    {.world_x = 5.0F, .world_z = -88.0F, .height = 15.0F, .radius = 14.0F},
+                    {.world_x = -12.0F, .world_z = 84.0F, .height = 17.0F, .radius = 15.0F},
+                    {.world_x = 88.0F, .world_z = -62.0F, .height = 22.0F, .radius = 17.0F},
+                    {.world_x = -92.0F, .world_z = 72.0F, .height = 13.0F, .radius = 12.0F},
+                    {.world_x = 58.0F, .world_z = 88.0F, .height = 12.0F, .radius = 12.0F},
+                    {.world_x = -62.0F, .world_z = -88.0F, .height = 19.0F, .radius = 16.0F},
+                    // A proper mountain, well beyond the roads.
+                    {.world_x = 125.0F, .world_z = 70.0F, .height = 40.0F, .radius = 28.0F},
+            },
+            // Must cover the noise (+/- amplitude) and the tallest hill above.
             .height_range_min = -1.6F,
-            .height_range_max = 1.6F,
+            .height_range_max = 44.0F,
     };
     terrain_ground_y_ = scene.physics_settings.ground_y;
 
@@ -552,6 +604,212 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         });
     }
 
+    // Roads draped over the terrain (hills included), each a ribbon mesh with lamp posts along it. The lamps are the
+    // scene's point lights. Spurs start on a ring and climb the hills.
+    {
+        struct RoadSpec {
+            std::vector<glm::vec2> control;
+            bool closed;
+            float width;
+            glm::vec3 lamp_colour;
+        };
+
+        std::vector<RoadSpec> roads;
+
+        {
+            constexpr std::array<float, 9> outer_radii{40.0F, 46.0F, 38.0F, 44.0F, 40.0F, 36.0F, 46.0F, 42.0F, 38.0F};
+            RoadSpec outer{.control = {}, .closed = true, .width = 6.0F, .lamp_colour = {0.75F, 0.88F, 1.0F}};
+            for (std::size_t i = 0; i < outer_radii.size(); ++i) {
+                auto const angle = static_cast<float>(i) / static_cast<float>(outer_radii.size()) * 6.2831853F;
+                outer.control.emplace_back(outer_radii[i] * std::cos(angle), outer_radii[i] * std::sin(angle));
+            }
+            roads.push_back(std::move(outer));
+
+            RoadSpec inner{.control = {}, .closed = true, .width = 5.0F, .lamp_colour = {1.0F, 0.72F, 0.38F}};
+            for (std::size_t i = 0; i < 6; ++i) {
+                auto const angle = (static_cast<float>(i) / 6.0F) * 6.2831853F + 0.3F;
+                auto const radius = 27.0F + ((i % 2 == 0) ? 1.5F : -1.5F);
+                inner.control.emplace_back(radius * std::cos(angle), radius * std::sin(angle));
+            }
+            roads.push_back(std::move(inner));
+        }
+
+        // Spurs: the first point sits on the outer ring (40, 0), (7, -40) and (-38, 14) region.
+        roads.push_back({.control = {{-38.0F, 14.0F}, {-43.0F, 29.0F}, {-55.0F, 37.0F}, {-66.0F, 30.0F}, {-60.0F, 20.0F}},
+                         .closed = false,
+                         .width = 4.0F,
+                         .lamp_colour = {1.0F, 0.45F, 0.75F}});
+        roads.push_back({.control = {{40.0F, 0.0F}, {54.0F, 10.0F}, {66.0F, 16.0F}, {74.0F, 28.0F}},
+                         .closed = false,
+                         .width = 4.0F,
+                         .lamp_colour = {0.4F, 1.0F, 0.75F}});
+        roads.push_back({.control = {{7.0F, -40.0F}, {3.0F, -58.0F}, {11.0F, -72.0F}, {5.0F, -84.0F}},
+                         .closed = false,
+                         .width = 4.0F,
+                         .lamp_colour = {0.75F, 0.5F, 1.0F}});
+
+        constexpr float road_lift = 0.15F; // above the terrain, which coarse LODs can round above the road
+        constexpr float lamp_spacing = 7.0F;
+        constexpr float pole_height = 4.5F;
+        constexpr float lamp_radius = 0.22F;
+        constexpr float sphere_radius_unscaled = 0.5F;
+        constexpr std::size_t max_lamp_lights = 190;
+
+        for (auto const model: road_models_) {
+            renderer.release_model(model);
+        }
+        road_models_.clear();
+        road_samples_.clear();
+
+        auto const surface_y = [&](glm::vec2 const &xz) {
+            return scene.physics_settings.ground_y + sample_terrain_height(terrain_params_, xz.x, xz.y);
+        };
+
+        auto const material_for = [&](MaterialCreateInfo info) -> MaterialHandle {
+            info.base_colour_texture = images.white();
+            info.normal_texture = images.flat_normal();
+            info.metallic_roughness_texture = images.metallic_roughness();
+            info.occlusion_texture = images.occlusion();
+            info.emissive_texture = images.emissive();
+            info.sampler = samplers.linear_repeat();
+            info.metallic_factor = 0.0F;
+
+            auto material = renderer.create_material(info);
+            if (!material) {
+                error("Could not create road material: {}", describe(material.error()));
+                return MaterialHandle{};
+            }
+            scene_materials.push_back(*material);
+            return *material;
+        };
+
+        auto const road_material = material_for(MaterialCreateInfo{
+                .base_colour_factor = glm::vec4{0.06F, 0.06F, 0.07F, 1.0F}, .roughness_factor = 0.85F});
+        auto const pole_material = material_for(MaterialCreateInfo{
+                .base_colour_factor = glm::vec4{0.12F, 0.12F, 0.13F, 1.0F}, .roughness_factor = 0.6F});
+
+        std::size_t lamp_count = 0;
+
+        for (auto const &[road_index, road]: roads | std::views::enumerate) {
+            auto const samples = sample_spline(road.control, road.closed, 1.5F);
+            auto const count = static_cast<int>(samples.size());
+            auto const half_width = road.width * 0.5F;
+
+            auto const forward_at = [&](int i) {
+                auto const next = road.closed ? samples[static_cast<std::size_t>((i + 1) % count)]
+                                              : samples[static_cast<std::size_t>(std::min(i + 1, count - 1))];
+                auto const previous = road.closed ? samples[static_cast<std::size_t>((i + count - 1) % count)]
+                                                  : samples[static_cast<std::size_t>(std::max(i - 1, 0))];
+                return glm::normalize(next - previous);
+            };
+            // Perpendicular so the last column is on the right, which faces the ribbon up.
+            auto const across_at = [&](int i) {
+                auto const forward = forward_at(i);
+                return glm::vec2{-forward.y, forward.x};
+            };
+
+            auto const lift = road_lift + 0.01F * static_cast<float>(road_index);
+            std::vector<glm::vec3> grid;
+            grid.reserve(static_cast<std::size_t>(count + 1) * 3U);
+
+            // A closed loop ends by repeating its first row.
+            for (int i = 0; i < count + (road.closed ? 1 : 0); ++i) {
+                auto const index = i % count;
+                auto const centre = samples[static_cast<std::size_t>(index)];
+                auto const across = across_at(index);
+
+                for (int column = -1; column <= 1; ++column) {
+                    auto const xz = centre + across * (static_cast<float>(column) * half_width);
+                    grid.emplace_back(xz.x, surface_y(xz) + lift, xz.y);
+                }
+            }
+
+            for (auto const &centre: samples) {
+                road_samples_.emplace_back(centre.x, centre.y, half_width);
+            }
+
+            auto mesh = make_ribbon_mesh(grid, 3U);
+            if (!mesh) {
+                error("Could not build road mesh {}: {}", road_index, describe(mesh.error()));
+                continue;
+            }
+            auto model = renderer.create_model_from_cpu_data(to_model_cpu_data(std::move(*mesh)));
+            if (!model) {
+                error("Could not upload road model {}: {}", road_index, describe(model.error()));
+                continue;
+            }
+            road_models_.push_back(*model);
+
+            auto const road_entity = GeneratedEntity{&scene, "road_{}", road_index};
+            road_entity.emplace<Components::Transform>();
+            road_entity.emplace<Components::Model>(Components::Model{.model = *model});
+            if (road_material.valid()) {
+                road_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{.material = road_material});
+            }
+
+            // Lamps are grouped under one identity-transform entity for the Hierarchy.
+            auto const lamp_group = GeneratedEntity{&scene, "road_{}_lamps", road_index};
+            lamp_group.emplace<Components::Transform>();
+
+            auto const lamp_material = material_for(MaterialCreateInfo{
+                    .base_colour_factor = glm::vec4{road.lamp_colour, 1.0F},
+                    .emissive_factor = road.lamp_colour,
+                    .emissive_strength = 6.0F,
+                    .roughness_factor = 0.4F,
+            });
+
+            float distance_until_lamp = 0.0F;
+            int side = 1;
+            std::size_t lamp_index = 0;
+
+            for (int i = 0; i < count; ++i) {
+                auto const centre = samples[static_cast<std::size_t>(i)];
+
+                if (i > 0) {
+                    distance_until_lamp -= glm::distance(centre, samples[static_cast<std::size_t>(i - 1)]);
+                }
+                if (distance_until_lamp > 0.0F) {
+                    continue;
+                }
+                distance_until_lamp += lamp_spacing;
+
+                if (lamp_count >= max_lamp_lights) {
+                    warn("Road lamp limit ({}) reached; remaining lamps skipped", max_lamp_lights);
+                    break;
+                }
+
+                auto const xz = centre + across_at(i) * (static_cast<float>(side) * (half_width + 0.7F));
+                side = -side;
+                auto const base = glm::vec3{xz.x, surface_y(xz), xz.y};
+
+                add_static_box(std::format("road_{}_pole_{}", road_index, lamp_index),
+                               base + glm::vec3{0.0F, pole_height * 0.5F, 0.0F}, {0.07F, pole_height * 0.5F, 0.07F},
+                               pole_material, lamp_group);
+
+                auto const lamp = GeneratedEntity{&scene, "road_{}_lamp_{}", road_index, lamp_index};
+                lamp.emplace<Components::Transform>(Components::Transform{
+                        .position = base + glm::vec3{0.0F, pole_height + lamp_radius, 0.0F},
+                        .scale = glm::vec3{lamp_radius / sphere_radius_unscaled},
+                });
+                lamp.emplace<Components::Model>(Components::Model{.model = engine_models.sphere});
+                if (lamp_material.valid()) {
+                    lamp.emplace<Components::MaterialOverride>(Components::MaterialOverride{.material = lamp_material});
+                }
+                lamp.emplace<Components::PointLight>(Components::PointLight{
+                        .colour = road.lamp_colour,
+                        .intensity = 40.0F,
+                        .range = 14.0F,
+                });
+                lamp.emplace<Components::Parent>(Components::Parent{.entity = lamp_group});
+
+                ++lamp_index;
+                ++lamp_count;
+            }
+        }
+
+        info("Built {} roads with {} lamps", road_models_.size(), lamp_count);
+    }
+
     grass_material_info_ = MaterialCreateInfo{
             .base_colour_factor = glm::vec4{0.25F, 0.55F, 0.18F, 1.0F},
             .base_colour_texture = images.white(),
@@ -618,6 +876,15 @@ auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
                            grass_field_params_.field_size * 0.5F + jitter(grass_eng);
             auto const z = (static_cast<float>(cell_z) + 0.5F) * grass_field_params_.spacing -
                            grass_field_params_.field_size * 0.5F + jitter(grass_eng);
+
+            constexpr auto road_margin = 0.6F;
+            auto const on_road = std::ranges::any_of(road_samples_, [&](glm::vec3 const &road) {
+                auto const reach = road.z + road_margin;
+                return glm::dot(glm::vec2{x, z} - glm::vec2{road}, glm::vec2{x, z} - glm::vec2{road}) < reach * reach;
+            });
+            if (on_road) {
+                continue;
+            }
 
             auto const density = blotch_density(glm::vec2{x, z}, grass_field_params_);
             auto const spawn_chance = glm::smoothstep(
@@ -860,7 +1127,7 @@ auto BasicGame::shoot_bullet(Scene &scene, std::size_t n) -> void {
 
 auto BasicGame::benchmark_camera_path() const -> std::vector<CameraKeyframe> {
     // A loop around the village mixing grass-level shots, close-ups against walls and canopies, and high overviews.
-    // Heights stay above the terrain's +1.6 m amplitude.
+    // Heights stay above the village-area noise (+1.6 m); the hills sit well clear of this loop.
     return {
             {.position = {0.0F, 2.2F, 6.0F}, .target = {0.0F, 2.0F, -10.0F}},
             {.position = {-6.0F, 2.0F, 2.0F}, .target = {-10.0F, 1.5F, -8.0F}},

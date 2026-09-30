@@ -50,6 +50,7 @@
 #include "rendering/entity.hxx"
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/renderer.hxx"
+#include "rendering/screenshot.hxx"
 #include "rendering/scene.hxx"
 #include "scene/components.hxx"
 #include "scene/editor_camera.hxx"
@@ -644,7 +645,7 @@ auto main(int argc, char **argv) -> int {
             application.camera.look_at(keyframe.position, keyframe.target);
 
             if (benchmark->options().keyframe_screenshots && benchmark->at_keyframe()) {
-                application.renderer->request_screenshot();
+                application.renderer->request_screenshot(ScreenshotSource::window);
             }
         }
 

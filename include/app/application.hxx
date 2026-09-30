@@ -139,6 +139,7 @@ struct Application {
     bool viewport_hovered = false;
     ImVec2 viewport_screen_pos{};
     ImVec2 viewport_content_size{};
+    bool screenshot_viewport_only = true;
 
     std::string hierarchy_search;
 
@@ -202,6 +203,7 @@ struct Application {
     // Registers the debug-line and ImGui overlays. Called once both renderers exist.
     auto register_overlays() -> void;
 
+    auto request_screenshot() -> void;
     auto on_event(KeyPressedEvent ev) -> bool;
     auto on_event(KeyReleasedEvent ev) -> bool;
     auto on_event(MouseMovedEvent ev) -> bool;

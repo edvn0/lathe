@@ -119,8 +119,11 @@ auto ScreenshotCapture::get_or_create_slot(std::uint32_t frame_index) -> Readbac
     return *slots_[frame_index];
 }
 
-auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffer, VkImage image, VkFormat format,
-                               VkExtent2D extent, std::uint32_t frame_index) -> bool {
+auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffer, ScreenshotImage const &source,
+                               std::uint32_t frame_index) -> bool {
+    auto const image = source.image;
+    auto const format = source.format;
+    auto const extent = source.extent;
 
     auto &slot = get_or_create_slot(frame_index);
 
@@ -165,15 +168,15 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
         slot.buffer = std::move(*created);
     }
 
-    // Color attachment -> transfer source.
+    // Current layout -> transfer source.
     VkImageMemoryBarrier2 const to_transfer_src{
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .pNext = nullptr,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .srcStageMask = source.stage_before,
+            .srcAccessMask = source.access_before,
             .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
             .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .oldLayout = source.layout_before,
             .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -202,7 +205,7 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
 
     vkCmdPipelineBarrier2(command_buffer, &to_transfer_src_info);
 
-    // Swapchain image -> readback buffer.
+    // Source image -> readback buffer.
     VkBufferImageCopy2 const region{
             .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
             .pNext = nullptr,
@@ -237,16 +240,16 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
 
     vkCmdCopyImageToBuffer2(command_buffer, &copy_info);
 
-    // Transfer source -> presentation.
+    // Transfer source -> the layout the rest of the frame expects.
     VkImageMemoryBarrier2 const to_present{
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .pNext = nullptr,
             .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
             .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
-            .dstAccessMask = VK_ACCESS_2_NONE,
+            .dstStageMask = source.stage_after,
+            .dstAccessMask = source.access_after,
             .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .newLayout = source.layout_after,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = image,

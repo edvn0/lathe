@@ -59,6 +59,7 @@
 #include "physics/physics.hxx"
 #include "physics/physics_world.hxx"
 #include "rendering/renderer.hxx"
+#include "rendering/screenshot.hxx"
 #include "rendering/scene.hxx"
 
 namespace {
@@ -384,8 +385,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
                 auto const aspect =
                         viewport_content_size.y > 0.0F ? viewport_content_size.x / viewport_content_size.y : 1.0F;
-                auto const view = camera.view();
-                auto const projection = camera.projection(aspect);
+                // ImGuizmo derives the camera direction (which half of each rotation ring is front-facing) from a
+                // right-handed view matrix. Our camera is left-handed, so flip view-space Z in the view and undo it in
+                // the projection: view * projection is unchanged, but the gizmo's front/back sense is correct.
+                auto const flip_z = glm::scale(glm::mat4(1.0F), glm::vec3(1.0F, 1.0F, -1.0F));
+                auto const view = flip_z * camera.view();
+                auto const projection = camera.projection(aspect) * flip_z;
 
                 auto const previous_matrix = registry.get<Components::Transform>(selected_entity).matrix();
                 auto matrix = previous_matrix;
@@ -1898,6 +1903,13 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::SameLine();
         // Editable mid-play to switch an embedded session to fullscreen and back.
         ImGui::Checkbox("Fullscreen", &play_fullscreen);
+
+        ImGui::Separator();
+        if (ImGui::Button("Screenshot (F12)")) {
+            request_screenshot();
+        }
+        ImGui::SameLine();
+        ImGui::Checkbox("Viewport only", &screenshot_viewport_only);
     });
 
     widget("Scene stats", [&] {
@@ -2414,12 +2426,17 @@ auto Application::on_startup() -> void {
     });
 }
 
+auto Application::request_screenshot() -> void {
+    // Fullscreen play has no viewport target; the renderer falls back to the window there anyway.
+    renderer->request_screenshot(screenshot_viewport_only ? ScreenshotSource::viewport : ScreenshotSource::window);
+}
+
 auto Application::on_event(KeyPressedEvent ev) -> bool {
     if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL) {
         renderer->queue_render_thread_event([this] { game->on_populate(*editor_scene, *renderer, engine_models); });
     }
     if (ev.key == GLFW_KEY_F12) {
-        renderer->request_screenshot();
+        request_screenshot();
     }
 
     if (is_playing) {

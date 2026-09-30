@@ -4,6 +4,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <numbers>
@@ -421,6 +422,73 @@ auto make_capsule_mesh(std::uint32_t segments, std::uint32_t rings)
             indices.push_back(a);
             indices.push_back(b + 1);
             indices.push_back(b);
+        }
+    }
+
+    if (auto tangents = generate_tangents(vertices, indices); !tangents) {
+        return std::unexpected(tangents.error());
+    }
+
+    return PrimitiveMeshData{.vertices = std::move(vertices), .indices = std::move(indices)};
+}
+
+auto make_ribbon_mesh(std::span<glm::vec3 const> grid, std::uint32_t columns, float uv_scale)
+        -> std::expected<PrimitiveMeshData, ModelLoadError> {
+    if (columns < 2U || grid.size() < static_cast<std::size_t>(columns) * 2U || grid.size() % columns != 0U) {
+        return std::unexpected(ModelLoadError{.type = ModelLoadErrorType::invalid_argument});
+    }
+
+    auto const rows = static_cast<std::uint32_t>(grid.size() / columns);
+    auto const at = [&](std::uint32_t row, std::uint32_t column) { return grid[row * columns + column]; };
+
+    std::vector<ModelVertex> vertices;
+    vertices.reserve(grid.size());
+
+    float along = 0.0F;
+
+    for (std::uint32_t row = 0; row < rows; ++row) {
+        auto const centre = at(row, columns / 2U);
+
+        if (row > 0U) {
+            along += glm::distance(centre, at(row - 1U, columns / 2U));
+        }
+
+        auto const forward = glm::normalize(at(std::min(row + 1U, rows - 1U), columns / 2U) -
+                                            at(row > 0U ? row - 1U : 0U, columns / 2U));
+        auto const across = at(row, columns - 1U) - at(row, 0U);
+        auto const normal = glm::normalize(glm::cross(across, forward));
+        auto const width = glm::length(across);
+
+        for (std::uint32_t column = 0; column < columns; ++column) {
+            auto const fraction = static_cast<float>(column) / static_cast<float>(columns - 1U);
+
+            vertices.push_back(ModelVertex{
+                    .position = at(row, column),
+                    .normal = normal,
+                    // Placeholder; generate_tangents() overwrites it.
+                    .tangent = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F},
+                    .texcoord = glm::vec2{fraction * width * uv_scale, along * uv_scale},
+            });
+        }
+    }
+
+    std::vector<std::uint32_t> indices;
+    indices.reserve(static_cast<std::size_t>(rows - 1U) * (columns - 1U) * 6U);
+
+    for (std::uint32_t row = 0; row + 1U < rows; ++row) {
+        for (std::uint32_t column = 0; column + 1U < columns; ++column) {
+            auto const near_first = row * columns + column;
+            auto const near_second = near_first + 1U;
+            auto const far_first = near_first + columns;
+            auto const far_second = far_first + 1U;
+
+            indices.push_back(near_first);
+            indices.push_back(near_second);
+            indices.push_back(far_second);
+
+            indices.push_back(near_first);
+            indices.push_back(far_second);
+            indices.push_back(far_first);
         }
     }
 

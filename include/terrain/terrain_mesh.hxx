@@ -9,6 +9,14 @@
 #include "terrain/noise.hxx"
 #include "assets/primitive_meshes.hxx"
 
+// A smooth Gaussian bump added on top of the noise field.
+struct TerrainHill {
+    float world_x = 0.0F;
+    float world_z = 0.0F;
+    float height = 10.0F; // peak height in metres
+    float radius = 12.0F; // Gaussian sigma in metres; the visible footprint is roughly 2.5x this
+};
+
 // A rectangular terrain patch from fbm simplex noise.
 struct TerrainParams {
     std::uint32_t samples_x = 129; // vertex columns, >= 2
@@ -22,13 +30,14 @@ struct TerrainParams {
     float persistence = 0.5F;
     std::uint32_t seed = 1U;
     float uv_scale = 0.08F; // texture-space units per world unit
+    std::vector<TerrainHill> hills; // added to the noise; height_range_max must cover the tallest peak
 
     // World-space centre of the sample window, so streamed chunks sample one continuous field.
     float world_origin_x = 0.0F;
     float world_origin_z = 0.0F;
 
     // Fixed vertical bounds used for mid_height instead of the patch's observed min/max. min == max means unset
-    // (per-patch bounds). fbm() is roughly [-1,1], so +/- amplitude works.
+    // (per-patch bounds). fbm() is roughly [-1,1], so +/- amplitude works, plus the tallest hill.
     float height_range_min = 0.0F;
     float height_range_max = 0.0F;
 };

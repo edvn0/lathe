@@ -2,7 +2,10 @@
 
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <vector>
+
+#include <glm/vec3.hpp>
 
 #include "assets/load_model.hxx"
 
@@ -26,4 +29,11 @@ struct PrimitiveMeshData {
 [[nodiscard]] auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>;
 
 [[nodiscard]] auto make_capsule_mesh(std::uint32_t segments = 16, std::uint32_t rings = 8)
+        -> std::expected<PrimitiveMeshData, ModelLoadError>;
+
+// A strip of quads through a row-major grid of world-space points: `columns` points across (first to last),
+// the rest along. Roads, rivers and paths. Normals come from the grid, so pass points already draped over any
+// terrain. Facing is up when, looking along the strip, the last column is to the right of the first (+Z across
+// for +X along). UVs are `uv_scale` per metre, U across and V along. Needs columns >= 2 and >= 2 rows.
+[[nodiscard]] auto make_ribbon_mesh(std::span<glm::vec3 const> grid, std::uint32_t columns, float uv_scale = 0.25F)
         -> std::expected<PrimitiveMeshData, ModelLoadError>;

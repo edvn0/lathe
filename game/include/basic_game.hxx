@@ -2,6 +2,7 @@
 
 #include <entt/entt.hpp>
 #include <glm/vec3.hpp>
+#include <vector>
 
 #include "app/game.hxx"
 #include "assets/material.hxx"
@@ -53,6 +54,9 @@ private:
     // on_populate() runs again on every Ctrl+R, so what it creates outside the scene is kept here and reused.
     ModelHandle cube_model_{};
     ModelHandle skull_model_{};
+    std::vector<ModelHandle> road_models_;
+    // Road centreline samples (x, z, half-width), so the grass field can leave the roads clear.
+    std::vector<glm::vec3> road_samples_;
     ScriptHandle enemy_ai_script_{};
     glm::vec3 cube_half_extents_{0.5F};
 

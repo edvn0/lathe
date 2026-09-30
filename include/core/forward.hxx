@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 struct VulkanContext;
 
 class ImageStorage;
@@ -20,3 +22,4 @@ namespace Components {
 }
 
 class ScreenshotCapture;
+enum class ScreenshotSource : std::uint8_t;
