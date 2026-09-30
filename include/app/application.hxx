@@ -99,6 +99,11 @@ struct Application {
     auto play() -> void;
     auto stop() -> void;
 
+    // Hides and locks the cursor for mouse-look. ImGui ignores the mouse while it is captured: the disabled cursor's
+    // position is an unbounded virtual accumulator, which ImGui's GLFW backend would otherwise keep hit-testing.
+    auto capture_mouse() -> void;
+    auto release_mouse() -> void;
+
     EngineModels engine_models{};
 
     // Null when the game has no streaming terrain.
