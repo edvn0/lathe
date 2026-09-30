@@ -375,8 +375,7 @@ namespace {
         return ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse;
     }
 
-    // viewport_hovered goes false once the cursor is disabled, since ImGui's GLFW backend then reports no mouse
-    // position.
+    // viewport_hovered goes false once the mouse is captured, since ImGui then ignores the mouse.
     auto viewport_has_mouse(Application const &app) -> bool {
         return app.viewport_hovered || app.mouse_dragging || app.game_mouse_captured;
     }
@@ -412,7 +411,7 @@ namespace {
         // stuck on.
         if (action == GLFW_RELEASE) {
             if (!app->is_playing && button == GLFW_MOUSE_BUTTON_RIGHT && app->mouse_dragging) {
-                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                app->release_mouse();
             }
 
             app->on_event(MouseButtonReleasedEvent{.button = button, .modifiers = mods});
@@ -425,12 +424,12 @@ namespace {
 
         if (!app->is_playing) {
             if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                app->capture_mouse();
             }
         } else if (!app->play_fullscreen && app->viewport_hovered && !app->game_mouse_captured) {
             // Embedded play captures the cursor on the first Viewport click; Escape releases it.
             app->game_mouse_captured = true;
-            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            app->capture_mouse();
         }
 
         app->on_event(MouseButtonPressedEvent{.button = button, .modifiers = mods});
