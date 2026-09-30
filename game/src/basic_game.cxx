@@ -11,6 +11,8 @@
 #include <random>
 #include <ranges>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <GLFW/glfw3.h>
 #include <glm/ext/matrix_transform.hpp>
@@ -181,10 +183,15 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     constexpr float enemy_capsule_radius = 0.3F;
     constexpr float enemy_capsule_height = 0.8F;
 
-    auto const enemy_ai = scene.get_scripts().emplace<EnemyAIScript>();
-    if (!enemy_ai) {
-        error("[BasicGame::on_populate] Could not create EnemyAIScript instance");
-    } else {
+    if (scene.get_scripts().get(enemy_ai_script_) == nullptr) {
+        if (auto const created = scene.get_scripts().emplace<EnemyAIScript>()) {
+            enemy_ai_script_ = *created;
+        } else {
+            error("[BasicGame::on_populate] Could not create EnemyAIScript instance");
+        }
+    }
+
+    if (scene.get_scripts().get(enemy_ai_script_) != nullptr) {
         auto const enemy_scale =
                 glm::vec3{enemy_capsule_radius / mesh_base_radius, enemy_capsule_height / mesh_base_height,
                           enemy_capsule_radius / mesh_base_radius};
@@ -207,11 +214,19 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                     .angle = angle,
             });
             enemy.emplace<Components::Model>(Components::Model{.model = engine_models.capsule});
-            enemy.emplace<Components::Script>(Components::Script{.script = enemy_ai.value()});
+            enemy.emplace<Components::Script>(Components::Script{.script = enemy_ai_script_});
         }
     }
 
-    cube_model_ = load_or_fallback("assets/models/test_cube.glb");
+    // load_model() takes a reference on every call, including cache hits.
+    auto const release_previous = [&](ModelHandle previous) {
+        if (previous.valid() && previous != engine_models.cube) {
+            renderer.release_model(previous);
+        }
+    };
+
+    auto const previous_cube_model = std::exchange(cube_model_, load_or_fallback("assets/models/test_cube.glb"));
+    release_previous(previous_cube_model);
 
     auto const cube_bounds = renderer.model_bounds(cube_model_);
     cube_half_extents_ = cube_bounds.has_value() ? (cube_bounds->second - cube_bounds->first) * 0.5F : glm::vec3{0.5F};
@@ -250,25 +265,31 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             streamer.request(images, "assets/textures/dirt/dirt_rough_1k.exr", TextureRole::generic,
                              images.metallic_roughness(), "dirt.roughness");
 
-    auto const terrain_material = renderer.create_material(MaterialCreateInfo{
-            .base_colour_factor = glm::vec4{1.0F, 1.0F, 1.0F, 1.0F},
-            .base_colour_texture = dirt_albedo_index,
-            .normal_texture = dirt_normal_index,
-            .metallic_roughness_texture = dirt_roughness_index,
-            .occlusion_texture = images.occlusion(),
-            .emissive_texture = images.emissive(),
-            .sampler = samplers.linear_repeat(),
-    },
-            // Named so the editor can offer it.
-            "terrain");
+    // The terrain keeps the material it was created with, so it's made once.
+    if (!terrain_material_.valid()) {
+        auto const terrain_material = renderer.create_material(MaterialCreateInfo{
+                .base_colour_factor = glm::vec4{1.0F, 1.0F, 1.0F, 1.0F},
+                .base_colour_texture = dirt_albedo_index,
+                .normal_texture = dirt_normal_index,
+                .metallic_roughness_texture = dirt_roughness_index,
+                .occlusion_texture = images.occlusion(),
+                .emissive_texture = images.emissive(),
+                .sampler = samplers.linear_repeat(),
+        },
+                // Named so the editor can offer it.
+                "terrain");
 
-    if (terrain_material) {
-        terrain_material_ = *terrain_material;
-    } else {
-        error("Could not create terrain material: {}", describe(terrain_material.error()));
+        if (terrain_material) {
+            terrain_material_ = *terrain_material;
+        } else {
+            error("Could not create terrain material: {}", describe(terrain_material.error()));
+        }
     }
 
     constexpr auto village_radius = 14.0F;
+
+    // Their creation references are dropped at the end, leaving the entities as the only owners.
+    std::vector<MaterialHandle> scene_materials;
 
     // Houses and trees are built from engine primitives; walls, doorways and eaves give GTAO corners to shade.
     auto const flat_material = [&](glm::vec3 const &colour) -> MaterialHandle {
@@ -286,6 +307,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             error("Could not create material: {}", describe(material.error()));
             return MaterialHandle{};
         }
+        scene_materials.push_back(*material);
         return material.value();
     };
 
@@ -453,7 +475,10 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         constexpr auto skull_position = glm::vec3{0.0F, 0.0F, -8.5F};
         constexpr float skull_scale = 8.0F;
 
-        auto const skull_model = load_or_fallback("assets/models/scattering_skull.glb");
+        auto const previous_skull_model =
+                std::exchange(skull_model_, load_or_fallback("assets/models/scattering_skull.glb"));
+        release_previous(previous_skull_model);
+        auto const skull_model = skull_model_;
 
         // On a failed load this is the shared engine cube, whose materials must not be touched.
         if (skull_model != engine_models.cube) {
@@ -538,13 +563,17 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .wind_strength = 0.28F,
             .max_shadow_cascade = GpuMaterial::no_shadow_cascade,
     };
-    auto const grass_material_result = renderer.create_material(grass_material_info_, "grass");
-
-    if (!grass_material_result) {
-        error("Could not create grass material: {}", describe(grass_material_result.error()));
+    if (grass_material_.valid()) {
+        if (auto const updated = renderer.update_material(grass_material_, grass_material_info_); !updated) {
+            error("Could not reset grass material: {}", describe(updated.error()));
+        }
+    } else if (auto const created = renderer.create_material(grass_material_info_, "grass"); created) {
+        grass_material_ = *created;
     } else {
-        grass_material_ = *grass_material_result;
+        error("Could not create grass material: {}", describe(created.error()));
+    }
 
+    if (grass_material_.valid()) {
         // One entity owns every blade's transform; per-blade entities made spawning, iteration and the play() clone
         // expensive.
         auto const grass_field_entity = GeneratedEntity{&scene, "grass_field"};
@@ -555,6 +584,10 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         grass_field_entity_ = grass_field_entity;
 
         rebuild_grass_field(scene);
+    }
+
+    for (auto const material: scene_materials) {
+        renderer.release_material(material);
     }
 }
 

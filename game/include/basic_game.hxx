@@ -9,6 +9,7 @@
 #include "assets/model.hxx"
 #include "player_camera.hxx"
 #include "player_controller.hxx"
+#include "scene/script_handle.hxx"
 #include "terrain/terrain_mesh.hxx"
 
 struct GrassParams {
@@ -49,7 +50,10 @@ private:
     PlayerController player_controller_;
     PlayerCamera player_camera_;
 
+    // on_populate() runs again on every Ctrl+R, so what it creates outside the scene is kept here and reused.
     ModelHandle cube_model_{};
+    ModelHandle skull_model_{};
+    ScriptHandle enemy_ai_script_{};
     glm::vec3 cube_half_extents_{0.5F};
 
     MaterialHandle grass_material_{};
