@@ -32,6 +32,7 @@
 #include "scene/editor_camera.hxx"
 #include "scene/hierarchy_model.hxx"
 #include "scene/input_events.hxx"
+#include "scripting/script_widget.hxx"
 #include "serialisation/scene_serialisation.hxx"
 #include "terrain/terrain_world.hxx"
 
@@ -178,6 +179,9 @@ struct Application {
     bool has_last_mouse_position = false;
 
     gui::TerminalWidget terminal_widget;
+
+    // Lua console for the editor scene; disabled while playing.
+    gui::ScriptWidget script_widget;
 
     // Shared by the "Load Model" panel and the Inspector's model picker; `model_browse_target` says which opened it.
     gui::FileBrowser model_browser;

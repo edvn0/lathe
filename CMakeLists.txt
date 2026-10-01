@@ -363,6 +363,73 @@ CPMAddPackage(
     DOWNLOAD_ONLY YES
 )
 
+# Header-only toasts. Only src/rendering/toast.cxx includes it (see gui::toast_*).
+CPMAddPackage(
+    NAME ImGuiNotify
+    GITHUB_REPOSITORY TyomaVader/ImGuiNotify
+    GIT_TAG d00e45f8d6b1e094bc9288d20eb3d2840f6a7d73
+    GIT_SHALLOW NO
+    DOWNLOAD_ONLY YES
+    # The dismiss button erases the toast and then keeps reading through the erased element.
+    PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/imgui_notify_dismiss_button.patch"
+)
+
+# ------------------------------------------------------------------------------
+# Scripting: Lua 5.4 (compiled as C; errors are setjmp/longjmp) + sol2.
+# ------------------------------------------------------------------------------
+
+CPMAddPackage(
+    NAME lua
+    GITHUB_REPOSITORY lua/lua
+    GIT_TAG v5.4.8
+    DOWNLOAD_ONLY YES
+)
+
+# The core plus only the libraries the sandbox opens. io/os/package(loadlib)/debug/coroutine/utf8 and linit.c
+# (which references all of them) are not in the binary at all. lua.c, onelua.c and ltests.c are front ends/tests.
+set(
+    lathe_lua_sources
+    lapi.c lcode.c lctype.c ldebug.c ldo.c ldump.c lfunc.c lgc.c llex.c lmem.c lobject.c lopcodes.c
+    lparser.c lstate.c lstring.c ltable.c ltm.c lundump.c lvm.c lzio.c
+    lauxlib.c lbaselib.c lstrlib.c ltablib.c lmathlib.c
+)
+list(TRANSFORM lathe_lua_sources PREPEND "${lua_SOURCE_DIR}/")
+
+add_library(lua STATIC ${lathe_lua_sources})
+add_library(lua::lua ALIAS lua)
+
+# C on purpose: compiling Lua as C++ makes it throw, which needs -fexceptions in the scripting module and breaks its
+# shared PCH. No LUA_USE_POSIX/LINUX: those pull in _setjmp/dlopen/mkstemp, which -std=c17 doesn't declare.
+set_target_properties(
+    lua
+    PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED YES
+        C_EXTENSIONS NO
+)
+target_include_directories(lua PUBLIC "${lua_SOURCE_DIR}")
+
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(lua PRIVATE -w)
+endif()
+
+if(UNIX)
+  target_link_libraries(lua PRIVATE m)
+endif()
+
+CPMAddPackage(
+    NAME sol2
+    GITHUB_REPOSITORY ThePhD/sol2
+    GIT_TAG v3.5.0
+    DOWNLOAD_ONLY YES
+)
+
+# sol2's own CMakeLists needs CMake 3.26 and drags in FetchContent/LuaBuild; the headers are all we need.
+add_library(sol2 INTERFACE)
+add_library(sol2::sol2 ALIAS sol2)
+target_include_directories(sol2 INTERFACE "${sol2_SOURCE_DIR}/include")
+target_link_libraries(sol2 INTERFACE lua::lua)
+
 CPMAddPackage(
     NAME tinyexr
     GITHUB_REPOSITORY syoyo/tinyexr
@@ -486,6 +553,15 @@ if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
 
   # imgui_internal.h trips -Wconversion, which -Werror turns into an error.
   mark_target_includes_system(imgui)
+
+  # Paths as laid out at the pinned commit; the header lives next to the example backends.
+  set(imgui_notify_include_dir "${ImGuiNotify_SOURCE_DIR}/unixExample/backends")
+  set(imgui_notify_icons_dir "${ImGuiNotify_SOURCE_DIR}/unixExample/fonts")
+
+  add_library(imgui_notify INTERFACE)
+  target_include_directories(imgui_notify INTERFACE "${imgui_notify_include_dir}" "${imgui_notify_icons_dir}")
+  target_link_libraries(imgui_notify INTERFACE imgui)
+  mark_target_includes_system(imgui_notify)
 endif()
 
 mark_target_includes_system(meshoptimizer)
@@ -665,6 +741,8 @@ mark_target_includes_system(GPUOpen::VulkanMemoryAllocator)
 mark_target_includes_system(fastgltf::fastgltf)
 mark_target_includes_system(glm::glm)
 mark_target_includes_system(EnTT::EnTT)
+mark_target_includes_system(lua)
+mark_target_includes_system(sol2::sol2)
 
 
 include("${CMAKE_SOURCE_DIR}/cmake/shader_push_constant_reflection.cmake")
@@ -735,7 +813,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/renderdoc_config.cmake")
 
 # ------------------------------------------------------------------------------
 # Module libraries, in dependency order:
-# core < gpu < assets < physics < scene < terrain < rendering < serialisation < app
+# core < gpu < assets < physics < scene < terrain < rendering < serialisation < scripting < app
 # ------------------------------------------------------------------------------
 
 add_subdirectory(src/core)
@@ -746,6 +824,7 @@ add_subdirectory(src/scene)
 add_subdirectory(src/terrain)
 add_subdirectory(src/rendering)
 add_subdirectory(src/serialisation)
+add_subdirectory(src/scripting)
 add_subdirectory(src/app)
 
 # ------------------------------------------------------------------------------
@@ -767,7 +846,7 @@ add_library(
 target_link_libraries(
     lathe-core
     INTERFACE
-        "$<LINK_GROUP:RESCAN,engine_app,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_assets,engine_gpu,engine_core>"
+        "$<LINK_GROUP:RESCAN,engine_app,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_assets,engine_gpu,engine_core>"
 )
 
 add_library(

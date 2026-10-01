@@ -44,6 +44,8 @@ target_link_libraries(
         meshoptimizer
         efsw
         imgui
+        lua::lua
+        sol2::sol2
         tinyexr
         ktx
         BS_thread_pool
@@ -60,4 +62,9 @@ target_compile_definitions(
         GLM_ENABLE_EXPERIMENTAL
         SLANG_ROOT_PATH="${slang_root}"
         LATHE_ENABLE_VALIDATION=$<BOOL:${LATHE_ENABLE_VALIDATION}>
+        # One sol2 configuration for every TU (ODR). SOL_NO_EXCEPTIONS is left to sol2's own __EXCEPTIONS detection
+        # so LATHE_ENABLE_EXCEPTIONS=ON still works.
+        SOL_ALL_SAFETIES_ON=1
+        SOL_PRINT_ERRORS=0
+        SOL_USING_CXX_LUA=0
 )
