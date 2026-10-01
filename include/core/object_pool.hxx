@@ -122,7 +122,9 @@ public:
             return std::nullopt;
         }
 
-        return HolderT{
+        // Built in place, so no temporary Holder is moved into the optional.
+        return std::optional<HolderT>{
+                std::in_place,
                 *this,
                 allocation->first,
         };
