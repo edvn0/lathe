@@ -188,6 +188,11 @@ public struct UBO {
     public uint cluster_grid_y;
     public uint cluster_grid_z;
     public uint cluster_light_capacity;
+
+    // Screen-size light LOD, see light_screen_fade() in light_clusters.slang. fade of 0 disables it.
+    public float light_lod_pixel_scale;
+    public float light_lod_cull_radius_pixels;
+    public float light_lod_fade_radius_pixels;
 };
 
 public struct PC

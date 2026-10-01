@@ -2158,6 +2158,22 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             renderer->set_fog_settings(fog);
         }
 
+        ImGui::SeparatorText("Light LOD");
+        auto light_lod = renderer->light_lod_settings();
+        bool light_lod_dirty = false;
+        light_lod_dirty |= ImGui::Checkbox("Screen-size light culling", &light_lod.enabled);
+        ImGui::BeginDisabled(!light_lod.enabled);
+        light_lod_dirty |= ImGui::SliderFloat("Cull below (px)", &light_lod.cull_radius_pixels, 0.0F, 32.0F, "%.1f");
+        ImGui::SetItemTooltip("On-screen radius of a light's range below which it is dropped before clustering.");
+        light_lod_dirty |=
+                ImGui::SliderFloat("Full strength at (px)", &light_lod.fade_radius_pixels, 0.0F, 64.0F, "%.1f");
+        ImGui::SetItemTooltip("Lights fade in between the cull radius and this one.");
+        ImGui::EndDisabled();
+        if (light_lod_dirty) {
+            light_lod.fade_radius_pixels = std::max(light_lod.fade_radius_pixels, light_lod.cull_radius_pixels);
+            renderer->set_light_lod_settings(light_lod);
+        }
+
         ImGui::SeparatorText("Punctual lights");
         auto &registry = active_scene()->get_registry();
 

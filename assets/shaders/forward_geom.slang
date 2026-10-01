@@ -324,8 +324,10 @@ var base_colour = base_sample.xyz *
                 break;
             }
 
-            punctual_contribution += shade_light(pc.lights[light_index], input.world_position, shading_normal,
-                                                 view_direction, base_colour, metallic, roughness);
+            const GpuLight light = pc.lights[light_index];
+            punctual_contribution += shade_light(light, input.world_position, shading_normal, view_direction,
+                                                 base_colour, metallic, roughness) *
+                                     light_screen_fade(ubo, light);
 
             if (lane_next == light_index) {
                 ++cursor;
@@ -334,8 +336,10 @@ var base_colour = base_sample.xyz *
         }
     } else {
         for (uint light_index = 0; light_index < pc.light_count; ++light_index) {
-            punctual_contribution += shade_light(pc.lights[light_index], input.world_position, shading_normal,
-                                                 view_direction, base_colour, metallic, roughness);
+            const GpuLight light = pc.lights[light_index];
+            punctual_contribution += shade_light(light, input.world_position, shading_normal, view_direction,
+                                                 base_colour, metallic, roughness) *
+                                     light_screen_fade(ubo, light);
         }
     }
 
