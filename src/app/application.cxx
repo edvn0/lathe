@@ -302,6 +302,97 @@ namespace {
         return std::format("material:{}", name);
     }
 
+    // Lighting > Debug's cluster grid: a preset or the four dimensions, applied as they change so the heatmap
+    // follows, and what the latest frame made of them. `refused` holds an edit past a limit, which stays in the
+    // sliders with the reason until it is fixed.
+    auto draw_cluster_grid_settings(Renderer &renderer, std::optional<ClusterGridSettings> &refused) -> void {
+        auto grid = refused.value_or(renderer.cluster_grid());
+        bool changed = false;
+
+        auto const preset = std::ranges::find(cluster_grid_presets, grid, &ClusterGridPreset::grid);
+        std::string const preview =
+                preset == cluster_grid_presets.end() ? std::string{"Custom"} : std::string{preset->name};
+
+        if (ImGui::BeginCombo("Cluster grid", preview.c_str())) {
+            for (auto const &option: cluster_grid_presets) {
+                bool const selected = option.grid == grid;
+                auto const label =
+                        std::format("{} ({}x{}x{}, {} per cluster)", option.name, option.grid.tiles_x,
+                                    option.grid.tiles_y, option.grid.depth_slices, option.grid.light_capacity);
+
+                if (ImGui::Selectable(label.c_str(), selected)) {
+                    grid = option.grid;
+                    changed = true;
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        auto const slider = [&](char const *label, std::uint32_t &value, std::uint32_t maximum, char const *tooltip,
+                                ImGuiSliderFlags flags = ImGuiSliderFlags_None) {
+            auto edited = static_cast<int>(value);
+            if (ImGui::SliderInt(label, &edited, 1, static_cast<int>(maximum), "%d",
+                                 flags | ImGuiSliderFlags_AlwaysClamp)) {
+                value = static_cast<std::uint32_t>(edited);
+                changed = true;
+            }
+            ImGui::SetItemTooltip("%s", tooltip);
+        };
+
+        slider("Tiles across", grid.tiles_x, cluster_grid_maximum_tiles,
+               "Screen columns. More gives each pixel fewer lights to shade, at more build work.");
+        slider("Tiles down", grid.tiles_y, cluster_grid_maximum_tiles,
+               "Screen rows. Tiles split the view evenly, so 9 rows to 16 columns keeps them square at 16:9.");
+        slider("Depth slices", grid.depth_slices, cluster_grid_maximum_depth_slices,
+               "Exponential slices between the near and far planes. More separates lights at different depths.");
+        slider("Lights per cluster", grid.light_capacity, cluster_grid_maximum_light_capacity,
+               "List capacity. A cluster touching more lights drops the highest-indexed ones (magenta in the "
+               "heatmap). Costs memory, not shading time.",
+               ImGuiSliderFlags_Logarithmic);
+
+        if (changed) {
+            if (auto applied = renderer.set_cluster_grid(grid); applied) {
+                refused.reset();
+            } else {
+                refused = grid;
+            }
+        }
+
+        auto const mebibytes = static_cast<double>(cluster_buffer_bytes(grid)) / (1024.0 * 1024.0);
+        ImGui::TextDisabled("%u clusters, %.1f MiB per frame in flight", cluster_count(grid), mebibytes);
+
+        if (refused) {
+            auto const reason = validate_cluster_grid(*refused);
+            ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.40F, 1.0F), "Not applied: %s",
+                               reason ? "" : reason.error().c_str());
+            return;
+        }
+
+        auto const &stats = renderer.last_cluster_stats();
+        if (!stats.valid || stats.grid != grid) {
+            return;
+        }
+
+        auto const total = cluster_count(stats.grid);
+        auto const occupied_share = total == 0 ? 0.0 : 100.0 * stats.occupied_clusters / total;
+        auto const average =
+                stats.occupied_clusters == 0 ? 0.0 : static_cast<double>(stats.stored_lights) / stats.occupied_clusters;
+
+        ImGui::Text("Occupied clusters: %u (%.0f%%)", stats.occupied_clusters, occupied_share);
+        ImGui::Text("Lights per occupied cluster: %.1f average, %u most", average, stats.maximum_lights);
+
+        if (stats.overflowing_clusters == 0) {
+            ImGui::Text("Overflowing clusters: 0");
+        } else {
+            ImGui::TextColored(ImVec4(1.0F, 0.3F, 1.0F, 1.0F), "Overflowing clusters: %u", stats.overflowing_clusters);
+            ImGui::SetItemTooltip("These drop lights. Raise Lights per cluster, or refine the grid so each cluster "
+                                  "covers less of the scene.");
+        }
+    }
+
     [[nodiscard]] auto is_material_pending_deletion(std::span<Application::PendingDeletion const> pending_deletions,
                                                     std::string_view name) -> bool {
         auto const label = material_deletion_label(name);
@@ -2015,6 +2106,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         if (ImGui::Checkbox("Cluster light-count heatmap", &cluster_heatmap)) {
             renderer->set_cluster_debug_heatmap(cluster_heatmap);
         }
+        draw_cluster_grid_settings(*renderer, refused_cluster_grid);
         ImGui::EndDisabled();
 
         auto light = renderer->directional_light();

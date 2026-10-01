@@ -222,6 +222,9 @@ auto BenchmarkRun::to_json(BenchmarkEnvironment const &environment) const -> std
     json += "  \"schema\": 1,\n";
     json += std::format("  \"device\": \"{}\",\n", json_escape(environment.device_name));
     json += std::format("  \"render_extent\": [{}, {}],\n", environment.render_width, environment.render_height);
+    json += std::format("  \"cluster_grid\": [{}, {}, {}, {}],\n", environment.cluster_grid.tiles_x,
+                        environment.cluster_grid.tiles_y, environment.cluster_grid.depth_slices,
+                        environment.cluster_grid.light_capacity);
     json += std::format("  \"seed\": {},\n", options_.seed);
     json += std::format("  \"keyframes\": {},\n", keyframes_.size());
     json += std::format("  \"frames\": {},\n", measured_frames_);

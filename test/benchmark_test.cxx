@@ -157,6 +157,7 @@ TEST_CASE("benchmark run warms up until streaming settles, then records one lap"
     CHECK(json.find("\"streaming_settled\": true") != std::string::npos);
     CHECK(json.find("\"id\": \"forward_pass\"") != std::string::npos);
     CHECK(json.find("a \\\"quoted\\\" gpu") != std::string::npos);
+    CHECK(json.find("\"cluster_grid\": [16, 9, 24, 256]") != std::string::npos);
 }
 
 TEST_CASE("a fixed seed reproduces random sequences, per stream") {

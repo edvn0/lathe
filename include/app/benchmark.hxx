@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "rendering/cluster_grid.hxx"
 #include "rendering/render_stage.hxx"
 #include "scene/camera_path.hxx"
 
@@ -62,6 +63,7 @@ struct BenchmarkEnvironment {
     std::string device_name;
     std::uint32_t render_width = 0;
     std::uint32_t render_height = 0;
+    ClusterGridSettings cluster_grid{};
 };
 
 class BenchmarkRun {

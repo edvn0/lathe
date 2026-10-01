@@ -30,10 +30,15 @@ little about how passes compare on one.
 ./lathe --benchmark=perf/head.json [--benchmark-frames=600]
                [--benchmark-warmup=60] [--benchmark-max-warmup=1200]
                [--seed=1337] [--benchmark-screenshots]
+               [--cluster-grid=16x9x24:256]
 ```
 
 `--benchmark-screenshots` saves one screenshot per keyframe into
 `screenshots/`, which shows what the run looked at.
+
+`--cluster-grid=XxYxZ[:capacity]` sets the clustered-lighting grid (see
+`docs/clustered-lighting.md`), so two runs of one build can compare grids.
+The JSON records it as `cluster_grid`.
 
 ## Locally
 

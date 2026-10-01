@@ -47,8 +47,10 @@ def percent_change(base: float, head: float) -> float | None:
 def describe_run(label: str, result: dict) -> str:
     width, height = result["render_extent"]
     settled = "" if result.get("streaming_settled", True) else ", **streaming never settled**"
+    grid = result.get("cluster_grid")
+    clusters = f", clusters {grid[0]}x{grid[1]}x{grid[2]}:{grid[3]}" if grid else ""
     return (
-        f"- **{label}**: {result['device']}, {width}x{height}, seed {result['seed']}, "
+        f"- **{label}**: {result['device']}, {width}x{height}, seed {result['seed']}{clusters}, "
         f"{result['frames']} frames over {result['keyframes']} keyframes "
         f"(after {result['warmup_frames']} warmup){settled}"
     )
@@ -59,6 +61,9 @@ def mismatches(base: dict, head: dict) -> list[str]:
     for key in ("device", "render_extent", "seed", "keyframes", "frames"):
         if base.get(key) != head.get(key):
             notes.append(f"`{key}` differs ({base.get(key)} vs {head.get(key)}) -- numbers may not be comparable.")
+    # Older runs don't record the grid.
+    if "cluster_grid" in base and "cluster_grid" in head and base["cluster_grid"] != head["cluster_grid"]:
+        notes.append(f"`cluster_grid` differs ({base['cluster_grid']} vs {head['cluster_grid']}).")
     return notes
 
 

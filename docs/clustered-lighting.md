@@ -6,9 +6,12 @@ not how many exist. The renderer accepts up to `maximum_light_count` = 65,536 of
 
 ## Grid
 
-16 x 9 screen tiles by 24 depth slices (`cluster_grid_*`, mirrored in
-`scene_types.slang` and `renderer.hxx`). The cluster count is fixed, so
-resizing never touches the cluster buffers.
+Screen tiles by depth slices, 16 x 9 x 24 by default. The grid and the
+per-cluster capacity are `ClusterGridSettings` (`rendering/cluster_grid.hxx`),
+set at runtime with `Renderer::set_cluster_grid` and passed to the shaders in
+`UBO::cluster_grid_*` and `UBO::cluster_light_capacity`. The grid doesn't
+follow the window size, so resizing never touches the cluster buffers. See
+[Tuning the grid](#tuning-the-grid).
 
 - **Tiles** are cut in NDC, not pixels. The fragment shader projects its
   world position with `view_projection` to find its tile, and the build
@@ -38,21 +41,24 @@ every cluster's count.
    `visible_lights_buffer` as view-space spheres plus light indices. A
    shared-memory prefix sum keeps them in light-index order. At 65k lights this
    is 256 iterations.
-2. **`light_cluster.slang`**: one workgroup per screen tile (144 in all).
+2. **`light_cluster.slang`**: one workgroup per screen tile (144 for the
+   default grid).
    - The group streams the visible list and keeps the lights that touch the
      tile's four side planes, in shared-memory batches of 1024.
-   - Each batch is then assigned to the tile's 24 depth slices. Every wave
+   - Each batch is then assigned to the tile's depth slices. Every wave
      owns some slices and walks the batch one wave at a time. It tests each
      sphere against the cluster's view-space AABB and appends hits with a
      ballot prefix count.
 
-   No atomics are involved, so each cluster's list comes out sorted by light
-   index and the output is deterministic.
+   The lists use no atomics, so each comes out sorted by light index and the
+   output is deterministic. Each group then adds its clusters to four
+   statistics with one atomic per wave (see [Debugging](#debugging)).
 
-`cluster_lights_buffer` holds `cluster_count` counts, followed by
-`cluster_count * cluster_light_capacity` (256) indices: 3.4 MiB per frame in
-flight. When a cluster has more than 256 lights, it keeps the lowest light
-indices, and its count still reports the true total.
+`cluster_lights_buffer` holds the 16 bytes of statistics, then one count per
+cluster, then `light_capacity` indices per cluster (`cluster_buffer_bytes`):
+3.4 MiB per frame in flight for the default grid. When a cluster has more
+lights than its capacity, it keeps the lowest light indices, and its count
+still reports the true total.
 
 ## Shading (`forward_geom.slang`)
 
@@ -76,10 +82,10 @@ The wave ops need subgroup arithmetic in the fragment stage. Every GPU with the
   Past that, `submit_point_light` and `submit_spot_light` return
   `capacity_exceeded`. The directional light is separate, and it is the only
   light that casts shadows.
-- **Lights per cluster:** 256 (`cluster_light_capacity`). A cluster that
-  touches more keeps the lowest light indices and silently drops the rest, so
-  those lights go missing from that part of the screen. The heatmap shows such
-  clusters in magenta.
+- **Lights per cluster:** `light_capacity`, 256 by default and at most 1,024. A
+  cluster that touches more keeps the lowest light indices and drops the rest,
+  so those lights go missing from that part of the screen. The heatmap shows
+  such clusters in magenta, and the statistics count them.
 
   Normal scenes stay far below 256. Overflow takes very dense light fields
   seen from a distance, because a distant cluster spans a large area. In a
@@ -87,11 +93,56 @@ The wave ops need subgroup arithmetic in the fragment stage. Every GPU with the
   0.6 per square metre, each with a range of 2-6 m), clusters covering up to
   11% of the screen overflowed, and 0-5% in most views.
 
-  If a scene needs more, raise `cluster_light_capacity` in both
-  `renderer.hxx` and `scene_types.slang`. Each step of 256 costs another
-  3.4 MiB per frame in flight, and distant pixels pay to shade the extra
-  lights. A finer `cluster_grid_*` also helps, because smaller clusters hold
-  fewer lights.
+  If a scene needs more, raise the capacity or refine the grid (see below).
+- **Grid size:** at most 64 x 64 tiles and 64 depth slices, with the lists at
+  most 128 MiB per frame in flight. `validate_cluster_grid` refuses anything
+  past those.
+
+## Tuning the grid
+
+Lighting > Debug has a **Cluster grid** preset menu and a slider for each
+dimension. Changes apply from the next frame, and each frame in flight
+reallocates its lists the next time it is prepared, so the heatmap follows
+the sliders.
+
+| Preset | Grid | Capacity | Clusters | Lists per frame |
+| --- | --- | --- | --- | --- |
+| Coarse | 8 x 5 x 16 | 256 | 640 | 0.6 MiB |
+| Default | 16 x 9 x 24 | 256 | 3,456 | 3.4 MiB |
+| Fine | 32 x 18 x 32 | 128 | 18,432 | 9.1 MiB |
+| Very fine | 48 x 27 x 48 | 128 | 62,208 | 30.6 MiB |
+
+The trade-off:
+
+- **Finer** grids give each fragment fewer lights that miss it, so the forward
+  pass shades less. Clusters overflow less, so a smaller capacity is enough.
+  The build does more work: one workgroup per tile, each walking every
+  visible light, so the Light Clustering stage grows with the tile count.
+- **Coarser** grids are cheaper to build, but every pixel in a cluster shades
+  all its lights. That suits scenes with few lights, or lights that are large
+  next to the cluster size.
+- **Depth slices** matter when lights stack up along the view direction. Lights
+  spread over a wide area seen at a grazing angle (a street, a field) need
+  more slices.
+- **Capacity** costs memory, not shading time. Only clusters that actually
+  hold that many lights pay for them.
+
+The fragment shader shades the union of the lists in its wave, so a finer
+grid saves less in practice than the per-cluster averages suggest.
+
+Under the sliders, the panel shows the latest frame's statistics. They are
+read back a frames-in-flight cycle late:
+
+- **Occupied clusters:** clusters touching at least one light.
+- **Lights per occupied cluster:** the average and the most. The most counts
+  lights the cluster dropped.
+- **Overflowing clusters:** clusters past the capacity, which drop lights.
+  They are shown in magenta when there are any.
+
+To compare grids, benchmark one build twice with `--cluster-grid=XxYxZ` or
+`--cluster-grid=XxYxZ:capacity` (`docs/perf-benchmark.md`). Look at the
+Light Clustering and Forward Pass stages. The flag also sets the grid for a
+normal run.
 
 ## Debugging
 
@@ -104,7 +155,10 @@ Lighting > Debug has two toggles:
   fragment by its cluster's light count:
   - blue through red for 1 up to 64 or more lights,
   - black for none,
-  - magenta past `cluster_light_capacity`, where lights are being dropped.
+  - magenta past the capacity, where lights are being dropped.
+
+`Renderer::last_cluster_stats` returns the statistics behind the panel's
+numbers.
 
 The two dispatches share one GPU timestamp, so they show in the frame-timing
 plot and as `light_clustering` in benchmark output.

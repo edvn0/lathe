@@ -19,6 +19,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
@@ -48,6 +49,7 @@
 #include "gpu/gpu_resource_table.hxx"
 #include "gpu/image_storage.hxx"
 #include "gpu/sampler_storage.hxx"
+#include "rendering/cluster_grid.hxx"
 #include "rendering/forward_target.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/render_passes.hxx"
@@ -211,12 +213,18 @@ struct UBO {
     float cluster_z_scale = 1.0F;
     float cluster_z_bias = 0.0F;
 
-    // 0 shades every light per fragment; otherwise the forward pass reads the cluster light masks.
+    // 0 shades every light per fragment; otherwise the forward pass reads the cluster light lists.
     std::uint32_t clustered_lighting = 1;
     std::uint32_t cluster_debug_heatmap = 0;
+
+    // ClusterGridSettings of the frame.
+    std::uint32_t cluster_grid_x = 16;
+    std::uint32_t cluster_grid_y = 9;
+    std::uint32_t cluster_grid_z = 24;
+    std::uint32_t cluster_light_capacity = 256;
 };
 
-static_assert(sizeof(UBO) == 732, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 748, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 288);
 static_assert(offsetof(UBO, cascade_atlas_offset_u) == 592);
@@ -558,6 +566,15 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto cluster_debug_heatmap() const noexcept -> bool { return cluster_debug_heatmap_; }
     auto set_cluster_debug_heatmap(bool enabled) noexcept -> void { cluster_debug_heatmap_ = enabled; }
 
+    // The clustered-lighting grid. A new one applies from the next frame: each frame in flight resizes its cluster
+    // lists the next time it is prepared. A grid validate_cluster_grid() rejects is refused with its reason.
+    [[nodiscard]] auto cluster_grid() const noexcept -> ClusterGridSettings const & { return cluster_grid_; }
+    auto set_cluster_grid(ClusterGridSettings const &grid) -> std::expected<void, std::string>;
+
+    // light_cluster.slang's statistics from the latest frame whose readback has landed; invalid while clustering is
+    // off.
+    [[nodiscard]] auto last_cluster_stats() const noexcept -> ClusterStats const & { return last_cluster_stats_; }
+
     // Captures the viewport target (the scene alone) or the whole composited window. The viewport is only there in the
     // editor; fullscreen play falls back to the window.
     auto request_screenshot(ScreenshotSource source) noexcept -> void;
@@ -630,16 +647,6 @@ private:
     // plus 20 bytes for light_cull.slang's visible list.
     static constexpr std::uint32_t maximum_light_count = 65'536;
 
-    // Mirror the cluster constants in scene_types.slang: NDC tiles by exponential depth slices, each cluster a
-    // sorted list of up to cluster_light_capacity light indices. A cluster touching more lights drops the highest
-    // indices; see "Limits" in docs/clustered-lighting.md.
-    static constexpr std::uint32_t cluster_grid_x = 16;
-    static constexpr std::uint32_t cluster_grid_y = 9;
-    static constexpr std::uint32_t cluster_grid_z = 24;
-    static constexpr std::uint32_t cluster_tile_count = cluster_grid_x * cluster_grid_y;
-    static constexpr std::uint32_t cluster_count = cluster_tile_count * cluster_grid_z;
-    static constexpr std::uint32_t cluster_light_capacity = 256;
-
     // Camera frustum plus one per shadow cascade, 6 planes each.
     static constexpr std::uint32_t cull_plane_count = 6 * (1 + shadow_cascade_count);
 
@@ -689,9 +696,15 @@ private:
         // visible count.
         Buffer visible_lights_buffer{};
 
-        // light_cluster.slang's output, read by the forward fragment shader: cluster_count counts, then
-        // cluster_count * cluster_light_capacity light indices.
+        // light_cluster.slang's output, laid out for cluster_grid (cluster_buffer_bytes): the statistics, then the
+        // counts and lists the forward fragment shader reads.
         Buffer cluster_lights_buffer{};
+        ClusterGridSettings cluster_grid{};
+
+        // Host-visible copy of the statistics, read when this frame slot is next prepared.
+        Buffer cluster_stats_readback_buffer{};
+        ClusterGridSettings cluster_stats_grid{};
+        bool cluster_stats_pending = false;
 
         // Handed to scene overlays as OverlayRecordContext::view_projection.
         glm::mat4 view_projection{1.0F};
@@ -893,6 +906,11 @@ private:
     // slot was used into last_frame_stats_.
     auto consume_culled_readback(RendererFrame &frame) -> void;
 
+    // Reads the cluster statistics recorded the last time this frame slot was used into last_cluster_stats_, then
+    // resizes the slot's cluster lists to cluster_grid_ if it changed. The slot's fence has been waited on.
+    [[nodiscard]]
+    auto prepare_cluster_buffers(RendererFrame &frame) -> std::expected<void, RendererError>;
+
     [[nodiscard]]
     auto resolve_frame_targets(RendererFrame const &frame) const -> std::expected<FrameTargets, RendererError>;
 
@@ -1021,6 +1039,8 @@ private:
     bool meshlet_culling_ = true;
     bool clustered_lighting_ = true;
     bool cluster_debug_heatmap_ = false;
+    ClusterGridSettings cluster_grid_{};
+    ClusterStats last_cluster_stats_{};
     float light_icon_world_size_ = 0.5F;
 
     // Shared across frames in flight so unchanged tiles persist.
