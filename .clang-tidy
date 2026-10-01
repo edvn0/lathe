@@ -1,5 +1,5 @@
 # Enforced in CI (the clang-tidy job in .github/workflows/build.yml) and runnable locally with
-# `TARGET=linux-native ./compile.sh --tidy`; clangd also picks this file up.
+# `cargo xtask tidy`; clangd also picks this file up.
 #
 # Every modernize-* check is on. The exclusions below are checks that conflict with deliberate patterns here:
 #
