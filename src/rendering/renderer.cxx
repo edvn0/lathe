@@ -1876,7 +1876,14 @@ auto Renderer::retain_model(ModelHandle handle) -> void {
     ++slot->ref_count;
 }
 
-auto Renderer::release_model(ModelHandle handle) -> void { static_cast<void>(destroy_model(handle)); }
+auto Renderer::release_model(ModelHandle handle) -> void {
+    // Scenes outlive destroy(), which already freed every model.
+    if (!initialized_) {
+        return;
+    }
+
+    static_cast<void>(destroy_model(handle));
+}
 
 auto Renderer::register_model_name(ModelHandle handle, std::string_view name) -> void {
     static_cast<void>(assets_.models().register_asset(std::string{name}, handle));

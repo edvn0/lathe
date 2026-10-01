@@ -69,6 +69,11 @@ private:
     auto on_script_detached(entt::registry &, entt::entity) -> void;
     auto on_material_override_attached(entt::registry &, entt::entity) -> void;
     auto on_material_override_detached(entt::registry &, entt::entity) -> void;
+
+    // Release a StreamedModelTag entity's model reference exactly once, whichever component goes first.
+    auto on_model_destroyed(entt::registry &, entt::entity) -> void;
+    auto on_streamed_model_tag_destroyed(entt::registry &, entt::entity) -> void;
+
     auto connect_light_signals() -> void;
 
     template<typename T>
