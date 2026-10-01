@@ -45,7 +45,7 @@ struct TerrainParams {
 // One permutation table shared across samples. Reads are const, so it's safe to share between threads.
 class TerrainField {
 public:
-    explicit TerrainField(TerrainParams params) : params_{params}, noise_{params.seed} {}
+    explicit TerrainField(TerrainParams const &params) : params_{params}, noise_{params.seed} {}
 
     [[nodiscard]] auto height(float world_x, float world_z) const noexcept -> float;
 
