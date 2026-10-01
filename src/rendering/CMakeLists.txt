@@ -6,6 +6,7 @@
 add_library(
     engine_rendering
     STATIC
+        cluster_grid.cxx
         debug_renderer.cxx
         editor_icons.cxx
         engine_models.cxx

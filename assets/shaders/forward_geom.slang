@@ -178,14 +178,14 @@ float3 shade_light(GpuLight punctual_light, float3 world_position, float3 shadin
 }
 
 // Black (no lights) through blue, green and yellow to red at 64 or more lights in the cluster, and magenta past
-// cluster_light_capacity, where the cluster drops lights.
-float3 cluster_heatmap_colour(uint light_count)
+// the cluster's capacity, where it drops lights.
+float3 cluster_heatmap_colour(uint light_count, uint capacity)
 {
     if (light_count == 0) {
         return float3(0.0);
     }
 
-    if (light_count > cluster_light_capacity) {
+    if (light_count > capacity) {
         return float3(1.0, 0.0, 1.0);
     }
 
@@ -306,8 +306,9 @@ var base_colour = base_sample.xyz *
 
         cluster_light_count = pc.cluster_lights[cluster];
 
-        const uint stored_count = min(cluster_light_count, cluster_light_capacity);
-        const uint list_base = cluster_count + cluster * cluster_light_capacity;
+        const uint capacity = ubo.cluster_light_capacity;
+        const uint stored_count = min(cluster_light_count, capacity);
+        const uint list_base = cluster_count(ubo) + cluster * capacity;
         const uint list_end = 0xFFFFFFFFu;
 
         // Each lane's list is sorted by light index, so the wave merges them: every iteration shades the smallest
@@ -346,7 +347,7 @@ var base_colour = base_sample.xyz *
     float3 shaded_colour = ambient + directional_contribution + punctual_contribution + emissive;
 
     if (ubo.cluster_debug_heatmap != 0) {
-        shaded_colour = lerp(shaded_colour, cluster_heatmap_colour(cluster_light_count), 0.75);
+        shaded_colour = lerp(shaded_colour, cluster_heatmap_colour(cluster_light_count, ubo.cluster_light_capacity), 0.75);
     }
 
     if (ubo.shadow_debug_cascade_tint != 0) {

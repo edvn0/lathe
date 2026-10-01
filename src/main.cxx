@@ -45,6 +45,7 @@
 #include "maths/aabb.hxx"
 #include "physics/physics.hxx"
 #include "physics/physics_world.hxx"
+#include "rendering/cluster_grid.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
@@ -575,6 +576,19 @@ auto main(int argc, char **argv) -> int {
         return EXIT_FAILURE;
     }
 
+    // --cluster-grid=XxYxZ[:capacity] picks the clustered-lighting grid, for comparing grids in benchmarks.
+    std::optional<ClusterGridSettings> cluster_grid;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--cluster-grid="; arg.starts_with(prefix)) {
+            auto parsed = parse_cluster_grid(arg.substr(prefix.size()));
+            if (!parsed) {
+                error("Invalid --cluster-grid: {}", parsed.error());
+                return EXIT_FAILURE;
+            }
+            cluster_grid = *parsed;
+        }
+    }
+
     // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
         set_fixed_random_seed((*benchmark_options)->seed);
@@ -596,6 +610,12 @@ auto main(int argc, char **argv) -> int {
     if (!initialize_application(context, application)) {
         destroy_application(context, application);
         return EXIT_FAILURE;
+    }
+
+    if (cluster_grid) {
+        if (auto applied = application.renderer->set_cluster_grid(*cluster_grid); !applied) {
+            error("Invalid --cluster-grid: {}", applied.error());
+        }
     }
 
     application.on_startup();
@@ -712,6 +732,7 @@ auto main(int argc, char **argv) -> int {
                         .device_name = properties.deviceName,
                         .render_width = renderer_extent.width,
                         .render_height = renderer_extent.height,
+                        .cluster_grid = application.renderer->cluster_grid(),
                 });
 
                 if (written) {

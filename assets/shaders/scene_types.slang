@@ -98,16 +98,9 @@ public struct Material {
     public float _pad2 = 0.0F;
 };
 
-// Clustered lighting grid: screen tiles in NDC, exponential depth slices. Mirrors cluster_grid_* in renderer.hxx.
-public static const uint cluster_grid_x = 16;
-public static const uint cluster_grid_y = 9;
-public static const uint cluster_grid_z = 24;
-public static const uint cluster_tile_count = cluster_grid_x * cluster_grid_y;
-public static const uint cluster_count = cluster_tile_count * cluster_grid_z;
-
-// Light indices stored per cluster; a cluster past this keeps its lowest light indices. Mirrors
-// cluster_light_capacity in renderer.hxx.
-public static const uint cluster_light_capacity = 256;
+// Clustered lighting: the grid is set at runtime (UBO::cluster_grid_*, see ClusterGridSettings in cluster_grid.hxx).
+// light_cluster.slang sizes its shared per-slice arrays by this. Mirrors cluster_grid_maximum_depth_slices.
+public static const uint cluster_grid_maximum_depth_slices = 64;
 
 public enum class LightType : uint {
     point,
@@ -188,6 +181,13 @@ public struct UBO {
 
     // Non-zero tints the forward pass by the number of lights in each fragment's cluster.
     public uint cluster_debug_heatmap;
+
+    // The cluster grid: NDC tiles by exponential depth slices, each cluster a sorted list of up to
+    // cluster_light_capacity light indices.
+    public uint cluster_grid_x;
+    public uint cluster_grid_y;
+    public uint cluster_grid_z;
+    public uint cluster_light_capacity;
 };
 
 public struct PC
@@ -215,9 +215,9 @@ public struct PC
     public uint cull_flags;
     public uint cull_padding;
 
-    // Per-cluster light lists from light_cluster.slang: cluster_count counts, then cluster_count *
-    // cluster_light_capacity light indices. Only read by the forward fragment shader when UBO::clustered_lighting is
-    // set.
+    // Per-cluster light lists from light_cluster.slang: cluster_count(ubo) counts, then cluster_count(ubo) *
+    // UBO::cluster_light_capacity light indices. Only read by the forward fragment shader when
+    // UBO::clustered_lighting is set.
     public Ptr<uint> cluster_lights;
 };
 

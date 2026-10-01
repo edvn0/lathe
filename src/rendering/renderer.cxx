@@ -930,11 +930,10 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     shadow_atlas_ = std::move(*shadow_atlas);
 
-    // Mirrors the layouts in light_cull.slang and light_cluster.slang.
+    // Mirrors the layout in light_cull.slang. The cluster lists depend on the grid, so prepare_cluster_buffers()
+    // creates them.
     constexpr VkDeviceSize visible_lights_size =
             (sizeof(glm::vec4) + sizeof(std::uint32_t)) * VkDeviceSize{maximum_light_count} + sizeof(std::uint32_t);
-    constexpr VkDeviceSize cluster_lights_size =
-            sizeof(std::uint32_t) * VkDeviceSize{cluster_count} * (1 + VkDeviceSize{cluster_light_capacity});
 
     frames_.resize(frames_in_flight);
 
@@ -1104,21 +1103,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.visible_lights_buffer = std::move(*visible_lights);
 
-        // light_cluster.slang is the only writer.
-        auto cluster_lights = Buffer::create(context_, BufferCreateInfo{
-                                                               .size = cluster_lights_size,
-                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                               .memory = BufferMemory::device,
-                                                               .debug_name = "renderer.frame_cluster_lights",
-                                                       });
-
-        if (!cluster_lights) {
-            return std::unexpected(make_device_error(cluster_lights.error()));
-        }
-
-        frame.cluster_lights_buffer = std::move(*cluster_lights);
-
         auto targets = create_frame_targets(frame_index, create_info.extent);
 
         if (!targets) {
@@ -1269,6 +1253,7 @@ auto Renderer::destroy() noexcept -> void {
 
     // The frames' image targets are Holders, destroyed by frames_.clear() below, before image_storage_.
     for (auto &frame: frames_) {
+        frame.cluster_stats_readback_buffer.destroy();
         frame.cluster_lights_buffer.destroy();
         frame.visible_lights_buffer.destroy();
         frame.lights_buffer.destroy();
@@ -1292,6 +1277,7 @@ auto Renderer::destroy() noexcept -> void {
         frame.culled_readback_capacity = 0;
         frame.culled_readback_count = 0;
         frame.culled_readback_pending = false;
+        frame.cluster_stats_pending = false;
     }
 
     frames_.clear();
@@ -2164,6 +2150,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     auto &frame = frames_[frame_index];
 
+    if (auto cluster_buffers = prepare_cluster_buffers(frame); !cluster_buffers) {
+        clear_submissions();
+        return std::unexpected(cluster_buffers.error());
+    }
+
     frame.view_projection = matrices.projection * matrices.view;
 
     frame.draws.clear();
@@ -2631,7 +2622,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     // Cluster slices split [near, far] exponentially, so each slice is about as deep as it is wide on screen.
     auto const cluster_near = std::max(matrices.near_clip, 1e-4F);
     auto const cluster_far = std::max(matrices.far_clip, cluster_near * 2.0F);
-    auto const cluster_z_scale = static_cast<float>(cluster_grid_z) / std::log(cluster_far / cluster_near);
+    auto const cluster_z_scale =
+            static_cast<float>(frame.cluster_grid.depth_slices) / std::log(cluster_far / cluster_near);
     auto const cluster_z_bias = -std::log(cluster_near) * cluster_z_scale;
 
     UBO const ubo{
@@ -2690,6 +2682,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .cluster_z_bias = cluster_z_bias,
             .clustered_lighting = clustered_lighting_ ? 1U : 0U,
             .cluster_debug_heatmap = clustered_lighting_ && cluster_debug_heatmap_ ? 1U : 0U,
+            .cluster_grid_x = frame.cluster_grid.tiles_x,
+            .cluster_grid_y = frame.cluster_grid.tiles_y,
+            .cluster_grid_z = frame.cluster_grid.depth_slices,
+            .cluster_light_capacity = frame.cluster_grid.light_capacity,
     };
 
     if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {
@@ -2969,6 +2965,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             auto const visible_count_address =
                     visible_indices_address + (sizeof(std::uint32_t) * VkDeviceSize{maximum_light_count});
 
+            auto const cluster_stats_address = frame.cluster_lights_buffer.device_address;
+            auto const cluster_lists_address = cluster_stats_address + cluster_stats_bytes;
+
+            // light_cluster.slang accumulates into the statistics.
+            vkCmdFillBuffer(command_buffer, frame.cluster_lights_buffer.buffer, 0, cluster_stats_bytes, 0);
+
             bind_compute_node(pipeline_graph_, light_cull_pipeline_, command_buffer);
             gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, light_cull_pipeline);
 
@@ -2987,23 +2989,37 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             // A single workgroup walks every light, keeping the visible list in light-index order.
             vkCmdDispatch(command_buffer, 1, 1, 1);
 
-            VkBufferMemoryBarrier2 const visible_to_cluster{
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .buffer = frame.visible_lights_buffer.buffer,
-                    .offset = 0,
-                    .size = VK_WHOLE_SIZE,
+            std::array const before_cluster{
+                    VkBufferMemoryBarrier2{
+                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = frame.visible_lights_buffer.buffer,
+                            .offset = 0,
+                            .size = VK_WHOLE_SIZE,
+                    },
+                    VkBufferMemoryBarrier2{
+                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = frame.cluster_lights_buffer.buffer,
+                            .offset = 0,
+                            .size = cluster_stats_bytes,
+                    },
             };
 
             VkDependencyInfo const visible_dependency{
                     .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = 1,
-                    .pBufferMemoryBarriers = &visible_to_cluster,
+                    .bufferMemoryBarrierCount = static_cast<std::uint32_t>(before_cluster.size()),
+                    .pBufferMemoryBarriers = before_cluster.data(),
             };
 
             vkCmdPipelineBarrier2(command_buffer, &visible_dependency);
@@ -3017,37 +3033,93 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                     .visible_spheres_address = visible_spheres_address,
                     .visible_light_indices_address = visible_indices_address,
                     .visible_light_count_address = visible_count_address,
-                    .cluster_lights_address = frame.cluster_lights_buffer.device_address,
+                    .cluster_lights_address = cluster_lists_address,
+                    .cluster_stats_address = cluster_stats_address,
             };
 
             vkCmdPushConstants(command_buffer, light_cluster_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(cluster_pc),
                                &cluster_pc);
 
             // One workgroup per screen tile; each fills its tile's column of clusters.
-            vkCmdDispatch(command_buffer, cluster_tile_count, 1, 1);
+            vkCmdDispatch(command_buffer, cluster_tile_count(frame.cluster_grid), 1, 1);
 
             // The previous use of this frame slot's lists finished before its fence was waited on, so only the
-            // write-to-read edge needs a barrier.
-            VkBufferMemoryBarrier2 const clusters_to_forward{
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .buffer = frame.cluster_lights_buffer.buffer,
-                    .offset = 0,
-                    .size = VK_WHOLE_SIZE,
+            // write-to-read edges need barriers: the lists to the forward pass, the statistics to the readback copy.
+            std::array const after_cluster{
+                    VkBufferMemoryBarrier2{
+                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = frame.cluster_lights_buffer.buffer,
+                            .offset = cluster_stats_bytes,
+                            .size = VK_WHOLE_SIZE,
+                    },
+                    VkBufferMemoryBarrier2{
+                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = frame.cluster_lights_buffer.buffer,
+                            .offset = 0,
+                            .size = cluster_stats_bytes,
+                    },
             };
 
             VkDependencyInfo const cluster_dependency{
                     .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = 1,
-                    .pBufferMemoryBarriers = &clusters_to_forward,
+                    .bufferMemoryBarrierCount = static_cast<std::uint32_t>(after_cluster.size()),
+                    .pBufferMemoryBarriers = after_cluster.data(),
             };
 
             vkCmdPipelineBarrier2(command_buffer, &cluster_dependency);
+
+            VkBufferCopy2 const stats_region{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                    .srcOffset = 0,
+                    .dstOffset = 0,
+                    .size = cluster_stats_bytes,
+            };
+
+            VkCopyBufferInfo2 const stats_copy{
+                    .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+                    .srcBuffer = frame.cluster_lights_buffer.buffer,
+                    .dstBuffer = frame.cluster_stats_readback_buffer.buffer,
+                    .regionCount = 1,
+                    .pRegions = &stats_region,
+            };
+
+            vkCmdCopyBuffer2(command_buffer, &stats_copy);
+
+            VkBufferMemoryBarrier2 const stats_to_host{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                    .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                    .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                    .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = frame.cluster_stats_readback_buffer.buffer,
+                    .offset = 0,
+                    .size = cluster_stats_bytes,
+            };
+
+            VkDependencyInfo const stats_dependency{
+                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .bufferMemoryBarrierCount = 1,
+                    .pBufferMemoryBarriers = &stats_to_host,
+            };
+
+            vkCmdPipelineBarrier2(command_buffer, &stats_dependency);
+
+            frame.cluster_stats_grid = frame.cluster_grid;
+            frame.cluster_stats_pending = true;
         }
 
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool, end_query);
@@ -3154,6 +3226,78 @@ auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
     }
 
     last_frame_stats_.visible_instance_count = visible_instance_count;
+}
+
+auto Renderer::set_cluster_grid(ClusterGridSettings const &grid) -> std::expected<void, std::string> {
+    if (auto valid = validate_cluster_grid(grid); !valid) {
+        return valid;
+    }
+
+    cluster_grid_ = grid;
+    return {};
+}
+
+auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<void, RendererError> {
+    if (frame.cluster_stats_pending) {
+        frame.cluster_stats_pending = false;
+
+        if (auto invalidated = frame.cluster_stats_readback_buffer.invalidate(0, cluster_stats_bytes); !invalidated) {
+            error("[Renderer] Failed to invalidate the cluster statistics readback buffer");
+        } else if (auto const *stats = frame.cluster_stats_readback_buffer.mapped_data_as<std::uint32_t const>();
+                   stats != nullptr) {
+            last_cluster_stats_ = ClusterStats{
+                    .grid = frame.cluster_stats_grid,
+                    .occupied_clusters = stats[0],
+                    .overflowing_clusters = stats[1],
+                    .maximum_lights = stats[2],
+                    .stored_lights = stats[3],
+                    .valid = true,
+            };
+        }
+    }
+
+    if (!clustered_lighting_) {
+        last_cluster_stats_ = {};
+    }
+
+    if (!frame.cluster_stats_readback_buffer.valid()) {
+        auto readback = Buffer::create(context_, BufferCreateInfo{
+                                                         .size = cluster_stats_bytes,
+                                                         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                         .memory = BufferMemory::readback,
+                                                         .debug_name = "renderer.cluster_stats_readback",
+                                                 });
+
+        if (!readback) {
+            return std::unexpected(make_device_error(readback.error()));
+        }
+
+        frame.cluster_stats_readback_buffer = std::move(*readback);
+    }
+
+    if (frame.cluster_lights_buffer.valid() && frame.cluster_grid == cluster_grid_) {
+        return {};
+    }
+
+    // light_cluster.slang is the only writer of the lists; the statistics are cleared and read back by copies.
+    auto cluster_lights = Buffer::create(
+            context_, BufferCreateInfo{
+                              .size = cluster_buffer_bytes(cluster_grid_),
+                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              .memory = BufferMemory::device,
+                              .debug_name = "renderer.frame_cluster_lights",
+                      });
+
+    if (!cluster_lights) {
+        return std::unexpected(make_device_error(cluster_lights.error()));
+    }
+
+    // Nothing in flight still reads the old buffer: it belongs to this slot, whose fence has been waited on.
+    frame.cluster_lights_buffer = std::move(*cluster_lights);
+    frame.cluster_grid = cluster_grid_;
+
+    return {};
 }
 
 auto Renderer::resolve_frame_targets(RendererFrame const &frame) const -> std::expected<FrameTargets, RendererError> {
@@ -3372,7 +3516,7 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .ubo_address = ubos_[frame_index].device_address,
                     .lights_address = frame.lights_buffer.device_address,
                     .light_count = frame.light_count,
-                    .cluster_lights_address = frame.cluster_lights_buffer.device_address,
+                    .cluster_lights_address = frame.cluster_lights_buffer.device_address + cluster_stats_bytes,
                     .pipeline_statistics_query_pool = pipeline_stat_queries_[frame_index].query_pool,
                     .meshlet_culling = meshlet_culling_,
                     .opaque_pipeline = forward_pipeline_,

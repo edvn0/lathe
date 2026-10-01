@@ -5,6 +5,22 @@ import scene_types;
 // Clustered lighting shared by light_cull.slang, light_cluster.slang and the forward fragment shader. Tiles are laid
 // out in NDC rather than pixels, so the build and the lookup agree without knowing the viewport flip.
 
+public uint cluster_tile_count(Ptr<UBO> ubo)
+{
+    return ubo.cluster_grid_x * ubo.cluster_grid_y;
+}
+
+public uint cluster_count(Ptr<UBO> ubo)
+{
+    return cluster_tile_count(ubo) * ubo.cluster_grid_z;
+}
+
+// Index of a cluster in the counts and lists.
+public uint cluster_flat_index(Ptr<UBO> ubo, uint tile_x, uint tile_y, uint slice)
+{
+    return (slice * ubo.cluster_grid_y + tile_y) * ubo.cluster_grid_x + tile_x;
+}
+
 public float cluster_slice_depth(Ptr<UBO> ubo, float slice)
 {
     return exp((slice - ubo.cluster_z_bias) / ubo.cluster_z_scale);
@@ -16,13 +32,16 @@ public uint cluster_index(Ptr<UBO> ubo, float4 clip, float view_z)
     const float2 ndc = clip.xy / clip.w;
     const float2 tile_uv = saturate(ndc * 0.5 + 0.5);
 
-    const uint tile_x = min(uint(tile_uv.x * float(cluster_grid_x)), cluster_grid_x - 1);
-    const uint tile_y = min(uint(tile_uv.y * float(cluster_grid_y)), cluster_grid_y - 1);
+    const uint grid_x = ubo.cluster_grid_x;
+    const uint grid_y = ubo.cluster_grid_y;
+
+    const uint tile_x = min(uint(tile_uv.x * float(grid_x)), grid_x - 1);
+    const uint tile_y = min(uint(tile_uv.y * float(grid_y)), grid_y - 1);
 
     const float slice = log(max(view_z, 1e-4)) * ubo.cluster_z_scale + ubo.cluster_z_bias;
-    const uint slice_index = uint(clamp(slice, 0.0, float(cluster_grid_z - 1)));
+    const uint slice_index = uint(clamp(slice, 0.0, float(ubo.cluster_grid_z - 1)));
 
-    return (slice_index * cluster_grid_y + tile_y) * cluster_grid_x + tile_x;
+    return cluster_flat_index(ubo, tile_x, tile_y, slice_index);
 }
 
 // World-space bounding sphere (xyz = centre, w = radius) of everything a light can reach. A spot light's lit region
@@ -60,9 +79,9 @@ public float3 cluster_view_ray(float4x4 inverse_projection, float2 ndc)
 }
 
 // A tile's NDC rectangle.
-public void cluster_tile_ndc(uint tile_x, uint tile_y, out float2 ndc_min, out float2 ndc_max)
+public void cluster_tile_ndc(Ptr<UBO> ubo, uint tile_x, uint tile_y, out float2 ndc_min, out float2 ndc_max)
 {
-    const float2 grid = float2(cluster_grid_x, cluster_grid_y);
+    const float2 grid = float2(ubo.cluster_grid_x, ubo.cluster_grid_y);
     ndc_min = float2(tile_x, tile_y) / grid * 2.0 - 1.0;
     ndc_max = float2(tile_x + 1, tile_y + 1) / grid * 2.0 - 1.0;
 }

@@ -23,6 +23,7 @@
 #include "assets/material_storage.hxx"
 #include "assets/shader_hot_reload_watcher.hxx"
 #include "gpu/context.hxx"
+#include "rendering/cluster_grid.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/render_stage.hxx"
@@ -159,6 +160,9 @@ struct Application {
     // The row whose context menu is open. The menu is drawn outside the clipped rows, so it stays open while that
     // row scrolls out of view.
     entt::entity hierarchy_context_entity = entt::null;
+
+    // A cluster grid edit the renderer refused, shown in Lighting > Debug until it is fixed or replaced.
+    std::optional<ClusterGridSettings> refused_cluster_grid;
 
     float light_azimuth_degrees = 30.0F;
     float light_elevation_degrees = 55.0F;
