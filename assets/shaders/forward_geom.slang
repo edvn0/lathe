@@ -177,14 +177,19 @@ float3 shade_light(GpuLight punctual_light, float3 world_position, float3 shadin
     return shade_punctual(shading_normal, view_direction, light_dir, radiance, base_colour, metallic, roughness);
 }
 
-// Black (no lights) through blue, green and yellow to red at 16 or more lights in the cluster.
+// Black (no lights) through blue, green and yellow to red at 64 or more lights in the cluster, and magenta past
+// cluster_light_capacity, where the cluster drops lights.
 float3 cluster_heatmap_colour(uint light_count)
 {
     if (light_count == 0) {
         return float3(0.0);
     }
 
-    const float t = saturate(float(light_count) / 16.0);
+    if (light_count > cluster_light_capacity) {
+        return float3(1.0, 0.0, 1.0);
+    }
+
+    const float t = saturate(float(light_count) / 64.0);
     return saturate(float3(2.0 * t - 0.5, 1.5 - abs(4.0 * t - 2.0), 1.5 - 3.0 * t));
 }
 
@@ -297,23 +302,33 @@ var base_colour = base_sample.xyz *
 
     if (ubo.clustered_lighting != 0) {
         const float4 clip = mul(ubo.view_projection, float4(input.world_position, 1.0));
-        const uint mask_base = cluster_index(ubo, clip, view_z) * cluster_mask_words;
+        const uint cluster = cluster_index(ubo, clip, view_z);
 
-        for (uint word_index = 0; word_index * 32 < pc.light_count; ++word_index) {
-            const uint lane_word = pc.cluster_light_masks[mask_base + word_index];
-            cluster_light_count += countbits(lane_word);
+        cluster_light_count = pc.cluster_lights[cluster];
 
-            // The union over the wave keeps the loop uniform, so every lane walks the same lights and the light
-            // loads stay scalar. A light outside a lane's cluster is out of range there and contributes zero.
-            uint word = WaveActiveBitOr(lane_word);
+        const uint stored_count = min(cluster_light_count, cluster_light_capacity);
+        const uint list_base = cluster_count + cluster * cluster_light_capacity;
+        const uint list_end = 0xFFFFFFFFu;
 
-            while (word != 0) {
-                const uint bit = firstbitlow(word);
-                word &= word - 1;
+        // Each lane's list is sorted by light index, so the wave merges them: every iteration shades the smallest
+        // pending index across the wave, which keeps the loop uniform and the light load scalar. Lanes whose cluster
+        // lacks that light are out of its range and add zero.
+        uint cursor = 0;
+        uint lane_next = stored_count != 0 ? pc.cluster_lights[list_base] : list_end;
 
-                punctual_contribution += shade_light(pc.lights[word_index * 32 + bit], input.world_position,
-                                                     shading_normal, view_direction, base_colour, metallic,
-                                                     roughness);
+        for (;;) {
+            const uint light_index = WaveActiveMin(lane_next);
+
+            if (light_index == list_end) {
+                break;
+            }
+
+            punctual_contribution += shade_light(pc.lights[light_index], input.world_position, shading_normal,
+                                                 view_direction, base_colour, metallic, roughness);
+
+            if (lane_next == light_index) {
+                ++cursor;
+                lane_next = cursor < stored_count ? pc.cluster_lights[list_base + cursor] : list_end;
             }
         }
     } else {

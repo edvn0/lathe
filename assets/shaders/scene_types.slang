@@ -102,12 +102,12 @@ public struct Material {
 public static const uint cluster_grid_x = 16;
 public static const uint cluster_grid_y = 9;
 public static const uint cluster_grid_z = 24;
-public static const uint cluster_count = cluster_grid_x * cluster_grid_y * cluster_grid_z;
+public static const uint cluster_tile_count = cluster_grid_x * cluster_grid_y;
+public static const uint cluster_count = cluster_tile_count * cluster_grid_z;
 
-// Each cluster stores a bitmask over the light buffer, one bit per light. Mirrors maximum_light_count in
-// renderer.hxx.
-public static const uint maximum_light_count = 256;
-public static const uint cluster_mask_words = maximum_light_count / 32;
+// Light indices stored per cluster; a cluster past this keeps its lowest light indices. Mirrors
+// cluster_light_capacity in renderer.hxx.
+public static const uint cluster_light_capacity = 256;
 
 public enum class LightType : uint {
     point,
@@ -183,7 +183,7 @@ public struct UBO {
     public float cluster_z_scale;
     public float cluster_z_bias;
 
-    // 0 shades every light per fragment; otherwise the forward pass reads PC::cluster_light_masks.
+    // 0 shades every light per fragment; otherwise the forward pass reads PC::cluster_lights.
     public uint clustered_lighting;
 
     // Non-zero tints the forward pass by the number of lights in each fragment's cluster.
@@ -215,9 +215,10 @@ public struct PC
     public uint cull_flags;
     public uint cull_padding;
 
-    // cluster_count * cluster_mask_words light bitmasks from light_cluster.slang; only read by the forward fragment
-    // shader when UBO::clustered_lighting is set.
-    public Ptr<uint> cluster_light_masks;
+    // Per-cluster light lists from light_cluster.slang: cluster_count counts, then cluster_count *
+    // cluster_light_capacity light indices. Only read by the forward fragment shader when UBO::clustered_lighting is
+    // set.
+    public Ptr<uint> cluster_lights;
 };
 
 public struct ShadowPC

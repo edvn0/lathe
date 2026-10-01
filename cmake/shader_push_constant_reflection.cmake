@@ -311,6 +311,13 @@ add_shader_push_constant(
 )
 
 add_shader_push_constant(
+    light_cull.slang
+    main_cs
+    compute
+    LightCullPushConstants
+)
+
+add_shader_push_constant(
     light_cluster.slang
     main_cs
     compute

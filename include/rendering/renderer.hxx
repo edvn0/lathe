@@ -626,20 +626,18 @@ private:
     static_assert(std::is_trivially_copyable_v<GpuLight>);
     static_assert(sizeof(GpuLight) == 64);
 
-    static constexpr std::uint32_t maximum_light_count = 256;
+    // Point and spot lights together. Each frame in flight keeps sizeof(GpuLight) per light of host-visible memory,
+    // plus 20 bytes for light_cull.slang's visible list.
+    static constexpr std::uint32_t maximum_light_count = 65'536;
 
     // Mirror the cluster constants in scene_types.slang: NDC tiles by exponential depth slices, each cluster a
-    // bitmask over the light buffer.
+    // sorted list of up to cluster_light_capacity light indices.
     static constexpr std::uint32_t cluster_grid_x = 16;
     static constexpr std::uint32_t cluster_grid_y = 9;
     static constexpr std::uint32_t cluster_grid_z = 24;
-    static constexpr std::uint32_t cluster_count = cluster_grid_x * cluster_grid_y * cluster_grid_z;
-    static constexpr std::uint32_t cluster_mask_words = maximum_light_count / 32;
-
-    static_assert(maximum_light_count % 32 == 0);
-
-    // light_cluster.slang's workgroup size.
-    static constexpr std::uint32_t light_cluster_group_size = 128;
+    static constexpr std::uint32_t cluster_tile_count = cluster_grid_x * cluster_grid_y;
+    static constexpr std::uint32_t cluster_count = cluster_tile_count * cluster_grid_z;
+    static constexpr std::uint32_t cluster_light_capacity = 256;
 
     // Camera frustum plus one per shadow cascade, 6 planes each.
     static constexpr std::uint32_t cull_plane_count = 6 * (1 + shadow_cascade_count);
@@ -686,9 +684,13 @@ private:
         Buffer lights_buffer{};
         std::uint32_t light_count = 0;
 
-        // cluster_count * cluster_mask_words light bitmasks, rebuilt by light_cluster.slang every frame and read by
-        // the forward fragment shader.
-        Buffer cluster_light_mask_buffer{};
+        // light_cull.slang's output: maximum_light_count view-space spheres, then as many light indices, then the
+        // visible count.
+        Buffer visible_lights_buffer{};
+
+        // light_cluster.slang's output, read by the forward fragment shader: cluster_count counts, then
+        // cluster_count * cluster_light_capacity light indices.
+        Buffer cluster_lights_buffer{};
 
         // Handed to scene overlays as OverlayRecordContext::view_projection.
         glm::mat4 view_projection{1.0F};
@@ -1002,6 +1004,7 @@ private:
     PipelineNodeHandle bloom_upsample_pipeline_;
     PipelineNodeHandle gtao_pipeline_;
     PipelineNodeHandle gtao_denoise_pipeline_;
+    PipelineNodeHandle light_cull_pipeline_;
     PipelineNodeHandle light_cluster_pipeline_;
     ShaderChangeQueue shader_change_queue_;
 

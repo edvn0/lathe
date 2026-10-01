@@ -1,9 +1,8 @@
 # Clustered lighting
 
-Punctual lights (point and spot, up to `maximum_light_count` = 256) are
-binned into view-space clusters by a compute pass every frame. The forward
-fragment shader then shades only the lights in its own cluster, where it used
-to loop over every light in the scene.
+Punctual lights (point and spot) are culled and binned into view-space clusters on the GPU every frame. The forward
+fragment shader shades only the lights in its own cluster, so the frame cost follows how many lights touch each pixel,
+not how many exist. The renderer accepts up to `maximum_light_count` = 65,536 of them.
 
 ## Grid
 
@@ -12,55 +11,77 @@ to loop over every light in the scene.
 resizing never touches the cluster buffers.
 
 - **Tiles** are cut in NDC, not pixels. The fragment shader projects its
-  world position with `view_projection` to find its tile, and the compute
-  pass unprojects the same NDC rectangle through `inverse_projection`. Neither
-  side has to know about the forward pass's flipped-Y, reverse-Z viewport.
+  world position with `view_projection` to find its tile, and the build
+  passes unproject the same NDC rectangle through `inverse_projection`.
+  Neither side has to know about the forward pass's flipped-Y, reverse-Z
+  viewport.
 - **Slices** split [near, far] exponentially:
   `slice = floor(log(view_z) * cluster_z_scale + cluster_z_bias)`, with both
   terms in the UBO. Slice 0 reaches back to the eye and the last slice to the
   far plane, so fragments the shader clamps into them are still covered.
 
-## Build (`light_cluster.slang`, "Light Clustering" stage)
+## Bounds
 
-One thread per cluster in 128-wide workgroups. Each workgroup first writes
-every light's view-space bounding sphere to shared memory. A point light's
-sphere is its range. A spot light gets the tightest sphere around its
-spherical sector: through the apex and the rim for cones up to 45 degrees,
-around the cap's circle for wider ones. Each thread then builds its
-cluster's view-space AABB from the four corner rays at the slice's near and
-far depths, and tests it against every sphere.
+A point light is bounded by the sphere of its range. A spot light gets the
+tightest sphere around its spherical sector: through the apex and the rim for
+cones up to 45 degrees, around the cap's circle for wider ones
+(`light_bounding_sphere` in `light_clusters.slang`).
 
-The result is a **bitmask per cluster**, one bit per light. That is
-`cluster_mask_words` = 8 uints, so 3456 clusters take 108 KiB per frame in
-flight. Masks need no atomics or global counters, and the output is
-deterministic. The word loop is unrolled so each word stays in a register.
+## Build ("Light Clustering" stage)
 
-The pass is skipped when clustering is off or there are no lights. A buffer
-barrier hands the masks from compute to fragment.
+Two compute dispatches, then a barrier to the fragment shader. Both run
+whenever clustering is on, even with no lights, because the forward pass reads
+every cluster's count.
+
+1. **`light_cull.slang`**: one 256-wide workgroup walks every light and tests
+   its sphere against the camera frustum. It compacts the visible ones into
+   `visible_lights_buffer` as view-space spheres plus light indices. A
+   shared-memory prefix sum keeps them in light-index order. At 65k lights this
+   is 256 iterations.
+2. **`light_cluster.slang`**: one workgroup per screen tile (144 in all).
+   - The group streams the visible list and keeps the lights that touch the
+     tile's four side planes, in shared-memory batches of 1024.
+   - Each batch is then assigned to the tile's 24 depth slices. Every wave
+     owns some slices and walks the batch one wave at a time. It tests each
+     sphere against the cluster's view-space AABB and appends hits with a
+     ballot prefix count.
+
+   No atomics are involved, so each cluster's list comes out sorted by light
+   index and the output is deterministic.
+
+`cluster_lights_buffer` holds `cluster_count` counts, followed by
+`cluster_count * cluster_light_capacity` (256) indices: 3.4 MiB per frame in
+flight. When a cluster has more than 256 lights, it keeps the lowest light
+indices, and its count still reports the true total.
 
 ## Shading (`forward_geom.slang`)
 
-The fragment shader reads its cluster's mask words and ORs each one across
-the wave (`WaveActiveBitOr`) before walking the set bits. Every lane then
-runs the same light loop. On NVIDIA that keeps the warp convergent and turns
-the light fetches into uniform loads, rather than each lane chasing its own
-list. Lanes that pick up a neighbour's light lose nothing in correctness:
-the falloff is exactly zero beyond a light's range and outside its cone, and
-cluster membership is conservative.
+Each lane reads its cluster's sorted list. The wave then merges the lists:
+every iteration takes `WaveActiveMin` of each lane's next index, shades that
+one light on every lane, and advances the lanes that held it.
 
-The wave ops need subgroup arithmetic in the fragment stage. Every GPU that
-has the `VK_EXT_mesh_shader` support the renderer already requires provides
-it.
+- The loop runs once per light in the union of the wave's clusters.
+- It stays uniform, so the light fetch is a scalar load and an NVIDIA warp
+  never diverges inside the light loop.
+- A lane whose cluster lacks the current light is outside that light's
+  range. Falloff is exactly zero beyond the range and outside the cone, so
+  shading it adds nothing.
+
+The wave ops need subgroup arithmetic in the fragment stage. Every GPU with the
+`VK_EXT_mesh_shader` support the renderer already requires provides it.
 
 ## Debugging
 
 Lighting > Debug has two toggles:
 
-- **Clustered lighting (GPU)** (`Renderer::set_clustered_lighting`). Turn
-  it off to fall back to the old all-lights loop and compare.
+- **Clustered lighting (GPU)** (`Renderer::set_clustered_lighting`). Turning it
+  off falls back to looping over every light per fragment, for comparison.
+  With thousands of lights that loop is extremely slow.
 - **Cluster light-count heatmap** (`set_cluster_debug_heatmap`). Tints each
-  fragment by how many lights its cluster holds: blue for few, red at 16 or
-  more, and black for none.
+  fragment by its cluster's light count:
+  - blue through red for 1 up to 64 or more lights,
+  - black for none,
+  - magenta past `cluster_light_capacity`, where lights are being dropped.
 
-The pass has its own GPU timestamp, so it shows in the frame-timing plot and
-as `light_clustering` in benchmark output.
+The two dispatches share one GPU timestamp, so they show in the frame-timing
+plot and as `light_clustering` in benchmark output.
