@@ -61,13 +61,14 @@ struct ClusterGridPreset {
     ClusterGridSettings grid;
 };
 
-// The finer presets hold fewer lights per cluster, so they get by with a smaller capacity.
+// Very fine's clusters are small enough to get by with a smaller capacity. Fine keeps 256: the 5,000-light
+// light_field.lbf puts up to 140 lights in one of its clusters.
 inline constexpr std::array cluster_grid_presets{
         ClusterGridPreset{.name = "Coarse",
                           .grid = {.tiles_x = 8, .tiles_y = 5, .depth_slices = 16, .light_capacity = 256}},
         ClusterGridPreset{.name = "Default", .grid = {}},
         ClusterGridPreset{.name = "Fine",
-                          .grid = {.tiles_x = 32, .tiles_y = 18, .depth_slices = 32, .light_capacity = 128}},
+                          .grid = {.tiles_x = 32, .tiles_y = 18, .depth_slices = 32, .light_capacity = 256}},
         ClusterGridPreset{.name = "Very fine",
                           .grid = {.tiles_x = 48, .tiles_y = 27, .depth_slices = 48, .light_capacity = 128}},
 };

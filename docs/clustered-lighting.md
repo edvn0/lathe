@@ -109,13 +109,13 @@ the sliders.
 | --- | --- | --- | --- | --- |
 | Coarse | 8 x 5 x 16 | 256 | 640 | 0.6 MiB |
 | Default | 16 x 9 x 24 | 256 | 3,456 | 3.4 MiB |
-| Fine | 32 x 18 x 32 | 128 | 18,432 | 9.1 MiB |
+| Fine | 32 x 18 x 32 | 256 | 18,432 | 18.1 MiB |
 | Very fine | 48 x 27 x 48 | 128 | 62,208 | 30.6 MiB |
 
 The trade-off:
 
 - **Finer** grids give each fragment fewer lights that miss it, so the forward
-  pass shades less. Clusters overflow less, so a smaller capacity is enough.
+  pass shades less. Clusters overflow less, so a smaller capacity can be enough.
   The build does more work: one workgroup per tile, each walking every
   visible light, so the Light Clustering stage grows with the tile count.
 - **Coarser** grids are cheaper to build, but every pixel in a cluster shades
