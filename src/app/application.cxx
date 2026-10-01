@@ -155,24 +155,6 @@ namespace {
         return changed;
     };
 
-    constexpr auto draw_rows = [](auto &index, entt::registry &registry, auto &&view, auto &&draw_light) {
-        for (auto [entity, transform, light, meta]: view.each()) {
-            ImGui::PushID(static_cast<int>(index++));
-            if (ImGui::TreeNode(meta.name.c_str())) {
-                bool changed = ImGui::DragFloat3("Position", &transform.position.x, 0.1F);
-                changed |= draw_light(light);
-
-                if (changed) {
-                    using LightT = std::decay_t<decltype(light)>;
-                    registry.patch<LightT>(entity);
-                }
-
-                ImGui::TreePop();
-            }
-            ImGui::PopID();
-        }
-    };
-
     // Copies every component in Cs... that `source` has onto `dest`. Never pass Components::PhysicsBody: it's a
     // non-owning handle into PhysicsWorld, so a copy would share the original's rigid body.
     template<typename... Cs>
@@ -2108,17 +2090,72 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         ImGui::SeparatorText("Punctual lights");
         auto &registry = active_scene()->get_registry();
-        std::size_t index = 0;
-        draw_rows(index, registry,
-                  registry.view<Components::Transform, Components::PointLight, Components::GeneratedMeta>(),
-                  draw_point_light);
-        draw_rows(index, registry, registry.view<Components::Transform, Components::PointLight, Components::Meta>(),
-                  draw_point_light);
-        draw_rows(index, registry, registry.view<Components::Transform, Components::SpotLight, Components::Meta>(),
-                  draw_spot_light);
-        draw_rows(index, registry,
-                  registry.view<Components::Transform, Components::SpotLight, Components::GeneratedMeta>(),
-                  draw_spot_light);
+
+        // Point lights first, then spot lights.
+        std::vector<entt::entity> light_rows;
+        for (auto const entity: registry.view<Components::Transform, Components::PointLight>()) {
+            light_rows.push_back(entity);
+        }
+        auto const point_light_count = light_rows.size();
+        for (auto const entity: registry.view<Components::Transform, Components::SpotLight>()) {
+            light_rows.push_back(entity);
+        }
+
+        ImGui::TextDisabled("%zu point, %zu spot", point_light_count, light_rows.size() - point_light_count);
+
+        // One fixed-height row per light, clipped to the visible ones: the scene can hold tens of thousands. Clicking
+        // a row selects the light, which is edited below the list.
+        auto &selection = selection_context();
+        auto const selected = selection.primary();
+
+        constexpr std::size_t visible_light_rows = 10;
+        auto const list_height = static_cast<float>(std::clamp<std::size_t>(light_rows.size(), 1, visible_light_rows)) *
+                                         ImGui::GetTextLineHeightWithSpacing() +
+                                 (ImGui::GetStyle().WindowPadding.y * 2.0F);
+
+        if (ImGui::BeginChild("##punctual_lights", ImVec2{0.0F, list_height}, ImGuiChildFlags_Borders)) {
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(light_rows.size()));
+
+            while (clipper.Step()) {
+                for (auto row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+                    auto const row_index = static_cast<std::size_t>(row);
+                    auto const entity = light_rows[row_index];
+                    auto const label = std::format("{} ({})", entity_display_name(registry, entity),
+                                                   row_index < point_light_count ? "point" : "spot");
+
+                    ImGui::PushID(static_cast<int>(entt::to_integral(entity)));
+                    if (ImGui::Selectable(label.c_str(), entity == selected)) {
+                        selection.select(entity);
+                    }
+                    ImGui::PopID();
+                }
+            }
+        }
+        ImGui::EndChild();
+
+        if (registry.valid(selected)) {
+            // Lights are only re-uploaded when their component changes, so a moved light patches it too.
+            auto const edit_light = [&]<typename LightT>(LightT &punctual_light, auto &&draw_light) {
+                auto &transform = registry.get<Components::Transform>(selected);
+
+                ImGui::TextUnformatted(entity_display_name(registry, selected).c_str());
+                bool changed = ImGui::DragFloat3("Position", &transform.position.x, 0.1F);
+                changed |= draw_light(punctual_light);
+
+                if (changed) {
+                    registry.patch<LightT>(selected);
+                }
+            };
+
+            if (registry.all_of<Components::Transform>(selected)) {
+                if (auto *point_light = registry.try_get<Components::PointLight>(selected)) {
+                    edit_light(*point_light, draw_point_light);
+                } else if (auto *spot_light = registry.try_get<Components::SpotLight>(selected)) {
+                    edit_light(*spot_light, draw_spot_light);
+                }
+            }
+        }
     });
 
 
