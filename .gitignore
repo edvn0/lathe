@@ -12,3 +12,5 @@ assets/models/*
 tools/shader_reflect/target
 
 __pycache__/
+
+tools/xtask/target
