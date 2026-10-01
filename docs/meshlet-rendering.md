@@ -64,7 +64,12 @@ culling (`main_cs`) applies to both.
   must agree) so no dimension exceeds the guaranteed 65535.
 - Shadow pass: CPU-built, un-culled commands. Main view: `main_cs`
   frustum-culls instances as before, compacts survivors and rewrites the
-  group counts for the survivor count.
+  group counts for the survivor count. With occlusion culling on
+  (`docs/occlusion-culling.md`), `main_cs` also defers instances last
+  frame's Hi-Z hides, `late_cs` appends the ones this frame's Hi-Z doesn't,
+  and the prepass runs in two phases (`culled_indirect`, then
+  `late_indirect`) while forward draws `merged_indirect`, both phases'
+  instances with the same `cull_flags`.
 - `SV_DrawIndex` restarts at 0 per indirect call, so
   `render_pass::detail::draw_scene_commands` re-points `PC::task_commands`
   at the first command of each call.
@@ -83,6 +88,10 @@ One task workgroup = up to 32 meshlets of one instance, one lane each:
   flags because forward depth-tests `EQUAL` against the prepass.
 - Survivors are compacted in lane order (deterministic) into the payload,
   then a single `DispatchMesh`.
+
+Occlusion is tested per instance only, before the task shader; per-meshlet
+occlusion (record/replay bits so forward stays exact) is specified in
+`docs/occlusion-culling-m2.md`.
 
 `Renderer::set_meshlet_culling(false)` (Lighting > Debug > "Meshlet culling
 (task shader)") disables per-meshlet culling for A/B debugging. With
