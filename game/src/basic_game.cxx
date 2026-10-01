@@ -217,15 +217,15 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     constexpr float enemy_capsule_radius = 0.3F;
     constexpr float enemy_capsule_height = 0.8F;
 
-    if (scene.get_scripts().get(enemy_ai_script_) == nullptr) {
+    if (!enemy_ai_script_) {
         if (auto const created = scene.get_scripts().emplace<EnemyAIScript>()) {
-            enemy_ai_script_ = *created;
+            enemy_ai_script_ = ScriptHolder{scene.get_scripts(), *created};
         } else {
             error("[BasicGame::on_populate] Could not create EnemyAIScript instance");
         }
     }
 
-    if (scene.get_scripts().get(enemy_ai_script_) != nullptr) {
+    if (enemy_ai_script_) {
         auto const enemy_scale =
                 glm::vec3{enemy_capsule_radius / mesh_base_radius, enemy_capsule_height / mesh_base_height,
                           enemy_capsule_radius / mesh_base_radius};
@@ -248,7 +248,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                     .angle = angle,
             });
             enemy.emplace<Components::Model>(Components::Model{.model = engine_models.capsule});
-            enemy.emplace<Components::Script>(Components::Script{.script = enemy_ai_script_});
+            enemy.emplace<Components::Script>(Components::Script{.script = enemy_ai_script_.handle()});
         }
     }
 

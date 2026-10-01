@@ -5,6 +5,7 @@
 #include <memory>
 #include <utility>
 
+#include "core/holder.hxx"
 #include "core/object_pool.hxx"
 #include "rendering/script.hxx"
 #include "scene/script_handle.hxx"
@@ -62,3 +63,6 @@ public:
 private:
     ObjectPool<ScriptSlotData, 0> slots_;
 };
+
+// Owns a script instance; dropping it destroys the IScript. Entities still pointing at it see a stale handle.
+using ScriptHolder = Holder<ScriptStorage, ScriptHandle, &ScriptStorage::destroy>;

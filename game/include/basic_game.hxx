@@ -10,7 +10,7 @@
 #include "assets/model.hxx"
 #include "player_camera.hxx"
 #include "player_controller.hxx"
-#include "scene/script_handle.hxx"
+#include "rendering/script_storage.hxx"
 #include "terrain/terrain_mesh.hxx"
 
 struct GrassParams {
@@ -57,7 +57,8 @@ private:
     std::vector<ModelHandle> road_models_;
     // Road centreline samples (x, z, half-width), so the grass field can leave the roads clear.
     std::vector<glm::vec3> road_samples_;
-    ScriptHandle enemy_ai_script_{};
+    // Shared by every enemy; destroyed with the game, which Application drops before the renderer.
+    ScriptHolder enemy_ai_script_{};
     glm::vec3 cube_half_extents_{0.5F};
 
     MaterialHandle grass_material_{};
