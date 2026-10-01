@@ -3,6 +3,7 @@
 #include <entt/entt.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
+#include <optional>
 #include <vector>
 
 #include "assets/material.hxx"
@@ -69,7 +70,32 @@ namespace Components {
     // Bullets spawned by BasicGame::shoot_bullet(). Their names aren't unique, so they need a tag.
     struct BulletTag {};
 
-    // The entity's Model handle is ref-counted (loaded through a model cache), so removing the entity may call
-    // destroy_model(). Not for entities sharing an unretained handle.
+    // The entity owns one reference on its Model handle (ref-counted through the model cache), which Scene releases
+    // when the entity, the Model or the tag goes. Not for entities sharing an unretained handle.
     struct StreamedModelTag {};
+
+    // For on_destroy<Model> and on_destroy<StreamedModelTag>: the model reference to release, if this removal is the
+    // one that ends the entity's ownership. entt raises on_destroy before erasing, one pool at a time, so whichever
+    // of the pair goes first finds its partner still present and returns the handle; the second finds it gone.
+    [[nodiscard]]
+    inline auto model_released_by_model_destroy(entt::registry const &registry, entt::entity entity)
+            -> std::optional<ModelHandle> {
+        if (!registry.all_of<StreamedModelTag>(entity)) {
+            return std::nullopt;
+        }
+
+        return registry.get<Model>(entity).model;
+    }
+
+    [[nodiscard]]
+    inline auto model_released_by_tag_destroy(entt::registry const &registry, entt::entity entity)
+            -> std::optional<ModelHandle> {
+        auto const *model = registry.try_get<Model>(entity);
+
+        if (model == nullptr) {
+            return std::nullopt;
+        }
+
+        return model->model;
+    }
 } // namespace Components

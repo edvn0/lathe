@@ -47,8 +47,11 @@ Scene::Scene(Renderer &renderer) : renderer_(renderer) {
     entt::sink{lights_changed_signal_}.connect<&Renderer::mark_lights_dirty>(renderer);
 }
 
-// entt doesn't signal on_destroy when the registry is destroyed.
-Scene::~Scene() { registry.clear<Components::MaterialOverride>(); }
+// entt doesn't signal on_destroy when the registry is destroyed, so release what components own by hand.
+Scene::~Scene() {
+    registry.clear<Components::MaterialOverride>();
+    registry.clear<Components::StreamedModelTag>();
+}
 
 auto Scene::on_scene_start() -> void {
     physics_world = std::make_unique<PhysicsWorld>(physics_settings, thread_pool(), registry);
@@ -107,6 +110,18 @@ auto Scene::on_material_override_detached(entt::registry &reg, entt::entity enti
                       [this](MaterialHandle handle) { renderer_.release_material(handle); });
 }
 
+auto Scene::on_model_destroyed(entt::registry &reg, entt::entity entity) -> void {
+    if (auto const model = Components::model_released_by_model_destroy(reg, entity)) {
+        renderer_.release_model(*model);
+    }
+}
+
+auto Scene::on_streamed_model_tag_destroyed(entt::registry &reg, entt::entity entity) -> void {
+    if (auto const model = Components::model_released_by_tag_destroy(reg, entity)) {
+        renderer_.release_model(*model);
+    }
+}
+
 auto Scene::set_material_override(entt::entity entity, Components::MaterialOverride material_override) -> void {
     if (!registry.valid(entity)) {
         return;
@@ -154,6 +169,9 @@ auto Scene::connect_light_signals() -> void {
 
     registry.on_construct<Components::MaterialOverride>().connect<&Scene::on_material_override_attached>(*this);
     registry.on_destroy<Components::MaterialOverride>().connect<&Scene::on_material_override_detached>(*this);
+
+    registry.on_destroy<Components::Model>().connect<&Scene::on_model_destroyed>(*this);
+    registry.on_destroy<Components::StreamedModelTag>().connect<&Scene::on_streamed_model_tag_destroyed>(*this);
 }
 
 void systems::lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) {

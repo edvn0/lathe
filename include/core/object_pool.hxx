@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -17,7 +18,6 @@ template<typename T, std::uint32_t Sentinel = std::numeric_limits<std::uint32_t>
 class ObjectPool {
 public:
     using HandleT = Handle<T, Sentinel>;
-    using HolderT = Holder<T, Sentinel>;
 
     ObjectPool() = default;
 
@@ -79,20 +79,6 @@ public:
         };
     }
 
-    [[nodiscard]]
-    auto acquire() -> std::optional<HolderT> {
-        auto allocation = allocate();
-
-        if (!allocation) {
-            return std::nullopt;
-        }
-
-        return HolderT{
-                *this,
-                allocation->first,
-        };
-    }
-
     // Moves the payload out, bumps the generation (never back to 0, which means "never allocated") and frees the
     // slot. nullopt for a stale or out-of-range handle.
     //
@@ -122,6 +108,26 @@ public:
         --size_;
 
         return value;
+    }
+
+    // Owns a slot; destroying or resetting it calls release() and destroys the value.
+    using HolderT = Holder<ObjectPool, HandleT, &ObjectPool::release>;
+
+    // allocate(), with the slot owned by the returned Holder.
+    [[nodiscard]]
+    auto acquire() -> std::optional<HolderT> {
+        auto allocation = allocate();
+
+        if (!allocation) {
+            return std::nullopt;
+        }
+
+        // Built in place, so no temporary Holder is moved into the optional.
+        return std::optional<HolderT>{
+                std::in_place,
+                *this,
+                allocation->first,
+        };
     }
 
     [[nodiscard]]

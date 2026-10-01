@@ -24,34 +24,6 @@ namespace {
 
 } // namespace
 
-ForwardTarget::ForwardTarget(ForwardTarget &&other) noexcept :
-    hdr_(std::exchange(other.hdr_, ImageHandle{})), resolved_hdr_(std::exchange(other.resolved_hdr_, ImageHandle{})),
-    depth_(std::exchange(other.depth_, ImageHandle{})),
-    resolved_depth_(std::exchange(other.resolved_depth_, ImageHandle{})),
-    extent_(std::exchange(other.extent_, VkExtent2D{})),
-    hdr_format_(std::exchange(other.hdr_format_, VK_FORMAT_UNDEFINED)),
-    depth_format_(std::exchange(other.depth_format_, VK_FORMAT_UNDEFINED)),
-    samples_(std::exchange(other.samples_, VK_SAMPLE_COUNT_1_BIT)) {}
-
-auto ForwardTarget::operator=(ForwardTarget &&other) noexcept -> ForwardTarget & {
-    if (this == &other) {
-        return *this;
-    }
-
-    // The current handles must already be destroyed; ForwardTarget doesn't own the ImageStorage.
-    hdr_ = std::exchange(other.hdr_, ImageHandle{});
-    depth_ = std::exchange(other.depth_, ImageHandle{});
-    resolved_hdr_ = std::exchange(other.resolved_hdr_, ImageHandle{});
-    resolved_depth_ = std::exchange(other.resolved_depth_, ImageHandle{});
-
-    extent_ = std::exchange(other.extent_, VkExtent2D{});
-    hdr_format_ = std::exchange(other.hdr_format_, VK_FORMAT_UNDEFINED);
-    depth_format_ = std::exchange(other.depth_format_, VK_FORMAT_UNDEFINED);
-    samples_ = std::exchange(other.samples_, VK_SAMPLE_COUNT_1_BIT);
-
-    return *this;
-}
-
 auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo const &create_info)
         -> std::expected<ForwardTarget, ForwardTargetError> {
     if (create_info.extent.width == 0 || create_info.extent.height == 0 ||
@@ -61,10 +33,12 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
 
     bool const is_msaa = create_info.samples > VK_SAMPLE_COUNT_1_BIT;
 
+    // Each image is held as soon as it's created, so an early return destroys the ones before it.
+
     // The single-sample HDR image is the render target without MSAA and the resolve target with it.
     auto const resolved_hdr_name = std::string{create_info.debug_name} + ".hdr";
 
-    auto resolved_hdr = image_storage.create_image(ImageCreateInfo{
+    auto resolved_hdr = create_held_image(image_storage, ImageCreateInfo{
             .extent =
                     VkExtent3D{
                             .width = create_info.extent.width,
@@ -91,12 +65,12 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
     }
 
     // The MSAA target is never sampled, so it gets no SAMPLED usage or descriptor view.
-    std::expected<ImageHandle, ImageStorageError> msaa_hdr;
+    std::expected<ImageHolder, ImageStorageError> msaa_hdr;
 
     if (is_msaa) {
         auto const msaa_hdr_name = std::string{create_info.debug_name} + ".hdr_msaa";
 
-        msaa_hdr = image_storage.create_image(ImageCreateInfo{
+        msaa_hdr = create_held_image(image_storage, ImageCreateInfo{
                 .extent =
                         VkExtent3D{
                                 .width = create_info.extent.width,
@@ -120,15 +94,13 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
         if (!msaa_hdr) {
             warn("Could not create the MSAA HDR image ({} samples)", static_cast<std::uint32_t>(create_info.samples));
 
-            static_cast<void>(image_storage.destroy_image(*resolved_hdr));
-
             return std::unexpected(make_image_error(msaa_hdr.error()));
         }
     }
 
     auto const depth_name = std::string{create_info.debug_name} + (is_msaa ? ".depth_msaa" : ".depth");
 
-    auto depth = image_storage.create_image(ImageCreateInfo{
+    auto depth = create_held_image(image_storage, ImageCreateInfo{
             .extent =
                     VkExtent3D{
                             .width = create_info.extent.width,
@@ -151,21 +123,15 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
     });
 
     if (!depth) {
-        if (is_msaa) {
-            static_cast<void>(image_storage.destroy_image(*msaa_hdr));
-        }
-
-        static_cast<void>(image_storage.destroy_image(*resolved_hdr));
-
         return std::unexpected(make_image_error(depth.error()));
     }
 
-    std::expected<ImageHandle, ImageStorageError> resolved_depth;
+    std::expected<ImageHolder, ImageStorageError> resolved_depth;
 
     if (is_msaa) {
         auto const resolved_depth_name = std::string{create_info.debug_name} + ".depth";
 
-        resolved_depth = image_storage.create_image(ImageCreateInfo{
+        resolved_depth = create_held_image(image_storage, ImageCreateInfo{
                 .extent =
                         VkExtent3D{
                                 .width = create_info.extent.width,
@@ -187,20 +153,21 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
         });
 
         if (!resolved_depth) {
-            static_cast<void>(image_storage.destroy_image(*depth));
-            static_cast<void>(image_storage.destroy_image(*msaa_hdr));
-            static_cast<void>(image_storage.destroy_image(*resolved_hdr));
-
             return std::unexpected(make_image_error(resolved_depth.error()));
         }
     }
 
     ForwardTarget target;
 
-    target.hdr_ = is_msaa ? *msaa_hdr : *resolved_hdr;
-    target.resolved_hdr_ = is_msaa ? *resolved_hdr : ImageHandle{};
-    target.depth_ = *depth;
-    target.resolved_depth_ = is_msaa ? *resolved_depth : ImageHandle{};
+    if (is_msaa) {
+        target.hdr_ = std::move(*msaa_hdr);
+        target.resolved_hdr_ = std::move(*resolved_hdr);
+        target.resolved_depth_ = std::move(*resolved_depth);
+    } else {
+        target.hdr_ = std::move(*resolved_hdr);
+    }
+
+    target.depth_ = std::move(*depth);
 
     target.extent_ = create_info.extent;
     target.hdr_format_ = create_info.hdr_format;
@@ -208,32 +175,4 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
     target.samples_ = create_info.samples;
 
     return target;
-}
-
-auto ForwardTarget::destroy(ImageStorage &image_storage) noexcept -> void {
-    if (depth_.valid()) {
-        static_cast<void>(image_storage.destroy_image(depth_));
-    }
-
-    if (resolved_depth_.valid()) {
-        static_cast<void>(image_storage.destroy_image(resolved_depth_));
-    }
-
-    if (hdr_.valid()) {
-        static_cast<void>(image_storage.destroy_image(hdr_));
-    }
-
-    if (resolved_hdr_.valid()) {
-        static_cast<void>(image_storage.destroy_image(resolved_hdr_));
-    }
-
-    hdr_ = {};
-    resolved_hdr_ = {};
-    depth_ = {};
-    resolved_depth_ = {};
-
-    extent_ = {};
-    hdr_format_ = VK_FORMAT_UNDEFINED;
-    depth_format_ = VK_FORMAT_UNDEFINED;
-    samples_ = VK_SAMPLE_COUNT_1_BIT;
 }

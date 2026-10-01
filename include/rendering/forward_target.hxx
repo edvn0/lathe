@@ -10,6 +10,7 @@
 
 #include "core/error_context.hxx"
 #include "gpu/image.hxx"
+#include "gpu/image_storage.hxx"
 
 enum class ForwardTargetErrorType : std::uint8_t {
     invalid_argument,
@@ -52,29 +53,31 @@ struct ForwardTargetCreateInfo {
     std::string_view debug_name = "forward_target";
 };
 
+// Owns its images: destroying or overwriting a ForwardTarget destroys them, so do that only once the GPU is done with
+// them. The ImageStorage must outlive it.
 class ForwardTarget {
 public:
     ForwardTarget() = default;
     ForwardTarget(ForwardTarget const &) = delete;
     auto operator=(ForwardTarget const &) -> ForwardTarget & = delete;
-    ForwardTarget(ForwardTarget &&other) noexcept;
-    auto operator=(ForwardTarget &&other) noexcept -> ForwardTarget &;
+    ForwardTarget(ForwardTarget &&other) noexcept = default;
+    auto operator=(ForwardTarget &&other) noexcept -> ForwardTarget & = default;
+    ~ForwardTarget() = default;
 
     [[nodiscard]]
     static auto create(ImageStorage &image_storage, ForwardTargetCreateInfo const &create_info)
             -> std::expected<ForwardTarget, ForwardTargetError>;
 
-    auto destroy(ImageStorage &image_storage) noexcept -> void;
-
     [[nodiscard]]
     auto valid() const noexcept -> bool {
-        bool const resolve_ok = samples_ <= VK_SAMPLE_COUNT_1_BIT || (resolved_hdr_.valid() && resolved_depth_.valid());
-        return hdr_.valid() && depth_.valid() && resolve_ok;
+        bool const resolve_ok = samples_ <= VK_SAMPLE_COUNT_1_BIT ||
+                                (resolved_hdr_.handle().valid() && resolved_depth_.handle().valid());
+        return hdr_.handle().valid() && depth_.handle().valid() && resolve_ok;
     }
 
     [[nodiscard]]
     auto depth() const noexcept -> ImageHandle {
-        return depth_;
+        return depth_.handle();
     }
 
     [[nodiscard]]
@@ -99,12 +102,12 @@ public:
 
     [[nodiscard]]
     auto hdr() const noexcept -> ImageHandle {
-        return hdr_;
+        return hdr_.handle();
     }
 
     [[nodiscard]]
     auto resolved_hdr() const noexcept -> ImageHandle {
-        return resolved_hdr_.valid() ? resolved_hdr_ : hdr_;
+        return resolved_hdr_.handle().valid() ? resolved_hdr_.handle() : hdr_.handle();
     }
 
     [[nodiscard]]
@@ -114,14 +117,14 @@ public:
 
     [[nodiscard]]
     auto resolved_depth() const noexcept -> ImageHandle {
-        return resolved_depth_.valid() ? resolved_depth_ : depth_;
+        return resolved_depth_.handle().valid() ? resolved_depth_.handle() : depth_.handle();
     }
 
 private:
-    ImageHandle hdr_{};
-    ImageHandle resolved_hdr_{};
-    ImageHandle depth_{};
-    ImageHandle resolved_depth_{};
+    ImageHolder hdr_{};
+    ImageHolder resolved_hdr_{};
+    ImageHolder depth_{};
+    ImageHolder resolved_depth_{};
 
     VkExtent2D extent_{};
 

@@ -696,7 +696,7 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
 
         registry.emplace<Components::Model>(entity, Components::Model{.model = handle});
 
-        // StreamedModelTag entities own a model reference, which the editor releases when they're deleted.
+        // StreamedModelTag entities own a model reference, which Scene releases when the entity or tag goes.
         if (has_flag(description.entities[component.entity].flags, SceneEntityFlags::streamed_model)) {
             renderer.retain_model(handle);
             registry.emplace<Components::StreamedModelTag>(entity);

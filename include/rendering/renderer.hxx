@@ -481,7 +481,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     // Valid once record_frame() has run for this frame_index in embedded mode.
     [[nodiscard]] auto viewport_target(std::uint32_t index) const noexcept -> ImageHandle {
-        return frames_[index].viewport_target;
+        return frames_[index].viewport_target.handle();
     }
 
     auto queue_render_thread_event(std::move_only_function<void()> &&) -> void;
@@ -662,18 +662,35 @@ private:
         ForwardTarget forward_target{};
 
         // LDR composite output sampled by the editor's Viewport panel. Unused in fullscreen play.
-        ImageHandle viewport_target{};
+        ImageHolder viewport_target{};
 
+        // mip_slots are register_view() aliases of image's mip views, so they're released before it: declared after
+        // it for destruction, and assigned first on a move.
         struct BloomTarget {
-            ImageHandle image;
-            std::array<ImageHandle, render_pass::bloom_mip_count> mip_slots;
+            ImageHolder image;
+            std::array<ImageHolder, render_pass::bloom_mip_count> mip_slots;
+
+            BloomTarget() = default;
+            ~BloomTarget() = default;
+
+            BloomTarget(BloomTarget const &) = delete;
+            auto operator=(BloomTarget const &) -> BloomTarget & = delete;
+
+            BloomTarget(BloomTarget &&) noexcept = default;
+
+            auto operator=(BloomTarget &&other) noexcept -> BloomTarget & {
+                mip_slots = std::move(other.mip_slots);
+                image = std::move(other.image);
+
+                return *this;
+            }
         };
         BloomTarget bloom_target{};
 
         // Per-frame GTAO targets: `raw` from the horizon search, `denoised` sampled by the forward pass.
         struct AoTarget {
-            ImageHandle raw;
-            ImageHandle denoised;
+            ImageHolder raw;
+            ImageHolder denoised;
         };
         AoTarget ao_target{};
 
@@ -712,6 +729,14 @@ private:
         // material can skip the far cascades.
         std::array<std::uint32_t, shadow_cascade_count> shadow_opaque_indirect_count{};
         std::array<std::uint32_t, shadow_cascade_count> shadow_mask_indirect_count{};
+    };
+
+    // A frame's extent-sized render targets, built together so initialize() and resize() share one path.
+    struct OwnedFrameTargets {
+        ForwardTarget forward_target{};
+        ImageHolder viewport_target{};
+        RendererFrame::BloomTarget bloom_target{};
+        RendererFrame::AoTarget ao_target{};
     };
 
     struct ModelSubmission {
@@ -891,6 +916,11 @@ private:
     // Fills last_frame_timings_.overlays from a retired frame's queries.
     auto read_overlay_timings(FrameTimestamps const &frame_query) -> void;
 
+    // Uses hdr_format_, depth_format_, samples_ and swapchain_format_. On failure, whatever was created is destroyed.
+    [[nodiscard]]
+    auto create_frame_targets(std::uint32_t frame_index, VkExtent2D extent)
+            -> std::expected<OwnedFrameTargets, RendererError>;
+
     // Screenshot copy or present transition, then the end-of-frame timestamp.
     // viewport is null when the scene was composited straight into the swapchain.
     auto record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
@@ -953,7 +983,7 @@ private:
     float light_icon_world_size_ = 0.5F;
 
     // Shared across frames in flight so unchanged tiles persist.
-    ImageHandle shadow_atlas_{};
+    ImageHolder shadow_atlas_{};
     std::array<ShadowCascadeCacheEntry, shadow_cascade_count> shadow_cascade_cache_{};
     std::uint64_t shadow_frame_ = 0;
     std::uint64_t shadow_caster_revision_ = 1;

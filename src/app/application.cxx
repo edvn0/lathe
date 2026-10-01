@@ -1348,12 +1348,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         }
                     }
 
-                    // Only StreamedModelTag entities own a model reference that can be released.
-                    if (auto const *model = registry.try_get<Components::Model>(target);
-                        model != nullptr && registry.all_of<Components::StreamedModelTag>(target)) {
-                        renderer->release_model(model->model);
-                    }
-
+                    // A StreamedModelTag entity's model reference is released by Scene's on_destroy hooks.
                     registry.destroy(target);
                 };
 
@@ -1459,12 +1454,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::PopID();
 
             if (!open) {
-                // An owned model's reference goes with the component.
+                // An owned model's reference goes with the component; Scene's on_destroy hooks release it.
                 if constexpr (std::is_same_v<T, Components::Model>) {
-                    if (registry.all_of<Components::StreamedModelTag>(selected_entity)) {
-                        renderer->release_model(registry.get<Components::Model>(selected_entity).model);
-                        registry.remove<Components::StreamedModelTag>(selected_entity);
-                    }
+                    registry.remove<Components::StreamedModelTag>(selected_entity);
                 }
                 registry.remove<T>(selected_entity);
             }
@@ -2224,7 +2216,8 @@ auto Application::set_entity_model(entt::registry &registry, entt::entity entity
     registry.patch<Components::Model>(entity, [&](Components::Model &component) { component.model = model; });
     registry.emplace_or_replace<Components::StreamedModelTag>(entity);
 
-    // Released after the swap: if `model` == `previous`, the caller's reference replaces the entity's.
+    // A swap, not a removal, so Scene's on_destroy hooks don't see it and the old reference is released here. Released
+    // after the swap: if `model` == `previous`, the caller's reference replaces the entity's.
     if (owned_previous) {
         renderer->release_model(previous);
     }

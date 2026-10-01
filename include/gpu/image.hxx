@@ -18,7 +18,6 @@
 #include "core/error_context.hxx"
 #include "core/forward.hxx"
 #include "core/handle.hxx"
-#include "core/holder.hxx"
 
 inline constexpr auto invalid_image_index = std::numeric_limits<std::uint32_t>::max();
 
@@ -26,7 +25,6 @@ inline constexpr auto invalid_image_index = std::numeric_limits<std::uint32_t>::
 struct ImageSlotData;
 
 using ImageHandle = Handle<ImageSlotData>;
-using ImageHolder = Holder<ImageSlotData>;
 
 enum class ImageDescriptorView : std::uint8_t {
     sampled_2d = 0,
