@@ -20,5 +20,5 @@ struct LuaMemoryBudget {
 };
 
 // lua_Alloc. `user_data` is a LuaMemoryBudget*. Frees and shrinks never fail (Lua 5.4 assumes osize >= nsize can't).
-[[nodiscard]] auto lua_budget_alloc(void *user_data, void *block, std::size_t old_size, std::size_t new_size) noexcept
-        -> void *;
+[[nodiscard]] auto lua_budget_alloc(void *user_data, void *block, std::size_t old_size,
+                                    std::size_t new_size) noexcept -> void *;

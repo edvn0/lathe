@@ -6,7 +6,10 @@
 add_library(
     engine_scripting
     STATIC
+        entity_index.cxx
         lua_allocator.cxx
+        script_bindings.cxx
+        script_engine.cxx
         script_error.cxx
 )
 

@@ -11,8 +11,8 @@
 namespace {
     // Globals a script might reach for that the sandbox leaves out on purpose.
     constexpr std::array<std::string_view, 13> blocked_names{
-            "os",      "io",        "require",   "load",           "loadstring", "dofile", "loadfile",
-            "debug",   "package",   "coroutine", "collectgarbage", "utf8",       "_G",
+            "os",    "io",      "require",   "load",           "loadstring", "dofile", "loadfile",
+            "debug", "package", "coroutine", "collectgarbage", "utf8",       "_G",
     };
 
     constexpr std::array<std::string_view, 2> nil_value_prefixes{
