@@ -61,7 +61,7 @@ CPU-side `MeshSlotData` bookkeeping record. It has no way to tell
 `GeometryArena` "this range is free now" because that operation doesn't
 exist. Every mesh ever created — including ones created and then rolled
 back on a later failure inside `Renderer::create_model_common()`
-(`src/renderer.cxx`, look for `rollback_meshes`) — permanently consumes
+(`src/renderer.cxx`, look for `created_meshes`) — permanently consumes
 arena space for the process's lifetime. This is fine for a level that only
 ever grows; it is not viable for any future streaming/unload scenario
 (swapping models in and out, level transitions without a full restart).

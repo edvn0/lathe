@@ -154,6 +154,9 @@ namespace {
         };
     }
 
+    // Owns a mesh through Renderer::destroy_mesh(), which also retires its geometry.
+    using MeshHolder = Holder<Renderer, MeshHandle, &Renderer::destroy_mesh>;
+
     auto make_image_error(ImageStorageError error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::image_error,
@@ -1385,21 +1388,14 @@ auto Renderer::create_model_common(
     std::vector<MeshHandle> imported_meshes;
     imported_meshes.resize(model.meshes.size());
 
-    std::vector<MeshHandle> created_meshes;
+    // Held until the model is installed, so every early return below destroys the meshes made so far.
+    std::vector<MeshHolder> created_meshes;
     created_meshes.reserve(model.meshes.size());
-
-    auto rollback_meshes = [this, &created_meshes] {
-        for (auto const handle: created_meshes) {
-            static_cast<void>(destroy_mesh(handle));
-        }
-    };
 
     for (std::size_t mesh_index = 0; mesh_index < model.meshes.size(); ++mesh_index) {
         auto const &source_mesh = model.meshes[mesh_index];
 
         if (source_mesh.primitives.empty()) {
-            rollback_meshes();
-
             return std::unexpected(make_error(RendererErrorType::invalid_mesh));
         }
 
@@ -1411,8 +1407,6 @@ auto Renderer::create_model_common(
             auto const index = source_submesh.material_index;
 
             if (source_submesh.material_index >= model.materials.size()) {
-                rollback_meshes();
-
                 return std::unexpected(make_error(RendererErrorType::invalid_material));
             }
 
@@ -1431,12 +1425,11 @@ auto Renderer::create_model_common(
         });
 
         if (!mesh) {
-            rollback_meshes();
             return std::unexpected(mesh.error());
         }
 
         imported_meshes[mesh_index] = *mesh;
-        created_meshes.push_back(*mesh);
+        created_meshes.emplace_back(*this, *mesh);
     }
 
     std::vector<ModelDraw> flattened_draws;
@@ -1479,14 +1472,11 @@ auto Renderer::create_model_common(
         auto result = add_node(add_node, root, glm::mat4{1.0F});
 
         if (!result) {
-            rollback_meshes();
             return std::unexpected(result.error());
         }
     }
 
     if (flattened_draws.empty()) {
-        rollback_meshes();
-
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
 
@@ -1498,9 +1488,12 @@ auto Renderer::create_model_common(
     });
 
     if (!handle) {
-        rollback_meshes();
-
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    // The model's draws own the meshes now; destroy_model() releases them.
+    for (auto &mesh: created_meshes) {
+        static_cast<void>(mesh.detach());
     }
 
     return *handle;
