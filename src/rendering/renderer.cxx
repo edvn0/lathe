@@ -861,7 +861,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     auto const upload_size = batch_bounds_offset + batch_bounds_size;
 
-    auto shadow_atlas = image_storage_.create_image(ImageCreateInfo{
+    auto shadow_atlas = create_held_image(image_storage_, ImageCreateInfo{
             .extent = VkExtent3D{.width = shadow_atlas_width, .height = shadow_atlas_height, .depth = 1},
             .format = VK_FORMAT_D32_SFLOAT,
             .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -881,7 +881,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         return std::unexpected(make_image_error(shadow_atlas.error()));
     }
 
-    shadow_atlas_ = *shadow_atlas;
+    shadow_atlas_ = std::move(*shadow_atlas);
 
     frames_.resize(frames_in_flight);
 
@@ -1036,159 +1036,16 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.lights_buffer = std::move(*lights_buffer);
 
-        auto const target_name = std::format("renderer.forward_target_{}", frame_index);
-        auto forward_target = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
-                                                                            .extent = create_info.extent,
-                                                                            .hdr_format = create_info.hdr_format,
-                                                                            .depth_format = create_info.depth_format,
-                                                                            .samples = create_info.samples,
-                                                                            .debug_name = target_name,
-                                                                    });
+        auto targets = create_frame_targets(frame_index, create_info.extent);
 
-        if (!forward_target) {
-            return std::unexpected(RendererError{
-                    .type = RendererErrorType::forward_target_error,
-                    .cause = ErrorCause{Boxed<ForwardTargetError>{forward_target.error()}},
-            });
+        if (!targets) {
+            return std::unexpected(targets.error());
         }
 
-        frame.forward_target = std::move(*forward_target);
-
-        auto const viewport_target_name = std::format("renderer.viewport_target_{}", frame_index);
-        auto viewport_target = image_storage_.create_image(ImageCreateInfo{
-                .extent =
-                        VkExtent3D{
-                                .width = create_info.extent.width,
-                                .height = create_info.extent.height,
-                                .depth = 1,
-                        },
-                .format = swapchain_format_,
-                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .debug_name = viewport_target_name,
-        });
-
-        if (!viewport_target) {
-            return std::unexpected(make_image_error(viewport_target.error()));
-        }
-
-        frame.viewport_target = *viewport_target;
-
-        auto const bloom_target_name = std::format("renderer.bloom_target_{}", frame_index);
-
-        auto bloom_image = image_storage_.create_image(ImageCreateInfo{
-                .extent =
-                        VkExtent3D{
-                                .width = create_info.extent.width / 2,
-                                .height = create_info.extent.height / 2,
-                                .depth = 1,
-                        },
-                .format = VK_FORMAT_R16G16B16A16_SFLOAT,
-                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = render_pass::bloom_mip_count,
-                .array_layers = 1,
-                .create_mip_layer_views = true,
-                .debug_name = bloom_target_name,
-        });
-
-        if (!bloom_image) {
-            return std::unexpected(make_image_error(bloom_image.error()));
-        }
-
-        RendererFrame::BloomTarget bloom_target{.image = *bloom_image};
-
-        auto const *bloom_image_ptr = image_storage_.get(*bloom_image);
-
-        for (std::uint32_t mip = 0; mip < render_pass::bloom_mip_count; ++mip) {
-            auto const view = bloom_image_ptr->mip_layer_view(mip, 0);
-
-            auto mip_slot = image_storage_.register_view(ImageViewRegistration{
-                    .sampled_2d = view,
-                    .storage_2d = view,
-            });
-
-            if (!mip_slot) {
-                return std::unexpected(make_image_error(mip_slot.error()));
-            }
-
-            bloom_target.mip_slots[mip] = *mip_slot;
-        }
-
-        frame.bloom_target = bloom_target;
-
-        auto const ao_raw_name = std::format("renderer.ao_raw_{}", frame_index);
-        auto ao_raw_image = image_storage_.create_image(ImageCreateInfo{
-                .extent =
-                        VkExtent3D{
-                                .width = create_info.extent.width,
-                                .height = create_info.extent.height,
-                                .depth = 1,
-                        },
-                .format = VK_FORMAT_R8G8B8A8_UNORM,
-                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .debug_name = ao_raw_name,
-        });
-
-        if (!ao_raw_image) {
-            return std::unexpected(make_image_error(ao_raw_image.error()));
-        }
-
-        auto const ao_denoised_name = std::format("renderer.ao_denoised_{}", frame_index);
-
-        auto ao_denoised_image = image_storage_.create_image(ImageCreateInfo{
-                .extent =
-                        VkExtent3D{
-                                .width = create_info.extent.width,
-                                .height = create_info.extent.height,
-                                .depth = 1,
-                        },
-                .format = VK_FORMAT_R8G8B8A8_UNORM,
-                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .debug_name = ao_denoised_name,
-        });
-
-        if (!ao_denoised_image) {
-            return std::unexpected(make_image_error(ao_denoised_image.error()));
-        }
-
-        frame.ao_target = RendererFrame::AoTarget{.raw = *ao_raw_image, .denoised = *ao_denoised_image};
+        frame.forward_target = std::move(targets->forward_target);
+        frame.viewport_target = std::move(targets->viewport_target);
+        frame.bloom_target = std::move(targets->bloom_target);
+        frame.ao_target = std::move(targets->ao_target);
 
         frame.draw_upload_offset = 0;
         frame.transform_upload_offset = transform_offset;
@@ -1327,35 +1184,8 @@ auto Renderer::destroy() noexcept -> void {
         ubo.destroy();
     }
 
+    // The frames' image targets are Holders, destroyed by frames_.clear() below, before image_storage_.
     for (auto &frame: frames_) {
-        frame.forward_target.destroy(image_storage_);
-
-        if (frame.viewport_target.valid()) {
-            static_cast<void>(image_storage_.destroy_image(frame.viewport_target));
-            frame.viewport_target = ImageHandle{};
-        }
-
-        for (auto const mip_slot: frame.bloom_target.mip_slots) {
-            if (mip_slot.valid()) {
-                static_cast<void>(image_storage_.destroy_image(mip_slot));
-            }
-        }
-        if (frame.bloom_target.image.valid()) {
-            static_cast<void>(image_storage_.destroy_image(frame.bloom_target.image));
-            frame.bloom_target = {};
-        }
-
-        if (frame.ao_target.raw.valid()) {
-            static_cast<void>(image_storage_.destroy_image(frame.ao_target.raw));
-        }
-        if (frame.ao_target.denoised.valid()) {
-            static_cast<void>(image_storage_.destroy_image(frame.ao_target.denoised));
-        }
-        frame.ao_target = {};
-
-        frame.lights_buffer.destroy();
-        frame.frustum_planes_buffer.destroy();
-
         frame.lights_buffer.destroy();
         frame.frustum_planes_buffer.destroy();
         frame.visible_transform_buffer.destroy();
@@ -1381,10 +1211,7 @@ auto Renderer::destroy() noexcept -> void {
 
     frames_.clear();
 
-    if (shadow_atlas_.valid()) {
-        static_cast<void>(image_storage_.destroy_image(shadow_atlas_));
-        shadow_atlas_ = ImageHandle{};
-    }
+    shadow_atlas_.reset();
 
     shadow_cascade_cache_ = {};
     shadow_frame_ = 0;
@@ -2722,7 +2549,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .light_intensity = light_.intensity,
             .light_colour = light_.colour,
             .shadow_normal_offset_texels = shadow_settings_.normal_offset_texels,
-            .shadow_atlas_texture = shadow_atlas_.index,
+            .shadow_atlas_texture = shadow_atlas_.handle().index,
             .shadow_sampler = sampler_storage_.shadow_compare().index,
             .shadow_depth_bias_world = shadow_settings_.depth_bias_world,
             .shadow_pcf_radius_texels = shadow_settings_.pcf_radius_texels,
@@ -3102,10 +2929,10 @@ auto Renderer::resolve_frame_targets(RendererFrame const &frame) const -> std::e
             .resolved_depth = image_storage_.get(resolved_depth_handle),
             .resolved_hdr_handle = resolved_hdr_handle,
             .resolved_depth_handle = resolved_depth_handle,
-            .shadow_atlas = image_storage_.get(shadow_atlas_),
-            .ao_raw = image_storage_.get(frame.ao_target.raw),
-            .ao_denoised = image_storage_.get(frame.ao_target.denoised),
-            .viewport = image_storage_.get(frame.viewport_target),
+            .shadow_atlas = shadow_atlas_.get(),
+            .ao_raw = frame.ao_target.raw.get(),
+            .ao_denoised = frame.ao_target.denoised.get(),
+            .viewport = frame.viewport_target.get(),
             .extent = frame.forward_target.extent(),
             .multisampled = multisampled,
     };
@@ -3258,8 +3085,8 @@ auto Renderer::record_ambient_occlusion_pass(render_pass::Context const &pass_co
                                   .denoised_ao = *targets.ao_denoised,
                                   .extent = targets.extent,
                                   .depth_texture_index = targets.resolved_depth_handle.index,
-                                  .raw_ao_texture_index = frame.ao_target.raw.index,
-                                  .denoised_ao_texture_index = frame.ao_target.denoised.index,
+                                  .raw_ao_texture_index = frame.ao_target.raw.handle().index,
+                                  .denoised_ao_texture_index = frame.ao_target.denoised.handle().index,
                                   .point_sampler_index = sampler_storage_.nearest_clamp().index,
                                   .ubo_address = ubos_[pass_context.frame_index].device_address,
                                   .gtao_pipeline = gtao_pipeline_,
@@ -3322,7 +3149,7 @@ auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, Rende
 
     std::array<std::uint32_t, render_pass::bloom_mip_count> mip_texture_indices{};
     for (std::uint32_t mip = 0; mip < render_pass::bloom_mip_count; ++mip) {
-        mip_texture_indices[mip] = frame.bloom_target.mip_slots[mip].index;
+        mip_texture_indices[mip] = frame.bloom_target.mip_slots[mip].handle().index;
     }
 
     return render_pass::bloom(
@@ -3330,7 +3157,7 @@ auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, Rende
             render_pass::BloomPassInfo{
                     .enabled = bloom_settings_.enabled,
                     .input_hdr = hdr,
-                    .target = bloom_settings_.enabled ? image_storage_.get(frame.bloom_target.image) : nullptr,
+                    .target = bloom_settings_.enabled ? frame.bloom_target.image.get() : nullptr,
                     .mip_texture_indices = mip_texture_indices,
                     .input_extent = targets.extent,
                     .downsample_pipeline = bloom_downsample_pipeline_,
@@ -3716,6 +3543,140 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     return {};
 }
 
+auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent)
+        -> std::expected<OwnedFrameTargets, RendererError> {
+    OwnedFrameTargets targets;
+
+    auto const target_name = std::format("renderer.forward_target_{}", frame_index);
+    auto forward_target = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
+                                                                        .extent = extent,
+                                                                        .hdr_format = hdr_format_,
+                                                                        .depth_format = depth_format_,
+                                                                        .samples = samples_,
+                                                                        .debug_name = target_name,
+                                                                });
+
+    if (!forward_target) {
+        return std::unexpected(RendererError{
+                .type = RendererErrorType::forward_target_error,
+                .cause = ErrorCause{Boxed<ForwardTargetError>{forward_target.error()}},
+        });
+    }
+
+    targets.forward_target = std::move(*forward_target);
+
+    auto const viewport_target_name = std::format("renderer.viewport_target_{}", frame_index);
+    auto viewport_target = create_held_image(image_storage_, ImageCreateInfo{
+            .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
+            .format = swapchain_format_,
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+            .image_type = VK_IMAGE_TYPE_2D,
+            .view_type = VK_IMAGE_VIEW_TYPE_2D,
+            .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+            .flags = 0,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .mip_levels = 1,
+            .array_layers = 1,
+            .debug_name = viewport_target_name,
+    });
+
+    if (!viewport_target) {
+        return std::unexpected(make_image_error(viewport_target.error()));
+    }
+
+    targets.viewport_target = std::move(*viewport_target);
+
+    auto const bloom_target_name = std::format("renderer.bloom_target_{}", frame_index);
+    auto bloom_image = create_held_image(image_storage_, ImageCreateInfo{
+            .extent = VkExtent3D{.width = extent.width / 2, .height = extent.height / 2, .depth = 1},
+            .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+            .image_type = VK_IMAGE_TYPE_2D,
+            .view_type = VK_IMAGE_VIEW_TYPE_2D,
+            .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+            .flags = 0,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .mip_levels = render_pass::bloom_mip_count,
+            .array_layers = 1,
+            .create_mip_layer_views = true,
+            .debug_name = bloom_target_name,
+    });
+
+    if (!bloom_image) {
+        return std::unexpected(make_image_error(bloom_image.error()));
+    }
+
+    // Into the BloomTarget before its mip slots, so a failed registration still releases the slots first.
+    targets.bloom_target.image = std::move(*bloom_image);
+
+    auto const *bloom_image_ptr = targets.bloom_target.image.get();
+
+    for (std::uint32_t mip = 0; mip < render_pass::bloom_mip_count; ++mip) {
+        auto const view = bloom_image_ptr->mip_layer_view(mip, 0);
+
+        auto mip_slot = register_held_view(image_storage_, ImageViewRegistration{
+                                                                   .sampled_2d = view,
+                                                                   .storage_2d = view,
+                                                           });
+
+        if (!mip_slot) {
+            return std::unexpected(make_image_error(mip_slot.error()));
+        }
+
+        targets.bloom_target.mip_slots[mip] = std::move(*mip_slot);
+    }
+
+    auto const create_ao_image = [&](std::string_view kind) -> std::expected<ImageHolder, RendererError> {
+        auto const name = std::format("renderer.ao_{}_{}", kind, frame_index);
+
+        auto image = create_held_image(image_storage_, ImageCreateInfo{
+                .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
+                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                .image_type = VK_IMAGE_TYPE_2D,
+                .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                .flags = 0,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .mip_levels = 1,
+                .array_layers = 1,
+                .debug_name = name,
+        });
+
+        if (!image) {
+            return std::unexpected(make_image_error(image.error()));
+        }
+
+        return std::move(*image);
+    };
+
+    auto ao_raw = create_ao_image("raw");
+
+    if (!ao_raw) {
+        return std::unexpected(ao_raw.error());
+    }
+
+    targets.ao_target.raw = std::move(*ao_raw);
+
+    auto ao_denoised = create_ao_image("denoised");
+
+    if (!ao_denoised) {
+        return std::unexpected(ao_denoised.error());
+    }
+
+    targets.ao_target.denoised = std::move(*ao_denoised);
+
+    return targets;
+}
+
 auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
     if (extent.width == 0 || extent.height == 0) {
         return {};
@@ -3730,217 +3691,30 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         return std::unexpected(waited.error());
     }
 
-    std::vector<ForwardTarget> replacements;
+    // Every frame's replacements are built before any frame is touched: on failure the current targets stay, and the
+    // replacements built so far are destroyed with `replacements`.
+    std::vector<OwnedFrameTargets> replacements;
     replacements.reserve(frames_.size());
 
-    std::vector<ImageHandle> viewport_target_replacements;
-    viewport_target_replacements.reserve(frames_.size());
-
-    std::vector<RendererFrame::AoTarget> ao_target_replacements;
-    ao_target_replacements.reserve(frames_.size());
-
-    std::vector<RendererFrame::BloomTarget> bloom_target_replacements;
-    bloom_target_replacements.reserve(frames_.size());
-
-    auto const destroy_replacements = [&] {
-        for (auto &created: replacements) {
-            created.destroy(image_storage_);
-        }
-        for (auto const handle: viewport_target_replacements) {
-            static_cast<void>(image_storage_.destroy_image(handle));
-        }
-        for (auto const &ao: ao_target_replacements) {
-            static_cast<void>(image_storage_.destroy_image(ao.raw));
-            static_cast<void>(image_storage_.destroy_image(ao.denoised));
-        }
-        for (auto const &bloom: bloom_target_replacements) {
-            for (auto const mip_slot: bloom.mip_slots) {
-                static_cast<void>(image_storage_.destroy_image(mip_slot));
-            }
-            static_cast<void>(image_storage_.destroy_image(bloom.image));
-        }
-    };
-
     for (std::size_t index = 0; index < frames_.size(); ++index) {
-        auto const target_name = std::format("renderer.forward_target_{}", index);
+        auto targets = create_frame_targets(static_cast<std::uint32_t>(index), extent);
 
-        auto replacement = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
-                                                                         .extent = extent,
-                                                                         .hdr_format = hdr_format_,
-                                                                         .depth_format = depth_format_,
-                                                                         .samples = samples_,
-                                                                         .debug_name = target_name,
-                                                                 });
-
-        if (!replacement) {
-            destroy_replacements();
-
-            return std::unexpected(RendererError{
-                    .type = RendererErrorType::forward_target_error,
-                    .cause = ErrorCause{Boxed<ForwardTargetError>{replacement.error()}},
-            });
+        if (!targets) {
+            return std::unexpected(targets.error());
         }
 
-        replacements.push_back(std::move(*replacement));
-
-        auto const viewport_target_name = std::format("renderer.viewport_target_{}", index);
-        auto viewport_target_replacement = image_storage_.create_image(ImageCreateInfo{
-                .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
-                .format = swapchain_format_,
-                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .debug_name = viewport_target_name,
-        });
-
-        if (!viewport_target_replacement) {
-            destroy_replacements();
-
-            return std::unexpected(make_image_error(viewport_target_replacement.error()));
-        }
-
-        viewport_target_replacements.push_back(*viewport_target_replacement);
-
-        auto const ao_raw_name = std::format("renderer.ao_raw_{}", index);
-        auto ao_raw_image = image_storage_.create_image(ImageCreateInfo{
-                .extent =
-                        VkExtent3D{
-                                .width = extent.width,
-                                .height = extent.height,
-                                .depth = 1,
-                        },
-                .format = VK_FORMAT_R8G8B8A8_UNORM,
-                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .debug_name = ao_raw_name,
-        });
-
-        if (!ao_raw_image) {
-            destroy_replacements();
-
-            return std::unexpected(make_image_error(ao_raw_image.error()));
-        }
-
-        auto const ao_denoised_name = std::format("renderer.ao_denoised_{}", index);
-
-        auto ao_denoised_image = image_storage_.create_image(ImageCreateInfo{
-                .extent =
-                        VkExtent3D{
-                                .width = extent.width,
-                                .height = extent.height,
-                                .depth = 1,
-                        },
-                .format = VK_FORMAT_R8G8B8A8_UNORM,
-                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .debug_name = ao_denoised_name,
-        });
-
-        if (!ao_denoised_image) {
-            destroy_replacements();
-
-            return std::unexpected(make_image_error(ao_denoised_image.error()));
-        }
-
-        ao_target_replacements.push_back(RendererFrame::AoTarget{.raw = *ao_raw_image, .denoised = *ao_denoised_image});
-
-        auto const bloom_target_name = std::format("renderer.bloom_target_{}", index);
-
-        auto bloom_image = image_storage_.create_image(ImageCreateInfo{
-                .extent =
-                        VkExtent3D{
-                                .width = extent.width / 2,
-                                .height = extent.height / 2,
-                                .depth = 1,
-                        },
-                .format = VK_FORMAT_R16G16B16A16_SFLOAT,
-                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = render_pass::bloom_mip_count,
-                .array_layers = 1,
-                .create_mip_layer_views = true,
-                .debug_name = bloom_target_name,
-        });
-
-        if (!bloom_image) {
-            destroy_replacements();
-
-            return std::unexpected(make_image_error(bloom_image.error()));
-        }
-
-        RendererFrame::BloomTarget bloom_target{.image = *bloom_image};
-
-        auto const *bloom_image_ptr = image_storage_.get(*bloom_image);
-
-        for (std::uint32_t mip = 0; mip < render_pass::bloom_mip_count; ++mip) {
-            auto const view = bloom_image_ptr->mip_layer_view(mip, 0);
-
-            auto mip_slot = image_storage_.register_view(ImageViewRegistration{
-                    .sampled_2d = view,
-                    .storage_2d = view,
-            });
-
-            if (!mip_slot) {
-                destroy_replacements();
-
-                return std::unexpected(make_image_error(mip_slot.error()));
-            }
-
-            bloom_target.mip_slots[mip] = *mip_slot;
-        }
-
-        bloom_target_replacements.push_back(bloom_target);
+        replacements.push_back(std::move(*targets));
     }
 
+    // Moving in destroys the old targets.
     for (std::size_t index = 0; index < frames_.size(); ++index) {
-        frames_[index].forward_target.destroy(image_storage_);
-        frames_[index].forward_target = std::move(replacements[index]);
+        auto &frame = frames_[index];
+        auto &targets = replacements[index];
 
-        static_cast<void>(image_storage_.destroy_image(frames_[index].viewport_target));
-        frames_[index].viewport_target = viewport_target_replacements[index];
-
-        static_cast<void>(image_storage_.destroy_image(frames_[index].ao_target.raw));
-        static_cast<void>(image_storage_.destroy_image(frames_[index].ao_target.denoised));
-        frames_[index].ao_target = ao_target_replacements[index];
-
-        for (auto const mip_slot: frames_[index].bloom_target.mip_slots) {
-            static_cast<void>(image_storage_.destroy_image(mip_slot));
-        }
-        static_cast<void>(image_storage_.destroy_image(frames_[index].bloom_target.image));
-        frames_[index].bloom_target = bloom_target_replacements[index];
+        frame.forward_target = std::move(targets.forward_target);
+        frame.viewport_target = std::move(targets.viewport_target);
+        frame.bloom_target = std::move(targets.bloom_target);
+        frame.ao_target = std::move(targets.ao_target);
     }
 
     extent_ = extent;
