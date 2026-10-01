@@ -194,6 +194,9 @@ namespace scene_section {
 // Current (written) version of each section; see scene_codec.cxx for what older versions each one still reads.
 inline constexpr std::uint16_t scene_section_version = 1;
 
+// v2 stores instance transforms column-wise and byte-shuffled, as translation/rotation/scale where they decompose.
+inline constexpr std::uint16_t instanced_models_section_version = 2;
+
 [[nodiscard]]
 auto encode_scene(SceneDescription const &scene) -> std::vector<std::byte>;
 

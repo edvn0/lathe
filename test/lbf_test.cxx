@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <cstring>
+#include <glm/gtc/matrix_transform.hpp>
 #include <fstream>
 #include <numeric>
 
@@ -51,6 +52,63 @@ namespace {
         }
 
         return cpu_data;
+    }
+
+    // The payload of one SCEN section, and the version it was written with.
+    struct EncodedSection {
+        std::uint16_t version = 0;
+        std::span<std::byte const> payload;
+    };
+
+    auto find_section(std::span<std::byte const> scene, std::uint32_t type) -> EncodedSection {
+        ByteReader reader{scene};
+
+        while (reader.remaining() > 0) {
+            auto const section_type = reader.read<std::uint32_t>();
+            auto const version = reader.read<std::uint16_t>();
+            static_cast<void>(reader.read<std::uint16_t>());
+            auto const size = reader.read<std::uint64_t>();
+            auto const offset = scene.size() - reader.remaining();
+
+            if (reader.failed() || size > reader.remaining()) {
+                break;
+            }
+            if (section_type == type) {
+                return EncodedSection{.version = version, .payload = scene.subspan(offset, size)};
+            }
+
+            std::vector<std::byte> skipped(size);
+            reader.read_span(std::span<std::byte>{skipped});
+        }
+
+        return {};
+    }
+
+    // A grass-like field: yaw-only rotation, uniform scale, translation on a jittered grid.
+    auto grass_like_transforms(std::size_t count) -> std::vector<glm::mat4> {
+        std::vector<glm::mat4> transforms;
+        transforms.reserve(count);
+
+        for (std::size_t index = 0; index < count; ++index) {
+            auto const yaw = static_cast<float>(index) * 0.731F;
+            auto const scale = 0.6F + (0.01F * static_cast<float>(index % 40));
+            auto const column = index % 25;
+            auto const row = index / 25;
+            auto transform = glm::translate(glm::mat4{1.0F}, glm::vec3{static_cast<float>(column) * 0.5F, 0.1F,
+                                                                         static_cast<float>(row) * 0.5F});
+            transform = glm::rotate(transform, yaw, glm::vec3{0.0F, 1.0F, 0.0F});
+            transforms.push_back(glm::scale(transform, glm::vec3{scale}));
+        }
+
+        return transforms;
+    }
+
+    auto check_matrices_close(glm::mat4 const &actual, glm::mat4 const &expected) -> void {
+        for (glm::length_t column = 0; column < 4; ++column) {
+            for (glm::length_t row = 0; row < 4; ++row) {
+                CHECK(actual[column][row] == doctest::Approx(expected[column][row]).epsilon(1e-5));
+            }
+        }
     }
 
 } // namespace
@@ -406,6 +464,98 @@ TEST_SUITE("unit") {
 
         // Same input, same bytes: the dirty check compares encodings.
         CHECK(encode_scene(*decoded) == payload);
+    }
+
+    TEST_CASE("Instance transforms that decompose are stored as TRS columns") {
+        SceneDescription scene;
+        scene.models.push_back(SceneAssetRef{.id = asset_id_from_key("model:grass.gltf"), .source = "grass.gltf"});
+        scene.entities.push_back(SceneEntity{.name = "grass"});
+        scene.entities.push_back(SceneEntity{.name = "mirrored"});
+
+        auto const transforms = grass_like_transforms(500);
+        scene.instanced_models.push_back(
+                SceneInstancedModelComponent{.entity = 0, .model = 0, .transforms = transforms});
+
+        auto const mirrored = std::vector{glm::scale(glm::mat4{1.0F}, glm::vec3{-1.0F, 1.0F, 1.0F}),
+                                          glm::scale(glm::rotate(glm::mat4{1.0F}, 0.4F, glm::vec3{1.0F, 0.0F, 0.0F}),
+                                                     glm::vec3{2.0F, -3.0F, 0.5F})};
+        scene.instanced_models.push_back(
+                SceneInstancedModelComponent{.entity = 1, .model = 0, .transforms = mirrored});
+
+        auto const payload = encode_scene(scene);
+
+        auto const section = find_section(payload, scene_section::instanced_models);
+        CHECK(section.version == instanced_models_section_version);
+        // Component count, then per component: entity, model, material, count, encoding and 10 floats per instance.
+        CHECK(section.payload.size() == 4 + (17 + (40 * transforms.size())) + (17 + (40 * mirrored.size())));
+
+        auto const decoded = decode_scene(payload);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->instanced_models.size() == 2);
+        REQUIRE(decoded->instanced_models[0].transforms.size() == transforms.size());
+        REQUIRE(decoded->instanced_models[1].transforms.size() == mirrored.size());
+
+        for (std::size_t index = 0; index < transforms.size(); ++index) {
+            check_matrices_close(decoded->instanced_models[0].transforms[index], transforms[index]);
+        }
+        for (std::size_t index = 0; index < mirrored.size(); ++index) {
+            check_matrices_close(decoded->instanced_models[1].transforms[index], mirrored[index]);
+        }
+    }
+
+    TEST_CASE("A sheared instance keeps its component's transforms as exact matrices") {
+        SceneDescription scene;
+        scene.models.push_back(SceneAssetRef{.id = asset_id_from_key("model:a.gltf"), .source = "a.gltf"});
+        scene.entities.push_back(SceneEntity{.name = "sheared"});
+
+        auto transforms = grass_like_transforms(8);
+        auto sheared = glm::mat4{1.0F};
+        sheared[1][0] = 0.5F;
+        transforms.push_back(sheared);
+        scene.instanced_models.push_back(
+                SceneInstancedModelComponent{.entity = 0, .model = 0, .transforms = transforms});
+
+        auto const payload = encode_scene(scene);
+        auto const section = find_section(payload, scene_section::instanced_models);
+        CHECK(section.payload.size() == 4 + 17 + (64 * transforms.size()));
+
+        auto const decoded = decode_scene(payload);
+        REQUIRE(decoded.has_value());
+        CHECK(decoded->instanced_models[0].transforms == transforms);
+    }
+
+    TEST_CASE("Version 1 instanced model sections still decode") {
+        SceneDescription scene;
+        scene.models.push_back(SceneAssetRef{.id = asset_id_from_key("model:a.gltf"), .source = "a.gltf"});
+        scene.entities.push_back(SceneEntity{.name = "old"});
+
+        auto payload = encode_scene(scene);
+
+        // v1 layout: interleaved column-major matrices.
+        auto const transforms = grass_like_transforms(3);
+        ByteWriter section;
+        section.write(std::uint32_t{1});
+        section.write(std::uint32_t{0}); // entity
+        section.write(std::uint32_t{0}); // model
+        section.write(scene_no_index); // material
+        section.write(static_cast<std::uint32_t>(transforms.size()));
+        for (auto const &transform: transforms) {
+            section.write_span(std::span<float const>{&transform[0][0], 16});
+        }
+
+        // A second instanced_models section replaces the empty current-version one when decoded.
+        ByteWriter framed;
+        framed.write(scene_section::instanced_models);
+        framed.write(std::uint16_t{1});
+        framed.write(std::uint16_t{0});
+        framed.write(static_cast<std::uint64_t>(section.size()));
+        framed.write_span(section.bytes());
+        payload.insert(payload.end(), framed.bytes().begin(), framed.bytes().end());
+
+        auto const decoded = decode_scene(payload);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->instanced_models.size() == 1);
+        CHECK(decoded->instanced_models[0].transforms == transforms);
     }
 
     TEST_CASE("Scene codec skips sections from a newer engine and rejects bad references") {
