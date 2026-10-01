@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <ranges>
 #include <utility>
 
 namespace {
@@ -130,8 +131,7 @@ auto HierarchyModel::recompute_matches() -> void {
         }
     }
 
-    for (auto it = preorder.rbegin(); it != preorder.rend(); ++it) {
-        auto const node = *it;
+    for (auto const node: std::views::reverse(preorder)) {
         bool match = self_match_[node];
         for (std::uint32_t child = 0; child < child_count_[node] && !match; ++child) {
             match = subtree_match_[children_[first_child_[node] + child]];
