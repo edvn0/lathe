@@ -51,6 +51,7 @@
 #include "gpu/sampler_storage.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "rendering/forward_target.hxx"
+#include "rendering/hiz_occlusion.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/render_passes.hxx"
 #include "rendering/render_stage.hxx"
@@ -593,6 +594,14 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto occlusion_test_mode() const noexcept -> OcclusionTestMode { return occlusion_test_mode_; }
     auto set_occlusion_test_mode(OcclusionTestMode mode) noexcept -> void;
 
+    // One level of the Hi-Z pyramid as a sampled_2d texture for the debug panel: R32, the farthest depth of each texel
+    // (reverse-Z, so brighter is nearer). Only the level's logical extent (hiz_level_extent() of hiz_depth_extent())
+    // is written; the rest of the power-of-two image is undefined. Invalid until occlusion culling has built the
+    // pyramid since the last resize, or when R32_SFLOAT can't be linearly filtered for the UI.
+    [[nodiscard]] auto hiz_debug_view(std::uint32_t mip) const noexcept -> ImageHandle;
+    [[nodiscard]] auto hiz_debug_mip_count() const noexcept -> std::uint32_t { return hiz_.mip_count; }
+    [[nodiscard]] auto hiz_depth_extent() const noexcept -> VkExtent2D { return hiz_.depth_extent; }
+
     // Punctual lights binned into view-space clusters on the GPU, so each fragment only shades the lights that can
     // reach it. Off shades every light per fragment.
     [[nodiscard]] auto clustered_lighting() const noexcept -> bool { return clustered_lighting_; }
@@ -870,6 +879,44 @@ private:
         std::array<std::uint32_t, shadow_cascade_count> shadow_mask_indirect_count{};
     };
 
+    // The Hi-Z pyramid (docs/occlusion-culling.md): R32_SFLOAT, hiz_image_extent() of the render extent with
+    // hiz_mip_count() levels. image's primary view (all levels) is what the occlusion tests read; mip_slots[i] is
+    // level i alone, registered as sampled_2d and storage_2d for the build. Shared by every frame in flight: there is
+    // one graphics queue and frames are submitted in order, so frame N + 1's phase 1 reads what frame N built.
+    //
+    // mip_slots are register_view() aliases of image's mip views, so they're released before it: declared after it
+    // for destruction, and assigned first on a move.
+    struct HizPyramid {
+        ImageHolder image;
+        std::array<ImageHolder, hiz_max_mip_count> mip_slots;
+        VkExtent2D depth_extent{};
+        std::uint32_t mip_count = 0;
+
+        // Set once a build has left every level in SHADER_READ_ONLY_OPTIMAL.
+        bool layout_initialised = false;
+
+        HizPyramid() = default;
+        ~HizPyramid() = default;
+
+        HizPyramid(HizPyramid const &) = delete;
+        auto operator=(HizPyramid const &) -> HizPyramid & = delete;
+
+        HizPyramid(HizPyramid &&) noexcept = default;
+
+        auto operator=(HizPyramid &&other) noexcept -> HizPyramid & {
+            mip_slots = std::move(other.mip_slots);
+            image = std::move(other.image);
+            depth_extent = other.depth_extent;
+            mip_count = other.mip_count;
+            layout_initialised = other.layout_initialised;
+
+            return *this;
+        }
+    };
+
+    [[nodiscard]]
+    auto create_hiz_pyramid(VkExtent2D depth_extent) -> std::expected<HizPyramid, RendererError>;
+
     // A frame's extent-sized render targets, built together so initialize() and resize() share one path.
     struct OwnedFrameTargets {
         ForwardTarget forward_target{};
@@ -1030,6 +1077,11 @@ private:
                               FrameTargets const &targets, render_pass::DepthPrepassPhase phase)
             -> std::expected<void, RendererError>;
 
+    // Builds hiz_ from the early prepass's depth (the MIN resolve under MSAA) for late_cs and next frame's main_cs.
+    [[nodiscard]]
+    auto record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets)
+            -> std::expected<void, RendererError>;
+
     // Phase 2 of occlusion culling: late_cs re-tests main_cs's candidates against this frame's Hi-Z.
     [[nodiscard]]
     auto record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
@@ -1130,6 +1182,7 @@ private:
     PipelineNodeHandle composite_pipeline_;
     PipelineNodeHandle frustum_cull_pipeline_;
     PipelineNodeHandle occlusion_cull_pipeline_;
+    PipelineNodeHandle hiz_build_pipeline_;
     PipelineNodeHandle light_icon_pipeline_;
     PipelineNodeHandle bloom_downsample_pipeline_;
     PipelineNodeHandle bloom_upsample_pipeline_;
@@ -1160,6 +1213,15 @@ private:
 
     // Shared across frames in flight so unchanged tiles persist.
     ImageHolder shadow_atlas_{};
+
+    // Two-phase occlusion culling. The history is the last built pyramid and the view-projection it was built with;
+    // phase 1 only uses it while hiz_history_valid_, which a resize, a toggle or a frame without occlusion clears.
+    HizPyramid hiz_{};
+    glm::mat4 hiz_history_view_projection_{1.0F};
+    bool hiz_history_valid_ = false;
+
+    // VK_FORMAT_R32_SFLOAT supports linear filtering, which the UI's sampler needs for hiz_debug_view().
+    bool hiz_debug_view_supported_ = false;
     std::array<ShadowCascadeCacheEntry, shadow_cascade_count> shadow_cascade_cache_{};
     std::uint64_t shadow_frame_ = 0;
     std::uint64_t shadow_caster_revision_ = 1;

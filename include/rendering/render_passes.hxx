@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <span>
 #include <type_traits>
 
 #include <volk.h>
@@ -264,11 +265,28 @@ namespace render_pass {
 
     auto depth_prepass(Context const &context, DepthPrepassInfo const &info) -> std::expected<void, RendererError>;
 
-    // Orders the early prepass's depth writes and resolve before the late prepass loads and re-resolves them. `depth`
-    // is the (possibly multisampled) attachment and `resolved_depth` its resolve target, or null at 1x. Both stay in
-    // DEPTH_ATTACHMENT_OPTIMAL.
-    auto depth_prepass_phase_barrier(Context const &context, Image const &depth, Image const *resolved_depth) noexcept
-            -> void;
+    // Builds the Hi-Z pyramid between the early and late prepasses (docs/occlusion-culling.md), as one compute
+    // dispatch per level (hiz_build.slang), each reading the level below through mip_texture_indices[level - 1] (or the
+    // depth for level 0) and writing mip_texture_indices[level].
+    //
+    // `source_depth` is the single-sample depth the early prepass wrote: the MIN resolve under MSAA, otherwise the
+    // attachment itself. It goes DEPTH_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL -> DEPTH_ATTACHMENT_OPTIMAL, so
+    // the late prepass can load or re-resolve it. `multisampled_depth`, when set, is the MSAA attachment, which the
+    // late prepass loads. Every pyramid level ends in SHADER_READ_ONLY_OPTIMAL, visible to compute, task and fragment
+    // shaders (the occlusion tests and the debug view); the previous contents are discarded.
+    struct HizBuildInfo {
+        Image const &source_depth;
+        std::uint32_t source_texture_index = 0;
+        VkExtent2D depth_extent{};
+        Image const *multisampled_depth = nullptr;
+
+        Image const &hiz;
+        std::span<std::uint32_t const> mip_texture_indices;
+
+        PipelineNodeHandle pipeline{};
+    };
+
+    auto build_hiz(Context const &context, HizBuildInfo const &info) -> std::expected<void, RendererError>;
 
     auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)
             -> std::expected<std::optional<AoTextureIndex>, RendererError>;

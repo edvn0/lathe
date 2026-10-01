@@ -802,6 +802,26 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.occlusion_cull_pipeline",
     }); // index 21: occlusion_cull
 
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/hiz_build.slang",
+                                    .entry_point = "main_cs",
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.hiz_build_pipeline",
+    }); // index 22: hiz_build
+
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
@@ -839,6 +859,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     light_cluster_pipeline_ = *registered_pipelines[19];
     light_cull_pipeline_ = *registered_pipelines[20];
     occlusion_cull_pipeline_ = *registered_pipelines[21];
+    hiz_build_pipeline_ = *registered_pipelines[22];
 
     {
         auto light_icon_image = DecodedImage::load_from_file("assets/textures/light_bulb.png");
@@ -1259,6 +1280,20 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.batch_bounds.reserve(maximum_draw_count_);
     }
 
+    auto hiz = create_hiz_pyramid(create_info.extent);
+
+    if (!hiz) {
+        return std::unexpected(hiz.error());
+    }
+
+    hiz_ = std::move(*hiz);
+    hiz_history_valid_ = false;
+
+    VkFormatProperties hiz_format_properties{};
+    vkGetPhysicalDeviceFormatProperties(context_.physical_device, VK_FORMAT_R32_SFLOAT, &hiz_format_properties);
+    hiz_debug_view_supported_ =
+            (hiz_format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(context_.physical_device, &properties);
 
@@ -1424,6 +1459,9 @@ auto Renderer::destroy() noexcept -> void {
     frames_.clear();
 
     shadow_atlas_.reset();
+
+    hiz_ = HizPyramid{};
+    hiz_history_valid_ = false;
 
     shadow_cascade_cache_ = {};
     shadow_frame_ = 0;
@@ -2877,21 +2915,34 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
-    // Two-phase occlusion culling: record_frame follows this decision for the frame.
-    frame.occlusion_active = occlusion_culling_ && occlusion_culling_supported();
+    // Two-phase occlusion culling: record_frame follows this decision for the frame. The pyramid matches the render
+    // extent except between a resize and the frames recreated with it.
+    auto const forward_extent = frame.forward_target.extent();
+    frame.occlusion_active = occlusion_culling_ && occlusion_culling_supported() && static_cast<bool>(hiz_.image) &&
+                             hiz_.depth_extent.width == forward_extent.width &&
+                             hiz_.depth_extent.height == forward_extent.height;
 
     {
-        auto const states = occlusion_view_states(frame.occlusion_active, false, occlusion_test_mode_);
+        auto const states = occlusion_view_states(frame.occlusion_active, hiz_history_valid_, occlusion_test_mode_);
 
+        // [0]: last frame's pyramid, projected as it was built. [1]: the pyramid record_frame builds this frame.
         std::array<GpuOcclusionView, 2> const occlusion_views{
                 GpuOcclusionView{
-                        .view_projection = view_projection,
+                        .view_projection = hiz_history_view_projection_,
                         .stats_address = frame.occlusion_stats_buffer.device_address,
+                        .hiz_texture_index = hiz_.image.handle().index,
+                        .hiz_mip_count = hiz_.mip_count,
+                        .depth_width = hiz_.depth_extent.width,
+                        .depth_height = hiz_.depth_extent.height,
                         .enabled = states.early,
                 },
                 GpuOcclusionView{
                         .view_projection = view_projection,
                         .stats_address = frame.occlusion_stats_buffer.device_address,
+                        .hiz_texture_index = hiz_.image.handle().index,
+                        .hiz_mip_count = hiz_.mip_count,
+                        .depth_width = hiz_.depth_extent.width,
+                        .depth_height = hiz_.depth_extent.height,
                         .enabled = states.late,
                 },
         };
@@ -3354,9 +3405,83 @@ auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
     last_frame_stats_.occlusion_stats_valid = frame.occlusion_stats_active;
 }
 
-auto Renderer::set_occlusion_culling(bool enabled) noexcept -> void { occlusion_culling_ = enabled; }
+auto Renderer::set_occlusion_culling(bool enabled) noexcept -> void {
+    if (enabled != occlusion_culling_) {
+        hiz_history_valid_ = false;
+    }
 
-auto Renderer::set_occlusion_test_mode(OcclusionTestMode mode) noexcept -> void { occlusion_test_mode_ = mode; }
+    occlusion_culling_ = enabled;
+}
+
+auto Renderer::set_occlusion_test_mode(OcclusionTestMode mode) noexcept -> void {
+    if (mode != occlusion_test_mode_) {
+        hiz_history_valid_ = false;
+    }
+
+    occlusion_test_mode_ = mode;
+}
+
+auto Renderer::hiz_debug_view(std::uint32_t mip) const noexcept -> ImageHandle {
+    if (!hiz_debug_view_supported_ || !hiz_.layout_initialised || hiz_.mip_count == 0) {
+        return {};
+    }
+
+    return hiz_.mip_slots[std::min(mip, hiz_.mip_count - 1)].handle();
+}
+
+auto Renderer::create_hiz_pyramid(VkExtent2D depth_extent) -> std::expected<HizPyramid, RendererError> {
+    HizExtent const depth{.width = depth_extent.width, .height = depth_extent.height};
+    auto const image_extent = hiz_image_extent(depth);
+
+    HizPyramid pyramid;
+    pyramid.depth_extent = depth_extent;
+    pyramid.mip_count = hiz_mip_count(depth);
+
+    auto image = create_held_image(
+            image_storage_,
+            ImageCreateInfo{
+                    .extent = VkExtent3D{.width = image_extent.width, .height = image_extent.height, .depth = 1},
+                    .format = VK_FORMAT_R32_SFLOAT,
+                    .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .image_type = VK_IMAGE_TYPE_2D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                    .flags = 0,
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .mip_levels = pyramid.mip_count,
+                    .array_layers = 1,
+                    .create_mip_layer_views = true,
+                    .debug_name = "renderer.hiz",
+            });
+
+    if (!image) {
+        return std::unexpected(make_image_error(image.error()));
+    }
+
+    // Into the pyramid before its mip slots, so a failed registration still releases the slots first.
+    pyramid.image = std::move(*image);
+
+    auto const *hiz_image = pyramid.image.get();
+
+    for (std::uint32_t mip = 0; mip < pyramid.mip_count; ++mip) {
+        auto const view = hiz_image->mip_layer_view(mip, 0);
+
+        auto mip_slot = register_held_view(image_storage_, ImageViewRegistration{
+                                                                   .sampled_2d = view,
+                                                                   .storage_2d = view,
+                                                           });
+
+        if (!mip_slot) {
+            return std::unexpected(make_image_error(mip_slot.error()));
+        }
+
+        pyramid.mip_slots[mip] = std::move(*mip_slot);
+    }
+
+    return pyramid;
+}
 
 auto Renderer::occlusion_culling_supported() const noexcept -> bool {
     return samples_ == VK_SAMPLE_COUNT_1_BIT || context_.depth_resolve_min_supported;
@@ -3600,7 +3725,11 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
                                       .extent = targets.extent,
                                       .samples = samples_,
                                       .phase = phase,
-                                      .depth_resolve_mode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
+                                      // The Hi-Z needs each pixel's farthest sample; the late phase's resolve then
+                                      // leaves the SAMPLE_ZERO depth everything else expects.
+                                      .depth_resolve_mode = phase == render_pass::DepthPrepassPhase::early
+                                                                    ? VK_RESOLVE_MODE_MIN_BIT
+                                                                    : VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
                                       .draws = late ? late_view_draws(frame) : early_view_draws(frame),
                                       .counts = batch_counts(frame),
                                       .cull_planes_address = frame.frustum_planes_buffer.device_address,
@@ -3625,6 +3754,42 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
     TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Depth Prepass",
                  tracy::Color::SlateGray);
     return record();
+}
+
+auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets)
+        -> std::expected<void, RendererError> {
+    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Hi-Z Build",
+                 tracy::Color::DarkOrange);
+
+    auto const *hiz_image = hiz_.image.get();
+
+    if (hiz_image == nullptr || hiz_.mip_count == 0 || hiz_.mip_count > hiz_max_mip_count) {
+        return std::unexpected(make_error(RendererErrorType::image_error));
+    }
+
+    std::array<std::uint32_t, hiz_max_mip_count> mip_texture_indices{};
+
+    for (std::uint32_t mip = 0; mip < hiz_.mip_count; ++mip) {
+        mip_texture_indices[mip] = hiz_.mip_slots[mip].handle().index;
+    }
+
+    auto const built = render_pass::build_hiz(
+            pass_context, render_pass::HizBuildInfo{
+                                  .source_depth = *targets.resolved_depth,
+                                  .source_texture_index = targets.resolved_depth_handle.index,
+                                  .depth_extent = targets.extent,
+                                  .multisampled_depth = targets.multisampled ? targets.depth : nullptr,
+                                  .hiz = *hiz_image,
+                                  .mip_texture_indices = std::span{mip_texture_indices}.first(hiz_.mip_count),
+                                  .pipeline = hiz_build_pipeline_,
+                          });
+
+    if (!built) {
+        return std::unexpected(built.error());
+    }
+
+    hiz_.layout_initialised = true;
+    return {};
 }
 
 auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
@@ -4267,9 +4432,13 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     }
 
     if (frame.occlusion_active) {
-        render_pass::depth_prepass_phase_barrier(pass_context, *targets->depth,
-                                                 targets->multisampled ? targets->resolved_depth : nullptr);
-        write_empty_stage(command_buffer, frame_index, RenderStage::HiZBuild);
+        if (auto built = record_hiz_build(pass_context, *targets); !built) {
+            return built;
+        }
+
+        // Next frame's phase 1 tests against this pyramid, projected as it was built.
+        hiz_history_view_projection_ = frame.view_projection;
+        hiz_history_valid_ = true;
 
         if (auto culled = record_occlusion_cull_pass(pass_context, frame); !culled) {
             return culled;
@@ -4283,6 +4452,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         write_empty_stage(command_buffer, frame_index, RenderStage::HiZBuild);
         write_empty_stage(command_buffer, frame_index, RenderStage::OcclusionCulling);
         write_empty_stage(command_buffer, frame_index, RenderStage::DepthPrepassLate);
+
+        // A pyramid from before this gap may not match what is on screen when culling resumes.
+        hiz_history_valid_ = false;
     }
 
     record_occlusion_stats_readback(command_buffer, frame);
@@ -4485,6 +4657,12 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         replacements.push_back(std::move(*targets));
     }
 
+    auto hiz = create_hiz_pyramid(extent);
+
+    if (!hiz) {
+        return std::unexpected(hiz.error());
+    }
+
     // Moving in destroys the old targets.
     for (std::size_t index = 0; index < frames_.size(); ++index) {
         auto &frame = frames_[index];
@@ -4495,6 +4673,9 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         frame.bloom_target = std::move(targets.bloom_target);
         frame.ao_target = std::move(targets.ao_target);
     }
+
+    hiz_ = std::move(*hiz);
+    hiz_history_valid_ = false;
 
     extent_ = extent;
 

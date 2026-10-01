@@ -45,6 +45,7 @@
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
+#include "rendering/hiz_occlusion.hxx"
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/imgui_widget.hxx"
 #include "rendering/toast.hxx"
@@ -2020,6 +2021,24 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::Text("Instances visible (post-cull): %s (%u, %.1f%%)", fmt(stats.visible_instance_count),
                     stats.visible_instance_count, culled_percent);
 
+        if (stats.occlusion_stats_valid) {
+            auto const frustum_culled = stats.submitted_instance_count > stats.frustum_visible_instance_count
+                                                ? stats.submitted_instance_count - stats.frustum_visible_instance_count
+                                                : 0U;
+            auto const occluded_percent = stats.frustum_visible_instance_count != 0
+                                                  ? 100.0F * static_cast<float>(stats.occluded_instance_count) /
+                                                            static_cast<float>(stats.frustum_visible_instance_count)
+                                                  : 0.0F;
+
+            ImGui::Text("Instances frustum-culled: %s (%u)", fmt(frustum_culled), frustum_culled);
+            ImGui::Text("Instances occluded (Hi-Z): %s (%u, %.1f%% of frustum-visible)",
+                        fmt(stats.occluded_instance_count), stats.occluded_instance_count, occluded_percent);
+            ImGui::Text("Phase 1 / phase 2 instances: %u / %u (%u deferred by phase 1)", stats.early_instance_count,
+                        stats.late_instance_count, stats.occlusion_candidate_count);
+        } else {
+            ImGui::TextDisabled("Occlusion culling inactive");
+        }
+
         ImGui::Text("Model / mesh submissions: %u / %u", stats.model_submission_count, stats.mesh_submission_count);
         ImGui::Text("Lights: %u point / %u spot", stats.point_light_count, stats.spot_light_count);
     });
@@ -2110,6 +2129,67 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         bool meshlet_culling = renderer->meshlet_culling();
         if (ImGui::Checkbox("Meshlet culling (task shader)", &meshlet_culling)) {
             renderer->set_meshlet_culling(meshlet_culling);
+        }
+
+        // Two-phase Hi-Z occlusion culling of whole instances; see docs/occlusion-culling.md.
+        bool const occlusion_supported = renderer->occlusion_culling_supported();
+        bool occlusion_culling = renderer->occlusion_culling() && occlusion_supported;
+
+        ImGui::BeginDisabled(!occlusion_supported);
+        if (ImGui::Checkbox("Occlusion culling (Hi-Z, two-phase)", &occlusion_culling)) {
+            renderer->set_occlusion_culling(occlusion_culling);
+        }
+        ImGui::EndDisabled();
+
+        if (!occlusion_supported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Unavailable: this device has no MIN depth resolve (VK_RESOLVE_MODE_MIN_BIT) for MSAA");
+        }
+
+        if (occlusion_culling) {
+            ImGui::Indent();
+
+            constexpr std::array occlusion_test_names{"Hi-Z", "Stub: never occluded", "Stub: always defer"};
+            auto test_mode = static_cast<int>(renderer->occlusion_test_mode());
+
+            if (ImGui::Combo("Occlusion test", &test_mode, occlusion_test_names.data(),
+                             static_cast<int>(occlusion_test_names.size()))) {
+                renderer->set_occlusion_test_mode(static_cast<OcclusionTestMode>(test_mode));
+            }
+
+            ImGui::SetItemTooltip("The stubs exercise the two-phase draw lists without the Hi-Z test: the frame must "
+                                  "look exactly as with occlusion culling off.");
+
+            auto const pyramid_levels = renderer->hiz_debug_mip_count();
+
+            if (pyramid_levels > 0) {
+                auto const top_mip = static_cast<int>(pyramid_levels) - 1;
+                hiz_debug_mip = std::clamp(hiz_debug_mip, 0, top_mip);
+                ImGui::SliderInt("Hi-Z mip", &hiz_debug_mip, 0, top_mip);
+
+                auto const mip = static_cast<std::uint32_t>(hiz_debug_mip);
+
+                if (auto const view = renderer->hiz_debug_view(mip); view.valid()) {
+                    auto const depth_extent = renderer->hiz_depth_extent();
+                    HizExtent const depth{.width = depth_extent.width, .height = depth_extent.height};
+                    auto const level = hiz_level_extent(depth, mip);
+                    auto const image = hiz_image_extent(depth);
+
+                    // Only the level's logical extent is written; crop to it.
+                    ImVec2 const uv_max{
+                            static_cast<float>(level.width) / static_cast<float>(std::max(image.width >> mip, 1U)),
+                            static_cast<float>(level.height) / static_cast<float>(std::max(image.height >> mip, 1U)),
+                    };
+
+                    auto const width = ImGui::GetContentRegionAvail().x;
+                    auto const height = width * static_cast<float>(depth.height) / static_cast<float>(depth.width);
+
+                    ImGui::Image(gui::linear_source_texture_id(view.index), ImVec2(width, height), ImVec2(0.0F, 0.0F),
+                                 uv_max);
+                    ImGui::TextDisabled("Red: each texel's farthest depth (reverse-Z: brighter is nearer)");
+                }
+            }
+
+            ImGui::Unindent();
         }
 
         bool clustered_lighting = renderer->clustered_lighting();
