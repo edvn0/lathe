@@ -229,7 +229,8 @@ auto HierarchyModel::rebuild_rows() -> void {
 
     for (std::uint32_t group = 0; group < group_members_.size(); ++group) {
         auto const &members = group_members_[group];
-        if (members.empty() || std::ranges::none_of(members, [&](std::uint32_t node) { return subtree_match_[node]; })) {
+        if (members.empty() ||
+            std::ranges::none_of(members, [&](std::uint32_t node) { return subtree_match_[node]; })) {
             continue;
         }
 

@@ -129,11 +129,10 @@ auto Application::update_scene_jobs() -> void {
                 scene_pack.reset();
             }
 
-            scene_status = std::format("Saved '{}' ({:.1f} MiB, {:.2f}s){}", gui::path_to_utf8(path.filename()),
-                                       static_cast<double>(saved->file_size) / (1024.0 * 1024.0), saved->seconds,
-                                       saved->warnings.empty() && saved->cook.failures.empty()
-                                               ? ""
-                                               : " with warnings; see the console");
+            scene_status = std::format(
+                    "Saved '{}' ({:.1f} MiB, {:.2f}s){}", gui::path_to_utf8(path.filename()),
+                    static_cast<double>(saved->file_size) / (1024.0 * 1024.0), saved->seconds,
+                    saved->warnings.empty() && saved->cook.failures.empty() ? "" : " with warnings; see the console");
 
             if (open_after_save.has_value()) {
                 auto next = std::move(*open_after_save);
@@ -167,9 +166,9 @@ auto Application::update_scene_jobs() -> void {
             scene_path = path;
             scene_pack = std::move((*finished)->pack);
             mark_editor_scene_clean();
-            scene_status = std::format("Opened '{}' in {:.2f}s{}", gui::path_to_utf8(path.filename()),
-                                       (*finished)->seconds,
-                                       (*finished)->instantiate.warnings.empty() ? "" : " with warnings; see the console");
+            scene_status =
+                    std::format("Opened '{}' in {:.2f}s{}", gui::path_to_utf8(path.filename()), (*finished)->seconds,
+                                (*finished)->instantiate.warnings.empty() ? "" : " with warnings; see the console");
         } else {
             error("Opening '{}' failed: {}", path.string(), describe(finished->error()));
             scene_status = std::format("Opening '{}' failed; see the console.", gui::path_to_utf8(path.filename()));

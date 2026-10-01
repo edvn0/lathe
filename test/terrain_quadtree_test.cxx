@@ -134,8 +134,8 @@ TEST_SUITE("unit") {
 
                 select_chunks({x, 0.0F}, settings, split_state, desired);
 
-                auto const lod0_count =
-                        static_cast<std::size_t>(std::ranges::count_if(desired, [](ChunkKey const &key) { return key.lod == 0; }));
+                auto const lod0_count = static_cast<std::size_t>(
+                        std::ranges::count_if(desired, [](ChunkKey const &key) { return key.lod == 0; }));
 
                 if (step > 0 && lod0_count != previous_lod0_count) {
                     ++flips;

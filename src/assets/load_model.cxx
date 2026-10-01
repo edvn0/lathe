@@ -159,7 +159,7 @@ namespace {
     // glTF is right-handed and the renderer left-handed, so imported data is mirrored across Z (else models render as
     // their mirror image). Triangle winding is reversed to match, and node transforms become S * M * S.
     auto to_glm(fastgltf::math::fmat4x4 const &matrix) noexcept -> glm::mat4 {
-        constexpr glm::mat4 mirror_z{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+        constexpr glm::mat4 mirror_z{1.0F, 0.0F, 0.0F,  0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
                                      0.0F, 0.0F, -1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
         return mirror_z * glm::make_mat4(matrix.data()) * mirror_z;
     }
@@ -433,8 +433,8 @@ namespace {
 
             for (std::size_t index = 0; index < vertices.size(); ++index) {
                 // A reflection also flips the bitangent sign.
-                vertices[index].tangent = glm::vec4{tangents[index].x, tangents[index].y, -tangents[index].z,
-                                                    -tangents[index].w};
+                vertices[index].tangent =
+                        glm::vec4{tangents[index].x, tangents[index].y, -tangents[index].z, -tangents[index].w};
             }
 
             has_tangents = true;

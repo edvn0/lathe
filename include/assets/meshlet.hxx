@@ -119,8 +119,8 @@ auto compute_meshlet_bounds(MeshletTopology const &topology, std::span<Compresse
 
 // Uploads `topology.data`. `meshlets` is left zero; pair with upload_meshlet_descriptors().
 [[nodiscard]]
-auto upload_meshlet_data(GeometryArena &geometry_arena, VkCommandBuffer command_buffer,
-                         MeshletTopology const &topology) -> std::expected<GeometrySlice, GeometryArenaError>;
+auto upload_meshlet_data(GeometryArena &geometry_arena, VkCommandBuffer command_buffer, MeshletTopology const &topology)
+        -> std::expected<GeometrySlice, GeometryArenaError>;
 
 [[nodiscard]]
 auto upload_meshlet_descriptors(GeometryArena &geometry_arena, VkCommandBuffer command_buffer,

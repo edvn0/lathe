@@ -14,10 +14,10 @@
 
 #include <optional>
 
-#include "gpu/device_error.hxx"
 #include "core/error_context.hxx"
 #include "core/forward.hxx"
 #include "core/handle.hxx"
+#include "gpu/device_error.hxx"
 
 inline constexpr auto invalid_image_index = std::numeric_limits<std::uint32_t>::max();
 

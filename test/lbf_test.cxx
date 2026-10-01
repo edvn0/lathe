@@ -91,7 +91,8 @@ TEST_SUITE("unit") {
     TEST_CASE("LBF container: chunks round-trip, compressed and raw") {
         LbfWriter writer{LbfFileKind::asset_pack};
 
-        writer.add_chunk(LbfChunkInput{.type = lbf_chunk::texture, .id = 7, .version = 3, .payload = repetitive_payload(4096)});
+        writer.add_chunk(
+                LbfChunkInput{.type = lbf_chunk::texture, .id = 7, .version = 3, .payload = repetitive_payload(4096)});
         writer.add_chunk(LbfChunkInput{.type = lbf_chunk::model, .id = 2, .payload = bytes_of("tiny")});
         writer.add_chunk(LbfChunkInput{.type = lbf_chunk::model, .id = 1, .payload = {}});
 
@@ -178,7 +179,8 @@ TEST_SUITE("unit") {
 
     TEST_CASE("LBF container: stored chunks copy verbatim between files") {
         LbfWriter first{LbfFileKind::asset_pack};
-        first.add_chunk(LbfChunkInput{.type = lbf_chunk::texture, .id = 9, .version = 1, .payload = repetitive_payload(2048)});
+        first.add_chunk(
+                LbfChunkInput{.type = lbf_chunk::texture, .id = 9, .version = 1, .payload = repetitive_payload(2048)});
 
         auto source = LbfReader::from_memory(*first.finish(LbfWriteOptions{.parallel = false}));
         REQUIRE(source.has_value());
@@ -237,12 +239,13 @@ TEST_SUITE("unit") {
     TEST_CASE("Cooked model round-trips geometry, LODs and meshlets losslessly") {
         auto cpu_data = finalized_cube();
         cpu_data.materials.push_back(ModelCpuMaterial{.base_colour_factor = glm::vec4{0.5F}, .base_colour_image = 0});
-        cpu_data.image_sources.push_back(ModelCpuImageSource{.slot = ModelTextureSlot::base_colour, .debug_name = "albedo"});
+        cpu_data.image_sources.push_back(
+                ModelCpuImageSource{.slot = ModelTextureSlot::base_colour, .debug_name = "albedo"});
         cpu_data.meshes[0].primitives[0].material_index = 0;
         cpu_data.lights.push_back(ModelCpuLight{.type = ModelLightType::spot, .intensity = 3.0F});
 
-        std::array const images{CookedImageRef{.texture = AssetId{.value = 77}, .slot = ModelTextureSlot::base_colour,
-                                               .debug_name = "albedo"}};
+        std::array const images{CookedImageRef{
+                .texture = AssetId{.value = 77}, .slot = ModelTextureSlot::base_colour, .debug_name = "albedo"}};
         std::array const samplers{DefaultSampler::nearest_clamp};
 
         auto payload = encode_cooked_model(cpu_data, images, samplers);
@@ -313,9 +316,12 @@ TEST_SUITE("unit") {
         };
 
         LbfWriter writer{LbfFileKind::asset_pack};
-        writer.add_chunk(LbfChunkInput{.type = lbf_chunk::model, .id = model_id.value, .version = cooked_model_version,
+        writer.add_chunk(LbfChunkInput{.type = lbf_chunk::model,
+                                       .id = model_id.value,
+                                       .version = cooked_model_version,
                                        .payload = *encode_cooked_model(cpu_data, images, samplers)});
-        writer.add_chunk(LbfChunkInput{.type = lbf_chunk::texture, .id = texture_id.value,
+        writer.add_chunk(LbfChunkInput{.type = lbf_chunk::texture,
+                                       .id = texture_id.value,
                                        .version = cooked_texture_version,
                                        .payload = encode_cooked_texture(texture, TextureRole::normal_map)});
 
@@ -347,15 +353,16 @@ TEST_SUITE("unit") {
         SceneDescription scene;
         scene.physics_settings.gravity = glm::vec3{0.0F, -3.0F, 0.0F};
         scene.models.push_back(SceneAssetRef{.id = asset_id_from_key("model:a.gltf"), .source = "a.gltf"});
-        scene.textures.push_back(SceneTextureRef{.id = AssetId{.value = 5}, .source = "t.png", .role = TextureRole::generic});
+        scene.textures.push_back(
+                SceneTextureRef{.id = AssetId{.value = 5}, .source = "t.png", .role = TextureRole::generic});
 
         SceneMaterial material{.name = "red", .base_colour_factor = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F}};
         material.textures[scene_material_texture::metallic_roughness] = 0;
         material.alpha_mode = AlphaMode::mask;
         scene.materials.push_back(material);
 
-        scene.entities.push_back(SceneEntity{.name = "root",
-                                             .transform = Components::Transform{.position = glm::vec3{1.0F, 2.0F, 3.0F}}});
+        scene.entities.push_back(SceneEntity{
+                .name = "root", .transform = Components::Transform{.position = glm::vec3{1.0F, 2.0F, 3.0F}}});
         scene.entities.push_back(SceneEntity{.name = "child", .parent = 0, .flags = SceneEntityFlags::generated_name});
         scene.entities.push_back(SceneEntity{.name = "player", .flags = SceneEntityFlags::player});
 

@@ -44,6 +44,4 @@ auto embedded_texture_asset_key(std::string_view cache_key, TextureRole role) ->
     return std::format("texture:{}|{}", cache_key, std::to_underlying(role));
 }
 
-auto engine_asset_key(std::string_view name) -> std::string {
-    return std::format("{}{}", engine_asset_prefix, name);
-}
+auto engine_asset_key(std::string_view name) -> std::string { return std::format("{}{}", engine_asset_prefix, name); }

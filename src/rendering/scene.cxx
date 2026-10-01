@@ -1,12 +1,12 @@
 #include "rendering/scene.hxx"
 
-#include "scene/components.hxx"
+#include "core/thread_pool.hxx"
+#include "physics/physics_world.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/entity.hxx"
-#include "physics/physics_world.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/script_storage.hxx"
-#include "core/thread_pool.hxx"
+#include "scene/components.hxx"
 
 #include <atomic>
 #include <future>

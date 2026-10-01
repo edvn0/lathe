@@ -5,9 +5,9 @@
 
 #include <glm/vec3.hpp>
 
-#include "core/config.hxx"
 #include "assets/geometry.hxx"
 #include "assets/material.hxx"
+#include "core/config.hxx"
 
 // One submesh (an LOD chain plus material) for Renderer::create_mesh.
 struct SubmeshCreateInfo {

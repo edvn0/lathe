@@ -48,9 +48,9 @@ struct ModelLoadProfile {
 // Adds the elapsed time to `*target` on scope exit. A null `target` makes it a no-op.
 class ScopedProfileSample {
 public:
-    explicit ScopedProfileSample(ProfileNanos *target) noexcept
-        : target_(target), start_(target != nullptr ? std::chrono::steady_clock::now()
-                                                     : std::chrono::steady_clock::time_point{}) {}
+    explicit ScopedProfileSample(ProfileNanos *target) noexcept :
+        target_(target),
+        start_(target != nullptr ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}) {}
 
     ScopedProfileSample(ScopedProfileSample const &) = delete;
     auto operator=(ScopedProfileSample const &) -> ScopedProfileSample & = delete;

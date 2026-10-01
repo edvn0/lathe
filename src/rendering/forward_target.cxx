@@ -38,26 +38,28 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
     // The single-sample HDR image is the render target without MSAA and the resolve target with it.
     auto const resolved_hdr_name = std::string{create_info.debug_name} + ".hdr";
 
-    auto resolved_hdr = create_held_image(image_storage, ImageCreateInfo{
-            .extent =
-                    VkExtent3D{
-                            .width = create_info.extent.width,
-                            .height = create_info.extent.height,
-                            .depth = 1,
-                    },
-            .format = create_info.hdr_format,
-            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-            .image_type = VK_IMAGE_TYPE_2D,
-            .view_type = VK_IMAGE_VIEW_TYPE_2D,
-            .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-            .flags = 0,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .mip_levels = 1,
-            .array_layers = 1,
-            .debug_name = resolved_hdr_name,
-    });
+    auto resolved_hdr = create_held_image(
+            image_storage, ImageCreateInfo{
+                                   .extent =
+                                           VkExtent3D{
+                                                   .width = create_info.extent.width,
+                                                   .height = create_info.extent.height,
+                                                   .depth = 1,
+                                           },
+                                   .format = create_info.hdr_format,
+                                   .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                   .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                                   .image_type = VK_IMAGE_TYPE_2D,
+                                   .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                                   .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                                   .flags = 0,
+                                   .samples = VK_SAMPLE_COUNT_1_BIT,
+                                   .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                   .mip_levels = 1,
+                                   .array_layers = 1,
+                                   .debug_name = resolved_hdr_name,
+                           });
 
     if (!resolved_hdr) {
         warn("Could not create the resolved HDR image (1 sample)");
@@ -70,26 +72,27 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
     if (is_msaa) {
         auto const msaa_hdr_name = std::string{create_info.debug_name} + ".hdr_msaa";
 
-        msaa_hdr = create_held_image(image_storage, ImageCreateInfo{
-                .extent =
-                        VkExtent3D{
-                                .width = create_info.extent.width,
-                                .height = create_info.extent.height,
-                                .depth = 1,
-                        },
-                .format = create_info.hdr_format,
-                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = 0,
-                .flags = 0,
-                .samples = create_info.samples,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .debug_name = msaa_hdr_name,
-        });
+        msaa_hdr = create_held_image(
+                image_storage, ImageCreateInfo{
+                                       .extent =
+                                               VkExtent3D{
+                                                       .width = create_info.extent.width,
+                                                       .height = create_info.extent.height,
+                                                       .depth = 1,
+                                               },
+                                       .format = create_info.hdr_format,
+                                       .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                       .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                                       .image_type = VK_IMAGE_TYPE_2D,
+                                       .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                                       .descriptor_views = 0,
+                                       .flags = 0,
+                                       .samples = create_info.samples,
+                                       .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                       .mip_levels = 1,
+                                       .array_layers = 1,
+                                       .debug_name = msaa_hdr_name,
+                               });
 
         if (!msaa_hdr) {
             warn("Could not create the MSAA HDR image ({} samples)", static_cast<std::uint32_t>(create_info.samples));
@@ -100,27 +103,29 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
 
     auto const depth_name = std::string{create_info.debug_name} + (is_msaa ? ".depth_msaa" : ".depth");
 
-    auto depth = create_held_image(image_storage, ImageCreateInfo{
-            .extent =
-                    VkExtent3D{
-                            .width = create_info.extent.width,
-                            .height = create_info.extent.height,
-                            .depth = 1,
-                    },
-            .format = create_info.depth_format,
-            .usage = VkImageUsageFlags{VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT} |
-                     (is_msaa ? VkImageUsageFlags{} : VkImageUsageFlags{VK_IMAGE_USAGE_SAMPLED_BIT}),
-            .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
-            .image_type = VK_IMAGE_TYPE_2D,
-            .view_type = VK_IMAGE_VIEW_TYPE_2D,
-            .descriptor_views = is_msaa ? 0u : image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-            .flags = 0,
-            .samples = create_info.samples,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .mip_levels = 1,
-            .array_layers = 1,
-            .debug_name = depth_name,
-    });
+    auto depth = create_held_image(
+            image_storage,
+            ImageCreateInfo{
+                    .extent =
+                            VkExtent3D{
+                                    .width = create_info.extent.width,
+                                    .height = create_info.extent.height,
+                                    .depth = 1,
+                            },
+                    .format = create_info.depth_format,
+                    .usage = VkImageUsageFlags{VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT} |
+                             (is_msaa ? VkImageUsageFlags{} : VkImageUsageFlags{VK_IMAGE_USAGE_SAMPLED_BIT}),
+                    .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+                    .image_type = VK_IMAGE_TYPE_2D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                    .descriptor_views = is_msaa ? 0u : image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                    .flags = 0,
+                    .samples = create_info.samples,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .mip_levels = 1,
+                    .array_layers = 1,
+                    .debug_name = depth_name,
+            });
 
     if (!depth) {
         return std::unexpected(make_image_error(depth.error()));
@@ -131,26 +136,28 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
     if (is_msaa) {
         auto const resolved_depth_name = std::string{create_info.debug_name} + ".depth";
 
-        resolved_depth = create_held_image(image_storage, ImageCreateInfo{
-                .extent =
-                        VkExtent3D{
-                                .width = create_info.extent.width,
-                                .height = create_info.extent.height,
-                                .depth = 1,
-                        },
-                .format = create_info.depth_format,
-                .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .debug_name = resolved_depth_name,
-        });
+        resolved_depth = create_held_image(
+                image_storage,
+                ImageCreateInfo{
+                        .extent =
+                                VkExtent3D{
+                                        .width = create_info.extent.width,
+                                        .height = create_info.extent.height,
+                                        .depth = 1,
+                                },
+                        .format = create_info.depth_format,
+                        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+                        .image_type = VK_IMAGE_TYPE_2D,
+                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                        .flags = 0,
+                        .samples = VK_SAMPLE_COUNT_1_BIT,
+                        .tiling = VK_IMAGE_TILING_OPTIMAL,
+                        .mip_levels = 1,
+                        .array_layers = 1,
+                        .debug_name = resolved_depth_name,
+                });
 
         if (!resolved_depth) {
             return std::unexpected(make_image_error(resolved_depth.error()));

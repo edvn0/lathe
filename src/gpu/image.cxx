@@ -12,9 +12,9 @@
 #include <glm/gtc/packing.hpp>
 #include <stb_image.h>
 
+#include "core/logger.hxx"
 #include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
-#include "core/logger.hxx"
 #include "gpu/vk_object_name.hxx"
 
 namespace {

@@ -13,11 +13,11 @@
 
 #include <optional>
 
-#include "gpu/buffer.hxx"
+#include "assets/material.hxx"
 #include "core/error_context.hxx"
 #include "core/forward.hxx"
-#include "assets/material.hxx"
 #include "core/object_pool.hxx"
+#include "gpu/buffer.hxx"
 
 #include "gpu/image.hxx"
 #include "gpu/sampler.hxx"

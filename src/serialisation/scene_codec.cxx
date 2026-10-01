@@ -595,9 +595,9 @@ auto decode_scene(std::span<std::byte const> payload, std::uint16_t chunk_versio
     ZoneScopedNC("decode_scene", tracy::Color::Goldenrod);
 
     if (chunk_version == 0 || chunk_version > scene_chunk_version) {
-        return std::unexpected(make_error(LbfErrorType::unsupported_version,
-                                          std::format("SCEN v{}, this build reads v1-v{}", chunk_version,
-                                                      scene_chunk_version)));
+        return std::unexpected(
+                make_error(LbfErrorType::unsupported_version,
+                           std::format("SCEN v{}, this build reads v1-v{}", chunk_version, scene_chunk_version)));
     }
 
     SceneDescription scene;
@@ -705,9 +705,8 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
     }
 
     auto const entities_valid = [&](auto const &components) {
-        return std::ranges::all_of(components, [&](auto const &component) {
-            return entity_in_range(scene, component.entity);
-        });
+        return std::ranges::all_of(components,
+                                   [&](auto const &component) { return entity_in_range(scene, component.entity); });
     };
 
     if (!entities_valid(scene.point_lights) || !entities_valid(scene.spot_lights) ||

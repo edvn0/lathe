@@ -201,9 +201,8 @@ namespace {
                     .debug_meshlet_colours = info->debug_meshlet_colours,
             };
 
-            std::array const textures{info->base_colour_texture, info->normal_texture,
-                                      info->metallic_roughness_texture, info->occlusion_texture,
-                                      info->emissive_texture};
+            std::array const textures{info->base_colour_texture, info->normal_texture, info->metallic_roughness_texture,
+                                      info->occlusion_texture, info->emissive_texture};
 
             for (std::size_t slot = 0; slot < textures.size(); ++slot) {
                 material.textures[slot] = texture_index(textures[slot], slot);
@@ -248,8 +247,8 @@ namespace {
 
 } // namespace
 
-auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &engine_models, SceneCaptureReport *report)
-        -> SceneDescription {
+auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &engine_models,
+                   SceneCaptureReport *report) -> SceneDescription {
     ZoneScopedNC("capture_scene", tracy::Color::Goldenrod);
 
     auto const &registry = scene.get_registry();
@@ -321,7 +320,8 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
             entity_model = model->model;
 
             if (auto const model_index = capture.model_index(model->model); model_index != scene_no_index) {
-                description.model_components.push_back(SceneModelComponent{.entity = entity_index, .model = model_index});
+                description.model_components.push_back(
+                        SceneModelComponent{.entity = entity_index, .model = model_index});
             }
         }
 
@@ -380,7 +380,8 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
             } else {
                 auto copy = *body;
                 copy.heightfield = nullptr;
-                description.rigid_bodies.push_back(SceneRigidBodyComponent{.entity = entity_index, .body = std::move(copy)});
+                description.rigid_bodies.push_back(
+                        SceneRigidBodyComponent{.entity = entity_index, .body = std::move(copy)});
             }
         }
 
@@ -390,7 +391,8 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
             if (name.empty()) {
                 capture.warn_once("a script without a registered name can't be saved; it was dropped");
             } else {
-                description.scripts.push_back(SceneScriptComponent{.entity = entity_index, .script = std::string{name}});
+                description.scripts.push_back(
+                        SceneScriptComponent{.entity = entity_index, .script = std::string{name}});
             }
         }
 
@@ -461,7 +463,8 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
             if (pack != nullptr) {
                 auto future = thread_pool().submit_task(
                         [pack = std::move(pack), id = reference.id,
-                         &sampler_storage = renderer.sampler_storage()]() -> std::expected<ModelCpuData, ModelLoadError> {
+                         &sampler_storage =
+                                 renderer.sampler_storage()]() -> std::expected<ModelCpuData, ModelLoadError> {
                             auto cpu_data = pack->load_model(id, sampler_storage);
 
                             if (!cpu_data) {
@@ -502,17 +505,16 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         auto cpu_data = decode.future.get();
 
         if (!cpu_data) {
-            report.warnings.push_back(
-                    std::format("cooked model '{}' is unusable ({}); loading its source", reference.source,
-                                describe(cpu_data.error())));
+            report.warnings.push_back(std::format("cooked model '{}' is unusable ({}); loading its source",
+                                                  reference.source, describe(cpu_data.error())));
             continue;
         }
 
         auto handle = renderer.create_model_from_cpu_data(*cpu_data);
 
         if (!handle) {
-            report.warnings.push_back(std::format("could not upload model '{}': {}", reference.source,
-                                                  describe(handle.error())));
+            report.warnings.push_back(
+                    std::format("could not upload model '{}': {}", reference.source, describe(handle.error())));
             continue;
         }
 
@@ -534,8 +536,8 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         auto handle = renderer.load_model(source);
 
         if (!handle) {
-            report.warnings.push_back(
-                    std::format("could not load model '{}' ({}); using the engine cube", source, describe(handle.error())));
+            report.warnings.push_back(std::format("could not load model '{}' ({}); using the engine cube", source,
+                                                  describe(handle.error())));
             model.handle = engine_models.cube;
             continue;
         }
@@ -629,8 +631,8 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         auto created = renderer.create_material(info, material.name);
 
         if (!created) {
-            report.warnings.push_back(std::format("could not create material '{}': {}", material.name,
-                                                  describe(created.error())));
+            report.warnings.push_back(
+                    std::format("could not create material '{}': {}", material.name, describe(created.error())));
             continue;
         }
 
@@ -744,11 +746,12 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
 
     for (auto const &component: description.instanced_models) {
         if (auto const handle = models[component.model].handle; handle.valid()) {
-            registry.emplace<Components::InstancedModel>(entities[component.entity], Components::InstancedModel{
-                                                                                             .model = handle,
-                                                                                             .material_override = material_at(component.material),
-                                                                                             .transforms = component.transforms,
-                                                                                     });
+            registry.emplace<Components::InstancedModel>(entities[component.entity],
+                                                         Components::InstancedModel{
+                                                                 .model = handle,
+                                                                 .material_override = material_at(component.material),
+                                                                 .transforms = component.transforms,
+                                                         });
         }
     }
 
@@ -768,7 +771,8 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         auto const handle = renderer.assets().scripts().find(component.script);
 
         if (!handle.valid()) {
-            report.warnings.push_back(std::format("script '{}' isn't registered in this build; skipped", component.script));
+            report.warnings.push_back(
+                    std::format("script '{}' isn't registered in this build; skipped", component.script));
             continue;
         }
 
@@ -798,8 +802,8 @@ auto apply_deferred_slot_overrides(Scene &scene, Renderer &renderer, std::vector
             return false;
         }
 
-        auto const *model = registry.valid(deferred.entity) ? registry.try_get<Components::Model>(deferred.entity)
-                                                            : nullptr;
+        auto const *model =
+                registry.valid(deferred.entity) ? registry.try_get<Components::Model>(deferred.entity) : nullptr;
 
         // Skipped if the entity went away or was given another model in the meantime.
         if (model != nullptr && model->model == deferred.model) {
@@ -870,13 +874,12 @@ auto SceneSaveJob::start(Scene const &scene, Renderer &renderer, EngineModels co
 
     // std::async rather than thread_pool(): cooking fans out to the pool and waits on it, which would deadlock from
     // inside a pool worker.
-    job.future_ = std::async(std::launch::async,
-                             [description = std::move(description), warnings = std::move(capture_report.warnings),
-                              &sampler_storage = renderer.sampler_storage(), path = std::move(path),
-                              options = std::move(options), started_at]() mutable {
-                                 return write_scene_file(description, std::move(warnings), sampler_storage, path,
-                                                         options, started_at);
-                             });
+    job.future_ = std::async(std::launch::async, [description = std::move(description),
+                                                  warnings = std::move(capture_report.warnings),
+                                                  &sampler_storage = renderer.sampler_storage(), path = std::move(path),
+                                                  options = std::move(options), started_at]() mutable {
+        return write_scene_file(description, std::move(warnings), sampler_storage, path, options, started_at);
+    });
 
     return job;
 }
@@ -899,77 +902,77 @@ namespace {
                           SamplerStorage &sampler_storage, std::filesystem::path const &path,
                           SceneSaveOptions const &options, std::chrono::steady_clock::time_point start)
             -> std::expected<SceneSaveResult, LbfError> {
-    ZoneScopedNC("write_scene_file", tracy::Color::Goldenrod);
+        ZoneScopedNC("write_scene_file", tracy::Color::Goldenrod);
 
-    SceneSaveResult result;
-    result.warnings = std::move(warnings);
-    result.fingerprint = scene_fingerprint(description);
+        SceneSaveResult result;
+        result.warnings = std::move(warnings);
+        result.fingerprint = scene_fingerprint(description);
 
-    LbfWriter writer{LbfFileKind::scene};
-
-    writer.add_chunk(LbfChunkInput{
-            .type = lbf_chunk::scene,
-            .version = scene_chunk_version,
-            .payload = encode_scene(description),
-    });
-
-    // Which engine and format versions wrote this file; informational, never needed to read it.
-    {
-        auto const metadata = std::format("writer=lathe;lbf={}.{};scene={};section={};model={};texture={}",
-                                          lbf_version_major, lbf_version_minor, scene_chunk_version,
-                                          scene_section_version, cooked_model_version, cooked_texture_version);
-        auto const bytes = std::as_bytes(std::span<char const>{metadata.data(), metadata.size()});
+        LbfWriter writer{LbfFileKind::scene};
 
         writer.add_chunk(LbfChunkInput{
-                .type = lbf_chunk::metadata,
-                .version = 1,
-                .payload = {bytes.begin(), bytes.end()},
-                .compress = false,
+                .type = lbf_chunk::scene,
+                .version = scene_chunk_version,
+                .payload = encode_scene(description),
         });
-    }
 
-    if (options.embed_assets) {
-        AssetCookRequest request;
+        // Which engine and format versions wrote this file; informational, never needed to read it.
+        {
+            auto const metadata = std::format("writer=lathe;lbf={}.{};scene={};section={};model={};texture={}",
+                                              lbf_version_major, lbf_version_minor, scene_chunk_version,
+                                              scene_section_version, cooked_model_version, cooked_texture_version);
+            auto const bytes = std::as_bytes(std::span<char const>{metadata.data(), metadata.size()});
 
-        for (auto const &model: description.models) {
-            if (!model.source.starts_with(engine_asset_prefix)) {
-                request.models.emplace_back(model.source);
+            writer.add_chunk(LbfChunkInput{
+                    .type = lbf_chunk::metadata,
+                    .version = 1,
+                    .payload = {bytes.begin(), bytes.end()},
+                    .compress = false,
+            });
+        }
+
+        if (options.embed_assets) {
+            AssetCookRequest request;
+
+            for (auto const &model: description.models) {
+                if (!model.source.starts_with(engine_asset_prefix)) {
+                    request.models.emplace_back(model.source);
+                }
             }
+
+            for (auto const &texture: description.textures) {
+                request.textures.push_back(AssetCookRequest::Texture{.path = texture.source, .role = texture.role});
+            }
+
+            result.cook = cook_assets(request, sampler_storage, writer,
+                                      AssetCookOptions{.source_packs = options.source_packs});
         }
 
-        for (auto const &texture: description.textures) {
-            request.textures.push_back(AssetCookRequest::Texture{.path = texture.source, .role = texture.role});
+        auto written = writer.write_file(path, options.write);
+
+        if (!written) {
+            return std::unexpected(written.error());
         }
 
-        result.cook =
-                cook_assets(request, sampler_storage, writer, AssetCookOptions{.source_packs = options.source_packs});
+        result.file_size = *written;
+        result.seconds = seconds_since(start);
+
+        info("save_scene: wrote '{}' ({:.1f} MiB, {} entities, {} models cooked / {} copied, {} textures cooked / {} "
+             "copied) in {:.2f}s",
+             path.string(), static_cast<double>(result.file_size) / (1024.0 * 1024.0), description.entities.size(),
+             result.cook.models_cooked, result.cook.models_copied, result.cook.textures_cooked,
+             result.cook.textures_copied, result.seconds);
+
+        for (auto const &warning: result.warnings) {
+            warn("save_scene: {}", warning);
+        }
+
+        for (auto const &failure: result.cook.failures) {
+            warn("save_scene: not embedded, will load from source: {}", failure);
+        }
+
+        return result;
     }
-
-    auto written = writer.write_file(path, options.write);
-
-    if (!written) {
-        return std::unexpected(written.error());
-    }
-
-    result.file_size = *written;
-    result.seconds = seconds_since(start);
-
-    info("save_scene: wrote '{}' ({:.1f} MiB, {} entities, {} models cooked / {} copied, {} textures cooked / {} "
-         "copied) in {:.2f}s",
-         path.string(), static_cast<double>(result.file_size) / (1024.0 * 1024.0), description.entities.size(),
-         result.cook.models_cooked, result.cook.models_copied, result.cook.textures_cooked, result.cook.textures_copied,
-         result.seconds);
-
-    for (auto const &warning: result.warnings) {
-        warn("save_scene: {}", warning);
-    }
-
-    for (auto const &failure: result.cook.failures) {
-        warn("save_scene: not embedded, will load from source: {}", failure);
-    }
-
-    return result;
-}
 
 } // namespace
 
@@ -994,7 +997,8 @@ namespace {
         auto const &reader = (*pack)->reader();
 
         if (reader.header().kind != LbfFileKind::scene) {
-            return std::unexpected(make_error(LbfErrorType::wrong_file_kind, "this .lbf is an asset pack, not a scene"));
+            return std::unexpected(
+                    make_error(LbfErrorType::wrong_file_kind, "this .lbf is an asset pack, not a scene"));
         }
 
         auto const *entry = reader.find(lbf_chunk::scene);
@@ -1049,9 +1053,8 @@ auto SceneLoadJob::start(std::filesystem::path path) -> SceneLoadJob {
             return std::unexpected(read.error());
         }
 
-        return Prepared{.pack = std::move(read->pack),
-                        .description = std::move(read->description),
-                        .decode = read->decode};
+        return Prepared{
+                .pack = std::move(read->pack), .description = std::move(read->description), .decode = read->decode};
     });
 
     return job;

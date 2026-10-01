@@ -13,12 +13,14 @@
 inline constexpr std::uint32_t terrain_chunk_samples = 65; // interior vertices per side
 inline constexpr std::uint32_t terrain_chunk_cells = terrain_chunk_samples - 1; // 64
 
-inline constexpr std::uint32_t terrain_chunk_interior_vertex_count = terrain_chunk_samples * terrain_chunk_samples; // 4225
+inline constexpr std::uint32_t terrain_chunk_interior_vertex_count =
+        terrain_chunk_samples * terrain_chunk_samples; // 4225
 inline constexpr std::uint32_t terrain_chunk_skirt_vertex_count = 4U * terrain_chunk_samples; // 260
 inline constexpr std::uint32_t terrain_chunk_vertex_count =
         terrain_chunk_interior_vertex_count + terrain_chunk_skirt_vertex_count; // 4485
 
-inline constexpr std::uint32_t terrain_chunk_interior_index_count = terrain_chunk_cells * terrain_chunk_cells * 6U; // 24576
+inline constexpr std::uint32_t terrain_chunk_interior_index_count =
+        terrain_chunk_cells * terrain_chunk_cells * 6U; // 24576
 inline constexpr std::uint32_t terrain_chunk_skirt_index_count = 4U * terrain_chunk_cells * 6U; // 1536
 inline constexpr std::uint32_t terrain_chunk_index_count =
         terrain_chunk_interior_index_count + terrain_chunk_skirt_index_count; // 26112

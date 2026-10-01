@@ -190,12 +190,10 @@ TEST_SUITE("unit") {
         constexpr auto cell_size = 1.0F;
         constexpr auto span = static_cast<float>(terrain_chunk_cells) * cell_size;
 
-        auto const chunk_a = make_terrain_chunk(field, TerrainChunkRequest{.world_origin_x = 0.0F,
-                                                                           .world_origin_z = 0.0F,
-                                                                           .cell_size = cell_size});
-        auto const chunk_b = make_terrain_chunk(field, TerrainChunkRequest{.world_origin_x = span,
-                                                                           .world_origin_z = 0.0F,
-                                                                           .cell_size = cell_size});
+        auto const chunk_a = make_terrain_chunk(
+                field, TerrainChunkRequest{.world_origin_x = 0.0F, .world_origin_z = 0.0F, .cell_size = cell_size});
+        auto const chunk_b = make_terrain_chunk(
+                field, TerrainChunkRequest{.world_origin_x = span, .world_origin_z = 0.0F, .cell_size = cell_size});
 
         for (std::uint32_t row = 0; row < terrain_chunk_samples; ++row) {
             auto const a_index = terrain_chunk_interior_index(terrain_chunk_cells, row); // chunk_a's +X edge
@@ -209,12 +207,10 @@ TEST_SUITE("unit") {
     TEST_CASE("cross-LOD vertices at the same world position agree exactly") {
         auto const field = default_field();
 
-        auto const lod0 = make_terrain_chunk(field, TerrainChunkRequest{.world_origin_x = 0.0F,
-                                                                        .world_origin_z = 0.0F,
-                                                                        .cell_size = 1.0F});
-        auto const lod1 = make_terrain_chunk(field, TerrainChunkRequest{.world_origin_x = 0.0F,
-                                                                        .world_origin_z = 0.0F,
-                                                                        .cell_size = 2.0F});
+        auto const lod0 = make_terrain_chunk(
+                field, TerrainChunkRequest{.world_origin_x = 0.0F, .world_origin_z = 0.0F, .cell_size = 1.0F});
+        auto const lod1 = make_terrain_chunk(
+                field, TerrainChunkRequest{.world_origin_x = 0.0F, .world_origin_z = 0.0F, .cell_size = 2.0F});
 
         // Both chunks are centred on (0,0), which every LOD's grid passes through, and height() depends only on world
         // position.

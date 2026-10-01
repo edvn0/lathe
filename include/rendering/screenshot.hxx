@@ -6,9 +6,9 @@
 #include <volk.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -16,7 +16,7 @@
 
 // What a screenshot captures.
 enum class ScreenshotSource : std::uint8_t {
-    window,   // The composited swapchain image: the whole app including the UI.
+    window, // The composited swapchain image: the whole app including the UI.
     viewport, // The editor's viewport target: just the rendered scene.
 };
 

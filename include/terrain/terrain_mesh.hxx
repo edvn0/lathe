@@ -6,8 +6,8 @@
 #include <vector>
 
 #include "assets/load_model.hxx"
-#include "terrain/noise.hxx"
 #include "assets/primitive_meshes.hxx"
+#include "terrain/noise.hxx"
 
 // A smooth Gaussian bump added on top of the noise field.
 struct TerrainHill {
@@ -83,5 +83,4 @@ struct TerrainMeshResult {
     float mid_height = 0.0F;
 };
 
-[[nodiscard]] auto make_terrain_mesh(TerrainParams const &params)
-        -> std::expected<TerrainMeshResult, ModelLoadError>;
+[[nodiscard]] auto make_terrain_mesh(TerrainParams const &params) -> std::expected<TerrainMeshResult, ModelLoadError>;

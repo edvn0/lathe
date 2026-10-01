@@ -3,8 +3,8 @@
 #include "core/forward.hxx"
 #include "physics/physics.hxx"
 
-#include <entt/entt.hpp>
 #include <entt/entity/snapshot.hpp>
+#include <entt/entt.hpp>
 
 #include <glm/mat4x4.hpp>
 

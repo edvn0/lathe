@@ -906,21 +906,23 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     auto const upload_size = batch_bounds_offset + batch_bounds_size;
 
-    auto shadow_atlas = create_held_image(image_storage_, ImageCreateInfo{
-            .extent = VkExtent3D{.width = shadow_atlas_width, .height = shadow_atlas_height, .depth = 1},
-            .format = VK_FORMAT_D32_SFLOAT,
-            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
-            .image_type = VK_IMAGE_TYPE_2D,
-            .view_type = VK_IMAGE_VIEW_TYPE_2D,
-            .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-            .flags = 0,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .mip_levels = 1,
-            .array_layers = 1,
-            .debug_name = "renderer.shadow_atlas",
-    });
+    auto shadow_atlas = create_held_image(
+            image_storage_,
+            ImageCreateInfo{
+                    .extent = VkExtent3D{.width = shadow_atlas_width, .height = shadow_atlas_height, .depth = 1},
+                    .format = VK_FORMAT_D32_SFLOAT,
+                    .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+                    .image_type = VK_IMAGE_TYPE_2D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                    .flags = 0,
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .mip_levels = 1,
+                    .array_layers = 1,
+                    .debug_name = "renderer.shadow_atlas",
+            });
 
     if (!shadow_atlas) {
         return std::unexpected(make_image_error(shadow_atlas.error()));
@@ -1088,14 +1090,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.lights_buffer = std::move(*lights_buffer);
 
         // light_cull.slang is the only writer.
-        auto visible_lights = Buffer::create(
-                context_, BufferCreateInfo{
-                                  .size = visible_lights_size,
-                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                  .memory = BufferMemory::device,
-                                  .debug_name = "renderer.frame_visible_lights",
-                          });
+        auto visible_lights = Buffer::create(context_, BufferCreateInfo{
+                                                               .size = visible_lights_size,
+                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                               .memory = BufferMemory::device,
+                                                               .debug_name = "renderer.frame_visible_lights",
+                                                       });
 
         if (!visible_lights) {
             return std::unexpected(make_device_error(visible_lights.error()));
@@ -1104,14 +1105,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.visible_lights_buffer = std::move(*visible_lights);
 
         // light_cluster.slang is the only writer.
-        auto cluster_lights = Buffer::create(
-                context_, BufferCreateInfo{
-                                  .size = cluster_lights_size,
-                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                  .memory = BufferMemory::device,
-                                  .debug_name = "renderer.frame_cluster_lights",
-                          });
+        auto cluster_lights = Buffer::create(context_, BufferCreateInfo{
+                                                               .size = cluster_lights_size,
+                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                               .memory = BufferMemory::device,
+                                                               .debug_name = "renderer.frame_cluster_lights",
+                                                       });
 
         if (!cluster_lights) {
             return std::unexpected(make_device_error(cluster_lights.error()));
@@ -2234,8 +2234,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             continue;
         }
 
-        auto const slot_overrides = std::span{slot_override_submissions_}.subspan(
-                model_submission.slot_override_first, model_submission.slot_override_count);
+        auto const slot_overrides = std::span{slot_override_submissions_}.subspan(model_submission.slot_override_first,
+                                                                                  model_submission.slot_override_count);
 
         for (auto const &model_draw: model->draws) {
             auto const *mesh = mesh_slot(model_draw.mesh);
@@ -3395,21 +3395,20 @@ auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, Rende
         mip_texture_indices[mip] = frame.bloom_target.mip_slots[mip].handle().index;
     }
 
-    return render_pass::bloom(
-            pass_context,
-            render_pass::BloomPassInfo{
-                    .enabled = bloom_settings_.enabled,
-                    .input_hdr = hdr,
-                    .target = bloom_settings_.enabled ? frame.bloom_target.image.get() : nullptr,
-                    .mip_texture_indices = mip_texture_indices,
-                    .input_extent = targets.extent,
-                    .downsample_pipeline = bloom_downsample_pipeline_,
-                    .upsample_pipeline = bloom_upsample_pipeline_,
-                    .linear_sampler_index = sampler_storage_.linear_clamp().index,
-                    .threshold = bloom_settings_.threshold,
-                    .knee = bloom_settings_.knee,
-                    .filter_radius = bloom_settings_.filter_radius,
-            });
+    return render_pass::bloom(pass_context,
+                              render_pass::BloomPassInfo{
+                                      .enabled = bloom_settings_.enabled,
+                                      .input_hdr = hdr,
+                                      .target = bloom_settings_.enabled ? frame.bloom_target.image.get() : nullptr,
+                                      .mip_texture_indices = mip_texture_indices,
+                                      .input_extent = targets.extent,
+                                      .downsample_pipeline = bloom_downsample_pipeline_,
+                                      .upsample_pipeline = bloom_upsample_pipeline_,
+                                      .linear_sampler_index = sampler_storage_.linear_clamp().index,
+                                      .threshold = bloom_settings_.threshold,
+                                      .knee = bloom_settings_.knee,
+                                      .filter_radius = bloom_settings_.filter_radius,
+                              });
 }
 
 auto Renderer::record_composite_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
@@ -3467,20 +3466,20 @@ auto Renderer::record_frame_end(VkCommandBuffer command_buffer, SwapchainImage c
     // The viewport target is left sampled by the UI pass; hand it back the same way so the next frame is unaffected.
     if (pending == ScreenshotSource::viewport && viewport != nullptr) {
         // The swapchain is presented as usual; the capture never touches it.
-        (void) screenshot_->record(context_, command_buffer,
-                                   ScreenshotImage{
-                                           .image = viewport->image(),
-                                           .format = viewport->format(),
-                                           .extent = {viewport->extent().width, viewport->extent().height},
-                                           .layout_before = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                           .stage_before = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                           .access_before = VK_ACCESS_2_NONE,
-                                           .layout_after = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                           .stage_after = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                           .access_after = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                                   },
-                                   frame_index);
+        (void) screenshot_->record(
+                context_, command_buffer,
+                ScreenshotImage{
+                        .image = viewport->image(),
+                        .format = viewport->format(),
+                        .extent = {viewport->extent().width, viewport->extent().height},
+                        .layout_before = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        .stage_before = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                        .access_before = VK_ACCESS_2_NONE,
+                        .layout_after = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        .stage_after = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        .access_after = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                },
+                frame_index);
         render_pass::present_swapchain(command_buffer, swapchain_image.image);
     } else {
         bool const screenshot_recorded =
@@ -3809,21 +3808,23 @@ auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent
     targets.forward_target = std::move(*forward_target);
 
     auto const viewport_target_name = std::format("renderer.viewport_target_{}", frame_index);
-    auto viewport_target = create_held_image(image_storage_, ImageCreateInfo{
-            .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
-            .format = swapchain_format_,
-            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-            .image_type = VK_IMAGE_TYPE_2D,
-            .view_type = VK_IMAGE_VIEW_TYPE_2D,
-            .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-            .flags = 0,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .mip_levels = 1,
-            .array_layers = 1,
-            .debug_name = viewport_target_name,
-    });
+    auto viewport_target = create_held_image(
+            image_storage_, ImageCreateInfo{
+                                    .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
+                                    .format = swapchain_format_,
+                                    .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                    .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                                    .image_type = VK_IMAGE_TYPE_2D,
+                                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                                    .flags = 0,
+                                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                    .mip_levels = 1,
+                                    .array_layers = 1,
+                                    .debug_name = viewport_target_name,
+                            });
 
     if (!viewport_target) {
         return std::unexpected(make_image_error(viewport_target.error()));
@@ -3832,23 +3833,25 @@ auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent
     targets.viewport_target = std::move(*viewport_target);
 
     auto const bloom_target_name = std::format("renderer.bloom_target_{}", frame_index);
-    auto bloom_image = create_held_image(image_storage_, ImageCreateInfo{
-            .extent = VkExtent3D{.width = extent.width / 2, .height = extent.height / 2, .depth = 1},
-            .format = VK_FORMAT_R16G16B16A16_SFLOAT,
-            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-            .image_type = VK_IMAGE_TYPE_2D,
-            .view_type = VK_IMAGE_VIEW_TYPE_2D,
-            .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-            .flags = 0,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .mip_levels = render_pass::bloom_mip_count,
-            .array_layers = 1,
-            .create_mip_layer_views = true,
-            .debug_name = bloom_target_name,
-    });
+    auto bloom_image = create_held_image(
+            image_storage_,
+            ImageCreateInfo{
+                    .extent = VkExtent3D{.width = extent.width / 2, .height = extent.height / 2, .depth = 1},
+                    .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                    .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .image_type = VK_IMAGE_TYPE_2D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                        image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                    .flags = 0,
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .mip_levels = render_pass::bloom_mip_count,
+                    .array_layers = 1,
+                    .create_mip_layer_views = true,
+                    .debug_name = bloom_target_name,
+            });
 
     if (!bloom_image) {
         return std::unexpected(make_image_error(bloom_image.error()));
@@ -3877,22 +3880,24 @@ auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent
     auto const create_ao_image = [&](std::string_view kind) -> std::expected<ImageHolder, RendererError> {
         auto const name = std::format("renderer.ao_{}_{}", kind, frame_index);
 
-        auto image = create_held_image(image_storage_, ImageCreateInfo{
-                .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
-                .format = VK_FORMAT_R8G8B8A8_UNORM,
-                .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                .image_type = VK_IMAGE_TYPE_2D,
-                .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                .flags = 0,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
-                .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .mip_levels = 1,
-                .array_layers = 1,
-                .debug_name = name,
-        });
+        auto image = create_held_image(
+                image_storage_,
+                ImageCreateInfo{
+                        .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
+                        .format = VK_FORMAT_R8G8B8A8_UNORM,
+                        .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .image_type = VK_IMAGE_TYPE_2D,
+                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                            image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                        .flags = 0,
+                        .samples = VK_SAMPLE_COUNT_1_BIT,
+                        .tiling = VK_IMAGE_TILING_OPTIMAL,
+                        .mip_levels = 1,
+                        .array_layers = 1,
+                        .debug_name = name,
+                });
 
         if (!image) {
             return std::unexpected(make_image_error(image.error()));

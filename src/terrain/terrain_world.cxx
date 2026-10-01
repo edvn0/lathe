@@ -110,7 +110,7 @@ auto TerrainWorld::upload_ready(IMeshSink &mesh_sink, VkCommandBuffer command_bu
 
         if (!slot) {
             warn("terrain_world: slot pool exhausted for lod {} -- chunk ({},{}) dropped, will retry", key.lod, key.x,
-                key.z);
+                 key.z);
             return;
         }
 
@@ -203,7 +203,7 @@ auto TerrainWorld::submit(IMeshSink &mesh_sink) const -> void {
 
         if (!submitted) {
             error("terrain_world: submit_mesh failed for chunk ({},{}) lod={}: {}", key.x, key.z, key.lod,
-                 describe(submitted.error()));
+                  describe(submitted.error()));
         }
     }
 }

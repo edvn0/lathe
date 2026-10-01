@@ -3,8 +3,8 @@
 #include <volk.h>
 
 #include "core/allocator.hxx"
-#include "gpu/device_error.hxx"
 #include "core/forward.hxx"
+#include "gpu/device_error.hxx"
 
 #include <concepts>
 #include <cstddef>

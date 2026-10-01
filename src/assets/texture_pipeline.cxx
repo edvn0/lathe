@@ -18,8 +18,8 @@
 #include <ktx.h>
 #include <stb_image_resize2.h>
 
-#include "gpu/image.hxx"
 #include "core/logger.hxx"
+#include "gpu/image.hxx"
 
 namespace {
 
@@ -139,9 +139,8 @@ namespace {
                 stbir_resize_uint8_srgb(input, static_cast<int>(prev.width), static_cast<int>(prev.height), 0, output,
                                         static_cast<int>(next_width), static_cast<int>(next_height), 0, STBIR_RGBA);
             } else {
-                stbir_resize_uint8_linear(input, static_cast<int>(prev.width), static_cast<int>(prev.height), 0,
-                                          output, static_cast<int>(next_width), static_cast<int>(next_height), 0,
-                                          STBIR_RGBA);
+                stbir_resize_uint8_linear(input, static_cast<int>(prev.width), static_cast<int>(prev.height), 0, output,
+                                          static_cast<int>(next_width), static_cast<int>(next_height), 0, STBIR_RGBA);
             }
 
             mips.push_back(RawMip{.width = next_width, .height = next_height, .pixels = std::move(next)});
@@ -154,8 +153,7 @@ namespace {
     auto encode_uastc(std::vector<RawMip> const &mips, TextureRole role)
             -> std::expected<KtxTexturePtr, TexturePipelineError> {
         ktxTextureCreateInfo create_info{};
-        create_info.vkFormat =
-                role == TextureRole::colour ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        create_info.vkFormat = role == TextureRole::colour ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
         create_info.baseWidth = mips.front().width;
         create_info.baseHeight = mips.front().height;
         create_info.baseDepth = 1;
@@ -178,8 +176,8 @@ namespace {
             auto const &mip = mips[level];
 
             auto const result = ktxTexture_SetImageFromMemory(ktxTexture(texture.get()), level, 0, 0,
-                                                               reinterpret_cast<ktx_uint8_t const *>(mip.pixels.data()),
-                                                               mip.pixels.size());
+                                                              reinterpret_cast<ktx_uint8_t const *>(mip.pixels.data()),
+                                                              mip.pixels.size());
 
             if (result != KTX_SUCCESS) {
                 return std::unexpected(
@@ -214,15 +212,15 @@ namespace {
 
         if (ec) {
             warn("texture_pipeline: could not create cache directory '{}': {}", cache_path.parent_path().string(),
-                ec.message());
+                 ec.message());
             return;
         }
 
         static std::atomic<std::uint64_t> temp_counter{0};
 
-        auto const temp_path =
-                cache_path.string() + std::format(".tmp-{:x}-{}", std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                                                  temp_counter.fetch_add(1, std::memory_order_relaxed));
+        auto const temp_path = cache_path.string() +
+                               std::format(".tmp-{:x}-{}", std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                                           temp_counter.fetch_add(1, std::memory_order_relaxed));
 
         if (ktxTexture2_WriteToNamedFile(texture, temp_path.c_str()) != KTX_SUCCESS) {
             warn("texture_pipeline: failed to write cache file '{}'", temp_path);
@@ -298,7 +296,7 @@ namespace {
         ktxTexture2 *raw = nullptr;
 
         auto const create_result = ktxTexture2_CreateFromNamedFile(cache_path.string().c_str(),
-                                                                    KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw);
+                                                                   KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw);
 
         if (create_result != KTX_SUCCESS || raw == nullptr) {
             warn("texture_pipeline: cache file '{}' failed to load, re-encoding", cache_path.string());
@@ -363,15 +361,14 @@ namespace {
 
     // Shared tail of the file and memory loaders: convert to 8-bit RGBA and encode.
     [[nodiscard]]
-    auto compress_decoded_image(DecodedImage const &decoded, TextureRole role,
-                                std::filesystem::path const &cache_path, std::string debug_name,
-                                ModelLoadProfile *profile) -> std::expected<CompressedTexture, TexturePipelineError> {
+    auto compress_decoded_image(DecodedImage const &decoded, TextureRole role, std::filesystem::path const &cache_path,
+                                std::string debug_name, ModelLoadProfile *profile)
+            -> std::expected<CompressedTexture, TexturePipelineError> {
         auto const width = decoded.width();
         auto const height = decoded.height();
         auto rgba8 = to_rgba8(decoded);
 
-        return encode_and_transcode(std::move(rgba8), width, height, role, cache_path, std::move(debug_name),
-                                    profile);
+        return encode_and_transcode(std::move(rgba8), width, height, role, cache_path, std::move(debug_name), profile);
     }
 
 } // namespace
@@ -449,9 +446,9 @@ auto load_compressed_texture(std::filesystem::path const &source_path, TextureRo
 }
 
 auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> encoded_bytes, TextureRole role,
-                                                  std::string_view cache_key,
-                                                  std::filesystem::path const &cache_directory,
-                                                  std::shared_ptr<ModelLoadProfile> const &profile)
+                                                 std::string_view cache_key,
+                                                 std::filesystem::path const &cache_directory,
+                                                 std::shared_ptr<ModelLoadProfile> const &profile)
         -> std::expected<CompressedTexture, TexturePipelineError> {
     auto *const profile_ptr = profile.get();
 
@@ -497,8 +494,7 @@ auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels,
         profile_ptr->texture_count.fetch_add(1, std::memory_order_relaxed);
     }
 
-    if (width == 0 || height == 0 ||
-        rgba_pixels.size_bytes() != static_cast<std::size_t>(width) * height * 4) {
+    if (width == 0 || height == 0 || rgba_pixels.size_bytes() != static_cast<std::size_t>(width) * height * 4) {
         return std::unexpected(
                 make_error(TexturePipelineErrorType::decode_failed, "invalid in-memory image dimensions"));
     }
@@ -514,6 +510,5 @@ auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels,
 
     std::vector<std::byte> base{rgba_pixels.begin(), rgba_pixels.end()};
 
-    return encode_and_transcode(std::move(base), width, height, role, cache_path, std::string{cache_key},
-                                profile_ptr);
+    return encode_and_transcode(std::move(base), width, height, role, cache_path, std::string{cache_key}, profile_ptr);
 }

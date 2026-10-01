@@ -35,11 +35,8 @@ namespace {
     // 5
     [[nodiscard]] auto small_tree() -> std::vector<HierarchyModel::Node> {
         return {
-                node(1, "Village"),
-                node(2, "House", entity(1)),
-                node(3, "Well", entity(1)),
-                node(4, "Lamp", entity(2)),
-                node(5, "Player"),
+                node(1, "Village"),         node(2, "House", entity(1)), node(3, "Well", entity(1)),
+                node(4, "Lamp", entity(2)), node(5, "Player"),
         };
     }
 

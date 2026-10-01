@@ -19,20 +19,20 @@
 #include <string>
 #include <vector>
 
+#include "app/game.hxx"
 #include "assets/material_storage.hxx"
+#include "assets/shader_hot_reload_watcher.hxx"
 #include "gpu/context.hxx"
 #include "rendering/debug_renderer.hxx"
-#include "scene/editor_camera.hxx"
-#include "scene/hierarchy_model.hxx"
 #include "rendering/engine_models.hxx"
-#include "app/game.hxx"
-#include "scene/input_events.hxx"
 #include "rendering/render_stage.hxx"
 #include "rendering/scene.hxx"
-#include "assets/shader_hot_reload_watcher.hxx"
 #include "rendering/terminal_widget.hxx"
-#include "terrain/terrain_world.hxx"
+#include "scene/editor_camera.hxx"
+#include "scene/hierarchy_model.hxx"
+#include "scene/input_events.hxx"
 #include "serialisation/scene_serialisation.hxx"
+#include "terrain/terrain_world.hxx"
 
 struct ScrollingBuffer {
     std::int32_t max_size;

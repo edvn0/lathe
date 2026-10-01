@@ -2,8 +2,8 @@
 
 #include <volk.h>
 
-#include "core/error_context.hxx"
 #include "assets/geometry.hxx"
+#include "core/error_context.hxx"
 
 #include <algorithm>
 #include <bit>
@@ -63,7 +63,7 @@ struct std::formatter<GeometryArenaErrorType> : std::formatter<std::string_view>
 // write fails; for BumpAllocator that also reclaims the alignment padding.
 template<typename A>
 concept GeometryAllocatorPolicy = requires(A a, A const &const_a, VkDeviceSize size, VkDeviceSize alignment,
-                                            GeometrySlice slice, typename A::Checkpoint checkpoint) {
+                                           GeometrySlice slice, typename A::Checkpoint checkpoint) {
     typename A::Checkpoint;
 
     { a.reset(size) } -> std::same_as<void>;

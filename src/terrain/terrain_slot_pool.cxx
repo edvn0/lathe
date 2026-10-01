@@ -67,8 +67,9 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
 
             if (!vertex_slice) {
                 return std::unexpected(TerrainSlotPoolError{
-                        .message = std::format("terrain_slot_pool: failed to allocate vertex slot (lod={}, slot={}): {}",
-                                               lod, slot, describe(vertex_slice.error())),
+                        .message =
+                                std::format("terrain_slot_pool: failed to allocate vertex slot (lod={}, slot={}): {}",
+                                            lod, slot, describe(vertex_slice.error())),
                 });
             }
 

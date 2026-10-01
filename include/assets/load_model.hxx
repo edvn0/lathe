@@ -19,18 +19,18 @@
 #include <utility>
 #include <vector>
 
-#include "core/config.hxx"
-#include "core/error_context.hxx"
-#include "core/forward.hxx"
 #include "assets/geometry.hxx"
 #include "assets/geometry_arena.hxx"
 #include "assets/material.hxx"
 #include "assets/meshlet.hxx"
 #include "assets/model_load_profile.hxx"
+#include "assets/texture_streamer.hxx"
+#include "core/config.hxx"
+#include "core/error_context.hxx"
+#include "core/forward.hxx"
 #include "gpu/compressed_texture.hxx"
 #include "gpu/model_vertex.hxx"
 #include "gpu/sampler.hxx"
-#include "assets/texture_streamer.hxx"
 
 struct ModelPrimitive {
     std::array<MeshGeometry, lod_count> lods{};
@@ -204,8 +204,7 @@ auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *
 // `profile` gets the CPU-parse timings and is carried into the returned ModelCpuData.
 [[nodiscard]]
 auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage,
-                    std::shared_ptr<ModelLoadProfile> profile = nullptr)
-        -> std::expected<ModelCpuData, ModelLoadError>;
+                    std::shared_ptr<ModelLoadProfile> profile = nullptr) -> std::expected<ModelCpuData, ModelLoadError>;
 
 // load_model_cpu() on thread_pool(). Doesn't create a handle, since GPU uploads must happen on the render
 // thread; ModelStreamer pairs this with create_pending_model()/finish_model_load(). Bypasses the path cache.
@@ -267,8 +266,8 @@ auto start_model_gpu_upload(ModelCpuData cpu_data, ImageStorage &image_storage, 
 // `command_buffer` must be recording for this frame.
 [[nodiscard]]
 auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
-                           ImageStorage &image_storage, MaterialStorage &material_storage,
-                           std::uint32_t item_budget) -> std::expected<std::optional<Model>, ModelLoadError>;
+                           ImageStorage &image_storage, MaterialStorage &material_storage, std::uint32_t item_budget)
+        -> std::expected<std::optional<Model>, ModelLoadError>;
 
 // Runs the whole GPU upload in one call. Textures are only requested, so materials start with default
 // textures. Meant for small procedural models; streamed models go through ModelStreamer.

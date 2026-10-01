@@ -297,7 +297,7 @@ namespace gui {
                 .alphaBlendOp = VK_BLEND_OP_ADD,
         };
         VkColorComponentFlags const write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                                  VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+                                                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         vkCmdSetColorBlendEnableEXT(cmd, 0, 1, &blend_enable);
         vkCmdSetColorBlendEquationEXT(cmd, 0, 1, &blend_equation);
         vkCmdSetColorWriteMaskEXT(cmd, 0, 1, &write_mask);

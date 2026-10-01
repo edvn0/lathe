@@ -10,10 +10,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "assets/texture_pipeline.hxx"
 #include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
 #include "gpu/image_storage.hxx"
-#include "assets/texture_pipeline.hxx"
 
 // Loads textures on the thread pool and hands back a handle that samples a fallback until the real image is
 // uploaded. Never blocks.
@@ -23,7 +23,7 @@ public:
     // the image already made for it, even one that failed to load and stays on its fallback.
     [[nodiscard]]
     auto request(ImageStorage &images, std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
-                std::string debug_name, std::shared_ptr<ModelLoadProfile> profile = nullptr) -> ImageHandle;
+                 std::string debug_name, std::shared_ptr<ModelLoadProfile> profile = nullptr) -> ImageHandle;
 
     // request() for an image with no file, e.g. one embedded in a glTF. `encoded_bytes` is decoded on the
     // background thread. `cache_key` must be stable and unique per source image.

@@ -4,8 +4,8 @@
 
 #include <efsw/efsw.hpp>
 
-#include "core/logger.hxx"
 #include "assets/shader_change_queue.hxx"
+#include "core/logger.hxx"
 
 struct ShaderHotReloadWatcher::Listener final : efsw::FileWatchListener {
     explicit Listener(ShaderChangeQueue &queue) noexcept : change_queue(&queue) {}

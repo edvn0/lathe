@@ -59,7 +59,8 @@ auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path,
     return reservation.handle;
 }
 
-auto ModelStreamer::request_prepared(IModelSink &sink, std::future<std::expected<ModelCpuData, ModelLoadError>> cpu_data,
+auto ModelStreamer::request_prepared(IModelSink &sink,
+                                     std::future<std::expected<ModelCpuData, ModelLoadError>> cpu_data,
                                      std::filesystem::path source_path, ModelHandle fallback, std::string debug_name)
         -> ModelHandle {
     auto const reservation = reserve(sink, source_path, fallback, debug_name);
@@ -108,8 +109,8 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                 }
 
                 if (request.prepared) {
-                    request.upload = start_model_gpu_upload(std::move(*cpu_data), sink.image_storage(),
-                                                            sink.texture_streamer());
+                    request.upload =
+                            start_model_gpu_upload(std::move(*cpu_data), sink.image_storage(), sink.texture_streamer());
                 } else {
                     request.finalization = start_primitive_finalization(std::move(*cpu_data));
                 }
@@ -127,13 +128,13 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                     return false; // more tangent/LOD work for a later frame
                 }
 
-                request.upload = start_model_gpu_upload(std::move(**finalized), sink.image_storage(),
-                                                        sink.texture_streamer());
+                request.upload =
+                        start_model_gpu_upload(std::move(**finalized), sink.image_storage(), sink.texture_streamer());
             }
 
-            auto stepped = step_model_gpu_upload(*request.upload, command_buffer, sink.geometry_arena(),
-                                                 sink.image_storage(), sink.material_storage(),
-                                                 gpu_upload_items_per_frame);
+            auto stepped =
+                    step_model_gpu_upload(*request.upload, command_buffer, sink.geometry_arena(), sink.image_storage(),
+                                          sink.material_storage(), gpu_upload_items_per_frame);
 
             if (!stepped) {
                 fail(sink, request, std::format("{} while uploading", describe(stepped.error())));
@@ -173,8 +174,8 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
         if (request.profile != nullptr) {
             auto const elapsed = std::chrono::steady_clock::now() - request.requested_at;
 
-            request.profile->total_wall_ns.store(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count(), std::memory_order_relaxed);
+            request.profile->total_wall_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count(),
+                                                 std::memory_order_relaxed);
 
             info("model_streamer: '{}' load profile:\n{}", request.debug_name,
                  format_model_load_profile(*request.profile));

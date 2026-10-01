@@ -100,17 +100,17 @@ auto FreeListAllocator::allocate(VkDeviceSize allocation_size, VkDeviceSize alig
     if (auto const back_offset = best_aligned_offset + allocation_size; back_offset < range.offset + range.size) {
 
         insert_at = free_ranges_.insert(insert_at, FreeRange{
-                                                            .offset = back_offset,
-                                                            .size = (range.offset + range.size) - back_offset,
-                                                    });
+                                                           .offset = back_offset,
+                                                           .size = (range.offset + range.size) - back_offset,
+                                                   });
     }
 
     if (best_aligned_offset > range.offset) {
 
         free_ranges_.insert(insert_at, FreeRange{
-                                                .offset = range.offset,
-                                                .size = best_aligned_offset - range.offset,
-                                        });
+                                               .offset = range.offset,
+                                               .size = best_aligned_offset - range.offset,
+                                       });
     }
 
     used_ += allocation_size;
@@ -128,8 +128,8 @@ auto FreeListAllocator::deallocate(GeometrySlice const &slice) -> void {
         return;
     }
 
-    auto const insert_pos =
-            std::ranges::lower_bound(free_ranges_, slice.offset, {}, [](FreeRange const &range) { return range.offset; });
+    auto const insert_pos = std::ranges::lower_bound(free_ranges_, slice.offset, {},
+                                                     [](FreeRange const &range) { return range.offset; });
 
     auto it = free_ranges_.insert(insert_pos, FreeRange{.offset = slice.offset, .size = slice.size});
 

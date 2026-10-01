@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <array>
-#include <deque>
 #include <cstring>
+#include <deque>
 #include <format>
 #include <fstream>
 #include <future>
@@ -55,7 +55,8 @@ namespace {
                 return std::unexpected(make_error(LbfErrorType::compression_failed, ZSTD_getErrorName(written)));
             }
 
-            auto const threshold = static_cast<double>(bytes.size()) * (1.0 - static_cast<double>(options.minimum_savings));
+            auto const threshold =
+                    static_cast<double>(bytes.size()) * (1.0 - static_cast<double>(options.minimum_savings));
 
             if (static_cast<double>(written) <= threshold) {
                 compressed.resize(written);
@@ -108,9 +109,8 @@ auto LbfWriter::add_stored_chunk(LbfChunkEntry const &entry, std::vector<std::by
 }
 
 auto LbfWriter::contains(std::uint32_t type, std::uint64_t id) const noexcept -> bool {
-    return std::ranges::any_of(chunks_, [&](PendingChunk const &chunk) {
-        return chunk.entry.type == type && chunk.entry.id == id;
-    });
+    return std::ranges::any_of(
+            chunks_, [&](PendingChunk const &chunk) { return chunk.entry.type == type && chunk.entry.id == id; });
 }
 
 auto LbfWriter::emit(LbfWriteOptions const &options, std::function<bool(std::span<std::byte const>)> const &write)
@@ -129,7 +129,8 @@ auto LbfWriter::emit(LbfWriteOptions const &options, std::function<bool(std::spa
     });
 
     auto const duplicate = std::ranges::unique(order, [&](std::size_t left, std::size_t right) {
-        return chunks_[left].entry.type == chunks_[right].entry.type && chunks_[left].entry.id == chunks_[right].entry.id;
+        return chunks_[left].entry.type == chunks_[right].entry.type &&
+               chunks_[left].entry.id == chunks_[right].entry.id;
     });
 
     order.erase(duplicate.begin(), duplicate.end());
@@ -152,7 +153,8 @@ auto LbfWriter::emit(LbfWriteOptions const &options, std::function<bool(std::spa
 
     // Compression runs up to `window` chunks ahead of the write position, so a big file is never held compressed in
     // full, while every core still has work.
-    auto const window = options.parallel ? std::max<std::size_t>(2, std::size_t{2} * std::thread::hardware_concurrency()) : 0;
+    auto const window =
+            options.parallel ? std::max<std::size_t>(2, std::size_t{2} * std::thread::hardware_concurrency()) : 0;
     std::deque<std::future<std::expected<void, LbfError>>> in_flight;
     std::size_t submitted = 0;
 
@@ -187,9 +189,8 @@ auto LbfWriter::emit(LbfWriteOptions const &options, std::function<bool(std::spa
 
         if (options.parallel) {
             while (submitted < order.size() && submitted < position + window) {
-                in_flight.push_back(thread_pool().submit_task([&process, next = &chunks_[order[submitted]]] {
-                    return process(*next);
-                }));
+                in_flight.push_back(thread_pool().submit_task(
+                        [&process, next = &chunks_[order[submitted]]] { return process(*next); }));
                 ++submitted;
             }
 
@@ -278,8 +279,8 @@ auto LbfWriter::write_file(std::filesystem::path const &path, LbfWriteOptions co
         std::ofstream stream{temporary, std::ios::binary | std::ios::trunc};
 
         if (!stream) {
-            return std::unexpected(
-                    make_error(LbfErrorType::io_failed, std::format("cannot open '{}' for writing", temporary.string())));
+            return std::unexpected(make_error(LbfErrorType::io_failed,
+                                              std::format("cannot open '{}' for writing", temporary.string())));
         }
 
         header = emit(options, [&stream](std::span<std::byte const> bytes) {
@@ -293,7 +294,8 @@ auto LbfWriter::write_file(std::filesystem::path const &path, LbfWriteOptions co
             stream.flush();
 
             if (!stream) {
-                header = std::unexpected(make_error(LbfErrorType::io_failed, std::format("short write to '{}'", temporary.string())));
+                header = std::unexpected(
+                        make_error(LbfErrorType::io_failed, std::format("short write to '{}'", temporary.string())));
             }
         }
     }
@@ -340,7 +342,8 @@ auto LbfReader::open(std::filesystem::path const &path, LbfReadOptions const &op
     auto parsed = parse(std::move(reader), *header_bytes);
 
     if (parsed && parsed->header_.file_size != file_size) {
-        return std::unexpected(make_error(LbfErrorType::corrupt_header, "file size does not match its header (truncated?)"));
+        return std::unexpected(
+                make_error(LbfErrorType::corrupt_header, "file size does not match its header (truncated?)"));
     }
 
     return parsed;
@@ -453,7 +456,8 @@ auto LbfReader::read_range(std::uint64_t offset, std::uint64_t size) const
     stream.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(size));
 
     if (!stream || static_cast<std::uint64_t>(stream.gcount()) != size) {
-        return std::unexpected(make_error(LbfErrorType::io_failed, std::format("short read from '{}'", path_.string())));
+        return std::unexpected(
+                make_error(LbfErrorType::io_failed, std::format("short read from '{}'", path_.string())));
     }
 
     return bytes;
@@ -486,7 +490,8 @@ auto LbfReader::stream_chunk(LbfChunkEntry const &entry) const -> std::expected<
     stream.seekg(static_cast<std::streamoff>(entry.offset));
 
     std::vector<std::byte> raw(entry.raw_size);
-    std::vector<std::byte> block(entry.compression == LbfCompression::none ? 0 : std::min(block_size, entry.stored_size));
+    std::vector<std::byte> block(entry.compression == LbfCompression::none ? 0
+                                                                           : std::min(block_size, entry.stored_size));
     Xxh64Stream checksum;
 
     auto const read_into = [&](std::byte *destination, std::uint64_t size) -> bool {
@@ -542,9 +547,9 @@ auto LbfReader::stream_chunk(LbfChunkEntry const &entry) const -> std::expected<
                     last_result = ZSTD_decompressStream(decoder.get(), &output, &input);
 
                     if (ZSTD_isError(last_result) != 0U) {
-                        return std::unexpected(make_error(LbfErrorType::decompression_failed,
-                                                          std::format("{}: {}", chunk_name(),
-                                                                      ZSTD_getErrorName(last_result))));
+                        return std::unexpected(
+                                make_error(LbfErrorType::decompression_failed,
+                                           std::format("{}: {}", chunk_name(), ZSTD_getErrorName(last_result))));
                     }
 
                     // Output full with input left over: the frame is bigger than the table says.
@@ -560,8 +565,8 @@ auto LbfReader::stream_chunk(LbfChunkEntry const &entry) const -> std::expected<
             }
 
             if (last_result != 0 || output.pos != raw.size()) {
-                return std::unexpected(make_error(LbfErrorType::decompression_failed,
-                                                  "decompressed size mismatch; " + chunk_name()));
+                return std::unexpected(
+                        make_error(LbfErrorType::decompression_failed, "decompressed size mismatch; " + chunk_name()));
             }
             break;
         }

@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 
-#include "scene/components.hxx"
 #include "physics/physics_world.hxx"
+#include "scene/components.hxx"
 
 #include <BS_thread_pool.hpp>
 #include <entt/entt.hpp>
@@ -76,7 +76,12 @@ TEST_SUITE("unit") {
 
         // Flat heightfield centred in its symmetric AABB.
         TerrainColliderDesc const desc{
-                .samples_x = 5, .samples_z = 5, .cell_size_x = 1.0F, .cell_size_z = 1.0F, .min_height = -1.0F, .max_height = 1.0F,
+                .samples_x = 5,
+                .samples_z = 5,
+                .cell_size_x = 1.0F,
+                .cell_size_z = 1.0F,
+                .min_height = -1.0F,
+                .max_height = 1.0F,
         };
         auto const handle = world.reserve_terrain_collider(desc);
         REQUIRE(handle.valid());
@@ -85,8 +90,8 @@ TEST_SUITE("unit") {
         world.bind_terrain_collider(handle, glm::vec3{0.0F, 5.0F, 0.0F}, flat_heights);
 
         auto const entity = registry.create();
-        auto const transform = registry.emplace<Components::Transform>(
-                entity, Components::Transform{.position = {0.0F, 15.0F, 0.0F}});
+        auto const transform =
+                registry.emplace<Components::Transform>(entity, Components::Transform{.position = {0.0F, 15.0F, 0.0F}});
         auto const body = registry.emplace<Components::RigidBody>(
                 entity, Components::RigidBody{.half_extents = {0.5F, 0.5F, 0.5F}, .mass = 1.0F});
 
@@ -104,7 +109,12 @@ TEST_SUITE("unit") {
         PhysicsWorld world{settings, pool, registry};
 
         TerrainColliderDesc const desc{
-                .samples_x = 5, .samples_z = 5, .cell_size_x = 1.0F, .cell_size_z = 1.0F, .min_height = -1.0F, .max_height = 1.0F,
+                .samples_x = 5,
+                .samples_z = 5,
+                .cell_size_x = 1.0F,
+                .cell_size_z = 1.0F,
+                .min_height = -1.0F,
+                .max_height = 1.0F,
         };
         auto const handle = world.reserve_terrain_collider(desc);
         REQUIRE(handle.valid());
@@ -113,8 +123,8 @@ TEST_SUITE("unit") {
         world.bind_terrain_collider(handle, glm::vec3{0.0F, 5.0F, 0.0F}, flat_heights);
 
         auto const entity = registry.create();
-        auto const transform = registry.emplace<Components::Transform>(
-                entity, Components::Transform{.position = {0.0F, 15.0F, 0.0F}});
+        auto const transform =
+                registry.emplace<Components::Transform>(entity, Components::Transform{.position = {0.0F, 15.0F, 0.0F}});
         auto const body = registry.emplace<Components::RigidBody>(
                 entity, Components::RigidBody{.half_extents = {0.5F, 0.5F, 0.5F}, .mass = 1.0F});
 

@@ -50,8 +50,8 @@
 #include "rendering/entity.hxx"
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/renderer.hxx"
-#include "rendering/screenshot.hxx"
 #include "rendering/scene.hxx"
+#include "rendering/screenshot.hxx"
 #include "scene/components.hxx"
 #include "scene/editor_camera.hxx"
 #include "vulkan_bootstrap.hxx"
@@ -105,8 +105,8 @@ namespace {
                                                 : std::span<MaterialSlotOverride const>{};
 
             auto const world_transform = systems::get_world_transform(registry, entity, transform);
-            auto result = application.renderer->submit_model(model.model, world_transform, material_override,
-                                                             slot_overrides);
+            auto result =
+                    application.renderer->submit_model(model.model, world_transform, material_override, slot_overrides);
 
             if (!result) {
                 error("Could not submit scene object (model index {}): {}", model.model.index,
@@ -129,7 +129,7 @@ namespace {
 
         for (auto [entity, instanced]: instanced_model_view.each()) {
             auto result = application.renderer->submit_model_instances(instanced.model, instanced.transforms,
-                                                                        instanced.material_override);
+                                                                       instanced.material_override);
 
             if (!result) {
                 error("Could not submit instanced model (model index {}, {} instances): {}", instanced.model.index,

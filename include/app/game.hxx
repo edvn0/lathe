@@ -48,9 +48,18 @@ public:
     // Called every frame while playing, with the runtime scene.
     virtual auto on_update(Scene &scene, float delta_time) -> void = 0;
 
-    virtual auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void { (void) scene; (void) event; }
-    virtual auto on_key_released(Scene &scene, KeyReleasedEvent const &event) -> void { (void) scene; (void) event; }
-    virtual auto on_mouse_moved(Scene &scene, MouseMovedEvent const &event) -> void { (void) scene; (void) event; }
+    virtual auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void {
+        (void) scene;
+        (void) event;
+    }
+    virtual auto on_key_released(Scene &scene, KeyReleasedEvent const &event) -> void {
+        (void) scene;
+        (void) event;
+    }
+    virtual auto on_mouse_moved(Scene &scene, MouseMovedEvent const &event) -> void {
+        (void) scene;
+        (void) event;
+    }
     virtual auto on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void {
         (void) scene;
         (void) event;

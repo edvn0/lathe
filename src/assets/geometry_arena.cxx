@@ -64,15 +64,15 @@ auto GeometryArenaT<Allocator>::create(VulkanContext &ctx, GeometryArenaCreateIn
         }};
     }
 
-    auto buffer = Buffer::create(
-            ctx, BufferCreateInfo{
-                         .size = create_info.capacity,
-                         .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                         .memory = BufferMemory::device,
-                         .debug_name = create_info.debug_name,
-                 });
+    auto buffer =
+            Buffer::create(ctx, BufferCreateInfo{
+                                        .size = create_info.capacity,
+                                        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                        .memory = BufferMemory::device,
+                                        .debug_name = create_info.debug_name,
+                                });
 
     if (!buffer) {
         return std::unexpected{from_device_error(buffer.error())};
@@ -218,7 +218,8 @@ auto GeometryArenaT<Allocator>::allocate_vertices(VkCommandBuffer command_buffer
 
 template<GeometryAllocatorPolicy Allocator>
 auto GeometryArenaT<Allocator>::allocate_indices(VkCommandBuffer command_buffer, std::span<const std::byte> data,
-                                                 VkIndexType index_type) -> std::expected<IndexSlice, GeometryArenaError> {
+                                                 VkIndexType index_type)
+        -> std::expected<IndexSlice, GeometryArenaError> {
 
     auto const element_size = index_element_size(index_type);
 

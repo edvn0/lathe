@@ -6,10 +6,10 @@
 #include <memory>
 #include <vector>
 
+#include "core/thread_pool.hxx"
 #include "terrain/terrain_chunk.hxx"
 #include "terrain/terrain_mesh.hxx"
 #include "terrain/terrain_quadtree.hxx"
-#include "core/thread_pool.hxx"
 
 // Generates chunks on thread_pool() and polls the futures each frame. Chunks that aren't ready simply aren't
 // drawn; there is no placeholder.

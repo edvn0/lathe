@@ -496,8 +496,8 @@ namespace render_pass {
             bool blending = false;
         };
 
-        [[nodiscard]] auto scene_layouts_valid(PipelineGraphRepository const &graph,
-                                               SceneDraw const &draw) noexcept -> bool {
+        [[nodiscard]] auto scene_layouts_valid(PipelineGraphRepository const &graph, SceneDraw const &draw) noexcept
+                -> bool {
             return resolve_layout(graph, draw.meshlet_pipeline) != VK_NULL_HANDLE &&
                    resolve_layout(graph, draw.instanced_pipeline) != VK_NULL_HANDLE;
         }
@@ -508,8 +508,8 @@ namespace render_pass {
         // SV_DrawIndex restarts at 0 per indirect call, so PC::task_commands points at this call's first command.
         template<typename PushConstants>
         auto draw_scene_commands(Context const &context, SceneDraw const &draw, DrawBuffers const &buffers,
-                                 std::uint32_t first_command, std::uint32_t command_count,
-                                 PushConstants pc) noexcept -> void {
+                                 std::uint32_t first_command, std::uint32_t command_count, PushConstants pc) noexcept
+                -> void {
             if (command_count == 0) {
                 return;
             }
@@ -1046,12 +1046,18 @@ namespace render_pass {
         auto const width = static_cast<float>(scope.extent.width);
         auto const height = static_cast<float>(scope.extent.height);
 
-        VkViewport const viewport =
-                stage == OverlayStage::scene
-                        ? VkViewport{.x = 0.0F, .y = height, .width = width, .height = -height, .minDepth = 1.0F,
-                                     .maxDepth = 0.0F}
-                        : VkViewport{.x = 0.0F, .y = 0.0F, .width = width, .height = height, .minDepth = 0.0F,
-                                     .maxDepth = 1.0F};
+        VkViewport const viewport = stage == OverlayStage::scene ? VkViewport{.x = 0.0F,
+                                                                              .y = height,
+                                                                              .width = width,
+                                                                              .height = -height,
+                                                                              .minDepth = 1.0F,
+                                                                              .maxDepth = 0.0F}
+                                                                 : VkViewport{.x = 0.0F,
+                                                                              .y = 0.0F,
+                                                                              .width = width,
+                                                                              .height = height,
+                                                                              .minDepth = 0.0F,
+                                                                              .maxDepth = 1.0F};
 
         VkRect2D const scissor{.offset = {0, 0}, .extent = scope.extent};
 

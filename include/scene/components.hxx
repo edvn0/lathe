@@ -8,8 +8,8 @@
 
 #include "assets/material.hxx"
 #include "assets/model.hxx"
-#include "physics/physics_components.hxx"
 #include "core/transform.hxx"
+#include "physics/physics_components.hxx"
 #include "scene/script_handle.hxx"
 
 namespace Components {

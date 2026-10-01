@@ -251,8 +251,7 @@ namespace debug_draw {
             impl_->pipeline = *created;
         }
 
-        auto const vertex_count =
-                static_cast<std::uint32_t>(impl_->pending_lines.size() + impl_->extra_lines.size());
+        auto const vertex_count = static_cast<std::uint32_t>(impl_->pending_lines.size() + impl_->extra_lines.size());
 
         if (!impl_->ensure_capacity(frame_index, vertex_count)) {
             return;
@@ -321,8 +320,18 @@ namespace debug_draw {
 
         // Bottom face, top face, then the 4 verticals.
         constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 12> edges{{
-                {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
-                {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7},
+                {0, 1},
+                {1, 2},
+                {2, 3},
+                {3, 0},
+                {4, 5},
+                {5, 6},
+                {6, 7},
+                {7, 4},
+                {0, 4},
+                {1, 5},
+                {2, 6},
+                {3, 7},
         }};
 
         for (auto const &[a, b]: edges) {

@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
-#include <glm/gtc/packing.hpp>
 #include <glm/geometric.hpp>
+#include <glm/gtc/packing.hpp>
 
 namespace {
     constexpr auto pack_sign_into_snorm2x16(glm::vec2 value, bool sign_bit) -> glm::uint32 {

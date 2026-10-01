@@ -45,23 +45,23 @@ namespace {
         for (std::uint32_t column = 0; column < terrain_chunk_cells; ++column) {
             // min_row edge (row 0): outward = -Z.
             emit_quad(indices, terrain_chunk_interior_index(column, 0), terrain_chunk_interior_index(column + 1, 0),
-                     skirt_min_row_index(column + 1), skirt_min_row_index(column));
+                      skirt_min_row_index(column + 1), skirt_min_row_index(column));
 
             // max_row edge (row 64): outward = +Z, so the column order is flipped.
             auto const row = terrain_chunk_cells;
             emit_quad(indices, terrain_chunk_interior_index(column + 1, row), terrain_chunk_interior_index(column, row),
-                     skirt_max_row_index(column), skirt_max_row_index(column + 1));
+                      skirt_max_row_index(column), skirt_max_row_index(column + 1));
         }
 
         for (std::uint32_t row = 0; row < terrain_chunk_cells; ++row) {
             // min_col edge (column 0): outward = -X, so the row order is flipped.
             emit_quad(indices, terrain_chunk_interior_index(0, row + 1), terrain_chunk_interior_index(0, row),
-                     skirt_min_col_index(row), skirt_min_col_index(row + 1));
+                      skirt_min_col_index(row), skirt_min_col_index(row + 1));
 
             // max_col edge (column 64): outward = +X.
             auto const column = terrain_chunk_cells;
             emit_quad(indices, terrain_chunk_interior_index(column, row), terrain_chunk_interior_index(column, row + 1),
-                     skirt_max_col_index(row + 1), skirt_max_col_index(row));
+                      skirt_max_col_index(row + 1), skirt_max_col_index(row));
         }
     }
 
@@ -72,9 +72,9 @@ namespace {
         for (std::uint32_t row = 0; row < terrain_chunk_cells; ++row) {
             for (std::uint32_t column = 0; column < terrain_chunk_cells; ++column) {
                 emit_quad(indices, terrain_chunk_interior_index(column, row),
-                         terrain_chunk_interior_index(column, row + 1),
-                         terrain_chunk_interior_index(column + 1, row + 1),
-                         terrain_chunk_interior_index(column + 1, row));
+                          terrain_chunk_interior_index(column, row + 1),
+                          terrain_chunk_interior_index(column + 1, row + 1),
+                          terrain_chunk_interior_index(column + 1, row));
             }
         }
 
@@ -192,12 +192,12 @@ auto make_terrain_chunk(TerrainField const &field, TerrainChunkRequest const &re
 
     for (std::uint32_t row = 0; row < terrain_chunk_samples; ++row) {
         vertices[skirt_min_col_index(row)] = make_skirt_vertex(terrain_chunk_interior_index(0, row));
-        vertices[skirt_max_col_index(row)] =
-                make_skirt_vertex(terrain_chunk_interior_index(terrain_chunk_cells, row));
+        vertices[skirt_max_col_index(row)] = make_skirt_vertex(terrain_chunk_interior_index(terrain_chunk_cells, row));
     }
 
     std::vector<CompressedModelVertex> compressed(terrain_chunk_vertex_count);
-    std::ranges::transform(vertices, compressed.begin(), [](ModelVertex const &vertex) { return compress_vertex(vertex); });
+    std::ranges::transform(vertices, compressed.begin(),
+                           [](ModelVertex const &vertex) { return compress_vertex(vertex); });
 
     auto indices = build_greedy_chunk_indices(heights, params.greedy_tolerance * cell_size);
 

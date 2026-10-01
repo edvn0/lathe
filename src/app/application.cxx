@@ -59,8 +59,8 @@
 #include "physics/physics.hxx"
 #include "physics/physics_world.hxx"
 #include "rendering/renderer.hxx"
-#include "rendering/screenshot.hxx"
 #include "rendering/scene.hxx"
+#include "rendering/screenshot.hxx"
 
 namespace {
 
@@ -949,8 +949,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             // The leading space and FramePadding give the node the same height as the Selectable rows.
             ImGui::SetNextItemOpen(row.expanded, ImGuiCond_Always);
             bool const open = ImGui::TreeNodeEx(" ##group_node", ImGuiTreeNodeFlags_SpanAvailWidth |
-                                                                          ImGuiTreeNodeFlags_FramePadding |
-                                                                          ImGuiTreeNodeFlags_NoTreePushOnOpen);
+                                                                         ImGuiTreeNodeFlags_FramePadding |
+                                                                         ImGuiTreeNodeFlags_NoTreePushOnOpen);
             if (open != row.expanded) {
                 hierarchy_model.set_group_expanded(row.group, open);
             }
@@ -1118,8 +1118,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                 std::max(request.RangeFirstItem, request.RangeLastItem),
                                 static_cast<ImGuiSelectionUserData>(rows.size()) - 1);
                         for (auto row = first; row <= last; ++row) {
-                            if (auto const entity = rows[static_cast<std::size_t>(row)].entity;
-                                entity != entt::null) {
+                            if (auto const entity = rows[static_cast<std::size_t>(row)].entity; entity != entt::null) {
                                 transaction.set(entity, request.Selected);
                             }
                         }
@@ -1131,8 +1130,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         constexpr ImGuiMultiSelectFlags multi_select_flags = ImGuiMultiSelectFlags_ClearOnEscape |
                                                              ImGuiMultiSelectFlags_ClearOnClickVoid |
                                                              ImGuiMultiSelectFlags_BoxSelect1d;
-        auto *const multi_select_io = ImGui::BeginMultiSelect(
-                multi_select_flags, static_cast<int>(selection.size()), static_cast<int>(rows.size()));
+        auto *const multi_select_io = ImGui::BeginMultiSelect(multi_select_flags, static_cast<int>(selection.size()),
+                                                              static_cast<int>(rows.size()));
         apply_selection_requests(multi_select_io);
 
         float const rows_x = ImGui::GetCursorPosX();
@@ -1184,9 +1183,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         apply_selection_requests(ImGui::EndMultiSelect());
         if (clicked_entity != entt::null) {
-            selection.modify([&](SelectionContext::Transaction &transaction) {
-                transaction.set_primary(clicked_entity);
-            });
+            selection.modify(
+                    [&](SelectionContext::Transaction &transaction) { transaction.set_primary(clicked_entity); });
         }
 
         if (open_context_menu) {
@@ -1441,7 +1439,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                          MaterialHandle copy_source) -> std::optional<MaterialHandle> {
             auto const &materials = renderer->assets().materials();
             auto const current_name = materials.name_of(current);
-            std::string const preview = !current.valid()         ? none_label
+            std::string const preview = !current.valid()       ? none_label
                                         : current_name.empty() ? "(own material)"
                                                                : std::string(current_name);
 
@@ -1551,8 +1549,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             bool changed = false;
 
             auto const set_slot = [&](MaterialHandle source, MaterialHandle material) {
-                std::erase_if(edited.slots,
-                              [&](MaterialSlotOverride const &slot) { return slot.source == source; });
+                std::erase_if(edited.slots, [&](MaterialSlotOverride const &slot) { return slot.source == source; });
                 if (material.valid()) {
                     edited.slots.push_back(MaterialSlotOverride{.source = source, .material = material});
                 }
@@ -1602,8 +1599,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
                 auto const label = std::format("Slot {}", index);
                 ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0F);
-                if (auto const picked = material_picker(label.c_str(), slot_material(source), "(model material)",
-                                                        source)) {
+                if (auto const picked =
+                            material_picker(label.c_str(), slot_material(source), "(model material)", source)) {
                     set_slot(source, *picked);
                 }
 
@@ -1685,8 +1682,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             } else if (state == ModelRequestState::failed) {
                 auto const reason = renderer->model_streamer().failure_reason(model.model);
                 ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.40F, 1.0F),
-                                   "Load failed: %.*s -- showing the placeholder model", static_cast<int>(reason.size()),
-                                   reason.data());
+                                   "Load failed: %.*s -- showing the placeholder model",
+                                   static_cast<int>(reason.size()), reason.data());
             }
 
             auto &models = renderer->assets().models();

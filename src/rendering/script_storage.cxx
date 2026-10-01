@@ -21,6 +21,4 @@ auto ScriptStorage::get(ScriptHandle handle) noexcept -> IScript * {
     return slot != nullptr ? slot->script.get() : nullptr;
 }
 
-auto ScriptStorage::destroy(ScriptHandle handle) -> void {
-    static_cast<void>(slots_.release(handle));
-}
+auto ScriptStorage::destroy(ScriptHandle handle) -> void { static_cast<void>(slots_.release(handle)); }

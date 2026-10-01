@@ -1,8 +1,8 @@
 #include "serialisation/cooked_model.hxx"
 
 #include <algorithm>
-#include <limits>
 #include <format>
+#include <limits>
 #include <source_location>
 #include <utility>
 
@@ -215,9 +215,9 @@ namespace {
                 return true;
 
             case IndexEncoding::meshopt:
-                if (count % 3 != 0 ||
-                    meshopt_decodeIndexBuffer(indices.data(), count, sizeof(std::uint32_t),
-                                              reinterpret_cast<unsigned char const *>(bytes.data()), bytes.size()) != 0) {
+                if (count % 3 != 0 || meshopt_decodeIndexBuffer(indices.data(), count, sizeof(std::uint32_t),
+                                                                reinterpret_cast<unsigned char const *>(bytes.data()),
+                                                                bytes.size()) != 0) {
                     reader.fail();
                     return false;
                 }
@@ -349,7 +349,8 @@ auto encode_cooked_model(ModelCpuData const &cpu_data, std::span<CookedImageRef 
             write_vec3(writer, primitive_max);
 
             auto const &vertices = primitive.compressed_vertices;
-            std::vector<std::byte> encoded(meshopt_encodeVertexBufferBound(vertices.size(), sizeof(CompressedModelVertex)));
+            std::vector<std::byte> encoded(
+                    meshopt_encodeVertexBufferBound(vertices.size(), sizeof(CompressedModelVertex)));
             auto const encoded_size =
                     meshopt_encodeVertexBuffer(reinterpret_cast<unsigned char *>(encoded.data()), encoded.size(),
                                                vertices.data(), vertices.size(), sizeof(CompressedModelVertex));
@@ -543,9 +544,9 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
 
             primitive.compressed_vertices.resize(vertex_count);
 
-            if (meshopt_decodeVertexBuffer(primitive.compressed_vertices.data(), vertex_count,
-                                           sizeof(CompressedModelVertex),
-                                           reinterpret_cast<unsigned char const *>(encoded.data()), encoded.size()) != 0) {
+            if (meshopt_decodeVertexBuffer(
+                        primitive.compressed_vertices.data(), vertex_count, sizeof(CompressedModelVertex),
+                        reinterpret_cast<unsigned char const *>(encoded.data()), encoded.size()) != 0) {
                 reader.fail();
                 break;
             }
@@ -586,7 +587,8 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
     for (auto const &node: cpu_data.nodes) {
         if ((node.mesh_index != no_index && node.mesh_index >= mesh_count) ||
             !std::ranges::all_of(node.children, valid_node)) {
-            return std::unexpected(make_error(LbfErrorType::malformed_payload, "node references a missing mesh or node"));
+            return std::unexpected(
+                    make_error(LbfErrorType::malformed_payload, "node references a missing mesh or node"));
         }
     }
 

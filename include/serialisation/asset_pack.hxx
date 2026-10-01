@@ -47,8 +47,7 @@ public:
     // A finalized ModelCpuData ready for record_model_gpu_upload()/start_model_gpu_upload(). Its image sources load
     // their TEXR chunks from this pack on the texture streamer's threads. Thread-safe.
     [[nodiscard]]
-    auto load_model(AssetId id, SamplerStorage const &sampler_storage) const
-            -> std::expected<ModelCpuData, LbfError>;
+    auto load_model(AssetId id, SamplerStorage const &sampler_storage) const -> std::expected<ModelCpuData, LbfError>;
 
     // A loader for ModelCpuImageSource::cooked / TextureStreamer::request_cooked.
     [[nodiscard]]

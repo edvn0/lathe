@@ -19,7 +19,7 @@ struct Renderer;
 namespace Components {
     struct Transform;
     struct MaterialOverride;
-}
+} // namespace Components
 
 class ScreenshotCapture;
 enum class ScreenshotSource : std::uint8_t;

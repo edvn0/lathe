@@ -10,10 +10,10 @@
 
 #include <glm/glm.hpp>
 
-#include "core/config.hxx"
 #include "assets/geometry.hxx"
 #include "assets/material.hxx"
 #include "assets/model.hxx"
+#include "core/config.hxx"
 #include "core/object_pool.hxx"
 
 // One submesh: GeometryArena ranges per LOD, material and local bounds. Validated by Renderer::create_mesh.

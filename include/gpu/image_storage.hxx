@@ -12,12 +12,12 @@
 
 #include "core/error_context.hxx"
 
-#include "gpu/buffer.hxx"
-#include "gpu/compressed_texture.hxx"
 #include "core/forward.hxx"
 #include "core/holder.hxx"
-#include "gpu/image.hxx"
 #include "core/object_pool.hxx"
+#include "gpu/buffer.hxx"
+#include "gpu/compressed_texture.hxx"
+#include "gpu/image.hxx"
 
 enum class ImageDescriptorClass : std::uint8_t {
     sampled_2d,

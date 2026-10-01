@@ -12,8 +12,8 @@
 
 namespace {
 
-    [[nodiscard]] auto parse_count(std::string_view flag,
-                                   std::string_view value) -> std::expected<std::uint32_t, std::string> {
+    [[nodiscard]] auto parse_count(std::string_view flag, std::string_view value)
+            -> std::expected<std::uint32_t, std::string> {
         std::uint32_t result = 0;
         auto const [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
 

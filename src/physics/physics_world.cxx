@@ -12,11 +12,11 @@
 #include <LinearMath/btThreads.h>
 
 #include "core/arena_allocator.hxx"
-#include "physics/debug_lines.hxx"
 #include "core/logger.hxx"
 #include "core/memory_tracker.hxx"
-#include "physics/physics_components.hxx"
 #include "core/transform.hxx"
+#include "physics/debug_lines.hxx"
+#include "physics/physics_components.hxx"
 
 #include <algorithm>
 #include <vector>
@@ -132,7 +132,8 @@ struct PhysicsWorld::Impl {
 
             // Every remaining body came from add_body() and has a PhysicsBody to remove. No null check on the user
             // pointer: entity 0 bit-casts to null.
-            auto const entity = static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(rigid_body->getUserPointer()));
+            auto const entity =
+                    static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(rigid_body->getUserPointer()));
 
             if (registry.valid(entity)) {
                 registry.remove<Components::PhysicsBody>(entity);
@@ -186,8 +187,7 @@ struct PhysicsWorld::Impl {
 };
 
 PhysicsWorld::PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool,
-                           entt::registry &registry) :
-    impl_{std::make_unique<Impl>(settings, thread_pool, registry)} {}
+                           entt::registry &registry) : impl_{std::make_unique<Impl>(settings, thread_pool, registry)} {}
 
 PhysicsWorld::~PhysicsWorld() = default;
 
@@ -206,7 +206,7 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
     switch (body.shape) {
         case Components::BodyShape::capsule:
             shape = impl_->arena.construct_with_base<btCapsuleShape, btCollisionShape>(body.capsule_radius,
-                                                                                        body.capsule_height);
+                                                                                       body.capsule_height);
             break;
         case Components::BodyShape::heightfield: {
             auto const &heightfield = *body.heightfield;
@@ -279,13 +279,13 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
     impl_->world->addRigidBody(rigid_body);
 
     registry.emplace<Components::PhysicsBody>(entity, Components::PhysicsBody{
-                                                               .rigid_body = rigid_body,
-                                                               .shape = shape,
-                                                       });
+                                                              .rigid_body = rigid_body,
+                                                              .shape = shape,
+                                                      });
 }
 
-auto PhysicsWorld::set_velocity(entt::registry const &registry, entt::entity entity,
-                                glm::vec3 const &linear_velocity) -> void {
+auto PhysicsWorld::set_velocity(entt::registry const &registry, entt::entity entity, glm::vec3 const &linear_velocity)
+        -> void {
     auto const *physics_body = registry.try_get<Components::PhysicsBody const>(entity);
     if (physics_body == nullptr) {
         return;
@@ -341,17 +341,15 @@ auto PhysicsWorld::remove_body(entt::registry &registry, entt::entity entity) ->
     registry.remove<Components::PhysicsBody>(entity);
 }
 
-auto PhysicsWorld::reserve_terrain_colliders(std::uint32_t count) -> void {
-    impl_->terrain_colliders.reserve(count);
-}
+auto PhysicsWorld::reserve_terrain_colliders(std::uint32_t count) -> void { impl_->terrain_colliders.reserve(count); }
 
 auto PhysicsWorld::reserve_terrain_collider(TerrainColliderDesc const &desc) -> TerrainColliderHandle {
     Impl::TerrainColliderSlot slot;
     slot.heights.assign(static_cast<std::size_t>(desc.samples_x) * desc.samples_z, 0.0F);
 
     slot.shape = impl_->arena.construct<btHeightfieldTerrainShape>(
-            static_cast<int>(desc.samples_x), static_cast<int>(desc.samples_z), slot.heights.data(),
-            desc.min_height, desc.max_height, /*upAxis=*/1, /*flipQuadEdges=*/false);
+            static_cast<int>(desc.samples_x), static_cast<int>(desc.samples_z), slot.heights.data(), desc.min_height,
+            desc.max_height, /*upAxis=*/1, /*flipQuadEdges=*/false);
     slot.shape->setLocalScaling(btVector3{desc.cell_size_x, 1.0F, desc.cell_size_z});
 
     btTransform start_transform;
@@ -395,7 +393,7 @@ auto PhysicsWorld::bind_terrain_collider(TerrainColliderHandle handle, glm::vec3
                                  int /*part_id_0*/, int /*index_0*/, btCollisionObjectWrapper const *col_obj_1_wrap,
                                  int /*part_id_1*/, int /*index_1*/) -> btScalar override {
                 auto const *other = col_obj_0_wrap->getCollisionObject() == self ? col_obj_1_wrap->getCollisionObject()
-                                                                                  : col_obj_0_wrap->getCollisionObject();
+                                                                                 : col_obj_0_wrap->getCollisionObject();
 
                 if (auto *rigid_body = btRigidBody::upcast(other);
                     rigid_body != nullptr && !rigid_body->isStaticObject() &&

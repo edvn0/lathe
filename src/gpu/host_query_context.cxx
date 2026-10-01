@@ -1,7 +1,7 @@
 #include "gpu/host_query_context.hxx"
 
-#include "gpu/context.hxx"
 #include "core/logger.hxx"
+#include "gpu/context.hxx"
 
 auto HostQueryContext::initialize(VulkanContext &vulkan_context) -> void {
     if (vulkan_context.host_calibrated_timestamps_supported) {

@@ -9,8 +9,8 @@
 #include "core/thread_pool.hxx"
 
 auto TextureStreamer::request(ImageStorage &images, std::filesystem::path source_path, TextureRole role,
-                              ImageHandle fallback, std::string debug_name,
-                              std::shared_ptr<ModelLoadProfile> profile) -> ImageHandle {
+                              ImageHandle fallback, std::string debug_name, std::shared_ptr<ModelLoadProfile> profile)
+        -> ImageHandle {
     std::error_code canonicalize_error;
     auto const canonical_path = std::filesystem::weakly_canonical(source_path, canonicalize_error);
     auto const path_key = std::format("{}|{}", (canonicalize_error ? source_path : canonical_path).generic_string(),
@@ -71,8 +71,8 @@ auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std:
 
     auto future = pool.submit_task([encoded = std::move(encoded_bytes), role, cache_key = std::move(cache_key),
                                     profile = std::move(profile)]() {
-        return load_compressed_texture_from_encoded_memory(encoded, role, cache_key,
-                                                            default_texture_cache_directory(), profile);
+        return load_compressed_texture_from_encoded_memory(encoded, role, cache_key, default_texture_cache_directory(),
+                                                           profile);
     });
 
     pending_.push_back(PendingRequest{
@@ -209,8 +209,8 @@ auto TextureStreamer::flush(ImageStorage &images, VulkanContext &context) -> std
             continue;
         }
 
-        ready.push_back(Ready{.handle = request.handle, .debug_name = std::move(request.debug_name),
-                              .texture = std::move(*result)});
+        ready.push_back(Ready{
+                .handle = request.handle, .debug_name = std::move(request.debug_name), .texture = std::move(*result)});
     }
 
     pending_.clear();
@@ -223,8 +223,8 @@ auto TextureStreamer::flush(ImageStorage &images, VulkanContext &context) -> std
             auto uploaded = images.upgrade_pending_image(entry.handle, entry.texture, command_buffer);
 
             if (!uploaded) {
-                error("texture_streamer: '{}' failed to upload ({}); staying on its fallback texture",
-                      entry.debug_name, uploaded.error().type);
+                error("texture_streamer: '{}' failed to upload ({}); staying on its fallback texture", entry.debug_name,
+                      uploaded.error().type);
                 continue;
             }
 

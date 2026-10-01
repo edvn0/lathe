@@ -960,8 +960,8 @@ private:
 
     // Screenshot copy or present transition, then the end-of-frame timestamp.
     // viewport is null when the scene was composited straight into the swapchain.
-    auto record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
-                          Image const *viewport, std::uint32_t frame_index) -> void;
+    auto record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, Image const *viewport,
+                          std::uint32_t frame_index) -> void;
 
     VulkanContext &context_;
 

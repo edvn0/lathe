@@ -7,14 +7,12 @@
 
 // Owner has a get(HandleT) returning a pointer to the held value, so a Holder can dereference.
 template<typename Owner, typename HandleT>
-concept HolderOwnerWithGet = requires(Owner &owner, HandleT handle) {
-    requires std::is_pointer_v<decltype(owner.get(handle))>;
-};
+concept HolderOwnerWithGet =
+        requires(Owner &owner, HandleT handle) { requires std::is_pointer_v<decltype(owner.get(handle))>; };
 
 template<typename Owner, typename HandleT>
-concept HolderOwnerWithConstGet = requires(Owner const &owner, HandleT handle) {
-    requires std::is_pointer_v<decltype(owner.get(handle))>;
-};
+concept HolderOwnerWithConstGet =
+        requires(Owner const &owner, HandleT handle) { requires std::is_pointer_v<decltype(owner.get(handle))>; };
 
 template<typename Owner, typename HandleT>
 concept HolderOwnerWithContains = requires(Owner const &owner, HandleT handle) {

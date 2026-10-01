@@ -6,11 +6,11 @@
 
 #include <BS_thread_pool.hpp>
 
-#include "physics/debug_lines.hxx"
 #include "core/forward.hxx"
+#include "core/transform.hxx"
+#include "physics/debug_lines.hxx"
 #include "physics/physics.hxx"
 #include "physics/physics_components.hxx"
-#include "core/transform.hxx"
 
 #include <cstdint>
 #include <limits>
@@ -46,8 +46,7 @@ struct TerrainColliderDesc {
 class PhysicsWorld {
 public:
     // `registry` must outlive this PhysicsWorld; the destructor removes remaining PhysicsBody components.
-    PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool,
-                entt::registry &registry);
+    PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool, entt::registry &registry);
     ~PhysicsWorld();
 
     PhysicsWorld(PhysicsWorld const &) = delete;

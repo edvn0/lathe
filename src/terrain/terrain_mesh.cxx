@@ -10,8 +10,7 @@
 
 namespace {
 
-    auto noise_height(SimplexNoise2D const &noise, TerrainParams const &params, float world_x, float world_z)
-            -> float {
+    auto noise_height(SimplexNoise2D const &noise, TerrainParams const &params, float world_x, float world_z) -> float {
         auto height = noise.fbm(world_x * params.frequency, world_z * params.frequency, params.octaves,
                                 params.lacunarity, params.persistence) *
                       params.amplitude;
@@ -77,7 +76,7 @@ auto make_terrain_mesh(TerrainParams const &params) -> std::expected<TerrainMesh
 
     // A fixed range gives every chunk the same mid_height; otherwise use this patch's own extremes.
     auto const mid_height = has_fixed_height_range(params) ? (params.height_range_min + params.height_range_max) * 0.5F
-                                                            : (min_height + max_height) * 0.5F;
+                                                           : (min_height + max_height) * 0.5F;
 
     // Central differences against the field, one ring past the patch, so edge vertices get two-sided derivatives
     // and neighbouring chunks compute identical normals.
@@ -116,8 +115,8 @@ auto make_terrain_mesh(TerrainParams const &params) -> std::expected<TerrainMesh
                     .normal = normal,
                     // Placeholder; generate_tangents() overwrites it.
                     .tangent = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F},
-                    .texcoord = glm::vec2{uv_origin_x + local_x * params.uv_scale,
-                                          uv_origin_z + local_z * params.uv_scale},
+                    .texcoord =
+                            glm::vec2{uv_origin_x + local_x * params.uv_scale, uv_origin_z + local_z * params.uv_scale},
             };
         }
     }

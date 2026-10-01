@@ -107,7 +107,8 @@ auto sampler_for(SamplerStorage const &sampler_storage, DefaultSampler sampler) 
 }
 
 auto default_sampler_of(SamplerStorage const &sampler_storage, SamplerHandle handle) noexcept -> DefaultSampler {
-    for (auto const sampler: {DefaultSampler::linear_clamp, DefaultSampler::nearest_repeat, DefaultSampler::nearest_clamp}) {
+    for (auto const sampler:
+         {DefaultSampler::linear_clamp, DefaultSampler::nearest_repeat, DefaultSampler::nearest_clamp}) {
         if (sampler_for(sampler_storage, sampler) == handle) {
             return sampler;
         }
@@ -140,9 +141,7 @@ auto AssetPack::has_texture(AssetId id) const noexcept -> bool {
     return reader_.find(lbf_chunk::texture, id.value) != nullptr;
 }
 
-auto AssetPack::texture_cache_key(AssetId id) -> std::string {
-    return std::format("lbf:{}", id);
-}
+auto AssetPack::texture_cache_key(AssetId id) -> std::string { return std::format("lbf:{}", id); }
 
 auto AssetPack::load_texture(AssetId id) const -> std::expected<CompressedTexture, LbfError> {
     auto const *entry = reader_.find(lbf_chunk::texture, id.value);
@@ -298,9 +297,8 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
         }
 
         parsed.push_back(ParsedModel{.id = id, .source = source});
-        parse_tasks.push_back(pool.submit_task([source, &sampler_storage] {
-            return load_model_cpu(source, sampler_storage);
-        }));
+        parse_tasks.push_back(
+                pool.submit_task([source, &sampler_storage] { return load_model_cpu(source, sampler_storage); }));
     }
 
     std::vector<ParsedModel> ready_models;
@@ -356,10 +354,9 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
         }
 
         texture_tasks.push_back(pool.submit_task([job = std::move(job), directory = options.texture_cache_directory] {
-            auto texture = job.path.empty()
-                                   ? load_compressed_texture_from_encoded_memory(job.encoded, job.role, job.cache_key,
-                                                                                 directory)
-                                   : load_compressed_texture(job.path, job.role, directory);
+            auto texture = job.path.empty() ? load_compressed_texture_from_encoded_memory(job.encoded, job.role,
+                                                                                          job.cache_key, directory)
+                                            : load_compressed_texture(job.path, job.role, directory);
 
             if (!texture) {
                 return TextureResult{.id = job.id,
@@ -367,9 +364,8 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
                                      .payload = std::unexpected(describe(texture.error()))};
             }
 
-            return TextureResult{.id = job.id,
-                                 .debug_name = job.debug_name,
-                                 .payload = encode_cooked_texture(*texture, job.role)};
+            return TextureResult{
+                    .id = job.id, .debug_name = job.debug_name, .payload = encode_cooked_texture(*texture, job.role)};
         }));
     }
 

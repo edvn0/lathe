@@ -1,7 +1,7 @@
 #include "gpu/buffer.hxx"
 
-#include "gpu/context.hxx"
 #include "core/logger.hxx"
+#include "gpu/context.hxx"
 #include "gpu/vk_object_name.hxx"
 
 #include <cstddef>

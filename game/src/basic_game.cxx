@@ -20,18 +20,18 @@
 #include <glm/gtc/quaternion.hpp>
 #include <imgui.h>
 
-#include "scene/components.hxx"
-#include "rendering/entity.hxx"
-#include "core/error_describe.hxx"
-#include "core/random.hxx"
-#include "core/logger.hxx"
-#include "physics/physics_world.hxx"
 #include "assets/primitive_meshes.hxx"
+#include "core/error_describe.hxx"
+#include "core/logger.hxx"
+#include "core/random.hxx"
 #include "enemy_ai_script.hxx"
+#include "physics/physics_world.hxx"
+#include "rendering/entity.hxx"
 #include "rendering/imgui_widget.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/script_storage.hxx"
+#include "scene/components.hxx"
 #include "terrain/terrain_mesh.hxx"
 
 namespace {
@@ -117,8 +117,9 @@ namespace {
 
             for (int k = 0; k < steps; ++k) {
                 auto const t = static_cast<float>(k) / static_cast<float>(steps);
-                samples.push_back(0.5F * ((2.0F * p1) + (p2 - p0) * t + (2.0F * p0 - 5.0F * p1 + 4.0F * p2 - p3) * t * t +
-                                          (3.0F * p1 - p0 - 3.0F * p2 + p3) * t * t * t));
+                samples.push_back(0.5F *
+                                  ((2.0F * p1) + (p2 - p0) * t + (2.0F * p0 - 5.0F * p1 + 4.0F * p2 - p3) * t * t +
+                                   (3.0F * p1 - p0 - 3.0F * p2 + p3) * t * t * t));
             }
         }
 
@@ -238,7 +239,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             auto enemy = GeneratedEntity{&scene, "enemy_{}", i};
             enemy.emplace<Components::Transform>(Components::Transform{
                     .position = center + glm::vec3{enemy_orbit_radius * std::cos(angle), 0.0F,
-                                                    enemy_orbit_radius * std::sin(angle)},
+                                                   enemy_orbit_radius * std::sin(angle)},
                     .scale = enemy_scale,
             });
             enemy.emplace<Components::CircularMotion>(Components::CircularMotion{
@@ -253,7 +254,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     }
 
     // load_model() takes a reference on every call, including cache hits.
-    auto const release_previous = [&](ModelHandle previous) {
+    auto const release_previous = [&](ModelHandle previous) -> void {
         if (previous.valid() && previous != engine_models.cube) {
             renderer.release_model(previous);
         }
@@ -280,22 +281,23 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .seed = 1337U,
             .uv_scale = 0.08F,
             // Kept outside the village ring (radius 14) so the houses stay on gentle ground.
-            .hills = {
-                    {.world_x = 48.0F, .world_z = -30.0F, .height = 16.0F, .radius = 14.0F},
-                    {.world_x = -55.0F, .world_z = 28.0F, .height = 20.0F, .radius = 16.0F},
-                    {.world_x = 22.0F, .world_z = 58.0F, .height = 11.0F, .radius = 12.0F},
-                    {.world_x = -32.0F, .world_z = -58.0F, .height = 14.0F, .radius = 13.0F},
-                    {.world_x = 72.0F, .world_z = 28.0F, .height = 18.0F, .radius = 15.0F},
-                    {.world_x = -78.0F, .world_z = -22.0F, .height = 24.0F, .radius = 18.0F},
-                    {.world_x = 5.0F, .world_z = -88.0F, .height = 15.0F, .radius = 14.0F},
-                    {.world_x = -12.0F, .world_z = 84.0F, .height = 17.0F, .radius = 15.0F},
-                    {.world_x = 88.0F, .world_z = -62.0F, .height = 22.0F, .radius = 17.0F},
-                    {.world_x = -92.0F, .world_z = 72.0F, .height = 13.0F, .radius = 12.0F},
-                    {.world_x = 58.0F, .world_z = 88.0F, .height = 12.0F, .radius = 12.0F},
-                    {.world_x = -62.0F, .world_z = -88.0F, .height = 19.0F, .radius = 16.0F},
-                    // A proper mountain, well beyond the roads.
-                    {.world_x = 125.0F, .world_z = 70.0F, .height = 40.0F, .radius = 28.0F},
-            },
+            .hills =
+                    {
+                            {.world_x = 48.0F, .world_z = -30.0F, .height = 16.0F, .radius = 14.0F},
+                            {.world_x = -55.0F, .world_z = 28.0F, .height = 20.0F, .radius = 16.0F},
+                            {.world_x = 22.0F, .world_z = 58.0F, .height = 11.0F, .radius = 12.0F},
+                            {.world_x = -32.0F, .world_z = -58.0F, .height = 14.0F, .radius = 13.0F},
+                            {.world_x = 72.0F, .world_z = 28.0F, .height = 18.0F, .radius = 15.0F},
+                            {.world_x = -78.0F, .world_z = -22.0F, .height = 24.0F, .radius = 18.0F},
+                            {.world_x = 5.0F, .world_z = -88.0F, .height = 15.0F, .radius = 14.0F},
+                            {.world_x = -12.0F, .world_z = 84.0F, .height = 17.0F, .radius = 15.0F},
+                            {.world_x = 88.0F, .world_z = -62.0F, .height = 22.0F, .radius = 17.0F},
+                            {.world_x = -92.0F, .world_z = 72.0F, .height = 13.0F, .radius = 12.0F},
+                            {.world_x = 58.0F, .world_z = 88.0F, .height = 12.0F, .radius = 12.0F},
+                            {.world_x = -62.0F, .world_z = -88.0F, .height = 19.0F, .radius = 16.0F},
+                            // A proper mountain, well beyond the roads.
+                            {.world_x = 125.0F, .world_z = 70.0F, .height = 40.0F, .radius = 28.0F},
+                    },
             // Must cover the noise (+/- amplitude) and the tallest hill above.
             .height_range_min = -1.6F,
             .height_range_max = 44.0F,
@@ -319,15 +321,16 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
     // The terrain keeps the material it was created with, so it's made once.
     if (!terrain_material_.valid()) {
-        auto const terrain_material = renderer.create_material(MaterialCreateInfo{
-                .base_colour_factor = glm::vec4{1.0F, 1.0F, 1.0F, 1.0F},
-                .base_colour_texture = dirt_albedo_index,
-                .normal_texture = dirt_normal_index,
-                .metallic_roughness_texture = dirt_roughness_index,
-                .occlusion_texture = images.occlusion(),
-                .emissive_texture = images.emissive(),
-                .sampler = samplers.linear_repeat(),
-        },
+        auto const terrain_material = renderer.create_material(
+                MaterialCreateInfo{
+                        .base_colour_factor = glm::vec4{1.0F, 1.0F, 1.0F, 1.0F},
+                        .base_colour_texture = dirt_albedo_index,
+                        .normal_texture = dirt_normal_index,
+                        .metallic_roughness_texture = dirt_roughness_index,
+                        .occlusion_texture = images.occlusion(),
+                        .emissive_texture = images.emissive(),
+                        .sampler = samplers.linear_repeat(),
+                },
                 // Named so the editor can offer it.
                 "terrain");
 
@@ -635,10 +638,11 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         }
 
         // Spurs: the first point sits on the outer ring (40, 0), (7, -40) and (-38, 14) region.
-        roads.push_back({.control = {{-38.0F, 14.0F}, {-43.0F, 29.0F}, {-55.0F, 37.0F}, {-66.0F, 30.0F}, {-60.0F, 20.0F}},
-                         .closed = false,
-                         .width = 4.0F,
-                         .lamp_colour = {1.0F, 0.45F, 0.75F}});
+        roads.push_back(
+                {.control = {{-38.0F, 14.0F}, {-43.0F, 29.0F}, {-55.0F, 37.0F}, {-66.0F, 30.0F}, {-60.0F, 20.0F}},
+                 .closed = false,
+                 .width = 4.0F,
+                 .lamp_colour = {1.0F, 0.45F, 0.75F}});
         roads.push_back({.control = {{40.0F, 0.0F}, {54.0F, 10.0F}, {66.0F, 16.0F}, {74.0F, 28.0F}},
                          .closed = false,
                          .width = 4.0F,
@@ -744,7 +748,8 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             road_entity.emplace<Components::Transform>();
             road_entity.emplace<Components::Model>(Components::Model{.model = *model});
             if (road_material.valid()) {
-                road_entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{.material = road_material});
+                road_entity.emplace<Components::MaterialOverride>(
+                        Components::MaterialOverride{.material = road_material});
             }
 
             // Lamps are grouped under one identity-transform entity for the Hierarchy.
@@ -899,11 +904,11 @@ auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
             auto const grass_y = scene.physics_settings.ground_y + sample_terrain_height(terrain_params_, x, z);
 
             grass_transforms.push_back(Components::Transform{
-                                                .position = glm::vec3{x, grass_y, z},
-                                                .rotation = glm::angleAxis(yaw(grass_eng), glm::vec3{0.0F, 1.0F, 0.0F}),
-                                                .scale = glm::vec3{grass_scale},
+                    .position = glm::vec3{x, grass_y, z},
+                    .rotation = glm::angleAxis(yaw(grass_eng), glm::vec3{0.0F, 1.0F, 0.0F}),
+                    .scale = glm::vec3{grass_scale},
             }
-                                                .matrix());
+                                               .matrix());
         }
     }
 
@@ -1004,12 +1009,12 @@ auto BasicGame::on_update(Scene &scene, float delta_time) -> void {
     physics_world.set_velocity(registry, player_entity_, desired_velocity);
 
     auto const speed_factor = player_controller_.move_speed() > 0.0F
-                                       ? glm::length(desired_velocity) / player_controller_.move_speed()
-                                       : 0.0F;
+                                      ? glm::length(desired_velocity) / player_controller_.move_speed()
+                                      : 0.0F;
 
-    auto const occlusion_query = [&physics_world, player = player_entity_](
-                                          glm::vec3 const &origin, glm::vec3 const &direction,
-                                          float max_distance) -> std::optional<float> {
+    auto const occlusion_query = [&physics_world, player = player_entity_](glm::vec3 const &origin,
+                                                                           glm::vec3 const &direction,
+                                                                           float max_distance) -> std::optional<float> {
         auto const hit = physics_world.raycast(origin, direction, max_distance);
         if (hit && hit->entity != player) {
             return hit->distance;

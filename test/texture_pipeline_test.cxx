@@ -42,7 +42,7 @@ namespace {
 
         ktxTexture2 *raw = nullptr;
         auto const create_result = ktxTexture2_CreateFromNamedFile(ktx2_files.front().string().c_str(),
-                                                                    KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw);
+                                                                   KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw);
 
         REQUIRE(create_result == KTX_SUCCESS);
         REQUIRE(raw != nullptr);
@@ -70,8 +70,7 @@ TEST_SUITE("unit") {
         CHECK(first->mips.front().width == first->width);
         CHECK(first->mips.front().height == first->height);
 
-        auto const expected_mip_count =
-                static_cast<std::size_t>(std::bit_width(std::max(first->width, first->height)));
+        auto const expected_mip_count = static_cast<std::size_t>(std::bit_width(std::max(first->width, first->height)));
         CHECK(first->mips.size() == expected_mip_count);
 
         verify_cache_file_round_trips(cache_dir, VK_FORMAT_BC7_SRGB_BLOCK);
@@ -121,8 +120,7 @@ TEST_SUITE("unit") {
     TEST_CASE("load_compressed_texture: missing source file fails cleanly") {
         auto const cache_dir = make_temp_cache_dir("missing");
 
-        auto result =
-                load_compressed_texture("assets/textures/does_not_exist.png", TextureRole::colour, cache_dir);
+        auto result = load_compressed_texture("assets/textures/does_not_exist.png", TextureRole::colour, cache_dir);
 
         CHECK_FALSE(result.has_value());
         CHECK(result.error().type == TexturePipelineErrorType::source_not_found);

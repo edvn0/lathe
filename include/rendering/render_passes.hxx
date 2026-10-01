@@ -8,13 +8,13 @@
 
 #include <volk.h>
 
-#include "gpu/buffer.hxx"
 #include "core/config.hxx"
+#include "core/renderer_error.hxx"
+#include "gpu/buffer.hxx"
 #include "gpu/gpu_resource_table.hxx"
 #include "gpu/image_storage.hxx"
 #include "rendering/overlay.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
-#include "core/renderer_error.hxx"
 #include "rendering/shadow_cascades.hxx"
 
 namespace render_pass {
