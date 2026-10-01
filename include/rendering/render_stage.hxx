@@ -6,6 +6,7 @@
 enum class RenderStage : std::uint8_t {
     FullFrame = 0,
     Culling,
+    LightClustering,
     ShadowPass,
     DepthPrepass,
     AmbientOcclusion,
@@ -22,6 +23,8 @@ constexpr auto to_string(RenderStage stage) -> std::string_view {
             return "Full Frame";
         case Culling:
             return "GPU Culling";
+        case LightClustering:
+            return "Light Clustering";
         case ShadowPass:
             return "Shadow Pass";
         case DepthPrepass:

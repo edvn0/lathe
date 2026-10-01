@@ -2045,6 +2045,18 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             renderer->set_meshlet_culling(meshlet_culling);
         }
 
+        bool clustered_lighting = renderer->clustered_lighting();
+        if (ImGui::Checkbox("Clustered lighting (GPU)", &clustered_lighting)) {
+            renderer->set_clustered_lighting(clustered_lighting);
+        }
+
+        ImGui::BeginDisabled(!clustered_lighting);
+        bool cluster_heatmap = renderer->cluster_debug_heatmap();
+        if (ImGui::Checkbox("Cluster light-count heatmap", &cluster_heatmap)) {
+            renderer->set_cluster_debug_heatmap(cluster_heatmap);
+        }
+        ImGui::EndDisabled();
+
         auto light = renderer->directional_light();
         auto shadows = renderer->shadow_settings();
         bool dirty = false;

@@ -162,6 +162,9 @@ namespace render_pass {
         VkDeviceAddress lights_address = 0;
         std::uint32_t light_count = 0;
 
+        // Per-cluster light bitmasks; only read when the UBO enables clustered lighting.
+        VkDeviceAddress cluster_light_masks_address = 0;
+
         VkQueryPool pipeline_statistics_query_pool = VK_NULL_HANDLE;
 
         bool meshlet_culling = true;

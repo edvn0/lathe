@@ -996,6 +996,7 @@ namespace render_pass {
                 .screen_size_x = static_cast<float>(info.extent.width),
                 .screen_size_y = static_cast<float>(info.extent.height),
                 .cull_planes_address = info.cull_planes_address,
+                .cluster_light_masks_address = info.cluster_light_masks_address,
         };
 
         // Must cull exactly like the prepass's opaque draw, since this pass depth-tests EQUAL.

@@ -3,6 +3,7 @@ import scene_types;
 import wind;
 import pbr;
 import meshlet_task;
+import light_clusters;
 
 struct VertexOutput
 {
@@ -151,6 +152,42 @@ float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float refe
     return sum * (1.0 / 9.0);
 }
 
+// Radiance from one punctual light, with KHR_lights_punctual's distance and cone falloff. Exactly zero beyond
+// `range` and outside the cone, which the clustered loop relies on.
+float3 shade_light(GpuLight punctual_light, float3 world_position, float3 shading_normal, float3 view_direction,
+                   float3 base_colour, float metallic, float roughness)
+{
+    float3 to_light = punctual_light.position - world_position;
+    float distance = length(to_light);
+    float3 light_dir = to_light / max(distance, 1e-6);
+
+    // KHR_lights_punctual's smooth window on top of inverse-square, reaching zero at `range`.
+    float distance_falloff = clamp(1.0 - pow(distance / max(punctual_light.range, 1e-4), 4.0), 0.0, 1.0);
+    distance_falloff = (distance_falloff * distance_falloff) / max(distance * distance, 1e-4);
+
+    float cone_falloff = 1.0;
+    if (punctual_light.type == LightType.spot) {
+        float cd = dot(normalize(punctual_light.direction), -light_dir);
+        cone_falloff = clamp(cd * punctual_light.spot_scale + punctual_light.spot_offset, 0.0, 1.0);
+        cone_falloff *= cone_falloff;
+    }
+
+    float3 radiance = punctual_light.colour * punctual_light.intensity * distance_falloff * cone_falloff;
+
+    return shade_punctual(shading_normal, view_direction, light_dir, radiance, base_colour, metallic, roughness);
+}
+
+// Black (no lights) through blue, green and yellow to red at 16 or more lights in the cluster.
+float3 cluster_heatmap_colour(uint light_count)
+{
+    if (light_count == 0) {
+        return float3(0.0);
+    }
+
+    const float t = saturate(float(light_count) / 16.0);
+    return saturate(float3(2.0 * t - 0.5, 1.5 - abs(4.0 * t - 2.0), 1.5 - 3.0 * t));
+}
+
 [shader("fragment")]
 OutputFS main_fs(VertexOutput input, uniform PC pc)
 {
@@ -256,29 +293,34 @@ var base_colour = base_sample.xyz *
             metallic, roughness) * shadow;
 
     float3 punctual_contribution = float3(0.0);
+    uint cluster_light_count = 0;
 
-    for (uint light_index = 0; light_index < pc.light_count; ++light_index) {
-        const var punctual_light = pc.lights[light_index];
+    if (ubo.clustered_lighting != 0) {
+        const float4 clip = mul(ubo.view_projection, float4(input.world_position, 1.0));
+        const uint mask_base = cluster_index(ubo, clip, view_z) * cluster_mask_words;
 
-        float3 to_light = punctual_light.position - input.world_position;
-        float distance = length(to_light);
-        float3 light_dir = to_light / max(distance, 1e-6);
+        for (uint word_index = 0; word_index * 32 < pc.light_count; ++word_index) {
+            const uint lane_word = pc.cluster_light_masks[mask_base + word_index];
+            cluster_light_count += countbits(lane_word);
 
-        // KHR_lights_punctual's smooth window on top of inverse-square, reaching zero at `range`.
-        float distance_falloff = clamp(1.0 - pow(distance / max(punctual_light.range, 1e-4), 4.0), 0.0, 1.0);
-        distance_falloff = (distance_falloff * distance_falloff) / max(distance * distance, 1e-4);
+            // The union over the wave keeps the loop uniform, so every lane walks the same lights and the light
+            // loads stay scalar. A light outside a lane's cluster is out of range there and contributes zero.
+            uint word = WaveActiveBitOr(lane_word);
 
-        float cone_falloff = 1.0;
-        if (punctual_light.type == LightType.spot) {
-            float cd = dot(normalize(punctual_light.direction), -light_dir);
-            cone_falloff = clamp(cd * punctual_light.spot_scale + punctual_light.spot_offset, 0.0, 1.0);
-            cone_falloff *= cone_falloff;
+            while (word != 0) {
+                const uint bit = firstbitlow(word);
+                word &= word - 1;
+
+                punctual_contribution += shade_light(pc.lights[word_index * 32 + bit], input.world_position,
+                                                     shading_normal, view_direction, base_colour, metallic,
+                                                     roughness);
+            }
         }
-
-        float3 radiance = punctual_light.colour * punctual_light.intensity * distance_falloff * cone_falloff;
-
-        punctual_contribution += shade_punctual(shading_normal, view_direction, light_dir, radiance, base_colour,
-                                                metallic, roughness);
+    } else {
+        for (uint light_index = 0; light_index < pc.light_count; ++light_index) {
+            punctual_contribution += shade_light(pc.lights[light_index], input.world_position, shading_normal,
+                                                 view_direction, base_colour, metallic, roughness);
+        }
     }
 
     float3 ambient = base_colour * ambient_occlusion * ubo.ambient_intensity;
@@ -287,6 +329,10 @@ var base_colour = base_sample.xyz *
                   material.emissive_strength;
 
     float3 shaded_colour = ambient + directional_contribution + punctual_contribution + emissive;
+
+    if (ubo.cluster_debug_heatmap != 0) {
+        shaded_colour = lerp(shaded_colour, cluster_heatmap_colour(cluster_light_count), 0.75);
+    }
 
     if (ubo.shadow_debug_cascade_tint != 0) {
         const float3 tints[5] = {

@@ -98,6 +98,17 @@ public struct Material {
     public float _pad2 = 0.0F;
 };
 
+// Clustered lighting grid: screen tiles in NDC, exponential depth slices. Mirrors cluster_grid_* in renderer.hxx.
+public static const uint cluster_grid_x = 16;
+public static const uint cluster_grid_y = 9;
+public static const uint cluster_grid_z = 24;
+public static const uint cluster_count = cluster_grid_x * cluster_grid_y * cluster_grid_z;
+
+// Each cluster stores a bitmask over the light buffer, one bit per light. Mirrors maximum_light_count in
+// renderer.hxx.
+public static const uint maximum_light_count = 256;
+public static const uint cluster_mask_words = maximum_light_count / 32;
+
 public enum class LightType : uint {
     point,
     spot,
@@ -167,6 +178,16 @@ public struct UBO {
 
     // 0 disables screen-space AO, 1 applies it at full strength.
     public float ao_intensity;
+
+    // Exponential depth slicing for the light clusters: slice = floor(log(view_z) * scale + bias).
+    public float cluster_z_scale;
+    public float cluster_z_bias;
+
+    // 0 shades every light per fragment; otherwise the forward pass reads PC::cluster_light_masks.
+    public uint clustered_lighting;
+
+    // Non-zero tints the forward pass by the number of lights in each fragment's cluster.
+    public uint cluster_debug_heatmap;
 };
 
 public struct PC
@@ -193,6 +214,10 @@ public struct PC
     public Ptr<float4> cull_planes;
     public uint cull_flags;
     public uint cull_padding;
+
+    // cluster_count * cluster_mask_words light bitmasks from light_cluster.slang; only read by the forward fragment
+    // shader when UBO::clustered_lighting is set.
+    public Ptr<uint> cluster_light_masks;
 };
 
 public struct ShadowPC

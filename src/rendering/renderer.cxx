@@ -703,6 +703,26 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         pipeline_infos.push_back(std::move(instanced));
     }
 
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/light_cluster.slang",
+                                    .entry_point = "main_cs",
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.light_cluster_pipeline",
+    }); // index 19: light_cluster
+
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
@@ -737,6 +757,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     shadow_mask_instanced_pipeline_ = *registered_pipelines[16];
     depth_prepass_instanced_pipeline_ = *registered_pipelines[17];
     depth_prepass_mask_instanced_pipeline_ = *registered_pipelines[18];
+    light_cluster_pipeline_ = *registered_pipelines[19];
 
     {
         auto light_icon_image = DecodedImage::load_from_file("assets/textures/light_bulb.png");
@@ -1039,6 +1060,22 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.lights_buffer = std::move(*lights_buffer);
 
+        // light_cluster.slang is the only writer.
+        auto cluster_light_masks = Buffer::create(
+                context_, BufferCreateInfo{
+                                  .size = sizeof(std::uint32_t) * cluster_count * cluster_mask_words,
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                  .memory = BufferMemory::device,
+                                  .debug_name = "renderer.frame_cluster_light_masks",
+                          });
+
+        if (!cluster_light_masks) {
+            return std::unexpected(make_device_error(cluster_light_masks.error()));
+        }
+
+        frame.cluster_light_mask_buffer = std::move(*cluster_light_masks);
+
         auto targets = create_frame_targets(frame_index, create_info.extent);
 
         if (!targets) {
@@ -1189,6 +1226,7 @@ auto Renderer::destroy() noexcept -> void {
 
     // The frames' image targets are Holders, destroyed by frames_.clear() below, before image_storage_.
     for (auto &frame: frames_) {
+        frame.cluster_light_mask_buffer.destroy();
         frame.lights_buffer.destroy();
         frame.frustum_planes_buffer.destroy();
         frame.visible_transform_buffer.destroy();
@@ -2546,6 +2584,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     auto const frustum_planes = extract_frustum_planes(view_projection);
 
+    // Cluster slices split [near, far] exponentially, so each slice is about as deep as it is wide on screen.
+    auto const cluster_near = std::max(matrices.near_clip, 1e-4F);
+    auto const cluster_far = std::max(matrices.far_clip, cluster_near * 2.0F);
+    auto const cluster_z_scale = static_cast<float>(cluster_grid_z) / std::log(cluster_far / cluster_near);
+    auto const cluster_z_bias = -std::log(cluster_near) * cluster_z_scale;
+
     UBO const ubo{
             .view_projection = view_projection,
             .view = view,
@@ -2598,6 +2642,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .time = matrices.time,
             .ambient_intensity = ambient_intensity_,
             .ao_intensity = ao_settings_.enabled ? ao_settings_.intensity : 0.0F,
+            .cluster_z_scale = cluster_z_scale,
+            .cluster_z_bias = cluster_z_bias,
+            .clustered_lighting = clustered_lighting_ ? 1U : 0U,
+            .cluster_debug_heatmap = clustered_lighting_ && cluster_debug_heatmap_ ? 1U : 0U,
     };
 
     if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {
@@ -2844,6 +2892,72 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
             frame.culled_readback_count = frame.indirect_command_count;
             frame.culled_readback_pending = true;
+        }
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool, end_query);
+    }
+#pragma endregion
+
+#pragma region LightClustering
+    {
+        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Light clustering", tracy::Color::Gold);
+
+        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::LightClustering);
+        constexpr auto start_query = stage * 2;
+        constexpr auto end_query = start_query + 1;
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
+                             start_query);
+
+        // With no lights the forward pass never reads the masks.
+        if (clustered_lighting_ && frame.light_count != 0) {
+            auto const light_cluster_pipeline = resolve_layout(pipeline_graph_, light_cluster_pipeline_);
+
+            if (light_cluster_pipeline == VK_NULL_HANDLE) {
+                clear_submissions();
+                return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+            }
+
+            bind_compute_node(pipeline_graph_, light_cluster_pipeline_, command_buffer);
+
+            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                     light_cluster_pipeline);
+
+            LightClusterPushConstants const cluster_pc{
+                    .ubo_address = ubos_[frame_index].device_address,
+                    .lights_address = frame.lights_buffer.device_address,
+                    .cluster_light_masks_address = frame.cluster_light_mask_buffer.device_address,
+                    .light_count = frame.light_count,
+            };
+
+            vkCmdPushConstants(command_buffer, light_cluster_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(cluster_pc),
+                               &cluster_pc);
+
+            vkCmdDispatch(command_buffer, (cluster_count + light_cluster_group_size - 1) / light_cluster_group_size,
+                          1, 1);
+
+            // The previous use of this frame slot's masks finished before its fence was waited on, so only the
+            // write-to-read edge needs a barrier.
+            VkBufferMemoryBarrier2 const masks_to_forward{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                    .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = frame.cluster_light_mask_buffer.buffer,
+                    .offset = 0,
+                    .size = VK_WHOLE_SIZE,
+            };
+
+            VkDependencyInfo const dependency_info{
+                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .bufferMemoryBarrierCount = 1,
+                    .pBufferMemoryBarriers = &masks_to_forward,
+            };
+
+            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
         }
 
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool, end_query);
@@ -3168,6 +3282,7 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .ubo_address = ubos_[frame_index].device_address,
                     .lights_address = frame.lights_buffer.device_address,
                     .light_count = frame.light_count,
+                    .cluster_light_masks_address = frame.cluster_light_mask_buffer.device_address,
                     .pipeline_statistics_query_pool = pipeline_stat_queries_[frame_index].query_pool,
                     .meshlet_culling = meshlet_culling_,
                     .opaque_pipeline = forward_pipeline_,
