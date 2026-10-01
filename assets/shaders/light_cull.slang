@@ -72,10 +72,12 @@ void main_cs(uint lane: SV_GroupIndex)
             visible = sphere_in_frustum(sphere);
         }
 
+        // Wave ops stay outside the branch so every lane contributes.
         const uint wave_exclusive = WavePrefixCountBits(visible);
+        const uint wave_total = WaveActiveCountBits(visible);
 
         if (lane_in_wave == 0) {
-            s_wave_totals[wave_id] = WaveActiveCountBits(visible);
+            s_wave_totals[wave_id] = wave_total;
         }
 
         GroupMemoryBarrierWithGroupSync();

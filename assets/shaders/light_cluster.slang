@@ -148,10 +148,12 @@ void main_cs(uint3 group_id: SV_GroupID, uint lane: SV_GroupIndex)
             }
         }
 
+        // Wave ops stay outside the branch so every lane contributes.
         const uint wave_exclusive = WavePrefixCountBits(in_tile);
+        const uint wave_total = WaveActiveCountBits(in_tile);
 
         if (lane_in_wave == 0) {
-            s_wave_totals[wave_id] = WaveActiveCountBits(in_tile);
+            s_wave_totals[wave_id] = wave_total;
         }
 
         GroupMemoryBarrierWithGroupSync();
