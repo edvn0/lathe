@@ -8,11 +8,16 @@
 #include <imgui.h>
 
 #include <ImGuizmo.h>
+#include <array>
 #include <bit>
 #include <filesystem>
 #include <implot.h>
 #include <unordered_map>
 #include <utility>
+
+// Font Awesome 6 icon ranges and the compressed solid font, both from ImGuiNotify (toast icons).
+#include "IconsFontAwesome6.h"
+#include "fa-solid-900.h"
 
 #include "core/error_describe.hxx"
 #include "core/human_readable_bytes.hxx"
@@ -466,6 +471,17 @@ namespace gui {
         if (std::filesystem::exists(font_path)) {
             auto const path_str = font_path.string();
             font = io.Fonts->AddFontFromFileTTF(path_str.c_str(), cfg.SizePixels, &cfg);
+
+            // Font Awesome glyphs for the toast icons, merged into the UI font. This backend builds a fixed atlas (no
+            // ImGuiBackendFlags_RendererHasTextures), so the glyph ranges must be given up front or they render as '?'.
+            static constexpr std::array<ImWchar, 3> icon_ranges{ICON_MIN_FA, ICON_MAX_16_FA, 0};
+            ImFontConfig icon_cfg{};
+            icon_cfg.MergeMode = true;
+            icon_cfg.PixelSnapH = true;
+            icon_cfg.GlyphMinAdvanceX = cfg.SizePixels * 2.0F / 3.0F;
+            static_cast<void>(io.Fonts->AddFontFromMemoryCompressedTTF(
+                    fa_solid_900_compressed_data, static_cast<int>(fa_solid_900_compressed_size),
+                    cfg.SizePixels * 2.0F / 3.0F, &icon_cfg, icon_ranges.data()));
         }
 
         io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
