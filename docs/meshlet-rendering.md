@@ -41,10 +41,13 @@ culling (`main_cs`) applies to both.
   primitive, building it late as a fallback). Aliased LODs alias the
   meshlets too. The synchronous `Renderer::load_model()` still finalizes
   on its caller's thread, like the rest of its CPU work.
-- **Terrain**: `TerrainSlotPool` builds one index-order topology for the
-  canonical chunk index buffer and shares its data range across every slot;
-  each slot has its own descriptor range whose bounds are recomputed in
-  `write()` whenever the slot's vertices are rewritten.
+- **Terrain**: each chunk is greedy-meshed (`greedy_merge_terrain_cells()`),
+  so its triangle count varies. `make_terrain_chunk()` builds the chunk's
+  index-order topology and bounds on the generation thread;
+  `TerrainSlotPool::write()` uploads them with the chunk's indices, repoints
+  the slot's mesh through `IMeshSink::update_submesh_geometry()` and retires
+  the slot's previous ranges. Slots start on a shared, unmerged placeholder
+  that is never drawn.
 
 ## Draws
 

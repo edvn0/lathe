@@ -37,26 +37,27 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
 
     if (!index_slice) {
         return std::unexpected(TerrainSlotPoolError{
-                .message = std::format("terrain_slot_pool: failed to allocate shared index buffer ({})",
+                .message = std::format("terrain_slot_pool: failed to allocate the placeholder index buffer ({})",
                                        describe(index_slice.error())),
         });
     }
 
-    // One index-order split shared by every slot; there are no positions yet, and the index order is already
-    // cache-optimized.
-    pool.meshlet_topology_ = build_meshlet_topology(std::span{canonical_indices}, terrain_chunk_vertex_count);
+    // Never rendered: slots are only drawn after write(), which replaces all of this. One copy serves every slot.
+    std::vector<CompressedModelVertex> const placeholder(terrain_chunk_vertex_count);
+    MeshletBuild placeholder_build{
+            .topology = build_meshlet_topology(std::span{canonical_indices}, terrain_chunk_vertex_count),
+            .meshlets = {},
+    };
+    placeholder_build.meshlets = compute_meshlet_bounds(placeholder_build.topology, placeholder);
 
-    auto meshlet_data = upload_meshlet_data(mesh_sink.geometry_arena(), command_buffer, pool.meshlet_topology_);
+    auto placeholder_meshlets = upload_meshlets(mesh_sink.geometry_arena(), command_buffer, placeholder_build);
 
-    if (pool.meshlet_topology_.meshlets.empty() || !meshlet_data) {
+    if (!placeholder_meshlets) {
         return std::unexpected(TerrainSlotPoolError{
-                .message = "terrain_slot_pool: failed to build/allocate the shared meshlet topology",
+                .message = std::format("terrain_slot_pool: failed to build/allocate the placeholder meshlets ({})",
+                                       describe(placeholder_meshlets.error())),
         });
     }
-
-    // Never rendered: slots are only drawn after write().
-    std::vector<CompressedModelVertex> const placeholder(terrain_chunk_vertex_count);
-    auto const placeholder_meshlets = compute_meshlet_bounds(pool.meshlet_topology_, placeholder);
 
     for (std::uint8_t lod = 0; lod < create_info.lod_levels; ++lod) {
         auto const [bounds_min, bounds_max] = slot_bounds(create_info, lod);
@@ -71,25 +72,10 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
                 });
             }
 
-            auto meshlet_slice =
-                    upload_meshlet_descriptors(mesh_sink.geometry_arena(), command_buffer, placeholder_meshlets);
-
-            if (!meshlet_slice) {
-                return std::unexpected(TerrainSlotPoolError{
-                        .message = std::format("terrain_slot_pool: failed to allocate meshlets (lod={}, slot={}): {}",
-                                               lod, slot, describe(meshlet_slice.error())),
-                });
-            }
-
             MeshGeometry const geometry{
                     .vertices = *vertex_slice,
                     .indices = *index_slice,
-                    .meshlets =
-                            MeshletSlice{
-                                    .descriptors = *meshlet_slice,
-                                    .data = *meshlet_data,
-                                    .meshlet_count = static_cast<std::uint32_t>(placeholder_meshlets.size()),
-                            },
+                    .meshlets = *placeholder_meshlets,
             };
 
             SubmeshCreateInfo submesh{
@@ -111,8 +97,10 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
             auto const slot_index = static_cast<std::uint32_t>(pool.slots_.size());
             pool.slots_.push_back(SlotRecord{
                     .mesh = *mesh,
-                    .vertex_bytes = vertex_slice->bytes,
-                    .meshlet_bytes = *meshlet_slice,
+                    .vertices = *vertex_slice,
+                    .indices = *index_slice,
+                    .meshlets = *placeholder_meshlets,
+                    .owns_geometry = false,
                     .lod = lod,
             });
             pool.free_by_lod_[lod].push_back(slot_index);
@@ -134,15 +122,17 @@ auto TerrainSlotPool::acquire(std::uint8_t lod) -> std::optional<TerrainSlotHand
 }
 
 auto TerrainSlotPool::write(IMeshSink &mesh_sink, VkCommandBuffer command_buffer, TerrainSlotHandle handle,
-                            std::span<CompressedModelVertex const> vertices) -> bool {
+                            TerrainChunkResult const &chunk) -> bool {
 
-    if (!handle.valid() || handle.index >= slots_.size() ||
-        vertices.size() != terrain_chunk_vertex_count) {
+    if (!handle.valid() || handle.index >= slots_.size() || chunk.vertices.size() != terrain_chunk_vertex_count ||
+        chunk.indices.empty() || chunk.meshlets.meshlets.empty()) {
         return false;
     }
 
-    auto const &slot = slots_[handle.index];
-    auto written = mesh_sink.geometry_arena().rewrite_slice(command_buffer, slot.vertex_bytes, std::as_bytes(vertices));
+    auto &slot = slots_[handle.index];
+    auto &arena = mesh_sink.geometry_arena();
+
+    auto written = arena.rewrite_slice(command_buffer, slot.vertices.bytes, std::as_bytes(std::span{chunk.vertices}));
 
     if (!written) {
         error("terrain_slot_pool: rewrite_slice failed for slot {} (lod={}): {}", handle.index, slot.lod,
@@ -150,15 +140,49 @@ auto TerrainSlotPool::write(IMeshSink &mesh_sink, VkCommandBuffer command_buffer
         return false;
     }
 
-    auto const meshlets = compute_meshlet_bounds(meshlet_topology_, vertices);
-    auto meshlets_written = mesh_sink.geometry_arena().rewrite_slice(command_buffer, slot.meshlet_bytes,
-                                                                     std::as_bytes(std::span{meshlets}));
+    auto indices = arena.allocate_indices(command_buffer, std::span{chunk.indices});
 
-    if (!meshlets_written) {
-        error("terrain_slot_pool: meshlet rewrite failed for slot {} (lod={}): {}", handle.index, slot.lod,
-              describe(meshlets_written.error()));
+    if (!indices) {
+        error("terrain_slot_pool: index allocation failed for slot {} (lod={}): {}", handle.index, slot.lod,
+              describe(indices.error()));
         return false;
     }
+
+    auto meshlets = upload_meshlets(arena, command_buffer, chunk.meshlets);
+
+    if (!meshlets) {
+        error("terrain_slot_pool: meshlet upload failed for slot {} (lod={}): {}", handle.index, slot.lod,
+              describe(meshlets.error()));
+        arena.retire(indices->bytes);
+        return false;
+    }
+
+    MeshGeometry const geometry{
+            .vertices = slot.vertices,
+            .indices = *indices,
+            .meshlets = *meshlets,
+    };
+
+    if (auto updated = mesh_sink.update_submesh_geometry(slot.mesh, 0, geometry); !updated) {
+        error("terrain_slot_pool: failed to repoint slot {} (lod={}): {}", handle.index, slot.lod,
+              describe(updated.error()));
+        arena.retire(indices->bytes);
+        arena.retire(meshlets->descriptors);
+        arena.retire(meshlets->data);
+        return false;
+    }
+
+    // The slot sat in retirement for frames_in_flight frames before acquire(), and retire() defers again, so no
+    // frame still reads these.
+    if (slot.owns_geometry) {
+        arena.retire(slot.indices.bytes);
+        arena.retire(slot.meshlets.descriptors);
+        arena.retire(slot.meshlets.data);
+    }
+
+    slot.indices = *indices;
+    slot.meshlets = *meshlets;
+    slot.owns_geometry = true;
 
     return true;
 }

@@ -40,6 +40,11 @@ struct TerrainParams {
     // (per-patch bounds). fbm() is roughly [-1,1], so +/- amplitude works, plus the tallest hill.
     float height_range_min = 0.0F;
     float height_range_max = 0.0F;
+
+    // Streamed chunks greedy-merge cells while every merged sample stays within this many cell sizes (vertically) of
+    // the merged quad's corner plane. Scaling by cell size keeps the on-screen error roughly constant, so coarse,
+    // distant LODs merge far more. 0 merges only exactly planar runs. Rendering only: colliders keep every sample.
+    float greedy_tolerance = 0.1F;
 };
 
 // One permutation table shared across samples. Reads are const, so it's safe to share between threads.
