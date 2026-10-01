@@ -3,7 +3,7 @@
 #include "core/forward.hxx"
 #include "physics/physics.hxx"
 
-#include <entt/entity/snapshot.hpp>
+// The umbrella header; it includes entity/snapshot.hpp, which can't be included on its own first.
 #include <entt/entt.hpp>
 
 #include <glm/mat4x4.hpp>

@@ -115,6 +115,15 @@ per component type. Stored as **sections**,
 component-wise (all point lights together, ...), so loading is a few tight
 loops rather than a per-entity switch.
 
+Instanced models' per-instance transforms (`instanced_models` v2) are
+stored column-wise, one float column per field, each column byte-shuffled
+(every value's first byte, then every second byte, ...) so zstd sees long
+runs of shared sign/exponent bytes. When every instance in a component is a
+plain translation-rotation-scale they are stored as those 10 floats,
+recomposing to the original matrix within float rounding; otherwise (shear,
+projection) as the 16 matrix floats, exactly. On a 14,892-blade grass field
+that is 288 KiB compressed, against 464 KiB for v1's interleaved matrices.
+
 Saved components: Transform, Parent, Model, MaterialOverride (whole-model
 and per-slot; slots name the model's material by index), InstancedModel,
 PointLight, SpotLight, RigidBody (except heightfields, which terrain
@@ -155,6 +164,7 @@ so files converge on the newest layout.
 | `TEXR` | 1 | 1 |
 | `SCEN` framing | 1 | 1 |
 | `SCEN` sections | 1 | 1 |
+| `SCEN` `instanced_models` section | 2 | 1 |
 
 ## APIs
 
