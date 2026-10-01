@@ -206,9 +206,17 @@ struct UBO {
 
     // 0 disables screen-space AO, 1 applies it at full strength. Baked occlusion always applies.
     float ao_intensity = 1.0F;
+
+    // Exponential depth slicing for the light clusters: slice = floor(log(view_z) * scale + bias).
+    float cluster_z_scale = 1.0F;
+    float cluster_z_bias = 0.0F;
+
+    // 0 shades every light per fragment; otherwise the forward pass reads the cluster light masks.
+    std::uint32_t clustered_lighting = 1;
+    std::uint32_t cluster_debug_heatmap = 0;
 };
 
-static_assert(sizeof(UBO) == 716, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 732, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 288);
 static_assert(offsetof(UBO, cascade_atlas_offset_u) == 592);
@@ -541,6 +549,15 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto meshlet_culling() const noexcept -> bool { return meshlet_culling_; }
     auto set_meshlet_culling(bool enabled) noexcept -> void { meshlet_culling_ = enabled; }
 
+    // Punctual lights binned into view-space clusters on the GPU, so each fragment only shades the lights that can
+    // reach it. Off shades every light per fragment.
+    [[nodiscard]] auto clustered_lighting() const noexcept -> bool { return clustered_lighting_; }
+    auto set_clustered_lighting(bool enabled) noexcept -> void { clustered_lighting_ = enabled; }
+
+    // Tints the scene by the number of lights in each fragment's cluster.
+    [[nodiscard]] auto cluster_debug_heatmap() const noexcept -> bool { return cluster_debug_heatmap_; }
+    auto set_cluster_debug_heatmap(bool enabled) noexcept -> void { cluster_debug_heatmap_ = enabled; }
+
     // Captures the viewport target (the scene alone) or the whole composited window. The viewport is only there in the
     // editor; fullscreen play falls back to the window.
     auto request_screenshot(ScreenshotSource source) noexcept -> void;
@@ -609,7 +626,19 @@ private:
     static_assert(std::is_trivially_copyable_v<GpuLight>);
     static_assert(sizeof(GpuLight) == 64);
 
-    static constexpr std::uint32_t maximum_light_count = 256;
+    // Point and spot lights together. Each frame in flight keeps sizeof(GpuLight) per light of host-visible memory,
+    // plus 20 bytes for light_cull.slang's visible list.
+    static constexpr std::uint32_t maximum_light_count = 65'536;
+
+    // Mirror the cluster constants in scene_types.slang: NDC tiles by exponential depth slices, each cluster a
+    // sorted list of up to cluster_light_capacity light indices. A cluster touching more lights drops the highest
+    // indices; see "Limits" in docs/clustered-lighting.md.
+    static constexpr std::uint32_t cluster_grid_x = 16;
+    static constexpr std::uint32_t cluster_grid_y = 9;
+    static constexpr std::uint32_t cluster_grid_z = 24;
+    static constexpr std::uint32_t cluster_tile_count = cluster_grid_x * cluster_grid_y;
+    static constexpr std::uint32_t cluster_count = cluster_tile_count * cluster_grid_z;
+    static constexpr std::uint32_t cluster_light_capacity = 256;
 
     // Camera frustum plus one per shadow cascade, 6 planes each.
     static constexpr std::uint32_t cull_plane_count = 6 * (1 + shadow_cascade_count);
@@ -655,6 +684,14 @@ private:
         // Punctual lights, maximum_light_count capacity. light_count slots are populated.
         Buffer lights_buffer{};
         std::uint32_t light_count = 0;
+
+        // light_cull.slang's output: maximum_light_count view-space spheres, then as many light indices, then the
+        // visible count.
+        Buffer visible_lights_buffer{};
+
+        // light_cluster.slang's output, read by the forward fragment shader: cluster_count counts, then
+        // cluster_count * cluster_light_capacity light indices.
+        Buffer cluster_lights_buffer{};
 
         // Handed to scene overlays as OverlayRecordContext::view_projection.
         glm::mat4 view_projection{1.0F};
@@ -968,6 +1005,8 @@ private:
     PipelineNodeHandle bloom_upsample_pipeline_;
     PipelineNodeHandle gtao_pipeline_;
     PipelineNodeHandle gtao_denoise_pipeline_;
+    PipelineNodeHandle light_cull_pipeline_;
+    PipelineNodeHandle light_cluster_pipeline_;
     ShaderChangeQueue shader_change_queue_;
 
     BloomSettings bloom_settings_;
@@ -980,6 +1019,8 @@ private:
     OverlayRegistry overlays_;
     OverlayRegistration light_icon_overlay_;
     bool meshlet_culling_ = true;
+    bool clustered_lighting_ = true;
+    bool cluster_debug_heatmap_ = false;
     float light_icon_world_size_ = 0.5F;
 
     // Shared across frames in flight so unchanged tiles persist.

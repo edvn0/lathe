@@ -139,6 +139,8 @@ auto benchmark_stage_id(RenderStage stage) noexcept -> std::string_view {
             return "full_frame";
         case Culling:
             return "gpu_culling";
+        case LightClustering:
+            return "light_clustering";
         case ShadowPass:
             return "shadow_pass";
         case DepthPrepass:

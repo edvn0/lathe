@@ -310,6 +310,20 @@ add_shader_push_constant(
     GtaoDenoisePushConstants
 )
 
+add_shader_push_constant(
+    light_cull.slang
+    main_cs
+    compute
+    LightCullPushConstants
+)
+
+add_shader_push_constant(
+    light_cluster.slang
+    main_cs
+    compute
+    LightClusterPushConstants
+)
+
 set(
     shader_push_constants_header
     "${shader_reflect_generated_dir}/include/shader_push_constants.hxx"

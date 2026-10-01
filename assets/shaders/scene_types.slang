@@ -98,6 +98,17 @@ public struct Material {
     public float _pad2 = 0.0F;
 };
 
+// Clustered lighting grid: screen tiles in NDC, exponential depth slices. Mirrors cluster_grid_* in renderer.hxx.
+public static const uint cluster_grid_x = 16;
+public static const uint cluster_grid_y = 9;
+public static const uint cluster_grid_z = 24;
+public static const uint cluster_tile_count = cluster_grid_x * cluster_grid_y;
+public static const uint cluster_count = cluster_tile_count * cluster_grid_z;
+
+// Light indices stored per cluster; a cluster past this keeps its lowest light indices. Mirrors
+// cluster_light_capacity in renderer.hxx.
+public static const uint cluster_light_capacity = 256;
+
 public enum class LightType : uint {
     point,
     spot,
@@ -167,6 +178,16 @@ public struct UBO {
 
     // 0 disables screen-space AO, 1 applies it at full strength.
     public float ao_intensity;
+
+    // Exponential depth slicing for the light clusters: slice = floor(log(view_z) * scale + bias).
+    public float cluster_z_scale;
+    public float cluster_z_bias;
+
+    // 0 shades every light per fragment; otherwise the forward pass reads PC::cluster_lights.
+    public uint clustered_lighting;
+
+    // Non-zero tints the forward pass by the number of lights in each fragment's cluster.
+    public uint cluster_debug_heatmap;
 };
 
 public struct PC
@@ -193,6 +214,11 @@ public struct PC
     public Ptr<float4> cull_planes;
     public uint cull_flags;
     public uint cull_padding;
+
+    // Per-cluster light lists from light_cluster.slang: cluster_count counts, then cluster_count *
+    // cluster_light_capacity light indices. Only read by the forward fragment shader when UBO::clustered_lighting is
+    // set.
+    public Ptr<uint> cluster_lights;
 };
 
 public struct ShadowPC
