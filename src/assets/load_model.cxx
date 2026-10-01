@@ -91,6 +91,22 @@ namespace {
 
         if (node.mesh_index != invalid_mesh && node.mesh_index < cpu_data.meshes.size()) {
             for (auto const &primitive: cpu_data.meshes[node.mesh_index].primitives) {
+                if (primitive.vertices.empty() && primitive.bounds.has_value()) {
+                    auto const &[local_min, local_max] = *primitive.bounds;
+
+                    for (std::uint32_t corner = 0; corner < 8; ++corner) {
+                        glm::vec3 const local{(corner & 1U) != 0 ? local_max.x : local_min.x,
+                                              (corner & 2U) != 0 ? local_max.y : local_min.y,
+                                              (corner & 4U) != 0 ? local_max.z : local_min.z};
+                        auto const model_space_position = glm::vec3{local_to_model * glm::vec4{local, 1.0F}};
+
+                        bounds_min = glm::min(bounds_min, model_space_position);
+                        bounds_max = glm::max(bounds_max, model_space_position);
+                    }
+
+                    continue;
+                }
+
                 for (auto const &vertex: primitive.vertices) {
                     auto const model_space_position = glm::vec3{local_to_model * glm::vec4{vertex.position, 1.0F}};
 
@@ -122,6 +138,10 @@ namespace {
     }
 
     auto compute_model_bounds(ModelCpuData const &cpu_data) -> std::pair<glm::vec3, glm::vec3> {
+        if (cpu_data.bounds.has_value()) {
+            return *cpu_data.bounds;
+        }
+
         auto bounds_min = glm::vec3{std::numeric_limits<float>::max()};
         auto bounds_max = glm::vec3{std::numeric_limits<float>::lowest()};
 
@@ -1023,12 +1043,20 @@ auto start_model_gpu_upload(ModelCpuData cpu_data, ImageStorage &image_storage, 
         auto const role = texture_role_for_slot(source.slot);
         auto const fallback = default_fallback_for_slot(image_storage, source.slot);
 
-        auto const handle =
-                source.path.empty()
-                        ? texture_streamer.request_from_memory(image_storage, source.encoded, role, source.cache_key,
-                                                               fallback, source.debug_name, upload.cpu_data.profile)
-                        : texture_streamer.request(image_storage, source.path, role, fallback, source.debug_name,
-                                                   upload.cpu_data.profile);
+        auto const handle = [&] {
+            if (source.cooked) {
+                return texture_streamer.request_cooked(image_storage, source.cooked, source.cache_key, fallback,
+                                                       source.debug_name, upload.cpu_data.profile);
+            }
+
+            if (source.path.empty()) {
+                return texture_streamer.request_from_memory(image_storage, source.encoded, role, source.cache_key,
+                                                            fallback, source.debug_name, upload.cpu_data.profile);
+            }
+
+            return texture_streamer.request(image_storage, source.path, role, fallback, source.debug_name,
+                                            upload.cpu_data.profile);
+        }();
 
         upload.image_handles.push_back(handle);
     }
@@ -1202,7 +1230,9 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                 }
 
                 auto const [primitive_bounds_min, primitive_bounds_max] =
-                        compute_primitive_bounds(std::span<ModelVertex const>{cpu_primitive.vertices});
+                        cpu_primitive.vertices.empty() && cpu_primitive.bounds.has_value()
+                                ? *cpu_primitive.bounds
+                                : compute_primitive_bounds(std::span<ModelVertex const>{cpu_primitive.vertices});
 
                 upload.meshes[upload.mesh_cursor].primitives.push_back(ModelPrimitive{
                         .lods = lods,

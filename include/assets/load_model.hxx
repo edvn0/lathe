@@ -11,6 +11,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <future>
 #include <memory>
 #include <optional>
@@ -26,6 +27,7 @@
 #include "assets/material.hxx"
 #include "assets/meshlet.hxx"
 #include "assets/model_load_profile.hxx"
+#include "gpu/compressed_texture.hxx"
 #include "gpu/model_vertex.hxx"
 #include "gpu/sampler.hxx"
 #include "assets/texture_streamer.hxx"
@@ -109,12 +111,18 @@ enum class ModelTextureSlot : std::uint8_t {
     emissive,
 };
 
-// An image not yet decoded or uploaded. Exactly one of `path` (external file, streamed from disk) and
-// `encoded` (embedded in the glTF) is set.
+// Produces an already block-compressed texture, e.g. a TEXR chunk read from an asset pack. Runs on
+// thread_pool(), so it must be thread-safe and must not block on the pool.
+using CookedTextureLoader = std::function<std::expected<CompressedTexture, TexturePipelineError>()>;
+
+// An image not yet decoded or uploaded. Exactly one of `path` (external file, streamed from disk), `encoded`
+// (embedded in the glTF) and `cooked` (pre-compressed, skips the texture pipeline) is set.
 struct ModelCpuImageSource {
     std::filesystem::path path;
     std::vector<std::byte> encoded;
-    std::string cache_key; // only meaningful when `encoded` is populated
+    CookedTextureLoader cooked;
+    // Identifies the image for de-duplication: required with `encoded` and `cooked`, ignored with `path`.
+    std::string cache_key;
     ModelTextureSlot slot = ModelTextureSlot::base_colour;
     std::string debug_name;
 };
@@ -153,6 +161,10 @@ struct ModelCpuPrimitive {
     std::vector<CompressedModelVertex> compressed_vertices;
     std::array<std::optional<MeshletBuild>, lod_count> meshlets{};
 
+    // Local-space AABB. Set by producers that don't keep `vertices` (cooked assets only carry
+    // compressed_vertices); otherwise computed from `vertices`.
+    std::optional<std::pair<glm::vec3, glm::vec3>> bounds;
+
     // Whether the glTF primitive had a TANGENT accessor. Only used between extract_primitive_cpu() and
     // finalize_primitive_cpu().
     bool has_tangents = false;
@@ -169,6 +181,9 @@ struct ModelCpuData {
     std::vector<ModelNode> nodes;
     std::vector<std::uint32_t> scene_roots;
     std::vector<ModelCpuLight> lights;
+
+    // Model-space AABB over every vertex, for producers without `vertices`; computed when unset.
+    std::optional<std::pair<glm::vec3, glm::vec3>> bounds;
 
     // Shared by the CPU parse, GPU upload and texture jobs so the whole load's timing ends up in one place.
     std::shared_ptr<ModelLoadProfile> profile;

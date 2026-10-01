@@ -35,5 +35,5 @@ FormatStyle: file
 CheckOptions:
   # Results are discarded deliberately with static_cast<void>(...).
   bugprone-unused-return-value.AllowCastToVoid: true
-  # Mirror `uint` fields in the shaders.
-  performance-enum-size.EnumIgnoreList: 'AlphaMode;GpuLightType'
+  # Mirror `uint` fields in the shaders, or are stored at a fixed width in .lbf files.
+  performance-enum-size.EnumIgnoreList: 'AlphaMode;GpuLightType;LbfFileKind;SceneEntityFlags'

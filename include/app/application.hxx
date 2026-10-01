@@ -13,6 +13,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -28,6 +31,7 @@
 #include "assets/shader_hot_reload_watcher.hxx"
 #include "rendering/terminal_widget.hxx"
 #include "terrain/terrain_world.hxx"
+#include "serialisation/scene_serialisation.hxx"
 
 struct ScrollingBuffer {
     std::int32_t max_size;
@@ -132,6 +136,9 @@ struct Application {
     // Inspector name field: the entity its text belongs to, and whether it holds an uncommitted edit.
     entt::entity inspector_name_entity = entt::null;
     std::array<char, 128> inspector_name_buffer{};
+
+    // The Save As / unsaved-changes path field.
+    std::array<char, 512> save_as_buffer{};
     ImGuizmo::OPERATION gizmo_operation = ImGuizmo::TRANSLATE;
     ImGuizmo::MODE gizmo_mode = ImGuizmo::WORLD;
 
@@ -147,6 +154,10 @@ struct Application {
     float light_elevation_degrees = 55.0F;
 
     bool mouse_dragging = false;
+
+    // Scene file modals, opened from outside the ImGui frame (shortcuts, drops) on the next one.
+    bool unsaved_changes_popup_requested = false;
+    bool save_as_popup_requested = false;
 
     double last_mouse_x = 0.0;
     double last_mouse_y = 0.0;
@@ -179,6 +190,48 @@ struct Application {
     // Points `entity`'s Model at `model`, taking over one reference the caller holds on `model` and releasing the
     // entity's reference on its previous model, if it owned one.
     auto set_entity_model(entt::registry &registry, entt::entity entity, ModelHandle model) -> void;
+
+    // ---- Scene files (.lbf); see scene_files.cxx.
+
+    // The file the editor scene was last opened from or saved to; empty while untitled.
+    std::filesystem::path scene_path;
+
+    // scene_fingerprint() of the editor scene at the last open/save/populate; differs once the scene is edited.
+    std::uint64_t scene_clean_fingerprint = 0;
+
+    // The file the scene was opened from, kept so a save copies unchanged cooked assets instead of re-cooking.
+    std::shared_ptr<AssetPack const> scene_pack;
+
+    std::optional<SceneSaveJob> scene_save_job;
+    std::optional<SceneLoadJob> scene_load_job;
+
+    // Opened once the running save finishes (the "Save and open" choice).
+    std::optional<std::filesystem::path> open_after_save;
+
+    // A file waiting on the unsaved-changes prompt.
+    std::optional<std::filesystem::path> pending_scene_open;
+
+    gui::FileBrowser scene_browser;
+    std::string scene_status;
+
+    [[nodiscard]] auto editor_scene_fingerprint() -> std::uint64_t;
+    [[nodiscard]] auto editor_scene_dirty() -> bool;
+    auto mark_editor_scene_clean() -> void;
+
+    // Opens `path`, first asking about unsaved changes if there are any.
+    auto request_open_scene(std::filesystem::path path) -> void;
+    auto start_open_scene(std::filesystem::path path) -> void;
+    // An empty path asks for one.
+    auto start_save_scene(std::filesystem::path path) -> void;
+
+    // Steps the background save/load. Called from update().
+    auto update_scene_jobs() -> void;
+
+    // OS drag-and-drop onto the window: .lbf opens the scene, .gltf/.glb spawns the model.
+    auto on_files_dropped(std::span<std::filesystem::path const> paths) -> void;
+
+    // The "Scene" panel, the unsaved-changes and save-as modals, and the open-scene browser.
+    auto draw_scene_file_ui() -> void;
 
     // State of the "New Material" popup, kept across frames.
     MaterialCreateInfo new_material_info{};

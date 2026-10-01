@@ -7,8 +7,8 @@
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
 
-auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback,
-                            std::string debug_name) -> ModelHandle {
+auto ModelStreamer::reserve(IModelSink &sink, std::filesystem::path const &source_path, ModelHandle fallback,
+                            std::string_view debug_name) -> Reservation {
     std::error_code canonicalize_error;
     auto const canonical_path = std::filesystem::weakly_canonical(source_path, canonicalize_error);
     auto const &cache_key_path = canonicalize_error ? source_path : canonical_path;
@@ -17,7 +17,7 @@ auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path,
     if (auto it = path_cache_.find(path_hash); it != path_cache_.end()) {
         debug("model_streamer: '{}' already loaded, reusing its model handle", debug_name);
         sink.retain_model(it->second);
-        return it->second;
+        return Reservation{.handle = it->second, .path_hash = path_hash, .final = true};
     }
 
     auto pending_handle = sink.create_pending_model(fallback);
@@ -26,25 +26,59 @@ auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path,
         warn("model_streamer: could not reserve a slot for '{}', staying on its fallback model", debug_name);
         // Every returned handle carries a reference for the caller.
         sink.retain_model(fallback);
-        return fallback;
+        return Reservation{.handle = fallback, .path_hash = path_hash, .final = true};
     }
 
     // The streamer's own reference, dropped once the request installs or fails.
     sink.retain_model(*pending_handle);
 
+    return Reservation{.handle = *pending_handle, .path_hash = path_hash};
+}
+
+auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback,
+                            std::string debug_name) -> ModelHandle {
+    auto const reservation = reserve(sink, source_path, fallback, debug_name);
+
+    if (reservation.final) {
+        return reservation.handle;
+    }
+
     auto profile = std::make_shared<ModelLoadProfile>();
-    auto future = load_model_cpu_async(std::move(source_path), sink.sampler_storage(), profile);
+    auto future = load_model_cpu_async(source_path, sink.sampler_storage(), profile);
 
     pending_.push_back(PendingRequest{
-            .handle = *pending_handle,
+            .handle = reservation.handle,
             .debug_name = std::move(debug_name),
             .future = std::move(future),
             .profile = std::move(profile),
             .requested_at = std::chrono::steady_clock::now(),
-            .path_hash = path_hash,
+            .path_hash = reservation.path_hash,
+            .source_path = std::move(source_path),
     });
 
-    return *pending_handle;
+    return reservation.handle;
+}
+
+auto ModelStreamer::request_prepared(IModelSink &sink, std::future<std::expected<ModelCpuData, ModelLoadError>> cpu_data,
+                                     std::filesystem::path source_path, ModelHandle fallback, std::string debug_name)
+        -> ModelHandle {
+    auto const reservation = reserve(sink, source_path, fallback, debug_name);
+
+    if (reservation.final) {
+        return reservation.handle;
+    }
+
+    pending_.push_back(PendingRequest{
+            .handle = reservation.handle,
+            .debug_name = std::move(debug_name),
+            .future = std::move(cpu_data),
+            .requested_at = std::chrono::steady_clock::now(),
+            .path_hash = reservation.path_hash,
+            .source_path = std::move(source_path),
+            .prepared = true,
+    });
+
+    return reservation.handle;
 }
 
 namespace {
@@ -73,7 +107,12 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                     return true;
                 }
 
-                request.finalization = start_primitive_finalization(std::move(*cpu_data));
+                if (request.prepared) {
+                    request.upload = start_model_gpu_upload(std::move(*cpu_data), sink.image_storage(),
+                                                            sink.texture_streamer());
+                } else {
+                    request.finalization = start_primitive_finalization(std::move(*cpu_data));
+                }
             }
 
             if (!request.upload.has_value()) {
@@ -117,6 +156,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             request.installed = true;
             path_cache_[request.path_hash] = request.handle;
             sink.register_model_name(request.handle, request.debug_name);
+            sink.register_model_source(request.handle, request.source_path);
 
             // Last, since this destroys the model if every caller already dropped it.
             sink.release_model(request.handle);
