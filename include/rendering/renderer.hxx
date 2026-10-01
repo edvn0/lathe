@@ -365,6 +365,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto destroy_mesh(MeshHandle handle) -> std::expected<void, RendererError>;
 
     [[nodiscard]]
+    auto update_submesh_geometry(MeshHandle mesh, std::uint32_t submesh_index, MeshGeometry const &geometry)
+            -> std::expected<void, RendererError> override;
+
+    [[nodiscard]]
     auto submit_mesh(MeshHandle mesh, glm::mat4 const &transform, MaterialHandle material_override = {})
             -> std::expected<void, RendererError> override;
 

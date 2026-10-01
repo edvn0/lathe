@@ -1938,6 +1938,37 @@ auto Renderer::request_texture(std::filesystem::path source_path, TextureRole ro
     return handle;
 }
 
+namespace {
+
+    [[nodiscard]] auto validate_submesh_lods(std::array<MeshGeometry, lod_count> const &lods)
+            -> std::expected<void, RendererError> {
+        auto const &lod0 = lods[0];
+
+        if (!lod0.vertices.bytes.valid() || !lod0.indices.bytes.valid() || lod0.vertices.vertex_count == 0 ||
+            lod0.indices.index_count == 0) {
+            return std::unexpected(make_error(RendererErrorType::invalid_argument));
+        }
+
+        // Every LOD is drawn through task/mesh shaders and needs meshlets.
+        if (!std::ranges::all_of(lods, [](MeshGeometry const &lod) { return lod.meshlets.valid(); })) {
+            return std::unexpected(make_error(RendererErrorType::invalid_argument));
+        }
+
+        auto stride = index_stride(lod0.indices.index_type);
+
+        if (!stride) {
+            return std::unexpected(stride.error());
+        }
+
+        if (lod0.indices.bytes.offset % *stride != 0) {
+            return std::unexpected(make_error(RendererErrorType::invalid_argument));
+        }
+
+        return {};
+    }
+
+} // namespace
+
 auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<MeshHandle, RendererError> {
     if (!initialized_ || create_info.submeshes.empty()) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
@@ -1951,30 +1982,12 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
     submeshes.reserve(create_info.submeshes.size());
 
     for (auto const &submesh_info: create_info.submeshes) {
-        auto const &lod0 = submesh_info.lods[0];
-
-        if (!lod0.vertices.bytes.valid() || !lod0.indices.bytes.valid() || lod0.vertices.vertex_count == 0 ||
-            lod0.indices.index_count == 0) {
-            return std::unexpected(make_error(RendererErrorType::invalid_argument));
-        }
-
-        // Every LOD is drawn through task/mesh shaders and needs meshlets.
-        if (!std::ranges::all_of(submesh_info.lods, [](MeshGeometry const &lod) { return lod.meshlets.valid(); })) {
-            return std::unexpected(make_error(RendererErrorType::invalid_argument));
+        if (auto valid = validate_submesh_lods(submesh_info.lods); !valid) {
+            return std::unexpected(valid.error());
         }
 
         if (material_storage_.get(submesh_info.material) == nullptr) {
             return std::unexpected(make_error(RendererErrorType::invalid_material));
-        }
-
-        auto stride = index_stride(lod0.indices.index_type);
-
-        if (!stride) {
-            return std::unexpected(stride.error());
-        }
-
-        if (lod0.indices.bytes.offset % *stride != 0) {
-            return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
 
         submeshes.push_back(Submesh{
@@ -2040,6 +2053,31 @@ auto Renderer::destroy_mesh(MeshHandle handle) -> std::expected<void, RendererEr
     if (!result) {
         return std::unexpected(make_error(RendererErrorType::invalid_mesh));
     }
+
+    mark_shadow_casters_dirty();
+    return {};
+}
+
+auto Renderer::update_submesh_geometry(MeshHandle mesh, std::uint32_t submesh_index, MeshGeometry const &geometry)
+        -> std::expected<void, RendererError> {
+    auto *slot = mesh_storage_.get(mesh);
+
+    if (slot == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+    }
+
+    if (submesh_index >= slot->submeshes.size()) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    std::array<MeshGeometry, lod_count> lods{};
+    lods.fill(geometry);
+
+    if (auto valid = validate_submesh_lods(lods); !valid) {
+        return std::unexpected(valid.error());
+    }
+
+    slot->submeshes[submesh_index].lods = lods;
 
     mark_shadow_casters_dirty();
     return {};

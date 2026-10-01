@@ -45,9 +45,11 @@ struct TerrainSlotPoolCreateInfo {
 // terrain_chunk_vertex_count vertices, so streaming a chunk in rewrites an existing slot's vertex range
 // instead of allocating.
 //
-// A slot's local AABB depends only on its LOD (fixed height range, fixed span), so it is set once.
+// Greedy meshing gives every chunk its own triangle count, so each write() allocates the chunk's index and
+// meshlet ranges and retires the slot's previous ones. Until its first write a slot points at a shared,
+// unmerged placeholder (terrain_chunk_indices()) that is never retired.
 //
-// The index slice (terrain_chunk_indices()) is allocated once and shared by every slot.
+// A slot's local AABB depends only on its LOD (fixed height range, fixed span), so it is set once.
 class TerrainSlotPool {
 public:
     TerrainSlotPool() = default;
@@ -60,9 +62,10 @@ public:
     // leaves a hole in the terrain.
     [[nodiscard]] auto acquire(std::uint8_t lod) -> std::optional<TerrainSlotHandle>;
 
-    // Overwrites `handle`'s vertex range with `vertices` (exactly terrain_chunk_vertex_count entries).
+    // Overwrites `handle`'s vertex range with `chunk.vertices` (exactly terrain_chunk_vertex_count entries) and
+    // points the slot's mesh at freshly uploaded `chunk.indices` and `chunk.meshlets`.
     [[nodiscard]] auto write(IMeshSink &mesh_sink, VkCommandBuffer command_buffer, TerrainSlotHandle handle,
-                             std::span<CompressedModelVertex const> vertices) -> bool;
+                             TerrainChunkResult const &chunk) -> bool;
 
     // Frees `handle` after frames_in_flight tick_retirement() calls, once the GPU is done reading it.
     auto release_deferred(TerrainSlotHandle handle) -> void;
@@ -78,10 +81,13 @@ public:
 private:
     struct SlotRecord {
         MeshHandle mesh{};
-        GeometrySlice vertex_bytes{};
+        VertexSlice vertices{};
 
-        // Per-slot meshlet bounds; the topology is shared, but bounds depend on the heights.
-        GeometrySlice meshlet_bytes{};
+        // The placeholder's until the first write(), then owned by this slot.
+        IndexSlice indices{};
+        MeshletSlice meshlets{};
+        bool owns_geometry = false;
+
         std::uint8_t lod = 0;
     };
 
@@ -94,6 +100,4 @@ private:
     std::vector<std::vector<std::uint32_t>> free_by_lod_{}; // indices into slots_, per LOD
     std::vector<RetiringSlot> retiring_{};
     std::uint32_t slots_per_lod_ = 0;
-
-    MeshletTopology meshlet_topology_{};
 };

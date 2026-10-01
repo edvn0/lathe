@@ -7,6 +7,7 @@ add_library(
     STATIC
         noise.cxx
         terrain_chunk.cxx
+        terrain_greedy_mesh.cxx
         terrain_mesh.cxx
         terrain_quadtree.cxx
         terrain_slot_pool.cxx

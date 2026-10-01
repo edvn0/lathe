@@ -1,10 +1,13 @@
 #include "terrain/terrain_chunk.hxx"
 
+#include "terrain/terrain_greedy_mesh.hxx"
+
 #include <glm/glm.hpp>
 #include <meshoptimizer.h>
 
 #include <algorithm>
 #include <limits>
+#include <span>
 
 namespace {
 
@@ -37,19 +40,8 @@ namespace {
         indices.push_back(v10);
     }
 
-    [[nodiscard]] auto build_terrain_chunk_indices() -> std::vector<std::uint32_t> {
-        std::vector<std::uint32_t> indices;
-        indices.reserve(terrain_chunk_index_count);
-
-        for (std::uint32_t row = 0; row < terrain_chunk_cells; ++row) {
-            for (std::uint32_t column = 0; column < terrain_chunk_cells; ++column) {
-                emit_quad(indices, terrain_chunk_interior_index(column, row),
-                         terrain_chunk_interior_index(column, row + 1),
-                         terrain_chunk_interior_index(column + 1, row + 1),
-                         terrain_chunk_interior_index(column + 1, row));
-            }
-        }
-
+    // Every boundary vertex gets a skirt quad, whatever the interior merged into.
+    auto append_skirt_indices(std::vector<std::uint32_t> &indices) -> void {
         for (std::uint32_t column = 0; column < terrain_chunk_cells; ++column) {
             // min_row edge (row 0): outward = -Z.
             emit_quad(indices, terrain_chunk_interior_index(column, 0), terrain_chunk_interior_index(column + 1, 0),
@@ -71,6 +63,36 @@ namespace {
             emit_quad(indices, terrain_chunk_interior_index(column, row), terrain_chunk_interior_index(column, row + 1),
                      skirt_max_col_index(row + 1), skirt_max_col_index(row));
         }
+    }
+
+    [[nodiscard]] auto build_terrain_chunk_indices() -> std::vector<std::uint32_t> {
+        std::vector<std::uint32_t> indices;
+        indices.reserve(terrain_chunk_index_count);
+
+        for (std::uint32_t row = 0; row < terrain_chunk_cells; ++row) {
+            for (std::uint32_t column = 0; column < terrain_chunk_cells; ++column) {
+                emit_quad(indices, terrain_chunk_interior_index(column, row),
+                         terrain_chunk_interior_index(column, row + 1),
+                         terrain_chunk_interior_index(column + 1, row + 1),
+                         terrain_chunk_interior_index(column + 1, row));
+            }
+        }
+
+        append_skirt_indices(indices);
+
+        return indices;
+    }
+
+    // Greedy-merged interior plus the full skirt, reordered for the vertex cache.
+    [[nodiscard]] auto build_greedy_chunk_indices(std::span<float const> heights, float tolerance)
+            -> std::vector<std::uint32_t> {
+        auto const quads = greedy_merge_terrain_cells(heights, terrain_chunk_samples, terrain_chunk_samples, tolerance);
+        auto indices = triangulate_terrain_quads(quads, terrain_chunk_samples, terrain_chunk_samples);
+
+        indices.reserve(indices.size() + terrain_chunk_skirt_index_count);
+        append_skirt_indices(indices);
+
+        meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), terrain_chunk_vertex_count);
 
         return indices;
     }
@@ -177,8 +199,20 @@ auto make_terrain_chunk(TerrainField const &field, TerrainChunkRequest const &re
     std::vector<CompressedModelVertex> compressed(terrain_chunk_vertex_count);
     std::ranges::transform(vertices, compressed.begin(), [](ModelVertex const &vertex) { return compress_vertex(vertex); });
 
+    auto indices = build_greedy_chunk_indices(heights, params.greedy_tolerance * cell_size);
+
+    // Split in index order: the indices are already cache-ordered, and the spatial split costs several times more on
+    // a terrain-sized chunk for little culling gain on mostly upward-facing triangles.
+    MeshletBuild meshlets{
+            .topology = build_meshlet_topology(indices, terrain_chunk_vertex_count),
+            .meshlets = {},
+    };
+    meshlets.meshlets = compute_meshlet_bounds(meshlets.topology, compressed);
+
     return TerrainChunkResult{
             .vertices = std::move(compressed),
+            .indices = std::move(indices),
+            .meshlets = std::move(meshlets),
             .heights = std::move(heights),
             .min_height = min_height,
             .max_height = max_height,

@@ -83,10 +83,76 @@ TEST_SUITE("unit") {
         }
     }
 
+    TEST_CASE("greedy chunk indices stay in bounds, face up and keep the full skirt") {
+        auto const field = default_field();
+        auto const chunk = make_terrain_chunk(field, TerrainChunkRequest{.cell_size = 1.0F});
+
+        REQUIRE(chunk.indices.size() % 3 == 0);
+        CHECK(chunk.indices.size() <= terrain_chunk_index_count);
+
+        std::size_t skirt_triangles = 0;
+
+        for (std::size_t i = 0; i + 2 < chunk.indices.size(); i += 3) {
+            auto const i0 = chunk.indices[i];
+            auto const i1 = chunk.indices[i + 1];
+            auto const i2 = chunk.indices[i + 2];
+
+            REQUIRE(i0 < terrain_chunk_vertex_count);
+            REQUIRE(i1 < terrain_chunk_vertex_count);
+            REQUIRE(i2 < terrain_chunk_vertex_count);
+
+            auto const a = decode_position(chunk.vertices[i0]);
+            auto const b = decode_position(chunk.vertices[i1]);
+            auto const c = decode_position(chunk.vertices[i2]);
+            auto const face_normal = glm::cross(b - a, c - a);
+
+            CHECK(glm::length(face_normal) > 0.0F);
+
+            if (skirt_outward_direction(i0) || skirt_outward_direction(i1) || skirt_outward_direction(i2)) {
+                ++skirt_triangles;
+            } else {
+                CHECK(face_normal.y > 0.0F);
+            }
+        }
+
+        CHECK(skirt_triangles == terrain_chunk_skirt_index_count / 3);
+
+        // The meshlets carry exactly the chunk's triangles.
+        std::size_t meshlet_triangles = 0;
+        for (auto const &meshlet: chunk.meshlets.meshlets) {
+            meshlet_triangles += meshlet.triangle_count;
+        }
+        CHECK(meshlet_triangles == chunk.indices.size() / 3);
+    }
+
+    TEST_CASE("greedy meshing merges smooth ground and zero tolerance keeps the full grid") {
+        TerrainParams params{};
+        params.amplitude = 0.5F;
+        params.frequency = 0.01F;
+        params.height_range_min = -1.0F;
+        params.height_range_max = 1.0F;
+
+        params.greedy_tolerance = 0.05F;
+        auto const merged = make_terrain_chunk(TerrainField{params}, TerrainChunkRequest{.cell_size = 1.0F});
+
+        // 0 still merges exact runs, which smooth noise never has.
+        params.greedy_tolerance = 0.0F;
+        auto const unmerged = make_terrain_chunk(TerrainField{params}, TerrainChunkRequest{.cell_size = 1.0F});
+
+        CHECK(unmerged.indices.size() == terrain_chunk_index_count);
+        CHECK(merged.indices.size() * 2 < unmerged.indices.size());
+
+        // Same vertices either way: merging only drops triangles.
+        CHECK(merged.vertices.size() == unmerged.vertices.size());
+        for (std::size_t i = 0; i < merged.vertices.size(); ++i) {
+            CHECK(merged.vertices[i].position_y == unmerged.vertices[i].position_y);
+        }
+    }
+
     TEST_CASE("skirt triangles wind outward") {
         auto const field = default_field();
         auto const chunk = make_terrain_chunk(field, TerrainChunkRequest{.cell_size = 1.0F});
-        auto const &indices = terrain_chunk_indices();
+        auto const &indices = chunk.indices;
 
         int checked = 0;
 

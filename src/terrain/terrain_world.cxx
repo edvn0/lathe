@@ -114,7 +114,7 @@ auto TerrainWorld::upload_ready(IMeshSink &mesh_sink, VkCommandBuffer command_bu
             return;
         }
 
-        if (!slot_pool_.write(mesh_sink, command_buffer, *slot, result.vertices)) {
+        if (!slot_pool_.write(mesh_sink, command_buffer, *slot, result)) {
             error("terrain_world: failed to upload chunk ({},{}) lod={}", key.x, key.z, key.lod);
             slot_pool_.release_deferred(*slot);
             return;
