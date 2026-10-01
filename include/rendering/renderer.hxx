@@ -631,7 +631,8 @@ private:
     static constexpr std::uint32_t maximum_light_count = 65'536;
 
     // Mirror the cluster constants in scene_types.slang: NDC tiles by exponential depth slices, each cluster a
-    // sorted list of up to cluster_light_capacity light indices.
+    // sorted list of up to cluster_light_capacity light indices. A cluster touching more lights drops the highest
+    // indices; see "Limits" in docs/clustered-lighting.md.
     static constexpr std::uint32_t cluster_grid_x = 16;
     static constexpr std::uint32_t cluster_grid_y = 9;
     static constexpr std::uint32_t cluster_grid_z = 24;

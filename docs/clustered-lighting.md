@@ -70,6 +70,29 @@ one light on every lane, and advances the lanes that held it.
 The wave ops need subgroup arithmetic in the fragment stage. Every GPU with the
 `VK_EXT_mesh_shader` support the renderer already requires provides it.
 
+## Limits
+
+- **Total lights:** 65,536 point and spot lights together (`maximum_light_count`).
+  Past that, `submit_point_light` and `submit_spot_light` return
+  `capacity_exceeded`. The directional light is separate, and it is the only
+  light that casts shadows.
+- **Lights per cluster:** 256 (`cluster_light_capacity`). A cluster that
+  touches more keeps the lowest light indices and silently drops the rest, so
+  those lights go missing from that part of the screen. The heatmap shows such
+  clusters in magenta.
+
+  Normal scenes stay far below 256. Overflow takes very dense light fields
+  seen from a distance, because a distant cluster spans a large area. In a
+  stress test of 35,000 point lights spread evenly over 240 x 240 m (about
+  0.6 per square metre, each with a range of 2-6 m), clusters covering up to
+  11% of the screen overflowed, and 0-5% in most views.
+
+  If a scene needs more, raise `cluster_light_capacity` in both
+  `renderer.hxx` and `scene_types.slang`. Each step of 256 costs another
+  3.4 MiB per frame in flight, and distant pixels pay to shade the extra
+  lights. A finer `cluster_grid_*` also helps, because smaller clusters hold
+  fewer lights.
+
 ## Debugging
 
 Lighting > Debug has two toggles:
