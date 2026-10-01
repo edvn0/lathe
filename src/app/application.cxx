@@ -2438,6 +2438,12 @@ auto Application::request_screenshot() -> void {
 auto Application::on_event(KeyPressedEvent ev) -> bool {
     if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL && !scene_load_job.has_value()) {
         renderer->queue_render_thread_event([this] {
+            // The runtime scene was cloned from the editor scene and shares its game-owned models; repopulating
+            // releases the old road models, so the runtime scene would go on drawing destroyed handles.
+            if (is_playing) {
+                stop();
+            }
+
             game->on_populate(*editor_scene, *renderer, engine_models);
             // Back to the game's own scene, which isn't a file.
             scene_path.clear();

@@ -41,7 +41,8 @@ class IGame {
 public:
     virtual ~IGame() = default;
 
-    // Called at startup and on Ctrl+R to rebuild the editor scene.
+    // Called at startup and on Ctrl+R to rebuild the editor scene. Ctrl+R stops play first, so it never runs while a
+    // runtime scene is alive.
     virtual auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void = 0;
 
     // Called every frame while playing, with the runtime scene.
