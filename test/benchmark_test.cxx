@@ -158,6 +158,16 @@ TEST_CASE("benchmark run warms up until streaming settles, then records one lap"
     CHECK(json.find("\"id\": \"forward_pass\"") != std::string::npos);
     CHECK(json.find("a \\\"quoted\\\" gpu") != std::string::npos);
     CHECK(json.find("\"cluster_grid\": [16, 9, 24, 256]") != std::string::npos);
+    CHECK(json.find("\"occlusion_culling\": false") != std::string::npos);
+
+    // The occlusion stages are always present, so on/off runs compare stage by stage.
+    CHECK(json.find("\"id\": \"hiz_build\"") != std::string::npos);
+    CHECK(json.find("\"id\": \"occlusion_culling\"") != std::string::npos);
+    CHECK(json.find("\"id\": \"depth_prepass_late\"") != std::string::npos);
+
+    auto const occlusion_json =
+            run.to_json(BenchmarkEnvironment{.device_name = "gpu", .occlusion_culling = true});
+    CHECK(occlusion_json.find("\"occlusion_culling\": true") != std::string::npos);
 }
 
 TEST_CASE("a fixed seed reproduces random sequences, per stream") {

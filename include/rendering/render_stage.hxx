@@ -9,6 +9,10 @@ enum class RenderStage : std::uint8_t {
     LightClustering,
     ShadowPass,
     DepthPrepass,
+    // Two-phase occlusion culling (docs/occlusion-culling.md). Written every frame, as empty ranges while it is off.
+    HiZBuild,
+    OcclusionCulling,
+    DepthPrepassLate,
     AmbientOcclusion,
     ForwardPass,
     Composition,
@@ -29,6 +33,12 @@ constexpr auto to_string(RenderStage stage) -> std::string_view {
             return "Shadow Pass";
         case DepthPrepass:
             return "Depth prepass";
+        case HiZBuild:
+            return "Hi-Z build";
+        case OcclusionCulling:
+            return "Occlusion culling";
+        case DepthPrepassLate:
+            return "Depth prepass (late)";
         case AmbientOcclusion:
             return "Ambient Occlusion";
         case ForwardPass:

@@ -557,6 +557,15 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto meshlet_culling() const noexcept -> bool { return meshlet_culling_; }
     auto set_meshlet_culling(bool enabled) noexcept -> void { meshlet_culling_ = enabled; }
 
+    // Two-phase Hi-Z occlusion culling of whole instances (docs/occlusion-culling.md). Off by default. Changing it
+    // drops the Hi-Z history, so the next frame draws every frustum-visible instance in phase 1.
+    [[nodiscard]] auto occlusion_culling() const noexcept -> bool { return occlusion_culling_; }
+    auto set_occlusion_culling(bool enabled) noexcept -> void;
+
+    // False under MSAA on devices without VK_RESOLVE_MODE_MIN_BIT depth resolves; occlusion culling then stays
+    // inactive whatever occlusion_culling() says.
+    [[nodiscard]] auto occlusion_culling_supported() const noexcept -> bool;
+
     // Punctual lights binned into view-space clusters on the GPU, so each fragment only shades the lights that can
     // reach it. Off shades every light per fragment.
     [[nodiscard]] auto clustered_lighting() const noexcept -> bool { return clustered_lighting_; }
@@ -976,6 +985,10 @@ private:
     auto create_frame_targets(std::uint32_t frame_index, VkExtent2D extent)
             -> std::expected<OwnedFrameTargets, RendererError>;
 
+    // Both timestamps of a stage that did no work this frame. Every stage writes both every frame: one missing
+    // query leaves vkGetQueryPoolResults NOT_READY and drops the whole frame's timings.
+    auto write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage) -> void;
+
     // Screenshot copy or present transition, then the end-of-frame timestamp.
     // viewport is null when the scene was composited straight into the swapchain.
     auto record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, Image const *viewport,
@@ -1037,6 +1050,8 @@ private:
     OverlayRegistry overlays_;
     OverlayRegistration light_icon_overlay_;
     bool meshlet_culling_ = true;
+    // Default off until the GPU checks in docs/occlusion-culling.md have passed.
+    bool occlusion_culling_ = false;
     bool clustered_lighting_ = true;
     bool cluster_debug_heatmap_ = false;
     ClusterGridSettings cluster_grid_{};

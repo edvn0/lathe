@@ -145,6 +145,12 @@ auto benchmark_stage_id(RenderStage stage) noexcept -> std::string_view {
             return "shadow_pass";
         case DepthPrepass:
             return "depth_prepass";
+        case HiZBuild:
+            return "hiz_build";
+        case OcclusionCulling:
+            return "occlusion_culling";
+        case DepthPrepassLate:
+            return "depth_prepass_late";
         case AmbientOcclusion:
             return "ambient_occlusion";
         case ForwardPass:
@@ -225,6 +231,7 @@ auto BenchmarkRun::to_json(BenchmarkEnvironment const &environment) const -> std
     json += std::format("  \"cluster_grid\": [{}, {}, {}, {}],\n", environment.cluster_grid.tiles_x,
                         environment.cluster_grid.tiles_y, environment.cluster_grid.depth_slices,
                         environment.cluster_grid.light_capacity);
+    json += std::format("  \"occlusion_culling\": {},\n", environment.occlusion_culling);
     json += std::format("  \"seed\": {},\n", options_.seed);
     json += std::format("  \"keyframes\": {},\n", keyframes_.size());
     json += std::format("  \"frames\": {},\n", measured_frames_);

@@ -3228,6 +3228,12 @@ auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
     last_frame_stats_.visible_instance_count = visible_instance_count;
 }
 
+auto Renderer::set_occlusion_culling(bool enabled) noexcept -> void { occlusion_culling_ = enabled; }
+
+auto Renderer::occlusion_culling_supported() const noexcept -> bool {
+    return samples_ == VK_SAMPLE_COUNT_1_BIT || context_.depth_resolve_min_supported;
+}
+
 auto Renderer::set_cluster_grid(ClusterGridSettings const &grid) -> std::expected<void, std::string> {
     if (auto valid = validate_cluster_grid(grid); !valid) {
         return valid;
@@ -3654,6 +3660,15 @@ auto Renderer::record_frame_end(VkCommandBuffer command_buffer, SwapchainImage c
     pipeline_stat_queries_[frame_index].has_results = true;
 }
 
+auto Renderer::write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage)
+        -> void {
+    auto const query_pool = timestamp_queries_[frame_index].query_pool;
+    auto const first_query = static_cast<std::uint32_t>(stage) * 2;
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, first_query);
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, first_query + 1);
+}
+
 auto Renderer::make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> render_pass::Context {
     return render_pass::Context{
             .command_buffer = command_buffer,
@@ -3899,6 +3914,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     if (auto prepass = record_depth_prepass(pass_context, frame, *targets); !prepass) {
         return prepass;
     }
+
+    write_empty_stage(command_buffer, frame_index, RenderStage::HiZBuild);
+    write_empty_stage(command_buffer, frame_index, RenderStage::OcclusionCulling);
+    write_empty_stage(command_buffer, frame_index, RenderStage::DepthPrepassLate);
 
     auto const ao_texture_index = record_ambient_occlusion_pass(pass_context, frame, *targets);
     if (!ao_texture_index) {
