@@ -1,0 +1,17 @@
+--- a/unixExample/backends/ImGuiNotify.hpp
++++ b/unixExample/backends/ImGuiNotify.hpp
+@@ -620,9 +620,14 @@
+                     SetCursorPosX(GetCursorPosX() + (GetWindowSize().x - GetCursorPosX()) * scale);
+
+                     // If the button is pressed, we want to remove the notification
+                     if (Button(ICON_FA_XMARK))
+                     {
++                        // lathe: the erase invalidates currentToast, which the code below still reads. Stop drawing
++                        // for this frame instead; the remaining toasts are drawn again on the next one.
+                         RemoveNotification(i);
++                        PopTextWrapPos();
++                        End();
++                        return;
+                     }
+                 }
+

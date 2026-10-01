@@ -23,6 +23,7 @@ add_library(
         script_storage.cxx
         shadow_cascades.cxx
         terminal_widget.cxx
+        toast.cxx
 )
 
 target_include_directories(
@@ -43,6 +44,8 @@ target_link_libraries(
         engine_core
     PRIVATE
         engine_options
+        # Kept private so the scripting and app modules can only reach toasts through gui::toast_*.
+        imgui_notify
 )
 
 target_precompile_headers(
