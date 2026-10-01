@@ -7,6 +7,7 @@ add_library(
     STATIC
         application.cxx
         benchmark.cxx
+        scene_files.cxx
 )
 
 target_include_directories(
@@ -19,6 +20,7 @@ target_link_libraries(
     engine_app
     PUBLIC
         engine_deps
+        engine_serialisation
         engine_rendering
         engine_terrain
         engine_scene

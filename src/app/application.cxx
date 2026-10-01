@@ -2118,6 +2118,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     });
 
 
+    draw_scene_file_ui();
+
     if (auto const picked = model_browser.draw(editor_icons.get())) {
         switch (model_browse_target) {
             case ModelBrowseTarget::spawn_entity:
@@ -2309,6 +2311,7 @@ auto Application::update(float delta_time) -> void {
 
     // Here rather than in the "Load Model" panel, which doesn't run while hidden or during fullscreen play.
     update_model_loads();
+    update_scene_jobs();
 
 
     // Keyed off the player's Transform rather than the follow camera, which springs and would jitter residency.
@@ -2406,6 +2409,7 @@ auto Application::on_startup() -> void {
         engine_models = *models;
 
         game->on_populate(*editor_scene, *renderer, engine_models);
+        mark_editor_scene_clean();
 
         if (auto terrain_info = game->terrain_create_info(*renderer)) {
             renderer->context().one_time_submit([this, info = *terrain_info](VkCommandBuffer command_buffer) {
@@ -2432,8 +2436,20 @@ auto Application::request_screenshot() -> void {
 }
 
 auto Application::on_event(KeyPressedEvent ev) -> bool {
-    if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL) {
-        renderer->queue_render_thread_event([this] { game->on_populate(*editor_scene, *renderer, engine_models); });
+    if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL && !scene_load_job.has_value()) {
+        renderer->queue_render_thread_event([this] {
+            game->on_populate(*editor_scene, *renderer, engine_models);
+            // Back to the game's own scene, which isn't a file.
+            scene_path.clear();
+            scene_pack.reset();
+            mark_editor_scene_clean();
+        });
+    }
+    if (ev.key == GLFW_KEY_S && (ev.modifiers & GLFW_MOD_CONTROL) != 0) {
+        start_save_scene((ev.modifiers & GLFW_MOD_SHIFT) != 0 ? std::filesystem::path{} : scene_path);
+    }
+    if (ev.key == GLFW_KEY_O && ev.modifiers == GLFW_MOD_CONTROL && !scene_browser.is_open()) {
+        scene_browser.open("Open Scene", {{.label = "Lathe scenes (*.lbf)", .extensions = {".lbf"}}});
     }
     if (ev.key == GLFW_KEY_F12) {
         request_screenshot();

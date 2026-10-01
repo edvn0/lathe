@@ -1,6 +1,7 @@
 #pragma once
 
 #include <expected>
+#include <filesystem>
 #include <string_view>
 
 #include <volk.h>
@@ -30,6 +31,9 @@ struct IModelSink {
 
     // Registers `handle` under `name` in the AssetRegistry. A name collision is ignored.
     virtual auto register_model_name(ModelHandle handle, std::string_view name) -> void = 0;
+
+    // Records the file `handle` was loaded from, so saving a scene can reference it by path.
+    virtual auto register_model_source(ModelHandle handle, std::filesystem::path const &source) -> void = 0;
 
     [[nodiscard]]
     virtual auto sampler_storage() noexcept -> SamplerStorage & = 0;

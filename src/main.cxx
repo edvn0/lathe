@@ -486,6 +486,23 @@ namespace {
         }
     }
 
+    auto drop_callback(GLFWwindow *window, int path_count, char const **paths) -> void {
+        auto *app = static_cast<WindowData *>(glfwGetWindowUserPointer(window))->app;
+
+        if (app == nullptr || path_count <= 0) {
+            return;
+        }
+
+        std::vector<std::filesystem::path> dropped;
+        dropped.reserve(static_cast<std::size_t>(path_count));
+
+        for (auto const *path: std::span{paths, static_cast<std::size_t>(path_count)}) {
+            dropped.push_back(gui::utf8_to_path(path));
+        }
+
+        app->on_files_dropped(dropped);
+    }
+
     auto install_window_callbacks(VulkanContext &context, Application &app) noexcept -> void {
         static WindowData wd{};
         wd.app = &app;
@@ -498,6 +515,7 @@ namespace {
         glfwSetCursorPosCallback(context.window, cursor_position_callback);
         glfwSetScrollCallback(context.window, scroll_callback);
         glfwSetWindowFocusCallback(context.window, focus_callback);
+        glfwSetDropCallback(context.window, drop_callback);
     }
 
     auto wait_idle_bounded(VkDevice device, std::string_view label) noexcept -> VkResult {
@@ -523,6 +541,11 @@ namespace {
                 report_vk_error("vkDeviceWaitIdle(application destroy)", result);
             }
         }
+        // An in-flight save finishes writing rather than being lost; both jobs reference the renderer.
+        application.scene_save_job.reset();
+        application.scene_load_job.reset();
+        application.scene_pack.reset();
+
         application.debug_renderer.reset();
         application.imgui_renderer.reset();
         application.renderer->destroy();
@@ -576,6 +599,22 @@ auto main(int argc, char **argv) -> int {
     }
 
     application.on_startup();
+
+    // Queued behind on_startup()'s populate, so they act on the game's scene once it exists. --save-scene cooks that
+    // scene into a self-contained .lbf (handy from scripts); --scene opens a saved one in its place.
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--save-scene="; arg.starts_with(prefix)) {
+            application.renderer->queue_render_thread_event(
+                    [&application, path = gui::utf8_to_path(arg.substr(prefix.size()))] {
+                        application.start_save_scene(path);
+                    });
+        } else if (constexpr std::string_view open_prefix = "--scene="; arg.starts_with(open_prefix)) {
+            application.renderer->queue_render_thread_event(
+                    [&application, path = gui::utf8_to_path(arg.substr(open_prefix.size()))] {
+                        application.request_open_scene(path);
+                    });
+        }
+    }
 
     std::optional<BenchmarkRun> benchmark;
     if (*benchmark_options) {

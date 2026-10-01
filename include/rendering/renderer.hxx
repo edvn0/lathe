@@ -276,6 +276,17 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     auto register_model_name(ModelHandle handle, std::string_view name) -> void override;
 
+    // Also seeds load_model()'s cache, so loading `source` again returns `handle` (with a new reference).
+    auto register_model_source(ModelHandle handle, std::filesystem::path const &source) -> void override;
+
+    // The model load_model(`source`) would return from its cache, without taking a reference; invalid if none.
+    [[nodiscard]]
+    auto cached_model(std::filesystem::path const &source) const -> ModelHandle;
+
+    // The file a model was loaded from; nullptr for procedural models and handles that aren't live.
+    [[nodiscard]]
+    auto model_source(ModelHandle handle) const noexcept -> std::filesystem::path const *;
+
     // Drops a reference; the last one destroys the model's meshes, evicts it from the model caches and frees its
     // slot.
     [[nodiscard]]
@@ -965,6 +976,9 @@ private:
     ScriptStorage script_storage_;
 
     std::unordered_map<std::size_t, ModelHandle> model_cache_;
+
+    // Keyed by (generation << 32 | index).
+    std::unordered_map<std::uint64_t, std::filesystem::path> model_sources_;
 
     std::vector<Submission> submissions_;
     std::vector<ModelSubmission> model_submissions_;

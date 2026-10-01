@@ -43,6 +43,10 @@ namespace {
     [[nodiscard]] constexpr auto overlay_query(std::uint32_t slot, std::uint32_t which) noexcept -> std::uint32_t {
         return overlay_query_base + (slot * queries_per_overlay) + which;
     }
+
+    [[nodiscard]] constexpr auto model_source_key(ModelHandle handle) noexcept -> std::uint64_t {
+        return (static_cast<std::uint64_t>(handle.generation) << 32U) | handle.index;
+    }
 } // namespace
 
 namespace {
@@ -1452,6 +1456,7 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
     }
 
     model_cache_[file_hash] = *model_result;
+    model_sources_.insert_or_assign(model_source_key(*model_result), cache_key_path);
     register_model_name(*model_result, path.filename().string());
 
     return model_result;
@@ -2057,6 +2062,33 @@ auto Renderer::register_model_name(ModelHandle handle, std::string_view name) ->
     static_cast<void>(assets_.models().register_asset(std::string{name}, handle));
 }
 
+auto Renderer::register_model_source(ModelHandle handle, std::filesystem::path const &source) -> void {
+    if (model_storage_.get(handle) == nullptr) {
+        return;
+    }
+
+    std::error_code canonicalize_error;
+    auto const canonical_path = std::filesystem::weakly_canonical(source, canonicalize_error);
+    auto const &cache_key_path = canonicalize_error ? source : canonical_path;
+
+    model_cache_.try_emplace(std::filesystem::hash_value(cache_key_path), handle);
+    model_sources_.insert_or_assign(model_source_key(handle), cache_key_path);
+}
+
+auto Renderer::cached_model(std::filesystem::path const &source) const -> ModelHandle {
+    std::error_code canonicalize_error;
+    auto const canonical_path = std::filesystem::weakly_canonical(source, canonicalize_error);
+    auto const &cache_key_path = canonicalize_error ? source : canonical_path;
+
+    auto const it = model_cache_.find(std::filesystem::hash_value(cache_key_path));
+    return it != model_cache_.end() && model_storage_.get(it->second) != nullptr ? it->second : ModelHandle{};
+}
+
+auto Renderer::model_source(ModelHandle handle) const noexcept -> std::filesystem::path const * {
+    auto const it = model_sources_.find(model_source_key(handle));
+    return it != model_sources_.end() ? &it->second : nullptr;
+}
+
 auto Renderer::destroy_model(ModelHandle handle) -> std::expected<void, RendererError> {
     auto *slot = model_storage_.get(handle);
 
@@ -2080,6 +2112,7 @@ auto Renderer::destroy_model(ModelHandle handle) -> std::expected<void, Renderer
 
     model_streamer_.forget(handle);
     std::erase_if(model_cache_, [handle](auto const &entry) { return entry.second == handle; });
+    model_sources_.erase(model_source_key(handle));
     assets_.models().unregister(handle);
 
     if (auto released = model_storage_.release(handle); !released) {

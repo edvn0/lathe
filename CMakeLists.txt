@@ -748,7 +748,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/renderdoc_config.cmake")
 
 # ------------------------------------------------------------------------------
 # Module libraries, in dependency order:
-# core < gpu < assets < physics < scene < terrain < rendering < app
+# core < gpu < assets < physics < scene < terrain < rendering < serialisation < app
 # ------------------------------------------------------------------------------
 
 add_subdirectory(src/core)
@@ -758,6 +758,7 @@ add_subdirectory(src/physics)
 add_subdirectory(src/scene)
 add_subdirectory(src/terrain)
 add_subdirectory(src/rendering)
+add_subdirectory(src/serialisation)
 add_subdirectory(src/app)
 
 # ------------------------------------------------------------------------------
@@ -779,7 +780,7 @@ add_library(
 target_link_libraries(
     lathe-core
     INTERFACE
-        "$<LINK_GROUP:RESCAN,engine_app,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_assets,engine_gpu,engine_core>"
+        "$<LINK_GROUP:RESCAN,engine_app,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_assets,engine_gpu,engine_core>"
 )
 
 add_library(
