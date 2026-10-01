@@ -47,6 +47,7 @@
 #include "rendering/entity.hxx"
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/imgui_widget.hxx"
+#include "rendering/toast.hxx"
 #include "scene/components.hxx"
 #include "scene/editor_camera.hxx"
 #include "scene/selection_context.hxx"
@@ -418,6 +419,7 @@ Application::~Application() {
 auto Application::on_ui(std::uint32_t frame_index) -> void {
     // Must match the CompositeTarget main.cxx passes to Renderer::record_frame.
     if (is_playing && play_fullscreen) {
+        gui::render_toasts();
         return;
     }
 
@@ -450,6 +452,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::DockBuilderDockWindow("Hierarchy", left);
         ImGui::DockBuilderDockWindow("Inspector", right);
         ImGui::DockBuilderDockWindow("Console", bottom);
+        ImGui::DockBuilderDockWindow("Script", bottom);
         ImGui::DockBuilderDockWindow("Assets", bottom);
         ImGui::DockBuilderDockWindow("Load Model", bottom);
         ImGui::DockBuilderDockWindow("Simulation", bottom);
@@ -531,6 +534,19 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     widget("Memory", [] { on_memory_ui(); });
 #endif
     widget("Console", [&] { terminal_widget.draw(); });
+
+    // Scripts edit the editor scene only; in play mode it's hidden behind the runtime clone, so Run is disabled.
+    widget("Script", [&] {
+        auto const world = is_playing ? std::optional<ScriptWorld>{}
+                                      : std::optional<ScriptWorld>{ScriptWorld{
+                                                .registry = &editor_scene->get_registry(),
+                                                .hierarchy_revision = editor_scene->hierarchy_revision(),
+                                        }};
+        // Like the gizmo: moved shadow casters need re-sorting.
+        if (script_widget.draw(world).transforms_written > 0) {
+            renderer->mark_dynamic_shadow_casters_dirty();
+        }
+    });
 
     widget("Load Model", [&] {
         ImGui::TextUnformatted("glTF / GLB model");
@@ -2250,6 +2266,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
         model_browse_entity = entt::null;
     }
+
+    // Drawn last so the toasts sit on top of the panels.
+    gui::render_toasts();
 }
 
 auto Application::spawn_streamed_model(std::filesystem::path const &path) -> void {

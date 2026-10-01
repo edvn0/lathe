@@ -19,6 +19,7 @@ target_include_directories(
 target_link_libraries(
     engine_app
     PUBLIC
+        engine_scripting
         engine_deps
         engine_serialisation
         engine_rendering

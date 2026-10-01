@@ -11,6 +11,7 @@ add_library(
         script_bindings.cxx
         script_engine.cxx
         script_error.cxx
+        script_widget.cxx
 )
 
 target_include_directories(engine_scripting PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
