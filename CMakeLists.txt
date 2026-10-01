@@ -144,7 +144,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/spirv-tools-opt.cmake")
 find_spirv_tools_opt()
 
-if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
+if(BUILD_TESTING)
   CPMAddPackage(
       NAME doctest
       GITHUB_REPOSITORY doctest/doctest
@@ -524,15 +524,7 @@ function(validate_slang_root root_path)
     )
   endif()
 
-  if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    if(NOT EXISTS "${root_path}/bin/slang.dll")
-      message(
-          FATAL_ERROR
-          "Windows Slang installation does not contain bin/slang.dll: "
-          "${root_path}"
-      )
-    endif()
-  elseif(APPLE)
+  if(APPLE)
     if(
         NOT EXISTS "${root_path}/lib/libslang.dylib"
         AND NOT EXISTS "${root_path}/bin/libslang.dylib"
@@ -601,12 +593,7 @@ elseif(SLANG_ARCHIVE)
   set(slang_root "${slang_binary_SOURCE_DIR}")
 
 else()
-  if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set(
-        slang_archive_name
-        "slang-${SLANG_VERSION}-windows-x86_64.tar.gz"
-    )
-  elseif(APPLE)
+  if(APPLE)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
       set(
           slang_archive_name
@@ -821,17 +808,7 @@ target_precompile_headers(
 # Platform configuration (link and runtime deployment for the executable)
 # ------------------------------------------------------------------------------
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-  include(
-      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/platform_windows.cmake"
-  )
-
-  configure_windows_target(
-      lathe
-      "${slang_bin_dir}"
-  )
-
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   include(
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/platform_linux.cmake"
   )
@@ -855,8 +832,7 @@ endif()
 # Release allocator (Linux only)
 #
 # linux-native Release links jemalloc, which replaces malloc/free (and so the
-# default operator new/delete) through symbol interposition. windows-mingw
-# keeps the system allocator. Needs libjemalloc-dev (see Dockerfile).
+# default operator new/delete) through symbol interposition. Needs libjemalloc-dev (see Dockerfile).
 # ------------------------------------------------------------------------------
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -902,21 +878,14 @@ endforeach()
 
 # ------------------------------------------------------------------------------
 # Tests
-#
-# doctest_discover_tests runs the test binary, so discovery is native-only.
 # ------------------------------------------------------------------------------
 
-if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
+if(BUILD_TESTING)
   include(
       "${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake"
   )
 
   add_subdirectory(test)
-elseif(BUILD_TESTING AND CMAKE_CROSSCOMPILING)
-  message(
-      STATUS
-      "Skipping native unit tests while cross-compiling"
-  )
 endif()
 
 # ------------------------------------------------------------------------------
