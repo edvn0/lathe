@@ -7,9 +7,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     clang-tidy \
-    mingw-w64 \
-    g++-mingw-w64-x86-64 \
-    gcc-mingw-w64-x86-64 \
     cmake \
     ninja-build \
     git \
@@ -32,8 +29,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     mold \
     libvulkan1 \
     mesa-vulkan-drivers \
-    && update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix \
-    && update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix \
     && rm -rf /var/lib/apt/lists/*
 
 # Outside /root, which is mode 0700: compile.sh runs builds as the host UID with a rootful daemon, and cargo

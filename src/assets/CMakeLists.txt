@@ -18,10 +18,7 @@ set(
     texture_streamer.cxx
 )
 
-# Picks the target platform's slang_library.cxx, not the host's.
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-  list(APPEND engine_assets_sources platform/windows/slang_library.cxx)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND engine_assets_sources platform/linux/slang_library.cxx)
 endif()
 

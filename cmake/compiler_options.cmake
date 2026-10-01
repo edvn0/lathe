@@ -82,11 +82,9 @@ elseif(
     )
   endif()
 
-  # Sanitizers are native-only; MinGW's runtime support is inconsistent.
-  #
   # -fno-sanitize=alignment: stb_image_resize2 does deliberate misaligned
   # accesses.
-  if(LATHE_SANITIZE AND NOT MINGW)
+  if(LATHE_SANITIZE)
     target_compile_options(
         engine_options
         INTERFACE

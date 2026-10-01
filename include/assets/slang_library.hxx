@@ -68,11 +68,7 @@ public:
 
     [[nodiscard]]
     static auto create_from_executable_directory(std::filesystem::path const &library_name =
-#if defined(_WIN32)
-                                                         L"slang-compiler.dll"
-#else
                                                          "libslang.so"
-#endif
                                                  ) -> std::expected<SlangLibrary, SlangLibraryError>;
 
     [[nodiscard]]

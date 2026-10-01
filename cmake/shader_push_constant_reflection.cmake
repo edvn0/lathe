@@ -10,64 +10,29 @@ find_program(
 
 set(shader_reflect_cargo_environment)
 
-if(NOT CMAKE_HOST_WIN32)
-    find_program(
-        shader_reflect_host_c_compiler
-        NAMES cc gcc clang
-        REQUIRED
-    )
+find_program(
+    shader_reflect_host_c_compiler
+    NAMES cc gcc clang
+    REQUIRED
+)
 
-    find_program(
-        shader_reflect_host_cxx_compiler
-        NAMES c++ g++ clang++
-        REQUIRED
-    )
+find_program(
+    shader_reflect_host_cxx_compiler
+    NAMES c++ g++ clang++
+    REQUIRED
+)
 
-    list(
-        APPEND
-        shader_reflect_cargo_environment
-        "CC=${shader_reflect_host_c_compiler}"
-        "CXX=${shader_reflect_host_cxx_compiler}"
-    )
-endif()
+list(
+    APPEND
+    shader_reflect_cargo_environment
+    "CC=${shader_reflect_host_c_compiler}"
+    "CXX=${shader_reflect_host_cxx_compiler}"
+)
 
-if(CMAKE_CROSSCOMPILING)
-    if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
-        set(
-            shader_reflect_host_slang_archive_name
-            "slang-${SLANG_VERSION}-linux-aarch64.tar.gz"
-        )
-    else()
-        set(
-            shader_reflect_host_slang_archive_name
-            "slang-${SLANG_VERSION}-linux-x86_64.tar.gz"
-        )
-    endif()
-
-    string(
-        CONCAT
-        shader_reflect_host_slang_url
-        "https://github.com/shader-slang/slang/releases/download/"
-        "v${SLANG_VERSION}/"
-        "${shader_reflect_host_slang_archive_name}"
-    )
-
-    CPMAddPackage(
-        NAME slang_binary_host
-        URL "${shader_reflect_host_slang_url}"
-        DOWNLOAD_ONLY YES
-    )
-
-    set(
-        shader_reflect_slangc
-        "${slang_binary_host_SOURCE_DIR}/bin/slangc"
-    )
-else()
-    set(
-        shader_reflect_slangc
-        "${slang_bin_dir}/slangc"
-    )
-endif()
+set(
+    shader_reflect_slangc
+    "${slang_bin_dir}/slangc"
+)
 
 set(
     shader_reflect_generated_dir
@@ -105,15 +70,9 @@ else()
     )
 endif()
 
-if(CMAKE_HOST_WIN32)
-    set(shader_reflect_host_executable_suffix ".exe")
-else()
-    set(shader_reflect_host_executable_suffix "")
-endif()
-
 set(
     shader_reflect_tool
-    "${shader_reflect_cargo_target_dir}/release/reflect_push_constants${shader_reflect_host_executable_suffix}"
+    "${shader_reflect_cargo_target_dir}/release/reflect_push_constants"
 )
 
 list(

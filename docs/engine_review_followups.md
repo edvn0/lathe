@@ -311,20 +311,6 @@ between `create_model` and `finish_model_load` this session.
 
 ---
 
-## 8. `windows-mingw` target — unverified for everything in this backlog's parent session
-
-Every change from the session that produced this backlog was verified
-only against `TARGET=linux-native` (per explicit instruction not to
-spend time on the mingw cross-compile target that session). Before
-considering any of that work fully "done," someone should run
-`TARGET=windows-mingw ./compile.sh --rebuild` and confirm it still builds
-clean — particularly the `vulkan_bootstrap.cxx`/`main.cxx` split (new
-source file added to the executable target in `CMakeLists.txt`) and the
-`-Werror`/`SYSTEM`-include fixes (`glm`, `stb` — mingw-w64's GCC may
-surface different or additional warnings than native GCC 14 did).
-
----
-
 ## Lower-priority / explicitly-not-worth-doing-yet
 
 - **Unused-`#include` cleanup**: clangd flags a long tail of

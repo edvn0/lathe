@@ -178,24 +178,12 @@ namespace gui {
         place("Project", working_directory);
         place("Models", working_directory / "assets" / "models");
 
-#if defined(_WIN32)
-        char const *home = std::getenv("USERPROFILE");
-#else
         char const *home = std::getenv("HOME");
-#endif
         if (home != nullptr && home[0] != '\0') {
             place("Home", utf8_to_path(home));
         }
 
-#if defined(_WIN32)
-        ImGui::Separator();
-        for (char letter = 'A'; letter <= 'Z'; ++letter) {
-            auto const root = std::format("{}:\\", letter);
-            place(root.c_str(), std::filesystem::path{root});
-        }
-#else
         place("/", std::filesystem::path{"/"});
-#endif
     }
 
     auto FileBrowser::draw_entries(EditorIcons const *icons) -> std::optional<std::filesystem::path> {

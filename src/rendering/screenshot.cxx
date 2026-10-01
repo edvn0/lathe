@@ -44,11 +44,7 @@ namespace {
 
         std::tm tm_buf{};
 
-#if defined(_WIN32)
-        localtime_s(&tm_buf, &now);
-#else
         localtime_r(&now, &tm_buf);
-#endif
 
         std::string buffer(32, '\0');
         std::strftime(buffer.data(), buffer.size(), "%Y%m%d_%H%M%S", &tm_buf);

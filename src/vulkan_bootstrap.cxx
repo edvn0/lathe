@@ -645,11 +645,7 @@ namespace {
         if (context.calibrated_timestamps_supported) {
             auto const domains = calibrateable_time_domains(context.physical_device);
 
-#ifdef _WIN32
-            constexpr auto host_time_domain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT;
-#else
             constexpr auto host_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT;
-#endif
 
             context.host_calibrated_timestamps_supported =
                     std::ranges::find(domains, VK_TIME_DOMAIN_DEVICE_EXT) != domains.end() &&

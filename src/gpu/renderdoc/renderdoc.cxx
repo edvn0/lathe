@@ -8,19 +8,7 @@
 
 #include "renderdoc_app.h"
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
-#include <windows.h>
-#else
 #include <dlfcn.h>
-#endif
 
 struct RenderDocApi {
     RENDERDOC_API_1_7_0 *rdoc{nullptr};
@@ -29,19 +17,11 @@ struct RenderDocApi {
 namespace {
 
     [[nodiscard]] auto load_renderdoc_module() -> void * {
-#if defined(_WIN32)
-        return static_cast<void *>(GetModuleHandleA("renderdoc.dll"));
-#else
         return dlopen("librenderdoc.so", RTLD_NOW | RTLD_NOLOAD);
-#endif
     }
 
     [[nodiscard]] auto get_api_proc(void *module) -> pRENDERDOC_GetAPI {
-#if defined(_WIN32)
-        return reinterpret_cast<pRENDERDOC_GetAPI>(GetProcAddress(static_cast<HMODULE>(module), "RENDERDOC_GetAPI"));
-#else
         return reinterpret_cast<pRENDERDOC_GetAPI>(dlsym(module, "RENDERDOC_GetAPI"));
-#endif
     }
 
 } // namespace

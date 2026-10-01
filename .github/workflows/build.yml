@@ -54,7 +54,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Only linux-native is built in CI.
         target:
           - linux-native
         build_type:
