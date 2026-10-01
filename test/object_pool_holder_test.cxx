@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -1097,5 +1098,159 @@ TEST_SUITE("ObjectPool::Holder") {
         }
 
         CHECK(state->total_destructions == 3);
+    }
+}
+
+namespace {
+
+    // A storage that wraps a pool and does extra teardown on destroy, like ImageStorage::destroy_image.
+    class RecordingStorage {
+    public:
+        using HandleT = Handle<std::uint32_t>;
+
+        explicit RecordingStorage(std::uint32_t capacity) : slots_(ObjectPool<std::uint32_t>::create(capacity)) {}
+
+        [[nodiscard]]
+        auto create(std::uint32_t value) -> HandleT {
+            auto allocation = slots_.allocate();
+
+            if (!allocation) {
+                std::abort();
+            }
+
+            allocation->second = value;
+
+            return allocation->first;
+        }
+
+        auto destroy(HandleT handle) -> bool {
+            auto released = slots_.release(handle);
+
+            if (!released) {
+                return false;
+            }
+
+            destroyed.push_back(*released);
+
+            return true;
+        }
+
+        [[nodiscard]]
+        auto get(HandleT handle) noexcept -> std::uint32_t * {
+            return slots_.get(handle);
+        }
+
+        [[nodiscard]]
+        auto get(HandleT handle) const noexcept -> std::uint32_t const * {
+            return slots_.get(handle);
+        }
+
+        std::vector<std::uint32_t> destroyed;
+
+    private:
+        ObjectPool<std::uint32_t> slots_;
+    };
+
+    using RecordingHolder = Holder<RecordingStorage, RecordingStorage::HandleT, &RecordingStorage::destroy>;
+
+    // Release only; no get() or contains().
+    struct ReleaseOnlyOwner {
+        auto release(Handle<int> handle) -> void { released.push_back(handle); }
+
+        std::vector<Handle<int>> released;
+    };
+
+    using ReleaseOnlyHolder = Holder<ReleaseOnlyOwner, Handle<int>, &ReleaseOnlyOwner::release>;
+
+    static_assert(!std::is_copy_constructible_v<RecordingHolder>);
+    static_assert(std::is_nothrow_move_constructible_v<RecordingHolder>);
+
+} // namespace
+
+TEST_SUITE("Holder with a custom owner") {
+    TEST_CASE("destroying the holder releases through the owner") {
+        RecordingStorage storage{2};
+
+        {
+            RecordingHolder holder{storage, storage.create(7)};
+
+            CHECK(holder);
+            CHECK(*holder == 7);
+            CHECK(storage.destroyed.empty());
+        }
+
+        CHECK(storage.destroyed == std::vector<std::uint32_t>{7});
+    }
+
+    TEST_CASE("reset releases once and empties the holder") {
+        RecordingStorage storage{1};
+
+        RecordingHolder holder{storage, storage.create(3)};
+
+        holder.reset();
+        holder.reset();
+
+        CHECK_FALSE(holder);
+        CHECK(holder.get() == nullptr);
+        CHECK(storage.destroyed == std::vector<std::uint32_t>{3});
+    }
+
+    TEST_CASE("move assignment releases the overwritten handle") {
+        RecordingStorage storage{2};
+
+        RecordingHolder first{storage, storage.create(1)};
+        RecordingHolder second{storage, storage.create(2)};
+
+        first = std::move(second);
+
+        CHECK(storage.destroyed == std::vector<std::uint32_t>{1});
+        CHECK(*first == 2);
+    }
+
+    TEST_CASE("detach hands the handle back without releasing") {
+        RecordingStorage storage{1};
+
+        auto const created = storage.create(5);
+
+        {
+            RecordingHolder holder{storage, created};
+            CHECK(holder.detach() == created);
+        }
+
+        CHECK(storage.destroyed.empty());
+        CHECK(storage.destroy(created));
+    }
+
+    TEST_CASE("a const holder reads through the owner's const get") {
+        RecordingStorage storage{1};
+
+        RecordingHolder const holder{storage, storage.create(9)};
+
+        CHECK(*holder.get() == 9);
+    }
+
+    TEST_CASE("an owner without get or contains still releases") {
+        ReleaseOnlyOwner owner;
+
+        auto const handle = Handle<int>{.index = 4, .generation = 1};
+
+        {
+            ReleaseOnlyHolder holder{owner, handle};
+            CHECK(holder);
+            CHECK(holder.handle() == handle);
+        }
+
+        CHECK(owner.released == std::vector<Handle<int>>{handle});
+    }
+
+    TEST_CASE("a default holder releases nothing") {
+        RecordingStorage storage{1};
+
+        {
+            RecordingHolder holder;
+            CHECK_FALSE(holder);
+        }
+
+        CHECK(storage.destroyed.empty());
     }
 }

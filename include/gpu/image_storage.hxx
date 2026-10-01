@@ -15,6 +15,7 @@
 #include "gpu/buffer.hxx"
 #include "gpu/compressed_texture.hxx"
 #include "core/forward.hxx"
+#include "core/holder.hxx"
 #include "gpu/image.hxx"
 #include "core/object_pool.hxx"
 
@@ -254,3 +255,25 @@ private:
 
     std::string debug_name_;
 };
+
+// Owns an ImageStorage slot; dropping it runs destroy_image(), which also covers register_view() aliases. Drop it only
+// once the GPU is done with the image.
+using ImageHolder = Holder<ImageStorage, ImageHandle, &ImageStorage::destroy_image>;
+
+// create_image(), with the slot owned by the returned Holder.
+[[nodiscard]]
+inline auto create_held_image(ImageStorage &image_storage, ImageCreateInfo const &create_info)
+        -> std::expected<ImageHolder, ImageStorageError> {
+    return image_storage.create_image(create_info).transform([&image_storage](ImageHandle handle) {
+        return ImageHolder{image_storage, handle};
+    });
+}
+
+// register_view(), with the slot owned by the returned Holder. The source image must outlive the Holder.
+[[nodiscard]]
+inline auto register_held_view(ImageStorage &image_storage, ImageViewRegistration const &registration)
+        -> std::expected<ImageHolder, ImageStorageError> {
+    return image_storage.register_view(registration).transform([&image_storage](ImageHandle handle) {
+        return ImageHolder{image_storage, handle};
+    });
+}
