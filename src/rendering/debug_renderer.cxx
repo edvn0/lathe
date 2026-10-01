@@ -17,6 +17,7 @@
 #include <glm/ext/matrix_float4x4.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include "core/human_readable_bytes.hxx"
 #include "core/logger.hxx"
 #include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
@@ -180,7 +181,7 @@ namespace debug_draw {
 
             auto const size = next_power_of_two(static_cast<std::size_t>(vertex_count) * sizeof(Vertex));
 
-            info("[DebugDraw] Reallocating line buffer to {} bytes", size);
+            info("[DebugDraw] Reallocating line buffer to {}", human_readable_bytes(size));
 
             auto created =
                     Buffer::create(renderer.context(), BufferCreateInfo{

@@ -7,6 +7,7 @@ add_library(
     STATIC
         error_describe.cxx
         fly_string.cxx
+        human_readable_bytes.cxx
         logger.cxx
         memory_tracker.cxx
         random.cxx

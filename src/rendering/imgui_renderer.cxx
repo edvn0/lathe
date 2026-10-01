@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "core/error_describe.hxx"
+#include "core/human_readable_bytes.hxx"
 #include "core/logger.hxx"
 #include "gpu/context.hxx"
 #include "rendering/renderer.hxx"
@@ -314,7 +315,7 @@ namespace gui {
         if (std::cmp_less(drawable.index_count, dd->TotalIdxCount)) {
             auto const size = static_cast<std::size_t>(dd->TotalIdxCount * 4) * sizeof(ImDrawIdx);
             auto const actual_size = next_power_of_two(size);
-            info("[ImGui] Reallocating index buffer to {} bytes", actual_size);
+            info("[ImGui] Reallocating index buffer to {}", human_readable_bytes(actual_size));
 
             auto created = Buffer::create(renderer.context(), BufferCreateInfo{
                                                                       .size = actual_size,
@@ -335,7 +336,7 @@ namespace gui {
         if (static_cast<std::int32_t>(drawable.vertex_count) < dd->TotalVtxCount) {
             auto const size = static_cast<std::size_t>(dd->TotalVtxCount * 4) * sizeof(ImDrawVert);
             auto const actual_size = next_power_of_two(size);
-            info("[ImGui] Reallocating vertex buffer to {} bytes", actual_size);
+            info("[ImGui] Reallocating vertex buffer to {}", human_readable_bytes(actual_size));
 
             auto created =
                     Buffer::create(renderer.context(), BufferCreateInfo{
