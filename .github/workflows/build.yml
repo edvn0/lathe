@@ -1,10 +1,26 @@
 name: ci
 
+# Skipped for commits that touch no source or build input (docs, etc.). If ci becomes a required status check, a skipped
+# workflow leaves it pending; switch to a paths-filter job in that case.
 on:
   push:
     branches:
       - main
+    paths: &paths
+      - "**.cxx"
+      - "**.hxx"
+      - "**.slang"
+      - "**/CMakeLists.txt"
+      - "**.cmake"
+      - "**.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "Dockerfile"
+      - "tools/**"
+      - ".clang-tidy"
+      - ".github/workflows/**"
   pull_request:
+    paths: *paths
 
 permissions:
   contents: read
@@ -58,7 +74,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up environment
         run: |
@@ -168,7 +184,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up environment
         run: |
