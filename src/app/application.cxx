@@ -180,6 +180,39 @@ namespace {
         buffer[length] = '\0';
     }
 
+    // Bullets get their own collapsible group in the Hierarchy since they spawn in bursts.
+    constexpr std::string_view bullets_group_label = "Bullets";
+
+    // The Hierarchy's nodes: every entity with a Transform and a name, each once. Bullets go in group 0.
+    [[nodiscard]] auto collect_hierarchy_nodes(entt::registry const &registry) -> std::vector<HierarchyModel::Node> {
+        std::vector<HierarchyModel::Node> nodes;
+        std::unordered_set<entt::entity> listed;
+
+        auto const add = [&](entt::entity entity) {
+            // An entity carrying both Meta and GeneratedMeta is listed once.
+            if (!listed.insert(entity).second) {
+                return;
+            }
+
+            auto const *parent = registry.try_get<Components::Parent>(entity);
+            nodes.push_back(HierarchyModel::Node{
+                    .entity = entity,
+                    .parent = parent != nullptr ? parent->entity : entt::entity{entt::null},
+                    .name = entity_display_name(registry, entity),
+                    .group = registry.all_of<Components::BulletTag>(entity) ? 0U : HierarchyModel::no_group,
+            });
+        };
+
+        for (auto const entity: registry.view<Components::Transform const, Components::GeneratedMeta const>()) {
+            add(entity);
+        }
+        for (auto const entity: registry.view<Components::Transform const, Components::Meta const>()) {
+            add(entity);
+        }
+
+        return nodes;
+    }
+
     // Writes to GeneratedMeta when the entity has one, since it wins in entity_display_name(), else to Meta.
     // Surrounding whitespace is trimmed; an empty name is ignored.
     auto rename_entity(entt::registry &registry, entt::entity entity, std::string_view name) -> void {
@@ -807,23 +840,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         auto &registry = active_scene()->get_registry();
 
-        auto const to_lower = [](std::string_view s) {
-            std::string out(s);
-            std::ranges::transform(out, out.begin(),
-                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            return out;
-        };
-        auto const search_lower = to_lower(hierarchy_search);
-        auto const matches_filter = [&](char const *name) {
-            if (search_lower.empty()) {
-                return true;
-            }
-            if (name == nullptr) {
-                return false;
-            }
-            return to_lower(name).find(search_lower) != std::string::npos;
-        };
-
         {
             float const icon_sz = ImGui::GetTextLineHeight();
             float const frame_h = ImGui::GetFrameHeight();
@@ -873,74 +889,18 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             return {.icon = gui::EditorIcon::empty, .tint = ImVec4(0.60F, 0.60F, 0.64F, 1.0F)};
         };
 
-        // Bullets are grouped under one collapsible node since they spawn in bursts.
-        auto const bullet_view =
-                registry.view<Components::Transform, Components::GeneratedMeta, Components::BulletTag>();
-        auto const bullet_count = static_cast<std::uint32_t>(std::distance(bullet_view.begin(), bullet_view.end()));
-
-        auto const meta_view =
-                registry.view<Components::Transform, Components::Meta>(entt::exclude<Components::BulletTag>);
-        auto const generated_view =
-                registry.view<Components::Transform, Components::GeneratedMeta>(entt::exclude<Components::BulletTag>);
-
-        // Dedup so an entity carrying both Meta and GeneratedMeta isn't listed twice (duplicate ImGui ID).
-        std::vector<entt::entity> listed_entities;
-        listed_entities.reserve(static_cast<std::size_t>(std::distance(generated_view.begin(), generated_view.end())) +
-                                static_cast<std::size_t>(std::distance(meta_view.begin(), meta_view.end())));
-        std::unordered_set<entt::entity> listed_set;
-
-        for (auto const entity: generated_view) {
-            listed_entities.push_back(entity);
-            listed_set.insert(entity);
+        // Rebuilt only when the scene's entities, names or parents change; every other frame lays out just the
+        // rows the clipper shows.
+        if (auto const *scene = active_scene();
+            scene != hierarchy_model_scene || scene->hierarchy_revision() != hierarchy_model_revision) {
+            hierarchy_model_scene = scene;
+            hierarchy_model_revision = scene->hierarchy_revision();
+            hierarchy_model.rebuild(collect_hierarchy_nodes(registry), {std::string{bullets_group_label}});
         }
-        for (auto const entity: meta_view) {
-            if (listed_set.insert(entity).second) {
-                listed_entities.push_back(entity);
-            }
-        }
-
-        std::unordered_map<entt::entity, std::vector<entt::entity>> children_of;
-        std::vector<entt::entity> root_entities;
-        root_entities.reserve(listed_entities.size());
-
-        for (auto const entity: listed_entities) {
-            auto const *parent = registry.try_get<Components::Parent>(entity);
-            bool const has_listed_parent = parent != nullptr && registry.valid(parent->entity) &&
-                                           registry.any_of<Components::Meta, Components::GeneratedMeta>(parent->entity);
-            if (has_listed_parent) {
-                children_of[parent->entity].push_back(entity);
-            } else {
-                root_entities.push_back(entity);
-            }
-        }
-
-        // A parent stays visible while filtering if it or any descendant matches.
-        std::unordered_map<entt::entity, bool> match_cache;
-        std::function<bool(entt::entity)> subtree_matches = [&](entt::entity entity) -> bool {
-            if (auto const cached = match_cache.find(entity); cached != match_cache.end()) {
-                return cached->second;
-            }
-            // Seeded before recursing so a cyclic Parent chain terminates.
-            match_cache[entity] = true;
-
-            bool result = matches_filter(entity_display_name(registry, entity).c_str());
-            if (!result) {
-                if (auto const it = children_of.find(entity); it != children_of.end()) {
-                    for (auto const child: it->second) {
-                        if (subtree_matches(child)) {
-                            result = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            match_cache[entity] = result;
-            return result;
-        };
+        hierarchy_model.set_filter(hierarchy_search);
 
         // Actions picked from the context menus are applied after the tree is drawn, so the registry isn't mutated
-        // while the views are being iterated.
+        // while the rows are being drawn.
         enum class HierarchyAction : std::uint8_t { none, add_child, duplicate, remove, reparent };
         HierarchyAction pending_action = HierarchyAction::none;
         // add_child: the new entity's parent (entt::null = root).
@@ -949,18 +909,16 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         entt::entity action_target = entt::null;
         entt::entity drag_reparent_source = entt::null;
 
-        std::size_t row_index = 0;
-
         auto &selection = selection_context();
         // The selection can outlive its entities (deleted, or the registry swapped by play/stop).
         selection.retain_if([&](entt::entity entity) { return registry.valid(entity); });
 
-        // Rows in draw order. ImGui's multi-select identifies each row by its index here, and reports shift-click
-        // ranges in those indices.
-        std::vector<entt::entity> drawn_rows;
-        drawn_rows.reserve(listed_entities.size() + bullet_count);
+        // One row per visible line, in draw order. Multi-select identifies each row by its index here and reports
+        // shift-click ranges in those indices; group rows have no entity and are skipped.
+        auto const rows = hierarchy_model.rows();
         // Row clicked this frame; becomes the primary entity so the Inspector follows the click.
         entt::entity clicked_entity = entt::null;
+        bool open_context_menu = false;
 
         auto const begin_rename = [&](entt::entity entity) {
             renaming_entity = entity;
@@ -968,56 +926,89 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             rename_needs_focus = true;
         };
 
-        // Draws one row, plus a tree node with the entity's children if it has any.
-        std::function<void(entt::entity)> draw_entity_node = [&](entt::entity entity) {
-            if (!subtree_matches(entity)) {
-                return;
-            }
+        float const row_height = ImGui::GetFrameHeight();
+        float const icon_size = ImGui::GetTextLineHeight();
 
+        auto const draw_alternate_background = [&](std::size_t row_index) {
+            if (row_index % 2 == 1) {
+                ImVec2 const row_screen_pos = ImGui::GetCursorScreenPos();
+                ImGui::GetWindowDrawList()->AddRectFilled(
+                        row_screen_pos,
+                        ImVec2(row_screen_pos.x + ImGui::GetContentRegionAvail().x, row_screen_pos.y + row_height),
+                        ImGui::GetColorU32(ImGuiCol_TableRowBgAlt));
+            }
+        };
+
+        // A collapsible row standing for a group, e.g. "Bullets (12)". Not selectable.
+        auto const draw_group_row = [&](HierarchyModel::Row const &row) {
+            ImGui::PushID("hierarchy_group");
+            ImGui::PushID(static_cast<int>(row.group));
+
+            ImVec2 const row_pos = ImGui::GetCursorPos();
+
+            // The leading space and FramePadding give the node the same height as the Selectable rows.
+            ImGui::SetNextItemOpen(row.expanded, ImGuiCond_Always);
+            bool const open = ImGui::TreeNodeEx(" ##group_node", ImGuiTreeNodeFlags_SpanAvailWidth |
+                                                                          ImGuiTreeNodeFlags_FramePadding |
+                                                                          ImGuiTreeNodeFlags_NoTreePushOnOpen);
+            if (open != row.expanded) {
+                hierarchy_model.set_group_expanded(row.group, open);
+            }
+            ImVec2 const after_row_pos = ImGui::GetCursorPos();
+
+            float const label_x = row_pos.x + ImGui::GetTreeNodeToLabelSpacing();
+            ImGui::SetCursorPos(ImVec2(label_x, row_pos.y + (row_height - icon_size) * 0.5F));
+            ImGui::ImageWithBg(editor_icons->texture(gui::EditorIcon::folder), ImVec2(icon_size, icon_size),
+                               ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(0.95F, 0.80F, 0.45F, 1.0F));
+            ImGui::SetCursorPos(ImVec2(label_x + icon_size + style.ItemInnerSpacing.x,
+                                       row_pos.y + (row_height - ImGui::GetTextLineHeight()) * 0.5F));
+            auto const label = hierarchy_model.group_label(row.group);
+            ImGui::Text("%.*s (%zu)", static_cast<int>(label.size()), label.data(),
+                        hierarchy_model.group_size(row.group));
+
+            ImGui::SetCursorPos(after_row_pos);
+            ImGui::PopID();
+            ImGui::PopID();
+        };
+
+        // One entity's row: a tree node when it has children (its children are rows of their own), a Selectable
+        // otherwise.
+        auto const draw_entity_row = [&](HierarchyModel::Row const &row, std::size_t row_index) {
+            auto const entity = row.entity;
             auto const name = entity_display_name(registry, entity);
-            auto const child_it = children_of.find(entity);
-            bool const has_children = child_it != children_of.end() && !child_it->second.empty();
 
             auto visual = visual_for(entity);
-            if (has_children && visual.icon == gui::EditorIcon::empty) {
+            if (row.has_children && visual.icon == gui::EditorIcon::empty) {
                 // Pure grouping entity.
                 visual = {.icon = gui::EditorIcon::folder, .tint = ImVec4(0.95F, 0.80F, 0.45F, 1.0F)};
             }
 
             ImGui::PushID(static_cast<int>(entity));
 
-            float const row_height = ImGui::GetFrameHeight();
-            float const icon_size = ImGui::GetTextLineHeight();
             ImVec2 const row_pos = ImGui::GetCursorPos();
-            ImVec2 const row_screen_pos = ImGui::GetCursorScreenPos();
             float const avail_width = ImGui::GetContentRegionAvail().x;
-
-            if (row_index++ % 2 == 1) {
-                ImGui::GetWindowDrawList()->AddRectFilled(
-                        row_screen_pos, ImVec2(row_screen_pos.x + avail_width, row_screen_pos.y + row_height),
-                        ImGui::GetColorU32(ImGuiCol_TableRowBgAlt));
-            }
 
             bool const is_selected = selection.contains(entity);
             float label_x = row_pos.x + style.FramePadding.x;
             ImVec2 next_row_pos;
-            bool open = false;
 
-            if (has_children) {
+            ImGui::SetNextItemSelectionUserData(static_cast<ImGuiSelectionUserData>(row_index));
+
+            if (row.has_children) {
                 ImGuiTreeNodeFlags const flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow |
-                                                 ImGuiTreeNodeFlags_FramePadding |
+                                                 ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_NoTreePushOnOpen |
                                                  (is_selected ? ImGuiTreeNodeFlags_Selected : ImGuiTreeNodeFlags_None);
-                // The leading space and FramePadding give the node the same height as the Selectable rows.
-                // OpenOnArrow: clicking the row selects, only the arrow expands.
-                ImGui::SetNextItemSelectionUserData(static_cast<ImGuiSelectionUserData>(drawn_rows.size()));
-                drawn_rows.push_back(entity);
-                open = ImGui::TreeNodeEx(" ##node", flags);
+                // See draw_group_row for the leading space. OpenOnArrow: clicking the row selects, only the arrow
+                // expands.
+                ImGui::SetNextItemOpen(row.expanded, ImGuiCond_Always);
+                bool const open = ImGui::TreeNodeEx(" ##node", flags);
+                if (open != row.expanded) {
+                    hierarchy_model.set_expanded(entity, open);
+                }
                 next_row_pos = ImGui::GetCursorPos();
                 label_x = row_pos.x + ImGui::GetTreeNodeToLabelSpacing();
             } else {
                 // Selection changes arrive as multi-select requests, so the return value isn't needed.
-                ImGui::SetNextItemSelectionUserData(static_cast<ImGuiSelectionUserData>(drawn_rows.size()));
-                drawn_rows.push_back(entity);
                 static_cast<void>(ImGui::Selectable("##row", is_selected, ImGuiSelectableFlags_None,
                                                     ImVec2(avail_width, row_height)));
                 next_row_pos = ImGui::GetCursorPos();
@@ -1031,7 +1022,10 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
 
             // Multi-select already selects an unselected row on right-click, so the menu acts on the selection.
-            ImGui::OpenPopupOnItemClick("entity_context", ImGuiPopupFlags_MouseButtonRight);
+            if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                hierarchy_context_entity = entity;
+                open_context_menu = true;
+            }
 
             if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
                 ImGui::SetDragDropPayload("HIERARCHY_ENTITY", &entity, sizeof(entity));
@@ -1084,44 +1078,15 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
 
             ImGui::SetCursorPos(next_row_pos);
-
-            if (has_children && open) {
-                for (auto const child: child_it->second) {
-                    draw_entity_node(child);
-                }
-                ImGui::TreePop();
-            }
-
-            if (ImGui::BeginPopup("entity_context")) {
-                auto const count = selection.size();
-
-                if (ImGui::MenuItem("Add Child Entity")) {
-                    pending_action = HierarchyAction::add_child;
-                    action_target = entity;
-                }
-                if (ImGui::MenuItem("Rename", "F2")) {
-                    begin_rename(entity);
-                }
-                // Duplicate and Delete act on the whole selection, which includes this row.
-                if (ImGui::MenuItem(count > 1 ? "Duplicate Selected" : "Duplicate", "Ctrl+D")) {
-                    pending_action = HierarchyAction::duplicate;
-                }
-                ImGui::Separator();
-                if (ImGui::MenuItem(count > 1 ? "Delete Selected" : "Delete", "Del")) {
-                    pending_action = HierarchyAction::remove;
-                }
-                ImGui::EndPopup();
-            }
-
             ImGui::PopID();
         };
 
-        auto const total_count = bullet_count + static_cast<std::uint32_t>(listed_entities.size());
+        auto const total_count = hierarchy_model.node_count();
         if (auto const selected_count = selection.size(); selected_count > 1) {
-            ImGui::TextDisabled("%u %s, %zu selected", total_count, total_count == 1 ? "entity" : "entities",
+            ImGui::TextDisabled("%zu %s, %zu selected", total_count, total_count == 1 ? "entity" : "entities",
                                 selected_count);
         } else {
-            ImGui::TextDisabled("%u %s", total_count, total_count == 1 ? "entity" : "entities");
+            ImGui::TextDisabled("%zu %s", total_count, total_count == 1 ? "entity" : "entities");
         }
 
         // Applies one BeginMultiSelect()/EndMultiSelect() batch as a single selection change.
@@ -1142,25 +1107,21 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         if (!request.Selected) {
                             continue;
                         }
-                        // Ctrl+A: everything the filter shows, collapsed children and bullets included.
-                        for (auto const entity: listed_entities) {
-                            if (matches_filter(entity_display_name(registry, entity).c_str())) {
-                                transaction.set(entity, true);
-                            }
-                        }
-                        for (auto const entity: bullet_view) {
-                            if (matches_filter(registry.get<Components::GeneratedMeta>(entity).name.c_str())) {
-                                transaction.set(entity, true);
-                            }
+                        // Ctrl+A: everything the filter matches, collapsed children and bullets included.
+                        for (auto const entity: hierarchy_model.matching_entities()) {
+                            transaction.set(entity, true);
                         }
                     } else if (request.Type == ImGuiSelectionRequestType_SetRange) {
                         auto const first = std::max<ImGuiSelectionUserData>(
                                 std::min(request.RangeFirstItem, request.RangeLastItem), 0);
                         auto const last = std::min<ImGuiSelectionUserData>(
                                 std::max(request.RangeFirstItem, request.RangeLastItem),
-                                static_cast<ImGuiSelectionUserData>(drawn_rows.size()) - 1);
+                                static_cast<ImGuiSelectionUserData>(rows.size()) - 1);
                         for (auto row = first; row <= last; ++row) {
-                            transaction.set(drawn_rows[static_cast<std::size_t>(row)], request.Selected);
+                            if (auto const entity = rows[static_cast<std::size_t>(row)].entity;
+                                entity != entt::null) {
+                                transaction.set(entity, request.Selected);
+                            }
                         }
                     }
                 }
@@ -1170,47 +1131,40 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         constexpr ImGuiMultiSelectFlags multi_select_flags = ImGuiMultiSelectFlags_ClearOnEscape |
                                                              ImGuiMultiSelectFlags_ClearOnClickVoid |
                                                              ImGuiMultiSelectFlags_BoxSelect1d;
-        apply_selection_requests(ImGui::BeginMultiSelect(multi_select_flags, static_cast<int>(selection.size()),
-                                                         static_cast<int>(total_count)));
+        auto *const multi_select_io = ImGui::BeginMultiSelect(
+                multi_select_flags, static_cast<int>(selection.size()), static_cast<int>(rows.size()));
+        apply_selection_requests(multi_select_io);
 
-        bool const any_bullet_matches =
-                search_lower.empty() || std::ranges::any_of(bullet_view, [&](entt::entity e) {
-                    return matches_filter(registry.get<Components::GeneratedMeta>(e).name.c_str());
-                });
+        float const rows_x = ImGui::GetCursorPosX();
 
-        if (bullet_count > 0 && any_bullet_matches) {
-            ImGui::PushID("bullets_group");
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(rows.size()));
 
-            float const row_height = ImGui::GetFrameHeight();
-            float const icon_size = ImGui::GetTextLineHeight();
-            ImVec2 const row_pos = ImGui::GetCursorPos();
-
-            // See draw_entity_node for the leading space and FramePadding.
-            bool const open = ImGui::TreeNodeEx(" ##bullets_node",
-                                                ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding);
-            ImVec2 const after_tree_pos = ImGui::GetCursorPos();
-
-            float const label_x = row_pos.x + ImGui::GetTreeNodeToLabelSpacing();
-            ImGui::SetCursorPos(ImVec2(label_x, row_pos.y + (row_height - icon_size) * 0.5F));
-            ImGui::ImageWithBg(editor_icons->texture(gui::EditorIcon::folder), ImVec2(icon_size, icon_size),
-                               ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(0.95F, 0.80F, 0.45F, 1.0F));
-            ImGui::SetCursorPos(ImVec2(label_x + icon_size + style.ItemInnerSpacing.x,
-                                       row_pos.y + (row_height - ImGui::GetTextLineHeight()) * 0.5F));
-            ImGui::Text("Bullets (%u)", bullet_count);
-
-            ImGui::SetCursorPos(after_tree_pos);
-
-            if (open) {
-                for (auto const entity: bullet_view) {
-                    draw_entity_node(entity);
-                }
-                ImGui::TreePop();
+        // Rows that must be submitted even when scrolled away: the shift-click range anchor, and the row with the
+        // rename field so it keeps keyboard focus.
+        if (multi_select_io->RangeSrcItem != -1) {
+            clipper.IncludeItemByIndex(static_cast<int>(multi_select_io->RangeSrcItem));
+        }
+        if (renaming_entity != entt::null) {
+            if (auto const renaming_row = hierarchy_model.row_of(renaming_entity); renaming_row >= 0) {
+                clipper.IncludeItemByIndex(static_cast<int>(renaming_row));
             }
-            ImGui::PopID();
         }
 
-        for (auto const entity: root_entities) {
-            draw_entity_node(entity);
+        while (clipper.Step()) {
+            for (auto row_index = clipper.DisplayStart; row_index < clipper.DisplayEnd; ++row_index) {
+                auto const index = static_cast<std::size_t>(row_index);
+                auto const &row = rows[index];
+
+                ImGui::SetCursorPosX(rows_x + (style.IndentSpacing * static_cast<float>(row.depth)));
+                draw_alternate_background(index);
+
+                if (row.entity == entt::null) {
+                    draw_group_row(row);
+                } else {
+                    draw_entity_row(row, index);
+                }
+            }
         }
 
         // The rows end with SetCursorPos(); ImGui asserts unless a real item follows.
@@ -1233,6 +1187,37 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             selection.modify([&](SelectionContext::Transaction &transaction) {
                 transaction.set_primary(clicked_entity);
             });
+        }
+
+        if (open_context_menu) {
+            ImGui::OpenPopup("entity_context");
+        }
+
+        if (ImGui::BeginPopup("entity_context")) {
+            auto const entity = hierarchy_context_entity;
+
+            if (!registry.valid(entity)) {
+                ImGui::CloseCurrentPopup();
+            } else {
+                auto const count = selection.size();
+
+                if (ImGui::MenuItem("Add Child Entity")) {
+                    pending_action = HierarchyAction::add_child;
+                    action_target = entity;
+                }
+                if (ImGui::MenuItem("Rename", "F2")) {
+                    begin_rename(entity);
+                }
+                // Duplicate and Delete act on the whole selection, which includes this row.
+                if (ImGui::MenuItem(count > 1 ? "Duplicate Selected" : "Duplicate", "Ctrl+D")) {
+                    pending_action = HierarchyAction::duplicate;
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem(count > 1 ? "Delete Selected" : "Delete", "Del")) {
+                    pending_action = HierarchyAction::remove;
+                }
+            }
+            ImGui::EndPopup();
         }
 
         // Shortcuts while the Hierarchy is focused and no text field has the keyboard.
@@ -1300,10 +1285,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         registry.emplace<Components::Parent>(clone, Components::Parent{.entity = parent});
                     }
 
-                    if (auto const it = children_of.find(source); it != children_of.end()) {
-                        for (auto const child: it->second) {
-                            duplicate_subtree(child, clone);
-                        }
+                    for (auto const child: hierarchy_model.children_of(source)) {
+                        duplicate_subtree(child, clone);
                     }
 
                     return clone;
@@ -1324,10 +1307,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     if (!registry.valid(target)) {
                         return;
                     }
-                    if (auto const it = children_of.find(target); it != children_of.end()) {
-                        for (auto const child: it->second) {
-                            delete_subtree(child);
-                        }
+                    for (auto const child: hierarchy_model.children_of(target)) {
+                        delete_subtree(child);
                     }
 
                     // A StreamedModelTag entity's model reference is released by Scene's on_destroy hooks.

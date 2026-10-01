@@ -23,6 +23,7 @@
 #include "gpu/context.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "scene/editor_camera.hxx"
+#include "scene/hierarchy_model.hxx"
 #include "rendering/engine_models.hxx"
 #include "app/game.hxx"
 #include "scene/input_events.hxx"
@@ -149,6 +150,15 @@ struct Application {
     bool screenshot_viewport_only = true;
 
     std::string hierarchy_search;
+
+    // The Hierarchy panel's tree, rebuilt only when the active scene or its hierarchy_revision() changes.
+    HierarchyModel hierarchy_model;
+    Scene const *hierarchy_model_scene = nullptr;
+    std::uint64_t hierarchy_model_revision = 0;
+
+    // The row whose context menu is open. The menu is drawn outside the clipped rows, so it stays open while that
+    // row scrolls out of view.
+    entt::entity hierarchy_context_entity = entt::null;
 
     float light_azimuth_degrees = 30.0F;
     float light_elevation_degrees = 55.0F;
