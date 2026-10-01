@@ -8,6 +8,7 @@ add_library(
     STATIC
         camera_path.cxx
         editor_camera.cxx
+        hierarchy_model.cxx
         selection_context.cxx
 )
 

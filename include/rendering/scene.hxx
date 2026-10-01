@@ -9,6 +9,7 @@
 #include <glm/mat4x4.hpp>
 
 #include <any>
+#include <cstdint>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -49,9 +50,15 @@ public:
     // Removes the component if `material_override` is empty.
     auto set_material_override(entt::entity entity, Components::MaterialOverride material_override) -> void;
 
+    // Changes whenever an entity's place or name in the editor hierarchy may have changed: a Transform, name, Parent
+    // or BulletTag added or removed, or a name or Parent edited. Values come from one process-wide counter, so two
+    // scenes never share one.
+    [[nodiscard]] auto hierarchy_revision() const noexcept -> std::uint64_t { return hierarchy_revision_; }
+
 private:
     entt::registry registry;
     entt::sigh<void()> lights_changed_signal_;
+    std::uint64_t hierarchy_revision_ = 0;
 
 public:
     // Declared after `registry` so it is destroyed first; its destructor uses the registry.
@@ -75,6 +82,9 @@ private:
     auto on_streamed_model_tag_destroyed(entt::registry &, entt::entity) -> void;
 
     auto connect_light_signals() -> void;
+
+    auto mark_hierarchy_changed(entt::registry &, entt::entity) -> void;
+    auto connect_hierarchy_signals() -> void;
 
     template<typename T>
     friend class detail::Entity;

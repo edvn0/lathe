@@ -8,11 +8,17 @@
 #include "rendering/script_storage.hxx"
 #include "core/thread_pool.hxx"
 
+#include <atomic>
 #include <future>
 #include <unordered_map>
 #include <utility>
 
 namespace {
+    [[nodiscard]] auto next_hierarchy_revision() noexcept -> std::uint64_t {
+        static std::atomic<std::uint64_t> revision{0};
+        return revision.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+
     // ScriptHandle has no std::hash, so group by index; get() revalidates the full handle.
     auto group_entities_by_script(entt::registry &registry)
             -> std::unordered_map<std::uint32_t, std::pair<ScriptHandle, std::vector<entt::entity>>> {
@@ -42,8 +48,9 @@ namespace {
     }
 } // namespace
 
-Scene::Scene(Renderer &renderer) : renderer_(renderer) {
+Scene::Scene(Renderer &renderer) : hierarchy_revision_(next_hierarchy_revision()), renderer_(renderer) {
     connect_light_signals();
+    connect_hierarchy_signals();
     entt::sink{lights_changed_signal_}.connect<&Renderer::mark_lights_dirty>(renderer);
 }
 
@@ -72,6 +79,31 @@ auto Scene::get_scripts() noexcept -> ScriptStorage & { return renderer_.script_
 auto Scene::get_scripts() const noexcept -> ScriptStorage const & { return renderer_.script_storage(); }
 
 auto Scene::mark_lights_dirty(entt::registry &, entt::entity) -> void { lights_changed_signal_.publish(); }
+
+auto Scene::mark_hierarchy_changed(entt::registry &, entt::entity) -> void {
+    hierarchy_revision_ = next_hierarchy_revision();
+}
+
+auto Scene::connect_hierarchy_signals() -> void {
+    // Transform changes don't move an entity in the tree, so its updates aren't connected.
+    registry.on_construct<Components::Transform>().connect<&Scene::mark_hierarchy_changed>(*this);
+    registry.on_destroy<Components::Transform>().connect<&Scene::mark_hierarchy_changed>(*this);
+
+    registry.on_construct<Components::Meta>().connect<&Scene::mark_hierarchy_changed>(*this);
+    registry.on_update<Components::Meta>().connect<&Scene::mark_hierarchy_changed>(*this);
+    registry.on_destroy<Components::Meta>().connect<&Scene::mark_hierarchy_changed>(*this);
+
+    registry.on_construct<Components::GeneratedMeta>().connect<&Scene::mark_hierarchy_changed>(*this);
+    registry.on_update<Components::GeneratedMeta>().connect<&Scene::mark_hierarchy_changed>(*this);
+    registry.on_destroy<Components::GeneratedMeta>().connect<&Scene::mark_hierarchy_changed>(*this);
+
+    registry.on_construct<Components::Parent>().connect<&Scene::mark_hierarchy_changed>(*this);
+    registry.on_update<Components::Parent>().connect<&Scene::mark_hierarchy_changed>(*this);
+    registry.on_destroy<Components::Parent>().connect<&Scene::mark_hierarchy_changed>(*this);
+
+    registry.on_construct<Components::BulletTag>().connect<&Scene::mark_hierarchy_changed>(*this);
+    registry.on_destroy<Components::BulletTag>().connect<&Scene::mark_hierarchy_changed>(*this);
+}
 
 auto Scene::on_transform_changed(entt::registry &reg, entt::entity entity) -> void {
     if (reg.any_of<Components::PointLight, Components::SpotLight>(entity)) {
