@@ -298,7 +298,7 @@ impl Config {
 
         let mut command = Command::new("docker");
 
-        command.arg("run").arg("--rm");
+        command.arg("run").arg("--rm").arg("--init");
 
         if interactive {
             command.arg("-it");
