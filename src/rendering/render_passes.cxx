@@ -729,7 +729,9 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::DepthPrepass);
+        bool const late = info.phase == DepthPrepassPhase::late;
+        auto const stage =
+                static_cast<std::uint32_t>(late ? RenderStage::DepthPrepassLate : RenderStage::DepthPrepass);
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, context.timestamp_query_pool,
                              stage * 2);
 
@@ -741,13 +743,14 @@ namespace render_pass {
                 .resolveMode = VK_RESOLVE_MODE_NONE,
                 .resolveImageView = VK_NULL_HANDLE,
                 .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .loadOp = late ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                 .clearValue = {},
         };
 
+        // The late phase begins rendering even with nothing to draw, so the resolve sees the final depth.
         if (info.resolved_depth != nullptr) {
-            depth_attachment.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+            depth_attachment.resolveMode = info.depth_resolve_mode;
             depth_attachment.resolveImageView = info.resolved_depth->view();
             depth_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
         }
@@ -801,6 +804,32 @@ namespace render_pass {
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                              context.timestamp_query_pool, stage * 2 + 1);
         return {};
+    }
+
+    auto depth_prepass_phase_barrier(Context const &context, Image const &depth, Image const *resolved_depth) noexcept
+            -> void {
+        constexpr VkPipelineStageFlags2 fragment_tests =
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+
+        // Multisample resolves, depth included, run in COLOR_ATTACHMENT_OUTPUT: they read `depth` and write
+        // `resolved_depth` there.
+        transition_image_layout(context.command_buffer, depth.image(), VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                fragment_tests | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                fragment_tests | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
+
+        if (resolved_depth != nullptr) {
+            transition_image_layout(context.command_buffer, resolved_depth->image(),
+                                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                    VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
+        }
     }
 
     auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)

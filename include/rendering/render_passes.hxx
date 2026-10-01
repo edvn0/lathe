@@ -90,11 +90,26 @@ namespace render_pass {
         Image const *resolved_depth = nullptr;
     };
 
+    // Two-phase occlusion culling splits the prepass (docs/occlusion-culling.md): `early` clears and draws the
+    // phase-1 instances, `late` loads that depth and adds the phase-2 ones. `only` is the single pass without it.
+    enum class DepthPrepassPhase : std::uint8_t {
+        only,
+        early,
+        late,
+    };
+
     struct DepthPrepassInfo {
         Image const &depth;
         Image const *resolved_depth = nullptr;
         VkExtent2D extent{};
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+
+        // only/early time RenderStage::DepthPrepass and clear; late times RenderStage::DepthPrepassLate and loads.
+        DepthPrepassPhase phase = DepthPrepassPhase::only;
+
+        // How `depth` resolves into `resolved_depth` when multisampled. MIN keeps each pixel's farthest sample
+        // (reverse-Z), which the Hi-Z needs to stay conservative; SAMPLE_ZERO is what GTAO and the rest expect.
+        VkResolveModeFlagBits depth_resolve_mode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
 
         DrawBuffers draws;
         DrawCounts counts;
@@ -248,6 +263,12 @@ namespace render_pass {
     auto shadow(Context const &context, ShadowPassInfo const &info) -> std::expected<void, RendererError>;
 
     auto depth_prepass(Context const &context, DepthPrepassInfo const &info) -> std::expected<void, RendererError>;
+
+    // Orders the early prepass's depth writes and resolve before the late prepass loads and re-resolves them. `depth`
+    // is the (possibly multisampled) attachment and `resolved_depth` its resolve target, or null at 1x. Both stay in
+    // DEPTH_ATTACHMENT_OPTIMAL.
+    auto depth_prepass_phase_barrier(Context const &context, Image const &depth, Image const *resolved_depth) noexcept
+            -> void;
 
     auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)
             -> std::expected<std::optional<AoTextureIndex>, RendererError>;
