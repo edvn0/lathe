@@ -89,34 +89,36 @@ namespace {
 
         if (edges.bottom.size() == 2 && edges.top.size() == 2 && edges.left.empty() && edges.right.empty()) {
             // Same diagonal as an unmerged cell.
-            emit({min_column, min_row}, {min_column, max_row}, {max_column, max_row});
-            emit({min_column, min_row}, {max_column, max_row}, {max_column, min_row});
+            emit({.column = min_column, .row = min_row}, {.column = min_column, .row = max_row},
+                 {.column = max_column, .row = max_row});
+            emit({.column = min_column, .row = min_row}, {.column = max_column, .row = max_row},
+                 {.column = max_column, .row = min_row});
             return;
         }
 
         auto const fan_edge = [&](std::uint32_t edge_column, std::vector<std::uint32_t> const &rows, GridPoint apex) {
-            GridPoint previous{edge_column, min_row};
+            GridPoint previous{.column = edge_column, .row = min_row};
 
             for (auto const row: rows) {
-                GridPoint const next{edge_column, row};
+                GridPoint const next{.column = edge_column, .row = row};
                 emit(previous, next, apex);
                 previous = next;
             }
 
-            emit(previous, {edge_column, max_row}, apex);
+            emit(previous, {.column = edge_column, .row = max_row}, apex);
         };
 
         std::size_t bottom_begin = 0;
         std::size_t top_end = edges.top.size() - 1;
 
         if (!edges.left.empty()) {
-            fan_edge(min_column, edges.left, GridPoint{edges.bottom[1], min_row});
+            fan_edge(min_column, edges.left, GridPoint{.column = edges.bottom[1], .row = min_row});
             bottom_begin = 1;
         }
 
         if (!edges.right.empty()) {
             top_end = edges.top.size() - 2;
-            fan_edge(max_column, edges.right, GridPoint{edges.top[top_end], max_row});
+            fan_edge(max_column, edges.right, GridPoint{.column = edges.top[top_end], .row = max_row});
         }
 
         auto const bottom_end = edges.bottom.size() - 1;
@@ -128,10 +130,12 @@ namespace {
                     top == top_end || (bottom < bottom_end && edges.bottom[bottom + 1] <= edges.top[top + 1]);
 
             if (advance_bottom) {
-                emit({edges.bottom[bottom], min_row}, {edges.bottom[bottom + 1], min_row}, {edges.top[top], max_row});
+                emit({.column = edges.bottom[bottom], .row = min_row},
+                     {.column = edges.bottom[bottom + 1], .row = min_row}, {.column = edges.top[top], .row = max_row});
                 ++bottom;
             } else {
-                emit({edges.bottom[bottom], min_row}, {edges.top[top + 1], max_row}, {edges.top[top], max_row});
+                emit({.column = edges.bottom[bottom], .row = min_row}, {.column = edges.top[top + 1], .row = max_row},
+                     {.column = edges.top[top], .row = max_row});
                 ++top;
             }
         }
