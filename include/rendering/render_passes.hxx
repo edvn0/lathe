@@ -99,6 +99,14 @@ namespace render_pass {
         late,
     };
 
+    // Meshlet-level occlusion cull bits for DepthPrepassInfo/ForwardGeometryInfo::extra_cull_flags
+    // (docs/occlusion-culling.md, "Meshlet level"). Mirrors cull_*_bit in scene_types.slang.
+    inline constexpr std::uint32_t cull_occlusion = 4U;
+    inline constexpr std::uint32_t cull_skip_recorded = 8U;
+    inline constexpr std::uint32_t cull_record = 16U;
+    inline constexpr std::uint32_t cull_replay = 32U;
+    inline constexpr std::uint32_t cull_stats = 64U;
+
     struct DepthPrepassInfo {
         Image const &depth;
         Image const *resolved_depth = nullptr;
@@ -120,6 +128,11 @@ namespace render_pass {
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
+
+        // Meshlet-level occlusion: the OcclusionView (PC::occlusion) and the cull_* bits OR-ed into the opaque and
+        // mask draws when meshlet_culling is set. 0 / 0 when it is inactive.
+        VkDeviceAddress occlusion_view_address = 0;
+        std::uint32_t extra_cull_flags = 0;
 
         // Task/mesh pipelines and their instanced vertex-shader variants.
         PipelineNodeHandle opaque_pipeline{};
@@ -180,6 +193,12 @@ namespace render_pass {
 
         // Per-cluster light counts and lists; only read when the UBO enables clustered lighting.
         VkDeviceAddress cluster_lights_address = 0;
+
+        // Meshlet-level occlusion: the OcclusionView (PC::occlusion) and the cull_* bits OR-ed into the opaque and
+        // mask draws when meshlet_culling is set (cull_replay: forward draws exactly what the prepass phases
+        // recorded). Blend draws never take them. 0 / 0 when it is inactive.
+        VkDeviceAddress occlusion_view_address = 0;
+        std::uint32_t extra_cull_flags = 0;
 
         VkQueryPool pipeline_statistics_query_pool = VK_NULL_HANDLE;
 

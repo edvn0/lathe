@@ -1,9 +1,14 @@
 module meshlet_task;
 
 import scene_types;
+import hiz_occlusion;
 
 // Task stage shared by every meshlet scene pass, so all passes cull identically; forward depth-tests EQUAL
 // against the prepass, so any mismatch shows up as holes.
+//
+// With meshlet occlusion (docs/occlusion-culling.md, "Meshlet level") the depth prepass phases test each meshlet's sphere against
+// the Hi-Z and record a bit per emitted meshlet; forward replays those bits instead of testing, since no single
+// pyramid reproduces both phases' decisions.
 //
 // One workgroup covers up to meshlets_per_task meshlets of one instance. SV_GroupID (flattened over X/Y)
 // picks the (instance, meshlet chunk), each lane tests one meshlet, and survivors are compacted in lane order
@@ -18,6 +23,7 @@ public struct MeshletPayload
 
 groupshared MeshletPayload s_payload;
 groupshared uint s_visible[meshlets_per_task];
+groupshared uint s_occluded[meshlets_per_task];
 
 // wind_offset() moves a vertex at most wind_strength along each of X and Z, so sqrt(2) * wind_strength bounds
 // the displacement.
@@ -27,7 +33,10 @@ static const float wind_radius_scale = 1.41421356;
 // model matrix, which is only exact for uniform scale.
 static const float uniform_scale_tolerance = 1.01;
 
-bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet_index)
+// Frustum and normal-cone tests. Returns the meshlet's world-space bounding sphere (wind padding included) for the
+// occlusion test.
+bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet_index, out float3 centre,
+                     out float radius)
 {
     const GpuDraw draw = pc.draws[instance_index];
     const Meshlet meshlet = draw.meshlets[meshlet_index];
@@ -43,8 +52,8 @@ bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet
 
     const float wind_strength = abs(pc.materials[draw.material_index].wind_strength);
 
-    const float3 centre = mul(model, float4(meshlet.centre, 1.0)).xyz;
-    const float radius = meshlet.radius * max_scale + wind_strength * wind_radius_scale;
+    centre = mul(model, float4(meshlet.centre, 1.0)).xyz;
+    radius = meshlet.radius * max_scale + wind_strength * wind_radius_scale;
 
     if ((pc.cull_flags & cull_frustum_bit) != 0) {
         [unroll]
@@ -87,12 +96,51 @@ public void run_meshlet_task(PC pc, uint plane_offset, uint draw_index, uint3 gr
     const uint meshlet_index = meshlet_base + lane;
 
     bool visible = group_valid && meshlet_index < command.meshlet_count;
+    bool occluded = false;
 
-    if (visible) {
-        visible = meshlet_visible(pc, plane_offset, instance_index, meshlet_index);
+    const uint flags = pc.cull_flags;
+    const uint bitset_flags = cull_replay_bit | cull_skip_recorded_bit | cull_record_bit;
+
+    // Only dereferenced when a flag needs it: the shadow pass and the non-occlusion paths pass a null PC::occlusion.
+    Ptr<uint> bits = Ptr<uint>(nullptr);
+    uint bit_word = 0;
+    uint bit_mask = 0;
+
+    if (visible && (flags & bitset_flags) != 0) {
+        const uint bit = pc.draws[instance_index].meshlet_visibility_offset + meshlet_index;
+        bits = pc.occlusion[0].meshlet_visibility;
+        bit_word = bit >> 5u;
+        bit_mask = 1u << (bit & 31u);
+    }
+
+    if (visible && (flags & cull_replay_bit) != 0) {
+        // Forward: exactly what a prepass phase drew.
+        visible = (bits[bit_word] & bit_mask) != 0;
+    } else if (visible) {
+        if ((flags & cull_skip_recorded_bit) != 0 && (bits[bit_word] & bit_mask) != 0) {
+            // Phase 1 already emitted it; don't draw or count it twice.
+            visible = false;
+        }
+
+        float3 centre = float3(0.0);
+        float radius = 0.0;
+
+        if (visible) {
+            visible = meshlet_visible(pc, plane_offset, instance_index, meshlet_index, centre, radius);
+        }
+
+        if (visible && (flags & cull_occlusion_bit) != 0 && sphere_occluded(pc.occlusion[0], centre, radius)) {
+            visible = false;
+            occluded = true;
+        }
+
+        if (visible && (flags & cull_record_bit) != 0) {
+            InterlockedOr(bits[bit_word], bit_mask);
+        }
     }
 
     s_visible[lane] = visible ? 1u : 0u;
+    s_occluded[lane] = occluded ? 1u : 0u;
 
     if (lane == 0) {
         s_payload.instance_index = instance_index;
@@ -113,6 +161,18 @@ public void run_meshlet_task(PC pc, uint plane_offset, uint draw_index, uint3 gr
 
     if (visible) {
         s_payload.meshlet_offsets[slot] = lane;
+    }
+
+    if ((flags & cull_stats_bit) != 0 && lane == 0) {
+        uint occluded_count = 0;
+
+        for (uint i = 0; i < meshlets_per_task; ++i) {
+            occluded_count += s_occluded[i];
+        }
+
+        if (occluded_count != 0) {
+            InterlockedAdd(pc.occlusion[0].stats[0], occluded_count);
+        }
     }
 
     GroupMemoryBarrierWithGroupSync();

@@ -52,6 +52,7 @@
 #include "rendering/cluster_grid.hxx"
 #include "rendering/forward_target.hxx"
 #include "rendering/hiz_occlusion.hxx"
+#include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/render_passes.hxx"
 #include "rendering/render_stage.hxx"
@@ -138,6 +139,13 @@ struct FrameStats {
     std::uint32_t late_instance_count = 0;
     std::uint32_t occluded_instance_count = 0;
     bool occlusion_stats_valid = false;
+
+    // Meshlet-level occlusion (docs/occlusion-culling.md, "Meshlet level"), valid when meshlet_occlusion_stats_valid.
+    // Of the meshlets that pass the frustum and cone tests: deferred ones were hidden by last frame's Hi-Z in phase 1
+    // and retested in phase 2; occluded ones were hidden by this frame's phase-1 depth and are culled for good.
+    std::uint32_t deferred_meshlet_count = 0;
+    std::uint32_t occluded_meshlet_count = 0;
+    bool meshlet_occlusion_stats_valid = false;
 
     std::uint32_t model_submission_count = 0;
     std::uint32_t mesh_submission_count = 0;
@@ -607,6 +615,12 @@ struct Renderer final : public IMeshSink, public IModelSink {
     // inactive whatever occlusion_culling() says.
     [[nodiscard]] auto occlusion_culling_supported() const noexcept -> bool;
 
+    // Hi-Z occlusion of individual meshlets in the task shader (docs/occlusion-culling.md, "Meshlet level"). Off by
+    // default. Only active while occlusion_culling() and meshlet_culling() are on; the depth prepass phases record the
+    // meshlets they emit and the forward pass replays that record.
+    [[nodiscard]] auto meshlet_occlusion_culling() const noexcept -> bool { return meshlet_occlusion_culling_; }
+    auto set_meshlet_occlusion_culling(bool enabled) noexcept -> void { meshlet_occlusion_culling_ = enabled; }
+
     // A debugging aid: the stub modes check the two-phase draw-list plumbing independently of the Hi-Z test.
     [[nodiscard]] auto occlusion_test_mode() const noexcept -> OcclusionTestMode { return occlusion_test_mode_; }
     auto set_occlusion_test_mode(OcclusionTestMode mode) noexcept -> void;
@@ -659,7 +673,10 @@ private:
         VkDeviceAddress meshlet_data_address = 0;
 
         std::uint32_t material_index = 0;
-        std::uint32_t transform_index = 0;
+
+        // The first bit of this instance's meshlets in the frame's meshlet visibility bitset
+        // (include/rendering/meshlet_visibility.hxx); 0 and never read for instanced batches.
+        std::uint32_t meshlet_visibility_offset = 0;
     };
 
     static_assert(std::is_trivially_copyable_v<GpuDraw>);
@@ -684,8 +701,12 @@ private:
     struct alignas(16) GpuOcclusionView {
         glm::mat4 view_projection{1.0F};
 
-        // Reserved for meshlet-level occlusion (docs/occlusion-culling-m2.md); 0 until then.
+        // The frame's meshlet visibility bitset while meshlet occlusion is active, else 0 (docs/occlusion-culling.md,
+        // "Meshlet level").
         VkDeviceAddress meshlet_visibility_address = 0;
+
+        // The counter the task shader adds this view's occlusion rejections to: occlusion_stat_deferred_meshlets for
+        // view [0], occlusion_stat_occluded_meshlets for view [1]. 0 until a task shader needs it.
         VkDeviceAddress stats_address = 0;
 
         // The whole mip chain, read via sampled_2d_depth[...].Load(int3(texel, level)).
@@ -712,7 +733,9 @@ private:
     static constexpr std::uint32_t occlusion_stat_early = 1;
     static constexpr std::uint32_t occlusion_stat_candidates = 2;
     static constexpr std::uint32_t occlusion_stat_late = 3;
-    // 4 and 5 are reserved for meshlet-level occlusion (docs/occlusion-culling-m2.md).
+    // Accumulated by the task shader (meshlet_task.slang) through each view's stats_address.
+    static constexpr std::uint32_t occlusion_stat_deferred_meshlets = 4;
+    static constexpr std::uint32_t occlusion_stat_occluded_meshlets = 5;
     static constexpr std::uint32_t occlusion_stat_count = 8;
 
     // One cull workgroup per batch, so batches are capped at the guaranteed maxComputeWorkGroupCount[0].
@@ -795,9 +818,19 @@ private:
         Buffer occlusion_stats_readback_buffer{};
         bool occlusion_stats_pending = false;
         bool occlusion_stats_active = false;
+        bool meshlet_occlusion_stats_active = false;
 
         // Decided by prepare_frame; record_frame follows it.
         bool occlusion_active = false;
+
+        // Meshlet-level occlusion (docs/occlusion-culling.md, "Meshlet level"): one bit per meshlet of every opaque and
+        // mask meshlet instance, cleared in prepare_frame. The depth prepass phases set the bits of the meshlets they
+        // emit; the forward pass replays them. Grown on demand (power-of-two bytes); meshlet_visibility_words is this
+        // frame's size.
+        Buffer meshlet_visibility_buffer{};
+        std::uint32_t meshlet_visibility_capacity_words = 0;
+        std::uint32_t meshlet_visibility_words = 0;
+        bool meshlet_occlusion_active = false;
 
         // Camera planes first, then 6 per shadow cascade. A separate buffer rather than a UBO array to get an
         // unambiguous 16-byte stride.
@@ -1104,6 +1137,11 @@ private:
     auto record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
             -> std::expected<void, RendererError>;
 
+    // Makes the task shaders' writes to the meshlet visibility bitset visible to the next task shader pass that reads
+    // it (`dst_access` is read for forward, read | write for the late prepass phase, which also records).
+    auto record_meshlet_visibility_barrier(VkCommandBuffer command_buffer, RendererFrame const &frame,
+                                           VkAccessFlags2 dst_access) -> void;
+
     // Copies the occlusion statistics into the frame's readback buffer.
     auto record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void;
 
@@ -1221,6 +1259,8 @@ private:
     bool meshlet_culling_ = true;
     // Default off until the GPU checks in docs/occlusion-culling.md have passed.
     bool occlusion_culling_ = false;
+    bool meshlet_occlusion_culling_ = false;
+    bool meshlet_visibility_cap_warned_ = false;
     OcclusionTestMode occlusion_test_mode_ = OcclusionTestMode::hiz;
     bool clustered_lighting_ = true;
     bool cluster_debug_heatmap_ = false;

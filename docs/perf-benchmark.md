@@ -31,6 +31,7 @@ little about how passes compare on one.
                [--benchmark-warmup=60] [--benchmark-max-warmup=1200]
                [--seed=1337] [--benchmark-screenshots]
                [--cluster-grid=16x9x24:256] [--occlusion-culling=on|off]
+               [--meshlet-occlusion=on|off]
 ```
 
 `--benchmark-screenshots` saves one screenshot per keyframe into
@@ -51,6 +52,13 @@ should be bit-identical. `run_benchmark.sh` passes extra arguments through,
 e.g. `tools/perf/run_benchmark.sh <build dir> perf/on.json
 --occlusion-culling=on`. Comparing a base from before these stages existed is
 fine: `compare_benchmarks.py` lists stages new in head on their own.
+
+`--meshlet-occlusion=on|off` adds per-meshlet Hi-Z occlusion in the task shader
+on top of it (`docs/occlusion-culling.md`, "Meshlet level"; off by default, and
+inert unless `--occlusion-culling=on`). The JSON records it as
+`meshlet_occlusion`, true only when it was actually active. Compare it against
+an `--occlusion-culling=on` run with the same stage sum, and look at the forward
+pass's task/mesh invocations in Scene stats.
 
 ## Locally
 

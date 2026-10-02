@@ -780,13 +780,14 @@ namespace render_pass {
                 .light_count = 0,
                 ._padding = 0,
                 .cull_planes_address = info.cull_planes_address,
+                .occlusion_address = info.occlusion_view_address,
         };
 
         auto opaque_pc = pc;
-        opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface : 0U;
+        opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface | info.extra_cull_flags : 0U;
 
         auto mask_pc = pc;
-        mask_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U;
+        mask_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum | info.extra_cull_flags : 0U;
 
         if (info.counts.opaque != 0) {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
@@ -1099,12 +1100,18 @@ namespace render_pass {
                 .screen_size_y = static_cast<float>(info.extent.height),
                 .cull_planes_address = info.cull_planes_address,
                 .cluster_lights_address = info.cluster_lights_address,
+                .occlusion_address = info.occlusion_view_address,
         };
 
-        // Must cull exactly like the prepass's opaque draw, since this pass depth-tests EQUAL.
+        // Must cull exactly like the prepass's opaque draw, since this pass depth-tests EQUAL. With meshlet occlusion
+        // the extra flags make it replay the meshlets the prepass phases recorded instead of testing them again.
         auto opaque_pc = pc;
-        opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface : 0U;
+        opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface | info.extra_cull_flags : 0U;
 
+        auto mask_pc = pc;
+        mask_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum | info.extra_cull_flags : 0U;
+
+        // Blend draws never enter the prepass, so they take no occlusion bits.
         auto unculled_backface_pc = pc;
         unculled_backface_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U;
 
@@ -1119,7 +1126,7 @@ namespace render_pass {
                                               detail::ForwardDynamicStateMode::main);
             vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
             detail::draw_scene_commands(context, opaque_draw, info.draws, info.counts.opaque, info.counts.mask,
-                                        unculled_backface_pc);
+                                        mask_pc);
         }
 
         if (info.counts.blend != 0) {

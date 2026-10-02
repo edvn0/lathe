@@ -81,8 +81,9 @@ public struct CullPC
     // Opaque and mask batches come first; only they are occluders and occludees. Blend batches are never deferred.
     public uint occludable_batch_count;
 
-    // Meshlet-level occlusion hook (docs/occlusion-culling-m2.md): non-zero makes a meshlet batch's late command cover
-    // [first_instance, + n1 + n2) instead of the phase-2 survivors alone. Always 0 until then.
+    // Meshlet-level occlusion (docs/occlusion-culling.md, "Meshlet level"): non-zero makes a meshlet batch's late command
+    // cover [first_instance, + n1 + n2) instead of the phase-2 survivors alone, so the late prepass retests the
+    // meshlets phase 1 deferred. Zero without meshlet occlusion.
     public uint late_union_meshlet_batches;
     public uint _padding;
 };

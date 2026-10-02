@@ -19,7 +19,8 @@ public struct OcclusionView
 {
     public float4x4 view_projection;
 
-    // Reserved for meshlet-level occlusion (docs/occlusion-culling-m2.md); null until then.
+    // Meshlet-level occlusion (docs/occlusion-culling.md, "Meshlet level"): the frame's meshlet visibility bitset, null
+    // while it is inactive, and the counter the task shader adds this view's occlusion rejections to.
     public Ptr<uint> meshlet_visibility;
     public Ptr<uint> stats;
 

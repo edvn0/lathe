@@ -2035,6 +2035,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         fmt(stats.occluded_instance_count), stats.occluded_instance_count, occluded_percent);
             ImGui::Text("Phase 1 / phase 2 instances: %u / %u (%u deferred by phase 1)", stats.early_instance_count,
                         stats.late_instance_count, stats.occlusion_candidate_count);
+
+            if (stats.meshlet_occlusion_stats_valid) {
+                ImGui::Text("Meshlets occluded: %s (%u final, %u deferred by phase 1)",
+                            fmt(stats.occluded_meshlet_count), stats.occluded_meshlet_count,
+                            stats.deferred_meshlet_count);
+            }
         } else {
             ImGui::TextDisabled("Occlusion culling inactive");
         }
@@ -2158,6 +2164,20 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
             ImGui::SetItemTooltip("The stubs exercise the two-phase draw lists without the Hi-Z test: the frame must "
                                   "look exactly as with occlusion culling off.");
+
+            // Per-meshlet Hi-Z test in the task shader; forward replays the meshlets the prepass phases recorded.
+            // See docs/occlusion-culling.md.
+            bool meshlet_occlusion = renderer->meshlet_occlusion_culling();
+
+            ImGui::BeginDisabled(!meshlet_culling);
+            if (ImGui::Checkbox("Meshlet occlusion (task shader)", &meshlet_occlusion)) {
+                renderer->set_meshlet_occlusion_culling(meshlet_occlusion);
+            }
+            ImGui::EndDisabled();
+
+            if (!meshlet_culling && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("Needs meshlet culling (task shader)");
+            }
 
             auto const pyramid_levels = renderer->hiz_debug_mip_count();
 

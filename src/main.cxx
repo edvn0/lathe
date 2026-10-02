@@ -606,6 +606,24 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    // --meshlet-occlusion=on|off overrides Renderer::meshlet_occlusion_culling()'s default (off). It only acts while
+    // occlusion culling and meshlet culling are on.
+    std::optional<bool> meshlet_occlusion;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--meshlet-occlusion="; arg.starts_with(prefix)) {
+            auto const value = arg.substr(prefix.size());
+
+            if (value == "on") {
+                meshlet_occlusion = true;
+            } else if (value == "off") {
+                meshlet_occlusion = false;
+            } else {
+                error("Invalid --meshlet-occlusion: '{}' (expected on or off)", value);
+                return EXIT_FAILURE;
+            }
+        }
+    }
+
     // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
         set_fixed_random_seed((*benchmark_options)->seed);
@@ -640,6 +658,16 @@ auto main(int argc, char **argv) -> int {
 
         if (*occlusion_culling && !application.renderer->occlusion_culling_supported()) {
             warn("--occlusion-culling=on: this device has no MIN depth resolve for MSAA, so it stays inactive");
+        }
+    }
+
+    if (meshlet_occlusion) {
+        application.renderer->set_meshlet_occlusion_culling(*meshlet_occlusion);
+
+        if (*meshlet_occlusion &&
+            !(application.renderer->occlusion_culling() && application.renderer->occlusion_culling_supported())) {
+            warn("--meshlet-occlusion=on needs --occlusion-culling=on (and a device that supports it), so it stays "
+                 "inactive");
         }
     }
 
@@ -760,6 +788,10 @@ auto main(int argc, char **argv) -> int {
                         .cluster_grid = application.renderer->cluster_grid(),
                         .occlusion_culling = application.renderer->occlusion_culling() &&
                                              application.renderer->occlusion_culling_supported(),
+                        .meshlet_occlusion = application.renderer->occlusion_culling() &&
+                                             application.renderer->occlusion_culling_supported() &&
+                                             application.renderer->meshlet_culling() &&
+                                             application.renderer->meshlet_occlusion_culling(),
                 });
 
                 if (written) {

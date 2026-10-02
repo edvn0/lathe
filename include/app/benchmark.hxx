@@ -67,6 +67,10 @@ struct BenchmarkEnvironment {
 
     // Renderer::occlusion_culling() for the run, so on/off results aren't mistaken for one another.
     bool occlusion_culling = false;
+
+    // Renderer::meshlet_occlusion_culling() for the run, and only true when it was active (occlusion culling and
+    // meshlet culling on too).
+    bool meshlet_occlusion = false;
 };
 
 class BenchmarkRun {
