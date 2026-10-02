@@ -13,6 +13,8 @@ add_library(
         environment_panel.cxx
         environment.cxx
         file_browser.cxx
+        frame_graph/compiler.cxx
+        frame_graph/frame_graph.cxx
         forward_target.cxx
         imgui_renderer.cxx
         overlay.cxx
