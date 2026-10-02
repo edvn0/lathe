@@ -31,6 +31,10 @@ inline constexpr std::uint16_t lbf_version_major = 1;
 inline constexpr std::uint16_t lbf_version_minor = 0;
 inline constexpr std::size_t lbf_payload_alignment = 64;
 
+// Upper bound on one chunk's decompressed size. read_chunk() allocates raw_size before it has decoded anything, and
+// raw_size comes from the file, so without a cap a 100-byte file can ask for terabytes (and allocation failure aborts).
+inline constexpr std::uint64_t lbf_max_chunk_raw_size = std::uint64_t{2} << 30U;
+
 [[nodiscard]] constexpr auto make_fourcc(char a, char b, char c, char d) noexcept -> std::uint32_t {
     return static_cast<std::uint32_t>(static_cast<std::uint8_t>(a)) |
            (static_cast<std::uint32_t>(static_cast<std::uint8_t>(b)) << 8U) |
@@ -204,6 +208,7 @@ private:
     LbfFileHeader header_{};
     std::vector<LbfChunkEntry> chunks_;
     LbfReadOptions options_{};
+    std::uint64_t source_size_ = 0; // the real size of the file or buffer, which the header must agree with
 };
 
 [[nodiscard]]

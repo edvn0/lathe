@@ -209,4 +209,5 @@ private:
 
     std::uint32_t current_frame_ = 0;
     bool recreate_requested_ = false;
+    bool device_lost_ = false; // recreate() found the device lost or hung
 };

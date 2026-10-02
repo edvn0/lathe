@@ -333,20 +333,13 @@ auto LbfReader::open(std::filesystem::path const &path, LbfReadOptions const &op
         return std::unexpected(make_error(LbfErrorType::not_an_lbf_file, path.string()));
     }
 
-    auto const file_size = std::filesystem::file_size(path, error);
+    reader.source_size_ = std::filesystem::file_size(path, error);
 
     if (error) {
         return std::unexpected(make_error(LbfErrorType::io_failed, path.string()));
     }
 
-    auto parsed = parse(std::move(reader), *header_bytes);
-
-    if (parsed && parsed->header_.file_size != file_size) {
-        return std::unexpected(
-                make_error(LbfErrorType::corrupt_header, "file size does not match its header (truncated?)"));
-    }
-
-    return parsed;
+    return parse(std::move(reader), *header_bytes);
 }
 
 auto LbfReader::from_memory(std::vector<std::byte> bytes, LbfReadOptions const &options)
@@ -361,13 +354,9 @@ auto LbfReader::from_memory(std::vector<std::byte> bytes, LbfReadOptions const &
         return std::unexpected(make_error(LbfErrorType::not_an_lbf_file, "shorter than an LBF header"));
     }
 
-    auto parsed = parse(std::move(reader), std::span<std::byte const>{*memory}.first(sizeof(LbfFileHeader)));
+    reader.source_size_ = memory->size();
 
-    if (parsed && parsed->header_.file_size != memory->size()) {
-        return std::unexpected(make_error(LbfErrorType::corrupt_header, "size does not match its header (truncated?)"));
-    }
-
-    return parsed;
+    return parse(std::move(reader), std::span<std::byte const>{*memory}.first(sizeof(LbfFileHeader)));
 }
 
 auto LbfReader::parse(LbfReader reader, std::span<std::byte const> header_bytes) -> std::expected<LbfReader, LbfError> {
@@ -386,7 +375,15 @@ auto LbfReader::parse(LbfReader reader, std::span<std::byte const> header_bytes)
                                                       header.version_minor, lbf_version_major)));
     }
 
-    if (header.header_size < sizeof(LbfFileHeader) ||
+    // Before anything is sized from the header: a truncated or lying file must fail here, not after allocating
+    // whatever its table of contents claims.
+    if (header.file_size != reader.source_size_) {
+        return std::unexpected(
+                make_error(LbfErrorType::corrupt_header, "file size does not match its header (truncated?)"));
+    }
+
+    if (header.header_size < sizeof(LbfFileHeader) || header.toc_offset < header.header_size ||
+        header.chunk_count > header.file_size / sizeof(LbfChunkEntry) ||
         header.toc_size != static_cast<std::uint64_t>(header.chunk_count) * sizeof(LbfChunkEntry) ||
         header.toc_offset > header.file_size || header.toc_size > header.file_size - header.toc_offset) {
         return std::unexpected(make_error(LbfErrorType::corrupt_header));
@@ -409,10 +406,28 @@ auto LbfReader::parse(LbfReader reader, std::span<std::byte const> header_bytes)
     }
 
     for (auto const &entry: reader.chunks_) {
-        if (entry.offset > header.toc_offset || entry.stored_size > header.toc_offset - entry.offset) {
-            return std::unexpected(make_error(LbfErrorType::corrupt_table_of_contents,
-                                              std::format("chunk {} {:016x} points outside the file",
-                                                          lbf_chunk_type_name(entry.type), entry.id)));
+        auto const name = [&] { return std::format("chunk {} {:016x}", lbf_chunk_type_name(entry.type), entry.id); };
+
+        // Payloads live between the header and the table of contents.
+        if (entry.offset < header.header_size || entry.offset > header.toc_offset ||
+            entry.stored_size > header.toc_offset - entry.offset) {
+            return std::unexpected(
+                    make_error(LbfErrorType::corrupt_table_of_contents, name() + " points outside the file"));
+        }
+
+        if (entry.compression != LbfCompression::none && entry.compression != LbfCompression::zstd) {
+            return std::unexpected(
+                    make_error(LbfErrorType::corrupt_table_of_contents, name() + " has an unknown compression"));
+        }
+
+        if (entry.raw_size > lbf_max_chunk_raw_size) {
+            return std::unexpected(
+                    make_error(LbfErrorType::corrupt_table_of_contents, name() + " is implausibly large"));
+        }
+
+        if (entry.compression == LbfCompression::none && entry.stored_size != entry.raw_size) {
+            return std::unexpected(
+                    make_error(LbfErrorType::corrupt_table_of_contents, name() + " raw/stored size mismatch"));
         }
     }
 
@@ -487,7 +502,26 @@ auto LbfReader::stream_chunk(LbfChunkEntry const &entry) const -> std::expected<
         return std::unexpected(make_error(LbfErrorType::io_failed, std::format("cannot open '{}'", path_.string())));
     }
 
+    if (entry.raw_size > lbf_max_chunk_raw_size) {
+        return std::unexpected(make_error(LbfErrorType::corrupt_table_of_contents, "chunk is implausibly large"));
+    }
+
     stream.seekg(static_cast<std::streamoff>(entry.offset));
+
+    if (entry.compression == LbfCompression::zstd) {
+        // Same check as the in-memory path: the frame header must agree with the table before raw is allocated.
+        std::array<std::byte, 18> head{}; // zstd's maximum frame header size
+        auto const head_size = std::min<std::uint64_t>(head.size(), entry.stored_size);
+
+        stream.read(reinterpret_cast<char *>(head.data()), static_cast<std::streamsize>(head_size));
+
+        if (!stream || ZSTD_getFrameContentSize(head.data(), static_cast<std::size_t>(head_size)) != entry.raw_size) {
+            return std::unexpected(
+                    make_error(LbfErrorType::decompression_failed, "frame size disagrees with the table"));
+        }
+
+        stream.seekg(static_cast<std::streamoff>(entry.offset));
+    }
 
     std::vector<std::byte> raw(entry.raw_size);
     std::vector<std::byte> block(entry.compression == LbfCompression::none ? 0
@@ -603,6 +637,12 @@ auto LbfReader::read_chunk(LbfChunkEntry const &entry) const -> std::expected<st
             return stored;
 
         case LbfCompression::zstd: {
+            // The frame states its own decompressed size; it must agree with the table before anything is sized.
+            if (ZSTD_getFrameContentSize(stored->data(), stored->size()) != entry.raw_size) {
+                return std::unexpected(
+                        make_error(LbfErrorType::decompression_failed, "frame size disagrees with the table"));
+            }
+
             std::vector<std::byte> raw(entry.raw_size);
             auto const written = ZSTD_decompress(raw.data(), raw.size(), stored->data(), stored->size());
 

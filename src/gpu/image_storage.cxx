@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "core/logger.hxx"
 #include "gpu/context.hxx"
 
 namespace {
@@ -455,6 +456,13 @@ auto ImageStorage::upgrade_pending_image(ImageHandle handle, CompressedTexture c
                                          VkCommandBuffer command_buffer) -> std::expected<Buffer, ImageStorageError> {
     if (context_ == nullptr || command_buffer == VK_NULL_HANDLE || texture.mips.empty() ||
         texture.format == VK_FORMAT_UNDEFINED) {
+        return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
+    }
+
+    // Every source of a CompressedTexture (cooked packs, the .ktx2 cache, the encoder) ends up here, and a bad
+    // mip table becomes an out-of-bounds buffer-to-image copy on the GPU.
+    if (auto const problem = validate_compressed_texture(texture); problem.has_value()) {
+        warn("image_storage: rejecting compressed texture '{}': {}", texture.debug_name, *problem);
         return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
     }
 

@@ -1,5 +1,10 @@
 #include "gpu/context.hxx"
 
+#include <limits>
+
+#include "core/logger.hxx"
+#include "gpu/device_wait.hxx"
+
 auto VulkanContext::destroy() -> void {
     auto &context = *this;
 
@@ -68,10 +73,10 @@ auto VulkanContext::one_time_submit(std::function<void(VkCommandBuffer)> &&func)
 
     vkEndCommandBuffer(buf);
 
-    VkFence fence;
+    VkFence fence = VK_NULL_HANDLE;
     VkFenceCreateInfo fence_info{};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    vkCreateFence(device, &fence_info, nullptr, &fence);
+    auto result = vkCreateFence(device, &fence_info, nullptr, &fence);
 
     VkCommandBufferSubmitInfo cmd_info{};
     cmd_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
@@ -82,11 +87,30 @@ auto VulkanContext::one_time_submit(std::function<void(VkCommandBuffer)> &&func)
     submit_info.commandBufferInfoCount = 1;
     submit_info.pCommandBufferInfos = &cmd_info;
 
-    vkQueueSubmit2(graphics_queue, 1, &submit_info, fence);
+    if (result == VK_SUCCESS) {
+        result = vkQueueSubmit2(graphics_queue, 1, &submit_info, fence);
+    }
 
-    vkWaitForFences(device, 1, &fence, VK_TRUE, std::numeric_limits<std::uint64_t>::max());
+    // Bounded: an unbounded wait here freezes the app for good when the GPU hangs mid-upload.
+    constexpr std::uint64_t one_time_submit_timeout_ns = 10'000'000'000ULL;
 
-    vkDestroyFence(device, fence, nullptr);
+    if (result == VK_SUCCESS) {
+        result = vkWaitForFences(device, 1, &fence, VK_TRUE, one_time_submit_timeout_ns);
+    }
+
+    if (result != VK_SUCCESS) {
+        // The callers have no way to act on a failed upload, but the loss is recorded so main can report it.
+        error("one_time_submit failed: VkResult {}", static_cast<int>(result));
+
+        if (is_device_failure(result)) {
+            device_lost.store(true, std::memory_order_release);
+        }
+    }
+
+    // A fence still pending after a timeout can't be destroyed; leak it, the device is being abandoned anyway.
+    if (fence != VK_NULL_HANDLE && result != VK_TIMEOUT) {
+        vkDestroyFence(device, fence, nullptr);
+    }
 
     auto const size = static_cast<std::uint32_t>(one_time_command_buffers.size());
     one_time_buffer_index = ((one_time_buffer_index + 1) % size);

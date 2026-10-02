@@ -9,8 +9,10 @@
 #include <source_location>
 #include <utility>
 
+#include <glm/geometric.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/mat3x3.hpp>
+#include <glm/vector_relational.hpp>
 
 #include "serialisation/byte_stream.hxx"
 
@@ -76,6 +78,15 @@ namespace {
         reader.read(transform.rotation.y);
         reader.read(transform.rotation.z);
         transform.scale = read_vec3(reader);
+
+        // Saved rotations are unit length; renormalise so a slightly-off or hand-edited one doesn't skew the matrix.
+        // A zero or non-finite one is left alone for validate_scene() to reject.
+        auto const length = glm::length(transform.rotation);
+
+        if (std::isfinite(length) && length > 1e-6F) {
+            transform.rotation = transform.rotation / length;
+        }
+
         return transform;
     }
 
@@ -771,6 +782,57 @@ namespace {
         return material == scene_no_index || material < scene.materials.size();
     }
 
+    // ---- value checks --------------------------------------------------------------------------------------------
+    //
+    // Index checks keep instantiate from reading out of bounds; these keep NaN, infinities and negative sizes out of
+    // transforms, physics and GPU buffers, where they poison culling, shadow and physics state for the whole scene.
+
+    [[nodiscard]] auto finite(float value) noexcept -> bool { return std::isfinite(value); }
+
+    template<glm::length_t N>
+    [[nodiscard]] auto finite(glm::vec<N, float> const &value) noexcept -> bool {
+        for (glm::length_t i = 0; i < N; ++i) {
+            if (!std::isfinite(value[i])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    [[nodiscard]] auto finite(glm::mat4 const &value) noexcept -> bool {
+        return finite(value[0]) && finite(value[1]) && finite(value[2]) && finite(value[3]);
+    }
+
+    // finite and >= 0
+    [[nodiscard]] auto non_negative(float value) noexcept -> bool { return std::isfinite(value) && value >= 0.0F; }
+
+    [[nodiscard]] auto valid_transform(Components::Transform const &transform) noexcept -> bool {
+        auto const &q = transform.rotation;
+        auto const length_squared = (q.w * q.w) + (q.x * q.x) + (q.y * q.y) + (q.z * q.z);
+
+        // A zero quaternion has no direction to normalise to; it turns every child matrix into NaN.
+        return finite(transform.position) && finite(transform.scale) && std::isfinite(length_squared) &&
+               length_squared > 1e-12F;
+    }
+
+    // Each entity may hold at most one of any component; instantiate emplaces them, and EnTT treats a second
+    // emplace as a bug (assert in debug, undefined behaviour in release).
+    template<typename Components>
+    [[nodiscard]] auto entities_unique(SceneDescription const &scene, Components const &components) -> bool {
+        std::vector<bool> seen(scene.entities.size(), false);
+
+        for (auto const &component: components) {
+            if (seen[component.entity]) {
+                return false;
+            }
+
+            seen[component.entity] = true;
+        }
+
+        return true;
+    }
+
 } // namespace
 
 auto encode_scene(SceneDescription const &scene) -> std::vector<std::byte> {
@@ -914,6 +976,85 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
     if (!entities_valid(scene.point_lights) || !entities_valid(scene.spot_lights) ||
         !entities_valid(scene.rigid_bodies) || !entities_valid(scene.scripts) || !entities_valid(scene.lifetimes)) {
         return fail("component entity out of range");
+    }
+
+    // Everything from here on indexes by entity, which is now known to be in range.
+    if (!entities_unique(scene, scene.model_components) || !entities_unique(scene, scene.material_overrides) ||
+        !entities_unique(scene, scene.instanced_models) || !entities_unique(scene, scene.point_lights) ||
+        !entities_unique(scene, scene.spot_lights) || !entities_unique(scene, scene.rigid_bodies) ||
+        !entities_unique(scene, scene.scripts) || !entities_unique(scene, scene.lifetimes)) {
+        return fail("entity has the same component more than once");
+    }
+
+    if (!finite(scene.physics_settings.gravity) || !finite(scene.physics_settings.ground_y)) {
+        return fail("non-finite physics settings");
+    }
+
+    for (auto const &entity: scene.entities) {
+        if (entity.transform.has_value() && !valid_transform(*entity.transform)) {
+            return fail("entity transform is not finite or has a zero rotation");
+        }
+    }
+
+    for (auto const &material: scene.materials) {
+        if (!finite(material.base_colour_factor) || !finite(material.emissive_factor) ||
+            !finite(material.emissive_strength) || !finite(material.metallic_factor) ||
+            !finite(material.roughness_factor) || !finite(material.normal_scale) ||
+            !finite(material.occlusion_strength) || !finite(material.alpha_cutoff) || !finite(material.wind_strength)) {
+            return fail("material has a non-finite factor");
+        }
+
+        // The renderer buckets shadow batches by cascade 0..shadow_cascade_count-1; anything else matches no bucket.
+        if (material.max_shadow_cascade >= shadow_cascade_count &&
+            material.max_shadow_cascade != GpuMaterial::no_shadow_cascade) {
+            return fail("material shadow cascade out of range");
+        }
+    }
+
+    for (auto const &component: scene.instanced_models) {
+        if (!std::ranges::all_of(component.transforms, [](glm::mat4 const &matrix) { return finite(matrix); })) {
+            return fail("instanced model has a non-finite transform");
+        }
+    }
+
+    for (auto const &component: scene.point_lights) {
+        auto const &light = component.light;
+
+        if (!finite(light.colour) || !non_negative(light.intensity) || !non_negative(light.range)) {
+            return fail("point light has a non-finite or negative value");
+        }
+    }
+
+    for (auto const &component: scene.spot_lights) {
+        auto const &light = component.light;
+
+        if (!finite(light.colour) || !non_negative(light.intensity) || !non_negative(light.range) ||
+            !non_negative(light.inner_cone_degrees) || !non_negative(light.outer_cone_degrees)) {
+            return fail("spot light has a non-finite or negative value");
+        }
+    }
+
+    for (auto const &component: scene.rigid_bodies) {
+        auto const &body = component.body;
+
+        auto const boxes_valid = body.compound_boxes == nullptr ||
+                                 std::ranges::all_of(*body.compound_boxes, [](Components::CompoundBoxChild const &box) {
+                                     return finite(box.local_centre) && finite(box.half_extents) &&
+                                            glm::all(glm::greaterThanEqual(box.half_extents, glm::vec3{0.0F}));
+                                 });
+
+        if (!finite(body.velocity) || !finite(body.half_extents) ||
+            !glm::all(glm::greaterThanEqual(body.half_extents, glm::vec3{0.0F})) ||
+            !non_negative(body.capsule_radius) || !non_negative(body.capsule_height) || !finite(body.restitution) ||
+            !non_negative(body.mass) || !boxes_valid) {
+            return fail("rigid body has a non-finite or negative value");
+        }
+    }
+
+    for (auto const &component: scene.lifetimes) {
+        if (!finite(component.remaining_seconds)) {
+            return fail("lifetime is not finite");
+        }
     }
 
     return {};

@@ -66,6 +66,10 @@ struct VulkanContext {
     Swapchain swapchain{};
 
     std::atomic_bool running{true};
+
+    // Set once the device is lost or stops responding. Nothing recovers from it in-process: main shows the user a
+    // restart notice and exits, instead of crashing or hanging.
+    std::atomic_bool device_lost{false};
     std::atomic_bool framebuffer_dirty{false};
     std::atomic_int framebuffer_width{0};
     std::atomic_int framebuffer_height{0};

@@ -1,5 +1,7 @@
 #include "rendering/renderer.hxx"
 
+#include "gpu/device_wait.hxx"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -4890,7 +4892,12 @@ auto Renderer::mark_shadow_casters_dirty() noexcept -> void {
 
 auto Renderer::request_screenshot(ScreenshotSource source) noexcept -> void { screenshot_->request(source); }
 auto Renderer::wait_idle() -> std::expected<void, RendererError> {
-    auto result = vkDeviceWaitIdle(context_.device);
+    auto const result = wait_idle_bounded(context_.device, "Renderer::wait_idle");
+
+    if (is_device_failure(result)) {
+        context_.device_lost.store(true, std::memory_order_release);
+    }
+
     return result == VK_SUCCESS ? std::expected<void, RendererError>{}
                                 : std::unexpected<RendererError>(RendererError{
                                           .type = RendererErrorType::device_error,

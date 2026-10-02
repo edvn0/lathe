@@ -30,6 +30,7 @@
 
 #include "app/application.hxx"
 #include "app/benchmark.hxx"
+#include "app/fatal_dialog.hxx"
 #include "app/game.hxx"
 #include "assets/shader_hot_reload_watcher.hxx"
 #include "core/allocator.hxx"
@@ -39,6 +40,7 @@
 #include "core/random.hxx"
 #include "glm/gtc/type_ptr.hpp"
 #include "gpu/context.hxx"
+#include "gpu/device_wait.hxx"
 #include "gpu/swapchain.hxx"
 #include "imgui.h"
 #include "implot.h"
@@ -215,6 +217,7 @@ namespace {
 
                 case SwapchainBeginFrameError::Kind::device_lost:
                     error("The Vulkan device was lost");
+                    context.device_lost.store(true, std::memory_order_release);
 
                     return false;
 
@@ -333,6 +336,7 @@ namespace {
 
             case SwapchainFrameResult::device_lost:
                 error("The Vulkan device was lost");
+                context.device_lost.store(true, std::memory_order_release);
 
                 return false;
 
@@ -519,24 +523,40 @@ namespace {
         glfwSetDropCallback(context.window, drop_callback);
     }
 
-    auto wait_idle_bounded(VkDevice device, std::string_view label) noexcept -> VkResult {
-        constexpr auto timeout = std::chrono::seconds{3};
+    // Shutdown can't do anything useful with a hung device, and further Vulkan calls against it aren't safe.
+    auto wait_idle_or_exit(VkDevice device, std::string_view label) noexcept -> VkResult {
+        auto const result = wait_idle_bounded(device, label);
 
-        auto future = std::async(std::launch::async, [device] { return vkDeviceWaitIdle(device); });
-
-        if (future.wait_for(timeout) != std::future_status::ready) {
-            error("{}: vkDeviceWaitIdle did not return within {} -- the GPU is not responding. Exiting immediately.",
-                  label, timeout);
-
+        if (result == VK_TIMEOUT) {
             std::_Exit(EXIT_FAILURE);
         }
 
-        return future.get();
+        return result;
+    }
+
+    // The device is gone, so nothing can be drawn. Tell the user plainly, in a native dialog, rather than vanishing
+    // or crashing; the swapchain window is hidden first so it isn't left frozen behind the dialog.
+    auto report_device_lost(VulkanContext &context) noexcept -> void {
+        error("The GPU device was lost or stopped responding; the application cannot continue.");
+
+        if (context.window != nullptr) {
+            glfwHideWindow(context.window);
+        }
+
+        auto const shown = show_fatal_dialog(
+                "Graphics device lost",
+                "The GPU stopped responding, so the renderer cannot continue.\n\n"
+                "Please restart the application. Work since the last save could not be recovered.\n\n"
+                "If this keeps happening, update your graphics driver and check the log for details.");
+
+        if (!shown) {
+            error("No dialog tool is available to show the device-lost notice; see the log above.");
+        }
     }
 
     auto destroy_application(VulkanContext &context, Application &application) noexcept -> void {
         if (context.device != VK_NULL_HANDLE) {
-            auto const result = wait_idle_bounded(context.device, "destroy_application");
+            auto const result = wait_idle_or_exit(context.device, "destroy_application");
 
             if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
                 report_vk_error("vkDeviceWaitIdle(application destroy)", result);
@@ -839,6 +859,11 @@ auto main(int argc, char **argv) -> int {
     }
 
     context.running.store(false, std::memory_order_release);
+
+    if (context.device_lost.load(std::memory_order_acquire)) {
+        exit_code = EXIT_FAILURE;
+        report_device_lost(context);
+    }
 
     if (benchmark && !benchmark->finished()) {
         error("Benchmark interrupted before it finished; no results written");
