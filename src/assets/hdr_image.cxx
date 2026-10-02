@@ -1,6 +1,7 @@
 #include "assets/hdr_image.hxx"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -32,6 +33,10 @@ namespace {
 
         return extension;
     }
+
+    // libktx leaks its memstream when it rejects a buffer with a bad identifier, so screen those out first.
+    constexpr std::array<unsigned char, 12> ktx2_identifier{0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB, '\r', '\n', 0x1A, '\n'};
+    constexpr std::size_t ktx2_header_size = 80;
 
     struct KtxTextureDeleter {
         auto operator()(ktxTexture2 *texture) const noexcept -> void {
@@ -191,6 +196,10 @@ auto decode_radiance_hdr(std::span<std::byte const> encoded) -> std::expected<Hd
 auto decode_ktx2_float(std::span<std::byte const> encoded) -> std::expected<HdrImage, HdrImageError> {
     if (encoded.empty()) {
         return make_error(HdrImageErrorType::invalid_data, "empty .ktx2 buffer");
+    }
+
+    if (encoded.size() < ktx2_header_size || std::memcmp(encoded.data(), ktx2_identifier.data(), ktx2_identifier.size()) != 0) {
+        return make_error(HdrImageErrorType::invalid_data, "not a .ktx2 file");
     }
 
     ktxTexture2 *raw = nullptr;
