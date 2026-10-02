@@ -336,6 +336,8 @@ namespace {
         std::vector<bool> visited(cpu_data.nodes.size(), false);
         std::vector<std::pair<std::uint32_t, std::uint32_t>> stack; // node, depth
 
+        stack.reserve(cpu_data.scene_roots.size());
+
         for (auto const root: cpu_data.scene_roots) {
             stack.emplace_back(root, 0);
         }
@@ -350,7 +352,10 @@ namespace {
 
             visited[node] = true;
 
-            for (auto const child: cpu_data.nodes[node].children) {
+            auto const &children = cpu_data.nodes[node].children;
+            stack.reserve(stack.size() + children.size());
+
+            for (auto const child: children) {
                 stack.emplace_back(child, depth + 1);
             }
         }
