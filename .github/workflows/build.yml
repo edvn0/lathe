@@ -17,8 +17,11 @@ on:
       - "**/Cargo.lock"
       - "Dockerfile"
       - "tools/**"
+      # The shader check has its own workflow (shaders.yml) and runs without a build.
+      - "!tools/check_shaders.py"
       - ".clang-tidy"
-      - ".github/workflows/**"
+      - ".github/workflows/build.yml"
+      - ".github/workflows/toolchain-image.yml"
   pull_request:
     paths: *paths
 
