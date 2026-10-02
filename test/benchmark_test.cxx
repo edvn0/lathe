@@ -168,6 +168,14 @@ TEST_CASE("benchmark run warms up until streaming settles, then records one lap"
     auto const occlusion_json =
             run.to_json(BenchmarkEnvironment{.device_name = "gpu", .occlusion_culling = true});
     CHECK(occlusion_json.find("\"occlusion_culling\": true") != std::string::npos);
+
+    // Meshlet-level occlusion is recorded separately, so runs with and without it aren't mistaken for one another.
+    CHECK(json.find("\"meshlet_occlusion\": false") != std::string::npos);
+    CHECK(occlusion_json.find("\"meshlet_occlusion\": false") != std::string::npos);
+
+    auto const meshlet_json = run.to_json(
+            BenchmarkEnvironment{.device_name = "gpu", .occlusion_culling = true, .meshlet_occlusion = true});
+    CHECK(meshlet_json.find("\"meshlet_occlusion\": true") != std::string::npos);
 }
 
 TEST_CASE("a fixed seed reproduces random sequences, per stream") {

@@ -232,6 +232,7 @@ auto BenchmarkRun::to_json(BenchmarkEnvironment const &environment) const -> std
                         environment.cluster_grid.tiles_y, environment.cluster_grid.depth_slices,
                         environment.cluster_grid.light_capacity);
     json += std::format("  \"occlusion_culling\": {},\n", environment.occlusion_culling);
+    json += std::format("  \"meshlet_occlusion\": {},\n", environment.meshlet_occlusion);
     json += std::format("  \"seed\": {},\n", options_.seed);
     json += std::format("  \"keyframes\": {},\n", keyframes_.size());
     json += std::format("  \"frames\": {},\n", measured_frames_);

@@ -1,5 +1,7 @@
 module scene_types;
 
+import hiz_occlusion;
+
 public static const uint shadow_cascade_count = 4;
 
 // Mirror meshlet_max_vertices/meshlet_max_triangles/meshlets_per_task in include/assets/meshlet.hxx.
@@ -52,6 +54,18 @@ public static const uint cull_frustum_bit = 1u;
 // Normal-cone culling. Only valid with back-face culling, and must match between prepass and forward, which
 // depth-tests EQUAL.
 public static const uint cull_backface_bit = 2u;
+// Meshlet-level Hi-Z occlusion (docs/occlusion-culling.md, "Meshlet level"); all need PC::occlusion. Only the main view sets them.
+// Test the meshlet's sphere against *PC::occlusion.
+public static const uint cull_occlusion_bit = 4u;
+// Phase 2: skip meshlets phase 1 already emitted (their bit is set), so the union range draws each once.
+public static const uint cull_skip_recorded_bit = 8u;
+// Set the meshlet's bit in OcclusionView::meshlet_visibility when it is emitted.
+public static const uint cull_record_bit = 16u;
+// Forward: emit exactly the meshlets whose bit is set and run no other test, so forward draws what the prepass
+// drew.
+public static const uint cull_replay_bit = 32u;
+// Add this task group's occlusion rejections to PC::occlusion->stats[0].
+public static const uint cull_stats_bit = 64u;
 
 public struct GpuDraw
 {
@@ -60,7 +74,10 @@ public struct GpuDraw
     public Ptr<uint> meshlet_data;
 
     public uint material_index;
-    public uint transform_index;
+
+    // The absolute bit index of the instance's meshlet 0 in the frame's meshlet visibility bitset (instance *
+    // meshlet_count further on for each following instance of the batch); 0 and never read for instanced batches.
+    public uint meshlet_visibility_offset;
 };
 
 public enum class AlphaMode : uint {
@@ -224,6 +241,10 @@ public struct PC
     // UBO::cluster_light_capacity light indices. Only read by the forward fragment shader when
     // UBO::clustered_lighting is set.
     public Ptr<uint> cluster_lights;
+
+    // The Hi-Z view and meshlet visibility bitset read when cull_flags has an occlusion bit; null otherwise (the
+    // shadow pass never sets one).
+    public Ptr<OcclusionView> occlusion;
 };
 
 public struct ShadowPC

@@ -89,9 +89,13 @@ One task workgroup = up to 32 meshlets of one instance, one lane each:
 - Survivors are compacted in lane order (deterministic) into the payload,
   then a single `DispatchMesh`.
 
-Occlusion is tested per instance only, before the task shader; per-meshlet
-occlusion (record/replay bits so forward stays exact) is specified in
-`docs/occlusion-culling-m2.md`.
+Instance-level Hi-Z occlusion runs before the task shader. With "Meshlet
+occlusion" on, the task shader also tests each meshlet's world-space bounding
+sphere against the Hi-Z in the depth prepass phases and records a bit per
+emitted meshlet (`cull_record_bit`); the forward pass then replays those bits
+(`cull_replay_bit`) instead of testing, so it draws exactly the prepass
+winners. The late phase skips meshlets the early phase already recorded
+(`cull_skip_recorded_bit`). See `docs/occlusion-culling.md`, "Meshlet level".
 
 `Renderer::set_meshlet_culling(false)` (Lighting > Debug > "Meshlet culling
 (task shader)") disables per-meshlet culling for A/B debugging. With

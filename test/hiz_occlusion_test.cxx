@@ -99,6 +99,17 @@ namespace {
         return depth_occluded(rect->nearest_depth, farthest, query.depth_epsilon);
     }
 
+    // hiz_occlusion.slang's sphere_occluded(): the box of centre +- radius, which meshlet_task.slang feeds with the
+    // meshlet's world-space bounding sphere.
+    [[nodiscard]] auto sphere_occluded_reference(std::vector<DepthLevel> const &pyramid, HizExtent depth,
+                                                 glm::mat4 const &view_projection, glm::vec3 centre,
+                                                 float radius) -> bool {
+        return aabb_occluded_reference(pyramid, depth,
+                                       OcclusionQuery{.view_projection = view_projection,
+                                                      .world_min = centre - glm::vec3{radius},
+                                                      .world_max = centre + glm::vec3{radius}});
+    }
+
     [[nodiscard]] auto random_float(std::mt19937 &engine, float low, float high) -> float {
         return std::uniform_real_distribution<float>{low, high}(engine);
     }
@@ -473,4 +484,43 @@ TEST_CASE("a box behind a full-screen wall is occluded and one in front of it is
                                         OcclusionQuery{.view_projection = view_projection,
                                                        .world_min = glm::vec3{-0.5F, -0.5F, 4.5F},
                                                        .world_max = glm::vec3{0.5F, 0.5F, 9.0F}}));
+}
+
+TEST_CASE("a sphere is occluded exactly when its bounding box is") {
+    constexpr HizExtent extent{.width = 40, .height = 30};
+    auto const projection = glm::perspectiveLH_ZO(glm::radians(60.0F), 40.0F / 30.0F, 0.1F, 100.0F);
+    auto const view = glm::lookAtLH(glm::vec3{0.0F}, glm::vec3{0.0F, 0.0F, 1.0F}, glm::vec3{0.0F, 1.0F, 0.0F});
+    auto const view_projection = projection * view;
+
+    // A wall at z = 5 covering the screen.
+    auto const wall = glm::vec4(view_projection * glm::vec4(0.0F, 0.0F, 5.0F, 1.0F));
+    auto const wall_depth = 1.0F - (wall.z / wall.w);
+
+    DepthLevel const depth{
+            .extent = extent,
+            .texels = std::vector<float>(static_cast<std::size_t>(extent.width) * extent.height, wall_depth),
+    };
+    auto const pyramid = build_hiz_reference(depth);
+
+    // Behind the wall, in front of it, and large enough that its nearest point pokes through.
+    CHECK(sphere_occluded_reference(pyramid, extent, view_projection, glm::vec3{0.0F, 0.0F, 9.0F}, 0.5F));
+    CHECK_FALSE(sphere_occluded_reference(pyramid, extent, view_projection, glm::vec3{0.0F, 0.0F, 3.0F}, 0.5F));
+    CHECK_FALSE(sphere_occluded_reference(pyramid, extent, view_projection, glm::vec3{0.0F, 0.0F, 9.0F}, 6.0F));
+
+    std::mt19937 engine{0x5F3E5U};
+
+    for (std::uint32_t iteration = 0; iteration < 2000; ++iteration) {
+        auto const random_depth_buffer = random_depth(engine, extent);
+        auto const random_pyramid = build_hiz_reference(random_depth_buffer);
+
+        glm::vec3 const centre{random_float(engine, -6.0F, 6.0F), random_float(engine, -6.0F, 6.0F),
+                               random_float(engine, 0.5F, 30.0F)};
+        auto const radius = random_float(engine, 0.01F, 3.0F);
+
+        CHECK(sphere_occluded_reference(random_pyramid, extent, view_projection, centre, radius) ==
+              aabb_occluded_reference(random_pyramid, extent,
+                                      OcclusionQuery{.view_projection = view_projection,
+                                                     .world_min = centre - glm::vec3{radius},
+                                                     .world_max = centre + glm::vec3{radius}}));
+    }
 }

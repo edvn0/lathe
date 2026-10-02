@@ -1430,6 +1430,7 @@ auto Renderer::destroy() noexcept -> void {
         frame.frustum_planes_buffer.destroy();
         frame.visible_transform_buffer.destroy();
         frame.visible_draw_buffer.destroy();
+        frame.meshlet_visibility_buffer.destroy();
         frame.occlusion_stats_readback_buffer.destroy();
         frame.occlusion_stats_buffer.destroy();
         frame.merged_indirect_buffer.destroy();
@@ -1452,7 +1453,11 @@ auto Renderer::destroy() noexcept -> void {
         frame.indirect_command_count = 0;
         frame.occlusion_stats_pending = false;
         frame.occlusion_stats_active = false;
+        frame.meshlet_occlusion_stats_active = false;
         frame.occlusion_active = false;
+        frame.meshlet_occlusion_active = false;
+        frame.meshlet_visibility_capacity_words = 0;
+        frame.meshlet_visibility_words = 0;
         frame.cluster_stats_pending = false;
     }
 
@@ -2466,8 +2471,13 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     mask_batches_.reserve(active_batches_.size());
     blend_batches_.reserve(active_batches_.size());
 
-    auto const emit_batch = [this, &frame,
-                             &submitted_triangle_count](BatchEntry const &batch) -> std::expected<void, RendererError> {
+    // One bit per meshlet of every opaque and mask meshlet-path instance, for meshlet-level occlusion culling. Blend
+    // batches never enter the depth prepass, so they take none.
+    MeshletVisibilityLayout meshlet_layout;
+
+    auto const emit_batch = [this, &frame, &submitted_triangle_count,
+                             &meshlet_layout](BatchEntry const &batch,
+                                              bool const allocate_meshlet_bits) -> std::expected<void, RendererError> {
         auto const *mesh = mesh_slot(batch.mesh);
 
         if (mesh == nullptr) {
@@ -2484,7 +2494,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             clear_submissions();
             return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
         }
-        auto const base_transform_index = static_cast<std::uint32_t>(frame.transforms.size());
 
         if (!geometry.meshlets.valid()) {
             clear_submissions();
@@ -2498,13 +2507,22 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         auto const meshlet_address = geometry_arena_.device_address(geometry.meshlets.descriptors);
         auto const meshlet_data_address = geometry_arena_.device_address(geometry.meshlets.data);
         auto const material_index = material_storage_.gpu_index(batch.material);
+
+        auto const meshlet_path = uses_meshlet_path(geometry.meshlets.meshlet_count);
+        auto const first_meshlet_bit = meshlet_path && allocate_meshlet_bits
+                                               ? meshlet_layout.reserve(instance_count, geometry.meshlets.meshlet_count)
+                                               : std::uint64_t{0};
+
         for (std::uint32_t instance = 0; instance < instance_count; ++instance) {
             frame.draws.push_back(GpuDraw{
                     .vertex_address = vertex_address,
                     .meshlet_address = meshlet_address,
                     .meshlet_data_address = meshlet_data_address,
                     .material_index = material_index,
-                    .transform_index = base_transform_index + instance,
+                    .meshlet_visibility_offset = meshlet_path && allocate_meshlet_bits
+                                                         ? meshlet_visibility_offset(first_meshlet_bit, instance,
+                                                                                     geometry.meshlets.meshlet_count)
+                                                         : 0U,
             });
         }
 
@@ -2515,7 +2533,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 .first_instance = first_instance,
         };
 
-        if (uses_meshlet_path(geometry.meshlets.meshlet_count)) {
+        if (meshlet_path) {
             command.meshlet_count = geometry.meshlets.meshlet_count;
         } else {
             auto const stride = index_stride(geometry.indices.index_type);
@@ -2661,7 +2679,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     frame.shadow_mask_indirect_count = order_shadow_batches(mask_batches_);
 
     for (auto const *batch: opaque_batches_) {
-        if (auto result = emit_batch(*batch); !result) {
+        if (auto result = emit_batch(*batch, true); !result) {
             return std::unexpected(result.error());
         }
     }
@@ -2669,7 +2687,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     frame.opaque_indirect_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
 
     for (auto const *batch: mask_batches_) {
-        if (auto result = emit_batch(*batch); !result) {
+        if (auto result = emit_batch(*batch, true); !result) {
             return std::unexpected(result.error());
         }
     }
@@ -2682,7 +2700,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     }
 
     for (auto const &pending: blend_batches_) {
-        if (auto result = emit_batch(*pending.entry); !result) {
+        if (auto result = emit_batch(*pending.entry, false); !result) {
             return std::unexpected(result.error());
         }
     }
@@ -2933,14 +2951,59 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                              hiz_.depth_extent.width == forward_extent.width &&
                              hiz_.depth_extent.height == forward_extent.height;
 
+    // Meshlet-level occlusion needs every opaque and mask meshlet's bit to fit; over the cap, instance-level occlusion
+    // carries on without it.
+    if (!meshlet_layout.fits() && !meshlet_visibility_cap_warned_) {
+        meshlet_visibility_cap_warned_ = true;
+        warn("Renderer: {} meshlet visibility bits exceed the cap of {}; meshlet occlusion culling is off for such "
+             "frames",
+             meshlet_layout.total_bits(), maximum_meshlet_visibility_bits);
+    }
+
+    frame.meshlet_occlusion_active = frame.occlusion_active && meshlet_occlusion_culling_ && meshlet_culling_ &&
+                                     meshlet_layout.fits() && meshlet_layout.total_bits() != 0;
+    frame.meshlet_visibility_words =
+            frame.meshlet_occlusion_active ? static_cast<std::uint32_t>(meshlet_layout.word_count()) : 0U;
+
+    if (frame.meshlet_visibility_words > frame.meshlet_visibility_capacity_words) {
+        auto const capacity_words = static_cast<std::uint32_t>(std::bit_ceil(frame.meshlet_visibility_words));
+        auto visibility = Buffer::create(context_, BufferCreateInfo{
+                                                           .size = VkDeviceSize{capacity_words} * sizeof(std::uint32_t),
+                                                           .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                           .memory = BufferMemory::device,
+                                                           .debug_name = "renderer.frame_meshlet_visibility",
+                                                   });
+
+        if (!visibility) {
+            clear_submissions();
+            return std::unexpected(make_device_error(visibility.error()));
+        }
+
+        // Nothing in flight still reads the old buffer: it belongs to this slot, whose fence has been waited on.
+        frame.meshlet_visibility_buffer = std::move(*visibility);
+        frame.meshlet_visibility_capacity_words = capacity_words;
+    }
+
     {
         auto const states = occlusion_view_states(frame.occlusion_active, hiz_history_valid_, occlusion_test_mode_);
+
+        auto const meshlet_visibility_address =
+                frame.meshlet_occlusion_active ? frame.meshlet_visibility_buffer.device_address : VkDeviceAddress{0};
+
+        // The task shader adds to its view's own counter: view [0] counts meshlets phase 1 deferred, view [1] the ones
+        // phase 2 culled for good.
+        auto const stats_slot_address = [&frame](std::uint32_t slot) -> VkDeviceAddress {
+            return frame.occlusion_stats_buffer.device_address + VkDeviceAddress{slot} * sizeof(std::uint32_t);
+        };
 
         // [0]: last frame's pyramid, projected as it was built. [1]: the pyramid record_frame builds this frame.
         std::array<GpuOcclusionView, 2> const occlusion_views{
                 GpuOcclusionView{
                         .view_projection = hiz_history_view_projection_,
-                        .stats_address = frame.occlusion_stats_buffer.device_address,
+                        .meshlet_visibility_address = meshlet_visibility_address,
+                        .stats_address = stats_slot_address(occlusion_stat_deferred_meshlets),
                         .hiz_texture_index = hiz_.image.handle().index,
                         .hiz_mip_count = hiz_.mip_count,
                         .depth_width = hiz_.depth_extent.width,
@@ -2949,7 +3012,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 },
                 GpuOcclusionView{
                         .view_projection = view_projection,
-                        .stats_address = frame.occlusion_stats_buffer.device_address,
+                        .meshlet_visibility_address = meshlet_visibility_address,
+                        .stats_address = stats_slot_address(occlusion_stat_occluded_meshlets),
                         .hiz_texture_index = hiz_.image.handle().index,
                         .hiz_mip_count = hiz_.mip_count,
                         .depth_width = hiz_.depth_extent.width,
@@ -2962,6 +3026,34 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             clear_submissions();
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
+    }
+
+    // The bitset starts empty every frame: the early prepass phase records into it, the late phase skips what it
+    // holds and adds to it, and forward replays it.
+    if (frame.meshlet_occlusion_active) {
+        auto const visibility_size = VkDeviceSize{frame.meshlet_visibility_words} * sizeof(std::uint32_t);
+        vkCmdFillBuffer(command_buffer, frame.meshlet_visibility_buffer.buffer, 0, visibility_size, 0);
+
+        VkBufferMemoryBarrier2 const visibility_cleared{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = frame.meshlet_visibility_buffer.buffer,
+                .offset = 0,
+                .size = visibility_size,
+        };
+
+        VkDependencyInfo const visibility_dependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .bufferMemoryBarrierCount = 1,
+                .pBufferMemoryBarriers = &visibility_cleared,
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &visibility_dependency);
     }
 
     if ((lights_dirty_mask_ & (1u << frame_index)) != 0) {
@@ -3414,6 +3506,10 @@ auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
     last_frame_stats_.late_instance_count = late;
     last_frame_stats_.occluded_instance_count = candidates >= late ? candidates - late : 0U;
     last_frame_stats_.occlusion_stats_valid = frame.occlusion_stats_active;
+
+    last_frame_stats_.deferred_meshlet_count = stats[occlusion_stat_deferred_meshlets];
+    last_frame_stats_.occluded_meshlet_count = stats[occlusion_stat_occluded_meshlets];
+    last_frame_stats_.meshlet_occlusion_stats_valid = frame.meshlet_occlusion_stats_active;
 }
 
 auto Renderer::set_occlusion_culling(bool enabled) noexcept -> void {
@@ -3728,6 +3824,25 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
 
     auto const frame_index = pass_context.frame_index;
 
+    // Meshlet-level occlusion: the early phase tests against the history Hi-Z (view [0]) and records the meshlets it
+    // emits; the late phase tests against this frame's Hi-Z (view [1]), skips what the early phase recorded and
+    // records its own. Both count into their view's statistics slot.
+    auto const meshlet_view_address = frame.meshlet_occlusion_active ? frame.occlusion_views_buffer.device_address +
+                                                                               (late ? sizeof(GpuOcclusionView) : 0U)
+                                                                     : VkDeviceAddress{0};
+    auto const meshlet_flags =
+            !frame.meshlet_occlusion_active
+                    ? 0U
+                    : (late ? render_pass::cull_occlusion | render_pass::cull_skip_recorded | render_pass::cull_record |
+                                       render_pass::cull_stats
+                            : render_pass::cull_occlusion | render_pass::cull_record | render_pass::cull_stats);
+
+    // The early phase's task shaders wrote the bitset; the late phase reads and extends it.
+    if (late && frame.meshlet_occlusion_active) {
+        record_meshlet_visibility_barrier(pass_context.command_buffer, frame,
+                                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    }
+
     auto const record = [&]() -> std::expected<void, RendererError> {
         return render_pass::depth_prepass(
                 pass_context, render_pass::DepthPrepassInfo{
@@ -3747,6 +3862,8 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
                                       .materials_address = material_storage_.device_address(),
                                       .ubo_address = ubos_[frame_index].device_address,
                                       .lights_address = frame.lights_buffer.device_address,
+                                      .occlusion_view_address = meshlet_view_address,
+                                      .extra_cull_flags = meshlet_flags,
                                       .opaque_pipeline = depth_prepass_pipeline_,
                                       .mask_pipeline = depth_prepass_mask_pipeline_,
                                       .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
@@ -3864,7 +3981,9 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
                 .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
                 .batch_count = frame.indirect_command_count,
                 .occludable_batch_count = frame.opaque_indirect_count + frame.mask_indirect_count,
-                .late_union_meshlet_batches = 0,
+                // Meshlet batches' late command covers the early survivors too, so their deferred meshlets get the late
+                // test; the late prepass skips the meshlets the early one already recorded.
+                .late_union_meshlet_batches = frame.meshlet_occlusion_active ? 1U : 0U,
                 ._padding = 0,
         };
 
@@ -3917,13 +4036,40 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
     return {};
 }
 
+auto Renderer::record_meshlet_visibility_barrier(VkCommandBuffer command_buffer, RendererFrame const &frame,
+                                                 VkAccessFlags2 dst_access) -> void {
+    // Task shaders are the only writers (InterlockedOr) and readers of the bitset.
+    VkBufferMemoryBarrier2 const barrier{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
+            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
+            .dstAccessMask = dst_access,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = frame.meshlet_visibility_buffer.buffer,
+            .offset = 0,
+            .size = VkDeviceSize{frame.meshlet_visibility_words} * sizeof(std::uint32_t),
+    };
+
+    VkDependencyInfo const dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &barrier,
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &dependency);
+}
+
 auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void {
     auto const stats_size = VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t);
 
-    // The last writer is late_cs, main_cs or, with no batches, prepare_frame's clear.
+    // The last writer is late_cs, main_cs, the depth prepass phases' task shaders (meshlet counters) or, with no
+    // batches, prepare_frame's clear.
     VkBufferMemoryBarrier2 const to_copy{
             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                            VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
             .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
             .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
             .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
@@ -3982,6 +4128,7 @@ auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, R
 
     frame.occlusion_stats_pending = true;
     frame.occlusion_stats_active = frame.occlusion_active;
+    frame.meshlet_occlusion_stats_active = frame.meshlet_occlusion_active;
 }
 
 auto Renderer::record_ambient_occlusion_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
@@ -4027,6 +4174,11 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
 
     auto const frame_index = pass_context.frame_index;
 
+    // The late prepass phase's task shaders wrote the last bits; forward only reads them.
+    if (frame.meshlet_occlusion_active) {
+        record_meshlet_visibility_barrier(pass_context.command_buffer, frame, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    }
+
     return render_pass::forward_geometry(
             pass_context,
             render_pass::ForwardGeometryInfo{
@@ -4044,6 +4196,12 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .lights_address = frame.lights_buffer.device_address,
                     .light_count = frame.light_count,
                     .cluster_lights_address = frame.cluster_lights_buffer.device_address + cluster_stats_bytes,
+                    // View [1]'s bitset is the one both prepass phases recorded into; forward replays it.
+                    .occlusion_view_address =
+                            frame.meshlet_occlusion_active
+                                    ? frame.occlusion_views_buffer.device_address + sizeof(GpuOcclusionView)
+                                    : VkDeviceAddress{0},
+                    .extra_cull_flags = frame.meshlet_occlusion_active ? render_pass::cull_replay : 0U,
                     .pipeline_statistics_query_pool = pipeline_stat_queries_[frame_index].query_pool,
                     .meshlet_culling = meshlet_culling_,
                     .opaque_pipeline = forward_pipeline_,
