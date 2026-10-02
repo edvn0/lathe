@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <format>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -22,6 +23,13 @@ public:
     auto c_str() const noexcept -> char const *;
 
     auto operator==(FlyString rhs) const noexcept -> bool;
+    auto operator==(std::string_view rhs) const noexcept -> bool { return view() == rhs; }
+
+    // Interned, so equal strings share one address: usable as a hash key without touching the characters.
+    [[nodiscard]]
+    auto identity() const noexcept -> std::size_t {
+        return std::hash<std::string const *>{}(value_);
+    }
 
 private:
     class Pool {
@@ -35,4 +43,19 @@ private:
 
     static auto pool() -> Pool &;
     std::string const *value_ = nullptr;
+};
+
+template<>
+struct std::hash<FlyString> {
+    [[nodiscard]]
+    auto operator()(FlyString const &value) const noexcept -> std::size_t {
+        return value.identity();
+    }
+};
+
+template<>
+struct std::formatter<FlyString> : std::formatter<std::string_view> {
+    auto format(FlyString const &value, std::format_context &context) const {
+        return std::formatter<std::string_view>::format(value.view(), context);
+    }
 };

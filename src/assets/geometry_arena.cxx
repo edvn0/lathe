@@ -93,7 +93,7 @@ auto GeometryArenaT<Allocator>::create(VulkanContext &ctx, GeometryArenaCreateIn
 
     GeometryArenaT<Allocator> result{};
     result.context_ = &ctx;
-    result.debug_name_ = std::string{create_info.debug_name};
+    result.debug_name_ = FlyString{create_info.debug_name};
     result.buffer = std::move(*buffer);
     result.upload_buffer = std::move(*upload_buffer);
     result.allocator_.reset(create_info.capacity);
@@ -306,7 +306,7 @@ auto GeometryArenaT<Allocator>::grow(VkCommandBuffer command_buffer, VkDeviceSiz
                                         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                .memory = BufferMemory::device,
-                               .debug_name = debug_name_,
+                               .debug_name = debug_name_.view(),
                        });
 
     if (!new_buffer) {

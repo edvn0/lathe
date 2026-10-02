@@ -36,8 +36,8 @@ auto ModelStreamer::reserve(IModelSink &sink, std::filesystem::path const &sourc
 }
 
 auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback,
-                            std::string debug_name) -> ModelHandle {
-    auto const reservation = reserve(sink, source_path, fallback, debug_name);
+                            FlyString debug_name) -> ModelHandle {
+    auto const reservation = reserve(sink, source_path, fallback, debug_name.view());
 
     if (reservation.final) {
         return reservation.handle;
@@ -48,7 +48,7 @@ auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path,
 
     pending_.push_back(PendingRequest{
             .handle = reservation.handle,
-            .debug_name = std::move(debug_name),
+            .debug_name = debug_name,
             .future = std::move(future),
             .profile = std::move(profile),
             .requested_at = std::chrono::steady_clock::now(),
@@ -61,9 +61,9 @@ auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path,
 
 auto ModelStreamer::request_prepared(IModelSink &sink,
                                      std::future<std::expected<ModelCpuData, ModelLoadError>> cpu_data,
-                                     std::filesystem::path source_path, ModelHandle fallback, std::string debug_name)
-        -> ModelHandle {
-    auto const reservation = reserve(sink, source_path, fallback, debug_name);
+                                     std::filesystem::path source_path, ModelHandle fallback,
+                                     FlyString debug_name) -> ModelHandle {
+    auto const reservation = reserve(sink, source_path, fallback, debug_name.view());
 
     if (reservation.final) {
         return reservation.handle;
@@ -71,7 +71,7 @@ auto ModelStreamer::request_prepared(IModelSink &sink,
 
     pending_.push_back(PendingRequest{
             .handle = reservation.handle,
-            .debug_name = std::move(debug_name),
+            .debug_name = debug_name,
             .future = std::move(cpu_data),
             .requested_at = std::chrono::steady_clock::now(),
             .path_hash = reservation.path_hash,
@@ -156,7 +156,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
 
             request.installed = true;
             path_cache_[request.path_hash] = request.handle;
-            sink.register_model_name(request.handle, request.debug_name);
+            sink.register_model_name(request.handle, request.debug_name.view());
             sink.register_model_source(request.handle, request.source_path);
 
             // Last, since this destroys the model if every caller already dropped it.

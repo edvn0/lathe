@@ -113,6 +113,7 @@ namespace {
     inline constexpr std::uint32_t max_primitive_vertices = 1U << 24U;
     inline constexpr std::uint32_t max_primitive_indices = 3U << 24U;
     inline constexpr std::uint32_t max_node_depth = 256;
+    inline constexpr std::size_t max_debug_name_length = 256;
 
     template<glm::length_t N>
     [[nodiscard]] auto all_finite(glm::vec<N, float> const &value) noexcept -> bool {
@@ -385,7 +386,7 @@ auto encode_cooked_model(ModelCpuData const &cpu_data, std::span<CookedImageRef 
     for (auto const &image: images) {
         writer.write(image.texture.value);
         writer.write(std::to_underlying(image.slot));
-        writer.write_string(image.debug_name);
+        writer.write_string(image.debug_name.view());
     }
 
     writer.write(static_cast<std::uint32_t>(cpu_data.materials.size()));
@@ -541,7 +542,11 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
         }
 
         image.slot = static_cast<ModelTextureSlot>(slot);
-        reader.read_string(image.debug_name);
+
+        // Interned for the life of the process, so a name from a file is capped: real ones are file names.
+        auto debug_name = reader.read_string();
+        debug_name.resize(std::min(debug_name.size(), max_debug_name_length));
+        image.debug_name = FlyString{debug_name};
 
         cpu_data.image_sources[index].slot = image.slot;
         cpu_data.image_sources[index].debug_name = image.debug_name;

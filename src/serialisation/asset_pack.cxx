@@ -78,7 +78,7 @@ namespace {
         std::vector<std::byte> encoded;
         std::string cache_key;
         TextureRole role = TextureRole::colour;
-        std::string debug_name;
+        FlyString debug_name;
     };
 
     struct ParsedModel {
@@ -334,14 +334,14 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
                 .id = asset_id_from_key(texture_asset_key(texture.path, texture.role)),
                 .path = texture.path,
                 .role = texture.role,
-                .debug_name = texture.path.filename().string(),
+                .debug_name = FlyString{texture.path.filename().string()},
         });
     }
 
     // Phase 2: textures, in parallel. Entries queued only as "copy from pack" that no pack had are skipped.
     struct TextureResult {
         AssetId id;
-        std::string debug_name;
+        FlyString debug_name;
         std::expected<std::vector<std::byte>, std::string> payload;
     };
 

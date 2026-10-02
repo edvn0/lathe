@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "core/error_context.hxx"
+#include "core/fly_string.hxx"
 #include "core/forward.hxx"
 #include "gpu/image_storage.hxx"
 #include "gpu/sampler_storage.hxx"
@@ -135,5 +136,5 @@ private:
     std::uint32_t image_capacity_ = 0;
     std::uint32_t sampler_capacity_ = 0;
 
-    std::string debug_name_;
+    FlyString debug_name_;
 };

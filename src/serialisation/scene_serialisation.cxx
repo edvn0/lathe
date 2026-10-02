@@ -455,7 +455,7 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         }
 
         auto pack = find_pack(packs, lbf_chunk::model, reference.id);
-        auto const debug_name = std::filesystem::path{reference.source}.filename().string();
+        auto const debug_name = FlyString{std::filesystem::path{reference.source}.filename().string()};
 
         if (options.stream_models) {
             ModelHandle handle{};
@@ -562,7 +562,7 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         }
 
         auto const &reference = description.textures[texture_index];
-        auto const debug_name = std::filesystem::path{reference.source}.filename().string();
+        auto const debug_name = FlyString{std::filesystem::path{reference.source}.filename().string()};
         ImageHandle handle{};
 
         if (auto const pack = find_pack(packs, lbf_chunk::texture, reference.id)) {
@@ -574,10 +574,11 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
                                                                    .path = reference.source,
                                                                    .role = reference.role,
                                                            });
-            static_cast<void>(renderer.assets().textures().register_asset(debug_name, handle));
+            static_cast<void>(renderer.assets().textures().register_asset(std::string{debug_name.view()}, handle));
             ++report.textures_from_packs;
         } else {
-            handle = renderer.request_texture(reference.source, reference.role, fallback, debug_name);
+            handle = renderer.request_texture(reference.source, reference.role, fallback,
+                                              std::string{debug_name.view()});
             ++report.textures_from_source;
         }
 

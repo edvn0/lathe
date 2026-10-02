@@ -19,6 +19,7 @@
 #include "assets/model.hxx"
 #include "assets/model_load_profile.hxx"
 #include "assets/model_sink.hxx"
+#include "core/fly_string.hxx"
 
 enum class ModelRequestState : std::uint8_t {
     // Installed, or never requested through this streamer.
@@ -43,8 +44,8 @@ public:
     // without reloading. Failed requests aren't cached, so they can be retried. The returned handle always carries
     // one reference for the caller, released with IModelSink::release_model().
     [[nodiscard]]
-    auto request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback, std::string debug_name)
-            -> ModelHandle;
+    auto request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback,
+                 FlyString debug_name) -> ModelHandle;
 
     // request() for CPU data produced elsewhere, e.g. a cooked model decoded from an asset pack. `cpu_data` must
     // resolve to finalized primitives (compressed vertices and meshlets built), so the finalization phase is skipped
@@ -52,8 +53,7 @@ public:
     // so a later request() for the same file reuses the handle.
     [[nodiscard]]
     auto request_prepared(IModelSink &sink, std::future<std::expected<ModelCpuData, ModelLoadError>> cpu_data,
-                          std::filesystem::path source_path, ModelHandle fallback, std::string debug_name)
-            -> ModelHandle;
+                          std::filesystem::path source_path, ModelHandle fallback, FlyString debug_name) -> ModelHandle;
 
     // Drops path_cache_ and failure entries for `handle`. Call when the model is destroyed.
     auto forget(ModelHandle handle) -> void;
@@ -77,7 +77,7 @@ public:
 private:
     struct PendingRequest {
         ModelHandle handle;
-        std::string debug_name;
+        FlyString debug_name;
         std::future<std::expected<ModelCpuData, ModelLoadError>> future;
 
         // Set once `future` resolves.

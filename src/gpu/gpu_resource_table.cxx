@@ -42,7 +42,7 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     table.context_ = &context;
     table.image_capacity_ = create_info.image_capacity;
     table.sampler_capacity_ = create_info.sampler_capacity;
-    table.debug_name_ = std::string{create_info.debug_name};
+    table.debug_name_ = FlyString{create_info.debug_name};
 
     std::array<VkDescriptorSetLayoutBinding, 5> bindings{
             VkDescriptorSetLayoutBinding{
@@ -301,7 +301,7 @@ GpuResourceTable::GpuResourceTable(GpuResourceTable &&other) noexcept :
     context_{std::exchange(other.context_, nullptr)}, layout_{std::exchange(other.layout_, VK_NULL_HANDLE)},
     pool_{std::exchange(other.pool_, VK_NULL_HANDLE)}, frames_{std::move(other.frames_)},
     image_capacity_{std::exchange(other.image_capacity_, 0)},
-    sampler_capacity_{std::exchange(other.sampler_capacity_, 0)}, debug_name_{std::move(other.debug_name_)} {}
+    sampler_capacity_{std::exchange(other.sampler_capacity_, 0)}, debug_name_{other.debug_name_} {}
 
 auto GpuResourceTable::operator=(GpuResourceTable &&other) noexcept -> GpuResourceTable & {
     if (this == &other) {
@@ -316,7 +316,7 @@ auto GpuResourceTable::operator=(GpuResourceTable &&other) noexcept -> GpuResour
     frames_ = std::move(other.frames_);
     image_capacity_ = std::exchange(other.image_capacity_, 0);
     sampler_capacity_ = std::exchange(other.sampler_capacity_, 0);
-    debug_name_ = std::move(other.debug_name_);
+    debug_name_ = other.debug_name_;
 
     return *this;
 }
@@ -340,7 +340,7 @@ auto GpuResourceTable::destroy() noexcept -> void {
     image_capacity_ = 0;
     sampler_capacity_ = 0;
 
-    debug_name_.clear();
+    debug_name_ = FlyString{};
 
     context_ = nullptr;
 }

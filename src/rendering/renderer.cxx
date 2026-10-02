@@ -375,21 +375,21 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/forward_geom.slang",
-                                    .entry_point = "main_task",
+                                    .entry_point = FlyString{"main_task"},
                                     .stage = renderer::ShaderStage::task,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/forward_geom.slang",
-                                    .entry_point = "main_mesh",
+                                    .entry_point = FlyString{"main_mesh"},
                                     .stage = renderer::ShaderStage::mesh,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/forward_geom.slang",
-                                    .entry_point = "main_fs",
+                                    .entry_point = FlyString{"main_fs"},
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -410,21 +410,21 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/forward_geom.slang",
-                                    .entry_point = "main_task",
+                                    .entry_point = FlyString{"main_task"},
                                     .stage = renderer::ShaderStage::task,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/forward_geom.slang",
-                                    .entry_point = "main_mesh",
+                                    .entry_point = FlyString{"main_mesh"},
                                     .stage = renderer::ShaderStage::mesh,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/forward_geom.slang",
-                                    .entry_point = "main_fs",
+                                    .entry_point = FlyString{"main_fs"},
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -445,21 +445,21 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/light_icons.slang",
-                                    .entry_point = "main_task",
+                                    .entry_point = FlyString{"main_task"},
                                     .stage = renderer::ShaderStage::task,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/light_icons.slang",
-                                    .entry_point = "main_mesh",
+                                    .entry_point = FlyString{"main_mesh"},
                                     .stage = renderer::ShaderStage::mesh,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/light_icons.slang",
-                                    .entry_point = "main_fs",
+                                    .entry_point = FlyString{"main_fs"},
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -480,14 +480,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/shadow_depth.slang",
-                                    .entry_point = "main_task",
+                                    .entry_point = FlyString{"main_task"},
                                     .stage = renderer::ShaderStage::task,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/shadow_depth.slang",
-                                    .entry_point = "main_mesh",
+                                    .entry_point = FlyString{"main_mesh"},
                                     .stage = renderer::ShaderStage::mesh,
                                     .include_directories = {},
                                     .defines = {},
@@ -507,21 +507,21 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/shadow_depth.slang",
-                                    .entry_point = "main_task",
+                                    .entry_point = FlyString{"main_task"},
                                     .stage = renderer::ShaderStage::task,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/shadow_depth.slang",
-                                    .entry_point = "main_mesh",
+                                    .entry_point = FlyString{"main_mesh"},
                                     .stage = renderer::ShaderStage::mesh,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/shadow_depth.slang",
-                                    .entry_point = "main_fs",
+                                    .entry_point = FlyString{"main_fs"},
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -541,14 +541,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/depth_prepass.slang",
-                                    .entry_point = "main_task",
+                                    .entry_point = FlyString{"main_task"},
                                     .stage = renderer::ShaderStage::task,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/depth_prepass.slang",
-                                    .entry_point = "main_mesh",
+                                    .entry_point = FlyString{"main_mesh"},
                                     .stage = renderer::ShaderStage::mesh,
                                     .include_directories = {},
                                     .defines = {},
@@ -568,21 +568,21 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/depth_prepass.slang",
-                                    .entry_point = "main_task",
+                                    .entry_point = FlyString{"main_task"},
                                     .stage = renderer::ShaderStage::task,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/depth_prepass.slang",
-                                    .entry_point = "main_mesh",
+                                    .entry_point = FlyString{"main_mesh"},
                                     .stage = renderer::ShaderStage::mesh,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/depth_prepass.slang",
-                                    .entry_point = "main_fs",
+                                    .entry_point = FlyString{"main_fs"},
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -602,14 +602,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/composite.slang",
-                                    .entry_point = "main_vs",
+                                    .entry_point = FlyString{"main_vs"},
                                     .stage = renderer::ShaderStage::vertex,
                                     .include_directories = {},
                                     .defines = {},
                             },
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/composite.slang",
-                                    .entry_point = "main_fs",
+                                    .entry_point = FlyString{"main_fs"},
                                     .stage = renderer::ShaderStage::fragment,
                                     .include_directories = {},
                                     .defines = {},
@@ -629,7 +629,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/frustum_cull.slang",
-                                    .entry_point = "main_cs",
+                                    .entry_point = FlyString{"main_cs"},
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -649,7 +649,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/bloom_downsample.slang",
-                                    .entry_point = "main_cs",
+                                    .entry_point = FlyString{"main_cs"},
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -669,7 +669,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/bloom_upsample.slang",
-                                    .entry_point = "main_cs",
+                                    .entry_point = FlyString{"main_cs"},
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -689,7 +689,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/gtao.slang",
-                                    .entry_point = "main_cs",
+                                    .entry_point = FlyString{"main_cs"},
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -709,7 +709,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/gtao_denoise.slang",
-                                    .entry_point = "main_cs",
+                                    .entry_point = FlyString{"main_cs"},
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -735,7 +735,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         for (auto &stage: instanced.stages) {
             if (stage.stage == renderer::ShaderStage::mesh) {
                 stage.stage = renderer::ShaderStage::vertex;
-                stage.entry_point = "main_vs";
+                stage.entry_point = FlyString{"main_vs"};
             }
         }
 
@@ -748,7 +748,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/light_cluster.slang",
-                                    .entry_point = "main_cs",
+                                    .entry_point = FlyString{"main_cs"},
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -768,7 +768,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/light_cull.slang",
-                                    .entry_point = "main_cs",
+                                    .entry_point = FlyString{"main_cs"},
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -789,7 +789,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/frustum_cull.slang",
-                                    .entry_point = "late_cs",
+                                    .entry_point = FlyString{"late_cs"},
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -809,7 +809,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                     {
                             renderer::ShaderCompileRequest{
                                     .source_path = "assets/shaders/hiz_build.slang",
-                                    .entry_point = "main_cs",
+                                    .entry_point = FlyString{"main_cs"},
                                     .stage = renderer::ShaderStage::compute,
                                     .include_directories = {},
                                     .defines = {},
@@ -2005,7 +2005,8 @@ auto Renderer::register_material_name(MaterialHandle handle, std::string name) -
 auto Renderer::request_texture(std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
                                std::string debug_name) -> ImageHandle {
     // The handle is stable across the pending-to-loaded upgrade, so it can be named right away.
-    auto const handle = texture_streamer_.request(image_storage_, std::move(source_path), role, fallback, debug_name);
+    auto const handle =
+            texture_streamer_.request(image_storage_, std::move(source_path), role, fallback, FlyString{debug_name});
 
     static_cast<void>(assets_.textures().register_asset(std::move(debug_name), handle));
 

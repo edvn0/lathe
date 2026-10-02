@@ -9,8 +9,8 @@
 #include "core/thread_pool.hxx"
 
 auto TextureStreamer::request(ImageStorage &images, std::filesystem::path source_path, TextureRole role,
-                              ImageHandle fallback, std::string debug_name, std::shared_ptr<ModelLoadProfile> profile)
-        -> ImageHandle {
+                              ImageHandle fallback, FlyString debug_name,
+                              std::shared_ptr<ModelLoadProfile> profile) -> ImageHandle {
     std::error_code canonicalize_error;
     auto const canonical_path = std::filesystem::weakly_canonical(source_path, canonicalize_error);
     auto const path_key = std::format("{}|{}", (canonicalize_error ? source_path : canonical_path).generic_string(),
@@ -44,7 +44,7 @@ auto TextureStreamer::request(ImageStorage &images, std::filesystem::path source
 
     pending_.push_back(PendingRequest{
             .handle = *pending_handle,
-            .debug_name = std::move(debug_name),
+            .debug_name = debug_name,
             .future = std::move(future),
     });
 
@@ -52,7 +52,7 @@ auto TextureStreamer::request(ImageStorage &images, std::filesystem::path source
 }
 
 auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std::byte> encoded_bytes, TextureRole role,
-                                          std::string cache_key, ImageHandle fallback, std::string debug_name,
+                                          std::string cache_key, ImageHandle fallback, FlyString debug_name,
                                           std::shared_ptr<ModelLoadProfile> profile) -> ImageHandle {
     auto pending_handle = images.create_pending_image(fallback);
 
@@ -77,7 +77,7 @@ auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std:
 
     pending_.push_back(PendingRequest{
             .handle = *pending_handle,
-            .debug_name = std::move(debug_name),
+            .debug_name = debug_name,
             .future = std::move(future),
     });
 
@@ -86,7 +86,7 @@ auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std:
 
 auto TextureStreamer::request_cooked(ImageStorage &images,
                                      std::function<std::expected<CompressedTexture, TexturePipelineError>()> loader,
-                                     std::string cache_key, ImageHandle fallback, std::string debug_name,
+                                     std::string cache_key, ImageHandle fallback, FlyString debug_name,
                                      std::shared_ptr<ModelLoadProfile> profile) -> ImageHandle {
     auto path_key = std::format("cooked|{}", cache_key);
 
@@ -120,7 +120,7 @@ auto TextureStreamer::request_cooked(ImageStorage &images,
 
     pending_.push_back(PendingRequest{
             .handle = *pending_handle,
-            .debug_name = std::move(debug_name),
+            .debug_name = debug_name,
             .future = std::move(future),
     });
 
@@ -193,7 +193,7 @@ auto TextureStreamer::flush(ImageStorage &images, VulkanContext &context) -> std
 
     struct Ready {
         ImageHandle handle;
-        std::string debug_name;
+        FlyString debug_name;
         CompressedTexture texture;
     };
 
@@ -209,8 +209,8 @@ auto TextureStreamer::flush(ImageStorage &images, VulkanContext &context) -> std
             continue;
         }
 
-        ready.push_back(Ready{
-                .handle = request.handle, .debug_name = std::move(request.debug_name), .texture = std::move(*result)});
+        ready.push_back(
+                Ready{.handle = request.handle, .debug_name = request.debug_name, .texture = std::move(*result)});
     }
 
     pending_.clear();

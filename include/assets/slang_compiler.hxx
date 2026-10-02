@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "core/fly_string.hxx"
 
 namespace renderer {
 
@@ -29,7 +30,7 @@ namespace renderer {
 
     struct ShaderCompileRequest {
         std::filesystem::path source_path;
-        std::string entry_point;
+        FlyString entry_point;
         ShaderStage stage = ShaderStage::vertex;
 
         std::vector<std::filesystem::path> include_directories{};
@@ -42,7 +43,7 @@ namespace renderer {
 
     struct CompiledShader {
         ShaderStage stage = ShaderStage::vertex;
-        std::string entry_point;
+        FlyString entry_point;
         std::vector<std::uint32_t> spirv;
     };
 

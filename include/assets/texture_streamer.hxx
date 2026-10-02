@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "assets/texture_pipeline.hxx"
+#include "core/fly_string.hxx"
 #include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
 #include "gpu/image_storage.hxx"
@@ -23,13 +24,13 @@ public:
     // the image already made for it, even one that failed to load and stays on its fallback.
     [[nodiscard]]
     auto request(ImageStorage &images, std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
-                 std::string debug_name, std::shared_ptr<ModelLoadProfile> profile = nullptr) -> ImageHandle;
+                 FlyString debug_name, std::shared_ptr<ModelLoadProfile> profile = nullptr) -> ImageHandle;
 
     // request() for an image with no file, e.g. one embedded in a glTF. `encoded_bytes` is decoded on the
     // background thread. `cache_key` must be stable and unique per source image.
     [[nodiscard]]
     auto request_from_memory(ImageStorage &images, std::vector<std::byte> encoded_bytes, TextureRole role,
-                             std::string cache_key, ImageHandle fallback, std::string debug_name,
+                             std::string cache_key, ImageHandle fallback, FlyString debug_name,
                              std::shared_ptr<ModelLoadProfile> profile = nullptr) -> ImageHandle;
 
     // request() for a texture that's already block-compressed, e.g. a TEXR chunk from an asset pack. `loader` runs on
@@ -38,7 +39,7 @@ public:
     [[nodiscard]]
     auto request_cooked(ImageStorage &images,
                         std::function<std::expected<CompressedTexture, TexturePipelineError>()> loader,
-                        std::string cache_key, ImageHandle fallback, std::string debug_name,
+                        std::string cache_key, ImageHandle fallback, FlyString debug_name,
                         std::shared_ptr<ModelLoadProfile> profile = nullptr) -> ImageHandle;
 
     // Where a texture came from, for turning handles back into asset references when saving a scene.
@@ -74,7 +75,7 @@ public:
 private:
     struct PendingRequest {
         ImageHandle handle;
-        std::string debug_name;
+        FlyString debug_name;
         std::future<std::expected<CompressedTexture, TexturePipelineError>> future;
     };
 

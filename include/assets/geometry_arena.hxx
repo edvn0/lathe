@@ -19,6 +19,7 @@
 #include <string_view>
 #include <type_traits>
 #include <vector>
+#include "core/fly_string.hxx"
 
 struct GeometryArenaCreateInfo {
     VkDeviceSize capacity = 0;
@@ -176,7 +177,7 @@ private:
             -> std::expected<void, GeometryArenaError>;
 
     VulkanContext *context_ = nullptr;
-    std::string debug_name_;
+    FlyString debug_name_;
 
     Buffer upload_buffer{};
     Buffer buffer{};

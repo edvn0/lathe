@@ -55,7 +55,7 @@ ImageStorage::ImageStorage(ImageStorage &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), slots_(std::move(other.slots_)),
     default_upload_buffer_(std::move(other.default_upload_buffer_)),
     defaults_uploaded_(std::exchange(other.defaults_uploaded_, false)),
-    pending_uploads_(std::move(other.pending_uploads_)), debug_name_(std::move(other.debug_name_)) {}
+    pending_uploads_(std::move(other.pending_uploads_)), debug_name_(other.debug_name_) {}
 
 auto ImageStorage::operator=(ImageStorage &&other) noexcept -> ImageStorage & {
     if (this == &other) {
@@ -72,7 +72,7 @@ auto ImageStorage::operator=(ImageStorage &&other) noexcept -> ImageStorage & {
 
     defaults_uploaded_ = std::exchange(other.defaults_uploaded_, false);
 
-    debug_name_ = std::move(other.debug_name_);
+    debug_name_ = other.debug_name_;
 
     return *this;
 }
@@ -88,7 +88,7 @@ auto ImageStorage::create(VulkanContext &context, ImageStorageCreateInfo const &
 
     storage.context_ = &context;
 
-    storage.debug_name_ = std::string{create_info.debug_name};
+    storage.debug_name_ = FlyString{create_info.debug_name};
 
     storage.slots_ = ObjectPool<ImageSlotData>::create(create_info.capacity);
 
@@ -139,7 +139,7 @@ auto ImageStorage::create_default_images() -> std::expected<void, ImageStorageEr
     default_upload_buffer_ = std::move(*upload);
 
     for (std::uint32_t index = 0; index < default_image_count; ++index) {
-        auto const name = debug_name_ + ".default." + std::string{default_names[index]};
+        auto const name = std::format("{}.default.{}", debug_name_, default_names[index]);
 
         auto image = Image::create(
                 *context_, ImageCreateInfo{
@@ -527,7 +527,7 @@ auto ImageStorage::upgrade_pending_image(ImageHandle handle, CompressedTexture c
                                        .tiling = VK_IMAGE_TILING_OPTIMAL,
                                        .mip_levels = mip_levels,
                                        .array_layers = 1,
-                                       .debug_name = texture.debug_name,
+                                       .debug_name = texture.debug_name.view(),
                                });
 
     if (!image) {
@@ -897,7 +897,7 @@ auto ImageStorage::destroy() noexcept -> void {
 
     defaults_uploaded_ = false;
 
-    debug_name_.clear();
+    debug_name_ = FlyString{};
 }
 
 auto ImageStorage::descriptor_record(std::uint32_t index) const noexcept -> ImageDescriptorRecord {

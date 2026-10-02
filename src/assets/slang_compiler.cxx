@@ -439,7 +439,7 @@ namespace renderer {
 
         if (SLANG_FAILED(result) || entry_point == nullptr) {
             if (diagnostics.empty()) {
-                diagnostics = "Entry point \"" + request.entry_point +
+                diagnostics = "Entry point \"" + std::string{request.entry_point.view()} +
                               "\" was not found or does not "
                               "match the requested shader stage.";
             }

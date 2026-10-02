@@ -667,7 +667,7 @@ namespace {
                                      ? std::format("{}#{}#{}", gltf_path.string(), image_index, embedded_size)
                                      : std::string{},
                 .slot = slot,
-                .debug_name = std::move(image_name),
+                .debug_name = FlyString{image_name},
         });
 
         image_cache.emplace(image_index, cpu_index);

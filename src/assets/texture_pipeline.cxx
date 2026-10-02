@@ -237,12 +237,12 @@ namespace {
     }
 
     [[nodiscard]]
-    auto extract_compressed_texture(ktxTexture2 *texture, std::string debug_name) -> CompressedTexture {
+    auto extract_compressed_texture(ktxTexture2 *texture, FlyString debug_name) -> CompressedTexture {
         CompressedTexture result;
         result.format = static_cast<VkFormat>(texture->vkFormat);
         result.width = texture->baseWidth;
         result.height = texture->baseHeight;
-        result.debug_name = std::move(debug_name);
+        result.debug_name = debug_name;
 
         auto const *base_data = ktxTexture_GetData(ktxTexture(texture));
         auto const total_size = ktxTexture_GetDataSize(ktxTexture(texture));
@@ -283,8 +283,8 @@ namespace {
     // The cache stores the transcoded BC7/BC5 data, so a hit is just a file read. Returns nullopt on any miss or
     // corruption so the caller re-encodes.
     [[nodiscard]]
-    auto try_load_cached(std::filesystem::path const &cache_path, std::string debug_name, ModelLoadProfile *profile)
-            -> std::optional<CompressedTexture> {
+    auto try_load_cached(std::filesystem::path const &cache_path, FlyString debug_name,
+                         ModelLoadProfile *profile) -> std::optional<CompressedTexture> {
         std::error_code ec;
 
         ScopedProfileSample lookup_sample{profile != nullptr ? &profile->texture_cache_lookup_ns : nullptr};
@@ -313,7 +313,7 @@ namespace {
             profile->texture_cache_hits.fetch_add(1, std::memory_order_relaxed);
         }
 
-        auto extracted = extract_compressed_texture(texture.get(), std::move(debug_name));
+        auto extracted = extract_compressed_texture(texture.get(), debug_name);
 
         // A truncated or hand-edited cache file can parse as KTX2 yet describe nonsense; fall back to re-encoding.
         if (auto const problem = validate_compressed_texture(extracted); problem.has_value()) {
@@ -326,7 +326,7 @@ namespace {
 
     [[nodiscard]]
     auto encode_and_transcode(std::vector<std::byte> base_rgba8, std::uint32_t width, std::uint32_t height,
-                              TextureRole role, std::filesystem::path const &cache_path, std::string debug_name,
+                              TextureRole role, std::filesystem::path const &cache_path, FlyString debug_name,
                               ModelLoadProfile *profile) -> std::expected<CompressedTexture, TexturePipelineError> {
         if (profile != nullptr) {
             profile->texture_cache_misses.fetch_add(1, std::memory_order_relaxed);
@@ -364,19 +364,19 @@ namespace {
 
         write_cache_atomic(texture.get(), cache_path);
 
-        return extract_compressed_texture(texture.get(), std::move(debug_name));
+        return extract_compressed_texture(texture.get(), debug_name);
     }
 
     // Shared tail of the file and memory loaders: convert to 8-bit RGBA and encode.
     [[nodiscard]]
     auto compress_decoded_image(DecodedImage const &decoded, TextureRole role, std::filesystem::path const &cache_path,
-                                std::string debug_name, ModelLoadProfile *profile)
-            -> std::expected<CompressedTexture, TexturePipelineError> {
+                                FlyString debug_name,
+                                ModelLoadProfile *profile) -> std::expected<CompressedTexture, TexturePipelineError> {
         auto const width = decoded.width();
         auto const height = decoded.height();
         auto rgba8 = to_rgba8(decoded);
 
-        return encode_and_transcode(std::move(rgba8), width, height, role, cache_path, std::move(debug_name), profile);
+        return encode_and_transcode(std::move(rgba8), width, height, role, cache_path, debug_name, profile);
     }
 
 } // namespace
@@ -432,7 +432,7 @@ auto load_compressed_texture(std::filesystem::path const &source_path, TextureRo
     auto const stem = source_path.stem().string();
     auto const cache_path = cache_path_for(identity, role, cache_directory, stem);
 
-    if (auto cached = try_load_cached(cache_path, stem, profile_ptr); cached.has_value()) {
+    if (auto cached = try_load_cached(cache_path, FlyString{stem}, profile_ptr); cached.has_value()) {
         return std::move(*cached);
     }
 
@@ -450,7 +450,7 @@ auto load_compressed_texture(std::filesystem::path const &source_path, TextureRo
                                           std::format("failed to decode '{}'", source_path.string())));
     }
 
-    return compress_decoded_image(*decoded, role, cache_path, stem, profile_ptr);
+    return compress_decoded_image(*decoded, role, cache_path, FlyString{stem}, profile_ptr);
 }
 
 auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> encoded_bytes, TextureRole role,
@@ -471,7 +471,7 @@ auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> enco
     auto const identity = std::format("encoded-memory|{}", cache_key);
     auto const cache_path = cache_path_for(identity, role, cache_directory, "embedded");
 
-    if (auto cached = try_load_cached(cache_path, std::string{cache_key}, profile_ptr); cached.has_value()) {
+    if (auto cached = try_load_cached(cache_path, FlyString{cache_key}, profile_ptr); cached.has_value()) {
         return std::move(*cached);
     }
 
@@ -488,7 +488,7 @@ auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> enco
         return std::unexpected(make_error(TexturePipelineErrorType::decode_failed, "failed to decode embedded image"));
     }
 
-    return compress_decoded_image(*decoded, role, cache_path, std::string{cache_key}, profile_ptr);
+    return compress_decoded_image(*decoded, role, cache_path, FlyString{cache_key}, profile_ptr);
 }
 
 auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels, std::uint32_t width,
@@ -510,7 +510,7 @@ auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels,
     auto const identity = std::format("memory|{}", cache_key);
     auto const cache_path = cache_path_for(identity, role, cache_directory, "embedded");
 
-    if (auto cached = try_load_cached(cache_path, std::string{cache_key}, profile_ptr); cached.has_value()) {
+    if (auto cached = try_load_cached(cache_path, FlyString{cache_key}, profile_ptr); cached.has_value()) {
         return std::move(*cached);
     }
 
@@ -518,5 +518,5 @@ auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels,
 
     std::vector<std::byte> base{rgba_pixels.begin(), rgba_pixels.end()};
 
-    return encode_and_transcode(std::move(base), width, height, role, cache_path, std::string{cache_key}, profile_ptr);
+    return encode_and_transcode(std::move(base), width, height, role, cache_path, FlyString{cache_key}, profile_ptr);
 }

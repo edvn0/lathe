@@ -27,6 +27,7 @@
 #include "assets/texture_streamer.hxx"
 #include "core/config.hxx"
 #include "core/error_context.hxx"
+#include "core/fly_string.hxx"
 #include "core/forward.hxx"
 #include "gpu/compressed_texture.hxx"
 #include "gpu/model_vertex.hxx"
@@ -124,7 +125,7 @@ struct ModelCpuImageSource {
     // Identifies the image for de-duplication: required with `encoded` and `cooked`, ignored with `path`.
     std::string cache_key;
     ModelTextureSlot slot = ModelTextureSlot::base_colour;
-    std::string debug_name;
+    FlyString debug_name;
 };
 
 struct ModelCpuMaterial {

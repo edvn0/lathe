@@ -191,8 +191,7 @@ namespace {
 SamplerStorage::~SamplerStorage() { destroy(); }
 
 SamplerStorage::SamplerStorage(SamplerStorage &&other) noexcept :
-    context_{std::exchange(other.context_, nullptr)}, slots_{std::move(other.slots_)},
-    debug_name_{std::move(other.debug_name_)} {}
+    context_{std::exchange(other.context_, nullptr)}, slots_{std::move(other.slots_)}, debug_name_{other.debug_name_} {}
 
 auto SamplerStorage::operator=(SamplerStorage &&other) noexcept -> SamplerStorage & {
     if (this == &other) {
@@ -205,7 +204,7 @@ auto SamplerStorage::operator=(SamplerStorage &&other) noexcept -> SamplerStorag
 
     slots_ = std::move(other.slots_);
 
-    debug_name_ = std::move(other.debug_name_);
+    debug_name_ = other.debug_name_;
 
     return *this;
 }
@@ -219,7 +218,7 @@ auto SamplerStorage::create(VulkanContext &context, std::uint32_t capacity, std:
     SamplerStorage storage;
 
     storage.context_ = &context;
-    storage.debug_name_ = std::string{debug_name};
+    storage.debug_name_ = FlyString{debug_name};
 
     storage.slots_ = ObjectPool<SamplerSlotData>::create(capacity);
 
@@ -228,7 +227,7 @@ auto SamplerStorage::create(VulkanContext &context, std::uint32_t capacity, std:
     for (std::uint32_t index = 0; index < default_sampler_count; ++index) {
         auto create_info = defaults[index].create_info;
 
-        auto const full_name = storage.debug_name_ + ".default." + std::string{create_info.debug_name};
+        auto const full_name = std::format("{}.default.{}", storage.debug_name_, create_info.debug_name);
 
         create_info.debug_name = full_name;
 
@@ -311,7 +310,7 @@ auto SamplerStorage::destroy() noexcept -> void {
 
     context_ = nullptr;
 
-    debug_name_.clear();
+    debug_name_ = FlyString{};
 }
 
 auto SamplerStorage::destroy_sampler(SamplerHandle handle) -> std::expected<void, SamplerStorageError> {

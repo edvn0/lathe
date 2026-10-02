@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "assets/load_model.hxx"
+#include "core/fly_string.hxx"
 #include "gpu/sampler.hxx"
 #include "serialisation/asset_id.hxx"
 #include "serialisation/lbf_error.hxx"
@@ -33,7 +34,7 @@ inline constexpr std::uint16_t cooked_model_oldest_readable_version = 1;
 struct CookedImageRef {
     AssetId texture{};
     ModelTextureSlot slot = ModelTextureSlot::base_colour;
-    std::string debug_name;
+    FlyString debug_name;
 };
 
 struct CookedModel {
