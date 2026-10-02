@@ -4,6 +4,12 @@
 
 namespace frame_graph {
 
+    // Every access bit that writes memory. A barrier's source scope only needs these made available.
+    inline constexpr VkAccessFlags2 write_access_mask =
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
+            VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+
     struct UseInfo {
         VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_NONE;
         VkAccessFlags2 access = VK_ACCESS_2_NONE;

@@ -1,22 +1,72 @@
 #include "rendering/frame_graph/compiler.hxx"
 
 #include <algorithm>
-#include <bit>
 #include <limits>
+#include <map>
+#include <numeric>
 
 namespace frame_graph {
     namespace {
 
+        // Nodes order the work of one frame: the virtual prologue (-1), the passes by declaration index, and the
+        // virtual epilogue (pass_count). Every cross-queue edge runs from a lower node to a higher one.
+        constexpr std::int64_t prologue_node = -1;
+        constexpr std::int64_t no_node = std::numeric_limits<std::int64_t>::min();
         constexpr auto no_resource = std::numeric_limits<std::uint32_t>::max();
+
+        constexpr auto queue_index(LogicalQueue queue) noexcept -> std::size_t {
+            return static_cast<std::size_t>(queue);
+        }
+
+        constexpr auto other_queue(LogicalQueue queue) noexcept -> LogicalQueue {
+            return queue == LogicalQueue::graphics ? LogicalQueue::compute : LogicalQueue::graphics;
+        }
 
         struct Tracked {
             VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+            bool accessed = false;
+            LogicalQueue owner = LogicalQueue::graphics;
             bool has_write = false;
+            LogicalQueue write_queue = LogicalQueue::graphics;
             VkPipelineStageFlags2 write_stages = VK_PIPELINE_STAGE_2_NONE;
             VkAccessFlags2 write_access = VK_ACCESS_2_NONE;
-            VkPipelineStageFlags2 read_stages = VK_PIPELINE_STAGE_2_NONE; // reads since the last write
-            VkPipelineStageFlags2 visible_stages = VK_PIPELINE_STAGE_2_NONE;
-            VkAccessFlags2 visible_access = VK_ACCESS_2_NONE;
+            std::array<VkPipelineStageFlags2, logical_queue_count> read_stages{}; // since the last write
+            std::array<VkPipelineStageFlags2, logical_queue_count> visible_stages{};
+            std::array<VkAccessFlags2, logical_queue_count> visible_access{};
+            std::array<std::int64_t, logical_queue_count> last_access{no_node, no_node};
+            std::int64_t last_write_node = no_node;
+            // Per queue: accesses there are ordered after the last cross-queue modification only by a semaphore wait,
+            // which covers just the waiting batch. Later accesses chain from `chain_src` with an execution barrier.
+            std::array<bool, logical_queue_count> cross_ordered{};
+            std::array<VkPipelineStageFlags2, logical_queue_count> chain_src{};
+            std::array<VkPipelineStageFlags2, logical_queue_count> chained{};
+            bool entry_has_work = false; // the import's entry state holds work a later queue must wait for
+        };
+
+        struct AccessSpec {
+            VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_NONE;
+            VkAccessFlags2 access = VK_ACCESS_2_NONE;
+            VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+            bool is_image = false;
+            bool writes = false;
+            bool discard = false;
+        };
+
+        struct Edge {
+            std::int64_t src = 0;
+            std::int64_t dst = 0;
+            VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_NONE;
+        };
+
+        struct PendingTransfer {
+            std::uint32_t resource = 0;
+            bool is_image = false;
+            LogicalQueue from = LogicalQueue::graphics;
+            LogicalQueue to = LogicalQueue::graphics;
+            std::int64_t release_node = 0;
+            std::int64_t acquire_node = 0;
+            VkImageLayout old_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+            VkImageLayout new_layout = VK_IMAGE_LAYOUT_UNDEFINED;
         };
 
         struct Hasher {
@@ -100,227 +150,617 @@ namespace frame_graph {
                     mark(graph.producers[access.resource][access.version]);
                 }
             }
-
-            // Every pass that wrote a version a live pass consumed is already marked above. What remains culled is
-            // dead.
             return live;
         }
 
-    } // namespace
-
-    auto compile(GraphDesc const &graph, QueueTopology const &topology,
-                 CompileOptions const &options) -> std::expected<CompiledGraph, FrameGraphError> {
-        // Single-queue only: with one queue (or async compute off) every pass resolves to graphics.
-        if (options.async_compute && !topology.same_queue(LogicalQueue::graphics, LogicalQueue::compute)) {
-            return std::unexpected(FrameGraphError{FrameGraphErrorType::unsupported_topology, {}, {}});
-        }
-        if (auto const valid = validate(graph); !valid) {
-            return std::unexpected(valid.error());
-        }
-
-        auto const pass_count = graph.passes.size();
-        auto result = CompiledGraph{};
-        result.pass_culled.assign(pass_count, true);
-        result.pass_queue.assign(pass_count, LogicalQueue::graphics);
-
-        auto const live = cull(graph);
-        for (auto index = std::size_t{0}; index < pass_count; ++index) {
-            result.pass_culled[index] = !live[index];
-        }
-
-        auto tracked = std::vector<Tracked>(graph.resources.size());
-        for (auto index = std::size_t{0}; index < graph.resources.size(); ++index) {
-            auto const &resource = graph.resources[index];
-            if (resource.imported) {
-                tracked[index] = Tracked{
-                        .layout = resource.entry.layout,
-                        .has_write = true,
-                        .write_stages = resource.entry.stages,
-                        .write_access = resource.entry.access,
-                };
-            }
-        }
-
-        auto &batch = result.batches.emplace_back();
-        batch.queue = LogicalQueue::graphics;
-        batch.signals_render_finished = true;
-
-        auto swapchain_seen = false;
-        for (auto index = std::size_t{0}; index < pass_count; ++index) {
-            if (!live[index]) {
-                continue;
-            }
-            auto const &pass = graph.passes[index];
-            auto compiled = CompiledPass{.pass = static_cast<std::uint32_t>(index)};
-
-            auto const emit = [&](std::uint32_t resource_index, ImageBarrier image, BufferBarrier buffer,
-                                  MemoryBarrier memory) {
-                switch (graph.resources[resource_index].kind) {
-                    case ResourceKind::image:
-                        compiled.before.images.push_back(image);
-                        break;
-                    case ResourceKind::buffer:
-                        compiled.before.buffers.push_back(buffer);
-                        break;
-                    case ResourceKind::token:
-                        compiled.before.memory.push_back(memory);
-                        break;
-                }
+        // The dependency DAG over live passes: an edge from an earlier pass to a later one wherever they touch a
+        // resource and at least one of them writes it.
+        auto dependency_successors(GraphDesc const &graph,
+                                   std::vector<bool> const &live) -> std::vector<std::vector<std::size_t>> {
+            auto successors = std::vector<std::vector<std::size_t>>(graph.passes.size());
+            struct History {
+                std::vector<std::size_t> accessors_since_write;
+                std::int64_t last_write = -1;
             };
+            auto history = std::vector<History>(graph.resources.size());
+            for (auto index = std::size_t{0}; index < graph.passes.size(); ++index) {
+                if (!live[index]) {
+                    continue;
+                }
+                for (auto const &access: graph.passes[index].accesses) {
+                    auto &h = history[access.resource];
+                    if (h.last_write >= 0) {
+                        successors[static_cast<std::size_t>(h.last_write)].push_back(index);
+                    }
+                    if (access.produces) {
+                        for (auto const reader: h.accessors_since_write) {
+                            successors[reader].push_back(index);
+                        }
+                        h.accessors_since_write.clear();
+                        h.last_write = static_cast<std::int64_t>(index);
+                    } else {
+                        h.accessors_since_write.push_back(index);
+                    }
+                }
+            }
+            return successors;
+        }
 
-            for (auto const &access: pass.accesses) {
-                auto const &resource = graph.resources[access.resource];
-                auto &state = tracked[access.resource];
-                auto const info = use_info(access.use, access.stages);
+        // reach[i] has bit j set when j is reachable from i (descendant).
+        auto reachability(std::vector<std::vector<std::size_t>> const &successors)
+                -> std::vector<std::vector<std::uint64_t>> {
+            auto const count = successors.size();
+            auto const words = (count + 63) / 64;
+            auto reach = std::vector<std::vector<std::uint64_t>>(count, std::vector<std::uint64_t>(words, 0));
+            // Successors always have higher indices, so a reverse sweep sees completed rows.
+            for (auto index = count; index-- > 0;) {
+                for (auto const next: successors[index]) {
+                    reach[index][next / 64] |= std::uint64_t{1} << (next % 64);
+                    for (auto word = std::size_t{0}; word < words; ++word) {
+                        reach[index][word] |= reach[next][word];
+                    }
+                }
+            }
+            return reach;
+        }
 
-                if (resource.swapchain && !swapchain_seen) {
-                    swapchain_seen = true;
-                    batch.waits_swapchain_acquire = true;
-                    batch.swapchain_wait_stages = info.stages;
+        auto test_bit(std::vector<std::uint64_t> const &bits, std::size_t index) -> bool {
+            return ((bits[index / 64] >> (index % 64)) & 1U) != 0;
+        }
+
+        // compute_required goes to compute. compute_preferred goes to compute unless every live graphics pass is an
+        // ancestor or descendant of it: that would cost two semaphores and overlap nothing.
+        auto resolve_queues(GraphDesc const &graph, std::vector<bool> const &live,
+                            bool async) -> std::vector<LogicalQueue> {
+            auto queues = std::vector<LogicalQueue>(graph.passes.size(), LogicalQueue::graphics);
+            if (!async) {
+                return queues;
+            }
+
+            auto const successors = dependency_successors(graph, live);
+            auto const reach = reachability(successors);
+
+            for (auto index = std::size_t{0}; index < graph.passes.size(); ++index) {
+                if (!live[index]) {
+                    continue;
+                }
+                auto const affinity = graph.passes[index].affinity;
+                if (affinity == QueueAffinity::compute_required) {
+                    queues[index] = LogicalQueue::compute;
+                    continue;
+                }
+                if (affinity != QueueAffinity::compute_preferred) {
+                    continue;
+                }
+                auto overlappable = false;
+                for (auto other = std::size_t{0}; other < graph.passes.size() && !overlappable; ++other) {
+                    if (other == index || !live[other] || graph.passes[other].affinity != QueueAffinity::graphics) {
+                        continue;
+                    }
+                    auto const related = test_bit(reach[index], other) || test_bit(reach[other], index);
+                    overlappable = !related;
+                }
+                queues[index] = overlappable ? LogicalQueue::compute : LogicalQueue::graphics;
+            }
+            return queues;
+        }
+
+        // Applies accesses to the tracked state and derives barriers, ownership transfers and cross-queue edges.
+        class Tracker {
+        public:
+            Tracker(GraphDesc const &graph, QueueTopology const &topology, CompileOptions const &options,
+                    bool multi_queue, std::size_t node_count) :
+                graph_(graph), topology_(topology), options_(options), multi_queue_(multi_queue),
+                tracked_(graph.resources.size()), acquires_(node_count), releases_(node_count) {
+                for (auto index = std::size_t{0}; index < graph.resources.size(); ++index) {
+                    auto const &resource = graph.resources[index];
+                    if (!resource.imported) {
+                        continue;
+                    }
+                    auto &state = tracked_[index];
+                    state.layout = resource.entry.layout;
+                    state.accessed = true;
+                    state.owner = LogicalQueue::graphics;
+                    state.has_write = true;
+                    state.write_queue = LogicalQueue::graphics;
+                    state.write_stages = resource.entry.stages;
+                    state.write_access = resource.entry.access;
+                    state.last_access[queue_index(LogicalQueue::graphics)] = prologue_node;
+                    state.last_write_node = prologue_node;
+                    state.entry_has_work = resource.entry.stages != 0 || resource.entry.access != 0;
+                }
+            }
+
+            auto apply(std::uint32_t resource, LogicalQueue queue, std::int64_t node, AccessSpec spec,
+                       BarrierSet &before) -> void {
+                auto &state = tracked_[resource];
+                auto const desc_kind = graph_.resources[resource].kind;
+                auto const qi = queue_index(queue);
+                auto const other = other_queue(queue);
+                auto const oi = queue_index(other);
+
+                if (!state.accessed) {
+                    state.owner = queue;
                 }
 
-                auto const layout_change = info.is_image && state.layout != info.layout;
-                auto const prior_stages = state.write_stages | state.read_stages;
-                auto const has_prior = state.has_write || state.read_stages != 0;
-                auto const old_layout = access.discard ? VK_IMAGE_LAYOUT_UNDEFINED : state.layout;
+                auto const layout_change = spec.is_image && state.layout != spec.layout;
+                auto const old_layout = spec.discard ? VK_IMAGE_LAYOUT_UNDEFINED : state.layout;
+                auto const own_write = state.has_write && state.write_queue == queue;
 
-                auto need_barrier = false;
+                auto const needs_transfer =
+                        multi_queue_ && state.accessed && state.owner != queue && desc_kind != ResourceKind::token &&
+                        graph_.resources[resource].sharing == Sharing::exclusive &&
+                        !topology_.same_family(LogicalQueue::graphics, LogicalQueue::compute) && !spec.discard;
+
+                // A layout transition is a write: it must follow the other queue's accesses in the old layout.
+                auto const modifies = spec.writes || layout_change;
+                auto ordered_by_edge = false;
+                if (multi_queue_ && state.accessed) {
+                    ordered_by_edge = add_edges(state, spec, modifies, other, node, needs_transfer);
+                }
+
+                // A reader that is not itself waiting must still be ordered after the cross-queue write the previous
+                // reader waited on: chain from that reader's stages with an execution-only barrier.
+                auto chain_stages = VkPipelineStageFlags2{VK_PIPELINE_STAGE_2_NONE};
+                if (!needs_transfer && !modifies && !ordered_by_edge && state.cross_ordered[qi] &&
+                    (spec.stages & ~state.chained[qi]) != 0) {
+                    chain_stages = state.chain_src[qi];
+                    state.chained[qi] |= spec.stages;
+                }
+
+                if (needs_transfer) {
+                    emit_transfer(resource, state, spec, queue, node);
+                } else {
+                    emit_barrier(resource, state, spec, queue, own_write, layout_change, old_layout, chain_stages,
+                                 before);
+                }
+
+                if (ordered_by_edge) {
+                    state.cross_ordered[qi] = !spec.writes;
+                    state.chain_src[qi] = spec.stages;
+                    state.chained[qi] = VK_PIPELINE_STAGE_2_NONE;
+                } else if (modifies) {
+                    state.cross_ordered[qi] = false;
+                }
+
+                // State update.
+                if (modifies || needs_transfer) {
+                    state.has_write = true;
+                    state.write_queue = queue;
+                    state.write_stages = spec.stages;
+                    state.write_access = spec.access;
+                    state.read_stages = {};
+                    state.visible_stages = {};
+                    state.visible_access = {};
+                    state.last_write_node = node;
+                    state.last_access[oi] = no_node;
+                }
+                if (!spec.writes) {
+                    state.read_stages[qi] |= spec.stages;
+                    state.visible_stages[qi] |= spec.stages;
+                    state.visible_access[qi] |= spec.access;
+                }
+                state.last_access[qi] = node;
+                state.owner = queue;
+                if (spec.is_image) {
+                    state.layout = spec.layout;
+                }
+                state.accessed = true;
+            }
+
+            [[nodiscard]] auto edges() const -> std::vector<Edge> const & { return edges_; }
+            [[nodiscard]] auto transfers() const -> std::vector<PendingTransfer> const & { return transfers_; }
+            [[nodiscard]] auto acquires_at(std::int64_t node) -> BarrierSet & {
+                return acquires_[static_cast<std::size_t>(node + 1)];
+            }
+            [[nodiscard]] auto releases_at(std::int64_t node) -> BarrierSet & {
+                return releases_[static_cast<std::size_t>(node + 1)];
+            }
+            [[nodiscard]] auto layout_of(std::uint32_t resource) const -> VkImageLayout {
+                return tracked_[resource].layout;
+            }
+
+        private:
+            auto add_edge(std::int64_t src, std::int64_t dst, VkPipelineStageFlags2 stages) -> bool {
+                if (src == no_node || src == dst) {
+                    return false;
+                }
+                edges_.push_back(Edge{.src = src, .dst = dst, .stages = stages});
+                return true;
+            }
+
+            auto add_edges(Tracked const &state, AccessSpec const &spec, bool modifies, LogicalQueue other,
+                           std::int64_t node, bool needs_transfer) -> bool {
+                auto const oi = queue_index(other);
+                if (needs_transfer) {
+                    // The release must follow the owner's last access, even the prologue's.
+                    return add_edge(state.last_access[oi], node, spec.stages);
+                }
+                // Without a transfer, the prologue only matters if its entry state left work behind.
+                auto const src = modifies                                          ? state.last_access[oi]
+                                 : (state.has_write && state.write_queue == other) ? state.last_write_node
+                                                                                   : no_node;
+                if (src == prologue_node && !state.entry_has_work) {
+                    return false;
+                }
+                return add_edge(src, node, spec.stages);
+            }
+
+            auto emit_transfer(std::uint32_t resource, Tracked const &state, AccessSpec const &spec, LogicalQueue queue,
+                               std::int64_t node) -> void {
+                auto const owner = state.owner;
+                auto const oi = queue_index(owner);
+                auto const release_node = state.last_access[oi];
+                auto const write_on_owner = state.has_write && state.write_queue == owner;
+                auto const src_stages =
+                        (write_on_owner ? state.write_stages : VK_PIPELINE_STAGE_2_NONE) | state.read_stages[oi];
+                auto const src_access = write_on_owner ? state.write_access : VK_ACCESS_2_NONE;
+                auto const src_family = topology_.family[oi];
+                auto const dst_family = topology_.family[queue_index(queue)];
+
+                if (spec.is_image) {
+                    auto barrier = ImageBarrier{
+                            .resource = resource,
+                            .src_stages = src_stages,
+                            .src_access = src_access,
+                            .dst_stages = VK_PIPELINE_STAGE_2_NONE,
+                            .dst_access = VK_ACCESS_2_NONE,
+                            .old_layout = state.layout,
+                            .new_layout = spec.layout,
+                            .src_family = src_family,
+                            .dst_family = dst_family,
+                            .op = OwnershipOp::release,
+                    };
+                    releases_at(release_node).images.push_back(barrier);
+                    barrier.src_stages = VK_PIPELINE_STAGE_2_NONE;
+                    barrier.src_access = VK_ACCESS_2_NONE;
+                    barrier.dst_stages = spec.stages;
+                    barrier.dst_access = spec.access;
+                    barrier.op = OwnershipOp::acquire;
+                    acquires_at(node).images.push_back(barrier);
+                } else {
+                    auto barrier = BufferBarrier{
+                            .resource = resource,
+                            .src_stages = src_stages,
+                            .src_access = src_access,
+                            .src_family = src_family,
+                            .dst_family = dst_family,
+                            .op = OwnershipOp::release,
+                    };
+                    releases_at(release_node).buffers.push_back(barrier);
+                    barrier.src_stages = VK_PIPELINE_STAGE_2_NONE;
+                    barrier.src_access = VK_ACCESS_2_NONE;
+                    barrier.dst_stages = spec.stages;
+                    barrier.dst_access = spec.access;
+                    barrier.op = OwnershipOp::acquire;
+                    acquires_at(node).buffers.push_back(barrier);
+                }
+                transfers_.push_back(PendingTransfer{
+                        .resource = resource,
+                        .is_image = spec.is_image,
+                        .from = owner,
+                        .to = queue,
+                        .release_node = release_node,
+                        .acquire_node = node,
+                        .old_layout = state.layout,
+                        .new_layout = spec.layout,
+                });
+            }
+
+            auto emit_barrier(std::uint32_t resource, Tracked const &state, AccessSpec const &spec, LogicalQueue queue,
+                              bool own_write, bool layout_change, VkImageLayout old_layout,
+                              VkPipelineStageFlags2 chain_stages, BarrierSet &before) -> void {
+                auto const qi = queue_index(queue);
                 auto src_stages = VkPipelineStageFlags2{VK_PIPELINE_STAGE_2_NONE};
                 auto src_access = VkAccessFlags2{VK_ACCESS_2_NONE};
-                auto dst_stages = info.stages;
-                auto dst_access = info.access;
+                auto dst_stages = spec.stages;
+                auto dst_access = spec.access;
+                auto need_barrier = false;
 
-                if (info.writes) {
-                    // WAW, WAR and RAW-with-write: wait for everything before, make the last write available.
-                    need_barrier = has_prior || layout_change;
-                    src_stages = prior_stages;
-                    src_access = access.discard ? VK_ACCESS_2_NONE : state.write_access;
+                if (spec.writes) {
+                    // WAW, WAR, RAW-then-write: wait for everything before and make the last write available.
+                    src_stages = (own_write ? state.write_stages : VK_PIPELINE_STAGE_2_NONE) | state.read_stages[qi];
+                    // A discarding write still follows the earlier write in memory order, so that write must be made
+                    // available. Only real write bits count: a layout transition recorded as a write carries read bits.
+                    src_access = own_write ? (state.write_access & write_access_mask) : VK_ACCESS_2_NONE;
+                    need_barrier = src_stages != 0 || layout_change;
                 } else {
-                    auto const covered =
-                            (info.stages & ~state.visible_stages) == 0 && (info.access & ~state.visible_access) == 0;
-                    need_barrier = layout_change || (state.has_write && !covered);
-                    src_stages = layout_change ? prior_stages : state.write_stages;
-                    src_access = state.write_access;
+                    auto const covered = (spec.stages & ~state.visible_stages[qi]) == 0 &&
+                                         (spec.access & ~state.visible_access[qi]) == 0;
+                    need_barrier = layout_change || (own_write && !covered);
+                    src_stages = own_write ? state.write_stages : VK_PIPELINE_STAGE_2_NONE;
+                    if (layout_change) {
+                        src_stages |= state.read_stages[qi];
+                    }
+                    src_access = own_write ? state.write_access : VK_ACCESS_2_NONE;
                 }
 
-                if (options.serialize && has_prior) {
+                if (chain_stages != 0) {
+                    need_barrier = true;
+                    src_stages |= chain_stages;
+                }
+
+                auto const has_prior = own_write || state.read_stages[qi] != 0;
+                if (options_.serialize && has_prior) {
                     need_barrier = true;
                     src_stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
                     src_access = VK_ACCESS_2_MEMORY_WRITE_BIT;
                     dst_stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
                     dst_access = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
                 }
-
-                if (need_barrier) {
-                    emit(access.resource,
-                         ImageBarrier{
-                                 .resource = access.resource,
-                                 .src_stages = src_stages,
-                                 .src_access = src_access,
-                                 .dst_stages = dst_stages,
-                                 .dst_access = dst_access,
-                                 .old_layout = old_layout,
-                                 .new_layout = info.layout,
-                         },
-                         BufferBarrier{
-                                 .resource = access.resource,
-                                 .src_stages = src_stages,
-                                 .src_access = src_access,
-                                 .dst_stages = dst_stages,
-                                 .dst_access = dst_access,
-                         },
-                         MemoryBarrier{
-                                 .src_stages = src_stages,
-                                 .src_access = src_access,
-                                 .dst_stages = dst_stages,
-                                 .dst_access = dst_access,
-                         });
+                if (!need_barrier) {
+                    return;
                 }
 
-                if (info.writes) {
-                    state.has_write = true;
-                    state.write_stages = info.stages;
-                    state.write_access = info.access;
-                    state.read_stages = 0;
-                    state.visible_stages = 0;
-                    state.visible_access = 0;
-                } else if (need_barrier) {
-                    // A layout transition is itself a write the new layout's readers must see.
-                    if (layout_change) {
-                        state.has_write = true;
-                        state.write_stages = info.stages;
-                        state.write_access = info.access;
-                        state.read_stages = 0;
-                        state.visible_stages = 0;
-                        state.visible_access = 0;
-                    }
-                    state.visible_stages |= info.stages;
-                    state.visible_access |= info.access;
-                    state.read_stages |= info.stages;
-                } else {
-                    state.read_stages |= info.stages;
-                    state.visible_stages |= info.stages;
-                    state.visible_access |= info.access;
-                }
-                if (info.is_image) {
-                    state.layout = info.layout;
+                switch (graph_.resources[resource].kind) {
+                    case ResourceKind::image:
+                        before.images.push_back(ImageBarrier{
+                                .resource = resource,
+                                .src_stages = src_stages,
+                                .src_access = src_access,
+                                .dst_stages = dst_stages,
+                                .dst_access = dst_access,
+                                .old_layout = old_layout,
+                                .new_layout = spec.layout,
+                        });
+                        break;
+                    case ResourceKind::buffer:
+                        before.buffers.push_back(BufferBarrier{
+                                .resource = resource,
+                                .src_stages = src_stages,
+                                .src_access = src_access,
+                                .dst_stages = dst_stages,
+                                .dst_access = dst_access,
+                        });
+                        break;
+                    case ResourceKind::token:
+                        before.memory.push_back(MemoryBarrier{
+                                .src_stages = src_stages,
+                                .src_access = src_access,
+                                .dst_stages = dst_stages,
+                                .dst_access = dst_access,
+                        });
+                        break;
                 }
             }
 
-            auto const slot = static_cast<std::uint32_t>(result.timestamp_passes[0].size());
-            compiled.timestamp_slot = slot;
-            result.timestamp_passes[0].push_back(static_cast<std::uint32_t>(index));
-            batch.passes.push_back(std::move(compiled));
+            GraphDesc const &graph_;
+            QueueTopology const &topology_;
+            CompileOptions const &options_;
+            bool multi_queue_;
+            std::vector<Tracked> tracked_;
+            std::vector<BarrierSet> acquires_;
+            std::vector<BarrierSet> releases_;
+            std::vector<Edge> edges_;
+            std::vector<PendingTransfer> transfers_;
+        };
+
+        struct BatchPlan {
+            LogicalQueue queue = LogicalQueue::graphics;
+            std::vector<std::int64_t> nodes;
+        };
+
+    } // namespace
+
+    auto compile(GraphDesc const &graph, QueueTopology const &topology,
+                 CompileOptions const &options) -> std::expected<CompiledGraph, FrameGraphError> {
+        if (auto const valid = validate(graph); !valid) {
+            return std::unexpected(valid.error());
         }
 
-        // Epilogue: leave every import in its declared exit state.
-        for (auto index = std::size_t{0}; index < graph.resources.size(); ++index) {
-            auto const &resource = graph.resources[index];
-            if (!resource.imported) {
+        auto const pass_count = graph.passes.size();
+        auto const epilogue_node = static_cast<std::int64_t>(pass_count);
+        auto const multi_queue =
+                options.async_compute && !topology.same_queue(LogicalQueue::graphics, LogicalQueue::compute);
+
+        auto result = CompiledGraph{};
+        result.pass_culled.assign(pass_count, true);
+
+        auto const live = cull(graph);
+        for (auto index = std::size_t{0}; index < pass_count; ++index) {
+            result.pass_culled[index] = !live[index];
+        }
+        result.pass_queue = resolve_queues(graph, live, multi_queue);
+
+        // Walk the live passes in declaration order, then the epilogue.
+        auto tracker = Tracker{graph, topology, options, multi_queue, pass_count + 2};
+        auto before = std::vector<BarrierSet>(pass_count + 2);
+        auto swapchain_stages = std::vector<VkPipelineStageFlags2>(pass_count + 2, VK_PIPELINE_STAGE_2_NONE);
+        auto touches_swapchain = std::vector<bool>(pass_count + 2, false);
+
+        for (auto index = std::size_t{0}; index < pass_count; ++index) {
+            if (!live[index]) {
                 continue;
             }
-            auto const &state = tracked[index];
-            auto const prior_stages = state.write_stages | state.read_stages;
-            auto const exit_layout = resource.exit.layout;
-            switch (resource.kind) {
-                case ResourceKind::image: {
-                    if (state.layout == exit_layout &&
-                        (resource.exit.stages == 0 || (resource.exit.stages & ~state.visible_stages) == 0)) {
-                        continue;
-                    }
-                    batch.epilogue.images.push_back(ImageBarrier{
-                            .resource = static_cast<std::uint32_t>(index),
-                            .src_stages = prior_stages,
-                            .src_access = state.write_access,
-                            .dst_stages = resource.exit.stages,
-                            .dst_access = resource.exit.access,
-                            .old_layout = state.layout,
-                            .new_layout = exit_layout,
-                    });
+            auto const node = static_cast<std::int64_t>(index);
+            auto const queue = result.pass_queue[index];
+            for (auto const &access: graph.passes[index].accesses) {
+                auto const info = use_info(access.use, access.stages);
+                if (graph.resources[access.resource].swapchain && !touches_swapchain[index + 1]) {
+                    touches_swapchain[index + 1] = true;
+                    swapchain_stages[index + 1] = info.stages;
+                }
+                tracker.apply(access.resource, queue, node,
+                              AccessSpec{
+                                      .stages = info.stages,
+                                      .access = info.access,
+                                      .layout = info.layout,
+                                      .is_image = info.is_image,
+                                      .writes = info.writes,
+                                      .discard = access.discard,
+                              },
+                              before[index + 1]);
+            }
+        }
+
+        // Epilogue: leave every import in its declared exit state, on the graphics queue.
+        auto epilogue_barriers = BarrierSet{};
+        for (auto index = std::size_t{0}; index < graph.resources.size(); ++index) {
+            auto const &resource = graph.resources[index];
+            if (!resource.imported || resource.kind == ResourceKind::token) {
+                continue;
+            }
+            auto const is_image = resource.kind == ResourceKind::image;
+            // An UNDEFINED exit layout means "leave it as it is".
+            auto const layout = (is_image && resource.exit.layout != VK_IMAGE_LAYOUT_UNDEFINED)
+                                        ? resource.exit.layout
+                                        : tracker.layout_of(static_cast<std::uint32_t>(index));
+            tracker.apply(static_cast<std::uint32_t>(index), LogicalQueue::graphics, epilogue_node,
+                          AccessSpec{
+                                  .stages = resource.exit.stages,
+                                  .access = resource.exit.access,
+                                  .layout = is_image ? layout : VK_IMAGE_LAYOUT_UNDEFINED,
+                                  .is_image = is_image,
+                          },
+                          epilogue_barriers);
+        }
+
+        // Split each queue's nodes into batches. A node with an incoming cross-queue edge starts a batch and a node
+        // with an outgoing one ends it.
+        auto has_incoming = std::vector<bool>(pass_count + 2, false);
+        auto has_outgoing = std::vector<bool>(pass_count + 2, false);
+        for (auto const &edge: tracker.edges()) {
+            has_outgoing[static_cast<std::size_t>(edge.src + 1)] = true;
+            has_incoming[static_cast<std::size_t>(edge.dst + 1)] = true;
+        }
+
+        auto plans = std::vector<BatchPlan>{};
+        for (auto const queue: {LogicalQueue::graphics, LogicalQueue::compute}) {
+            auto nodes = std::vector<std::int64_t>{};
+            if (queue == LogicalQueue::graphics) {
+                nodes.push_back(prologue_node);
+            }
+            for (auto index = std::size_t{0}; index < pass_count; ++index) {
+                if (live[index] && result.pass_queue[index] == queue) {
+                    nodes.push_back(static_cast<std::int64_t>(index));
+                }
+            }
+            if (queue == LogicalQueue::graphics) {
+                nodes.push_back(epilogue_node);
+            }
+
+            auto current = BatchPlan{.queue = queue, .nodes = {}};
+            for (auto const node: nodes) {
+                auto const slot = static_cast<std::size_t>(node + 1);
+                if (has_incoming[slot] && !current.nodes.empty()) {
+                    plans.push_back(std::move(current));
+                    current = BatchPlan{.queue = queue, .nodes = {}};
+                }
+                current.nodes.push_back(node);
+                if (has_outgoing[slot]) {
+                    plans.push_back(std::move(current));
+                    current = BatchPlan{.queue = queue, .nodes = {}};
+                }
+            }
+            if (!current.nodes.empty()) {
+                plans.push_back(std::move(current));
+            }
+        }
+
+        // Submission order: by first node, so every wait refers to an already-submitted batch.
+        std::ranges::stable_sort(plans, [](BatchPlan const &lhs, BatchPlan const &rhs) {
+            return lhs.nodes.front() < rhs.nodes.front();
+        });
+
+        auto node_batch = std::vector<std::uint32_t>(pass_count + 2, 0);
+        auto next_signal = std::array<std::uint32_t, logical_queue_count>{};
+        for (auto batch_index = std::size_t{0}; batch_index < plans.size(); ++batch_index) {
+            auto const &plan = plans[batch_index];
+            auto &batch = result.batches.emplace_back();
+            batch.queue = plan.queue;
+            batch.signal_index = next_signal[queue_index(plan.queue)]++;
+            batch.is_prologue = plan.nodes.front() == prologue_node;
+            batch.acquires = std::move(tracker.acquires_at(plan.nodes.front()));
+            batch.releases = std::move(tracker.releases_at(plan.nodes.back()));
+            for (auto const node: plan.nodes) {
+                node_batch[static_cast<std::size_t>(node + 1)] = static_cast<std::uint32_t>(batch_index);
+                if (node == prologue_node || node == epilogue_node) {
+                    continue;
+                }
+                auto const slot = static_cast<std::size_t>(node + 1);
+                auto &queue_passes = result.timestamp_passes[queue_index(plan.queue)];
+                batch.passes.push_back(CompiledPass{
+                        .pass = static_cast<std::uint32_t>(node),
+                        .before = std::move(before[slot]),
+                        .timestamp_slot = static_cast<std::uint32_t>(queue_passes.size()),
+                });
+                queue_passes.push_back(static_cast<std::uint32_t>(node));
+            }
+        }
+        result.signal_count = next_signal;
+
+        // The epilogue transitions go in the last graphics batch.
+        for (auto batch_index = result.batches.size(); batch_index-- > 0;) {
+            auto &batch = result.batches[batch_index];
+            if (batch.queue == LogicalQueue::graphics) {
+                batch.epilogue = std::move(epilogue_barriers);
+                batch.signals_render_finished = true;
+                break;
+            }
+        }
+
+        // Waits: one per other queue, at the max signal index, with the union of the covered first-use stages.
+        for (auto const &edge: tracker.edges()) {
+            auto const src_batch = node_batch[static_cast<std::size_t>(edge.src + 1)];
+            auto const dst_batch = node_batch[static_cast<std::size_t>(edge.dst + 1)];
+            if (src_batch == dst_batch) {
+                continue;
+            }
+            auto const &source = result.batches[src_batch];
+            auto &waiting = result.batches[dst_batch];
+            if (source.queue == waiting.queue) {
+                continue;
+            }
+            auto existing = std::ranges::find_if(waiting.waits,
+                                                 [&](SemaphoreWait const &wait) { return wait.queue == source.queue; });
+            if (existing == waiting.waits.end()) {
+                waiting.waits.push_back(SemaphoreWait{
+                        .queue = source.queue,
+                        .signal_index = source.signal_index,
+                        .stages = edge.stages,
+                });
+            } else {
+                existing->signal_index = std::max(existing->signal_index, source.signal_index);
+                existing->stages |= edge.stages;
+            }
+        }
+
+        for (auto const &pending: tracker.transfers()) {
+            result.transfers.push_back(OwnershipTransfer{
+                    .resource = pending.resource,
+                    .is_image = pending.is_image,
+                    .from = pending.from,
+                    .to = pending.to,
+                    .release_batch = node_batch[static_cast<std::size_t>(pending.release_node + 1)],
+                    .acquire_batch = node_batch[static_cast<std::size_t>(pending.acquire_node + 1)],
+                    .old_layout = pending.old_layout,
+                    .new_layout = pending.new_layout,
+            });
+        }
+
+        // The first batch touching the swapchain waits on image acquisition.
+        for (auto &batch: result.batches) {
+            auto done = false;
+            for (auto const &pass: batch.passes) {
+                if (touches_swapchain[pass.pass + 1]) {
+                    batch.waits_swapchain_acquire = true;
+                    batch.swapchain_wait_stages = swapchain_stages[pass.pass + 1];
+                    done = true;
                     break;
                 }
-                case ResourceKind::buffer: {
-                    if ((resource.exit.stages & ~state.visible_stages) == 0 &&
-                        (resource.exit.access & ~state.visible_access) == 0) {
-                        continue;
-                    }
-                    batch.epilogue.buffers.push_back(BufferBarrier{
-                            .resource = static_cast<std::uint32_t>(index),
-                            .src_stages = prior_stages,
-                            .src_access = state.write_access,
-                            .dst_stages = resource.exit.stages,
-                            .dst_access = resource.exit.access,
-                    });
-                    break;
-                }
-                case ResourceKind::token:
-                    break;
+            }
+            if (done) {
+                break;
             }
         }
 
         auto hasher = Hasher{};
         hasher.mix(static_cast<std::uint64_t>(options.async_compute));
         hasher.mix(static_cast<std::uint64_t>(options.serialize));
+        for (auto queue = std::size_t{0}; queue < logical_queue_count; ++queue) {
+            hasher.mix(topology.family[queue]);
+            hasher.mix(topology.queue_index[queue]);
+        }
         for (auto const &pass: graph.passes) {
             hasher.mix(pass.name);
             hasher.mix(static_cast<std::uint64_t>(pass.type));
@@ -337,6 +777,7 @@ namespace frame_graph {
         for (auto const &resource: graph.resources) {
             hasher.mix(resource.name);
             hasher.mix(static_cast<std::uint64_t>(resource.kind));
+            hasher.mix(static_cast<std::uint64_t>(resource.sharing));
             hasher.mix(static_cast<std::uint64_t>(resource.entry.layout));
             hasher.mix(static_cast<std::uint64_t>(resource.exit.layout));
             hasher.mix(resource.entry.stages);

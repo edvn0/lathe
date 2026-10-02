@@ -454,16 +454,6 @@ TEST_SUITE("unit") {
         }
     }
 
-    TEST_CASE("a dedicated topology is not supported yet") {
-        auto graph = FrameGraph{};
-        auto topology = QueueTopology{};
-        topology.family = {0, 2};
-        auto const result = compile(graph, topology);
-        REQUIRE_FALSE(result.has_value());
-        CHECK(result.error().type == FrameGraphErrorType::unsupported_topology);
-        CHECK(compile(graph, topology, {.async_compute = false}).has_value());
-    }
-
     TEST_CASE("the hash ignores record functions and tracks declarations") {
         auto const build = [](bool extra_read, int captured) {
             auto graph = FrameGraph{};

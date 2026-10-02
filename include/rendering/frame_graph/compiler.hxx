@@ -28,8 +28,9 @@ namespace frame_graph {
         bool serialize = false; // debug: ALL_COMMANDS barriers between all passes
     };
 
-    // Compiles the declared graph into barriers, batches and timestamp slots. Declaration order is the schedule. Only
-    // the single-queue topology is supported so far; others return unsupported_topology.
+    // Compiles the declared graph into barriers, batches, semaphore waits, ownership transfers and timestamp slots.
+    // Declaration order is the schedule. A topology with one queue, or async_compute = false, puts every pass on
+    // graphics.
     [[nodiscard]] auto compile(GraphDesc const &graph, QueueTopology const &topology,
                                CompileOptions const &options = {}) -> std::expected<CompiledGraph, FrameGraphError>;
 
