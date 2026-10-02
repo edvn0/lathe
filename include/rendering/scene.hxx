@@ -2,6 +2,7 @@
 
 #include "core/forward.hxx"
 #include "physics/physics.hxx"
+#include "scene/environment.hxx"
 
 // The umbrella header; it includes entity/snapshot.hpp, which can't be included on its own first.
 #include <entt/entt.hpp>
@@ -29,6 +30,9 @@ namespace detail {
 class Scene {
 public:
     PhysicsWorldSettings physics_settings{};
+
+    // Sky, image-based lighting, sun and fog. Pushed to the renderer every frame and saved with the scene.
+    SceneEnvironment environment = new_scene_environment();
 
     explicit Scene(Renderer &);
     ~Scene();

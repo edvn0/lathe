@@ -290,6 +290,55 @@ add_shader_push_constant(
     HizBuildPushConstants
 )
 
+add_shader_push_constant(
+    env_brdf_lut.slang
+    main_cs
+    compute
+    EnvBrdfLutPushConstants
+)
+
+add_shader_push_constant(
+    env_equirect_to_cube.slang
+    main_cs
+    compute
+    EnvEquirectToCubePushConstants
+)
+
+add_shader_push_constant(
+    env_sky_to_cube.slang
+    main_cs
+    compute
+    EnvSkyToCubePushConstants
+)
+
+add_shader_push_constant(
+    env_downsample.slang
+    main_cs
+    compute
+    EnvDownsamplePushConstants
+)
+
+add_shader_push_constant(
+    env_sh_project.slang
+    main_cs
+    compute
+    EnvShProjectPushConstants
+)
+
+add_shader_push_constant(
+    env_prefilter.slang
+    main_cs
+    compute
+    EnvPrefilterPushConstants
+)
+
+add_shader_push_constant(
+    skybox.slang
+    main_fs
+    fragment
+    SkyboxPushConstants
+)
+
 set(
     shader_push_constants_header
     "${shader_reflect_generated_dir}/include/shader_push_constants.hxx"

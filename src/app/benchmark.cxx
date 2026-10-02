@@ -159,6 +159,8 @@ auto benchmark_stage_id(RenderStage stage) noexcept -> std::string_view {
             return "composition";
         case BloomPass:
             return "bloom";
+        case Environment:
+            return "environment";
         default:
             return "unknown";
     }

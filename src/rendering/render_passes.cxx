@@ -1129,6 +1129,30 @@ namespace render_pass {
                                         mask_pc);
         }
 
+        // The background goes in before blending so blended surfaces composite over it, and inside this rendering
+        // scope because under MSAA the colour attachment is not stored, only resolved when the scope ends. Reversed Z
+        // stores the sky's ndc.z = 1 as depth 0, so with GREATER_OR_EQUAL and no depth write it only touches pixels no
+        // geometry reached.
+        if (info.draw_skybox) {
+            auto const sky_layout = detail::resolve_layout(context.pipeline_graph, info.skybox_pipeline);
+
+            if (sky_layout != VK_NULL_HANDLE) {
+                detail::set_forward_dynamic_state(context.command_buffer, info.extent,
+                                                  detail::ForwardDynamicStateMode::blend);
+                vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
+
+                detail::bind_graphics_node(context.pipeline_graph, info.skybox_pipeline, context.command_buffer,
+                                           info.samples, 1, false, true);
+                context.resource_table.bind(context.command_buffer, context.frame_index,
+                                            VK_PIPELINE_BIND_POINT_GRAPHICS, sky_layout);
+
+                SkyboxPushConstants const sky_pc{.ubo_address = info.ubo_address};
+
+                vkCmdPushConstants(context.command_buffer, sky_layout, VK_SHADER_STAGE_ALL, 0, sizeof(sky_pc), &sky_pc);
+                vkCmdDraw(context.command_buffer, 3, 1, 0, 0);
+            }
+        }
+
         if (info.counts.blend != 0) {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::blend);

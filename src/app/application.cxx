@@ -47,6 +47,7 @@
 #include "rendering/entity.hxx"
 #include "rendering/hiz_occlusion.hxx"
 #include "rendering/imgui_renderer.hxx"
+#include "rendering/environment_panel.hxx"
 #include "rendering/imgui_widget.hxx"
 #include "rendering/toast.hxx"
 #include "scene/components.hxx"
@@ -460,6 +461,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::DockBuilderDockWindow("Scene stats", bottom);
         ImGui::DockBuilderDockWindow("Frame timings", bottom);
         ImGui::DockBuilderDockWindow("Lighting", bottom);
+        ImGui::DockBuilderDockWindow("Environment", bottom);
 
         ImGui::DockBuilderFinish(dockspace_id);
     }
@@ -2226,20 +2228,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         draw_cluster_grid_settings(*renderer, refused_cluster_grid);
         ImGui::EndDisabled();
 
-        auto light = renderer->directional_light();
+        // The sun, ambient and fog live in the Environment window and are saved with the scene.
         auto shadows = renderer->shadow_settings();
         bool dirty = false;
-
-        dirty |= ImGui::SliderFloat("Azimuth", &light_azimuth_degrees, -180.0F, 180.0F, "%.1f deg");
-        // Kept above the horizon; a horizontal light degenerates the cascade depth range.
-        dirty |= ImGui::SliderFloat("Elevation", &light_elevation_degrees, 5.0F, 89.0F, "%.1f deg");
-        dirty |= ImGui::ColorEdit3("Colour", &light.colour.x);
-        dirty |= ImGui::SliderFloat("Intensity", &light.intensity, 0.0F, 10.0F);
-
-        float ambient_intensity = renderer->ambient_intensity();
-        if (ImGui::SliderFloat("Ambient intensity", &ambient_intensity, 0.0F, 1.0F)) {
-            renderer->set_ambient_intensity(ambient_intensity);
-        }
 
         ImGui::SeparatorText("Shadows");
         dirty |= ImGui::SliderFloat("Split lambda", &shadows.cascades.split_lambda, 0.0F, 1.0F);
@@ -2251,28 +2242,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         dirty |= ImGui::Checkbox("Cascade tint", &shadows.debug_cascade_tint);
 
         if (dirty) {
-            auto const azimuth = glm::radians(light_azimuth_degrees);
-            auto const elevation = glm::radians(light_elevation_degrees);
-
-            light.direction = glm::normalize(glm::vec3{
-                    std::cos(elevation) * std::cos(azimuth),
-                    std::sin(elevation),
-                    std::cos(elevation) * std::sin(azimuth),
-            });
-
-            renderer->set_directional_light(light);
             renderer->set_shadow_settings(shadows);
-        }
-
-        ImGui::SeparatorText("Fog");
-        auto fog = renderer->fog_settings();
-        bool fog_dirty = false;
-        fog_dirty |= ImGui::Checkbox("Enabled", &fog.enabled);
-        fog_dirty |= ImGui::ColorEdit3("Fog colour", &fog.colour.x);
-        fog_dirty |= ImGui::SliderFloat("Fog extinction", &fog.extinction, 0.0F, 0.02F, "%.4f");
-        fog_dirty |= ImGui::SliderFloat("Fog inscattering", &fog.inscattering, 0.0F, 2.0F);
-        if (fog_dirty) {
-            renderer->set_fog_settings(fog);
         }
 
         ImGui::SeparatorText("Light LOD");
@@ -2362,9 +2332,24 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     });
 
 
+    widget("Environment", [&] {
+        if (gui::draw_environment_panel(active_scene()->environment, renderer->environment_system(), model_browser,
+                                        browsing_environment)) {
+            // Edits are picked up by Renderer::set_environment next frame; the scene fingerprint sees them.
+        }
+    });
+
     draw_scene_file_ui();
 
-    if (auto const picked = model_browser.draw(editor_icons.get())) {
+    if (auto const picked = model_browser.draw(editor_icons.get()); picked && browsing_environment) {
+        browsing_environment = false;
+        active_scene()->environment.hdr_source = gui::path_to_utf8(*picked);
+    } else if (picked) {
+        // Not an environment: handled below as a model pick.
+        pending_model_pick = *picked;
+    }
+
+    if (auto const picked = std::exchange(pending_model_pick, std::nullopt)) {
         switch (model_browse_target) {
             case ModelBrowseTarget::spawn_entity:
                 spawn_streamed_model(*picked);
@@ -2488,6 +2473,7 @@ auto Application::play() -> void {
 
     runtime_scene = std::make_unique<Scene>(*renderer);
     runtime_scene->physics_settings = editor_scene->physics_settings;
+    runtime_scene->environment = editor_scene->environment;
     game->clone_into_runtime(*editor_scene, *runtime_scene);
 
     // Set first so active_scene() resolves to runtime_scene below.

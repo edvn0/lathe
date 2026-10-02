@@ -4,6 +4,7 @@ import wind;
 import pbr;
 import meshlet_task;
 import light_clusters;
+import environment;
 
 struct VertexOutput
 {
@@ -343,7 +344,62 @@ var base_colour = base_sample.xyz *
         }
     }
 
-    float3 ambient = base_colour * ambient_occlusion * ubo.ambient_intensity;
+    float3 ambient;
+
+    if ((ubo.environment_flags & env_ibl_valid) != 0) {
+        const uint debug_view = env_debug_view(ubo.environment_flags);
+        const bool furnace = debug_view == env_debug_white_furnace;
+
+        // Lookups rotate by -theta; the environment as a whole is rotated by +theta.
+        const float2 unrotate = float2(ubo.environment_rotation.x, -ubo.environment_rotation.y);
+        const float3 reflected = reflect(-view_direction, shading_normal);
+
+        const float ndotv = max(dot(shading_normal, view_direction), 1e-4);
+        const float3 f0 = lerp(float3(0.04), base_colour, metallic);
+
+        const float2 scale_bias = sampled_2d[ubo.brdf_lut_texture].SampleLevel(samplers[ubo.environment_sampler], float2(ndotv, roughness), 0).rg;
+        const float3 specular_albedo = f0 * scale_bias.x + scale_bias.y;
+
+        // Multi-scatter energy compensation (Fdez-Aguera 2019) from the same LUT.
+        float3 energy = float3(1.0);
+        if ((ubo.environment_flags & env_multi_scatter) != 0) {
+            energy = 1.0 + f0 * (1.0 / max(scale_bias.x + scale_bias.y, 1e-4) - 1.0);
+        }
+
+        float3 irradiance = sh9_eval(ubo.environment_sh, rotate_y(shading_normal, unrotate));
+        float3 prefiltered = sampled_cube[ubo.prefilter_cube_texture].SampleLevel(
+            samplers[ubo.environment_sampler], rotate_y(reflected, unrotate), roughness * ubo.environment_rotation.z).rgb;
+
+        if (furnace) {
+            irradiance = float3(1.0);
+            prefiltered = float3(1.0);
+        }
+
+        float so = 1.0;
+        if ((ubo.environment_flags & env_specular_occlusion) != 0) {
+            so = lerp(1.0, specular_occlusion(ndotv, ambient_occlusion, roughness), ubo.environment_rotation.w);
+        }
+
+        // Keeps the specular lobe from reflecting what lies below the surface.
+        const float horizon = saturate(1.0 + dot(reflected, normal));
+
+        const float3 diffuse_ibl = base_colour * (1.0 - metallic) * (1.0 - specular_albedo) * irradiance *
+                                   ambient_occlusion * ubo.environment_intensity.x;
+        const float3 specular_ibl = prefiltered * specular_albedo * energy * so * horizon * horizon * ubo.environment_intensity.y;
+
+        ambient = (diffuse_ibl + specular_ibl) * ubo.environment_exposure;
+
+        if (debug_view == env_debug_diffuse_only) {
+            ambient = diffuse_ibl * ubo.environment_exposure;
+        } else if (debug_view == env_debug_specular_only) {
+            ambient = specular_ibl * ubo.environment_exposure;
+        } else if (debug_view == env_debug_specular_occlusion) {
+            ambient = float3(so);
+        }
+    } else {
+        ambient = base_colour * ambient_occlusion * ubo.ambient_intensity;
+    }
+
     float3 emissive = emissive_texture.Sample(sampler, uv).xyz *
                   float3(material.emissive[0], material.emissive[1], material.emissive[2]) *
                   material.emissive_strength;
@@ -365,7 +421,14 @@ var base_colour = base_sample.xyz *
     float distance_to_camera = length(ubo.camera_position - input.world_position);
 
     float transmittance = exp(-distance_to_camera * ubo.fog_extinction);
-    float3 scattered = ubo.fog_colour * ubo.fog_inscattering * (1.0 - transmittance);
+    float3 fog_colour = ubo.fog_colour;
+
+    if ((ubo.environment_flags & env_fog_from_environment) != 0) {
+        const float3 view_ray = normalize(input.world_position - ubo.camera_position);
+        fog_colour *= environment_fog_colour(ubo, view_ray);
+    }
+
+    float3 scattered = fog_colour * ubo.fog_inscattering * (1.0 - transmittance);
 
     float3 fogged_colour = shaded_colour * transmittance + scattered;
 
