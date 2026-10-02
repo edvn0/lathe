@@ -1,0 +1,85 @@
+name: tidy
+
+# clang-tidy needs a full build for its compile database and generated headers, so it is too heavy for every push and
+# PR. It runs nightly on main instead, on demand, and on PRs that change its own inputs. Locally: `cargo xtask tidy`.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".clang-tidy"
+      - "tools/run_clang_tidy.sh"
+      - ".github/workflows/tidy.yml"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  toolchain:
+    name: toolchain image
+    uses: ./.github/workflows/toolchain-image.yml
+    permissions:
+      contents: read
+      packages: write
+
+  tidy:
+    name: clang-tidy
+
+    needs: toolchain
+    runs-on: ubuntu-latest
+
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      volumes:
+        - lathe-ci-cache:/ci-cache
+        - lathe-cargo-registry:/opt/cargo/registry
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 5G
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up environment
+        run: |
+          set -euo pipefail
+
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+          tools/ci_cache.sh env
+          cargo_target_dir="$(tools/ci_cache.sh cargo-target-dir HEAD)"
+          {
+            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+            echo "SHADER_REFLECT_CARGO_TARGET_DIR=${cargo_target_dir}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Configure
+        run: |
+          cmake \
+            -S . \
+            -B build/linux-native-debug \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DLATHE_CARGO_TARGET_DIR="${SHADER_REFLECT_CARGO_TARGET_DIR}" \
+            -DCMAKE_LINKER_TYPE=MOLD
+
+      - name: Build
+        run: cmake --build build/linux-native-debug --parallel --target all lathe-tests
+
+      - name: clang-tidy
+        run: tools/run_clang_tidy.sh build/linux-native-debug

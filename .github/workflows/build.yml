@@ -19,7 +19,6 @@ on:
       - "tools/**"
       # The shader check has its own workflow (shaders.yml) and runs without a build.
       - "!tools/check_shaders.py"
-      - ".clang-tidy"
       - ".github/workflows/build.yml"
       - ".github/workflows/toolchain-image.yml"
   pull_request:
@@ -143,11 +142,6 @@ jobs:
             --output-on-failure \
             --parallel 4 \
             --no-tests=error
-
-      # Reuses this job's compile database and generated headers, so it runs after the build.
-      - name: clang-tidy
-        if: matrix.build_type == 'Debug'
-        run: tools/run_clang_tidy.sh "build/${{ matrix.target }}-debug"
 
       - name: ccache statistics
         if: always()

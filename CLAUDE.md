@@ -13,7 +13,7 @@ cargo xtask rebuild     # clean + configure + build
 cargo xtask clean
 cargo xtask shell       # interactive shell inside the build container
 cargo xtask test        # build lathe-tests, run CTest (extra args after --)
-cargo xtask tidy        # build, then clang-tidy (.clang-tidy); CI fails on any finding
+cargo xtask tidy        # build, then clang-tidy (.clang-tidy); the nightly tidy workflow fails on any finding
 cargo xtask profile     # run the executable under perf/callgrind on the host
 ```
 
