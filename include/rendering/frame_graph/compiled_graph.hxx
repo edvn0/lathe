@@ -106,6 +106,7 @@ namespace frame_graph {
         std::vector<bool> pass_culled;
         std::array<std::vector<std::uint32_t>, logical_queue_count> timestamp_passes; // slot -> pass
         std::vector<LogicalQueue> pass_queue;
+        std::vector<std::uint32_t> schedule; // live passes in execution order, as declaration indices
         std::uint64_t hash = 0;
     };
 

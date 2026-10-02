@@ -1,5 +1,7 @@
 #include "rendering/frame_graph/compiler.hxx"
 
+#include "rendering/frame_graph/scheduler.hxx"
+
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -153,39 +155,6 @@ namespace frame_graph {
             return live;
         }
 
-        // The dependency DAG over live passes: an edge from an earlier pass to a later one wherever they touch a
-        // resource and at least one of them writes it.
-        auto dependency_successors(GraphDesc const &graph,
-                                   std::vector<bool> const &live) -> std::vector<std::vector<std::size_t>> {
-            auto successors = std::vector<std::vector<std::size_t>>(graph.passes.size());
-            struct History {
-                std::vector<std::size_t> accessors_since_write;
-                std::int64_t last_write = -1;
-            };
-            auto history = std::vector<History>(graph.resources.size());
-            for (auto index = std::size_t{0}; index < graph.passes.size(); ++index) {
-                if (!live[index]) {
-                    continue;
-                }
-                for (auto const &access: graph.passes[index].accesses) {
-                    auto &h = history[access.resource];
-                    if (h.last_write >= 0) {
-                        successors[static_cast<std::size_t>(h.last_write)].push_back(index);
-                    }
-                    if (access.produces) {
-                        for (auto const reader: h.accessors_since_write) {
-                            successors[reader].push_back(index);
-                        }
-                        h.accessors_since_write.clear();
-                        h.last_write = static_cast<std::int64_t>(index);
-                    } else {
-                        h.accessors_since_write.push_back(index);
-                    }
-                }
-            }
-            return successors;
-        }
-
         // reach[i] has bit j set when j is reachable from i (descendant).
         auto reachability(std::vector<std::vector<std::size_t>> const &successors)
                 -> std::vector<std::vector<std::uint64_t>> {
@@ -268,6 +237,12 @@ namespace frame_graph {
                     state.last_access[queue_index(LogicalQueue::graphics)] = prologue_node;
                     state.last_write_node = prologue_node;
                     state.entry_has_work = resource.entry.stages != 0 || resource.entry.access != 0;
+                    // A read-only entry state was made visible by the previous frame's exit barrier, so a first read
+                    // within it needs no barrier.
+                    if ((resource.entry.access & write_access_mask) == 0) {
+                        state.visible_stages[queue_index(LogicalQueue::graphics)] = resource.entry.stages;
+                        state.visible_access[queue_index(LogicalQueue::graphics)] = resource.entry.access;
+                    }
                 }
             }
 
@@ -542,43 +517,40 @@ namespace frame_graph {
 
     } // namespace
 
-    auto compile(GraphDesc const &graph, QueueTopology const &topology,
-                 CompileOptions const &options) -> std::expected<CompiledGraph, FrameGraphError> {
-        if (auto const valid = validate(graph); !valid) {
-            return std::unexpected(valid.error());
-        }
+    static auto declaration_hash(GraphDesc const &graph, QueueTopology const &topology,
+                                 CompileOptions const &options) -> std::uint64_t;
 
+    // Builds the plan for one schedule. A node is a position in `order`; the prologue is -1 and the epilogue is
+    // order.size(). Every cross-queue edge runs from a lower node to a higher one.
+    static auto build_plan(GraphDesc const &graph, QueueTopology const &topology, CompileOptions const &options,
+                           bool multi_queue, std::vector<bool> const &live, std::vector<LogicalQueue> const &queues,
+                           std::vector<std::uint32_t> const &order) -> CompiledGraph {
         auto const pass_count = graph.passes.size();
-        auto const epilogue_node = static_cast<std::int64_t>(pass_count);
-        auto const multi_queue =
-                options.async_compute && !topology.same_queue(LogicalQueue::graphics, LogicalQueue::compute);
+        auto const node_count = order.size();
+        auto const epilogue_node = static_cast<std::int64_t>(node_count);
 
         auto result = CompiledGraph{};
         result.pass_culled.assign(pass_count, true);
-
-        auto const live = cull(graph);
         for (auto index = std::size_t{0}; index < pass_count; ++index) {
             result.pass_culled[index] = !live[index];
         }
-        result.pass_queue = resolve_queues(graph, live, multi_queue);
+        result.pass_queue = queues;
+        result.schedule = order;
 
-        // Walk the live passes in declaration order, then the epilogue.
-        auto tracker = Tracker{graph, topology, options, multi_queue, pass_count + 2};
-        auto before = std::vector<BarrierSet>(pass_count + 2);
-        auto swapchain_stages = std::vector<VkPipelineStageFlags2>(pass_count + 2, VK_PIPELINE_STAGE_2_NONE);
-        auto touches_swapchain = std::vector<bool>(pass_count + 2, false);
+        auto tracker = Tracker{graph, topology, options, multi_queue, node_count + 2};
+        auto before = std::vector<BarrierSet>(node_count + 2);
+        auto swapchain_stages = std::vector<VkPipelineStageFlags2>(node_count + 2, VK_PIPELINE_STAGE_2_NONE);
+        auto touches_swapchain = std::vector<bool>(node_count + 2, false);
 
-        for (auto index = std::size_t{0}; index < pass_count; ++index) {
-            if (!live[index]) {
-                continue;
-            }
-            auto const node = static_cast<std::int64_t>(index);
-            auto const queue = result.pass_queue[index];
+        for (auto position = std::size_t{0}; position < node_count; ++position) {
+            auto const index = order[position];
+            auto const node = static_cast<std::int64_t>(position);
+            auto const queue = queues[index];
             for (auto const &access: graph.passes[index].accesses) {
                 auto const info = use_info(access.use, access.stages);
-                if (graph.resources[access.resource].swapchain && !touches_swapchain[index + 1]) {
-                    touches_swapchain[index + 1] = true;
-                    swapchain_stages[index + 1] = info.stages;
+                if (graph.resources[access.resource].swapchain && !touches_swapchain[position + 1]) {
+                    touches_swapchain[position + 1] = true;
+                    swapchain_stages[position + 1] = info.stages;
                 }
                 tracker.apply(access.resource, queue, node,
                               AccessSpec{
@@ -589,7 +561,7 @@ namespace frame_graph {
                                       .writes = info.writes,
                                       .discard = access.discard,
                               },
-                              before[index + 1]);
+                              before[position + 1]);
             }
         }
 
@@ -617,8 +589,8 @@ namespace frame_graph {
 
         // Split each queue's nodes into batches. A node with an incoming cross-queue edge starts a batch and a node
         // with an outgoing one ends it.
-        auto has_incoming = std::vector<bool>(pass_count + 2, false);
-        auto has_outgoing = std::vector<bool>(pass_count + 2, false);
+        auto has_incoming = std::vector<bool>(node_count + 2, false);
+        auto has_outgoing = std::vector<bool>(node_count + 2, false);
         for (auto const &edge: tracker.edges()) {
             has_outgoing[static_cast<std::size_t>(edge.src + 1)] = true;
             has_incoming[static_cast<std::size_t>(edge.dst + 1)] = true;
@@ -630,9 +602,9 @@ namespace frame_graph {
             if (queue == LogicalQueue::graphics) {
                 nodes.push_back(prologue_node);
             }
-            for (auto index = std::size_t{0}; index < pass_count; ++index) {
-                if (live[index] && result.pass_queue[index] == queue) {
-                    nodes.push_back(static_cast<std::int64_t>(index));
+            for (auto position = std::size_t{0}; position < node_count; ++position) {
+                if (queues[order[position]] == queue) {
+                    nodes.push_back(static_cast<std::int64_t>(position));
                 }
             }
             if (queue == LogicalQueue::graphics) {
@@ -662,7 +634,7 @@ namespace frame_graph {
             return lhs.nodes.front() < rhs.nodes.front();
         });
 
-        auto node_batch = std::vector<std::uint32_t>(pass_count + 2, 0);
+        auto node_batch = std::vector<std::uint32_t>(node_count + 2, 0);
         auto next_signal = std::array<std::uint32_t, logical_queue_count>{};
         for (auto batch_index = std::size_t{0}; batch_index < plans.size(); ++batch_index) {
             auto const &plan = plans[batch_index];
@@ -679,12 +651,13 @@ namespace frame_graph {
                 }
                 auto const slot = static_cast<std::size_t>(node + 1);
                 auto &queue_passes = result.timestamp_passes[queue_index(plan.queue)];
+                auto const pass_index = order[static_cast<std::size_t>(node)];
                 batch.passes.push_back(CompiledPass{
-                        .pass = static_cast<std::uint32_t>(node),
+                        .pass = pass_index,
                         .before = std::move(before[slot]),
                         .timestamp_slot = static_cast<std::uint32_t>(queue_passes.size()),
                 });
-                queue_passes.push_back(static_cast<std::uint32_t>(node));
+                queue_passes.push_back(pass_index);
             }
         }
         result.signal_count = next_signal;
@@ -739,12 +712,17 @@ namespace frame_graph {
         }
 
         // The first batch touching the swapchain waits on image acquisition.
+        auto node_of_pass = std::vector<std::size_t>(pass_count, 0);
+        for (auto position = std::size_t{0}; position < node_count; ++position) {
+            node_of_pass[order[position]] = position;
+        }
         for (auto &batch: result.batches) {
             auto done = false;
             for (auto const &pass: batch.passes) {
-                if (touches_swapchain[pass.pass + 1]) {
+                auto const slot = node_of_pass[pass.pass] + 1;
+                if (touches_swapchain[slot]) {
                     batch.waits_swapchain_acquire = true;
-                    batch.swapchain_wait_stages = swapchain_stages[pass.pass + 1];
+                    batch.swapchain_wait_stages = swapchain_stages[slot];
                     done = true;
                     break;
                 }
@@ -754,8 +732,23 @@ namespace frame_graph {
             }
         }
 
+        result.hash = declaration_hash(graph, topology, options);
+        return result;
+    }
+
+    static auto count_waits(CompiledGraph const &plan) -> std::size_t {
+        auto total = std::size_t{0};
+        for (auto const &batch: plan.batches) {
+            total += batch.waits.size();
+        }
+        return total;
+    }
+
+    static auto declaration_hash(GraphDesc const &graph, QueueTopology const &topology,
+                                 CompileOptions const &options) -> std::uint64_t {
         auto hasher = Hasher{};
         hasher.mix(static_cast<std::uint64_t>(options.async_compute));
+        hasher.mix(static_cast<std::uint64_t>(options.scheduler));
         hasher.mix(static_cast<std::uint64_t>(options.serialize));
         for (auto queue = std::size_t{0}; queue < logical_queue_count; ++queue) {
             hasher.mix(topology.family[queue]);
@@ -783,8 +776,32 @@ namespace frame_graph {
             hasher.mix(resource.entry.stages);
             hasher.mix(resource.exit.stages);
         }
-        result.hash = hasher.state;
-        return result;
+        return hasher.state;
+    }
+
+    auto compile(GraphDesc const &graph, QueueTopology const &topology,
+                 CompileOptions const &options) -> std::expected<CompiledGraph, FrameGraphError> {
+        if (auto const valid = validate(graph); !valid) {
+            return std::unexpected(valid.error());
+        }
+        auto const multi_queue =
+                options.async_compute && !topology.same_queue(LogicalQueue::graphics, LogicalQueue::compute);
+        auto const live = cull(graph);
+        auto const queues = resolve_queues(graph, live, multi_queue);
+
+        auto const declared = schedule(graph, live, queues, SchedulerMode::declaration_order);
+        auto plan = build_plan(graph, topology, options, multi_queue, live, queues, declared);
+        if (options.scheduler == SchedulerMode::overlap) {
+            auto const overlapped = schedule(graph, live, queues, SchedulerMode::overlap);
+            if (overlapped != declared) {
+                // Reordering must not cost more cross-queue waits than the declared order.
+                auto candidate = build_plan(graph, topology, options, multi_queue, live, queues, overlapped);
+                if (count_waits(candidate) <= count_waits(plan)) {
+                    plan = std::move(candidate);
+                }
+            }
+        }
+        return plan;
     }
 
     auto compile(FrameGraph const &graph, QueueTopology const &topology,

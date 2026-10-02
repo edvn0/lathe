@@ -15,6 +15,7 @@ add_library(
         file_browser.cxx
         frame_graph/compiler.cxx
         frame_graph/frame_graph.cxx
+        frame_graph/scheduler.cxx
         forward_target.cxx
         imgui_renderer.cxx
         overlay.cxx

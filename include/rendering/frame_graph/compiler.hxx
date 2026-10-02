@@ -5,6 +5,7 @@
 
 #include "rendering/frame_graph/compiled_graph.hxx"
 #include "rendering/frame_graph/frame_graph.hxx"
+#include "rendering/frame_graph/scheduler.hxx"
 
 namespace frame_graph {
 
@@ -25,6 +26,7 @@ namespace frame_graph {
 
     struct CompileOptions {
         bool async_compute = true;
+        SchedulerMode scheduler = SchedulerMode::declaration_order;
         bool serialize = false; // debug: ALL_COMMANDS barriers between all passes
     };
 

@@ -158,6 +158,12 @@ namespace frame_graph::test {
             }
         }
 
+        // Execution order of the live passes.
+        auto position = std::vector<std::size_t>(graph.passes.size(), 0);
+        for (auto index = std::size_t{0}; index < compiled.schedule.size(); ++index) {
+            position[compiled.schedule[index]] = index;
+        }
+
         // Flatten the plan into events and placed barriers with a per-queue slot order.
         auto events = std::vector<Event>{};
         auto barriers = std::vector<PlacedBarrier>{};
@@ -208,7 +214,8 @@ namespace frame_graph::test {
                     mine.push_back(event);
                 }
             }
-            std::ranges::sort(mine, [](Event const &a, Event const &b) { return a.pass < b.pass; });
+            std::ranges::sort(mine,
+                              [&](Event const &a, Event const &b) { return position[a.pass] < position[b.pass]; });
             auto const n = mine.size();
             if (n < 2) {
                 continue;
@@ -344,6 +351,136 @@ namespace frame_graph::test {
             problems.push_back("more than one batch waits on the swapchain acquire");
         }
         return problems;
+    }
+
+
+    // Builds a pseudo-random graph from `seed`: 2-24 passes over 1-12 resources with random queue affinities.
+    // `fence_percent` of the passes are marked pinned.
+    inline auto build_random_graph(FrameGraph &graph, std::uint32_t seed, std::uint32_t fence_percent = 0) -> void {
+        constexpr auto compute_stage = static_cast<ShaderStages>(ShaderStage::compute);
+        constexpr auto fragment_stage = static_cast<ShaderStages>(ShaderStage::fragment);
+        auto rng = std::uint64_t{seed} * 6364136223846793005ULL + 1442695040888963407ULL;
+        auto const next = [&](std::uint32_t bound) {
+            rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+            return static_cast<std::uint32_t>((rng >> 33U) % bound);
+        };
+        auto const noop = []() { return RecordFn{}; };
+        auto const pass_count = 2 + next(23);
+        auto const resource_count = 1 + next(12);
+
+        struct Slot {
+            bool image = false;
+            bool imported = false;
+            ImageId image_id{};
+            BufferId buffer_id{};
+            bool written = false;
+        };
+        auto slots = std::vector<Slot>(resource_count);
+        auto names = std::vector<std::string>{};
+        for (auto index = std::uint32_t{0}; index < resource_count; ++index) {
+            names.push_back(std::format("r{}", index));
+        }
+        for (auto index = std::uint32_t{0}; index < resource_count; ++index) {
+            auto &slot = slots[index];
+            slot.image = next(2) == 0;
+            slot.imported = !slot.image || next(2) == 0;
+            if (slot.imported && slot.image) {
+                slot.image_id = graph.import_image({
+                        .entry = {.layout = VK_IMAGE_LAYOUT_GENERAL,
+                                  .stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                  .access = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT},
+                        .exit = {.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                 .stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                 .access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT},
+                        .sharing = next(4) == 0 ? Sharing::concurrent : Sharing::exclusive,
+                        .debug_name = names[index],
+                });
+                slot.written = true;
+            } else if (slot.imported) {
+                slot.buffer_id = graph.import_buffer({
+                        .entry = {.stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                  .access = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT},
+                        .exit = {.stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 .access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT},
+                        .sharing = next(4) == 0 ? Sharing::concurrent : Sharing::exclusive,
+                        .debug_name = names[index],
+                });
+                slot.written = true;
+            }
+        }
+
+        for (auto pass_index = std::uint32_t{0}; pass_index < pass_count; ++pass_index) {
+            auto const kind = next(4); // 0 raster, 1-2 compute, 3 transfer
+            auto const type = kind == 0 ? PassType::raster : kind == 3 ? PassType::transfer : PassType::compute;
+            auto const affinity_roll = next(4);
+            auto const affinity = type == PassType::raster ? QueueAffinity::graphics
+                                  : affinity_roll == 0     ? QueueAffinity::graphics
+                                  : affinity_roll == 1     ? QueueAffinity::compute_required
+                                                           : QueueAffinity::compute_preferred;
+            auto const last = pass_index + 1 == pass_count;
+            graph.add_pass(std::format("pass_{}", pass_index), type, {}, [&](PassBuilder &p) {
+                p.queue(affinity);
+                if (fence_percent != 0 && next(100) < fence_percent) {
+                    p.pinned();
+                }
+                if (last || next(5) == 0) {
+                    p.side_effect();
+                }
+                auto const touches = 1 + next(3);
+                auto used = std::vector<std::uint32_t>{};
+                for (auto touch = std::uint32_t{0}; touch < touches; ++touch) {
+                    auto const index = next(resource_count);
+                    if (std::ranges::find(used, index) != used.end()) {
+                        continue;
+                    }
+                    used.push_back(index);
+                    auto &slot = slots[index];
+                    auto const stage = type == PassType::raster ? fragment_stage : compute_stage;
+                    auto const write = !slot.written || next(3) == 0;
+                    if (slot.image) {
+                        if (!slot.imported && !slot.written) {
+                            slot.image_id = p.create(
+                                    {.format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {4, 4, 1}, .debug_name = "t"});
+                        }
+                        if (type == PassType::raster) {
+                            slot.image_id = write ? p.color(slot.image_id, next(2) == 0 ? LoadOp::clear : LoadOp::load,
+                                                            StoreOp::store)
+                                                  : slot.image_id;
+                            if (!write) {
+                                [[maybe_unused]] auto const r = p.read(slot.image_id, Use::sampled, stage);
+                            }
+                        } else if (type == PassType::transfer) {
+                            if (write) {
+                                slot.image_id = p.write(slot.image_id, Use::transfer_dst);
+                            } else {
+                                [[maybe_unused]] auto const r = p.read(slot.image_id, Use::transfer_src);
+                            }
+                        } else if (write) {
+                            slot.image_id = p.write(slot.image_id,
+                                                    next(2) == 0 ? Use::storage_write : Use::storage_read_write, stage);
+                        } else {
+                            [[maybe_unused]] auto const r = p.read(slot.image_id, Use::sampled, stage);
+                        }
+                        slot.written = true;
+                    } else {
+                        if (type == PassType::transfer) {
+                            if (write) {
+                                slot.buffer_id = p.write(slot.buffer_id, Use::transfer_write);
+                            } else {
+                                [[maybe_unused]] auto const r = p.read(slot.buffer_id, Use::transfer_read);
+                            }
+                        } else if (write) {
+                            slot.buffer_id = p.write(slot.buffer_id,
+                                                     next(2) == 0 ? Use::shader_write : Use::shader_read_write, stage);
+                        } else {
+                            [[maybe_unused]] auto const r = p.read(slot.buffer_id, Use::shader_read, stage);
+                        }
+                        slot.written = true;
+                    }
+                }
+                return noop();
+            });
+        }
     }
 
 } // namespace frame_graph::test
