@@ -111,6 +111,59 @@ namespace {
         }
     }
 
+    // Rewrites the first table-of-contents entry and re-seals the table's checksum, so the file is internally
+    // consistent and only the entry's own values are hostile.
+    template<typename Patch>
+    auto with_patched_entry(std::vector<std::byte> file, Patch &&patch) -> std::vector<std::byte> {
+        LbfFileHeader header{};
+        std::memcpy(&header, file.data(), sizeof(header));
+
+        LbfChunkEntry entry{};
+        std::memcpy(&entry, file.data() + header.toc_offset, sizeof(entry));
+        patch(entry);
+        std::memcpy(file.data() + header.toc_offset, &entry, sizeof(entry));
+
+        header.toc_checksum = xxh64(std::span<std::byte const>{file}.subspan(header.toc_offset, header.toc_size));
+        std::memcpy(file.data(), &header, sizeof(header));
+        return file;
+    }
+
+    auto single_chunk_file(bool compress) -> std::vector<std::byte> {
+        LbfWriter writer{LbfFileKind::asset_pack};
+        writer.add_chunk(LbfChunkInput{.type = lbf_chunk::model,
+                                       .id = 1,
+                                       .version = 1,
+                                       .payload = repetitive_payload(4096),
+                                       .compress = compress});
+        return *writer.finish(LbfWriteOptions{.parallel = false});
+    }
+
+    auto valid_texture() -> CompressedTexture {
+        return CompressedTexture{
+                .format = VK_FORMAT_BC7_SRGB_BLOCK,
+                .width = 8,
+                .height = 4,
+                .mips = {{.width = 8, .height = 4, .byte_offset = 0, .byte_length = 32},
+                         {.width = 4, .height = 2, .byte_offset = 32, .byte_length = 16}},
+                .data = repetitive_payload(48),
+                .debug_name = "valid",
+        };
+    }
+
+    // A scene with one entity carrying one of every component, which each test then spoils in one way.
+    auto populated_scene() -> SceneDescription {
+        SceneDescription scene;
+        scene.models.push_back(SceneAssetRef{.source = "engine://cube"});
+        scene.materials.emplace_back();
+        scene.entities.push_back(SceneEntity{.name = "e", .transform = Components::Transform{}});
+        scene.model_components.push_back(SceneModelComponent{.entity = 0, .model = 0});
+        scene.point_lights.push_back(ScenePointLightComponent{.entity = 0});
+        scene.spot_lights.push_back(SceneSpotLightComponent{.entity = 0});
+        scene.rigid_bodies.push_back(SceneRigidBodyComponent{.entity = 0});
+        scene.lifetimes.push_back(SceneLifetimeComponent{.entity = 0, .remaining_seconds = 1.0F});
+        return scene;
+    }
+
 } // namespace
 
 TEST_SUITE("unit") {
@@ -751,5 +804,258 @@ TEST_SUITE("unit") {
         CHECK_FALSE(corrupted->read_chunk(*corrupted->find(lbf_chunk::texture, 1)).has_value());
 
         std::filesystem::remove(path);
+    }
+
+    TEST_CASE("LBF container: a hostile table of contents is refused before anything is allocated") {
+        constexpr auto terabyte = std::uint64_t{1} << 40U;
+
+        SUBCASE("a chunk claiming a terabyte decompressed size") {
+            // Valid checksums throughout: only raw_size lies. Before the cap this aborted the process on allocation.
+            auto file = with_patched_entry(single_chunk_file(true),
+                                           [&](LbfChunkEntry &entry) { entry.raw_size = terabyte; });
+
+            CHECK_FALSE(LbfReader::from_memory(std::move(file)).has_value());
+        }
+
+        SUBCASE("a plausible raw_size that disagrees with the zstd frame") {
+            auto file =
+                    with_patched_entry(single_chunk_file(true), [](LbfChunkEntry &entry) { entry.raw_size = 1000; });
+
+            auto reader = LbfReader::from_memory(std::move(file));
+            REQUIRE(reader.has_value());
+            CHECK_FALSE(reader->read_chunk(reader->chunks().front()).has_value());
+        }
+
+        SUBCASE("the same lie through the streamed file path") {
+            auto const path = std::filesystem::temp_directory_path() / "lathe_lbf_raw_size_lie.lbf";
+            auto const file =
+                    with_patched_entry(single_chunk_file(true), [](LbfChunkEntry &entry) { entry.raw_size = 1000; });
+            {
+                std::ofstream out{path, std::ios::binary};
+                out.write(reinterpret_cast<char const *>(file.data()), static_cast<std::streamsize>(file.size()));
+            }
+
+            auto reader = LbfReader::open(path);
+            REQUIRE(reader.has_value());
+            CHECK_FALSE(reader->read_chunk(reader->chunks().front()).has_value());
+            std::filesystem::remove(path);
+        }
+
+        SUBCASE("an unknown compression scheme") {
+            auto file = with_patched_entry(single_chunk_file(true), [](LbfChunkEntry &entry) {
+                entry.compression = static_cast<LbfCompression>(9);
+            });
+
+            CHECK_FALSE(LbfReader::from_memory(std::move(file)).has_value());
+        }
+
+        SUBCASE("a chunk overlapping the file header") {
+            auto file = with_patched_entry(single_chunk_file(false), [](LbfChunkEntry &entry) { entry.offset = 0; });
+
+            CHECK_FALSE(LbfReader::from_memory(std::move(file)).has_value());
+        }
+
+        SUBCASE("a header that promises a huge table in a tiny file") {
+            // Used to make open() allocate toc_size bytes before comparing file_size with the real size.
+            auto const path = std::filesystem::temp_directory_path() / "lathe_lbf_huge_toc.lbf";
+            LbfFileHeader header{};
+            header.chunk_count = 1U << 30U;
+            header.toc_offset = sizeof(LbfFileHeader);
+            header.toc_size = std::uint64_t{header.chunk_count} * sizeof(LbfChunkEntry);
+            header.file_size = terabyte;
+            {
+                std::ofstream out{path, std::ios::binary};
+                out.write(reinterpret_cast<char const *>(&header), sizeof(header));
+            }
+
+            auto reader = LbfReader::open(path);
+            REQUIRE_FALSE(reader.has_value());
+            CHECK(reader.error().type == LbfErrorType::corrupt_header);
+            std::filesystem::remove(path);
+        }
+    }
+
+    TEST_CASE("Cooked texture: descriptions the GPU could not copy safely are refused") {
+        REQUIRE_FALSE(validate_compressed_texture(valid_texture()).has_value());
+
+        auto const rejected = [](auto &&spoil) {
+            auto texture = valid_texture();
+            spoil(texture);
+
+            auto const decoded = decode_cooked_texture(encode_cooked_texture(texture, TextureRole::colour));
+            CHECK(validate_compressed_texture(texture).has_value());
+            CHECK_FALSE(decoded.has_value());
+        };
+
+        SUBCASE("a format outside the supported block formats") {
+            rejected([](CompressedTexture &texture) { texture.format = VK_FORMAT_R8G8B8A8_UNORM; });
+            rejected([](CompressedTexture &texture) { texture.format = VK_FORMAT_ASTC_4x4_UNORM_BLOCK; });
+
+            // An arbitrary u32 in the file isn't a VkFormat at all; it is refused before it is cast.
+            auto payload = encode_cooked_texture(valid_texture(), TextureRole::colour);
+            auto const bogus = std::uint32_t{0xFFFFFF91U};
+            std::memcpy(payload.data(), &bogus, sizeof(bogus));
+            CHECK_FALSE(decode_cooked_texture(payload).has_value());
+        }
+
+        SUBCASE("zero or oversized extents") {
+            rejected([](CompressedTexture &texture) { texture.width = 0; });
+            rejected([](CompressedTexture &texture) { texture.width = max_compressed_texture_extent + 1; });
+        }
+
+        SUBCASE("a mip that reads past the data") {
+            rejected([](CompressedTexture &texture) { texture.mips[1].byte_offset = 40; });
+            rejected([](CompressedTexture &texture) { texture.mips[1].byte_offset = 0xFFFFFFF0U; });
+        }
+
+        SUBCASE("a mip whose size does not match its format and extent") {
+            rejected([](CompressedTexture &texture) { texture.mips[0].byte_length = 31; });
+            rejected([](CompressedTexture &texture) { texture.mips[1].width = 5; });
+        }
+
+        SUBCASE("more mips than the extent has levels") {
+            rejected([](CompressedTexture &texture) {
+                texture.mips.resize(5,
+                                    CompressedMipLevel{.width = 1, .height = 1, .byte_offset = 0, .byte_length = 16});
+            });
+        }
+    }
+
+    TEST_CASE("Scene codec: values that would poison the renderer or physics are refused") {
+        REQUIRE(validate_scene(populated_scene()).has_value());
+
+        auto const rejected = [](auto &&spoil) {
+            auto scene = populated_scene();
+            spoil(scene);
+
+            CHECK_FALSE(validate_scene(scene).has_value());
+            // Through the codec too, which is the path a file takes.
+            CHECK_FALSE(decode_scene(encode_scene(scene)).has_value());
+        };
+
+        constexpr auto nan = std::numeric_limits<float>::quiet_NaN();
+        constexpr auto inf = std::numeric_limits<float>::infinity();
+
+        SUBCASE("transforms") {
+            rejected([&](SceneDescription &scene) { scene.entities[0].transform->position.x = nan; });
+            rejected([&](SceneDescription &scene) { scene.entities[0].transform->scale.y = inf; });
+            rejected([&](SceneDescription &scene) { scene.entities[0].transform->rotation = glm::quat{0, 0, 0, 0}; });
+        }
+
+        SUBCASE("lights") {
+            rejected([&](SceneDescription &scene) { scene.point_lights[0].light.intensity = nan; });
+            rejected([&](SceneDescription &scene) { scene.point_lights[0].light.range = -1.0F; });
+            rejected([&](SceneDescription &scene) { scene.spot_lights[0].light.outer_cone_degrees = inf; });
+        }
+
+        SUBCASE("rigid bodies") {
+            rejected([&](SceneDescription &scene) { scene.rigid_bodies[0].body.mass = -1.0F; });
+            rejected([&](SceneDescription &scene) { scene.rigid_bodies[0].body.half_extents.x = -0.5F; });
+            rejected([&](SceneDescription &scene) { scene.rigid_bodies[0].body.velocity.z = nan; });
+        }
+
+        SUBCASE("materials") {
+            rejected([&](SceneDescription &scene) { scene.materials[0].roughness_factor = nan; });
+            rejected([](SceneDescription &scene) { scene.materials[0].max_shadow_cascade = shadow_cascade_count; });
+            rejected([](SceneDescription &scene) { scene.materials[0].max_shadow_cascade = 0xFFFFFFFEU; });
+        }
+
+        SUBCASE("lifetimes and gravity") {
+            rejected([&](SceneDescription &scene) { scene.lifetimes[0].remaining_seconds = nan; });
+            rejected([&](SceneDescription &scene) { scene.physics_settings.gravity.y = inf; });
+        }
+
+        SUBCASE("a component listed twice for one entity") {
+            // instantiate_scene() emplaces each component, and EnTT asserts on a second emplace.
+            rejected([](SceneDescription &scene) { scene.model_components.push_back(scene.model_components[0]); });
+            rejected([](SceneDescription &scene) { scene.point_lights.push_back(scene.point_lights[0]); });
+            rejected([](SceneDescription &scene) { scene.rigid_bodies.push_back(scene.rigid_bodies[0]); });
+            rejected([](SceneDescription &scene) { scene.lifetimes.push_back(scene.lifetimes[0]); });
+        }
+
+        SUBCASE("a material that never casts shadows is still valid") {
+            auto scene = populated_scene();
+            scene.materials[0].max_shadow_cascade = GpuMaterial::no_shadow_cascade;
+            CHECK(validate_scene(scene).has_value());
+        }
+    }
+
+    TEST_CASE("Cooked model: geometry the GPU would read out of bounds is refused") {
+        // The encoder doesn't validate, so a valid model corrupted before encoding stands in for a hostile file.
+        auto const decode_after = [](auto &&spoil) {
+            auto cpu_data = finalized_cube();
+            spoil(cpu_data);
+
+            auto const payload = encode_cooked_model(cpu_data, {}, {});
+            REQUIRE(payload.has_value());
+            return decode_cooked_model(*payload);
+        };
+
+        CHECK(decode_after([](ModelCpuData &) {}).has_value());
+
+        SUBCASE("an index past the vertex count") {
+            CHECK_FALSE(decode_after([](ModelCpuData &data) {
+                            auto &primitive = data.meshes[0].primitives[0];
+                            primitive.indices[0] = static_cast<std::uint32_t>(primitive.compressed_vertices.size());
+                        }).has_value());
+        }
+
+        SUBCASE("a meshlet vertex list pointing past the vertex buffer") {
+            CHECK_FALSE(decode_after([](ModelCpuData &data) {
+                            auto &build = *data.meshes[0].primitives[0].meshlets[0];
+                            build.topology.data[build.meshlets[0].vertex_offset] = 0x00FFFFFFU;
+                        }).has_value());
+        }
+
+        SUBCASE("a packed triangle indexing past its meshlet's vertices") {
+            CHECK_FALSE(decode_after([](ModelCpuData &data) {
+                            auto &build = *data.meshes[0].primitives[0].meshlets[0];
+                            build.topology.data[build.meshlets[0].triangle_offset] = 0x00FFFFFFU;
+                        }).has_value());
+        }
+
+        SUBCASE("meshlets larger than the mesh shader's output arrays") {
+            CHECK_FALSE(decode_after([](ModelCpuData &data) {
+                            data.meshes[0].primitives[0].meshlets[0]->meshlets[0].vertex_count =
+                                    meshlet_max_vertices + 1;
+                        }).has_value());
+            CHECK_FALSE(decode_after([](ModelCpuData &data) {
+                            data.meshes[0].primitives[0].meshlets[0]->meshlets[0].triangle_count =
+                                    meshlet_max_triangles + 1;
+                        }).has_value());
+        }
+
+        SUBCASE("non-finite values") {
+            CHECK_FALSE(decode_after([](ModelCpuData &data) {
+                            data.meshes[0].primitives[0].meshlets[0]->meshlets[0].radius =
+                                    std::numeric_limits<float>::quiet_NaN();
+                        }).has_value());
+            CHECK_FALSE(decode_after([](ModelCpuData &data) {
+                            data.nodes[0].local_transform[3][0] = std::numeric_limits<float>::infinity();
+                        }).has_value());
+        }
+
+        SUBCASE("a node graph with a cycle or a shared child") {
+            CHECK_FALSE(decode_after([](ModelCpuData &data) {
+                            data.nodes[0].children = {0};
+                            data.scene_roots = {0};
+                        }).has_value());
+            CHECK_FALSE(decode_after([](ModelCpuData &data) { data.scene_roots = {0, 0}; }).has_value());
+        }
+    }
+
+    TEST_CASE("Cooked model: counts that outrun the payload are refused before allocating") {
+        ByteWriter writer;
+
+        // Bounds, then zero images and materials, then a node count no payload this small could hold.
+        for (int component = 0; component < 6; ++component) {
+            writer.write(0.0F);
+        }
+
+        writer.write(std::uint32_t{0}); // images
+        writer.write(std::uint32_t{0}); // materials
+        writer.write(std::uint32_t{0x7FFFFFFFU}); // nodes: 2^31 * sizeof(ModelNode) if believed
+
+        CHECK_FALSE(decode_cooked_model(writer.bytes()).has_value());
     }
 }

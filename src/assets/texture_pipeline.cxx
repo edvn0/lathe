@@ -313,7 +313,15 @@ namespace {
             profile->texture_cache_hits.fetch_add(1, std::memory_order_relaxed);
         }
 
-        return extract_compressed_texture(texture.get(), std::move(debug_name));
+        auto extracted = extract_compressed_texture(texture.get(), std::move(debug_name));
+
+        // A truncated or hand-edited cache file can parse as KTX2 yet describe nonsense; fall back to re-encoding.
+        if (auto const problem = validate_compressed_texture(extracted); problem.has_value()) {
+            warn("texture_pipeline: cache file '{}' is invalid ({}), re-encoding", cache_path.string(), *problem);
+            return std::nullopt;
+        }
+
+        return extracted;
     }
 
     [[nodiscard]]

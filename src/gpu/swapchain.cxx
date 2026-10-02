@@ -1,6 +1,7 @@
 #include "gpu/swapchain.hxx"
 
 #include "core/logger.hxx"
+#include "gpu/device_wait.hxx"
 
 #include <algorithm>
 #include <array>
@@ -46,21 +47,15 @@ namespace {
         };
     }
 
-    // vkDeviceWaitIdle can't time out, so wait on it asynchronously and exit immediately if the GPU doesn't
-    // respond; further Vulkan calls against a hung device aren't safe.
-    auto wait_idle_bounded(VkDevice device, std::string_view label) noexcept -> VkResult {
-        constexpr auto timeout = std::chrono::seconds{3};
+    // Shutdown paths can't do anything useful with a hung device; further Vulkan calls against it aren't safe.
+    auto wait_idle_or_exit(VkDevice device, std::string_view label) noexcept -> VkResult {
+        auto const result = wait_idle_bounded(device, label);
 
-        auto future = std::async(std::launch::async, [device] { return vkDeviceWaitIdle(device); });
-
-        if (future.wait_for(timeout) != std::future_status::ready) {
-            error("{}: vkDeviceWaitIdle did not return within {} -- the GPU is not responding. Exiting immediately.",
-                  label, timeout);
-
+        if (result == VK_TIMEOUT) {
             std::_Exit(EXIT_FAILURE);
         }
 
-        return future.get();
+        return result;
     }
 
 } // namespace
@@ -114,7 +109,8 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
         recreate_requested_ = false;
 
         if (!recreate()) {
-            return std::unexpected(make_error(Kind::fatal_error, "swapchain recreate failed"));
+            return std::unexpected(device_lost_ ? make_error(Kind::device_lost, "swapchain recreate")
+                                                : make_error(Kind::fatal_error, "swapchain recreate failed"));
         }
 
         return std::unexpected(make_error(Kind::recreated));
@@ -131,7 +127,9 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
 
     auto result = vkWaitForFences(device_, 1, &frame.in_flight, VK_TRUE, frame_wait_timeout_ns);
 
-    if (result == VK_ERROR_DEVICE_LOST) {
+    // The wait is bounded, so a GPU that hangs rather than faults shows up as a timeout. Report it like a loss: the
+    // device is unusable either way and the user gets the same restart notice.
+    if (result == VK_ERROR_DEVICE_LOST || result == VK_TIMEOUT) {
         return std::unexpected(make_error(Kind::device_lost, "vkWaitForFences"));
     }
 
@@ -146,7 +144,9 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         if (!recreate()) {
-            return std::unexpected(make_error(Kind::fatal_error, "swapchain recreate failed (out of date)"));
+            return std::unexpected(device_lost_
+                                           ? make_error(Kind::device_lost, "swapchain recreate (out of date)")
+                                           : make_error(Kind::fatal_error, "swapchain recreate failed (out of date)"));
         }
 
         return std::unexpected(make_error(Kind::recreated));
@@ -154,6 +154,12 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
 
     if (result == VK_ERROR_DEVICE_LOST) {
         return std::unexpected(make_error(Kind::device_lost, "vkAcquireNextImageKHR"));
+    }
+
+    // VK_NOT_READY / VK_TIMEOUT: nothing became available within the bound. That isn't a normal state with a healthy
+    // presentation engine, so don't fall through to the generic error.
+    if (result == VK_TIMEOUT || result == VK_NOT_READY) {
+        return std::unexpected(make_error(Kind::device_lost, "vkAcquireNextImageKHR timed out"));
     }
 
     auto const acquire_suboptimal = result == VK_SUBOPTIMAL_KHR;
@@ -327,7 +333,7 @@ auto Swapchain::end_frame(SwapchainFrame const &active_frame) noexcept -> Swapch
 
 auto Swapchain::destroy() noexcept -> void {
     if (device_ != VK_NULL_HANDLE) {
-        const VkResult wait_result = wait_idle_bounded(device_, "Swapchain::destroy");
+        const VkResult wait_result = wait_idle_or_exit(device_, "Swapchain::destroy");
 
         if (wait_result != VK_SUCCESS && wait_result != VK_ERROR_DEVICE_LOST) {
             report_vk_error("vkDeviceWaitIdle(swapchain destroy)", wait_result);
@@ -607,9 +613,10 @@ auto Swapchain::recreate() noexcept -> bool {
         return true;
     }
 
-    const VkResult wait_result = vkDeviceWaitIdle(device_);
+    const VkResult wait_result = wait_idle_bounded(device_, "Swapchain::recreate");
 
     if (wait_result != VK_SUCCESS) {
+        device_lost_ = is_device_failure(wait_result);
         report_vk_error("vkDeviceWaitIdle(swapchain recreate)", wait_result);
         return false;
     }

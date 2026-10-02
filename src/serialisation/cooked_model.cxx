@@ -1,6 +1,7 @@
 #include "serialisation/cooked_model.hxx"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <limits>
 #include <source_location>
@@ -8,6 +9,7 @@
 
 #include <meshoptimizer.h>
 
+#include "assets/meshlet.hxx"
 #include "serialisation/byte_stream.hxx"
 
 // Layouts baked into MODL v1. If one of these fires, bump cooked_model_version (see cooked_model.hxx).
@@ -107,6 +109,22 @@ namespace {
         return {bounds_min, bounds_max};
     }
 
+    // A cooked primitive larger than this is refused rather than allocated: counts come from the file.
+    inline constexpr std::uint32_t max_primitive_vertices = 1U << 24U;
+    inline constexpr std::uint32_t max_primitive_indices = 3U << 24U;
+    inline constexpr std::uint32_t max_node_depth = 256;
+
+    template<glm::length_t N>
+    [[nodiscard]] auto all_finite(glm::vec<N, float> const &value) noexcept -> bool {
+        for (glm::length_t i = 0; i < N; ++i) {
+            if (!std::isfinite(value[i])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     auto accumulate_bounds(ModelCpuData const &cpu_data, std::uint32_t node_index, glm::mat4 const &parent,
                            glm::vec3 &bounds_min, glm::vec3 &bounds_max, std::uint32_t depth) -> void {
         // A cyclic node graph would recurse forever; glTF forbids cycles but files aren't always valid.
@@ -195,19 +213,21 @@ namespace {
         auto const size = reader.read<std::uint32_t>();
         auto const bytes = reader.read_bytes(size);
 
-        if (reader.failed() || count > std::numeric_limits<std::uint32_t>::max() / sizeof(std::uint32_t)) {
+        if (reader.failed() || count % 3 != 0 || count > max_primitive_indices) {
             reader.fail();
             return false;
         }
 
-        indices.resize(count);
-
+        // Everything that sizes `indices` is checked before it is resized: `count` comes from the file, and a few
+        // bytes of header must not be able to ask for gigabytes.
         switch (static_cast<IndexEncoding>(encoding)) {
             case IndexEncoding::raw:
-                if (size != count * sizeof(std::uint32_t)) {
+                if (size != static_cast<std::uint64_t>(count) * sizeof(std::uint32_t)) {
                     reader.fail();
                     return false;
                 }
+
+                indices.resize(count);
 
                 if (count != 0) {
                     std::memcpy(indices.data(), bytes.data(), size);
@@ -215,9 +235,17 @@ namespace {
                 return true;
 
             case IndexEncoding::meshopt:
-                if (count % 3 != 0 || meshopt_decodeIndexBuffer(indices.data(), count, sizeof(std::uint32_t),
-                                                                reinterpret_cast<unsigned char const *>(bytes.data()),
-                                                                bytes.size()) != 0) {
+                // The index codec spends at least one byte per triangle.
+                if (count / 3 > size) {
+                    reader.fail();
+                    return false;
+                }
+
+                indices.resize(count);
+
+                if (meshopt_decodeIndexBuffer(indices.data(), count, sizeof(std::uint32_t),
+                                              reinterpret_cast<unsigned char const *>(bytes.data()),
+                                              bytes.size()) != 0) {
                     reader.fail();
                     return false;
                 }
@@ -233,19 +261,59 @@ namespace {
         writer.write_array(build.topology.data);
     }
 
-    auto read_meshlets(ByteReader &reader, MeshletBuild &build) -> bool {
+    // The mesh shader sizes its outputs from meshlet_max_vertices/triangles and the draw reads the vertex buffer
+    // through the meshlet's vertex list, so every number here has to be in range before it goes near the GPU: an index
+    // past `primitive_vertex_count` is an out-of-bounds buffer read, a meshlet larger than the limits an out-of-bounds
+    // write into shared memory.
+    auto read_meshlets(ByteReader &reader, MeshletBuild &build, std::uint32_t primitive_vertex_count) -> bool {
         reader.read_array(build.meshlets);
         reader.read_array(build.topology.data);
 
         build.topology.meshlets.clear();
         build.topology.meshlets.reserve(build.meshlets.size());
 
-        auto const data_size = build.topology.data.size();
+        auto const &data = build.topology.data;
+        auto const data_size = data.size();
 
         for (auto const &meshlet: build.meshlets) {
             // Vertex indices then packed triangles, both inside `data`.
             if (static_cast<std::uint64_t>(meshlet.vertex_offset) + meshlet.vertex_count > data_size ||
                 static_cast<std::uint64_t>(meshlet.triangle_offset) + meshlet.triangle_count > data_size) {
+                reader.fail();
+                return false;
+            }
+
+            if (meshlet.vertex_count == 0 || meshlet.vertex_count > meshlet_max_vertices ||
+                meshlet.triangle_count == 0 || meshlet.triangle_count > meshlet_max_triangles) {
+                reader.fail();
+                return false;
+            }
+
+            auto const vertices =
+                    std::span<std::uint32_t const>{data}.subspan(meshlet.vertex_offset, meshlet.vertex_count);
+
+            if (!std::ranges::all_of(vertices, [&](std::uint32_t index) { return index < primitive_vertex_count; })) {
+                reader.fail();
+                return false;
+            }
+
+            // Packed i0 | i1 << 8 | i2 << 16, each local to the meshlet's own vertex list.
+            auto const triangles =
+                    std::span<std::uint32_t const>{data}.subspan(meshlet.triangle_offset, meshlet.triangle_count);
+
+            auto const triangle_in_range = [&](std::uint32_t packed) {
+                return (packed & 0xFFU) < meshlet.vertex_count && ((packed >> 8U) & 0xFFU) < meshlet.vertex_count &&
+                       ((packed >> 16U) & 0xFFU) < meshlet.vertex_count;
+            };
+
+            if (!std::ranges::all_of(triangles, triangle_in_range)) {
+                reader.fail();
+                return false;
+            }
+
+            // Culling reads these on the GPU; NaN makes every test pass or fail unpredictably.
+            if (!all_finite(meshlet.centre) || !std::isfinite(meshlet.radius) || meshlet.radius < 0.0F ||
+                !all_finite(meshlet.cone_axis) || !std::isfinite(meshlet.cone_cutoff)) {
                 reader.fail();
                 return false;
             }
@@ -259,6 +327,40 @@ namespace {
         }
 
         return reader.ok();
+    }
+
+    // Each entry of the node graph is reachable once from the scene roots, and no deeper than the recursive walks
+    // elsewhere allow. A cycle would recurse forever; a node shared by several parents turns a few bytes of file into
+    // exponentially many visits.
+    [[nodiscard]] auto node_graph_is_a_forest(ModelCpuData const &cpu_data) -> bool {
+        std::vector<bool> visited(cpu_data.nodes.size(), false);
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> stack; // node, depth
+
+        stack.reserve(cpu_data.scene_roots.size());
+
+        for (auto const root: cpu_data.scene_roots) {
+            stack.emplace_back(root, 0);
+        }
+
+        while (!stack.empty()) {
+            auto const [node, depth] = stack.back();
+            stack.pop_back();
+
+            if (visited[node] || depth > max_node_depth) {
+                return false;
+            }
+
+            visited[node] = true;
+
+            auto const &children = cpu_data.nodes[node].children;
+            stack.reserve(stack.size() + children.size());
+
+            for (auto const child: children) {
+                stack.emplace_back(child, depth + 1);
+            }
+        }
+
+        return true;
     }
 
 } // namespace
@@ -411,11 +513,12 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
     auto const bounds_max = read_vec3(reader);
     cpu_data.bounds = std::pair{bounds_min, bounds_max};
 
-    // Every record below is at least a few bytes, so a count can't exceed the bytes left.
-    auto const bounded_count = [&] {
+    // Every record below has a minimum size, so a count can't exceed the bytes left divided by it. Without the division
+    // a 100-byte file could still ask for tens of gigabytes of default-constructed structs.
+    auto const bounded_count = [&](std::size_t minimum_record_size = 1) {
         auto const count = reader.read<std::uint32_t>();
 
-        if (count > reader.remaining()) {
+        if (count > reader.remaining() / minimum_record_size) {
             reader.fail();
             return std::uint32_t{0};
         }
@@ -423,7 +526,7 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
         return count;
     };
 
-    auto const image_count = bounded_count();
+    auto const image_count = bounded_count(13);
     cooked.images.resize(image_count);
     cpu_data.image_sources.resize(image_count);
 
@@ -444,7 +547,7 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
         cpu_data.image_sources[index].debug_name = image.debug_name;
     }
 
-    auto const material_count = bounded_count();
+    auto const material_count = bounded_count(64);
     cpu_data.materials.resize(material_count);
     cooked.material_samplers.resize(material_count);
 
@@ -478,7 +581,7 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
         material.emissive_image = read_image_index(reader, image_count);
     }
 
-    auto const node_count = bounded_count();
+    auto const node_count = bounded_count(72);
     cpu_data.nodes.resize(node_count);
 
     for (auto &node: cpu_data.nodes) {
@@ -489,7 +592,7 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
 
     reader.read_array(cpu_data.scene_roots);
 
-    auto const light_count = bounded_count();
+    auto const light_count = bounded_count(53);
     cpu_data.lights.resize(light_count);
 
     for (auto &light: cpu_data.lights) {
@@ -509,11 +612,11 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
         reader.read(light.outer_cone_degrees);
     }
 
-    auto const mesh_count = bounded_count();
+    auto const mesh_count = bounded_count(4);
     cpu_data.meshes.resize(mesh_count);
 
     for (auto &mesh: cpu_data.meshes) {
-        mesh.primitives.resize(bounded_count());
+        mesh.primitives.resize(bounded_count(36));
 
         for (auto &primitive: mesh.primitives) {
             if (reader.failed()) {
@@ -537,7 +640,10 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
             auto const encoded_size = reader.read<std::uint32_t>();
             auto const encoded = reader.read_bytes(encoded_size);
 
-            if (reader.failed() || vertex_count == 0) {
+            // The vertex codec spends at least one header byte per byte lane per 16-vertex block, so the encoded size
+            // bounds the count; the cap keeps even a consistent file from asking for gigabytes.
+            if (reader.failed() || vertex_count == 0 || vertex_count > max_primitive_vertices ||
+                vertex_count / 16 > encoded_size) {
                 reader.fail();
                 break;
             }
@@ -573,7 +679,7 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
                     }
                 }
 
-                read_meshlets(reader, primitive.meshlets[level].emplace());
+                read_meshlets(reader, primitive.meshlets[level].emplace(), vertex_count);
             }
         }
     }
@@ -583,6 +689,39 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
     }
 
     auto const valid_node = [&](std::uint32_t index) { return index < node_count; };
+
+    auto const finite_matrix = [](glm::mat4 const &matrix) {
+        return all_finite(matrix[0]) && all_finite(matrix[1]) && all_finite(matrix[2]) && all_finite(matrix[3]);
+    };
+
+    auto const finite_bounds = [](std::pair<glm::vec3, glm::vec3> const &bounds) {
+        return all_finite(bounds.first) && all_finite(bounds.second);
+    };
+
+    auto const finite_material = [](auto const &material) {
+        return all_finite(material.base_colour_factor) && all_finite(material.emissive_factor) &&
+               std::isfinite(material.emissive_strength) && std::isfinite(material.metallic_factor) &&
+               std::isfinite(material.roughness_factor) && std::isfinite(material.alpha_cutoff) &&
+               std::isfinite(material.normal_scale) && std::isfinite(material.occlusion_strength);
+    };
+
+    auto const finite_light = [](auto const &light) {
+        return all_finite(light.position) && all_finite(light.direction) && all_finite(light.colour) &&
+               std::isfinite(light.intensity) && std::isfinite(light.range) &&
+               std::isfinite(light.inner_cone_degrees) && std::isfinite(light.outer_cone_degrees);
+    };
+
+    auto const primitives_finite = std::ranges::all_of(cpu_data.meshes, [&](auto const &mesh) {
+        return std::ranges::all_of(mesh.primitives,
+                                   [&](auto const &primitive) { return finite_bounds(*primitive.bounds); });
+    });
+
+    if (!finite_bounds(*cpu_data.bounds) || !primitives_finite ||
+        !std::ranges::all_of(cpu_data.materials, finite_material) ||
+        !std::ranges::all_of(cpu_data.lights, finite_light) ||
+        !std::ranges::all_of(cpu_data.nodes, [&](auto const &node) { return finite_matrix(node.local_transform); })) {
+        return std::unexpected(make_error(LbfErrorType::malformed_payload, "MODL contains a non-finite value"));
+    }
 
     for (auto const &node: cpu_data.nodes) {
         if ((node.mesh_index != no_index && node.mesh_index >= mesh_count) ||
@@ -594,6 +733,11 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
 
     if (!std::ranges::all_of(cpu_data.scene_roots, valid_node)) {
         return std::unexpected(make_error(LbfErrorType::malformed_payload, "scene root references a missing node"));
+    }
+
+    if (!node_graph_is_a_forest(cpu_data)) {
+        return std::unexpected(
+                make_error(LbfErrorType::malformed_payload, "node graph has a cycle, a shared child, or is too deep"));
     }
 
     return cooked;

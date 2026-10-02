@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "gpu/compressed_texture.hxx"
 #include "serialisation/byte_stream.hxx"
 
 auto encode_cooked_texture(CompressedTexture const &texture, TextureRole role) -> std::vector<std::byte> {
@@ -41,7 +42,14 @@ auto decode_cooked_texture(std::span<std::byte const> payload, std::uint16_t ver
     CookedTexture cooked;
     auto &texture = cooked.texture;
 
-    texture.format = static_cast<VkFormat>(reader.read<std::uint32_t>());
+    auto const format = reader.read<std::uint32_t>();
+
+    // Checked before the cast: an arbitrary u32 isn't a valid VkFormat value.
+    if (compressed_block_bytes(format) == 0) {
+        reader.fail();
+    }
+
+    texture.format = reader.ok() ? static_cast<VkFormat>(format) : VK_FORMAT_UNDEFINED;
     texture.width = reader.read<std::uint32_t>();
     texture.height = reader.read<std::uint32_t>();
 
@@ -88,6 +96,13 @@ auto decode_cooked_texture(std::span<std::byte const> payload, std::uint16_t ver
 
     if (reader.failed() || texture.mips.empty() || texture.format == VK_FORMAT_UNDEFINED) {
         return std::unexpected(LbfError{.type = LbfErrorType::malformed_payload});
+    }
+
+    if (auto const problem = validate_compressed_texture(texture); problem.has_value()) {
+        return std::unexpected(LbfError{
+                .type = LbfErrorType::malformed_payload,
+                .cause = ErrorCause{ErrorContext{.message = FlyString{*problem}}},
+        });
     }
 
     return cooked;
