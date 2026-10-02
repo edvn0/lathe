@@ -197,6 +197,13 @@ dominates, only add phase-1 instances to the union when phase 1 deferred any of 
   phase records nothing and the late phase records everything, which isolates the late phase.
 - **Doubled draws or counts with meshlet occlusion**: the late phase lacks `cull_skip_recorded_bit`, or a batch's late
   command isn't the union `(first, n1 + n2)` (`CullPC::late_union_meshlet_batches`).
+- **SIGSEGV in `spvtools::opt::blockmergeutil::MergeWithSuccessor` at startup** (`spirv_opt::run` in
+  `slang_compiler.cxx`): a SPIRV-Tools optimizer bug on some control flow, hit by the runtime pipeline (Slang
+  `-O3`, then `RegisterPerformancePasses`) but not by CI, which only runs `slangc` for push-constant reflection.
+  `hiz_build.slang` hit it with nested `[unroll]`ed conditional accumulation; it now fetches clamped, branch-free.
+  To check shaders the way the runtime does: `slangc <file> -entry <e> -stage <s> -target spirv -profile spirv_1_6
+  -matrix-layout-column-major -force-glsl-scalar-layout -O3 -g2 -emit-spirv-directly -fvk-use-entrypoint-name`, then
+  `spirv-opt -O --skip-validation` (build SPIRV-Tools at the tag in the `Dockerfile`, `SPIRV_TOOLS_TAG`).
 - **Timings panel empty** after a change: some stage skipped a timestamp.
 - **Unavailable checkbox**: the device lacks MIN depth resolve under MSAA (logged at startup as "Depth resolve MIN
   support").

@@ -29,6 +29,18 @@ struct HizBuildPushConstants
 // Reverse-Z: 1.0 is the nearest possible depth, the neutral value for MIN.
 static const float hiz_neutral_depth = 1.0;
 
+// One child's depth, or the neutral value past the source's logical extent. The fetch is clamped into the source so it
+// never reads outside it, and there is no branch around it: nested [unroll]ed conditional accumulation made
+// spirv-opt's performance passes (BlockMergePass) segfault on this shader.
+float hiz_child_depth(Texture2D<float> source, uint2 child)
+{
+    uint2 last = uint2(pc.src_width - 1, pc.src_height - 1);
+    float depth = source.Load(int3(int2(min(child, last)), 0));
+    bool inside = child.x < pc.src_width && child.y < pc.src_height;
+
+    return inside ? depth : hiz_neutral_depth;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void main_cs(uint3 dispatch_id: SV_DispatchThreadID)
@@ -38,19 +50,10 @@ void main_cs(uint3 dispatch_id: SV_DispatchThreadID)
     }
 
     Texture2D<float> source = sampled_2d_depth[pc.src_texture_index];
-    float farthest = hiz_neutral_depth;
+    uint2 base = dispatch_id.xy * 2;
 
-    [unroll]
-    for (uint dy = 0; dy < 2; ++dy) {
-        [unroll]
-        for (uint dx = 0; dx < 2; ++dx) {
-            uint2 child = dispatch_id.xy * 2 + uint2(dx, dy);
-
-            if (child.x < pc.src_width && child.y < pc.src_height) {
-                farthest = min(farthest, source.Load(int3(int2(child), 0)));
-            }
-        }
-    }
+    float farthest = min(min(hiz_child_depth(source, base), hiz_child_depth(source, base + uint2(1, 0))),
+                         min(hiz_child_depth(source, base + uint2(0, 1)), hiz_child_depth(source, base + uint2(1, 1))));
 
     storage_r32f[pc.dst_storage_index][dispatch_id.xy] = farthest;
 }
