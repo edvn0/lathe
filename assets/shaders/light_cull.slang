@@ -1,9 +1,9 @@
 import scene_types;
 import light_clusters;
 
-// First half of the light clustering: tests every punctual light's bounding sphere against the camera frustum and
-// compacts the visible ones, as view-space spheres plus their light index, so light_cluster.slang only reads lights
-// that can reach the screen.
+// First half of the light clustering: tests every punctual light's bounding sphere against the camera frustum, drops
+// the ones light_screen_fade() LODs out, and compacts the rest, as view-space spheres plus their light index, so
+// light_cluster.slang only reads lights that can reach the screen.
 //
 // One workgroup walks the whole light buffer. A shared-memory prefix sum keeps the compaction in light-index order,
 // which light_cluster.slang relies on to emit sorted per-cluster lists. A few tens of thousands of lights is only a
@@ -68,8 +68,9 @@ void main_cs(uint lane: SV_GroupIndex)
         float4 sphere = float4(0.0);
 
         if (light_index < pc.light_count) {
-            sphere = light_bounding_sphere(pc.lights[light_index]);
-            visible = sphere_in_frustum(sphere);
+            const GpuLight light = pc.lights[light_index];
+            sphere = light_bounding_sphere(light);
+            visible = light_screen_fade(pc.ubo, light) > 0.0 && sphere_in_frustum(sphere);
         }
 
         // Wave ops stay outside the branch so every lane contributes.

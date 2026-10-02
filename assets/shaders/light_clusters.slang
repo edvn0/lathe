@@ -70,6 +70,21 @@ public float4 light_bounding_sphere(GpuLight light)
     return float4(light.position + direction * (light.range * cos_outer), light.range * sin_outer);
 }
 
+// How much of a punctual light survives screen-size LOD: 0 once its range covers fewer than
+// UBO::light_lod_cull_radius_pixels of radius on screen, easing to 1 at UBO::light_lod_fade_radius_pixels.
+// light_cull.slang drops lights at 0 and the forward pass scales by the rest, so both must call this.
+public float light_screen_fade(Ptr<UBO> ubo, GpuLight light)
+{
+    if (ubo.light_lod_fade_radius_pixels <= 0.0) {
+        return 1.0;
+    }
+
+    const float distance = max(length(light.position - ubo.camera_position), 1e-4);
+    const float radius_pixels = light.range * ubo.light_lod_pixel_scale / distance;
+
+    return smoothstep(ubo.light_lod_cull_radius_pixels, ubo.light_lod_fade_radius_pixels, radius_pixels);
+}
+
 // View-space direction through an NDC point, scaled to unit view depth.
 public float3 cluster_view_ray(float4x4 inverse_projection, float2 ndc)
 {

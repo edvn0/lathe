@@ -2626,6 +2626,14 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             static_cast<float>(frame.cluster_grid.depth_slices) / std::log(cluster_far / cluster_near);
     auto const cluster_z_bias = -std::log(cluster_near) * cluster_z_scale;
 
+    // projection[1][1] is cot(fov_y / 2) (negated by a Vulkan Y flip), so this maps range / distance to pixels of
+    // radius on the forward target.
+    auto const light_lod_pixel_scale =
+            std::abs(projection[1][1]) * static_cast<float>(frame.forward_target.extent().height) * 0.5F;
+    auto const light_lod_cull = std::max(light_lod_settings_.cull_radius_pixels, 0.0F);
+    // smoothstep() needs fade > cull.
+    auto const light_lod_fade = std::max(light_lod_settings_.fade_radius_pixels, light_lod_cull + 1e-3F);
+
     UBO const ubo{
             .view_projection = view_projection,
             .view = view,
@@ -2686,6 +2694,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .cluster_grid_y = frame.cluster_grid.tiles_y,
             .cluster_grid_z = frame.cluster_grid.depth_slices,
             .cluster_light_capacity = frame.cluster_grid.light_capacity,
+            .light_lod_pixel_scale = light_lod_pixel_scale,
+            .light_lod_cull_radius_pixels = light_lod_settings_.enabled ? light_lod_cull : 0.0F,
+            .light_lod_fade_radius_pixels = light_lod_settings_.enabled ? light_lod_fade : 0.0F,
     };
 
     if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {

@@ -98,6 +98,14 @@ struct FogSettings {
     float inscattering = 1.0F;
 };
 
+// Screen-size LOD for punctual lights: a light whose range covers fewer than cull_radius_pixels of radius on screen
+// is culled before clustering, and lights fade in over [cull_radius_pixels, fade_radius_pixels].
+struct LightLodSettings {
+    bool enabled = true;
+    float cull_radius_pixels = 2.0F;
+    float fade_radius_pixels = 6.0F;
+};
+
 struct StageTimings {
     std::array<float, stage_count> milliseconds{};
 
@@ -222,9 +230,15 @@ struct UBO {
     std::uint32_t cluster_grid_y = 9;
     std::uint32_t cluster_grid_z = 24;
     std::uint32_t cluster_light_capacity = 256;
+
+    // Screen-size light LOD (LightLodSettings). pixel_scale turns range / distance into an on-screen radius in
+    // pixels. fade_radius_pixels of 0 disables it.
+    float light_lod_pixel_scale = 0.0F;
+    float light_lod_cull_radius_pixels = 0.0F;
+    float light_lod_fade_radius_pixels = 0.0F;
 };
 
-static_assert(sizeof(UBO) == 748, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 760, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 288);
 static_assert(offsetof(UBO, cascade_atlas_offset_u) == 592);
@@ -434,6 +448,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     auto set_fog_settings(FogSettings const &settings) noexcept -> void { fog_settings_ = settings; }
     [[nodiscard]] auto fog_settings() const noexcept -> FogSettings const & { return fog_settings_; }
+
+    auto set_light_lod_settings(LightLodSettings const &settings) noexcept -> void { light_lod_settings_ = settings; }
+    [[nodiscard]] auto light_lod_settings() const noexcept -> LightLodSettings const & { return light_lod_settings_; }
 
     static_assert(shadow_cascade_count == 4, "Renderer shadow-cache defaults assume four cascades");
 
@@ -1062,6 +1079,7 @@ private:
     ShadowSettings shadow_settings_{};
     float ambient_intensity_ = 0.15F;
     FogSettings fog_settings_{};
+    LightLodSettings light_lod_settings_{};
 
     std::vector<PointLight> point_light_submissions_;
     std::vector<SpotLight> spot_light_submissions_;
