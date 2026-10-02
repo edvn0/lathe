@@ -23,6 +23,7 @@
 #include "scene/components.hxx"
 #include "serialisation/checksum.hxx"
 #include "serialisation/cooked_model.hxx"
+#include "serialisation/cooked_environment.hxx"
 #include "serialisation/cooked_texture.hxx"
 
 namespace {
@@ -256,6 +257,13 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
     auto &description = capture.description;
 
     description.physics_settings = scene.physics_settings;
+
+    description.environment = scene.environment;
+
+    if (!description.environment.hdr_source.empty()) {
+        description.environment.hdr_source = normalise_asset_path(description.environment.hdr_source);
+        description.environment_id = asset_id_from_key(environment_asset_key(description.environment.hdr_source));
+    }
 
     // Ascending entity id, so captures of an unchanged registry produce identical bytes.
     std::vector<entt::entity> entities;
@@ -656,6 +664,21 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
     auto &registry = scene.get_registry();
     registry.clear();
     scene.physics_settings = description.physics_settings;
+    scene.environment = description.environment;
+
+    // A cooked image in a pack beats reading the source file, which may not exist on this machine.
+    if (description.environment.source == EnvironmentSource::hdr_image && description.environment_id.valid()) {
+        for (auto const &pack: packs) {
+            if (pack == nullptr || !pack->has_environment(description.environment_id)) {
+                continue;
+            }
+
+            if (auto cooked = pack->load_environment(description.environment_id); cooked) {
+                renderer.environment_system().provide_hdr(description.environment.hdr_source, std::move(*cooked));
+                break;
+            }
+        }
+    }
 
     std::vector<entt::entity> entities;
     entities.reserve(description.entities.size());
@@ -919,9 +942,10 @@ namespace {
 
         // Which engine and format versions wrote this file; informational, never needed to read it.
         {
-            auto const metadata = std::format("writer=lathe;lbf={}.{};scene={};section={};model={};texture={}",
-                                              lbf_version_major, lbf_version_minor, scene_chunk_version,
-                                              scene_section_version, cooked_model_version, cooked_texture_version);
+            auto const metadata = std::format(
+                    "writer=lathe;lbf={}.{};scene={};section={};model={};texture={};environment={}", lbf_version_major,
+                    lbf_version_minor, scene_chunk_version, scene_section_version, cooked_model_version,
+                    cooked_texture_version, cooked_environment_version);
             auto const bytes = std::as_bytes(std::span<char const>{metadata.data(), metadata.size()});
 
             writer.add_chunk(LbfChunkInput{
@@ -943,6 +967,11 @@ namespace {
 
             for (auto const &texture: description.textures) {
                 request.textures.push_back(AssetCookRequest::Texture{.path = texture.source, .role = texture.role});
+            }
+
+            if (description.environment.source == EnvironmentSource::hdr_image &&
+                !description.environment.hdr_source.empty()) {
+                request.environments.emplace_back(description.environment.hdr_source);
             }
 
             result.cook = cook_assets(request, sampler_storage, writer,
@@ -1254,6 +1283,8 @@ auto scene_fingerprint(SceneDescription const &description) -> std::uint64_t {
 
     SceneDescription settings_only;
     settings_only.physics_settings = description.physics_settings;
+    settings_only.environment = description.environment;
+    settings_only.environment_id = description.environment_id;
     hashes.push_back(xxh64(encode_scene(settings_only)));
 
     return xxh64(std::as_bytes(std::span<std::uint64_t const>{hashes}));

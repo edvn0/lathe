@@ -32,6 +32,7 @@
 #include "maths/aabb.hxx"
 #include "rendering/render_passes.hxx"
 #include "rendering/screenshot.hxx"
+#include "rendering/sky_model.hxx"
 
 // Generated at build time from the shaders' push_constant blocks (see CMakeLists.txt).
 #include "shader_push_constants.hxx"
@@ -824,6 +825,153 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.hiz_build_pipeline",
     }); // index 22: hiz_build
 
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/env_brdf_lut.slang",
+                                    .entry_point = FlyString{"main_cs"},
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.env_brdf_lut_pipeline",
+    }); // index 23: env_brdf_lut
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/env_equirect_to_cube.slang",
+                                    .entry_point = FlyString{"main_cs"},
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.env_equirect_to_cube_pipeline",
+    }); // index 24: env_equirect_to_cube
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/env_sky_to_cube.slang",
+                                    .entry_point = FlyString{"main_cs"},
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.env_sky_to_cube_pipeline",
+    }); // index 25: env_sky_to_cube
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/env_downsample.slang",
+                                    .entry_point = FlyString{"main_cs"},
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.env_downsample_pipeline",
+    }); // index 26: env_downsample
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/env_sh_project.slang",
+                                    .entry_point = FlyString{"main_cs"},
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.env_sh_project_pipeline",
+    }); // index 27: env_sh_project
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/env_prefilter.slang",
+                                    .entry_point = FlyString{"main_cs"},
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.env_prefilter_pipeline",
+    }); // index 28: env_prefilter
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/skybox.slang",
+                                    .entry_point = FlyString{"main_vs"},
+                                    .stage = renderer::ShaderStage::vertex,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/skybox.slang",
+                                    .entry_point = FlyString{"main_fs"},
+                                    .stage = renderer::ShaderStage::fragment,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {create_info.hdr_format},
+            .depth_format = create_info.depth_format,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = create_info.samples,
+            .debug_name = "renderer.skybox_pipeline",
+    }); // index 29: skybox
+
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
@@ -862,6 +1010,30 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     light_cull_pipeline_ = *registered_pipelines[20];
     occlusion_cull_pipeline_ = *registered_pipelines[21];
     hiz_build_pipeline_ = *registered_pipelines[22];
+    skybox_pipeline_ = *registered_pipelines[29];
+
+    {
+        auto initialised = environment_.initialize(EnvironmentSystem::CreateInfo{
+                .context = &context_,
+                .images = &image_storage_,
+                .samplers = &sampler_storage_,
+                .pipelines = &pipeline_graph_,
+                .handles =
+                        EnvironmentPipelines{
+                                .brdf_lut = *registered_pipelines[23],
+                                .equirect_to_cube = *registered_pipelines[24],
+                                .sky_to_cube = *registered_pipelines[25],
+                                .downsample = *registered_pipelines[26],
+                                .sh_project = *registered_pipelines[27],
+                                .prefilter = *registered_pipelines[28],
+                        },
+                .frames_in_flight = frames_in_flight,
+        });
+
+        if (!initialised) {
+            return std::unexpected(initialised.error());
+        }
+    }
 
     {
         auto light_icon_image = DecodedImage::load_from_file("assets/textures/light_bulb.png");
@@ -1396,6 +1568,8 @@ auto Renderer::destroy() noexcept -> void {
     light_icon_overlay_.reset();
 
     screenshot_->close();
+
+    environment_.destroy();
 
     pipeline_graph_.save_pipeline_cache();
     pipeline_graph_.destroy();
@@ -2247,6 +2421,53 @@ auto Renderer::destroy_model(ModelHandle handle) -> std::expected<void, Renderer
     return {};
 }
 
+auto Renderer::set_environment(SceneEnvironment const &environment) -> void {
+    environment_.set_environment(environment);
+
+    ambient_intensity_ = environment.ambient_intensity;
+
+    fog_settings_ = FogSettings{
+            .enabled = environment.fog.enabled,
+            .colour = environment.fog.colour,
+            .extinction = environment.fog.extinction,
+            .inscattering = environment.fog.inscattering,
+    };
+
+    if (!environment.sun_drives_directional_light) {
+        return;
+    }
+
+    auto const &sun = environment.sun;
+
+    // The cascade depth range degenerates for a horizontal light, so the light never drops below 5 degrees even though
+    // the procedural sky follows the sun to the horizon and below.
+    auto const elevation = glm::radians(std::clamp(sun.elevation_degrees, 5.0F, 89.0F));
+    auto const azimuth = glm::radians(sun.azimuth_degrees);
+
+    DirectionalLight light{
+            .direction = glm::vec3{std::cos(elevation) * std::cos(azimuth), std::sin(elevation),
+                                   std::cos(elevation) * std::sin(azimuth)},
+            .colour = sun.colour,
+            .intensity = sun.intensity,
+    };
+
+    if (environment.source == EnvironmentSource::procedural_sky) {
+        auto const real_elevation = glm::radians(sun.elevation_degrees);
+
+        if (sun.derive_colour_from_sky) {
+            light.colour *= sun_transmittance(real_elevation, sun.turbidity);
+        }
+
+        // Fades out as the sun sets, hiding the 5 degree shadow clamp.
+        auto const fade = std::clamp((sun.elevation_degrees + 2.0F) / 7.0F, 0.0F, 1.0F);
+        light.intensity *= fade * fade * (3.0F - (2.0F * fade));
+    }
+
+    if (light.direction != light_.direction || light.colour != light_.colour || light.intensity != light_.intensity) {
+        light_ = light;
+    }
+}
+
 auto Renderer::submit_point_light(PointLight const &light) -> std::expected<void, RendererError> {
     if (point_light_submissions_.size() + spot_light_submissions_.size() >= maximum_light_count) {
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
@@ -2327,6 +2548,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     texture_streamer_.process_ready(image_storage_, command_buffer, frame_index);
     model_streamer_.process_ready(*this, command_buffer);
+
+    // Before the resource table refresh, so images the environment creates are visible to this frame's shaders.
+    if (auto environment = environment_.prepare(command_buffer, ++frame_counter_); !environment) {
+        clear_submissions();
+        return std::unexpected(environment.error());
+    }
 
     auto resource_result = gpu_resource_table_.prepare_frame(frame_index, image_storage_, sampler_storage_);
 
@@ -2925,6 +3152,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .light_lod_pixel_scale = light_lod_pixel_scale,
             .light_lod_cull_radius_pixels = light_lod_settings_.enabled ? light_lod_cull : 0.0F,
             .light_lod_fade_radius_pixels = light_lod_settings_.enabled ? light_lod_fade : 0.0F,
+            .environment = environment_.ubo_block(),
     };
 
     if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {
@@ -3887,6 +4115,24 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
     return record();
 }
 
+auto Renderer::record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void {
+    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Environment", tracy::Color::SkyBlue);
+
+    auto const command_buffer = pass_context.command_buffer;
+    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Environment);
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, pass_context.timestamp_query_pool,
+                         stage * 2);
+
+    environment_.record(command_buffer, gpu_resource_table_, pass_context.frame_index,
+                        ubos_[pass_context.frame_index].device_address);
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, pass_context.timestamp_query_pool,
+                         stage * 2 + 1);
+
+    static_cast<void>(frame);
+}
+
 auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets)
         -> std::expected<void, RendererError> {
     TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Hi-Z Build",
@@ -4211,6 +4457,8 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .blend_pipeline = forward_blend_pipeline_,
                     .opaque_instanced_pipeline = forward_instanced_pipeline_,
                     .blend_instanced_pipeline = forward_blend_instanced_pipeline_,
+                    .skybox_pipeline = skybox_pipeline_,
+                    .draw_skybox = (environment_.ubo_block().flags & environment_flag::skybox) != 0U,
                     .ao_texture_index = ao_texture_index,
                     .ao_sampler_index = sampler_storage_.linear_clamp().index,
             },
@@ -4588,6 +4836,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     auto ui_overlays = [&] { record_overlay_stage(pass_context, OverlayStage::ui, ui_scope, frame.view_projection); };
 
     record_overlay_prepares(pass_context);
+
+    record_environment_pass(pass_context, frame);
 
     if (auto shadows = record_shadow_pass(pass_context, frame, *targets); !shadows) {
         return shadows;

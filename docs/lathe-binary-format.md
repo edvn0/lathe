@@ -46,8 +46,8 @@ plugs straight into the existing upload path.
   (an `AssetId`, or 0 for singletons), offset, stored size, raw size, xxh64
   of the stored bytes. Sorted by (type, id), so lookups are binary searches.
 - **Chunk types**: `SCEN` (the scene), `MODL` (cooked model), `TEXR`
-  (cooked texture), `META` (which engine/format versions wrote the file;
-  informational).
+  (cooked texture), `ENVM` (cooked HDR environment), `META` (which
+  engine/format versions wrote the file; informational).
 - **Compression**: per chunk, zstd (default level 6), or stored raw when it
   saves less than 3% (BC7 blocks barely compress, and skipping
   decompression is worth more). zstd is the copy libktx already links in.
@@ -106,6 +106,23 @@ A `CompressedTexture` exactly as `ImageStorage` uploads it: VkFormat
 (BC7 sRGB / BC7 UNORM / BC5), every mip's extent and byte range, block data
 16-aligned.
 
+### `ENVM` (`cooked_environment.hxx`)
+
+An HDR environment as half-float RGBA, so loading one is a zstd decode and a
+byte reshuffle, with no `.hdr`/`.exr`/`.ktx2` parsing:
+
+```
+u32 width, u32 height, u32 vk_format (R16G16B16A16_SFLOAT only), u32 layers (1 = equirect, 6 = cubemap)
+pixels: every layer's half-float RGBA, byte-shuffled (all low bytes, then all high bytes)
+```
+
+The id is `asset_id_from_key(environment_asset_key(path))`, i.e. the xxh64 of
+`environment:<normalised path>`. The decoder refuses layers other than 1 or 6,
+equirects that aren't 2:1 or exceed 16384x8192, cube faces that aren't square
+powers of two up to 2048, other formats, and payloads whose size doesn't match
+exactly. A scene whose environment is an image gets one `ENVM` chunk when it is
+saved with assets embedded; loading prefers it over reading the source file.
+
 ### `SCEN` (`scene_codec.hxx`)
 
 A `SceneDescription`, plain data with no handles: model/texture reference
@@ -124,11 +141,19 @@ recomposing to the original matrix within float rounding; otherwise (shear,
 projection) as the 16 matrix floats, exactly. On a 14,892-blade grass field
 that is 288 KiB compressed, against 464 KiB for v1's interleaved matrices.
 
+The `environment` section (type 14) holds the scene's sky and image-based
+lighting: source (flat ambient, procedural Preetham sky or HDR image), the image
+path and `ENVM` asset id, rotation, exposure, diffuse/specular/occlusion
+intensities, multi-scatter, the sun (azimuth, elevation, turbidity, ground
+albedo, disc radius, colour, intensity) and the fog. A scene without it loads
+as flat ambient with the sun at 30/55 degrees, exactly as scenes looked before
+it existed; an engine from before it skips the section.
+
 Saved components: Transform, Parent, Model, MaterialOverride (whole-model
 and per-slot; slots name the model's material by index), InstancedModel,
 PointLight, SpotLight, RigidBody (except heightfields, which terrain
 regenerates), Script (by registered name), Lifetime, PlayerTag/BulletTag/
-StreamedModelTag, plus the scene's physics settings.
+StreamedModelTag, plus the scene's physics settings and environment.
 
 Not saved (warned about at save time): models generated at runtime with no
 file behind them (e.g. procedural ribbons), scripts without a registered
@@ -141,7 +166,8 @@ Three levels, so builds with different serialisation versions can coexist:
 1. **Container** (`lbf_version_major.minor`): a reader refuses another
    major; minor bumps are additive and ignored by older readers.
 2. **Chunk payload** (`LbfChunkEntry::version`, per type):
-   `cooked_model_version`, `cooked_texture_version`, `scene_chunk_version`.
+   `cooked_model_version`, `cooked_texture_version`,
+   `cooked_environment_version`, `scene_chunk_version`.
    Encoders always write the current version; decoders take the version
    from the TOC and accept `[oldest_readable, current]`. To change a
    layout, bump the constant, branch on the version in the decoder and keep
@@ -162,9 +188,11 @@ so files converge on the newest layout.
 | container | 1.0 | 1.x |
 | `MODL` | 1 | 1 |
 | `TEXR` | 1 | 1 |
+| `ENVM` | 1 | 1 |
 | `SCEN` framing | 1 | 1 |
 | `SCEN` sections | 1 | 1 |
 | `SCEN` `instanced_models` section | 2 | 1 |
+| `SCEN` `environment` section | 1 | 1 |
 
 ## APIs
 
@@ -196,7 +224,7 @@ so files converge on the newest layout.
 
 Lower level: `LbfWriter`/`LbfReader` (container), `cook_assets()` +
 `AssetPack` (asset packs; an `.lbf` of kind `asset_pack` holds only
-`MODL`/`TEXR`), `encode_scene`/`decode_scene`.
+`MODL`/`TEXR`/`ENVM`), `encode_scene`/`decode_scene`.
 
 ## Editor
 

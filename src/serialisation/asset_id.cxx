@@ -45,3 +45,7 @@ auto embedded_texture_asset_key(std::string_view cache_key, TextureRole role) ->
 }
 
 auto engine_asset_key(std::string_view name) -> std::string { return std::format("{}{}", engine_asset_prefix, name); }
+
+auto environment_asset_key(std::filesystem::path const &path) -> std::string {
+    return std::format("environment:{}", normalise_asset_path(path));
+}

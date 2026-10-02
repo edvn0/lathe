@@ -44,7 +44,7 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     table.sampler_capacity_ = create_info.sampler_capacity;
     table.debug_name_ = FlyString{create_info.debug_name};
 
-    std::array<VkDescriptorSetLayoutBinding, 5> bindings{
+    std::array<VkDescriptorSetLayoutBinding, 6> bindings{
             VkDescriptorSetLayoutBinding{
                     .binding = binding_index(GpuResourceBinding::sampled_2d),
                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
@@ -83,6 +83,14 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
                     .stageFlags = VK_SHADER_STAGE_ALL,
                     .pImmutableSamplers = nullptr,
             },
+            VkDescriptorSetLayoutBinding{
+                    // Slots without a cube view point at ImageStorage::black_cube_view().
+                    .binding = binding_index(GpuResourceBinding::sampled_cube),
+                    .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                    .descriptorCount = table.image_capacity_,
+                    .stageFlags = VK_SHADER_STAGE_ALL,
+                    .pImmutableSamplers = nullptr,
+            },
     };
 
     VkDescriptorSetLayoutCreateInfo const layout_info{
@@ -107,7 +115,7 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     std::array<VkDescriptorPoolSize, 3> pool_sizes{
             VkDescriptorPoolSize{
                     .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                    .descriptorCount = table.image_capacity_ * 3 * frame_count,
+                    .descriptorCount = table.image_capacity_ * 4 * frame_count,
             },
             VkDescriptorPoolSize{
                     .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -227,7 +235,11 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
         append_image_write(binding_index(GpuResourceBinding::sampled_2d_depth), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                            sampled_2d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // Cube/array/storage bindings have no fallback images yet, so only write the ones with a view.
+        append_image_write(binding_index(GpuResourceBinding::sampled_cube), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                           record.sampled_cube != VK_NULL_HANDLE ? record.sampled_cube : images.black_cube_view(),
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // Array/storage bindings have no fallback images yet, so only write the ones with a view.
         if (record.storage_2d != VK_NULL_HANDLE) {
             append_image_write(binding_index(GpuResourceBinding::storage_2d), index, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                record.storage_2d, VK_IMAGE_LAYOUT_GENERAL);

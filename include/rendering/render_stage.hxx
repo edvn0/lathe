@@ -17,6 +17,9 @@ enum class RenderStage : std::uint8_t {
     ForwardPass,
     Composition,
     BloomPass,
+    // Environment lighting builds (docs/ibl-and-skybox.md): BRDF LUT, radiance capture, SH and the GGX prefilter.
+    // Written every frame, as an empty range while nothing is rebuilding. Appended last so existing indices hold.
+    Environment,
     Count
 };
 
@@ -47,6 +50,8 @@ constexpr auto to_string(RenderStage stage) -> std::string_view {
             return "Composition Pass";
         case BloomPass:
             return "Bloom pass";
+        case Environment:
+            return "Environment";
         default:
             return "Unknown";
     }

@@ -57,7 +57,9 @@
 #include "rendering/render_passes.hxx"
 #include "rendering/render_stage.hxx"
 #include "rendering/script_storage.hxx"
+#include "rendering/environment.hxx"
 #include "rendering/shadow_cascades.hxx"
+#include "scene/environment.hxx"
 
 struct BloomSettings {
     bool enabled = true;
@@ -268,9 +270,13 @@ struct UBO {
     float light_lod_pixel_scale = 0.0F;
     float light_lod_cull_radius_pixels = 0.0F;
     float light_lod_fade_radius_pixels = 0.0F;
+
+    // Environment lighting and the skybox; flat in the shader's UBO (environment_flags and following).
+    EnvironmentUboBlock environment{};
 };
 
-static_assert(sizeof(UBO) == 760, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 952, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(offsetof(UBO, environment) == 760);
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 288);
 static_assert(offsetof(UBO, cascade_atlas_offset_u) == 592);
@@ -501,6 +507,12 @@ struct Renderer final : public IMeshSink, public IModelSink {
     };
 
     auto set_directional_light(DirectionalLight const &light) noexcept -> void { light_ = light; }
+
+    // The scene's environment: IBL, the skybox, fog and, when it asks to, the directional light (from the sun). Call
+    // every frame; it only does work when something changed.
+    auto set_environment(SceneEnvironment const &environment) -> void;
+    [[nodiscard]] auto environment_system() noexcept -> EnvironmentSystem & { return environment_; }
+    [[nodiscard]] auto environment_system() const noexcept -> EnvironmentSystem const & { return environment_; }
     [[nodiscard]] auto directional_light() const noexcept -> DirectionalLight const & { return light_; }
 
     auto set_shadow_settings(ShadowSettings const &settings) noexcept -> void { shadow_settings_ = settings; }
@@ -1117,6 +1129,8 @@ private:
     [[nodiscard]]
     static auto batch_counts(RendererFrame const &frame) noexcept -> render_pass::DrawCounts;
 
+    auto record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void;
+
     [[nodiscard]]
     auto record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                             FrameTargets const &targets) -> std::expected<void, RendererError>;
@@ -1245,7 +1259,12 @@ private:
     PipelineNodeHandle gtao_denoise_pipeline_;
     PipelineNodeHandle light_cull_pipeline_;
     PipelineNodeHandle light_cluster_pipeline_;
+    PipelineNodeHandle skybox_pipeline_;
     ShaderChangeQueue shader_change_queue_;
+
+    // Declared after image_storage_, sampler_storage_ and pipeline_graph_, which it holds slots and nodes in.
+    EnvironmentSystem environment_;
+    std::uint64_t frame_counter_ = 0;
 
     BloomSettings bloom_settings_;
     AoSettings ao_settings_;

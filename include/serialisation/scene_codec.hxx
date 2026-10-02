@@ -20,6 +20,7 @@
 #include "physics/physics.hxx"
 #include "physics/physics_components.hxx"
 #include "scene/components.hxx"
+#include "scene/environment.hxx"
 #include "serialisation/asset_id.hxx"
 #include "serialisation/lbf_error.hxx"
 
@@ -149,6 +150,11 @@ struct SceneLifetimeComponent {
 struct SceneDescription {
     PhysicsWorldSettings physics_settings{};
 
+    // Sky, IBL, sun and fog. A scene decoded from a file without the section keeps SceneEnvironment{}: flat ambient, as
+    // scenes always looked. `environment_id` is environment_asset_key(environment.hdr_source)'s id, for the ENVM chunk.
+    SceneEnvironment environment{};
+    AssetId environment_id{};
+
     std::vector<SceneAssetRef> models;
     std::vector<SceneTextureRef> textures;
     std::vector<SceneMaterial> materials;
@@ -189,6 +195,7 @@ namespace scene_section {
     inline constexpr std::uint32_t rigid_bodies = 11;
     inline constexpr std::uint32_t scripts = 12;
     inline constexpr std::uint32_t lifetimes = 13;
+    inline constexpr std::uint32_t environment = 14;
 } // namespace scene_section
 
 // Current (written) version of each section; see scene_codec.cxx for what older versions each one still reads.
@@ -196,6 +203,10 @@ inline constexpr std::uint16_t scene_section_version = 1;
 
 // v2 stores instance transforms column-wise and byte-shuffled, as translation/rotation/scale where they decompose.
 inline constexpr std::uint16_t instanced_models_section_version = 2;
+
+// The environment section: source, lighting, sun and fog (see scene/environment.hxx). Older engines skip it, and scenes
+// without it load as flat ambient.
+inline constexpr std::uint16_t environment_section_version = 1;
 
 [[nodiscard]]
 auto encode_scene(SceneDescription const &scene) -> std::vector<std::byte>;

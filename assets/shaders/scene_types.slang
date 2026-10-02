@@ -142,6 +142,13 @@ public struct GpuLight {
     public float _pad1;
 };
 
+// Nine RGB spherical-harmonics coefficients, premultiplied by the clamped-cosine lobe and 1/pi, so that sh9_eval()
+// returns irradiance / pi. Mirrors GpuEnvironmentSh in environment.hxx.
+public struct GpuEnvironmentSh
+{
+    public float4 coefficients[9];
+};
+
 public struct UBO {
     public float4x4 view_projection;
     public float4x4 view;
@@ -210,6 +217,23 @@ public struct UBO {
     public float light_lod_pixel_scale;
     public float light_lod_cull_radius_pixels;
     public float light_lod_fade_radius_pixels;
+
+    // Environment lighting and the skybox (docs/ibl-and-skybox.md). Mirrors UBO in renderer.hxx. The flag bits are the
+    // env_* constants in environment.slang.
+    public uint environment_flags;
+    public float environment_exposure;               // 2^EV, for both the skybox and IBL
+    public float4 environment_rotation;              // cos(theta), sin(theta), prefilter max LOD, specular occlusion strength
+    public float4 environment_intensity;             // diffuse, specular, unused, debug LOD
+    public uint radiance_cube_texture;               // bindless sampled_cube indices
+    public uint prefilter_cube_texture;
+    public uint brdf_lut_texture;                    // bindless sampled_2d index
+    public uint environment_sampler;                 // bindless samplers index (linear, clamp)
+    public float4 sky_perez[4];                      // Perez A-D for Y, x, y; row 3 = (E_Y, E_x, E_y, 0)
+    public float4 sky_zenith;                        // (Y, x, y) over F(0, theta_sun); Y carries the calibration
+    public float4 sky_ground;                        // rgb ground albedo
+    public float4 sun_direction_cos_radius;          // xyz toward the sun, w = cos(angular radius)
+    public float4 sun_disc_radiance;                 // rgb
+    public Ptr<GpuEnvironmentSh> environment_sh;     // live SH slot
 };
 
 public struct PC

@@ -3,6 +3,7 @@ set(
     assets_error_describe.cxx
     geometry_allocator.cxx
     geometry_arena.cxx
+    hdr_image.cxx
     load_model.cxx
     meshlet.cxx
     material_storage.cxx

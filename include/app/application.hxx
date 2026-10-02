@@ -165,8 +165,6 @@ struct Application {
     // A cluster grid edit the renderer refused, shown in Lighting > Debug until it is fixed or replaced.
     std::optional<ClusterGridSettings> refused_cluster_grid;
 
-    float light_azimuth_degrees = 30.0F;
-    float light_elevation_degrees = 55.0F;
 
     // The Hi-Z level shown in Lighting > Occlusion culling.
     int hiz_debug_mip = 0;
@@ -188,6 +186,10 @@ struct Application {
 
     // Shared by the "Load Model" panel and the Inspector's model picker; `model_browse_target` says which opened it.
     gui::FileBrowser model_browser;
+
+    // The model browser is shared with the Environment window's Browse...; this says which one opened it.
+    bool browsing_environment = false;
+    std::optional<std::filesystem::path> pending_model_pick;
 
     // Models spawned from the "Load Model" panel, newest last, so it can report how each load went.
     struct StreamedModelLoad {

@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "assets/hdr_image.hxx"
 #include "assets/load_model.hxx"
 #include "assets/texture_pipeline.hxx"
 #include "gpu/compressed_texture.hxx"
@@ -39,6 +40,11 @@ public:
 
     [[nodiscard]] auto has_model(AssetId id) const noexcept -> bool;
     [[nodiscard]] auto has_texture(AssetId id) const noexcept -> bool;
+    [[nodiscard]] auto has_environment(AssetId id) const noexcept -> bool;
+
+    // An ENVM chunk decoded back to half-float RGBA. Thread-safe.
+    [[nodiscard]]
+    auto load_environment(AssetId id) const -> std::expected<HdrImage, LbfError>;
 
     // Thread-safe.
     [[nodiscard]]
@@ -72,6 +78,9 @@ struct AssetCookRequest {
 
     std::vector<std::filesystem::path> models;
     std::vector<Texture> textures;
+
+    // HDR environment images (.hdr, .exr, .ktx2), cooked to ENVM chunks.
+    std::vector<std::filesystem::path> environments;
 };
 
 struct AssetCookReport {
@@ -79,6 +88,8 @@ struct AssetCookReport {
     std::uint32_t models_copied = 0; // reused verbatim from a source pack
     std::uint32_t textures_cooked = 0;
     std::uint32_t textures_copied = 0;
+    std::uint32_t environments_cooked = 0;
+    std::uint32_t environments_copied = 0;
 
     // Assets that couldn't be cooked; scenes keep referencing their source paths, so they still load from source.
     std::vector<std::string> failures;

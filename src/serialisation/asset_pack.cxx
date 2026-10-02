@@ -12,6 +12,7 @@
 #include "core/thread_pool.hxx"
 #include "gpu/sampler_storage.hxx"
 #include "serialisation/cooked_model.hxx"
+#include "serialisation/cooked_environment.hxx"
 #include "serialisation/cooked_texture.hxx"
 
 namespace {
@@ -50,6 +51,10 @@ namespace {
     }
 
     [[nodiscard]] auto current_version(std::uint32_t type) noexcept -> std::uint16_t {
+        if (type == lbf_chunk::environment) {
+            return cooked_environment_version;
+        }
+
         return type == lbf_chunk::model ? cooked_model_version : cooked_texture_version;
     }
 
@@ -139,6 +144,26 @@ auto AssetPack::has_model(AssetId id) const noexcept -> bool {
 
 auto AssetPack::has_texture(AssetId id) const noexcept -> bool {
     return reader_.find(lbf_chunk::texture, id.value) != nullptr;
+}
+
+auto AssetPack::has_environment(AssetId id) const noexcept -> bool {
+    return reader_.find(lbf_chunk::environment, id.value) != nullptr;
+}
+
+auto AssetPack::load_environment(AssetId id) const -> std::expected<HdrImage, LbfError> {
+    auto const *entry = reader_.find(lbf_chunk::environment, id.value);
+
+    if (entry == nullptr) {
+        return std::unexpected(make_error(LbfErrorType::chunk_not_found, std::format("environment {}", id)));
+    }
+
+    auto payload = reader_.read_chunk(*entry);
+
+    if (!payload) {
+        return std::unexpected(payload.error());
+    }
+
+    return decode_cooked_environment(*payload, entry->version);
 }
 
 auto AssetPack::texture_cache_key(AssetId id) -> std::string { return std::format("lbf:{}", id); }
@@ -384,6 +409,60 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
                 .payload = std::move(*result.payload),
         });
         ++report.textures_cooked;
+    }
+
+    // Environments: copied from a source pack that has one, otherwise decoded from the image and encoded as ENVM.
+    {
+        struct EnvironmentResult {
+            AssetId id;
+            std::string path;
+            std::expected<std::vector<std::byte>, std::string> payload;
+        };
+
+        std::vector<std::future<EnvironmentResult>> environment_tasks;
+        std::unordered_set<AssetId, AssetIdHash> seen_environments;
+
+        for (auto const &path: request.environments) {
+            auto const id = asset_id_from_key(environment_asset_key(path));
+
+            if (!seen_environments.insert(id).second || writer.contains(lbf_chunk::environment, id.value)) {
+                continue;
+            }
+
+            if (auto const [pack, entry] = find_in_packs(packs, lbf_chunk::environment, id); pack != nullptr) {
+                if (copy_from_pack(*pack, *entry)) {
+                    ++report.environments_copied;
+                    continue;
+                }
+            }
+
+            environment_tasks.push_back(pool.submit_task([id, path] {
+                auto image = load_hdr_image(path.string());
+
+                if (!image) {
+                    return EnvironmentResult{.id = id, .path = path.string(), .payload = std::unexpected(image.error().message)};
+                }
+
+                return EnvironmentResult{.id = id, .path = path.string(), .payload = encode_cooked_environment(*image)};
+            }));
+        }
+
+        for (auto &task: environment_tasks) {
+            auto result = task.get();
+
+            if (!result.payload) {
+                report.failures.push_back(std::format("environment '{}': {}", result.path, result.payload.error()));
+                continue;
+            }
+
+            writer.add_chunk(LbfChunkInput{
+                    .type = lbf_chunk::environment,
+                    .id = result.id.value,
+                    .version = cooked_environment_version,
+                    .payload = std::move(*result.payload),
+            });
+            ++report.environments_cooked;
+        }
     }
 
     // Phase 3: encode models. Cheap next to parsing, but meshopt's codecs still like the extra cores.

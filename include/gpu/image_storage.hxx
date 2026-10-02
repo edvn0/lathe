@@ -211,6 +211,13 @@ public:
         return default_image_handle(DefaultImage::emissive);
     }
 
+    // A 1x1 black cube. GpuResourceTable writes its view into every cube binding slot that has no cube view of its
+    // own, because the table is not PARTIALLY_BOUND. It is not a slot, so default_image_count is unaffected.
+    [[nodiscard]]
+    auto black_cube_view() const noexcept -> VkImageView {
+        return black_cube_.descriptor_view(ImageDescriptorView::sampled_cube);
+    }
+
     [[nodiscard]]
     auto size() const noexcept -> std::uint32_t {
         return slots_.size();
@@ -244,11 +251,18 @@ private:
     [[nodiscard]]
     auto create_default_images() -> std::expected<void, ImageStorageError>;
 
+    [[nodiscard]]
+    auto create_black_cube() -> std::expected<void, ImageStorageError>;
+
+    auto record_black_cube_clear(VkCommandBuffer command_buffer) const noexcept -> void;
+
     VulkanContext *context_ = nullptr;
 
     ObjectPool<ImageSlotData> slots_;
 
     Buffer default_upload_buffer_{};
+
+    Image black_cube_{};
 
     bool defaults_uploaded_ = false;
 

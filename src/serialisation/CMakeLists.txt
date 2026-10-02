@@ -12,6 +12,7 @@ add_library(
         asset_pack.cxx
         checksum.cxx
         cooked_model.cxx
+        cooked_environment.cxx
         cooked_texture.cxx
         lbf_container.cxx
         scene_codec.cxx

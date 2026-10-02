@@ -93,6 +93,8 @@ namespace {
 
         auto &registry = application.active_scene()->get_registry();
 
+        application.renderer->set_environment(application.active_scene()->environment);
+
         auto view = registry.view<Components::Transform const, Components::Model const>();
 
         // One wireframe box per submesh, from the same AABBs GPU culling tests.

@@ -210,6 +210,10 @@ namespace render_pass {
         PipelineNodeHandle opaque_instanced_pipeline{};
         PipelineNodeHandle blend_instanced_pipeline{};
 
+        // The background, drawn between the mask and blend draws (docs/ibl-and-skybox.md).
+        PipelineNodeHandle skybox_pipeline{};
+        bool draw_skybox = false;
+
         // Denoised GTAO, or white when AO is disabled.
         std::uint32_t ao_texture_index = 0;
         std::uint32_t ao_sampler_index = 0;

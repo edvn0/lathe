@@ -10,6 +10,8 @@ add_library(
         debug_renderer.cxx
         editor_icons.cxx
         engine_models.cxx
+        environment_panel.cxx
+        environment.cxx
         file_browser.cxx
         forward_target.cxx
         imgui_renderer.cxx
@@ -19,6 +21,7 @@ add_library(
         rendering_error_describe.cxx
         render_passes.cxx
         scene.cxx
+        sky_model.cxx
         screenshot.cxx
         script_storage.cxx
         shadow_cascades.cxx
