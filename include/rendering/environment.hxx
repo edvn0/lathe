@@ -161,6 +161,21 @@ struct EnvironmentDebugSettings {
     bool amortize_rebuilds = true;
 };
 
+// The outcome of EnvironmentSystem::validate_against_cpu().
+struct EnvironmentValidation {
+    // False when there was nothing built to check yet.
+    bool ran = false;
+    bool passed = false;
+
+    // Largest absolute difference over the sampled LUT texels (stored as half floats, so about 1e-3 of rounding).
+    float lut_max_error = 0.0F;
+
+    // Largest SH coefficient difference relative to the largest coefficient.
+    float sh_max_relative_error = 0.0F;
+
+    std::string summary;
+};
+
 class EnvironmentSystem {
 public:
     struct CreateInfo {
@@ -222,6 +237,12 @@ public:
 
     [[nodiscard]]
     auto status() const -> EnvironmentStatus;
+
+    // Reads the BRDF LUT, the live SH and the radiance level the SH came from back to the CPU and compares them against
+    // the CPU references (brdf_lut.hxx, spherical_harmonics.hxx). Blocks until the GPU is done: a debug action, not for
+    // frame recording. Render thread.
+    [[nodiscard]]
+    auto validate_against_cpu() -> EnvironmentValidation;
 
     // Bindless slots, for the editor's debug views. 0 when absent.
     [[nodiscard]] auto brdf_lut_texture_index() const noexcept -> std::uint32_t;

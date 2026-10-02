@@ -7,6 +7,8 @@
 #include <cstring>
 #include <format>
 
+#include <glm/gtc/packing.hpp>
+#include <glm/gtx/component_wise.hpp>
 #include <stb_image_resize2.h>
 #include <tracy/Tracy.hpp>
 
@@ -14,7 +16,10 @@
 #include "core/thread_pool.hxx"
 #include "gpu/context.hxx"
 #include "gpu/vk_barrier.hxx"
+#include "rendering/brdf_lut.hxx"
+#include "rendering/cube_map.hxx"
 #include "rendering/sky_model.hxx"
+#include "rendering/spherical_harmonics.hxx"
 
 // Generated at build time from the shaders' push_constant blocks (see CMakeLists.txt).
 #include "shader_push_constants.hxx"
@@ -1024,4 +1029,195 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
                                           VK_IMAGE_ASPECT_COLOR_BIT, 0, prefilter_mips, 0, 6);
         }
     }
+}
+
+auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
+    EnvironmentValidation result;
+
+    if (!initialised_ || !lut_ready_ || !live_key_.has_value() || !radiance_.image.handle().valid() || building_.has_value()) {
+        result.summary = "Nothing to validate yet: wait for the environment to finish building.";
+        return result;
+    }
+
+    auto const sh_level = static_cast<std::uint32_t>(std::max(std::countr_zero(radiance_.size) - 5, 0));
+    auto const level_size = radiance_.size >> sh_level;
+
+    auto const lut_bytes = static_cast<VkDeviceSize>(brdf_lut_size) * brdf_lut_size * 4U * sizeof(std::uint16_t);
+    auto const face_bytes = static_cast<VkDeviceSize>(level_size) * level_size * 4U * sizeof(std::uint16_t);
+
+    auto const make_readback = [&](VkDeviceSize size, char const *name) {
+        return Buffer::create(*context_, BufferCreateInfo{
+                                                 .size = size,
+                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                 .memory = BufferMemory::readback,
+                                                 .debug_name = name,
+                                         });
+    };
+
+    auto lut_readback = make_readback(lut_bytes, "environment.validate_lut");
+    auto radiance_readback = make_readback(face_bytes * 6U, "environment.validate_radiance");
+    auto sh_readback = make_readback(sizeof(GpuEnvironmentSh), "environment.validate_sh");
+
+    if (!lut_readback || !radiance_readback || !sh_readback) {
+        result.summary = "Could not allocate readback buffers.";
+        return result;
+    }
+
+    auto const lut_image = brdf_lut_->image();
+    auto const radiance_image = radiance_.image->image();
+    auto const sh_offset = static_cast<VkDeviceSize>(live_set_) * sizeof(GpuEnvironmentSh);
+
+    context_->one_time_submit([&](VkCommandBuffer command_buffer) {
+        // The environment is in sampled layouts, written by earlier frames: only their writes need to be visible.
+        transition_image_layout(command_buffer, lut_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, reader_stages | compute_stage,
+                                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+
+        VkBufferImageCopy2 const lut_region{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+                .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+                .imageExtent = {.width = brdf_lut_size, .height = brdf_lut_size, .depth = 1},
+        };
+
+        VkCopyImageToBufferInfo2 const lut_copy{
+                .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
+                .srcImage = lut_image,
+                .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .dstBuffer = lut_readback->buffer,
+                .regionCount = 1,
+                .pRegions = &lut_region,
+        };
+
+        vkCmdCopyImageToBuffer2(command_buffer, &lut_copy);
+
+        transition_image_layout(command_buffer, lut_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, reader_stages,
+                                VK_ACCESS_2_TRANSFER_READ_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+
+        transition_image_subresources(command_buffer, radiance_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, reader_stages | compute_stage,
+                                      VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                      VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, sh_level, 1, 0, 6);
+
+        std::array<VkBufferImageCopy2, 6> regions{};
+
+        for (std::uint32_t face = 0; face < 6; ++face) {
+            regions[face] = VkBufferImageCopy2{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+                    .bufferOffset = face * face_bytes,
+                    .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = sh_level, .baseArrayLayer = face, .layerCount = 1},
+                    .imageExtent = {.width = level_size, .height = level_size, .depth = 1},
+            };
+        }
+
+        VkCopyImageToBufferInfo2 const radiance_copy{
+                .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
+                .srcImage = radiance_image,
+                .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .dstBuffer = radiance_readback->buffer,
+                .regionCount = static_cast<std::uint32_t>(regions.size()),
+                .pRegions = regions.data(),
+        };
+
+        vkCmdCopyImageToBuffer2(command_buffer, &radiance_copy);
+
+        transition_image_subresources(command_buffer, radiance_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, reader_stages,
+                                      VK_ACCESS_2_TRANSFER_READ_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                      VK_IMAGE_ASPECT_COLOR_BIT, sh_level, 1, 0, 6);
+
+        VkBufferMemoryBarrier2 const sh_barrier{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .srcStageMask = compute_stage,
+                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = sh_buffer_.buffer,
+                .offset = sh_offset,
+                .size = sizeof(GpuEnvironmentSh),
+        };
+
+        VkDependencyInfo const sh_dependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .bufferMemoryBarrierCount = 1,
+                .pBufferMemoryBarriers = &sh_barrier,
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &sh_dependency);
+
+        VkBufferCopy const sh_region{.srcOffset = sh_offset, .dstOffset = 0, .size = sizeof(GpuEnvironmentSh)};
+
+        vkCmdCopyBuffer(command_buffer, sh_buffer_.buffer, sh_readback->buffer, 1, &sh_region);
+    });
+
+    std::vector<std::uint16_t> lut_halves(static_cast<std::size_t>(brdf_lut_size) * brdf_lut_size * 4U);
+    std::vector<std::uint16_t> radiance_halves(static_cast<std::size_t>(level_size) * level_size * 6U * 4U);
+    GpuEnvironmentSh gpu_sh{};
+
+    if (!lut_readback->read(0, std::span{lut_halves}) || !radiance_readback->read(0, std::span{radiance_halves}) ||
+        !sh_readback->read(0, std::span{&gpu_sh, 1})) {
+        result.summary = "Could not read the results back.";
+        return result;
+    }
+
+    // The LUT at a 4x4 grid of texels, against the CPU integral with the same sample set.
+    for (std::uint32_t gy = 0; gy < 4; ++gy) {
+        for (std::uint32_t gx = 0; gx < 4; ++gx) {
+            auto const x = (gx * 32U) + 16U;
+            auto const y = (gy * 32U) + 16U;
+
+            auto const reference =
+                    integrate_brdf(std::max((static_cast<float>(x) + 0.5F) / static_cast<float>(brdf_lut_size), 1e-3F),
+                                   std::max((static_cast<float>(y) + 0.5F) / static_cast<float>(brdf_lut_size), 0.045F), 1024);
+
+            auto const texel = ((static_cast<std::size_t>(y) * brdf_lut_size) + x) * 4U;
+            glm::vec2 const gpu{glm::unpackHalf1x16(lut_halves[texel]), glm::unpackHalf1x16(lut_halves[texel + 1])};
+
+            result.lut_max_error = std::max(result.lut_max_error, glm::compMax(glm::abs(gpu - reference)));
+        }
+    }
+
+    // The SH of the same level, from the same texels.
+    Sh9 cpu_sh;
+
+    for (std::uint32_t face = 0; face < 6; ++face) {
+        for (std::uint32_t y = 0; y < level_size; ++y) {
+            for (std::uint32_t x = 0; x < level_size; ++x) {
+                auto const uv = glm::vec2{(static_cast<float>(x) + 0.5F) / static_cast<float>(level_size),
+                                          (static_cast<float>(y) + 0.5F) / static_cast<float>(level_size)};
+
+                auto const texel = ((((static_cast<std::size_t>(face) * level_size) + y) * level_size) + x) * 4U;
+                glm::vec3 const radiance{glm::unpackHalf1x16(radiance_halves[texel]), glm::unpackHalf1x16(radiance_halves[texel + 1]),
+                                         glm::unpackHalf1x16(radiance_halves[texel + 2])};
+
+                sh9_accumulate(cpu_sh, cube_texel_direction(face, uv), radiance, cube_texel_solid_angle(x, y, level_size));
+            }
+        }
+    }
+
+    cpu_sh = sh9_cosine_convolve_over_pi(cpu_sh);
+
+    float largest = 1e-6F;
+    float worst = 0.0F;
+
+    for (std::uint32_t index = 0; index < sh9_coefficient_count; ++index) {
+        glm::vec3 const gpu{gpu_sh.coefficients[index]};
+
+        largest = std::max(largest, glm::compMax(glm::abs(cpu_sh.coefficients[index])));
+        worst = std::max(worst, glm::compMax(glm::abs(gpu - cpu_sh.coefficients[index])));
+    }
+
+    result.sh_max_relative_error = worst / largest;
+
+    result.ran = true;
+    result.passed = result.lut_max_error < 1e-2F && result.sh_max_relative_error < 1e-3F;
+    result.summary = std::format("{}: LUT max error {:.5f} (limit 0.01), SH max relative error {:.6f} (limit 0.001)",
+                                 result.passed ? "PASS" : "FAIL", result.lut_max_error, result.sh_max_relative_error);
+
+    info("environment: {}", result.summary);
+
+    return result;
 }

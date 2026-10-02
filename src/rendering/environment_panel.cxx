@@ -184,6 +184,18 @@ namespace gui {
                 system.rebuild();
             }
 
+            ImGui::SameLine();
+
+            static std::string validation;
+
+            if (ImGui::Button("Validate against CPU")) {
+                validation = system.validate_against_cpu().summary;
+            }
+
+            if (!validation.empty()) {
+                ImGui::TextWrapped("%s", validation.c_str());
+            }
+
             static int radiance_mip = 0;
             static int prefilter_mip = 0;
 
