@@ -4,6 +4,7 @@
 
 #include <cstdint>
 
+#include "core/fly_string.hxx"
 #include "core/memory_tracker.hxx"
 inline auto on_memory_ui() -> void {
     static auto previous = MemoryTracker::stats();
@@ -57,4 +58,17 @@ inline auto on_memory_ui() -> void {
     ImGui::Text("Net:                  %+10.2f KiB", static_cast<double>(net_bytes) / kib);
 
     ImGui::Text("Average allocation:   %10.2f bytes", average_allocation_size);
+
+    // The FlyString pool is never freed, so a count that keeps climbing means something interns unique text.
+    auto const pool = FlyString::pool_stats();
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("FlyString pool");
+
+    ImGui::Text("Interned strings:     %10llu", static_cast<unsigned long long>(pool.strings));
+
+    ImGui::Text("Characters:           %10.2f KiB", to_kib(pool.characters));
+
+    ImGui::Text("Average length:       %10.2f",
+                pool.strings != 0 ? static_cast<double>(pool.characters) / static_cast<double>(pool.strings) : 0.0);
 }

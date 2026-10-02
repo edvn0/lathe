@@ -223,4 +223,19 @@ TEST_SUITE("smoke") {
         CHECK(std::format("[{}]", FlyString{}) == "[]");
         CHECK(std::format("{:>6}", FlyString{"ab"}) == "    ab");
     }
+
+    TEST_CASE("FlyString: pool stats count each distinct string once") {
+        auto const before = FlyString::pool_stats();
+
+        // Unique to this test, so earlier tests can't have interned them.
+        static_cast<void>(FlyString{"pool_stats_probe_alpha"});
+        static_cast<void>(FlyString{"pool_stats_probe_alpha"});
+        static_cast<void>(FlyString{"pool_stats_probe_beta"});
+
+        auto const after = FlyString::pool_stats();
+
+        CHECK(after.strings == before.strings + 2);
+        CHECK(after.characters == before.characters + std::string_view{"pool_stats_probe_alpha"}.size() +
+                                          std::string_view{"pool_stats_probe_beta"}.size());
+    }
 }

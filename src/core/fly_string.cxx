@@ -26,8 +26,20 @@ auto FlyString::operator==(FlyString rhs) const noexcept -> bool { return value_
 auto FlyString::Pool::intern(std::string_view value) -> std::string const & {
     std::scoped_lock lock{mutex_};
     auto const [iterator, inserted] = strings_.emplace(value);
+
+    if (inserted) {
+        characters_ += iterator->size();
+    }
+
     return *iterator;
 }
+
+auto FlyString::Pool::stats() const -> PoolStats {
+    std::scoped_lock lock{mutex_};
+    return PoolStats{.strings = strings_.size(), .characters = characters_};
+}
+
+auto FlyString::pool_stats() -> PoolStats { return pool().stats(); }
 
 auto FlyString::pool() -> Pool & {
     static auto *instance = []() {
