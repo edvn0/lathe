@@ -52,6 +52,10 @@ struct VulkanContext {
     // Lets the pipeline-statistics query count task/mesh invocations.
     bool mesh_shader_queries_supported = false;
 
+    // VK_RESOLVE_MODE_MIN_BIT in VkPhysicalDeviceDepthStencilResolveProperties::supportedDepthResolveModes. Under
+    // MSAA, Hi-Z occlusion culling needs it to resolve the farthest sample (reverse-Z) of each pixel.
+    bool depth_resolve_min_supported = false;
+
     HostQueryContext host_query_context{};
 
     VkQueue graphics_queue = VK_NULL_HANDLE;

@@ -64,6 +64,9 @@ struct BenchmarkEnvironment {
     std::uint32_t render_width = 0;
     std::uint32_t render_height = 0;
     ClusterGridSettings cluster_grid{};
+
+    // Renderer::occlusion_culling() for the run, so on/off results aren't mistaken for one another.
+    bool occlusion_culling = false;
 };
 
 class BenchmarkRun {

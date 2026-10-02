@@ -51,6 +51,7 @@
 #include "gpu/sampler_storage.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "rendering/forward_target.hxx"
+#include "rendering/hiz_occlusion.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/render_passes.hxx"
 #include "rendering/render_stage.hxx"
@@ -124,9 +125,19 @@ struct FrameStats {
     std::uint32_t mask_indirect_count = 0;
     std::uint32_t blend_indirect_count = 0;
 
-    // Instances that survived GPU culling. Lags a frames-in-flight cycle behind the rest; 0 until the first
-    // readback.
+    // Instances drawn by the camera passes after GPU culling (early + late). Like every count below it, this lags a
+    // frames-in-flight cycle behind the rest; 0 until the first readback.
     std::uint32_t visible_instance_count = 0;
+
+    // Two-phase occlusion culling (docs/occlusion-culling.md), valid when occlusion_stats_valid. Frustum-visible
+    // instances are either drawn in phase 1 (early) or deferred as candidates; phase 2 draws the candidates that
+    // pass against this frame's Hi-Z (late) and drops the rest (occluded).
+    std::uint32_t frustum_visible_instance_count = 0;
+    std::uint32_t early_instance_count = 0;
+    std::uint32_t occlusion_candidate_count = 0;
+    std::uint32_t late_instance_count = 0;
+    std::uint32_t occluded_instance_count = 0;
+    bool occlusion_stats_valid = false;
 
     std::uint32_t model_submission_count = 0;
     std::uint32_t mesh_submission_count = 0;
@@ -136,6 +147,19 @@ struct FrameStats {
 };
 
 inline constexpr std::uint32_t pipeline_stat_count = 4;
+
+// Renderer::occlusion_test_mode(). The stubs exercise the two-phase draw lists without trusting the Hi-Z test; with
+// either, a frame must look exactly as with occlusion culling off.
+enum class OcclusionTestMode : std::uint8_t {
+    // Phase 1 tests against last frame's Hi-Z, phase 2 against this frame's.
+    hiz,
+
+    // Stub: phase 1 draws every frustum-visible instance; phase 2 is empty.
+    never_occluded,
+
+    // Stub: phase 1 defers every frustum-visible opaque/mask instance and phase 2 draws them all.
+    always_defer,
+};
 
 // Forward pass only. Task/mesh counts are valid only when mesh_stats_valid is set; otherwise the clipped count is.
 struct PipelineStats {
@@ -574,6 +598,27 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto meshlet_culling() const noexcept -> bool { return meshlet_culling_; }
     auto set_meshlet_culling(bool enabled) noexcept -> void { meshlet_culling_ = enabled; }
 
+    // Two-phase Hi-Z occlusion culling of whole instances (docs/occlusion-culling.md). Off by default. Changing it
+    // drops the Hi-Z history, so the next frame draws every frustum-visible instance in phase 1.
+    [[nodiscard]] auto occlusion_culling() const noexcept -> bool { return occlusion_culling_; }
+    auto set_occlusion_culling(bool enabled) noexcept -> void;
+
+    // False under MSAA on devices without VK_RESOLVE_MODE_MIN_BIT depth resolves; occlusion culling then stays
+    // inactive whatever occlusion_culling() says.
+    [[nodiscard]] auto occlusion_culling_supported() const noexcept -> bool;
+
+    // A debugging aid: the stub modes check the two-phase draw-list plumbing independently of the Hi-Z test.
+    [[nodiscard]] auto occlusion_test_mode() const noexcept -> OcclusionTestMode { return occlusion_test_mode_; }
+    auto set_occlusion_test_mode(OcclusionTestMode mode) noexcept -> void;
+
+    // One level of the Hi-Z pyramid as a sampled_2d texture for the debug panel: R32, the farthest depth of each texel
+    // (reverse-Z, so brighter is nearer). Only the level's logical extent (hiz_level_extent() of hiz_depth_extent())
+    // is written; the rest of the power-of-two image is undefined. Invalid until occlusion culling has built the
+    // pyramid since the last resize, or when R32_SFLOAT can't be linearly filtered for the UI.
+    [[nodiscard]] auto hiz_debug_view(std::uint32_t mip) const noexcept -> ImageHandle;
+    [[nodiscard]] auto hiz_debug_mip_count() const noexcept -> std::uint32_t { return hiz_.mip_count; }
+    [[nodiscard]] auto hiz_depth_extent() const noexcept -> VkExtent2D { return hiz_.depth_extent; }
+
     // Punctual lights binned into view-space clusters on the GPU, so each fragment only shades the lights that can
     // reach it. Off shades every light per fragment.
     [[nodiscard]] auto clustered_lighting() const noexcept -> bool { return clustered_lighting_; }
@@ -633,6 +678,45 @@ private:
     static_assert(std::is_trivially_copyable_v<GpuCullBounds>);
 
     static_assert(sizeof(GpuCullBounds) == 32);
+
+    // Mirrors OcclusionView in hiz_occlusion.slang. frame.occlusion_views_buffer holds two: [0] last frame's pyramid
+    // with the view-projection it was built with (phase 1), [1] this frame's (phase 2).
+    struct alignas(16) GpuOcclusionView {
+        glm::mat4 view_projection{1.0F};
+
+        // Reserved for meshlet-level occlusion (docs/occlusion-culling-m2.md); 0 until then.
+        VkDeviceAddress meshlet_visibility_address = 0;
+        VkDeviceAddress stats_address = 0;
+
+        // The whole mip chain, read via sampled_2d_depth[...].Load(int3(texel, level)).
+        std::uint32_t hiz_texture_index = 0;
+        std::uint32_t hiz_mip_count = 0;
+        std::uint32_t depth_width = 0;
+        std::uint32_t depth_height = 0;
+
+        // occlusion_view_* in renderer.cxx: disabled (never occluded), enabled, or the always_defer stub.
+        std::uint32_t enabled = 0;
+        float depth_epsilon = 1e-6F;
+        float guard_pixels = 1.0F;
+        std::uint32_t _pad0 = 0;
+    };
+
+    static_assert(std::is_trivially_copyable_v<GpuOcclusionView>);
+    static_assert(sizeof(GpuOcclusionView) == 112);
+    static_assert(offsetof(GpuOcclusionView, meshlet_visibility_address) == 64);
+    static_assert(offsetof(GpuOcclusionView, hiz_texture_index) == 80);
+    static_assert(offsetof(GpuOcclusionView, enabled) == 96);
+
+    // Slots of frame.occlusion_stats_buffer, accumulated by frustum_cull.slang. Mirrors occlusion_stat_* there.
+    static constexpr std::uint32_t occlusion_stat_frustum_visible = 0;
+    static constexpr std::uint32_t occlusion_stat_early = 1;
+    static constexpr std::uint32_t occlusion_stat_candidates = 2;
+    static constexpr std::uint32_t occlusion_stat_late = 3;
+    // 4 and 5 are reserved for meshlet-level occlusion (docs/occlusion-culling-m2.md).
+    static constexpr std::uint32_t occlusion_stat_count = 8;
+
+    // One cull workgroup per batch, so batches are capped at the guaranteed maxComputeWorkGroupCount[0].
+    static constexpr std::uint32_t maximum_cull_batch_count = 65'535;
 
     enum class GpuLightType : std::uint32_t {
         point = 0,
@@ -694,12 +778,26 @@ private:
         Buffer visible_draw_buffer{};
         Buffer visible_transform_buffer{};
 
-        // Host-visible copy of culled_indirect_buffer, grown on demand. Read at the start of record_frame for the same
-        // frame_index, so it lags a frames-in-flight cycle.
-        Buffer culled_readback_buffer{};
-        std::uint32_t culled_readback_capacity = 0;
-        std::uint32_t culled_readback_count = 0;
-        bool culled_readback_pending = false;
+        // Two-phase occlusion culling (docs/occlusion-culling.md). main_cs defers frustum-visible instances last
+        // frame's Hi-Z hides: their source indices go to occlusion_candidates_buffer at the batch's first_instance and
+        // their count to candidate_counts_buffer. late_cs appends the candidates that pass to the visible buffers after
+        // main_cs's survivors and writes late_indirect_buffer (the late prepass's ranges) and merged_indirect_buffer
+        // (both phases, for the forward pass). Unused while occlusion_active is false.
+        Buffer occlusion_views_buffer{};
+        Buffer occlusion_candidates_buffer{};
+        Buffer candidate_counts_buffer{};
+        Buffer late_indirect_buffer{};
+        Buffer merged_indirect_buffer{};
+
+        // occlusion_stat_count counters, cleared in prepare_frame. The readback copy is read when this frame slot is
+        // next recorded, so the stats lag a frames-in-flight cycle.
+        Buffer occlusion_stats_buffer{};
+        Buffer occlusion_stats_readback_buffer{};
+        bool occlusion_stats_pending = false;
+        bool occlusion_stats_active = false;
+
+        // Decided by prepare_frame; record_frame follows it.
+        bool occlusion_active = false;
 
         // Camera planes first, then 6 per shadow cascade. A separate buffer rather than a UBO array to get an
         // unambiguous 16-byte stride.
@@ -797,6 +895,44 @@ private:
         std::array<std::uint32_t, shadow_cascade_count> shadow_opaque_indirect_count{};
         std::array<std::uint32_t, shadow_cascade_count> shadow_mask_indirect_count{};
     };
+
+    // The Hi-Z pyramid (docs/occlusion-culling.md): R32_SFLOAT, hiz_image_extent() of the render extent with
+    // hiz_mip_count() levels. image's primary view (all levels) is what the occlusion tests read; mip_slots[i] is
+    // level i alone, registered as sampled_2d and storage_2d for the build. Shared by every frame in flight: there is
+    // one graphics queue and frames are submitted in order, so frame N + 1's phase 1 reads what frame N built.
+    //
+    // mip_slots are register_view() aliases of image's mip views, so they're released before it: declared after it
+    // for destruction, and assigned first on a move.
+    struct HizPyramid {
+        ImageHolder image;
+        std::array<ImageHolder, hiz_max_mip_count> mip_slots;
+        VkExtent2D depth_extent{};
+        std::uint32_t mip_count = 0;
+
+        // Set once a build has left every level in SHADER_READ_ONLY_OPTIMAL.
+        bool layout_initialised = false;
+
+        HizPyramid() = default;
+        ~HizPyramid() = default;
+
+        HizPyramid(HizPyramid const &) = delete;
+        auto operator=(HizPyramid const &) -> HizPyramid & = delete;
+
+        HizPyramid(HizPyramid &&) noexcept = default;
+
+        auto operator=(HizPyramid &&other) noexcept -> HizPyramid & {
+            mip_slots = std::move(other.mip_slots);
+            image = std::move(other.image);
+            depth_extent = other.depth_extent;
+            mip_count = other.mip_count;
+            layout_initialised = other.layout_initialised;
+
+            return *this;
+        }
+    };
+
+    [[nodiscard]]
+    auto create_hiz_pyramid(VkExtent2D depth_extent) -> std::expected<HizPyramid, RendererError>;
 
     // A frame's extent-sized render targets, built together so initialize() and resize() share one path.
     struct OwnedFrameTargets {
@@ -919,8 +1055,8 @@ private:
         bool multisampled = false;
     };
 
-    // Folds the culled-indirect readback recorded the last time this frame
-    // slot was used into last_frame_stats_.
+    // Folds the occlusion-statistics readback recorded the last time this frame slot was used into
+    // last_frame_stats_.
     auto consume_culled_readback(RendererFrame &frame) -> void;
 
     // Reads the cluster statistics recorded the last time this frame slot was used into last_cluster_stats_, then
@@ -931,9 +1067,18 @@ private:
     [[nodiscard]]
     auto resolve_frame_targets(RendererFrame const &frame) const -> std::expected<FrameTargets, RendererError>;
 
-    // The culled, compacted buffers the camera passes draw from.
+    // The culled, compacted buffers the camera passes draw from. All three share visible_draw_buffer and
+    // visible_transform_buffer; they differ in the indirect commands: phase 1's survivors (culled_indirect_buffer),
+    // phase 2's (late_indirect_buffer), and both for the forward pass (merged_indirect_buffer, or
+    // culled_indirect_buffer while occlusion is inactive).
     [[nodiscard]]
-    auto main_view_draws(RendererFrame const &frame) const -> render_pass::DrawBuffers;
+    auto early_view_draws(RendererFrame const &frame) const -> render_pass::DrawBuffers;
+
+    [[nodiscard]]
+    auto late_view_draws(RendererFrame const &frame) const -> render_pass::DrawBuffers;
+
+    [[nodiscard]]
+    auto forward_view_draws(RendererFrame const &frame) const -> render_pass::DrawBuffers;
 
     // Opaque/mask/blend batch counts, shared by the culled and un-culled buffers.
     [[nodiscard]]
@@ -943,10 +1088,24 @@ private:
     auto record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                             FrameTargets const &targets) -> std::expected<void, RendererError>;
 
-    // Also transitions the forward targets into attachment layouts.
+    // The `only`/`early` phases also transition the forward targets into attachment layouts.
     [[nodiscard]]
     auto record_depth_prepass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                              FrameTargets const &targets) -> std::expected<void, RendererError>;
+                              FrameTargets const &targets, render_pass::DepthPrepassPhase phase)
+            -> std::expected<void, RendererError>;
+
+    // Builds hiz_ from the early prepass's depth (the MIN resolve under MSAA) for late_cs and next frame's main_cs.
+    [[nodiscard]]
+    auto record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets)
+            -> std::expected<void, RendererError>;
+
+    // Phase 2 of occlusion culling: late_cs re-tests main_cs's candidates against this frame's Hi-Z.
+    [[nodiscard]]
+    auto record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
+
+    // Copies the occlusion statistics into the frame's readback buffer.
+    auto record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void;
 
     // Returns the AO texture's bindless index: denoised GTAO, or white when disabled.
     [[nodiscard]]
@@ -993,6 +1152,10 @@ private:
     auto create_frame_targets(std::uint32_t frame_index, VkExtent2D extent)
             -> std::expected<OwnedFrameTargets, RendererError>;
 
+    // Both timestamps of a stage that did no work this frame. Every stage writes both every frame: one missing
+    // query leaves vkGetQueryPoolResults NOT_READY and drops the whole frame's timings.
+    auto write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage) -> void;
+
     // Screenshot copy or present transition, then the end-of-frame timestamp.
     // viewport is null when the scene was composited straight into the swapchain.
     auto record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, Image const *viewport,
@@ -1035,6 +1198,8 @@ private:
     PipelineNodeHandle forward_blend_instanced_pipeline_;
     PipelineNodeHandle composite_pipeline_;
     PipelineNodeHandle frustum_cull_pipeline_;
+    PipelineNodeHandle occlusion_cull_pipeline_;
+    PipelineNodeHandle hiz_build_pipeline_;
     PipelineNodeHandle light_icon_pipeline_;
     PipelineNodeHandle bloom_downsample_pipeline_;
     PipelineNodeHandle bloom_upsample_pipeline_;
@@ -1054,6 +1219,9 @@ private:
     OverlayRegistry overlays_;
     OverlayRegistration light_icon_overlay_;
     bool meshlet_culling_ = true;
+    // Default off until the GPU checks in docs/occlusion-culling.md have passed.
+    bool occlusion_culling_ = false;
+    OcclusionTestMode occlusion_test_mode_ = OcclusionTestMode::hiz;
     bool clustered_lighting_ = true;
     bool cluster_debug_heatmap_ = false;
     ClusterGridSettings cluster_grid_{};
@@ -1062,6 +1230,15 @@ private:
 
     // Shared across frames in flight so unchanged tiles persist.
     ImageHolder shadow_atlas_{};
+
+    // Two-phase occlusion culling. The history is the last built pyramid and the view-projection it was built with;
+    // phase 1 only uses it while hiz_history_valid_, which a resize, a toggle or a frame without occlusion clears.
+    HizPyramid hiz_{};
+    glm::mat4 hiz_history_view_projection_{1.0F};
+    bool hiz_history_valid_ = false;
+
+    // VK_FORMAT_R32_SFLOAT supports linear filtering, which the UI's sampler needs for hiz_debug_view().
+    bool hiz_debug_view_supported_ = false;
     std::array<ShadowCascadeCacheEntry, shadow_cascade_count> shadow_cascade_cache_{};
     std::uint64_t shadow_frame_ = 0;
     std::uint64_t shadow_caster_revision_ = 1;

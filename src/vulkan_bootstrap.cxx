@@ -635,6 +635,24 @@ namespace {
 
         context.mesh_shader_queries_supported = mesh_shader_query_features.meshShaderQueries == VK_TRUE;
 
+        // Core in Vulkan 1.2.
+        VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve_properties{};
+        depth_stencil_resolve_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES;
+        depth_stencil_resolve_properties.pNext = nullptr;
+
+        VkPhysicalDeviceProperties2 properties2{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                .pNext = &depth_stencil_resolve_properties,
+                .properties = {},
+        };
+
+        vkGetPhysicalDeviceProperties2(context.physical_device, &properties2);
+
+        context.depth_resolve_min_supported =
+                (depth_stencil_resolve_properties.supportedDepthResolveModes & VK_RESOLVE_MODE_MIN_BIT) != 0;
+
+        info("Depth resolve MIN support: {}", context.depth_resolve_min_supported ? "yes" : "no");
+
         info("VK_EXT_shader_object support: {}",
              context.shader_objects_supported ? "yes" : "no (falling back to VkPipeline)");
 

@@ -7,6 +7,7 @@
 
 #include "assets/meshlet.hxx"
 #include "gpu/vk_barrier.hxx"
+#include "rendering/hiz_occlusion.hxx"
 #include "rendering/render_stage.hxx"
 #include "rendering/shadow_cascades.hxx"
 #include "shader_push_constants.hxx"
@@ -729,7 +730,9 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::DepthPrepass);
+        bool const late = info.phase == DepthPrepassPhase::late;
+        auto const stage =
+                static_cast<std::uint32_t>(late ? RenderStage::DepthPrepassLate : RenderStage::DepthPrepass);
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, context.timestamp_query_pool,
                              stage * 2);
 
@@ -741,13 +744,14 @@ namespace render_pass {
                 .resolveMode = VK_RESOLVE_MODE_NONE,
                 .resolveImageView = VK_NULL_HANDLE,
                 .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .loadOp = late ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                 .clearValue = {},
         };
 
+        // The late phase begins rendering even with nothing to draw, so the resolve sees the final depth.
         if (info.resolved_depth != nullptr) {
-            depth_attachment.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+            depth_attachment.resolveMode = info.depth_resolve_mode;
             depth_attachment.resolveImageView = info.resolved_depth->view();
             depth_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
         }
@@ -800,6 +804,104 @@ namespace render_pass {
         vkCmdEndRendering(context.command_buffer);
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                              context.timestamp_query_pool, stage * 2 + 1);
+        return {};
+    }
+
+    auto build_hiz(Context const &context, HizBuildInfo const &info) -> std::expected<void, RendererError> {
+        auto const mip_count = static_cast<std::uint32_t>(info.mip_texture_indices.size());
+        HizExtent const depth_extent{.width = info.depth_extent.width, .height = info.depth_extent.height};
+
+        if (mip_count == 0 || mip_count != hiz_mip_count(depth_extent) || info.hiz.mip_levels() < mip_count) {
+            return std::unexpected(detail::make_error(RendererErrorType::image_error));
+        }
+
+        auto const layout = detail::resolve_layout(context.pipeline_graph, info.pipeline);
+
+        if (layout == VK_NULL_HANDLE) {
+            return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
+        }
+
+        auto const command_buffer = context.command_buffer;
+        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::HiZBuild);
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, context.timestamp_query_pool,
+                             stage * 2);
+
+        constexpr VkPipelineStageFlags2 fragment_tests =
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+
+        // Multisample resolves, depth included, run in COLOR_ATTACHMENT_OUTPUT with COLOR_ATTACHMENT_* accesses.
+        constexpr VkPipelineStageFlags2 attachment_stages =
+                fragment_tests | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+        // The occlusion tests (main_cs, late_cs, and task shaders for meshlet occlusion) and the debug view.
+        constexpr VkPipelineStageFlags2 hiz_reader_stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                                                            VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                                                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+
+        // The late prepass loads the MSAA depth the early one stored (and its resolve read).
+        if (info.multisampled_depth != nullptr) {
+            transition_image_layout(command_buffer, info.multisampled_depth->image(),
+                                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                    attachment_stages, attachment_stages, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                    VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
+        }
+
+        // Written by the early prepass's depth writes (1x) or its resolve (MSAA).
+        transition_image_layout(command_buffer, info.source_depth.image(), VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, attachment_stages,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
+
+        // Rebuilt from scratch, so discard the contents. The source scope covers the earlier readers of the previous
+        // build, this frame's main_cs among them.
+        transition_image_layout(command_buffer, info.hiz.image(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                hiz_reader_stages, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_NONE,
+                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, mip_count);
+
+        detail::bind_compute_node(context.pipeline_graph, info.pipeline, command_buffer);
+        context.resource_table.bind(command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+        for (std::uint32_t level = 0; level < mip_count; ++level) {
+            bool const first_level = level == 0;
+            auto const source_extent = first_level ? depth_extent : hiz_level_extent(depth_extent, level - 1);
+            auto const level_extent = hiz_level_extent(depth_extent, level);
+
+            HizBuildPushConstants const build_pc{
+                    .src_texture_index =
+                            first_level ? info.source_texture_index : info.mip_texture_indices[level - 1],
+                    .dst_storage_index = info.mip_texture_indices[level],
+                    .src_width = source_extent.width,
+                    .src_height = source_extent.height,
+                    .dst_width = level_extent.width,
+                    .dst_height = level_extent.height,
+            };
+
+            vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(build_pc), &build_pc);
+            vkCmdDispatch(command_buffer, (level_extent.width + 7U) / 8U, (level_extent.height + 7U) / 8U, 1);
+
+            // Read by the next level's dispatch and, once the chain is done, by the occlusion tests.
+            transition_image_layout(command_buffer, info.hiz.image(), VK_IMAGE_LAYOUT_GENERAL,
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                    hiz_reader_stages, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, level, 1);
+        }
+
+        // Back for the late prepass, which loads it at 1x or overwrites it with its resolve under MSAA.
+        transition_image_layout(command_buffer, info.source_depth.image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                attachment_stages, VK_ACCESS_2_NONE,
+                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
+
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, context.timestamp_query_pool,
+                             stage * 2 + 1);
+
         return {};
     }
 

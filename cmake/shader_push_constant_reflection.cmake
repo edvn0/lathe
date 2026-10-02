@@ -283,6 +283,13 @@ add_shader_push_constant(
     LightClusterPushConstants
 )
 
+add_shader_push_constant(
+    hiz_build.slang
+    main_cs
+    compute
+    HizBuildPushConstants
+)
+
 set(
     shader_push_constants_header
     "${shader_reflect_generated_dir}/include/shader_push_constants.hxx"

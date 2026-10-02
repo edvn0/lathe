@@ -168,6 +168,9 @@ struct Application {
     float light_azimuth_degrees = 30.0F;
     float light_elevation_degrees = 55.0F;
 
+    // The Hi-Z level shown in Lighting > Occlusion culling.
+    int hiz_debug_mip = 0;
+
     bool mouse_dragging = false;
 
     // Scene file modals, opened from outside the ImGui frame (shortcuts, drops) on the next one.

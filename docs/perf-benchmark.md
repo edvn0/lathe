@@ -30,7 +30,7 @@ little about how passes compare on one.
 ./lathe --benchmark=perf/head.json [--benchmark-frames=600]
                [--benchmark-warmup=60] [--benchmark-max-warmup=1200]
                [--seed=1337] [--benchmark-screenshots]
-               [--cluster-grid=16x9x24:256]
+               [--cluster-grid=16x9x24:256] [--occlusion-culling=on|off]
 ```
 
 `--benchmark-screenshots` saves one screenshot per keyframe into
@@ -39,6 +39,18 @@ little about how passes compare on one.
 `--cluster-grid=XxYxZ[:capacity]` sets the clustered-lighting grid (see
 `docs/clustered-lighting.md`), so two runs of one build can compare grids.
 The JSON records it as `cluster_grid`.
+
+`--occlusion-culling=on|off` toggles two-phase Hi-Z occlusion culling (see
+`docs/occlusion-culling.md`; off by default). The JSON records whether it was
+active as `occlusion_culling`. Its stages (`hiz_build`, `occlusion_culling`,
+`depth_prepass_late`) are always in the JSON, near 0 ms while it is off, so
+compare on vs off by the sum `depth_prepass + hiz_build + occlusion_culling +
+depth_prepass_late + forward_pass` as well as the full frame. With
+`--benchmark-screenshots`, the keyframe screenshots of an on and an off run
+should be bit-identical. `run_benchmark.sh` passes extra arguments through,
+e.g. `tools/perf/run_benchmark.sh <build dir> perf/on.json
+--occlusion-culling=on`. Comparing a base from before these stages existed is
+fine: `compare_benchmarks.py` lists stages new in head on their own.
 
 ## Locally
 

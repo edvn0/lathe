@@ -589,6 +589,23 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    // --occlusion-culling=on|off overrides Renderer::occlusion_culling()'s default (off), e.g. for on/off benchmarks.
+    std::optional<bool> occlusion_culling;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--occlusion-culling="; arg.starts_with(prefix)) {
+            auto const value = arg.substr(prefix.size());
+
+            if (value == "on") {
+                occlusion_culling = true;
+            } else if (value == "off") {
+                occlusion_culling = false;
+            } else {
+                error("Invalid --occlusion-culling: '{}' (expected on or off)", value);
+                return EXIT_FAILURE;
+            }
+        }
+    }
+
     // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
         set_fixed_random_seed((*benchmark_options)->seed);
@@ -615,6 +632,14 @@ auto main(int argc, char **argv) -> int {
     if (cluster_grid) {
         if (auto applied = application.renderer->set_cluster_grid(*cluster_grid); !applied) {
             error("Invalid --cluster-grid: {}", applied.error());
+        }
+    }
+
+    if (occlusion_culling) {
+        application.renderer->set_occlusion_culling(*occlusion_culling);
+
+        if (*occlusion_culling && !application.renderer->occlusion_culling_supported()) {
+            warn("--occlusion-culling=on: this device has no MIN depth resolve for MSAA, so it stays inactive");
         }
     }
 
@@ -733,6 +758,8 @@ auto main(int argc, char **argv) -> int {
                         .render_width = renderer_extent.width,
                         .render_height = renderer_extent.height,
                         .cluster_grid = application.renderer->cluster_grid(),
+                        .occlusion_culling = application.renderer->occlusion_culling() &&
+                                             application.renderer->occlusion_culling_supported(),
                 });
 
                 if (written) {

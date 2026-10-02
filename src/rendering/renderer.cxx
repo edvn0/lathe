@@ -222,6 +222,44 @@ namespace {
     [[nodiscard]] auto shadow_signature_combine(std::uint64_t seed, std::uint64_t value) noexcept -> std::uint64_t {
         return seed ^ (shadow_signature_mix(value) + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U));
     }
+
+    // OcclusionView::enabled values. Mirrors occlusion_view_* in hiz_occlusion.slang.
+    constexpr std::uint32_t occlusion_view_disabled = 0U;
+    constexpr std::uint32_t occlusion_view_enabled = 1U;
+    constexpr std::uint32_t occlusion_view_force_occluded = 2U;
+
+    struct OcclusionViewStates {
+        std::uint32_t early = occlusion_view_disabled;
+        std::uint32_t late = occlusion_view_disabled;
+    };
+
+    // The enabled state of the phase-1 (history) and phase-2 (this frame's) views. Phase 1 needs a history pyramid;
+    // without one it draws everything, which is always correct.
+    [[nodiscard]] constexpr auto occlusion_view_states(bool active, bool history_valid, OcclusionTestMode mode) noexcept
+            -> OcclusionViewStates {
+        if (!active) {
+            return {};
+        }
+
+        switch (mode) {
+            case OcclusionTestMode::hiz:
+                return OcclusionViewStates{
+                        .early = history_valid ? occlusion_view_enabled : occlusion_view_disabled,
+                        .late = occlusion_view_enabled,
+                };
+
+            case OcclusionTestMode::never_occluded:
+                return {};
+
+            case OcclusionTestMode::always_defer:
+                return OcclusionViewStates{
+                        .early = occlusion_view_force_occluded,
+                        .late = occlusion_view_disabled,
+                };
+        }
+
+        return {};
+    }
 } // namespace
 
 Renderer::Renderer(VulkanContext &context) noexcept :
@@ -743,6 +781,47 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.light_cull_pipeline",
     }); // index 20: light_cull
 
+    // Phase 2 of occlusion culling; shares CullPC (and the reflected CullPushConstants) with main_cs.
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/frustum_cull.slang",
+                                    .entry_point = "late_cs",
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.occlusion_cull_pipeline",
+    }); // index 21: occlusion_cull
+
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/hiz_build.slang",
+                                    .entry_point = "main_cs",
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.hiz_build_pipeline",
+    }); // index 22: hiz_build
+
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
@@ -779,6 +858,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     depth_prepass_mask_instanced_pipeline_ = *registered_pipelines[18];
     light_cluster_pipeline_ = *registered_pipelines[19];
     light_cull_pipeline_ = *registered_pipelines[20];
+    occlusion_cull_pipeline_ = *registered_pipelines[21];
+    hiz_build_pipeline_ = *registered_pipelines[22];
 
     {
         auto light_icon_image = DecodedImage::load_from_file("assets/textures/light_bulb.png");
@@ -890,6 +971,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     auto const transform_size = *transform_size_result;
     auto const indirect_size = *indirect_size_result;
     auto const culled_indirect_size = indirect_size;
+
+    // Per batch rather than per draw: prepare_frame refuses more than maximum_cull_batch_count batches.
+    auto const cull_batch_capacity = std::min(maximum_draw_count_, maximum_cull_batch_count);
+    auto const occlusion_indirect_size = static_cast<VkDeviceSize>(cull_batch_capacity) * sizeof(GpuDrawCommand);
+    auto const candidate_counts_size = static_cast<VkDeviceSize>(cull_batch_capacity) * sizeof(std::uint32_t);
+    auto const occlusion_candidates_size = static_cast<VkDeviceSize>(maximum_draw_count_) * sizeof(std::uint32_t);
     auto const batch_bounds_size = *batch_bounds_size_result;
     auto const transform_offset = align_up(draw_size, 16);
     auto const indirect_offset = align_up(transform_offset + transform_size, 16);
@@ -1014,12 +1101,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.batch_bounds_buffer = std::move(*batch_bounds);
 
-        // main_cs is the only writer. TRANSFER_SRC for the visible-instance readback.
+        // main_cs is the only writer.
         auto culled_indirect = Buffer::create(
                 context_, BufferCreateInfo{
                                   .size = culled_indirect_size,
                                   .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                   .memory = BufferMemory::device,
                                   .debug_name = "renderer.frame_culled_indirect",
                           });
@@ -1057,6 +1144,75 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         }
 
         frame.visible_transform_buffer = std::move(*visible_transforms);
+
+        // Occlusion culling. late_cs is the only writer of the indirect buffers; main_cs of the candidates.
+        struct OcclusionBufferSpec {
+            Buffer *buffer;
+            VkDeviceSize size;
+            VkBufferUsageFlags usage;
+            BufferMemory memory;
+            char const *debug_name;
+        };
+
+        constexpr VkBufferUsageFlags storage_usage =
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        constexpr VkBufferUsageFlags indirect_usage = storage_usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+
+        std::array const occlusion_buffers{
+                // Host-written every frame.
+                OcclusionBufferSpec{.buffer = &frame.occlusion_views_buffer,
+                                    .size = 2 * sizeof(GpuOcclusionView),
+                                    .usage = storage_usage,
+                                    .memory = BufferMemory::upload,
+                                    .debug_name = "renderer.frame_occlusion_views"},
+                OcclusionBufferSpec{.buffer = &frame.occlusion_candidates_buffer,
+                                    .size = occlusion_candidates_size,
+                                    .usage = storage_usage,
+                                    .memory = BufferMemory::device,
+                                    .debug_name = "renderer.frame_occlusion_candidates"},
+                OcclusionBufferSpec{.buffer = &frame.candidate_counts_buffer,
+                                    .size = candidate_counts_size,
+                                    .usage = storage_usage,
+                                    .memory = BufferMemory::device,
+                                    .debug_name = "renderer.frame_candidate_counts"},
+                OcclusionBufferSpec{.buffer = &frame.late_indirect_buffer,
+                                    .size = occlusion_indirect_size,
+                                    .usage = indirect_usage,
+                                    .memory = BufferMemory::device,
+                                    .debug_name = "renderer.frame_late_indirect"},
+                OcclusionBufferSpec{.buffer = &frame.merged_indirect_buffer,
+                                    .size = occlusion_indirect_size,
+                                    .usage = indirect_usage,
+                                    .memory = BufferMemory::device,
+                                    .debug_name = "renderer.frame_merged_indirect"},
+                // Cleared by vkCmdFillBuffer and read back by a copy.
+                OcclusionBufferSpec{.buffer = &frame.occlusion_stats_buffer,
+                                    .size = occlusion_stat_count * sizeof(std::uint32_t),
+                                    .usage = storage_usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                    .memory = BufferMemory::device,
+                                    .debug_name = "renderer.frame_occlusion_stats"},
+                OcclusionBufferSpec{.buffer = &frame.occlusion_stats_readback_buffer,
+                                    .size = occlusion_stat_count * sizeof(std::uint32_t),
+                                    .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                    .memory = BufferMemory::readback,
+                                    .debug_name = "renderer.frame_occlusion_stats_readback"},
+        };
+
+        for (auto const &spec: occlusion_buffers) {
+            auto buffer = Buffer::create(context_, BufferCreateInfo{
+                                                           .size = spec.size,
+                                                           .usage = spec.usage,
+                                                           .memory = spec.memory,
+                                                           .debug_name = spec.debug_name,
+                                                   });
+
+            if (!buffer) {
+                return std::unexpected(make_device_error(buffer.error()));
+            }
+
+            *spec.buffer = std::move(*buffer);
+        }
 
         // Host-written every frame.
         auto frustum_planes_buffer =
@@ -1123,6 +1279,20 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.indirect_commands.reserve(maximum_draw_count_);
         frame.batch_bounds.reserve(maximum_draw_count_);
     }
+
+    auto hiz = create_hiz_pyramid(create_info.extent);
+
+    if (!hiz) {
+        return std::unexpected(hiz.error());
+    }
+
+    hiz_ = std::move(*hiz);
+    hiz_history_valid_ = false;
+
+    VkFormatProperties hiz_format_properties{};
+    vkGetPhysicalDeviceFormatProperties(context_.physical_device, VK_FORMAT_R32_SFLOAT, &hiz_format_properties);
+    hiz_debug_view_supported_ =
+            (hiz_format_properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
 
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(context_.physical_device, &properties);
@@ -1260,7 +1430,13 @@ auto Renderer::destroy() noexcept -> void {
         frame.frustum_planes_buffer.destroy();
         frame.visible_transform_buffer.destroy();
         frame.visible_draw_buffer.destroy();
-        frame.culled_readback_buffer.destroy();
+        frame.occlusion_stats_readback_buffer.destroy();
+        frame.occlusion_stats_buffer.destroy();
+        frame.merged_indirect_buffer.destroy();
+        frame.late_indirect_buffer.destroy();
+        frame.candidate_counts_buffer.destroy();
+        frame.occlusion_candidates_buffer.destroy();
+        frame.occlusion_views_buffer.destroy();
         frame.culled_indirect_buffer.destroy();
         frame.batch_bounds_buffer.destroy();
         frame.indirect_buffer.destroy();
@@ -1274,15 +1450,18 @@ auto Renderer::destroy() noexcept -> void {
         frame.batch_bounds.clear();
 
         frame.indirect_command_count = 0;
-        frame.culled_readback_capacity = 0;
-        frame.culled_readback_count = 0;
-        frame.culled_readback_pending = false;
+        frame.occlusion_stats_pending = false;
+        frame.occlusion_stats_active = false;
+        frame.occlusion_active = false;
         frame.cluster_stats_pending = false;
     }
 
     frames_.clear();
 
     shadow_atlas_.reset();
+
+    hiz_ = HizPyramid{};
+    hiz_history_valid_ = false;
 
     shadow_cascade_cache_ = {};
     shadow_frame_ = 0;
@@ -2524,6 +2703,34 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(upload_result.error());
     }
 
+    // main_cs and late_cs accumulate into the occlusion statistics. This slot's previous readback copy finished
+    // before its fence was waited on.
+    {
+        auto const stats_size = VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t);
+        vkCmdFillBuffer(command_buffer, frame.occlusion_stats_buffer.buffer, 0, stats_size, 0);
+
+        VkBufferMemoryBarrier2 const stats_cleared{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = frame.occlusion_stats_buffer.buffer,
+                .offset = 0,
+                .size = stats_size,
+        };
+
+        VkDependencyInfo const stats_dependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .bufferMemoryBarrierCount = 1,
+                .pBufferMemoryBarriers = &stats_cleared,
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &stats_dependency);
+    }
+
     auto const &view = matrices.view;
     auto const &projection = matrices.projection;
     auto const light_direction = glm::normalize(light_.direction);
@@ -2719,6 +2926,44 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
+    // Two-phase occlusion culling: record_frame follows this decision for the frame. The pyramid matches the render
+    // extent except between a resize and the frames recreated with it.
+    auto const forward_extent = frame.forward_target.extent();
+    frame.occlusion_active = occlusion_culling_ && occlusion_culling_supported() && static_cast<bool>(hiz_.image) &&
+                             hiz_.depth_extent.width == forward_extent.width &&
+                             hiz_.depth_extent.height == forward_extent.height;
+
+    {
+        auto const states = occlusion_view_states(frame.occlusion_active, hiz_history_valid_, occlusion_test_mode_);
+
+        // [0]: last frame's pyramid, projected as it was built. [1]: the pyramid record_frame builds this frame.
+        std::array<GpuOcclusionView, 2> const occlusion_views{
+                GpuOcclusionView{
+                        .view_projection = hiz_history_view_projection_,
+                        .stats_address = frame.occlusion_stats_buffer.device_address,
+                        .hiz_texture_index = hiz_.image.handle().index,
+                        .hiz_mip_count = hiz_.mip_count,
+                        .depth_width = hiz_.depth_extent.width,
+                        .depth_height = hiz_.depth_extent.height,
+                        .enabled = states.early,
+                },
+                GpuOcclusionView{
+                        .view_projection = view_projection,
+                        .stats_address = frame.occlusion_stats_buffer.device_address,
+                        .hiz_texture_index = hiz_.image.handle().index,
+                        .hiz_mip_count = hiz_.mip_count,
+                        .depth_width = hiz_.depth_extent.width,
+                        .depth_height = hiz_.depth_extent.height,
+                        .enabled = states.late,
+                },
+        };
+
+        if (!frame.occlusion_views_buffer.write(0, std::span{occlusion_views})) {
+            clear_submissions();
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+    }
+
     if ((lights_dirty_mask_ & (1u << frame_index)) != 0) {
         light_staging_.clear();
         light_staging_.reserve(point_light_submissions_.size() + spot_light_submissions_.size());
@@ -2778,7 +3023,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                              start_query);
 
         if (frame.indirect_command_count != 0) {
-            if (frame.indirect_command_count > 65535) {
+            if (frame.indirect_command_count > maximum_cull_batch_count) {
                 clear_submissions();
                 return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
             }
@@ -2804,8 +3049,16 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                     .dst_draws_address = frame.visible_draw_buffer.device_address,
                     .dst_transforms_address = frame.visible_transform_buffer.device_address,
                     .frustum_planes_address = frame.frustum_planes_buffer.device_address,
+                    .occlusion_address = frame.occlusion_views_buffer.device_address,
+                    .occlusion_candidates_address = frame.occlusion_candidates_buffer.device_address,
+                    .candidate_counts_address = frame.candidate_counts_buffer.device_address,
+                    .merged_indirect_address = frame.merged_indirect_buffer.device_address,
+                    .late_indirect_address = frame.late_indirect_buffer.device_address,
+                    .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
                     .batch_count = frame.indirect_command_count,
-                    .padding = 0,
+                    .occludable_batch_count = frame.opaque_indirect_count + frame.mask_indirect_count,
+                    .late_union_meshlet_batches = 0,
+                    ._padding = 0,
             };
 
             vkCmdPushConstants(command_buffer, frustum_cull_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc),
@@ -2813,63 +3066,48 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
             vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
 
-            std::array<VkBufferMemoryBarrier2, 4> const post_cull_barriers{
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                            VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                                            VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
-                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.visible_draw_buffer.buffer,
-                            .offset = 0,
-                            .size = VK_WHOLE_SIZE,
-                    },
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                            VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                                            VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
-                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.visible_transform_buffer.buffer,
-                            .offset = 0,
-                            .size = VK_WHOLE_SIZE,
-                    },
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            // Read as the indirect command and as the task shader's per-batch payload.
-                            .dstStageMask =
-                                    VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-                            .dstAccessMask =
-                                    VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.culled_indirect_buffer.buffer,
-                            .offset = 0,
-                            .size = VK_WHOLE_SIZE,
-                    },
-                    // Also read by the visible-instance readback copy.
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.culled_indirect_buffer.buffer,
-                            .offset = 0,
-                            .size = VK_WHOLE_SIZE,
-                    },
+            auto const compute_barrier = [](VkBuffer buffer, VkPipelineStageFlags2 dst_stages,
+                                            VkAccessFlags2 dst_access) -> VkBufferMemoryBarrier2 {
+                return VkBufferMemoryBarrier2{
+                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                        .dstStageMask = dst_stages,
+                        .dstAccessMask = dst_access,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .buffer = buffer,
+                        .offset = 0,
+                        .size = VK_WHOLE_SIZE,
+                };
+            };
+
+            constexpr VkPipelineStageFlags2 geometry_stages = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                                              VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                                                              VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
+
+            // late_cs (record_frame) reads the candidates, counts and phase-1 commands, appends to the visible
+            // buffers past main_cs's survivors, and adds to the statistics, which are then copied for readback.
+            std::array const post_cull_barriers{
+                    compute_barrier(frame.visible_draw_buffer.buffer,
+                                    geometry_stages | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT),
+                    compute_barrier(frame.visible_transform_buffer.buffer,
+                                    geometry_stages | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT),
+                    // Read as the indirect command and as the task shader's per-batch payload.
+                    compute_barrier(frame.culled_indirect_buffer.buffer,
+                                    VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                    VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
+                    compute_barrier(frame.occlusion_candidates_buffer.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
+                    compute_barrier(frame.candidate_counts_buffer.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
+                    compute_barrier(frame.occlusion_stats_buffer.buffer,
+                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                                            VK_ACCESS_2_TRANSFER_READ_BIT),
             };
 
             VkDependencyInfo const dependency_info{
@@ -2879,70 +3117,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             };
 
             vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-
-            auto const readback_size = static_cast<VkDeviceSize>(frame.indirect_command_count) * sizeof(GpuDrawCommand);
-
-            if (!frame.culled_readback_buffer.valid() ||
-                frame.culled_readback_capacity < frame.indirect_command_count) {
-                auto const capacity = std::bit_ceil(std::max(frame.indirect_command_count, 1U));
-
-                auto readback = Buffer::create(
-                        context_, BufferCreateInfo{
-                                          .size = static_cast<VkDeviceSize>(capacity) * sizeof(GpuDrawCommand),
-                                          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                          .memory = BufferMemory::readback,
-                                          .debug_name = "renderer.culled_readback",
-                                  });
-
-                if (!readback) {
-                    clear_submissions();
-                    return std::unexpected(make_device_error(readback.error()));
-                }
-
-                frame.culled_readback_buffer = std::move(*readback);
-                frame.culled_readback_capacity = capacity;
-            }
-
-            VkBufferCopy2 const readback_region{
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
-                    .srcOffset = 0,
-                    .dstOffset = 0,
-                    .size = readback_size,
-            };
-
-            VkCopyBufferInfo2 const readback_copy{
-                    .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
-                    .srcBuffer = frame.culled_indirect_buffer.buffer,
-                    .dstBuffer = frame.culled_readback_buffer.buffer,
-                    .regionCount = 1,
-                    .pRegions = &readback_region,
-            };
-
-            vkCmdCopyBuffer2(command_buffer, &readback_copy);
-
-            VkBufferMemoryBarrier2 const readback_to_host{
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                    .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
-                    .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .buffer = frame.culled_readback_buffer.buffer,
-                    .offset = 0,
-                    .size = readback_size,
-            };
-
-            VkDependencyInfo const readback_dependency_info{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = 1,
-                    .pBufferMemoryBarriers = &readback_to_host,
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &readback_dependency_info);
-
-            frame.culled_readback_count = frame.indirect_command_count;
-            frame.culled_readback_pending = true;
         }
 
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool, end_query);
@@ -3212,31 +3386,116 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
 auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
     // This frame slot's fence has been waited on, so last use's readback copy has completed.
-    if (!frame.culled_readback_pending) {
+    if (!frame.occlusion_stats_pending) {
         return;
     }
 
-    frame.culled_readback_pending = false;
+    frame.occlusion_stats_pending = false;
 
-    if (auto invalidated = frame.culled_readback_buffer.invalidate(
-                0, static_cast<VkDeviceSize>(frame.culled_readback_count) * sizeof(GpuDrawCommand));
+    if (auto invalidated = frame.occlusion_stats_readback_buffer.invalidate(
+                0, VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t));
         !invalidated) {
-        error("[Renderer] Failed to invalidate culled-indirect readback buffer");
+        error("[Renderer] Failed to invalidate the occlusion statistics readback buffer");
         return;
     }
 
-    auto const *commands = frame.culled_readback_buffer.mapped_data_as<GpuDrawCommand const>();
-    if (commands == nullptr) {
+    auto const *stats = frame.occlusion_stats_readback_buffer.mapped_data_as<std::uint32_t const>();
+    if (stats == nullptr) {
         return;
     }
 
-    std::uint32_t visible_instance_count = 0;
+    auto const candidates = stats[occlusion_stat_candidates];
+    auto const late = stats[occlusion_stat_late];
 
-    for (std::uint32_t i = 0; i < frame.culled_readback_count; ++i) {
-        visible_instance_count += commands[i].instance_count;
+    last_frame_stats_.visible_instance_count = stats[occlusion_stat_early] + late;
+    last_frame_stats_.frustum_visible_instance_count = stats[occlusion_stat_frustum_visible];
+    last_frame_stats_.early_instance_count = stats[occlusion_stat_early];
+    last_frame_stats_.occlusion_candidate_count = candidates;
+    last_frame_stats_.late_instance_count = late;
+    last_frame_stats_.occluded_instance_count = candidates >= late ? candidates - late : 0U;
+    last_frame_stats_.occlusion_stats_valid = frame.occlusion_stats_active;
+}
+
+auto Renderer::set_occlusion_culling(bool enabled) noexcept -> void {
+    if (enabled != occlusion_culling_) {
+        hiz_history_valid_ = false;
     }
 
-    last_frame_stats_.visible_instance_count = visible_instance_count;
+    occlusion_culling_ = enabled;
+}
+
+auto Renderer::set_occlusion_test_mode(OcclusionTestMode mode) noexcept -> void {
+    if (mode != occlusion_test_mode_) {
+        hiz_history_valid_ = false;
+    }
+
+    occlusion_test_mode_ = mode;
+}
+
+auto Renderer::hiz_debug_view(std::uint32_t mip) const noexcept -> ImageHandle {
+    if (!hiz_debug_view_supported_ || !hiz_.layout_initialised || hiz_.mip_count == 0) {
+        return {};
+    }
+
+    return hiz_.mip_slots[std::min(mip, hiz_.mip_count - 1)].handle();
+}
+
+auto Renderer::create_hiz_pyramid(VkExtent2D depth_extent) -> std::expected<HizPyramid, RendererError> {
+    HizExtent const depth{.width = depth_extent.width, .height = depth_extent.height};
+    auto const image_extent = hiz_image_extent(depth);
+
+    HizPyramid pyramid;
+    pyramid.depth_extent = depth_extent;
+    pyramid.mip_count = hiz_mip_count(depth);
+
+    auto image = create_held_image(
+            image_storage_,
+            ImageCreateInfo{
+                    .extent = VkExtent3D{.width = image_extent.width, .height = image_extent.height, .depth = 1},
+                    .format = VK_FORMAT_R32_SFLOAT,
+                    .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .image_type = VK_IMAGE_TYPE_2D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                    .flags = 0,
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .mip_levels = pyramid.mip_count,
+                    .array_layers = 1,
+                    .create_mip_layer_views = true,
+                    .debug_name = "renderer.hiz",
+            });
+
+    if (!image) {
+        return std::unexpected(make_image_error(image.error()));
+    }
+
+    // Into the pyramid before its mip slots, so a failed registration still releases the slots first.
+    pyramid.image = std::move(*image);
+
+    auto const *hiz_image = pyramid.image.get();
+
+    for (std::uint32_t mip = 0; mip < pyramid.mip_count; ++mip) {
+        auto const view = hiz_image->mip_layer_view(mip, 0);
+
+        auto mip_slot = register_held_view(image_storage_, ImageViewRegistration{
+                                                                   .sampled_2d = view,
+                                                                   .storage_2d = view,
+                                                           });
+
+        if (!mip_slot) {
+            return std::unexpected(make_image_error(mip_slot.error()));
+        }
+
+        pyramid.mip_slots[mip] = std::move(*mip_slot);
+    }
+
+    return pyramid;
+}
+
+auto Renderer::occlusion_culling_supported() const noexcept -> bool {
+    return samples_ == VK_SAMPLE_COUNT_1_BIT || context_.depth_resolve_min_supported;
 }
 
 auto Renderer::set_cluster_grid(ClusterGridSettings const &grid) -> std::expected<void, std::string> {
@@ -3354,11 +3613,29 @@ auto Renderer::resolve_frame_targets(RendererFrame const &frame) const -> std::e
     return targets;
 }
 
-auto Renderer::main_view_draws(RendererFrame const &frame) const -> render_pass::DrawBuffers {
+auto Renderer::early_view_draws(RendererFrame const &frame) const -> render_pass::DrawBuffers {
     return render_pass::DrawBuffers{
             .draws = frame.visible_draw_buffer,
             .transforms = frame.visible_transform_buffer,
             .indirect = frame.culled_indirect_buffer,
+            .index_buffer = geometry_arena_.bindable_buffer(),
+    };
+}
+
+auto Renderer::late_view_draws(RendererFrame const &frame) const -> render_pass::DrawBuffers {
+    return render_pass::DrawBuffers{
+            .draws = frame.visible_draw_buffer,
+            .transforms = frame.visible_transform_buffer,
+            .indirect = frame.late_indirect_buffer,
+            .index_buffer = geometry_arena_.bindable_buffer(),
+    };
+}
+
+auto Renderer::forward_view_draws(RendererFrame const &frame) const -> render_pass::DrawBuffers {
+    return render_pass::DrawBuffers{
+            .draws = frame.visible_draw_buffer,
+            .transforms = frame.visible_transform_buffer,
+            .indirect = frame.occlusion_active ? frame.merged_indirect_buffer : frame.culled_indirect_buffer,
             .index_buffer = geometry_arena_.bindable_buffer(),
     };
 }
@@ -3434,38 +3711,277 @@ auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, Rend
 }
 
 auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                                    FrameTargets const &targets) -> std::expected<void, RendererError> {
-    render_pass::prepare_forward_targets(
-            pass_context, render_pass::ForwardTargets{
-                                  .hdr = *targets.hdr,
-                                  .depth = *targets.depth,
-                                  .resolved_hdr = targets.multisampled ? targets.resolved_hdr : nullptr,
-                                  .resolved_depth = targets.multisampled ? targets.resolved_depth : nullptr,
-                          });
+                                    FrameTargets const &targets, render_pass::DepthPrepassPhase phase)
+        -> std::expected<void, RendererError> {
+    bool const late = phase == render_pass::DepthPrepassPhase::late;
 
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Depth Prepass",
-                 tracy::Color::SlateGray);
+    // The late phase draws on top of the early phase's depth.
+    if (!late) {
+        render_pass::prepare_forward_targets(
+                pass_context, render_pass::ForwardTargets{
+                                      .hdr = *targets.hdr,
+                                      .depth = *targets.depth,
+                                      .resolved_hdr = targets.multisampled ? targets.resolved_hdr : nullptr,
+                                      .resolved_depth = targets.multisampled ? targets.resolved_depth : nullptr,
+                              });
+    }
 
     auto const frame_index = pass_context.frame_index;
 
-    return render_pass::depth_prepass(pass_context,
-                                      render_pass::DepthPrepassInfo{
-                                              .depth = *targets.depth,
-                                              .resolved_depth = targets.multisampled ? targets.resolved_depth : nullptr,
-                                              .extent = targets.extent,
-                                              .samples = samples_,
-                                              .draws = main_view_draws(frame),
-                                              .counts = batch_counts(frame),
-                                              .cull_planes_address = frame.frustum_planes_buffer.device_address,
-                                              .materials_address = material_storage_.device_address(),
-                                              .ubo_address = ubos_[frame_index].device_address,
-                                              .lights_address = frame.lights_buffer.device_address,
-                                              .opaque_pipeline = depth_prepass_pipeline_,
-                                              .mask_pipeline = depth_prepass_mask_pipeline_,
-                                              .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
-                                              .mask_instanced_pipeline = depth_prepass_mask_instanced_pipeline_,
-                                              .meshlet_culling = meshlet_culling_,
-                                      });
+    auto const record = [&]() -> std::expected<void, RendererError> {
+        return render_pass::depth_prepass(
+                pass_context, render_pass::DepthPrepassInfo{
+                                      .depth = *targets.depth,
+                                      .resolved_depth = targets.multisampled ? targets.resolved_depth : nullptr,
+                                      .extent = targets.extent,
+                                      .samples = samples_,
+                                      .phase = phase,
+                                      // The Hi-Z needs each pixel's farthest sample; the late phase's resolve then
+                                      // leaves the SAMPLE_ZERO depth everything else expects.
+                                      .depth_resolve_mode = phase == render_pass::DepthPrepassPhase::early
+                                                                    ? VK_RESOLVE_MODE_MIN_BIT
+                                                                    : VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
+                                      .draws = late ? late_view_draws(frame) : early_view_draws(frame),
+                                      .counts = batch_counts(frame),
+                                      .cull_planes_address = frame.frustum_planes_buffer.device_address,
+                                      .materials_address = material_storage_.device_address(),
+                                      .ubo_address = ubos_[frame_index].device_address,
+                                      .lights_address = frame.lights_buffer.device_address,
+                                      .opaque_pipeline = depth_prepass_pipeline_,
+                                      .mask_pipeline = depth_prepass_mask_pipeline_,
+                                      .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
+                                      .mask_instanced_pipeline = depth_prepass_mask_instanced_pipeline_,
+                                      .meshlet_culling = meshlet_culling_,
+                              });
+    };
+
+    // Tracy zone names must be literals.
+    if (late) {
+        TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Depth Prepass (late)",
+                     tracy::Color::SlateGray);
+        return record();
+    }
+
+    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Depth Prepass",
+                 tracy::Color::SlateGray);
+    return record();
+}
+
+auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets)
+        -> std::expected<void, RendererError> {
+    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Hi-Z Build",
+                 tracy::Color::DarkOrange);
+
+    auto const *hiz_image = hiz_.image.get();
+
+    if (hiz_image == nullptr || hiz_.mip_count == 0 || hiz_.mip_count > hiz_max_mip_count) {
+        return std::unexpected(make_error(RendererErrorType::image_error));
+    }
+
+    std::array<std::uint32_t, hiz_max_mip_count> mip_texture_indices{};
+
+    for (std::uint32_t mip = 0; mip < hiz_.mip_count; ++mip) {
+        mip_texture_indices[mip] = hiz_.mip_slots[mip].handle().index;
+    }
+
+    auto const built = render_pass::build_hiz(
+            pass_context, render_pass::HizBuildInfo{
+                                  .source_depth = *targets.resolved_depth,
+                                  .source_texture_index = targets.resolved_depth_handle.index,
+                                  .depth_extent = targets.extent,
+                                  .multisampled_depth = targets.multisampled ? targets.depth : nullptr,
+                                  .hiz = *hiz_image,
+                                  .mip_texture_indices = std::span{mip_texture_indices}.first(hiz_.mip_count),
+                                  .pipeline = hiz_build_pipeline_,
+                          });
+
+    if (!built) {
+        return std::unexpected(built.error());
+    }
+
+    hiz_.layout_initialised = true;
+    return {};
+}
+
+auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Occlusion Culling",
+                 tracy::Color::SlateBlue);
+
+    auto const command_buffer = pass_context.command_buffer;
+    auto const query_pool = pass_context.timestamp_query_pool;
+    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::OcclusionCulling);
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2);
+
+    if (frame.indirect_command_count != 0) {
+        auto const layout = resolve_layout(pipeline_graph_, occlusion_cull_pipeline_);
+
+        if (layout == VK_NULL_HANDLE) {
+            return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+        }
+
+        constexpr VkPipelineStageFlags2 geometry_stages = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                                          VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                                                          VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
+
+        // late_cs appends past the ranges the early prepass reads, but device-address accesses can't be tracked per
+        // range, so order it after those reads.
+        VkMemoryBarrier2 const after_early_prepass{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                .srcStageMask = geometry_stages,
+                .srcAccessMask = VK_ACCESS_2_NONE,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_NONE,
+        };
+
+        VkDependencyInfo const before_dependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .memoryBarrierCount = 1,
+                .pMemoryBarriers = &after_early_prepass,
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &before_dependency);
+
+        bind_compute_node(pipeline_graph_, occlusion_cull_pipeline_, command_buffer);
+        gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+        // dst_indirect is main_cs's output, read here for the phase-1 counts.
+        CullPushConstants const cull_pc{
+                .src_draws_address = frame.draw_buffer.device_address,
+                .src_transforms_address = frame.transform_buffer.device_address,
+                .batch_bounds_address = frame.batch_bounds_buffer.device_address,
+                .src_indirect_address = frame.indirect_buffer.device_address,
+                .dst_indirect_address = frame.culled_indirect_buffer.device_address,
+                .dst_draws_address = frame.visible_draw_buffer.device_address,
+                .dst_transforms_address = frame.visible_transform_buffer.device_address,
+                .frustum_planes_address = frame.frustum_planes_buffer.device_address,
+                .occlusion_address = frame.occlusion_views_buffer.device_address + sizeof(GpuOcclusionView),
+                .occlusion_candidates_address = frame.occlusion_candidates_buffer.device_address,
+                .candidate_counts_address = frame.candidate_counts_buffer.device_address,
+                .merged_indirect_address = frame.merged_indirect_buffer.device_address,
+                .late_indirect_address = frame.late_indirect_buffer.device_address,
+                .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
+                .batch_count = frame.indirect_command_count,
+                .occludable_batch_count = frame.opaque_indirect_count + frame.mask_indirect_count,
+                .late_union_meshlet_batches = 0,
+                ._padding = 0,
+        };
+
+        vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
+        vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
+
+        auto const compute_barrier = [](VkBuffer buffer, VkPipelineStageFlags2 dst_stages,
+                                        VkAccessFlags2 dst_access) -> VkBufferMemoryBarrier2 {
+            return VkBufferMemoryBarrier2{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                    .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    .dstStageMask = dst_stages,
+                    .dstAccessMask = dst_access,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = buffer,
+                    .offset = 0,
+                    .size = VK_WHOLE_SIZE,
+            };
+        };
+
+        // The late prepass and forward pass read the appended instances and the new commands; the statistics go to
+        // the readback copy.
+        constexpr VkPipelineStageFlags2 indirect_stages =
+                VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT;
+        constexpr VkAccessFlags2 indirect_access =
+                VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+
+        std::array const after_cull{
+                compute_barrier(frame.visible_draw_buffer.buffer, geometry_stages, VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
+                compute_barrier(frame.visible_transform_buffer.buffer, geometry_stages,
+                                VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
+                compute_barrier(frame.late_indirect_buffer.buffer, indirect_stages, indirect_access),
+                compute_barrier(frame.merged_indirect_buffer.buffer, indirect_stages, indirect_access),
+                compute_barrier(frame.occlusion_stats_buffer.buffer, VK_PIPELINE_STAGE_2_COPY_BIT,
+                                VK_ACCESS_2_TRANSFER_READ_BIT),
+        };
+
+        VkDependencyInfo const after_dependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .bufferMemoryBarrierCount = static_cast<std::uint32_t>(after_cull.size()),
+                .pBufferMemoryBarriers = after_cull.data(),
+        };
+
+        vkCmdPipelineBarrier2(command_buffer, &after_dependency);
+    }
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2 + 1);
+    return {};
+}
+
+auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void {
+    auto const stats_size = VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t);
+
+    // The last writer is late_cs, main_cs or, with no batches, prepare_frame's clear.
+    VkBufferMemoryBarrier2 const to_copy{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = frame.occlusion_stats_buffer.buffer,
+            .offset = 0,
+            .size = stats_size,
+    };
+
+    VkDependencyInfo const copy_dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &to_copy,
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &copy_dependency);
+
+    VkBufferCopy2 const region{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+            .srcOffset = 0,
+            .dstOffset = 0,
+            .size = stats_size,
+    };
+
+    VkCopyBufferInfo2 const copy{
+            .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+            .srcBuffer = frame.occlusion_stats_buffer.buffer,
+            .dstBuffer = frame.occlusion_stats_readback_buffer.buffer,
+            .regionCount = 1,
+            .pRegions = &region,
+    };
+
+    vkCmdCopyBuffer2(command_buffer, &copy);
+
+    VkBufferMemoryBarrier2 const to_host{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+            .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = frame.occlusion_stats_readback_buffer.buffer,
+            .offset = 0,
+            .size = stats_size,
+    };
+
+    VkDependencyInfo const dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &to_host,
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &dependency);
+
+    frame.occlusion_stats_pending = true;
+    frame.occlusion_stats_active = frame.occlusion_active;
 }
 
 auto Renderer::record_ambient_occlusion_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
@@ -3520,7 +4036,7 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .output_hdr = {.index = targets.resolved_hdr_handle.index},
                     .extent = targets.extent,
                     .samples = samples_,
-                    .draws = main_view_draws(frame),
+                    .draws = forward_view_draws(frame),
                     .counts = batch_counts(frame),
                     .cull_planes_address = frame.frustum_planes_buffer.device_address,
                     .materials_address = material_storage_.device_address(),
@@ -3663,6 +4179,15 @@ auto Renderer::record_frame_end(VkCommandBuffer command_buffer, SwapchainImage c
 
     frame_query.has_results = true;
     pipeline_stat_queries_[frame_index].has_results = true;
+}
+
+auto Renderer::write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage)
+        -> void {
+    auto const query_pool = timestamp_queries_[frame_index].query_pool;
+    auto const first_query = static_cast<std::uint32_t>(stage) * 2;
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, first_query);
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, first_query + 1);
 }
 
 auto Renderer::make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> render_pass::Context {
@@ -3907,9 +4432,43 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         return shadows;
     }
 
-    if (auto prepass = record_depth_prepass(pass_context, frame, *targets); !prepass) {
+    // Two-phase occlusion culling (docs/occlusion-culling.md): the early prepass draws what main_cs kept, late_cs
+    // re-tests the rest against this frame's depth and the late prepass adds the survivors. Every stage still writes
+    // its timestamps when skipped.
+    if (auto prepass = record_depth_prepass(pass_context, frame, *targets,
+                                            frame.occlusion_active ? render_pass::DepthPrepassPhase::early
+                                                                   : render_pass::DepthPrepassPhase::only);
+        !prepass) {
         return prepass;
     }
+
+    if (frame.occlusion_active) {
+        if (auto built = record_hiz_build(pass_context, *targets); !built) {
+            return built;
+        }
+
+        // Next frame's phase 1 tests against this pyramid, projected as it was built.
+        hiz_history_view_projection_ = frame.view_projection;
+        hiz_history_valid_ = true;
+
+        if (auto culled = record_occlusion_cull_pass(pass_context, frame); !culled) {
+            return culled;
+        }
+
+        if (auto late = record_depth_prepass(pass_context, frame, *targets, render_pass::DepthPrepassPhase::late);
+            !late) {
+            return late;
+        }
+    } else {
+        write_empty_stage(command_buffer, frame_index, RenderStage::HiZBuild);
+        write_empty_stage(command_buffer, frame_index, RenderStage::OcclusionCulling);
+        write_empty_stage(command_buffer, frame_index, RenderStage::DepthPrepassLate);
+
+        // A pyramid from before this gap may not match what is on screen when culling resumes.
+        hiz_history_valid_ = false;
+    }
+
+    record_occlusion_stats_readback(command_buffer, frame);
 
     auto const ao_texture_index = record_ambient_occlusion_pass(pass_context, frame, *targets);
     if (!ao_texture_index) {
@@ -4109,6 +4668,12 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         replacements.push_back(std::move(*targets));
     }
 
+    auto hiz = create_hiz_pyramid(extent);
+
+    if (!hiz) {
+        return std::unexpected(hiz.error());
+    }
+
     // Moving in destroys the old targets.
     for (std::size_t index = 0; index < frames_.size(); ++index) {
         auto &frame = frames_[index];
@@ -4119,6 +4684,9 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         frame.bloom_target = std::move(targets.bloom_target);
         frame.ao_target = std::move(targets.ao_target);
     }
+
+    hiz_ = std::move(*hiz);
+    hiz_history_valid_ = false;
 
     extent_ = extent;
 

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <span>
 #include <type_traits>
 
 #include <volk.h>
@@ -90,11 +91,26 @@ namespace render_pass {
         Image const *resolved_depth = nullptr;
     };
 
+    // Two-phase occlusion culling splits the prepass (docs/occlusion-culling.md): `early` clears and draws the
+    // phase-1 instances, `late` loads that depth and adds the phase-2 ones. `only` is the single pass without it.
+    enum class DepthPrepassPhase : std::uint8_t {
+        only,
+        early,
+        late,
+    };
+
     struct DepthPrepassInfo {
         Image const &depth;
         Image const *resolved_depth = nullptr;
         VkExtent2D extent{};
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+
+        // only/early time RenderStage::DepthPrepass and clear; late times RenderStage::DepthPrepassLate and loads.
+        DepthPrepassPhase phase = DepthPrepassPhase::only;
+
+        // How `depth` resolves into `resolved_depth` when multisampled. MIN keeps each pixel's farthest sample
+        // (reverse-Z), which the Hi-Z needs to stay conservative; SAMPLE_ZERO is what GTAO and the rest expect.
+        VkResolveModeFlagBits depth_resolve_mode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
 
         DrawBuffers draws;
         DrawCounts counts;
@@ -248,6 +264,29 @@ namespace render_pass {
     auto shadow(Context const &context, ShadowPassInfo const &info) -> std::expected<void, RendererError>;
 
     auto depth_prepass(Context const &context, DepthPrepassInfo const &info) -> std::expected<void, RendererError>;
+
+    // Builds the Hi-Z pyramid between the early and late prepasses (docs/occlusion-culling.md), as one compute
+    // dispatch per level (hiz_build.slang), each reading the level below through mip_texture_indices[level - 1] (or the
+    // depth for level 0) and writing mip_texture_indices[level].
+    //
+    // `source_depth` is the single-sample depth the early prepass wrote: the MIN resolve under MSAA, otherwise the
+    // attachment itself. It goes DEPTH_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL -> DEPTH_ATTACHMENT_OPTIMAL, so
+    // the late prepass can load or re-resolve it. `multisampled_depth`, when set, is the MSAA attachment, which the
+    // late prepass loads. Every pyramid level ends in SHADER_READ_ONLY_OPTIMAL, visible to compute, task and fragment
+    // shaders (the occlusion tests and the debug view); the previous contents are discarded.
+    struct HizBuildInfo {
+        Image const &source_depth;
+        std::uint32_t source_texture_index = 0;
+        VkExtent2D depth_extent{};
+        Image const *multisampled_depth = nullptr;
+
+        Image const &hiz;
+        std::span<std::uint32_t const> mip_texture_indices;
+
+        PipelineNodeHandle pipeline{};
+    };
+
+    auto build_hiz(Context const &context, HizBuildInfo const &info) -> std::expected<void, RendererError>;
 
     auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)
             -> std::expected<std::optional<AoTextureIndex>, RendererError>;
