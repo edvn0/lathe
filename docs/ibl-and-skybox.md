@@ -14,7 +14,7 @@ From the environment, compute passes build three things:
 
 The forward pass replaces the flat ambient term with SH diffuse plus prefiltered specular × (F0·A + B), times AO, with a specular occlusion term derived from AO. A fullscreen skybox draws where no opaque geometry landed.
 
-**Status: design.** Nothing here is implemented. The milestones at the end are ordered so that each one builds, passes `cargo xtask test`, and has its own GPU check.
+**Status: implemented** (PR #46), with the deviations and the not-yet-done items listed under [As built](#as-built). The milestones at the end are the order the work landed in; each one built, passed `cargo xtask test` and had a GPU check.
 
 ## Goals
 
@@ -94,7 +94,7 @@ render_pass::forward_geometry
 | Equirect source | `R16G16B16A16_SFLOAT`, 2D | source size, capped at 8192×4096 (downscaled on CPU with `stb_image_resize2`); 1 mip | `sampled_2d` | Upload → projection; retired `frames_in_flight` frames after projection |
 | Radiance cube | `R16G16B16A16_SFLOAT`, `CUBE_COMPATIBLE`, 6 layers | HDR equirect: 512² (option 1024), 10 mips; KTX2 cube: its own face size (power of two, 64…1024); procedural: 256², 9 mips | primary `sampled_cube` (binding 5); per (mip, face) `mip_layer_view` registered via `register_view{sampled_2d, storage_2d}` = 60 / 54 slots | Recreated on source or size change |
 | Prefilter cube ×2 | `R16G16B16A16_SFLOAT`, cube | 256², **6 mips** (256…8), roughness `r_m = m / 5` | `sampled_cube` each; 36 (mip, face) slots each = 72 | Created once |
-| BRDF LUT | `R16G16_SFLOAT` (fall back to `R16G16B16A16_SFLOAT` without `STORAGE_IMAGE` format support), 2D | 128², 1 mip; x = N·V, y = perceptual roughness | `sampled_2d` + `storage_2d` (shader declares `[format("rg16f")]`) | Created once |
+| BRDF LUT | `R16G16B16A16_SFLOAT`, 2D (the engine's compute shaders write RGBA16F through format-less storage, so the LUT does too; only R and G are used) | 128², 1 mip; x = N·V, y = perceptual roughness | `sampled_2d` + `storage_2d` | Created once |
 | SH buffer | storage buffer, device local, `SHADER_DEVICE_ADDRESS` | 2 slots × `GpuEnvironmentSh` (9 × float4 = 144 B) | device address in `UBO::environment_sh_address` | Created once |
 | Black cube fallback | `R8G8B8A8_UNORM` cube, 1² | 1 mip | written to every binding-5 slot without a cube view | `ImageStorage` default |
 
@@ -156,7 +156,7 @@ The Environment stage writes its two timestamps every frame, empty when idle (`R
 ## Pass graph placement
 
 - **`RenderStage::Environment`** is appended **after `BloomPass`** (before `Count`) so existing stage indices and benchmark JSON keys keep their values. Add `to_string` "Environment" and the benchmark name `environment` (`src/app/benchmark.cxx`). It is recorded by the new `Renderer::record_environment_pass(pass_context, frame)` directly after `record_overlay_prepares` and before `record_shadow_pass`, with `TracyVkZoneC(..., "Environment", tracy::Color::SkyBlue)`. The CPU side of `EnvironmentSystem::prepare` uses `ZoneScopedNC("EnvironmentPrepare", tracy::Color::SkyBlue)`, and the HDR decode job uses `ZoneScopedNC("DecodeEnvironment", tracy::Color::Goldenrod)`.
-- **Skybox** goes in `render_pass::forward_geometry`, after the mask draws and before blend (`render_passes.cxx` between `:1130` and `:1132`). Blended surfaces then composite over the sky, MSAA edges against the sky resolve correctly, and no extra resolve or load is needed. It is wrapped in a nested `TracyVkZoneC(..., "Skybox", tracy::Color::LightSkyBlue)`. Its time is part of `ForwardPass`. It lies inside the pipeline-statistics query, so Scene stats' fragment invocations include sky pixels (note this in the stats tooltip).
+- **Skybox** goes in `render_pass::forward_geometry`, after the mask draws and before blend (`render_passes.cxx` between `:1130` and `:1132`). Blended surfaces then composite over the sky, MSAA edges against the sky resolve correctly, and no extra resolve or load is needed. It has no GPU zone of its own, because `render_pass::Context` carries no Tracy GPU context. Its time is part of `ForwardPass`. It lies inside the pipeline-statistics query, so Scene stats' fragment invocations include sky pixels (note this in the stats tooltip).
 - Without a skybox (flat ambient, or `draw_skybox` off) the clear colour shows, exactly as today.
 
 ## Skybox
@@ -177,7 +177,7 @@ The Environment stage writes its two timestamps every frame, empty when idle (`R
 
 ## Shader changes
 
-**UBO** (`scene_types.slang` and its mirror in `renderer.hxx`). `ambient_intensity` stays as the flat fallback. A block is appended after `light_lod_fade_radius_pixels`, with scalar-layout offsets pinned by `static_assert`s (UBO 760 → **936** bytes):
+**UBO** (`scene_types.slang` and its mirror in `renderer.hxx`). `ambient_intensity` stays as the flat fallback. A block is appended after `light_lod_fade_radius_pixels`, with scalar-layout offsets pinned by `static_assert`s (UBO 760 → **952** bytes). In C++ the block is `EnvironmentUboBlock` (`environment.hxx`), nested in `UBO` as `environment` so `renderer.hxx` does not need the system's internals; both are scalar layout, so the flat fields in the shader land on the same offsets:
 
 | Offset | Field | Meaning |
 |---|---|---|
@@ -187,10 +187,11 @@ The Environment stage writes its two timestamps every frame, empty when idle (`R
 | 784 | `float4 environment_intensity` | diffuse, specular, sky intensity scale, debug LOD |
 | 800 | `uint radiance_cube_texture, prefilter_cube_texture, brdf_lut_texture, environment_sampler` | bindless indices (`linear_clamp`) |
 | 816 | `float4 sky_perez[4]` | Perez A-D for Y, x, y in rows 0-2; row 3 = (E_Y, E_x, E_y, 0) |
-| 880 | `float4 sky_zenith` | xyz = zenith (Yz, xz, yz); w = horizon blend |
-| 896 | `float4 sun_direction_cos_radius` | xyz toward the sun, w = cos(angular radius) |
-| 912 | `float4 sun_disc_radiance` | rgb |
-| 928 | `Ptr<GpuEnvironmentSh> environment_sh_address` | live SH slot (`uint64`, 8-aligned) |
+| 880 | `float4 sky_zenith` | xyz = zenith (Y, x, y) over F(0, theta_sun); Y carries the calibration, the user's sky intensity and the night fade |
+| 896 | `float4 sky_ground` | rgb ground albedo |
+| 912 | `float4 sun_direction_cos_radius` | xyz toward the sun, w = cos(angular radius) |
+| 928 | `float4 sun_disc_radiance` | rgb |
+| 944 | `Ptr<GpuEnvironmentSh> environment_sh` | live SH slot (`uint64`, 8-aligned) |
 
 Putting the SH pointer in the UBO keeps the shared `PC`, `ForwardPushConstants` and `ShadowPushConstants` unchanged.
 
@@ -277,8 +278,10 @@ struct SceneEnvironment {
     float exposure_ev = 0.0F;
     float diffuse_intensity = 1.0F, specular_intensity = 1.0F;   // "IBL intensity"
     float specular_occlusion = 1.0F;            // 0 disables
+    float sky_intensity = 1.0F;                 // procedural only: scales the sky's radiance
     bool draw_skybox = true, fog_sky = false, sun_drives_directional_light = true;
     bool multi_scatter = true;                  // IBL specular energy compensation
+    std::uint32_t hdr_cube_size = 512;          // equirect sources: 256, 512 or 1024
     SceneSun sun;
     SceneFog fog;                               // moved here from Renderer-only FogSettings
 };
@@ -290,7 +293,8 @@ struct SceneEnvironment {
 
 ```
 u8  source            u8 flags (draw_skybox | fog_sky<<1 | sun_drives_light<<2 | derive_sun_colour<<3 | multi_scatter<<4 | fog_enabled<<5 | fog_from_environment<<6)   u16 reserved
-f32 ambient_intensity, rotation_degrees, exposure_ev, diffuse_intensity, specular_intensity, specular_occlusion
+f32 ambient_intensity, rotation_degrees, exposure_ev, diffuse_intensity, specular_intensity, specular_occlusion, sky_intensity
+u32 hdr_cube_size
 u64 hdr_asset_id      string hdr_source
 f32 sun.azimuth_degrees, sun.elevation_degrees, sun.turbidity   vec3 sun.ground_albedo
 f32 sun.angular_radius_degrees   vec3 sun.colour   f32 sun.intensity
@@ -426,6 +430,34 @@ Questions settled before implementation:
 4. **KTX2 float sources**: in v1 (equirect or cubemap, uncompressed float formats only).
 5. **Multi-scatter energy compensation**: in v1, for IBL specular, behind `multi_scatter` (default on in new scenes).
 6. **Flat ambient** stays a scalar, which keeps old scenes identical.
+
+## As built
+
+What differs from the design above, and what is not done yet.
+
+**Differences**
+
+- **One face per dispatch.** Capture, downsample and prefilter each dispatch one face (the face index and that face's `storage_2d` slot are push constants), so no shader needs an array of slots. `env_sh_project` and `env_prefilter` read the radiance through the cube binding, and the SH reduction is a groupshared tree rather than wave sums, which keeps it independent of the wave size.
+- **BRDF LUT** is RGBA16F (see the resources table).
+- **Sky model** is Preetham, with the calibration constant `sky_calibration` computed so the default sun gives today's 0.15 ambient (checked by `test/sky_model_test.cxx`). The sun disc's radiance is clamped to 2000, so it blooms without flooding the frame.
+- **Fog** takes its colour from the blurriest prefilter mip (`fog_from_environment`), and the fog settings are saved in the environment section.
+- **The KTX2 path** accepts Zstd-supercompressed float files (libktx inflates them on load). `lathe-env-bake` (`tools/env_bake`) writes them from an equirect, and `assets/environments/belfast_sunset_puresky_512.ktx2` is its output.
+- **A cooked environment** (`ENVM`) reaches the renderer through `EnvironmentSystem::provide_hdr`, which `instantiate_scene` calls when a pack has the chunk, so loading a saved scene does not need the source file.
+- **No nested Skybox GPU zone** (see Pass graph placement).
+- **Debug views** `diffuse only`, `specular only` and `specular occlusion` replace the ambient term only; direct light still shows.
+
+**Verified**
+
+- CPU maths, codecs and serde by unit tests (`cube_map`, `spherical_harmonics`, `brdf_lut`, `sky_model`, `hdr_image`, `environment_scene`).
+- On a GPU (NVIDIA, debug build with validation layers, procedural sky and the vendored cubemap): no validation messages, and "Validate against CPU" reports the LUT within 5e-4 and the SH within 4e-6 relative of the CPU references.
+- `cargo xtask tidy` and `tools/check_shaders.py` pass.
+
+**Not done**
+
+- The roughness x metallic sphere-grid scene, the generated test HDRI and the reference-image comparison against glTF-Sample-Viewer or Filament (`tools/compare_images.py`).
+- A bit-identical comparison of an amortized build against "Rebuild now", and a RenderDoc review of face seams.
+- Hardware timings for the performance budget; the numbers there are targets, not measurements.
+- Per-environment BRDF multi-scatter for punctual and directional lights (a follow-up already listed below).
 
 ## Milestones
 
