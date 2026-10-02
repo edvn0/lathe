@@ -43,7 +43,7 @@ jobs:
     name: shaders / slangc -O3 + spirv-opt
 
     needs: shader-toolchain
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
 
     container:
       image: ${{ needs.shader-toolchain.outputs.image }}

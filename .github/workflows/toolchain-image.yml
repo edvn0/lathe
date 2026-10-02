@@ -32,7 +32,7 @@ on:
 jobs:
   publish:
     name: publish
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read
