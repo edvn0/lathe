@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Build caches for CI jobs on the self-hosted runner, kept in a Docker volume mounted at /ci-cache (see the
-# `container:` blocks in .github/workflows/). They persist on the runner instead of round-tripping through the
-# repository's 10 GB actions/cache quota.
+# Build cache locations for CI jobs: the directories under /ci-cache that .github/workflows/ restore and save with
+# actions/cache (GitHub-hosted runners keep nothing between jobs).
 #
 #   tools/ci_cache.sh env                     append the cache locations to $GITHUB_ENV
 #   tools/ci_cache.sh cargo-target-dir <rev>  print the tools/shader_reflect cargo target directory for <rev>
 #                                             (nothing if <rev> has no tools/shader_reflect)
 #
-# CPM's source cache, ccache and cargo all lock what they share, so concurrent jobs can use the same volume.
 set -euo pipefail
 
 readonly cache_root="${CI_CACHE_ROOT:-/ci-cache}"
