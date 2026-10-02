@@ -6,30 +6,53 @@ name: shaders
 #
 # Its own workflow so it runs on its own inputs: a shader, the script, its image, or a version it pins. It needs no
 # C++ build, and ci's filter ignores these files in turn (except the shaders themselves, which the build reflects).
+#
+# The workflow itself always triggers, and the `changes` job decides whether the jobs run. A `paths:` filter on the
+# trigger would leave the required "shaders / slangc -O3 + spirv-opt" check unreported ("Expected") on every PR that
+# touches none of these files, blocking the merge; a job skipped by `if:` reports as skipped, which satisfies it.
 on:
   push:
     branches:
       - main
-    paths: &paths
-      - "assets/shaders/**"
-      - "tools/check_shaders.py"
-      - "docker/shader-check/**"
-      # The versions the tools must match: SLANG_VERSION and SPIRV_TOOLS_TAG.
-      - "CMakeLists.txt"
-      - "Dockerfile"
-      - ".github/workflows/shaders.yml"
-      - ".github/workflows/toolchain-image.yml"
   pull_request:
-    paths: *paths
 
 permissions:
   contents: read
   packages: read
 
 jobs:
+  changes:
+    name: changed files
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      shaders: ${{ steps.filter.outputs.shaders }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Filter paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            shaders:
+              - "assets/shaders/**"
+              - "tools/check_shaders.py"
+              - "docker/shader-check/**"
+              # The versions the tools must match: SLANG_VERSION and SPIRV_TOOLS_TAG.
+              - "CMakeLists.txt"
+              - "Dockerfile"
+              - ".github/workflows/shaders.yml"
+              - ".github/workflows/toolchain-image.yml"
+
   # Just slangc, spirv-opt and spirv-val: no compiler toolchain, so a much smaller image than the build's.
   shader-toolchain:
     name: shader check image
+    needs: changes
+    if: needs.changes.outputs.shaders == 'true'
     uses: ./.github/workflows/toolchain-image.yml
     with:
       dockerfile: docker/shader-check/Dockerfile
@@ -42,7 +65,8 @@ jobs:
   shaders:
     name: shaders / slangc -O3 + spirv-opt
 
-    needs: shader-toolchain
+    needs: [changes, shader-toolchain]
+    if: needs.changes.outputs.shaders == 'true'
     runs-on: ubuntu-latest
 
     container:
