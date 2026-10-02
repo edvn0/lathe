@@ -53,7 +53,7 @@ ImageStorage::~ImageStorage() { destroy(); }
 
 ImageStorage::ImageStorage(ImageStorage &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), slots_(std::move(other.slots_)),
-    default_upload_buffer_(std::move(other.default_upload_buffer_)),
+    default_upload_buffer_(std::move(other.default_upload_buffer_)), black_cube_(std::move(other.black_cube_)),
     defaults_uploaded_(std::exchange(other.defaults_uploaded_, false)),
     pending_uploads_(std::move(other.pending_uploads_)), debug_name_(other.debug_name_) {}
 
@@ -69,6 +69,8 @@ auto ImageStorage::operator=(ImageStorage &&other) noexcept -> ImageStorage & {
     slots_ = std::move(other.slots_);
 
     default_upload_buffer_ = std::move(other.default_upload_buffer_);
+
+    black_cube_ = std::move(other.black_cube_);
 
     defaults_uploaded_ = std::exchange(other.defaults_uploaded_, false);
 
@@ -101,7 +103,42 @@ auto ImageStorage::create(VulkanContext &context, ImageStorageCreateInfo const &
         return std::unexpected(defaults.error());
     }
 
+    auto black_cube = storage.create_black_cube();
+
+    if (!black_cube) {
+        storage.destroy();
+
+        return std::unexpected(black_cube.error());
+    }
+
     return storage;
+}
+
+auto ImageStorage::create_black_cube() -> std::expected<void, ImageStorageError> {
+    auto image = Image::create(
+            *context_, ImageCreateInfo{
+                               .extent = VkExtent3D{.width = 1, .height = 1, .depth = 1},
+                               .format = VK_FORMAT_R8G8B8A8_UNORM,
+                               .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                               .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                               .image_type = VK_IMAGE_TYPE_2D,
+                               .view_type = VK_IMAGE_VIEW_TYPE_CUBE,
+                               .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_cube),
+                               .flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
+                               .samples = VK_SAMPLE_COUNT_1_BIT,
+                               .tiling = VK_IMAGE_TILING_OPTIMAL,
+                               .mip_levels = 1,
+                               .array_layers = 6,
+                               .debug_name = std::format("{}.default.black_cube", debug_name_),
+                       });
+
+    if (!image) {
+        return std::unexpected(make_image_error(image.error()));
+    }
+
+    black_cube_ = std::move(*image);
+
+    return {};
 }
 
 auto ImageStorage::create_default_images() -> std::expected<void, ImageStorageError> {
@@ -728,6 +765,59 @@ auto ImageStorage::destroy_image(ImageHandle handle) -> std::expected<void, Imag
     return {};
 }
 
+auto ImageStorage::record_black_cube_clear(VkCommandBuffer command_buffer) const noexcept -> void {
+    constexpr VkImageSubresourceRange range{
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 6,
+    };
+
+    VkImageMemoryBarrier2 to_clear{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = VK_ACCESS_2_NONE,
+            .dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = black_cube_.image(),
+            .subresourceRange = range,
+    };
+
+    VkDependencyInfo dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers = nullptr,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &to_clear,
+    };
+
+    vkCmdPipelineBarrier2(command_buffer, &dependency);
+
+    constexpr VkClearColorValue black{.float32 = {0.0F, 0.0F, 0.0F, 0.0F}};
+
+    vkCmdClearColorImage(command_buffer, black_cube_.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+
+    to_clear.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    to_clear.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_clear.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    to_clear.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_clear.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_clear.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    vkCmdPipelineBarrier2(command_buffer, &dependency);
+}
+
 auto ImageStorage::prepare_frame(VkCommandBuffer command_buffer) -> std::expected<void, ImageStorageError> {
     if (defaults_uploaded_) [[likely]] {
         return {};
@@ -854,6 +944,8 @@ auto ImageStorage::prepare_frame(VkCommandBuffer command_buffer) -> std::expecte
 
     vkCmdPipelineBarrier2(command_buffer, &to_sampled_info);
 
+    record_black_cube_clear(command_buffer);
+
     defaults_uploaded_ = true;
 
     return {};
@@ -873,6 +965,8 @@ auto ImageStorage::get(ImageHandle handle) const noexcept -> Image const * {
 
 auto ImageStorage::destroy() noexcept -> void {
     default_upload_buffer_.destroy();
+
+    black_cube_.destroy();
 
     for (auto &buffer: pending_uploads_) {
         buffer.destroy();

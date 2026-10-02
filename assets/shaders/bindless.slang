@@ -4,6 +4,7 @@ public static const uint sampled_2d_binding = 0;
 public static const uint sampler_binding = 1;
 public static const uint comparison_sampler_binding = 2;
 public static const uint sampled_2d_depth_binding = 3;
+public static const uint sampled_cube_binding = 5;
 
 public [[vk::binding(sampled_2d_binding, 0)]]
 Texture2D<float4> sampled_2d[];
@@ -16,3 +17,5 @@ SamplerComparisonState comparison_samplers[];
 
 public [[vk::binding(sampled_2d_depth_binding, 0)]]
 Texture2D<float> sampled_2d_depth[];
+public [[vk::binding(sampled_cube_binding, 0)]]
+TextureCube<float4> sampled_cube[];
