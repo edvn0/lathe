@@ -561,7 +561,7 @@ namespace {
 
             vkGetPhysicalDeviceFeatures2(physical_device, &features2);
 
-            if (vulkan12_features.bufferDeviceAddress != VK_TRUE || vulkan13_features.synchronization2 != VK_TRUE ||
+            if (features2.features.shaderInt64 != VK_TRUE || vulkan12_features.bufferDeviceAddress != VK_TRUE || vulkan13_features.synchronization2 != VK_TRUE ||
                 vulkan13_features.dynamicRendering != VK_TRUE) {
                 continue;
             }
@@ -786,6 +786,7 @@ namespace {
         enabled_features.wideLines = VK_TRUE;
         enabled_features.pipelineStatisticsQuery = VK_TRUE;
         enabled_features.shaderInt16 = VK_TRUE;
+        enabled_features.shaderInt64 = VK_TRUE;
         enabled_features.drawIndirectFirstInstance = VK_TRUE;
 
         VkDeviceCreateInfo const create_info{
