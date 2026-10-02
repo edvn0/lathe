@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <expected>
 #include <future>
+#include <memory>
+#include <unordered_map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -195,6 +197,12 @@ public:
         return debug_;
     }
 
+    // An already-decoded image for `source` (the path the scene names), e.g. from a cooked ENVM chunk. The next time
+    // `source` needs loading it is used instead of reading the file, then dropped.
+    auto provide_hdr(std::string source, HdrImage image) -> void {
+        provided_.insert_or_assign(std::move(source), std::make_shared<HdrImage const>(std::move(image)));
+    }
+
     // Throws away the live environment and builds again from scratch (also after a hot reload of an environment shader).
     auto rebuild() noexcept -> void { ++generation_; }
 
@@ -359,6 +367,7 @@ private:
     std::vector<Retired> retired_;
 
     // HDR.
+    std::unordered_map<std::string, std::shared_ptr<HdrImage const>> provided_;
     std::optional<DecodeJob> decode_;
     std::string decode_error_;
     std::string error_message_;

@@ -2,9 +2,18 @@
 
 #include <cstring>
 #include <limits>
+#ifndef TEST_ASSETS_DIR
+#error "TEST_ASSETS_DIR must be defined by the build"
+#endif
 
+#include <filesystem>
+
+#include "gpu/sampler_storage.hxx"
 #include "serialisation/asset_id.hxx"
+#include "serialisation/asset_pack.hxx"
 #include "serialisation/byte_stream.hxx"
+#include "serialisation/cooked_environment.hxx"
+#include "serialisation/lbf_container.hxx"
 #include "serialisation/scene_codec.hxx"
 #include "serialisation/scene_serialisation.hxx"
 
@@ -184,4 +193,107 @@ TEST_CASE("The scene fingerprint sees environment edits") {
     CHECK(scene_fingerprint(other_fog) != base);
 
     CHECK(scene_fingerprint(scene) == base);
+}
+
+TEST_CASE("Cooked environments round-trip and refuse hostile payloads") {
+    HdrImage equirect;
+    equirect.width = 8;
+    equirect.height = 4;
+    equirect.layers = 1;
+    equirect.pixels.resize(8U * 4U * 4U);
+
+    for (std::size_t index = 0; index < equirect.pixels.size(); ++index) {
+        equirect.pixels[index] = static_cast<std::uint16_t>((index * 2654435761U) >> 7U);
+    }
+
+    auto const payload = encode_cooked_environment(equirect);
+    auto const decoded = decode_cooked_environment(payload);
+
+    REQUIRE(decoded.has_value());
+    CHECK(decoded->width == 8);
+    CHECK(decoded->height == 4);
+    CHECK(decoded->layers == 1);
+    CHECK(decoded->pixels == equirect.pixels);
+
+    HdrImage cube;
+    cube.width = 4;
+    cube.height = 4;
+    cube.layers = 6;
+    cube.pixels.assign(4U * 4U * 6U * 4U, 0x3C00);
+
+    auto const cube_decoded = decode_cooked_environment(encode_cooked_environment(cube));
+    REQUIRE(cube_decoded.has_value());
+    CHECK(cube_decoded->layers == 6);
+    CHECK(cube_decoded->pixels == cube.pixels);
+
+    // Truncated and padded payloads.
+    auto truncated = payload;
+    truncated.pop_back();
+    CHECK_FALSE(decode_cooked_environment(truncated).has_value());
+
+    auto padded = payload;
+    padded.push_back(std::byte{0});
+    CHECK_FALSE(decode_cooked_environment(padded).has_value());
+
+    CHECK_FALSE(decode_cooked_environment({}).has_value());
+    CHECK_FALSE(decode_cooked_environment(payload, cooked_environment_version + 1).has_value());
+
+    auto const with_header = [&](std::uint32_t width, std::uint32_t height, std::uint32_t format, std::uint32_t layers) {
+        ByteWriter writer;
+        writer.write(width);
+        writer.write(height);
+        writer.write(format);
+        writer.write(layers);
+        return writer.take();
+    };
+
+    // Sizes that a payload this small could never hold: refused before anything is allocated.
+    CHECK_FALSE(decode_cooked_environment(with_header(16384, 8192, cooked_environment_format, 1)).has_value());
+    CHECK_FALSE(decode_cooked_environment(with_header(8, 4, 37, 1)).has_value());
+    CHECK_FALSE(decode_cooked_environment(with_header(8, 8, cooked_environment_format, 1)).has_value());
+    CHECK_FALSE(decode_cooked_environment(with_header(32768, 16384, cooked_environment_format, 1)).has_value());
+    CHECK_FALSE(decode_cooked_environment(with_header(3, 3, cooked_environment_format, 6)).has_value());
+    CHECK_FALSE(decode_cooked_environment(with_header(4096, 4096, cooked_environment_format, 6)).has_value());
+    CHECK_FALSE(decode_cooked_environment(with_header(4, 4, cooked_environment_format, 3)).has_value());
+}
+
+TEST_CASE("cook_assets cooks an environment into a pack that loads back, and copies it on the next save") {
+    auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/environments/belfast_sunset_puresky_512.ktx2";
+
+    SamplerStorage sampler_storage;
+    LbfWriter writer{LbfFileKind::asset_pack};
+
+    auto const report = cook_assets(AssetCookRequest{.environments = {source}}, sampler_storage, writer);
+
+    CHECK(report.failures.empty());
+    CHECK(report.environments_cooked == 1);
+
+    auto reader = LbfReader::from_memory(*writer.finish());
+    REQUIRE(reader.has_value());
+
+    auto const pack = AssetPack::from_reader(std::move(*reader));
+    auto const id = asset_id_from_key(environment_asset_key(source));
+
+    REQUIRE(pack->has_environment(id));
+
+    auto const loaded = pack->load_environment(id);
+    auto const reference = load_hdr_image(source.string());
+
+    REQUIRE(loaded.has_value());
+    REQUIRE(reference.has_value());
+    CHECK(loaded->layers == 6);
+    CHECK(loaded->width == 512);
+    CHECK(loaded->pixels == reference->pixels);
+
+    LbfWriter second{LbfFileKind::asset_pack};
+    auto const copied =
+            cook_assets(AssetCookRequest{.environments = {source}}, sampler_storage, second, AssetCookOptions{.source_packs = {pack}});
+
+    CHECK(copied.environments_copied == 1);
+    CHECK(copied.environments_cooked == 0);
+
+    // A missing file is a reported failure, not a crash, and the scene keeps its source path.
+    LbfWriter missing{LbfFileKind::asset_pack};
+    auto const failed = cook_assets(AssetCookRequest{.environments = {"no/such/environment.hdr"}}, sampler_storage, missing);
+    CHECK(failed.failures.size() == 1);
 }

@@ -558,13 +558,23 @@ auto EnvironmentSystem::prepare(VkCommandBuffer command_buffer, std::uint64_t fr
                                     (radiance_is_cube_source_ || radiance_.size == std::clamp(std::bit_ceil(desired_.hdr_cube_size), 256U, 1024U));
 
         if (!wanted.empty() && !loaded_matches && (!decode_ || decode_->path != wanted) && decode_error_ != wanted) {
-            decode_ = DecodeJob{
-                    .path = wanted,
-                    .future = thread_pool().submit_task([wanted] {
-                        ZoneScopedNC("DecodeEnvironment", tracy::Color::Goldenrod);
-                        return load_hdr_image(wanted);
-                    }),
-            };
+            if (auto const provided = provided_.find(wanted); provided != provided_.end()) {
+                // Already decoded (a cooked chunk): skip the file, and don't keep a second copy around.
+                std::promise<std::expected<HdrImage, HdrImageError>> ready;
+                ready.set_value(*provided->second);
+
+                decode_ = DecodeJob{.path = wanted, .future = ready.get_future()};
+                provided_.erase(provided);
+            } else {
+                decode_ = DecodeJob{
+                        .path = wanted,
+                        .future = thread_pool().submit_task([wanted] {
+                            ZoneScopedNC("DecodeEnvironment", tracy::Color::Goldenrod);
+                            return load_hdr_image(wanted);
+                        }),
+                };
+            }
+
             decode_error_.clear();
         }
 
