@@ -41,7 +41,7 @@ jobs:
     name: ${{ matrix.target }} / ${{ matrix.build_type }}
 
     needs: toolchain
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
 
     # Every step runs inside the toolchain image, pulled once per job.
     container:
@@ -163,7 +163,7 @@ jobs:
     name: linux-native / Debug / ASan+UBSan / -Werror
 
     needs: toolchain
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
 
     container:
       image: ${{ needs.toolchain.outputs.image }}
