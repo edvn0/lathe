@@ -9,3 +9,15 @@
 `scattering_skull.glb` is ~189K triangles (~98K vertices) in a single primitive, used as a dense mesh for the
 meshlet debug colours (`MaterialCreateInfo::debug_meshlet_colours`). The engine ignores its subsurface/volume
 material extensions and renders it as a plain PBR material with its baked occlusion.
+
+## Downloaded at runtime
+
+These are not in the repository. The game fetches them on first run into `assets/models/` (gitignored), straight from
+the upstream repository, pinned to a commit and verified against a SHA-256 before it is kept.
+
+| File | Source | License |
+| --- | --- | --- |
+| `damaged_helmet.glb` | [DamagedHelmet](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/5bad5aaa0bbb5d0f9cdc934e626f27d0df1e79b8/Models/DamagedHelmet) from the Khronos glTF Sample Assets. Converted to glTF by ctxwing; earlier version by theblueturtle\_. | Conversion: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Original model: [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) |
+
+The helmet is for **non-commercial use only** (the CC BY-NC term follows the file, not the engine's MIT code). Credit
+both authors if you show it. To change the pinned commit or hash, edit `game/src/basic_game.cxx`.
