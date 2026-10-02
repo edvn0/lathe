@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <bit>
+#include <limits>
 
 namespace frame_graph {
     namespace {
+
+        constexpr auto no_resource = std::numeric_limits<std::uint32_t>::max();
 
         struct Tracked {
             VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -48,8 +51,7 @@ namespace frame_graph {
             for (auto const &pass: graph.passes) {
                 auto const compute_affinity = pass.affinity != QueueAffinity::graphics;
                 if (pass.type == PassType::raster && compute_affinity) {
-                    return fail(FrameGraphErrorType::raster_pass_with_compute_affinity, pass, graph,
-                                graph.resources.size());
+                    return fail(FrameGraphErrorType::raster_pass_with_compute_affinity, pass, graph, no_resource);
                 }
                 for (auto const &access: pass.accesses) {
                     if (is_attachment_use(access.use) && pass.type != PassType::raster) {
