@@ -208,7 +208,7 @@ auto PipelineGraphRepository::build_node(PipelineNode const &node) -> std::expec
         stage_infos.push_back(ShaderStageInfo{
                 .stage = to_vk_stage(stage.request.stage),
                 .spirv = stage.spirv,
-                .entry_point = FlyString{stage.entry_point},
+                .entry_point = stage.entry_point,
                 .flags = 0,
                 .specialization_info = nullptr,
                 .cache_key = to_stage_key(stage.request),
@@ -678,7 +678,7 @@ auto PipelineGraphRepository::build_shader_object_node(PipelineNode const &node)
         stage_infos.push_back(ShaderStageInfo{
                 .stage = to_vk_stage(stage.request.stage),
                 .spirv = stage.spirv,
-                .entry_point = FlyString{stage.entry_point},
+                .entry_point = stage.entry_point,
                 .cache_key = to_stage_key(stage.request),
         });
     }

@@ -309,15 +309,16 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     auto &streamer = renderer.texture_streamer();
 
     // Handles render their fallback until the compressed texture streams in.
-    auto const dirt_normal_index = streamer.request(images, "assets/textures/dirt/dirt_nor_gl_1k_zip.exr",
-                                                    TextureRole::normal_map, images.flat_normal(), "dirt.normal");
+    auto const dirt_normal_index =
+            streamer.request(images, "assets/textures/dirt/dirt_nor_gl_1k_zip.exr", TextureRole::normal_map,
+                             images.flat_normal(), FlyString{"dirt.normal"});
 
     auto const dirt_albedo_index = streamer.request(images, "assets/textures/dirt/dirt_diff_1k.jpg",
-                                                    TextureRole::colour, images.white(), "dirt.albedo");
+                                                    TextureRole::colour, images.white(), FlyString{"dirt.albedo"});
 
     auto const dirt_roughness_index =
             streamer.request(images, "assets/textures/dirt/dirt_rough_1k.exr", TextureRole::generic,
-                             images.metallic_roughness(), "dirt.roughness");
+                             images.metallic_roughness(), FlyString{"dirt.roughness"});
 
     // The terrain keeps the material it was created with, so it's made once.
     if (!terrain_material_.valid()) {

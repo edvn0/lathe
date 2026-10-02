@@ -1,5 +1,6 @@
 #include "serialisation/cooked_texture.hxx"
 
+#include <algorithm>
 #include <utility>
 
 #include "gpu/compressed_texture.hxx"
@@ -12,7 +13,7 @@ auto encode_cooked_texture(CompressedTexture const &texture, TextureRole role) -
     writer.write(texture.width);
     writer.write(texture.height);
     writer.write(std::to_underlying(role));
-    writer.write_string(texture.debug_name);
+    writer.write_string(texture.debug_name.view());
 
     writer.write(static_cast<std::uint32_t>(texture.mips.size()));
 
@@ -30,6 +31,10 @@ auto encode_cooked_texture(CompressedTexture const &texture, TextureRole role) -
 
     return writer.take();
 }
+
+namespace {
+    inline constexpr std::size_t max_debug_name_length = 256;
+} // namespace
 
 auto decode_cooked_texture(std::span<std::byte const> payload, std::uint16_t version)
         -> std::expected<CookedTexture, LbfError> {
@@ -60,7 +65,11 @@ auto decode_cooked_texture(std::span<std::byte const> payload, std::uint16_t ver
     }
 
     cooked.role = static_cast<TextureRole>(role);
-    reader.read_string(texture.debug_name);
+
+    // Interned for the life of the process, so a name from a file is capped: real ones are file names.
+    auto debug_name = reader.read_string();
+    debug_name.resize(std::min(debug_name.size(), max_debug_name_length));
+    texture.debug_name = FlyString{debug_name};
 
     auto const mip_count = reader.read<std::uint32_t>();
 

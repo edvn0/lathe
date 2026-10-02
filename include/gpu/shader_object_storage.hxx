@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/error_context.hxx"
+#include "core/fly_string.hxx"
 #include "core/forward.hxx"
 #include "core/object_pool.hxx"
 #include "gpu/shader_binary_cache.hxx"
@@ -131,5 +132,5 @@ private:
     std::mutex slot_mutex_;
 
     VkDescriptorSetLayout global_descriptor_set_layout_ = VK_NULL_HANDLE;
-    std::string debug_name_;
+    FlyString debug_name_;
 };

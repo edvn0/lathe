@@ -146,7 +146,7 @@ namespace {
                 .mips = {{.width = 8, .height = 4, .byte_offset = 0, .byte_length = 32},
                          {.width = 4, .height = 2, .byte_offset = 32, .byte_length = 16}},
                 .data = repetitive_payload(48),
-                .debug_name = "valid",
+                .debug_name = FlyString{"valid"},
         };
     }
 
@@ -328,7 +328,7 @@ TEST_SUITE("unit") {
                 .mips = {{.width = 8, .height = 4, .byte_offset = 0, .byte_length = 32},
                          {.width = 4, .height = 2, .byte_offset = 32, .byte_length = 16}},
                 .data = repetitive_payload(48),
-                .debug_name = "bricks",
+                .debug_name = FlyString{"bricks"},
         };
 
         auto const payload = encode_cooked_texture(texture, TextureRole::colour);
@@ -351,12 +351,13 @@ TEST_SUITE("unit") {
         auto cpu_data = finalized_cube();
         cpu_data.materials.push_back(ModelCpuMaterial{.base_colour_factor = glm::vec4{0.5F}, .base_colour_image = 0});
         cpu_data.image_sources.push_back(
-                ModelCpuImageSource{.slot = ModelTextureSlot::base_colour, .debug_name = "albedo"});
+                ModelCpuImageSource{.slot = ModelTextureSlot::base_colour, .debug_name = FlyString{"albedo"}});
         cpu_data.meshes[0].primitives[0].material_index = 0;
         cpu_data.lights.push_back(ModelCpuLight{.type = ModelLightType::spot, .intensity = 3.0F});
 
-        std::array const images{CookedImageRef{
-                .texture = AssetId{.value = 77}, .slot = ModelTextureSlot::base_colour, .debug_name = "albedo"}};
+        std::array const images{CookedImageRef{.texture = AssetId{.value = 77},
+                                               .slot = ModelTextureSlot::base_colour,
+                                               .debug_name = FlyString{"albedo"}}};
         std::array const samplers{DefaultSampler::nearest_clamp};
 
         auto payload = encode_cooked_model(cpu_data, images, samplers);

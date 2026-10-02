@@ -184,7 +184,7 @@ private:
     struct ShaderStageNode {
         renderer::ShaderCompileRequest request;
         std::vector<std::uint32_t> spirv;
-        std::string entry_point;
+        FlyString entry_point;
         std::vector<std::uint32_t> source_file_indices;
         std::vector<std::uint32_t> dependent_pipelines;
 

@@ -25,7 +25,7 @@ ShaderObjectStorage::~ShaderObjectStorage() { destroy(); }
 ShaderObjectStorage::ShaderObjectStorage(ShaderObjectStorage &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), slots_(std::move(other.slots_)),
     global_descriptor_set_layout_(std::exchange(other.global_descriptor_set_layout_, nullptr)),
-    debug_name_(std::move(other.debug_name_)) {}
+    debug_name_(other.debug_name_) {}
 
 auto ShaderObjectStorage::operator=(ShaderObjectStorage &&other) noexcept -> ShaderObjectStorage & {
     if (this == &other) {
@@ -40,7 +40,7 @@ auto ShaderObjectStorage::operator=(ShaderObjectStorage &&other) noexcept -> Sha
 
     global_descriptor_set_layout_ = std::exchange(other.global_descriptor_set_layout_, nullptr);
 
-    debug_name_ = std::move(other.debug_name_);
+    debug_name_ = other.debug_name_;
 
     return *this;
 }
@@ -56,7 +56,7 @@ auto ShaderObjectStorage::create(VulkanContext &context, ShaderObjectStorageCrea
 
     storage.context_ = &context;
 
-    storage.debug_name_ = std::string{create_info.debug_name};
+    storage.debug_name_ = FlyString{create_info.debug_name};
 
     storage.slots_ = ObjectPool<ShaderObjectSet>::create(create_info.capacity);
     storage.global_descriptor_set_layout_ = create_info.global_descriptor_set_layout;
@@ -180,5 +180,5 @@ auto ShaderObjectStorage::destroy() noexcept -> void {
 
     context_ = nullptr;
 
-    debug_name_.clear();
+    debug_name_ = FlyString{};
 }

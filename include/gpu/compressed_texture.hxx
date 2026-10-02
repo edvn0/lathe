@@ -10,6 +10,8 @@
 #include <string_view>
 #include <vector>
 
+#include "core/fly_string.hxx"
+
 // How source pixels are interpreted; decides the encode parameters and the final block format.
 enum class TextureRole : std::uint8_t {
     colour, // sRGB albedo/emissive -> BC7 sRGB.
@@ -32,7 +34,7 @@ struct CompressedTexture {
     std::uint32_t height = 0;
     std::vector<CompressedMipLevel> mips;
     std::vector<std::byte> data; // all mips concatenated; see CompressedMipLevel
-    std::string debug_name;
+    FlyString debug_name;
 };
 
 // Bytes per 4x4 block for the formats a cooked or cached texture may use (BC1-BC7); 0 for anything else. The format

@@ -12,6 +12,7 @@
 
 #include "core/error_context.hxx"
 
+#include "core/fly_string.hxx"
 #include "core/forward.hxx"
 #include "core/holder.hxx"
 #include "core/object_pool.hxx"
@@ -253,7 +254,7 @@ private:
 
     std::vector<Buffer> pending_uploads_;
 
-    std::string debug_name_;
+    FlyString debug_name_;
 };
 
 // Owns an ImageStorage slot; dropping it runs destroy_image(), which also covers register_view() aliases. Drop it only

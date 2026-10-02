@@ -5,8 +5,10 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <format>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -194,5 +196,46 @@ TEST_SUITE("smoke") {
                 CHECK(first.c_str() == other.c_str());
             }
         }
+    }
+
+    TEST_CASE("FlyString: compares with a string_view without interning it") {
+        auto const value = FlyString{"albedo"};
+
+        CHECK(value == std::string_view{"albedo"});
+        CHECK_FALSE(value == std::string_view{"normal"});
+        CHECK(FlyString{} == std::string_view{});
+    }
+
+    TEST_CASE("FlyString: hashes by identity, so equal strings are one key") {
+        std::unordered_map<FlyString, int> counts;
+
+        for (auto const *name: {"main_vs", "main_fs", "main_vs"}) {
+            ++counts[FlyString{std::string_view{name}}];
+        }
+
+        CHECK(counts.size() == 2);
+        CHECK(counts[FlyString{"main_vs"}] == 2);
+        CHECK(std::hash<FlyString>{}(FlyString{"x"}) == std::hash<FlyString>{}(FlyString{std::string{"x"}}));
+    }
+
+    TEST_CASE("FlyString: formats as its characters") {
+        CHECK(std::format("[{}]", FlyString{"image_storage"}) == "[image_storage]");
+        CHECK(std::format("[{}]", FlyString{}) == "[]");
+        CHECK(std::format("{:>6}", FlyString{"ab"}) == "    ab");
+    }
+
+    TEST_CASE("FlyString: pool stats count each distinct string once") {
+        auto const before = FlyString::pool_stats();
+
+        // Unique to this test, so earlier tests can't have interned them.
+        static_cast<void>(FlyString{"pool_stats_probe_alpha"});
+        static_cast<void>(FlyString{"pool_stats_probe_alpha"});
+        static_cast<void>(FlyString{"pool_stats_probe_beta"});
+
+        auto const after = FlyString::pool_stats();
+
+        CHECK(after.strings == before.strings + 2);
+        CHECK(after.characters == before.characters + std::string_view{"pool_stats_probe_alpha"}.size() +
+                                          std::string_view{"pool_stats_probe_beta"}.size());
     }
 }

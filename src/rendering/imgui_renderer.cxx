@@ -142,12 +142,12 @@ namespace gui {
                             {
                                     renderer::ShaderCompileRequest{
                                             .source_path = "assets/shaders/gui.slang",
-                                            .entry_point = "main_vs",
+                                            .entry_point = FlyString{"main_vs"},
                                             .stage = renderer::ShaderStage::vertex,
                                     },
                                     renderer::ShaderCompileRequest{
                                             .source_path = "assets/shaders/gui.slang",
-                                            .entry_point = "main_fs",
+                                            .entry_point = FlyString{"main_fs"},
                                             .stage = renderer::ShaderStage::fragment,
                                     },
                             },

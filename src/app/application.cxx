@@ -708,7 +708,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         draw_file_backed_section(
                 "Models", "assets/models", model_extensions, assets.models(),
                 [&](std::filesystem::path const &path, std::string const &name) {
-                    static_cast<void>(renderer->model_streamer().request(*renderer, path, engine_models.cube, name));
+                    static_cast<void>(
+                            renderer->model_streamer().request(*renderer, path, engine_models.cube, FlyString{name}));
                 },
                 draw_bullet_entry);
 
@@ -2373,8 +2374,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 auto &registry = active_scene()->get_registry();
                 if (registry.valid(model_browse_entity) && registry.all_of<Components::Model>(model_browse_entity)) {
                     // request() returns a reference for us, which set_entity_model() hands to the entity.
-                    auto const model = renderer->model_streamer().request(*renderer, *picked, engine_models.cube,
-                                                                          gui::path_to_utf8(picked->filename()));
+                    auto const model = renderer->model_streamer().request(
+                            *renderer, *picked, engine_models.cube, FlyString{gui::path_to_utf8(picked->filename())});
                     set_entity_model(registry, model_browse_entity, model);
                 }
                 break;
@@ -2389,7 +2390,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
 auto Application::spawn_streamed_model(std::filesystem::path const &path) -> void {
     auto file_name = gui::path_to_utf8(path.filename());
-    auto const model = renderer->model_streamer().request(*renderer, path, engine_models.cube, file_name);
+    auto const model = renderer->model_streamer().request(*renderer, path, engine_models.cube, FlyString{file_name});
 
     auto entity = Entity{active_scene(), gui::path_to_utf8(path.stem())};
     entity.emplace<Components::Transform>();

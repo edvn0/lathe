@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "core/error_context.hxx"
+#include "core/fly_string.hxx"
 #include "core/forward.hxx"
 #include "core/object_pool.hxx"
 #include "gpu/sampler.hxx"
@@ -181,5 +182,5 @@ private:
 
     ObjectPool<SamplerSlotData> slots_;
 
-    std::string debug_name_;
+    FlyString debug_name_;
 };
