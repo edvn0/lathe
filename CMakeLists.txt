@@ -485,6 +485,9 @@ set(KTX_FEATURE_JNI OFF CACHE BOOL "" FORCE)
 set(KTX_FEATURE_PY OFF CACHE BOOL "" FORCE)
 set(KTX_FEATURE_GL_UPLOAD OFF CACHE BOOL "" FORCE)
 set(KTX_FEATURE_VK_UPLOAD OFF CACHE BOOL "" FORCE)
+# etcdec.cxx is under an Ericsson license that is not open source (OpenGL/GLES/WebGL products only). Nothing here needs
+# software ETC decoding: Basis textures are transcoded to BC7/BC5.
+set(KTX_FEATURE_ETC_UNPACK OFF CACHE BOOL "" FORCE)
 
 # Skip the LFS test images and the CTS submodule; nothing we build reads them.
 set(ENV{GIT_LFS_SKIP_SMUDGE} "1")
