@@ -35,9 +35,6 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      volumes:
-        - lathe-ci-cache:/ci-cache
-        - lathe-cargo-registry:/opt/cargo/registry
 
     defaults:
       run:
@@ -46,11 +43,34 @@ jobs:
     env:
       CCACHE_NOHASHDIR: "true"
       CCACHE_COMPILERCHECK: content
-      CCACHE_MAXSIZE: 5G
+      CCACHE_MAXSIZE: 1G
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      # GitHub-hosted runners are fresh VMs, so nothing persists between jobs: the caches round-trip through
+      # actions/cache. PRs restore what main saved (a PR can read its base branch's caches); only main saves.
+      # ccache is per configuration; CPM sources and cargo outputs are shared by every job.
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            /ci-cache/ccache
+            /ci-cache/clang-tidy
+          key: ccache-v3-tidy-${{ github.sha }}
+          restore-keys: |
+            ccache-v3-tidy-
+
+      - name: Restore dependency caches
+        id: deps
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            /ci-cache/cpm
+            /ci-cache/cargo-target
+            /opt/cargo/registry
+          key: deps-v3-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'tools/shader_reflect/**') }}
 
       - name: Set up environment
         run: |
@@ -83,3 +103,22 @@ jobs:
 
       - name: clang-tidy
         run: tools/run_clang_tidy.sh build/linux-native-debug
+
+      - name: Save ccache
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            /ci-cache/ccache
+            /ci-cache/clang-tidy
+          key: ccache-v3-tidy-${{ github.sha }}
+
+      - name: Save dependency caches
+        if: always() && github.ref == 'refs/heads/main' && steps.deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            /ci-cache/cpm
+            /ci-cache/cargo-target
+            /opt/cargo/registry
+          key: deps-v3-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'tools/shader_reflect/**') }}
