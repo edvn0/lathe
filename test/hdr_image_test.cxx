@@ -198,3 +198,28 @@ TEST_CASE("decode_ktx2_float refuses bad shapes and formats") {
     CHECK_FALSE(decode_ktx2_float({}).has_value());
 
 }
+
+TEST_CASE("the vendored Belfast Sunset cubemap loads through load_hdr_image") {
+    auto const image = load_hdr_image(TEST_ASSETS_DIR "/assets/environments/belfast_sunset_puresky_512.ktx2");
+
+    REQUIRE(image.has_value());
+    CHECK(image->width == 512);
+    CHECK(image->height == 512);
+    CHECK(image->layers == 6);
+    REQUIRE(image->pixels.size() == 512U * 512U * 6U * 4U);
+
+    double sum = 0.0;
+    for (std::size_t texel = 0; texel < image->pixels.size(); texel += 4) {
+        auto const luminance = glm::unpackHalf1x16(image->pixels[texel + 1]);
+
+        REQUIRE(luminance >= 0.0F);
+        REQUIRE(luminance <= 65000.0F);
+
+        sum += luminance;
+    }
+
+    // A sunset sky is neither black nor blown out on average.
+    auto const mean = sum / (512.0 * 512.0 * 6.0);
+    CHECK(mean > 0.05);
+    CHECK(mean < 50.0);
+}

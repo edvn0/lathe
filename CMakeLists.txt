@@ -879,6 +879,25 @@ target_link_libraries(
         engine_options
 )
 
+# Bakes an equirect HDR panorama into a KTX2 cubemap environment (see tools/env_bake/main.cxx).
+add_executable(
+    lathe-env-bake
+    tools/env_bake/main.cxx
+)
+
+target_link_libraries(
+    lathe-env-bake
+    PRIVATE
+        lathe::core
+        engine_options
+)
+
+target_include_directories(
+    lathe-env-bake
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
 target_include_directories(
     lathe
     PRIVATE
