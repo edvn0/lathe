@@ -1,8 +1,14 @@
 #include "gpu/image.hxx"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
 #include <expected>
+#include <filesystem>
 #include <format>
+#include <fstream>
+#include <optional>
 #include <source_location>
 #include <string>
 #include <string_view>
@@ -923,6 +929,271 @@ auto DecodedImage::decode_stbi(std::string_view path, ImageColourSpace colour_sp
     };
 }
 
+
+namespace {
+    // Block decoders for the legacy DDS fourCCs (DXT1/DXT5/ATI2), base mip only. The texture pipeline re-encodes and
+    // mips the result, so only the pixels matter here.
+
+    auto expand_565(std::uint16_t packed) noexcept -> std::array<std::uint8_t, 3> {
+        auto const r = static_cast<std::uint32_t>((packed >> 11) & 0x1FU);
+        auto const g = static_cast<std::uint32_t>((packed >> 5) & 0x3FU);
+        auto const b = static_cast<std::uint32_t>(packed & 0x1FU);
+
+        return {static_cast<std::uint8_t>((r << 3) | (r >> 2)), static_cast<std::uint8_t>((g << 2) | (g >> 4)),
+                static_cast<std::uint8_t>((b << 3) | (b >> 2))};
+    }
+
+    template<typename T>
+    auto read_le(std::byte const *source) noexcept -> T {
+        T value{};
+        std::memcpy(&value, source, sizeof(T));
+        return value;
+    }
+
+    // Writes one 4x4 colour block (BC1 layout) as RGBA8 into `out`; `allow_alpha` enables BC1's 1-bit punch-through.
+    auto decode_bc1_colour(std::byte const *block, bool allow_alpha, std::array<std::uint8_t, 64> &out) noexcept -> void {
+        auto const c0 = read_le<std::uint16_t>(block);
+        auto const c1 = read_le<std::uint16_t>(block + 2);
+        auto const indices = read_le<std::uint32_t>(block + 4);
+
+        std::array<std::array<std::uint8_t, 4>, 4> palette{};
+        auto const e0 = expand_565(c0);
+        auto const e1 = expand_565(c1);
+
+        for (std::size_t i = 0; i < 3; ++i) {
+            palette[0][i] = e0[i];
+            palette[1][i] = e1[i];
+
+            if (c0 > c1 || !allow_alpha) {
+                palette[2][i] = static_cast<std::uint8_t>((2U * e0[i] + e1[i]) / 3U);
+                palette[3][i] = static_cast<std::uint8_t>((e0[i] + 2U * e1[i]) / 3U);
+            } else {
+                palette[2][i] = static_cast<std::uint8_t>((e0[i] + e1[i]) / 2U);
+                palette[3][i] = 0;
+            }
+        }
+
+        palette[0][3] = palette[1][3] = palette[2][3] = 255;
+        palette[3][3] = (c0 > c1 || !allow_alpha) ? 255 : 0;
+
+        for (std::size_t texel = 0; texel < 16; ++texel) {
+            auto const &colour = palette[(indices >> (2U * texel)) & 0x3U];
+            std::ranges::copy(colour, out.begin() + static_cast<std::ptrdiff_t>(texel * 4));
+        }
+    }
+
+    // BC4-style single-channel block: 8 bytes -> 16 values.
+    auto decode_bc4_block(std::byte const *block, std::array<std::uint8_t, 16> &out) noexcept -> void {
+        auto const a0 = static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(block[0]));
+        auto const a1 = static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(block[1]));
+
+        std::array<std::uint8_t, 8> palette{};
+        palette[0] = static_cast<std::uint8_t>(a0);
+        palette[1] = static_cast<std::uint8_t>(a1);
+
+        if (a0 > a1) {
+            for (std::uint32_t i = 1; i <= 6; ++i) {
+                palette[i + 1] = static_cast<std::uint8_t>(((7U - i) * a0 + i * a1) / 7U);
+            }
+        } else {
+            for (std::uint32_t i = 1; i <= 4; ++i) {
+                palette[i + 1] = static_cast<std::uint8_t>(((5U - i) * a0 + i * a1) / 5U);
+            }
+            palette[6] = 0;
+            palette[7] = 255;
+        }
+
+        std::uint64_t bits = 0;
+        for (std::size_t i = 0; i < 6; ++i) {
+            bits |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(block[2 + i])) << (8U * i);
+        }
+
+        for (std::size_t texel = 0; texel < 16; ++texel) {
+            out[texel] = palette[(bits >> (3U * texel)) & 0x7U];
+        }
+    }
+
+    constexpr std::uint32_t dds_magic = 0x20534444U;
+    constexpr std::uint32_t dds_header_size = 124;
+
+    constexpr auto make_fourcc(char a, char b, char c, char d) noexcept -> std::uint32_t {
+        return static_cast<std::uint32_t>(static_cast<unsigned char>(a)) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(b)) << 8U) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(c)) << 16U) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(d)) << 24U);
+    }
+
+    auto read_whole_file(std::string_view path) -> std::optional<std::vector<std::byte>> {
+        std::ifstream file{std::filesystem::path{path}, std::ios::binary | std::ios::ate};
+
+        if (!file) {
+            return std::nullopt;
+        }
+
+        auto const size = file.tellg();
+
+        if (size <= 0) {
+            return std::nullopt;
+        }
+
+        std::vector<std::byte> bytes(static_cast<std::size_t>(size));
+        file.seekg(0);
+        file.read(reinterpret_cast<char *>(bytes.data()), size);
+
+        if (!file) {
+            return std::nullopt;
+        }
+
+        return bytes;
+    }
+} // namespace
+
+auto DecodedImage::decode_dds(std::string_view path, ImageColourSpace colour_space) -> std::optional<DecodedImage> {
+    auto const bytes = read_whole_file(path);
+
+    if (!bytes || bytes->size() < 4 + dds_header_size || read_le<std::uint32_t>(bytes->data()) != dds_magic ||
+        read_le<std::uint32_t>(bytes->data() + 4) != dds_header_size) {
+        error("Could not decode DDS '{}': not a DDS file", path);
+        return std::nullopt;
+    }
+
+    auto const *header = bytes->data() + 4;
+    auto const height = read_le<std::uint32_t>(header + 8);
+    auto const width = read_le<std::uint32_t>(header + 12);
+    auto const fourcc = read_le<std::uint32_t>(header + 80);
+
+    auto const is_bc1 = fourcc == make_fourcc('D', 'X', 'T', '1');
+    auto const is_bc3 = fourcc == make_fourcc('D', 'X', 'T', '5');
+    auto const is_bc5 = fourcc == make_fourcc('A', 'T', 'I', '2');
+    auto const is_bc4 = fourcc == make_fourcc('A', 'T', 'I', '1');
+
+    if (!is_bc1 && !is_bc3 && !is_bc5 && !is_bc4) {
+        error("Could not decode DDS '{}': unsupported fourCC 0x{:08X}", path, fourcc);
+        return std::nullopt;
+    }
+
+    if (width == 0 || height == 0 || width > 16384 || height > 16384) {
+        error("Could not decode DDS '{}': invalid size {}x{}", path, width, height);
+        return std::nullopt;
+    }
+
+    auto const block_bytes = (is_bc1 || is_bc4) ? std::size_t{8} : std::size_t{16};
+    auto const blocks_x = (static_cast<std::size_t>(width) + 3U) / 4U;
+    auto const blocks_y = (static_cast<std::size_t>(height) + 3U) / 4U;
+    auto const data_offset = 4U + dds_header_size;
+
+    if (bytes->size() < data_offset + (blocks_x * blocks_y * block_bytes)) {
+        error("Could not decode DDS '{}': truncated", path);
+        return std::nullopt;
+    }
+
+    std::vector<std::byte> pixels(static_cast<std::size_t>(width) * height * 4U);
+    auto *out_pixels = reinterpret_cast<std::uint8_t *>(pixels.data());
+
+    for (std::size_t block_y = 0; block_y < blocks_y; ++block_y) {
+        for (std::size_t block_x = 0; block_x < blocks_x; ++block_x) {
+            auto const *block = bytes->data() + data_offset + ((block_y * blocks_x) + block_x) * block_bytes;
+            std::array<std::uint8_t, 64> rgba{};
+
+            if (is_bc1) {
+                decode_bc1_colour(block, true, rgba);
+            } else if (is_bc3) {
+                std::array<std::uint8_t, 16> alpha{};
+                decode_bc4_block(block, alpha);
+                decode_bc1_colour(block + 8, false, rgba);
+
+                for (std::size_t texel = 0; texel < 16; ++texel) {
+                    rgba[(texel * 4) + 3] = alpha[texel];
+                }
+            } else if (is_bc4) {
+                std::array<std::uint8_t, 16> red{};
+                decode_bc4_block(block, red);
+
+                for (std::size_t texel = 0; texel < 16; ++texel) {
+                    rgba[(texel * 4) + 0] = rgba[(texel * 4) + 1] = rgba[(texel * 4) + 2] = red[texel];
+                    rgba[(texel * 4) + 3] = 255;
+                }
+            } else {
+                std::array<std::uint8_t, 16> red{};
+                std::array<std::uint8_t, 16> green{};
+                decode_bc4_block(block, red);
+                decode_bc4_block(block + 8, green);
+
+                for (std::size_t texel = 0; texel < 16; ++texel) {
+                    auto const x = (static_cast<float>(red[texel]) / 127.5F) - 1.0F;
+                    auto const y = (static_cast<float>(green[texel]) / 127.5F) - 1.0F;
+                    auto const z = std::sqrt(std::max(0.0F, 1.0F - (x * x) - (y * y)));
+
+                    rgba[(texel * 4) + 0] = red[texel];
+                    rgba[(texel * 4) + 1] = green[texel];
+                    rgba[(texel * 4) + 2] = static_cast<std::uint8_t>(std::lround((z * 0.5F + 0.5F) * 255.0F));
+                    rgba[(texel * 4) + 3] = 255;
+                }
+            }
+
+            for (std::size_t texel = 0; texel < 16; ++texel) {
+                auto const x = (block_x * 4) + (texel % 4);
+                auto const y = (block_y * 4) + (texel / 4);
+
+                if (x < width && y < height) {
+                    std::memcpy(out_pixels + (((y * width) + x) * 4U), rgba.data() + (texel * 4), 4);
+                }
+            }
+        }
+    }
+
+    return DecodedImage{std::move(pixels), width, height,
+                        colour_space == ImageColourSpace::srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM};
+}
+
+auto classify_dds_alpha(std::string_view path) -> std::optional<AlphaCoverage> {
+    auto const bytes = read_whole_file(path);
+
+    if (!bytes || bytes->size() < 4 + dds_header_size || read_le<std::uint32_t>(bytes->data()) != dds_magic) {
+        return std::nullopt;
+    }
+
+    auto const *header = bytes->data() + 4;
+
+    // Only BC3 carries a full alpha channel; the other legacy formats here have none (BC1's 1-bit alpha is not used).
+    if (read_le<std::uint32_t>(header + 80) != make_fourcc('D', 'X', 'T', '5')) {
+        return AlphaCoverage::opaque;
+    }
+
+    auto const height = read_le<std::uint32_t>(header + 8);
+    auto const width = read_le<std::uint32_t>(header + 12);
+    auto const blocks = ((static_cast<std::size_t>(width) + 3U) / 4U) * ((static_cast<std::size_t>(height) + 3U) / 4U);
+    auto const data_offset = 4U + dds_header_size;
+
+    if (blocks == 0 || bytes->size() < data_offset + (blocks * 16U)) {
+        return std::nullopt;
+    }
+
+    std::size_t transparent = 0; // alpha below half
+    std::size_t partial = 0; // neither (nearly) clear nor (nearly) solid
+
+    for (std::size_t block = 0; block < blocks; ++block) {
+        std::array<std::uint8_t, 16> alpha{};
+        decode_bc4_block(bytes->data() + data_offset + (block * 16U), alpha);
+
+        for (auto const value: alpha) {
+            transparent += value < 128 ? 1U : 0U;
+            partial += (value > 8 && value < 247) ? 1U : 0U;
+        }
+    }
+
+    if (transparent == 0) {
+        return AlphaCoverage::opaque;
+    }
+
+    // Cut-outs (leaves, grilles) are almost all clear or solid with a thin soft edge; real translucency isn't.
+    constexpr double max_mask_partial_fraction = 0.12;
+
+    return static_cast<double>(partial) / static_cast<double>(blocks * 16U) <= max_mask_partial_fraction
+                   ? AlphaCoverage::mask
+                   : AlphaCoverage::blend;
+}
+
 DecodedImage::DecodedImage(std::vector<std::byte> pixels, std::uint32_t width, std::uint32_t height,
                            VkFormat format) noexcept :
     pixels_(std::move(pixels)), width_(width), height_(height), format_(format) {}
@@ -937,6 +1208,10 @@ auto DecodedImage::load_from_file(std::string_view path, ImageColourSpace colour
         }
 
         return decode_exr(path);
+    }
+
+    if (extension == ".dds") {
+        return decode_dds(path, colour_space);
     }
 
     return decode_stbi(path, colour_space);

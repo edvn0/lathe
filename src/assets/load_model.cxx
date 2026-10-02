@@ -36,8 +36,28 @@
 
 namespace {
 
+    // How a file's data relates to the renderer's left-handed, V-down space. glTF says right-handed with V down, so
+    // the default mirrors across Z. assimp's exporter writes FBX-sourced (left-handed, V-up) data without converting
+    // either, so those files are already in renderer space and only need V flipped.
+    struct ImportConvention {
+        bool left_handed = false; // data is already left-handed: skip the Z mirror and the winding reversal
+        bool flip_v = false; // V runs bottom-up
+
+        [[nodiscard]]
+        auto z_sign() const noexcept -> float {
+            return left_handed ? 1.0F : -1.0F;
+        }
+    };
+
+    auto detect_convention(fastgltf::Asset const &asset) -> ImportConvention {
+        auto const from_assimp =
+                asset.assetInfo.has_value() && asset.assetInfo->generator.find("assimp") != std::string::npos;
+
+        return ImportConvention{.left_handed = from_assimp, .flip_v = from_assimp};
+    }
+
     auto accumulate_node_lights(fastgltf::Asset const &asset, ModelCpuData const &cpu_data, std::uint32_t node_index,
-                                glm::mat4 const &parent_transform, std::vector<ModelCpuLight> &out_lights) -> void {
+                                ImportConvention const &convention, glm::mat4 const &parent_transform, std::vector<ModelCpuLight> &out_lights) -> void {
         auto const &gltf_node = asset.nodes[node_index];
         auto const local_to_model = parent_transform * cpu_data.nodes[node_index].local_transform;
 
@@ -56,7 +76,7 @@ namespace {
 
                 light.position = glm::vec3{local_to_model[3]};
                 // glTF lights point down local -Z; local_to_model is already Z-mirrored, which maps that to +Z.
-                light.direction = glm::normalize(glm::mat3{local_to_model} * glm::vec3{0.0F, 0.0F, 1.0F});
+                light.direction = glm::normalize(glm::mat3{local_to_model} * glm::vec3{0.0F, 0.0F, -convention.z_sign()});
 
                 light.colour = glm::vec3{gltf_light.color[0], gltf_light.color[1], gltf_light.color[2]};
                 light.intensity = gltf_light.intensity;
@@ -73,7 +93,7 @@ namespace {
         }
 
         for (auto const child: cpu_data.nodes[node_index].children) {
-            accumulate_node_lights(asset, cpu_data, child, local_to_model, out_lights);
+            accumulate_node_lights(asset, cpu_data, child, convention, local_to_model, out_lights);
         }
     }
 
@@ -158,7 +178,11 @@ namespace {
 
     // glTF is right-handed and the renderer left-handed, so imported data is mirrored across Z (else models render as
     // their mirror image). Triangle winding is reversed to match, and node transforms become S * M * S.
-    auto to_glm(fastgltf::math::fmat4x4 const &matrix) noexcept -> glm::mat4 {
+    auto to_glm(fastgltf::math::fmat4x4 const &matrix, ImportConvention const &convention) noexcept -> glm::mat4 {
+        if (convention.left_handed) {
+            return glm::make_mat4(matrix.data());
+        }
+
         constexpr glm::mat4 mirror_z{1.0F, 0.0F, 0.0F,  0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
                                      0.0F, 0.0F, -1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
         return mirror_z * glm::make_mat4(matrix.data()) * mirror_z;
@@ -377,7 +401,7 @@ auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *
 namespace {
 
     auto extract_primitive_cpu(fastgltf::Asset const &asset, fastgltf::Primitive const &primitive,
-                               ModelLoadProfile *profile) -> std::expected<ModelCpuPrimitive, ModelLoadError> {
+                               ImportConvention const &convention, ModelLoadProfile *profile) -> std::expected<ModelCpuPrimitive, ModelLoadError> {
         ScopedProfileSample extract_sample{profile != nullptr ? &profile->primitive_extract_ns : nullptr};
 
         if (primitive.type != fastgltf::PrimitiveType::Triangles) {
@@ -397,9 +421,10 @@ namespace {
         auto const positions = read_accessor<glm::vec3>(asset, *position_accessor);
 
         std::vector<ModelVertex> vertices(positions.size());
+        auto const z_sign = convention.z_sign();
 
         for (std::size_t index = 0; index < positions.size(); ++index) {
-            vertices[index].position = glm::vec3{positions[index].x, positions[index].y, -positions[index].z};
+            vertices[index].position = glm::vec3{positions[index].x, positions[index].y, z_sign * positions[index].z};
 
             vertices[index].normal = glm::vec3{0.0F, 1.0F, 0.0F};
             vertices[index].tangent = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F};
@@ -416,7 +441,7 @@ namespace {
             }
 
             for (std::size_t index = 0; index < vertices.size(); ++index) {
-                vertices[index].normal = glm::vec3{normals[index].x, normals[index].y, -normals[index].z};
+                vertices[index].normal = glm::vec3{normals[index].x, normals[index].y, z_sign * normals[index].z};
             }
         }
 
@@ -434,7 +459,7 @@ namespace {
             for (std::size_t index = 0; index < vertices.size(); ++index) {
                 // A reflection also flips the bitangent sign.
                 vertices[index].tangent =
-                        glm::vec4{tangents[index].x, tangents[index].y, -tangents[index].z, -tangents[index].w};
+                        glm::vec4{tangents[index].x, tangents[index].y, z_sign * tangents[index].z, z_sign * tangents[index].w};
             }
 
             has_tangents = true;
@@ -450,7 +475,9 @@ namespace {
             }
 
             for (std::size_t index = 0; index < vertices.size(); ++index) {
-                vertices[index].texcoord = texcoords[index];
+                vertices[index].texcoord = glm::vec2{texcoords[index].x, convention.flip_v
+                                                                                 ? 1.0F - texcoords[index].y
+                                                                                 : texcoords[index].y};
             }
         }
 
@@ -462,7 +489,7 @@ namespace {
 
         auto indices = std::move(*indices_result);
 
-        for (std::size_t triangle = 0; triangle + 2 < indices.size(); triangle += 3) {
+        for (std::size_t triangle = 0; !convention.left_handed && triangle + 2 < indices.size(); triangle += 3) {
             std::swap(indices[triangle + 1], indices[triangle + 2]);
         }
 
@@ -683,7 +710,7 @@ namespace {
                            SamplerStorage &sampler_storage, std::filesystem::path const &gltf_path,
                            std::filesystem::path const &base_directory,
                            std::unordered_map<std::size_t, std::size_t> &image_cache,
-                           std::vector<ModelCpuImageSource> &image_sources)
+                           std::vector<ModelCpuImageSource> &image_sources, ImportConvention const &convention)
             -> std::expected<ModelCpuMaterial, ModelLoadError> {
         ModelCpuMaterial material{};
 
@@ -724,6 +751,21 @@ namespace {
         }
 
         material.base_colour_image = *base_colour_image;
+
+        // assimp drops alphaMode, so recover it from the base colour's alpha (these textures store opacity there).
+        if (convention.left_handed && material.alpha_mode == AlphaMode::opaque && material.base_colour_image.has_value()) {
+            auto const &source = image_sources[*material.base_colour_image];
+
+            if (!source.path.empty() && source.path.extension() == ".dds") {
+                if (auto const coverage = classify_dds_alpha(source.path.string())) {
+                    if (*coverage == AlphaCoverage::mask) {
+                        material.alpha_mode = AlphaMode::mask;
+                    } else if (*coverage == AlphaCoverage::blend) {
+                        material.alpha_mode = AlphaMode::blend;
+                    }
+                }
+            }
+        }
 
         auto metallic_roughness_image = resolve_texture_cpu(
                 asset, gltf_material.pbrData.metallicRoughnessTexture, ModelTextureSlot::metallic_roughness,
@@ -814,6 +856,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
     }
 
     auto asset = std::move(asset_result.get());
+    auto const convention = detect_convention(asset);
 
     debug("[load_model_cpu]: parsed {} nodes, {} lights, {} scenes", asset.nodes.size(), asset.lights.size(),
           asset.scenes.size());
@@ -830,7 +873,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
         ScopedProfileSample const material_sample{profile_ptr != nullptr ? &profile_ptr->material_resolve_ns : nullptr};
 
         auto material = load_material_cpu(asset, gltf_material, sampler_storage, path, base_directory, image_cache,
-                                          cpu_data.image_sources);
+                                          cpu_data.image_sources, convention);
 
         if (!material) {
             return std::unexpected(material.error());
@@ -844,7 +887,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
         mesh.primitives.reserve(gltf_mesh.primitives.size());
 
         for (auto const &gltf_primitive: gltf_mesh.primitives) {
-            auto primitive = extract_primitive_cpu(asset, gltf_primitive, profile_ptr);
+            auto primitive = extract_primitive_cpu(asset, gltf_primitive, convention, profile_ptr);
 
             if (!primitive) {
                 return std::unexpected(primitive.error());
@@ -864,7 +907,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
 
     for (auto const &gltf_node: asset.nodes) {
         ModelNode node{
-                .local_transform = to_glm(fastgltf::getTransformMatrix(gltf_node)),
+                .local_transform = to_glm(fastgltf::getTransformMatrix(gltf_node), convention),
         };
 
         if (gltf_node.meshIndex.has_value()) {
@@ -893,7 +936,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
     cpu_data.lights.reserve(asset.lights.size());
 
     for (auto const root: cpu_data.scene_roots) {
-        accumulate_node_lights(asset, cpu_data, root, glm::mat4{1.0F}, cpu_data.lights);
+        accumulate_node_lights(asset, cpu_data, root, convention, glm::mat4{1.0F}, cpu_data.lights);
     }
     debug("[load_model_cpu]: extracted {} lights from {} scene roots", cpu_data.lights.size(),
           cpu_data.scene_roots.size());

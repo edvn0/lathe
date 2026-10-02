@@ -1002,6 +1002,10 @@ auto main(int argc, char **argv) -> int {
     info("Initialization complete; close the window to exit");
 
     auto renderer_extent = context.swapchain.extent();
+    // Viewport drags emit a new size nearly every frame; only resize once the size has settled.
+    constexpr auto resize_settle_time = std::chrono::milliseconds{150};
+    auto pending_extent = renderer_extent;
+    auto pending_since = std::chrono::steady_clock::now();
     auto last_frame_time = std::chrono::steady_clock::now();
     auto exit_code = EXIT_SUCCESS;
 
@@ -1126,7 +1130,17 @@ auto main(int argc, char **argv) -> int {
                                                        : VkExtent2D{.width = 1000, .height = 640};
         }
 
-        if (!compare(target_render_extent, renderer_extent)) {
+        // Wait for the viewport size to settle before resizing, so dragging a panel edge doesn't rebuild the frame
+        // graph transients every frame. Benchmarks and --stress-resize resize on their own schedule.
+        if (!compare(target_render_extent, pending_extent)) {
+            pending_extent = target_render_extent;
+            pending_since = std::chrono::steady_clock::now();
+        }
+
+        auto const settled = benchmark.has_value() || stress_resize_interval != 0 ||
+                             std::chrono::steady_clock::now() - pending_since >= resize_settle_time;
+
+        if (settled && !compare(target_render_extent, renderer_extent)) {
             auto resize_result = application.renderer->resize(target_render_extent);
 
             if (!resize_result) {

@@ -311,6 +311,18 @@ enum class ImageColourSpace : std::uint8_t {
     srgb,
 };
 
+// How a texture's alpha channel is used by the material that samples it.
+enum class AlphaCoverage : std::uint8_t {
+    opaque, // no meaningful alpha
+    mask, // a cut-out: nearly every texel is clear or solid
+    blend, // genuine translucency
+};
+
+// Scans the alpha of a legacy BC3 (DXT5) `.dds` base mip. nullopt if the file can't be read or isn't a DDS; every
+// other DDS format reports opaque.
+[[nodiscard]]
+auto classify_dds_alpha(std::string_view path) -> std::optional<AlphaCoverage>;
+
 class DecodedImage {
 public:
     [[nodiscard]]
@@ -352,6 +364,8 @@ private:
     static auto decode_stbi(std::string_view path, ImageColourSpace colour_space) -> std::optional<DecodedImage>;
     [[nodiscard]]
     static auto decode_exr(std::string_view path) -> std::optional<DecodedImage>;
+    [[nodiscard]]
+    static auto decode_dds(std::string_view path, ImageColourSpace colour_space) -> std::optional<DecodedImage>;
 
     std::vector<std::byte> pixels_;
     std::uint32_t width_ = 0;
