@@ -141,6 +141,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Dependencies
 # ------------------------------------------------------------------------------
 
+# libcurl (HTTP client) and libcrypto (SHA-256) come from the system; the build image installs the dev packages.
+find_package(CURL REQUIRED)
+find_package(OpenSSL REQUIRED)
+
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/spirv-tools-opt.cmake")
 find_spirv_tools_opt()
 
@@ -816,12 +820,13 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/renderdoc_config.cmake")
 
 # ------------------------------------------------------------------------------
 # Module libraries, in dependency order:
-# core < gpu < assets < physics < scene < terrain < rendering < serialisation < scripting < app
+# core < gpu < assets < net < physics < scene < terrain < rendering < serialisation < scripting < app
 # ------------------------------------------------------------------------------
 
 add_subdirectory(src/core)
 add_subdirectory(src/gpu)
 add_subdirectory(src/assets)
+add_subdirectory(src/net)
 add_subdirectory(src/physics)
 add_subdirectory(src/scene)
 add_subdirectory(src/terrain)
@@ -849,7 +854,7 @@ add_library(
 target_link_libraries(
     lathe-core
     INTERFACE
-        "$<LINK_GROUP:RESCAN,engine_app,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_assets,engine_gpu,engine_core>"
+        "$<LINK_GROUP:RESCAN,engine_app,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_net,engine_assets,engine_gpu,engine_core>"
 )
 
 add_library(

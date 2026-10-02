@@ -1,6 +1,7 @@
 #include "basic_game.hxx"
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include "core/logger.hxx"
 #include "core/random.hxx"
 #include "enemy_ai_script.hxx"
+#include "net/http.hxx"
 #include "physics/physics_world.hxx"
 #include "rendering/entity.hxx"
 #include "rendering/imgui_widget.hxx"
@@ -132,6 +134,65 @@ namespace {
 
 } // namespace
 
+namespace {
+
+    // Pinned to a commit so the bytes can't change underneath the hash.
+    constexpr std::string_view helmet_url =
+            "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/"
+            "5bad5aaa0bbb5d0f9cdc934e626f27d0df1e79b8/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb";
+    constexpr std::string_view helmet_sha256 = "a1e3b04de97b11de564ce6e53b95f02954a297f0008183ac63a4f5974f6b32d8";
+    constexpr auto helmet_path = "assets/models/damaged_helmet.glb";
+
+} // namespace
+
+auto BasicGame::request_helmet() -> void {
+    if (helmet_download_.valid() || helmet_model_.valid()) {
+        return;
+    }
+
+    helmet_download_ = http_client_.get_file_async({
+            .uri = std::string{helmet_url},
+            .destination = helmet_path,
+            .sha256 = std::string{helmet_sha256},
+    });
+}
+
+auto BasicGame::spawn_helmet(Scene &scene, Renderer &renderer) -> void {
+    if (!helmet_model_.valid()) {
+        auto model = renderer.load_model(helmet_path);
+
+        if (!model) {
+            error("Could not load the DamagedHelmet: {}", describe(model.error()));
+            return;
+        }
+
+        helmet_model_ = model.value();
+    }
+
+    auto helmet = Entity{&scene, "damaged_helmet"};
+    helmet.emplace<Components::Transform>(Components::Transform{
+            .position = glm::vec3{4.0F, 2.0F, -8.5F},
+            .scale = glm::vec3{2.0F},
+    });
+    helmet.emplace<Components::Model>(Components::Model{.model = helmet_model_});
+}
+
+auto BasicGame::poll_helmet(Scene &scene, Renderer &renderer) -> void {
+    if (!helmet_download_.valid() ||
+        helmet_download_.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+        return;
+    }
+
+    auto const result = helmet_download_.get();
+
+    if (!result) {
+        warn("Could not fetch the DamagedHelmet: {}", describe(result.error()));
+        return;
+    }
+
+    spawn_helmet(scene, renderer);
+}
+
 auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void {
     if (auto could_wait = renderer.wait_idle(); !could_wait.has_value()) {
         info("{}", describe(could_wait.error()));
@@ -139,6 +200,13 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     }
 
     scene.get_registry().clear();
+
+    // Repopulating wipes the registry; a helmet that already arrived is re-spawned, otherwise the download runs.
+    if (helmet_model_.valid()) {
+        spawn_helmet(scene, renderer);
+    } else {
+        request_helmet();
+    }
 
     auto const load_or_fallback = [&renderer, &default_model = engine_models.cube, s = &scene](
                                           std::filesystem::path const &path, entt::entity parent_entity = entt::null,
@@ -923,6 +991,8 @@ auto BasicGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_sce
 }
 
 auto BasicGame::on_ui(Scene &scene, Renderer &renderer) -> void {
+    poll_helmet(scene, renderer);
+
     if (!grass_material_.valid()) {
         return;
     }

@@ -11,6 +11,7 @@ add_library(
         logger.cxx
         memory_tracker.cxx
         random.cxx
+        sha256.cxx
         thread_pool.cxx
 )
 
@@ -34,6 +35,7 @@ target_link_libraries(
         engine_deps
     PRIVATE
         engine_options
+        OpenSSL::Crypto
 )
 
 target_precompile_headers(

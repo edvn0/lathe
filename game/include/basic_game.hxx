@@ -1,6 +1,8 @@
 #pragma once
 
 #include <entt/entt.hpp>
+#include <expected>
+#include <future>
 #include <glm/vec3.hpp>
 #include <vector>
 
@@ -8,6 +10,7 @@
 #include "assets/material.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/model.hxx"
+#include "net/http.hxx"
 #include "player_camera.hxx"
 #include "player_controller.hxx"
 #include "rendering/script_storage.hxx"
@@ -47,6 +50,12 @@ private:
 
     auto rebuild_grass_field(Scene &scene) -> void;
 
+    // The DamagedHelmet is CC BY / CC BY-NC, so it is fetched on each machine instead of shipped; see
+    // assets/models/README.md. Starts the download once, then spawns the model when it lands.
+    auto request_helmet() -> void;
+    auto poll_helmet(Scene &scene, Renderer &renderer) -> void;
+    auto spawn_helmet(Scene &scene, Renderer &renderer) -> void;
+
     entt::entity player_entity_{entt::null};
     PlayerController player_controller_;
     PlayerCamera player_camera_;
@@ -54,6 +63,10 @@ private:
     // on_populate() runs again on every Ctrl+R, so what it creates outside the scene is kept here and reused.
     ModelHandle cube_model_{};
     ModelHandle skull_model_{};
+    ModelHandle helmet_model_{};
+    // Declared before the future below so it outlives it; Application drops the game before the renderer.
+    HttpClient http_client_;
+    std::future<std::expected<void, HttpError>> helmet_download_;
     std::vector<ModelHandle> road_models_;
     // Road centreline samples (x, z, half-width), so the grass field can leave the roads clear.
     std::vector<glm::vec3> road_samples_;

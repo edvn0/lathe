@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-dev \
     libjemalloc-dev \
     mold \
+    libcurl4-openssl-dev \
     libvulkan1 \
     mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
