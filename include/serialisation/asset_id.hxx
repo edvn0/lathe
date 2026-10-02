@@ -16,6 +16,7 @@
 //   texture: "texture:<path>|<role>"         a texture file, cooked for one TextureRole
 //            "texture:<cache key>|<role>"    an image embedded in a glTF (see ModelCpuImageSource::cache_key)
 //   engine:  "engine://<name>"               built-in procedural models (cube, sphere, ...); never cooked
+//   environment: "environment:<path>"        an HDR environment image (.hdr, .exr, .ktx2), cooked to an ENVM chunk
 //
 // Paths are lexically normalised and stored with forward slashes, relative to the working directory when the
 // file lives under it, so a scene saved on one machine still resolves on another.
@@ -52,6 +53,9 @@ auto embedded_texture_asset_key(std::string_view cache_key, TextureRole role) ->
 
 [[nodiscard]]
 auto engine_asset_key(std::string_view name) -> std::string;
+
+[[nodiscard]]
+auto environment_asset_key(std::filesystem::path const &path) -> std::string;
 
 template<>
 struct std::formatter<AssetId> : std::formatter<std::string_view> {

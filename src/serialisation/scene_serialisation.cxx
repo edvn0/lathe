@@ -257,6 +257,13 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
 
     description.physics_settings = scene.physics_settings;
 
+    description.environment = scene.environment;
+
+    if (!description.environment.hdr_source.empty()) {
+        description.environment.hdr_source = normalise_asset_path(description.environment.hdr_source);
+        description.environment_id = asset_id_from_key(environment_asset_key(description.environment.hdr_source));
+    }
+
     // Ascending entity id, so captures of an unchanged registry produce identical bytes.
     std::vector<entt::entity> entities;
 
@@ -656,6 +663,7 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
     auto &registry = scene.get_registry();
     registry.clear();
     scene.physics_settings = description.physics_settings;
+    scene.environment = description.environment;
 
     std::vector<entt::entity> entities;
     entities.reserve(description.entities.size());
@@ -1254,6 +1262,8 @@ auto scene_fingerprint(SceneDescription const &description) -> std::uint64_t {
 
     SceneDescription settings_only;
     settings_only.physics_settings = description.physics_settings;
+    settings_only.environment = description.environment;
+    settings_only.environment_id = description.environment_id;
     hashes.push_back(xxh64(encode_scene(settings_only)));
 
     return xxh64(std::as_bytes(std::span<std::uint64_t const>{hashes}));

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <format>
 #include <memory>
@@ -682,6 +683,112 @@ namespace {
         }
     }
 
+    namespace environment_flag_bits {
+        constexpr std::uint8_t draw_skybox = 1U << 0U;
+        constexpr std::uint8_t fog_sky = 1U << 1U;
+        constexpr std::uint8_t sun_drives_light = 1U << 2U;
+        constexpr std::uint8_t derive_sun_colour = 1U << 3U;
+        constexpr std::uint8_t multi_scatter = 1U << 4U;
+        constexpr std::uint8_t fog_enabled = 1U << 5U;
+        constexpr std::uint8_t fog_from_environment = 1U << 6U;
+    } // namespace environment_flag_bits
+
+    auto write_environment(ByteWriter &writer, SceneDescription const &scene) -> void {
+        namespace bits = environment_flag_bits;
+
+        auto const &environment = scene.environment;
+
+        std::uint8_t flags = 0;
+        flags |= environment.draw_skybox ? bits::draw_skybox : 0U;
+        flags |= environment.fog_sky ? bits::fog_sky : 0U;
+        flags |= environment.sun_drives_directional_light ? bits::sun_drives_light : 0U;
+        flags |= environment.sun.derive_colour_from_sky ? bits::derive_sun_colour : 0U;
+        flags |= environment.multi_scatter ? bits::multi_scatter : 0U;
+        flags |= environment.fog.enabled ? bits::fog_enabled : 0U;
+        flags |= environment.fog.from_environment ? bits::fog_from_environment : 0U;
+
+        writer.write(std::to_underlying(environment.source));
+        writer.write(flags);
+        writer.write(std::uint16_t{0});
+
+        writer.write(environment.ambient_intensity);
+        writer.write(environment.rotation_degrees);
+        writer.write(environment.exposure_ev);
+        writer.write(environment.diffuse_intensity);
+        writer.write(environment.specular_intensity);
+        writer.write(environment.specular_occlusion);
+        writer.write(environment.sky_intensity);
+        writer.write(environment.hdr_cube_size);
+
+        writer.write(scene.environment_id.value);
+        writer.write_string(environment.hdr_source);
+
+        auto const &sun = environment.sun;
+
+        writer.write(sun.azimuth_degrees);
+        writer.write(sun.elevation_degrees);
+        writer.write(sun.turbidity);
+        write_vec3(writer, sun.ground_albedo);
+        writer.write(sun.angular_radius_degrees);
+        write_vec3(writer, sun.colour);
+        writer.write(sun.intensity);
+
+        write_vec3(writer, environment.fog.colour);
+        writer.write(environment.fog.extinction);
+        writer.write(environment.fog.inscattering);
+    }
+
+    auto read_environment(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+        namespace bits = environment_flag_bits;
+
+        auto &environment = scene.environment;
+
+        auto const source = reader.read<std::uint8_t>();
+
+        if (source > std::to_underlying(EnvironmentSource::hdr_image)) {
+            reader.fail();
+        }
+
+        environment.source = static_cast<EnvironmentSource>(source);
+
+        auto const flags = reader.read<std::uint8_t>();
+        static_cast<void>(reader.read<std::uint16_t>());
+
+        environment.draw_skybox = (flags & bits::draw_skybox) != 0;
+        environment.fog_sky = (flags & bits::fog_sky) != 0;
+        environment.sun_drives_directional_light = (flags & bits::sun_drives_light) != 0;
+        environment.sun.derive_colour_from_sky = (flags & bits::derive_sun_colour) != 0;
+        environment.multi_scatter = (flags & bits::multi_scatter) != 0;
+        environment.fog.enabled = (flags & bits::fog_enabled) != 0;
+        environment.fog.from_environment = (flags & bits::fog_from_environment) != 0;
+
+        reader.read(environment.ambient_intensity);
+        reader.read(environment.rotation_degrees);
+        reader.read(environment.exposure_ev);
+        reader.read(environment.diffuse_intensity);
+        reader.read(environment.specular_intensity);
+        reader.read(environment.specular_occlusion);
+        reader.read(environment.sky_intensity);
+        reader.read(environment.hdr_cube_size);
+
+        scene.environment_id.value = reader.read<std::uint64_t>();
+        reader.read_string(environment.hdr_source);
+
+        auto &sun = environment.sun;
+
+        reader.read(sun.azimuth_degrees);
+        reader.read(sun.elevation_degrees);
+        reader.read(sun.turbidity);
+        sun.ground_albedo = read_vec3(reader);
+        reader.read(sun.angular_radius_degrees);
+        sun.colour = read_vec3(reader);
+        reader.read(sun.intensity);
+
+        environment.fog.colour = read_vec3(reader);
+        reader.read(environment.fog.extinction);
+        reader.read(environment.fog.inscattering);
+    }
+
     // ---- section table -------------------------------------------------------------------------------------------
 
     using SectionWriter = void (*)(ByteWriter &, SceneDescription const &);
@@ -762,6 +869,11 @@ namespace {
                          .oldest_readable = 1,
                          .write = write_lifetimes,
                          .read = read_lifetimes},
+            SectionCodec{.type = scene_section::environment,
+                         .version = environment_section_version,
+                         .oldest_readable = 1,
+                         .write = write_environment,
+                         .read = read_environment},
     };
 
     [[nodiscard]] auto find_codec(std::uint32_t type) noexcept -> SectionCodec const * {
@@ -806,6 +918,63 @@ namespace {
 
     // finite and >= 0
     [[nodiscard]] auto non_negative(float value) noexcept -> bool { return std::isfinite(value) && value >= 0.0F; }
+
+    // Why `environment` can't be rendered or saved, if anything.
+    [[nodiscard]] auto environment_problem(SceneEnvironment const &environment) -> std::optional<std::string_view> {
+        auto const &sun = environment.sun;
+        auto const &fog = environment.fog;
+
+        if (!finite(environment.ambient_intensity) || !finite(environment.rotation_degrees) ||
+            !finite(environment.exposure_ev) || !finite(environment.diffuse_intensity) ||
+            !finite(environment.specular_intensity) || !finite(environment.specular_occlusion) ||
+            !finite(environment.sky_intensity) || !finite(sun.azimuth_degrees) || !finite(sun.elevation_degrees) ||
+            !finite(sun.turbidity) || !finite(sun.ground_albedo) || !finite(sun.angular_radius_degrees) ||
+            !finite(sun.colour) || !finite(sun.intensity) || !finite(fog.colour) || !finite(fog.extinction) ||
+            !finite(fog.inscattering)) {
+            return "non-finite environment value";
+        }
+
+        if (sun.turbidity < 2.0F || sun.turbidity > 10.0F) {
+            return "environment turbidity out of range";
+        }
+
+        if (glm::any(glm::lessThan(sun.ground_albedo, glm::vec3{0.0F})) ||
+            glm::any(glm::greaterThan(sun.ground_albedo, glm::vec3{1.0F}))) {
+            return "environment ground albedo out of range";
+        }
+
+        if (sun.elevation_degrees < -90.0F || sun.elevation_degrees > 90.0F) {
+            return "environment sun elevation out of range";
+        }
+
+        if (sun.angular_radius_degrees <= 0.0F || sun.angular_radius_degrees > 10.0F) {
+            return "environment sun radius out of range";
+        }
+
+        if (environment.exposure_ev < -20.0F || environment.exposure_ev > 20.0F) {
+            return "environment exposure out of range";
+        }
+
+        if (environment.ambient_intensity < 0.0F || environment.diffuse_intensity < 0.0F ||
+            environment.specular_intensity < 0.0F || environment.specular_occlusion < 0.0F ||
+            environment.sky_intensity < 0.0F || sun.intensity < 0.0F || sun.colour.x < 0.0F || sun.colour.y < 0.0F ||
+            sun.colour.z < 0.0F || fog.extinction < 0.0F || fog.inscattering < 0.0F || fog.colour.x < 0.0F ||
+            fog.colour.y < 0.0F || fog.colour.z < 0.0F) {
+            return "negative environment intensity";
+        }
+
+        if (environment.hdr_cube_size < 256 || environment.hdr_cube_size > 1024 ||
+            !std::has_single_bit(environment.hdr_cube_size)) {
+            return "environment cube size must be 256, 512 or 1024";
+        }
+
+        if (environment.source == EnvironmentSource::hdr_image && environment.hdr_source.empty()) {
+            return "environment image source has no path";
+        }
+
+        return std::nullopt;
+    }
+
 
     [[nodiscard]] auto valid_transform(Components::Transform const &transform) noexcept -> bool {
         auto const &q = transform.rotation;
@@ -988,6 +1157,10 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
 
     if (!finite(scene.physics_settings.gravity) || !finite(scene.physics_settings.ground_y)) {
         return fail("non-finite physics settings");
+    }
+
+    if (auto problem = environment_problem(scene.environment); problem.has_value()) {
+        return fail(*problem);
     }
 
     for (auto const &entity: scene.entities) {
