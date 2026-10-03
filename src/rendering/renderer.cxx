@@ -2968,34 +2968,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(upload_result.error());
     }
 
-    // main_cs and late_cs accumulate into the occlusion statistics. This slot's previous readback copy finished
-    // before its fence was waited on.
-    {
-        auto const stats_size = VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t);
-        vkCmdFillBuffer(command_buffer, frame.occlusion_stats_buffer.buffer, 0, stats_size, 0);
-
-        VkBufferMemoryBarrier2 const stats_cleared{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = frame.occlusion_stats_buffer.buffer,
-                .offset = 0,
-                .size = stats_size,
-        };
-
-        VkDependencyInfo const stats_dependency{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .bufferMemoryBarrierCount = 1,
-                .pBufferMemoryBarriers = &stats_cleared,
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &stats_dependency);
-    }
-
     auto const &view = matrices.view;
     auto const &projection = matrices.projection;
     auto const light_direction = glm::normalize(light_.direction);
@@ -3276,33 +3248,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
     }
 
-    // The bitset starts empty every frame: the early prepass phase records into it, the late phase skips what it
-    // holds and adds to it, and forward replays it.
-    if (frame.meshlet_occlusion_active) {
-        auto const visibility_size = VkDeviceSize{frame.meshlet_visibility_words} * sizeof(std::uint32_t);
-        vkCmdFillBuffer(command_buffer, frame.meshlet_visibility_buffer.buffer, 0, visibility_size, 0);
-
-        VkBufferMemoryBarrier2 const visibility_cleared{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = frame.meshlet_visibility_buffer.buffer,
-                .offset = 0,
-                .size = visibility_size,
-        };
-
-        VkDependencyInfo const visibility_dependency{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .bufferMemoryBarrierCount = 1,
-                .pBufferMemoryBarriers = &visibility_cleared,
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &visibility_dependency);
-    }
+    // The occlusion statistics and the meshlet visibility bitset are cleared by graph passes.
 
     if ((lights_dirty_mask_ & (1u << frame_index)) != 0) {
         light_staging_.clear();
@@ -3352,302 +3298,28 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     }
 
 #pragma region Culling
-    {
-        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Culling", tracy::Color::SlateBlue);
-
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Culling);
-        constexpr auto start_query = stage * 2;
-        constexpr auto end_query = start_query + 1;
-
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
-                             start_query);
-
-        if (frame.indirect_command_count != 0) {
-            if (frame.indirect_command_count > maximum_cull_batch_count) {
-                clear_submissions();
-                return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
-            }
-
-            auto const frustum_cull_pipeline = resolve_layout(pipeline_graph_, frustum_cull_pipeline_);
-
-            if (frustum_cull_pipeline == VK_NULL_HANDLE) {
-                clear_submissions();
-                return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
-            }
-
-            bind_compute_node(pipeline_graph_, frustum_cull_pipeline_, command_buffer);
-
-            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                     frustum_cull_pipeline);
-
-            CullPushConstants const cull_pc{
-                    .src_draws_address = frame.draw_buffer.device_address,
-                    .src_transforms_address = frame.transform_buffer.device_address,
-                    .batch_bounds_address = frame.batch_bounds_buffer.device_address,
-                    .src_indirect_address = frame.indirect_buffer.device_address,
-                    .dst_indirect_address = frame.culled_indirect_buffer.device_address,
-                    .dst_draws_address = frame.visible_draw_buffer.device_address,
-                    .dst_transforms_address = frame.visible_transform_buffer.device_address,
-                    .frustum_planes_address = frame.frustum_planes_buffer.device_address,
-                    .occlusion_address = frame.occlusion_views_buffer.device_address,
-                    .occlusion_candidates_address = frame.occlusion_candidates_buffer.device_address,
-                    .candidate_counts_address = frame.candidate_counts_buffer.device_address,
-                    .merged_indirect_address = frame.merged_indirect_buffer.device_address,
-                    .late_indirect_address = frame.late_indirect_buffer.device_address,
-                    .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
-                    .batch_count = frame.indirect_command_count,
-                    .occludable_batch_count = frame.opaque_indirect_count + frame.mask_indirect_count,
-                    .late_union_meshlet_batches = 0,
-                    ._padding = 0,
-            };
-
-            vkCmdPushConstants(command_buffer, frustum_cull_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc),
-                               &cull_pc);
-
-            vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
-
-            auto const compute_barrier = [](VkBuffer buffer, VkPipelineStageFlags2 dst_stages,
-                                            VkAccessFlags2 dst_access) -> VkBufferMemoryBarrier2 {
-                return VkBufferMemoryBarrier2{
-                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                        .dstStageMask = dst_stages,
-                        .dstAccessMask = dst_access,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .buffer = buffer,
-                        .offset = 0,
-                        .size = VK_WHOLE_SIZE,
-                };
-            };
-
-            constexpr VkPipelineStageFlags2 geometry_stages = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                                              VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                                                              VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
-
-            // late_cs (record_frame) reads the candidates, counts and phase-1 commands, appends to the visible
-            // buffers past main_cs's survivors, and adds to the statistics, which are then copied for readback.
-            std::array const post_cull_barriers{
-                    compute_barrier(frame.visible_draw_buffer.buffer,
-                                    geometry_stages | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT),
-                    compute_barrier(frame.visible_transform_buffer.buffer,
-                                    geometry_stages | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT),
-                    // Read as the indirect command and as the task shader's per-batch payload.
-                    compute_barrier(frame.culled_indirect_buffer.buffer,
-                                    VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
-                    compute_barrier(frame.occlusion_candidates_buffer.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
-                    compute_barrier(frame.candidate_counts_buffer.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
-                    compute_barrier(frame.occlusion_stats_buffer.buffer,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                                            VK_ACCESS_2_TRANSFER_READ_BIT),
-            };
-
-            VkDependencyInfo const dependency_info{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = static_cast<std::uint32_t>(post_cull_barriers.size()),
-                    .pBufferMemoryBarriers = post_cull_barriers.data(),
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    // The dispatch is the gpu_culling graph pass (record_gpu_culling); fail here, where the error handling is, if it
+    // cannot run.
+    if (frame.indirect_command_count != 0) {
+        if (frame.indirect_command_count > maximum_cull_batch_count) {
+            clear_submissions();
+            return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
         }
 
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool, end_query);
+        if (resolve_layout(pipeline_graph_, frustum_cull_pipeline_) == VK_NULL_HANDLE) {
+            clear_submissions();
+            return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+        }
     }
 #pragma endregion
 
 #pragma region LightClustering
-    {
-        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Light clustering", tracy::Color::Gold);
-
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::LightClustering);
-        constexpr auto start_query = stage * 2;
-        constexpr auto end_query = start_query + 1;
-
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
-                             start_query);
-
-        // Runs even with no lights: the forward pass reads every cluster's count whenever clustering is on.
-        if (clustered_lighting_) {
-            auto const light_cull_pipeline = resolve_layout(pipeline_graph_, light_cull_pipeline_);
-            auto const light_cluster_pipeline = resolve_layout(pipeline_graph_, light_cluster_pipeline_);
-
-            if (light_cull_pipeline == VK_NULL_HANDLE || light_cluster_pipeline == VK_NULL_HANDLE) {
-                clear_submissions();
-                return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
-            }
-
-            auto const visible_spheres_address = frame.visible_lights_buffer.device_address;
-            auto const visible_indices_address =
-                    visible_spheres_address + (sizeof(glm::vec4) * VkDeviceSize{maximum_light_count});
-            auto const visible_count_address =
-                    visible_indices_address + (sizeof(std::uint32_t) * VkDeviceSize{maximum_light_count});
-
-            auto const cluster_stats_address = frame.cluster_lights_buffer.device_address;
-            auto const cluster_lists_address = cluster_stats_address + cluster_stats_bytes;
-
-            // light_cluster.slang accumulates into the statistics.
-            vkCmdFillBuffer(command_buffer, frame.cluster_lights_buffer.buffer, 0, cluster_stats_bytes, 0);
-
-            bind_compute_node(pipeline_graph_, light_cull_pipeline_, command_buffer);
-            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, light_cull_pipeline);
-
-            LightCullPushConstants const cull_pc{
-                    .ubo_address = ubos_[frame_index].device_address,
-                    .lights_address = frame.lights_buffer.device_address,
-                    .frustum_planes_address = frame.frustum_planes_buffer.device_address,
-                    .visible_spheres_address = visible_spheres_address,
-                    .visible_light_indices_address = visible_indices_address,
-                    .visible_light_count_address = visible_count_address,
-                    .light_count = frame.light_count,
-            };
-
-            vkCmdPushConstants(command_buffer, light_cull_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
-
-            // A single workgroup walks every light, keeping the visible list in light-index order.
-            vkCmdDispatch(command_buffer, 1, 1, 1);
-
-            std::array const before_cluster{
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.visible_lights_buffer.buffer,
-                            .offset = 0,
-                            .size = VK_WHOLE_SIZE,
-                    },
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.cluster_lights_buffer.buffer,
-                            .offset = 0,
-                            .size = cluster_stats_bytes,
-                    },
-            };
-
-            VkDependencyInfo const visible_dependency{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = static_cast<std::uint32_t>(before_cluster.size()),
-                    .pBufferMemoryBarriers = before_cluster.data(),
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &visible_dependency);
-
-            bind_compute_node(pipeline_graph_, light_cluster_pipeline_, command_buffer);
-            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                     light_cluster_pipeline);
-
-            LightClusterPushConstants const cluster_pc{
-                    .ubo_address = ubos_[frame_index].device_address,
-                    .visible_spheres_address = visible_spheres_address,
-                    .visible_light_indices_address = visible_indices_address,
-                    .visible_light_count_address = visible_count_address,
-                    .cluster_lights_address = cluster_lists_address,
-                    .cluster_stats_address = cluster_stats_address,
-            };
-
-            vkCmdPushConstants(command_buffer, light_cluster_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(cluster_pc),
-                               &cluster_pc);
-
-            // One workgroup per screen tile; each fills its tile's column of clusters.
-            vkCmdDispatch(command_buffer, cluster_tile_count(frame.cluster_grid), 1, 1);
-
-            // The previous use of this frame slot's lists finished before its fence was waited on, so only the
-            // write-to-read edges need barriers: the lists to the forward pass, the statistics to the readback copy.
-            std::array const after_cluster{
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.cluster_lights_buffer.buffer,
-                            .offset = cluster_stats_bytes,
-                            .size = VK_WHOLE_SIZE,
-                    },
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.cluster_lights_buffer.buffer,
-                            .offset = 0,
-                            .size = cluster_stats_bytes,
-                    },
-            };
-
-            VkDependencyInfo const cluster_dependency{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = static_cast<std::uint32_t>(after_cluster.size()),
-                    .pBufferMemoryBarriers = after_cluster.data(),
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &cluster_dependency);
-
-            VkBufferCopy2 const stats_region{
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
-                    .srcOffset = 0,
-                    .dstOffset = 0,
-                    .size = cluster_stats_bytes,
-            };
-
-            VkCopyBufferInfo2 const stats_copy{
-                    .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
-                    .srcBuffer = frame.cluster_lights_buffer.buffer,
-                    .dstBuffer = frame.cluster_stats_readback_buffer.buffer,
-                    .regionCount = 1,
-                    .pRegions = &stats_region,
-            };
-
-            vkCmdCopyBuffer2(command_buffer, &stats_copy);
-
-            VkBufferMemoryBarrier2 const stats_to_host{
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                    .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
-                    .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .buffer = frame.cluster_stats_readback_buffer.buffer,
-                    .offset = 0,
-                    .size = cluster_stats_bytes,
-            };
-
-            VkDependencyInfo const stats_dependency{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = 1,
-                    .pBufferMemoryBarriers = &stats_to_host,
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &stats_dependency);
-
-            frame.cluster_stats_grid = frame.cluster_grid;
-            frame.cluster_stats_pending = true;
-        }
-
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool, end_query);
+    // The dispatches are graph passes (record_light_cull and friends); fail here, where the error handling is, if
+    // their pipelines are missing.
+    if (clustered_lighting_ && (resolve_layout(pipeline_graph_, light_cull_pipeline_) == VK_NULL_HANDLE ||
+                                resolve_layout(pipeline_graph_, light_cluster_pipeline_) == VK_NULL_HANDLE)) {
+        clear_submissions();
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 #pragma endregion
 
@@ -3722,6 +3394,178 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     }
 
     return {};
+}
+
+auto Renderer::record_occlusion_stats_clear(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void {
+    // main_cs and late_cs accumulate into the statistics, so they start at zero. This slot's previous readback copy
+    // finished before its fence was waited on.
+    vkCmdFillBuffer(command_buffer, frame.occlusion_stats_buffer.buffer, 0,
+                    VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t), 0);
+}
+
+auto Renderer::record_meshlet_visibility_clear(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void {
+    // The bitset starts empty every frame: the early prepass phase records into it, the late phase skips what it holds
+    // and adds to it, and forward replays it.
+    vkCmdFillBuffer(command_buffer, frame.meshlet_visibility_buffer.buffer, 0,
+                    VkDeviceSize{frame.meshlet_visibility_words} * sizeof(std::uint32_t), 0);
+}
+
+auto Renderer::record_gpu_culling(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    auto const command_buffer = pass_context.command_buffer;
+    auto const query_pool = pass_context.timestamp_query_pool;
+    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Culling);
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2);
+
+    if (frame.indirect_command_count != 0) {
+        auto const layout = resolve_layout(pipeline_graph_, frustum_cull_pipeline_);
+
+        if (layout == VK_NULL_HANDLE) {
+            return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+        }
+
+        bind_compute_node(pipeline_graph_, frustum_cull_pipeline_, command_buffer);
+        gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+        CullPushConstants const cull_pc{
+                .src_draws_address = frame.draw_buffer.device_address,
+                .src_transforms_address = frame.transform_buffer.device_address,
+                .batch_bounds_address = frame.batch_bounds_buffer.device_address,
+                .src_indirect_address = frame.indirect_buffer.device_address,
+                .dst_indirect_address = frame.culled_indirect_buffer.device_address,
+                .dst_draws_address = frame.visible_draw_buffer.device_address,
+                .dst_transforms_address = frame.visible_transform_buffer.device_address,
+                .frustum_planes_address = frame.frustum_planes_buffer.device_address,
+                .occlusion_address = frame.occlusion_views_buffer.device_address,
+                .occlusion_candidates_address = frame.occlusion_candidates_buffer.device_address,
+                .candidate_counts_address = frame.candidate_counts_buffer.device_address,
+                .merged_indirect_address = frame.merged_indirect_buffer.device_address,
+                .late_indirect_address = frame.late_indirect_buffer.device_address,
+                .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
+                .batch_count = frame.indirect_command_count,
+                .occludable_batch_count = frame.opaque_indirect_count + frame.mask_indirect_count,
+                .late_union_meshlet_batches = 0,
+                ._padding = 0,
+        };
+
+        vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
+        vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
+    }
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2 + 1);
+    return {};
+}
+
+auto Renderer::record_cluster_stats_clear(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> void {
+    // The light clustering stage spans the clear, the two dispatches and the statistics readback.
+    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::LightClustering);
+    vkCmdWriteTimestamp2(pass_context.command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         pass_context.timestamp_query_pool, stage * 2);
+
+    // light_cluster.slang accumulates into the statistics.
+    vkCmdFillBuffer(pass_context.command_buffer, frame.cluster_lights_buffer.buffer, 0, cluster_stats_bytes, 0);
+}
+
+auto Renderer::record_light_cull(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    auto const command_buffer = pass_context.command_buffer;
+    auto const layout = resolve_layout(pipeline_graph_, light_cull_pipeline_);
+
+    if (layout == VK_NULL_HANDLE) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    auto const visible_spheres_address = frame.visible_lights_buffer.device_address;
+    auto const visible_indices_address =
+            visible_spheres_address + (sizeof(glm::vec4) * VkDeviceSize{maximum_light_count});
+    auto const visible_count_address =
+            visible_indices_address + (sizeof(std::uint32_t) * VkDeviceSize{maximum_light_count});
+
+    bind_compute_node(pipeline_graph_, light_cull_pipeline_, command_buffer);
+    gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+    LightCullPushConstants const cull_pc{
+            .ubo_address = ubos_[pass_context.frame_index].device_address,
+            .lights_address = frame.lights_buffer.device_address,
+            .frustum_planes_address = frame.frustum_planes_buffer.device_address,
+            .visible_spheres_address = visible_spheres_address,
+            .visible_light_indices_address = visible_indices_address,
+            .visible_light_count_address = visible_count_address,
+            .light_count = frame.light_count,
+    };
+
+    vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
+
+    // A single workgroup walks every light, keeping the visible list in light-index order.
+    vkCmdDispatch(command_buffer, 1, 1, 1);
+    return {};
+}
+
+auto Renderer::record_light_cluster(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    auto const command_buffer = pass_context.command_buffer;
+    auto const layout = resolve_layout(pipeline_graph_, light_cluster_pipeline_);
+
+    if (layout == VK_NULL_HANDLE) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    auto const visible_spheres_address = frame.visible_lights_buffer.device_address;
+    auto const visible_indices_address =
+            visible_spheres_address + (sizeof(glm::vec4) * VkDeviceSize{maximum_light_count});
+    auto const visible_count_address =
+            visible_indices_address + (sizeof(std::uint32_t) * VkDeviceSize{maximum_light_count});
+
+    auto const cluster_stats_address = frame.cluster_lights_buffer.device_address;
+    auto const cluster_lists_address = cluster_stats_address + cluster_stats_bytes;
+
+    bind_compute_node(pipeline_graph_, light_cluster_pipeline_, command_buffer);
+    gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+    LightClusterPushConstants const cluster_pc{
+            .ubo_address = ubos_[pass_context.frame_index].device_address,
+            .visible_spheres_address = visible_spheres_address,
+            .visible_light_indices_address = visible_indices_address,
+            .visible_light_count_address = visible_count_address,
+            .cluster_lights_address = cluster_lists_address,
+            .cluster_stats_address = cluster_stats_address,
+    };
+
+    vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cluster_pc), &cluster_pc);
+
+    // One workgroup per screen tile; each fills its tile's column of clusters.
+    vkCmdDispatch(command_buffer, cluster_tile_count(frame.cluster_grid), 1, 1);
+    return {};
+}
+
+auto Renderer::record_cluster_stats_readback(render_pass::Context const &pass_context, RendererFrame &frame) -> void {
+    auto const command_buffer = pass_context.command_buffer;
+
+    VkBufferCopy2 const stats_region{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+            .srcOffset = 0,
+            .dstOffset = 0,
+            .size = cluster_stats_bytes,
+    };
+
+    VkCopyBufferInfo2 const stats_copy{
+            .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+            .srcBuffer = frame.cluster_lights_buffer.buffer,
+            .dstBuffer = frame.cluster_stats_readback_buffer.buffer,
+            .regionCount = 1,
+            .pRegions = &stats_region,
+    };
+
+    vkCmdCopyBuffer2(command_buffer, &stats_copy);
+
+    frame.cluster_stats_grid = frame.cluster_grid;
+    frame.cluster_stats_pending = true;
+
+    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::LightClustering);
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, pass_context.timestamp_query_pool,
+                         stage * 2 + 1);
 }
 
 auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
@@ -4093,9 +3937,6 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
 }
 
 auto Renderer::record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Environment",
-                 tracy::Color::SkyBlue);
-
     auto const command_buffer = pass_context.command_buffer;
     constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Environment);
 
@@ -4334,8 +4175,6 @@ auto Renderer::record_overlay_prepares(render_pass::Context const &pass_context)
 
     frame_query.overlays.clear();
 
-    bool any_gpu_writes = false;
-
     for (auto &entry: overlays_.all()) {
         frame_query.overlays.push_back(RecordedOverlay{
                 .name = entry.desc.name,
@@ -4352,49 +4191,16 @@ auto Renderer::record_overlay_prepares(render_pass::Context const &pass_context)
             TracyVkZoneTransient(context_.host_query_context.context, gpu_zone, command_buffer, entry.desc.name.c_str(),
                                  true);
 
-            auto const result = entry.desc.prepare(OverlayPrepareContext{
+            // Whether it wrote GPU data or not, the overlay_data token orders it before every overlay draw.
+            static_cast<void>(entry.desc.prepare(OverlayPrepareContext{
                     .command_buffer = command_buffer,
                     .frame_index = pass_context.frame_index,
-            });
-
-            any_gpu_writes = any_gpu_writes || result == OverlayPrepareResult::recorded_gpu_writes;
+            }));
         }
 
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pass_context.timestamp_query_pool,
                              overlay_query(entry.slot, 1));
     }
-
-    if (!any_gpu_writes) {
-        return;
-    }
-
-    // Makes every prepare() write visible to the stages an overlay's draw can read from.
-    VkMemoryBarrier2 const barrier{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-            .pNext = nullptr,
-            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
-                            VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                            VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
-                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT |
-                             VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT,
-    };
-
-    VkDependencyInfo const dependency_info{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext = nullptr,
-            .dependencyFlags = 0,
-            .memoryBarrierCount = 1,
-            .pMemoryBarriers = &barrier,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers = nullptr,
-            .imageMemoryBarrierCount = 0,
-            .pImageMemoryBarriers = nullptr,
-    };
-
-    vkCmdPipelineBarrier2(command_buffer, &dependency_info);
 }
 
 auto Renderer::record_overlay_stage(render_pass::Context const &pass_context, OverlayStage stage,
@@ -4503,61 +4309,6 @@ auto Renderer::register_light_icon_overlay() -> std::expected<void, RendererErro
     }
 
     light_icon_overlay_ = std::move(*registration);
-    return {};
-}
-
-auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &frame, PassHandoff &handoff)
-        -> std::expected<void, RendererError> {
-    ZoneScopedNC("RecordFrame", tracy::Color::RoyalBlue);
-
-    auto const command_buffer = info.command_buffer;
-    auto const frame_index = info.frame_index;
-
-    auto const pass_context = make_pass_context(command_buffer, frame_index);
-
-    record_overlay_prepares(pass_context);
-
-    record_environment_pass(pass_context, frame);
-
-    // The shadow pass follows as a graph pass when any cascade is redrawn (renderer_frame_graph.cxx); otherwise its
-    // stage still needs both timestamps.
-    if (frame.shadow_update_mask == 0) {
-        write_empty_stage(command_buffer, frame_index, RenderStage::ShadowPass);
-    }
-
-    // Two-phase occlusion culling (docs/occlusion-culling.md): the early prepass draws what main_cs kept, the Hi-Z is
-    // built from its depth, late_cs re-tests the rest against it and the late prepass adds the survivors. They are
-    // graph passes after this one (renderer_frame_graph.cxx); every stage still writes its timestamps when skipped.
-    if (frame.occlusion_active) {
-        // Next frame's phase 1 tests against this pyramid, projected as it was built.
-        hiz_history_view_projection_ = frame.view_projection;
-        hiz_history_valid_ = true;
-
-        // The Hi-Z build, late_cs and the late prepass follow as graph passes (renderer_frame_graph.cxx).
-    } else {
-        write_empty_stage(command_buffer, frame_index, RenderStage::HiZBuild);
-        write_empty_stage(command_buffer, frame_index, RenderStage::OcclusionCulling);
-        write_empty_stage(command_buffer, frame_index, RenderStage::DepthPrepassLate);
-
-        // A pyramid from before this gap may not match what is on screen when culling resumes.
-        hiz_history_valid_ = false;
-    }
-
-    // The two GTAO passes follow when AO is enabled (renderer_frame_graph.cxx); otherwise forward samples white and
-    // the stage still needs both timestamps.
-    if (ao_settings_.enabled) {
-        handoff.ao_texture_index = frame.ao_target.denoised.handle().index;
-    } else {
-        write_empty_stage(command_buffer, frame_index, RenderStage::AmbientOcclusion);
-        handoff.ao_texture_index = image_storage_.white().index;
-    }
-
-    // Bloom is its own graph pass when enabled; otherwise its stage still needs both timestamps.
-    if (!bloom_settings_.enabled) {
-        write_empty_stage(command_buffer, frame_index, RenderStage::BloomPass);
-    }
-
-
     return {};
 }
 

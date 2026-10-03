@@ -805,11 +805,8 @@ namespace render_pass {
                                     VK_IMAGE_ASPECT_COLOR_BIT, mip, 1);
         };
 
-        // Rebuilt every frame, so discard the contents. The source scope still covers last frame's readers.
-        transition_image_layout(command_buffer, bloom_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_NONE,
-                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, bloom_mip_count);
+        // The frame graph has put every level in GENERAL, discarding last frame's contents: the chain is rebuilt each
+        // frame. It takes the finished chain, every level SHADER_READ_ONLY_OPTIMAL, from here.
 
         // Downsample: HDR -> mip 0 -> mip 1 -> ..., each sampling the level above.
         detail::bind_compute_node(context.pipeline_graph, info.downsample_pipeline, command_buffer);

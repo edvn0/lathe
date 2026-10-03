@@ -1169,6 +1169,24 @@ private:
     auto record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
             -> std::expected<void, RendererError>;
 
+    // The first graph passes of the frame (prepare_frame only uploads and validates): clears, main_cs (frustum culling
+    // and phase 1 of occlusion culling) and light culling and clustering.
+    auto record_occlusion_stats_clear(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void;
+    auto record_meshlet_visibility_clear(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void;
+    [[nodiscard]]
+    auto record_gpu_culling(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
+
+    // Begins the light clustering stage's timestamps, which record_cluster_stats_readback ends.
+    auto record_cluster_stats_clear(render_pass::Context const &pass_context, RendererFrame const &frame) -> void;
+    [[nodiscard]]
+    auto record_light_cull(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto record_light_cluster(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
+    auto record_cluster_stats_readback(render_pass::Context const &pass_context, RendererFrame &frame) -> void;
+
     // Copies the occlusion statistics into the frame's readback buffer.
     auto record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void;
 
@@ -1210,21 +1228,13 @@ private:
     auto create_frame_targets(std::uint32_t frame_index, VkExtent2D extent)
             -> std::expected<OwnedFrameTargets, RendererError>;
 
-    // What the passes hand to the ones after them while parts of the frame are still being migrated: bindless indices
-    // and the like that used to be locals of one function. The legacy pass sets the AO index, forward the HDR one and
-    // bloom the bloom one.
+    // What the passes hand to the ones after them: bindless indices that used to be locals of one function.
+    // record_frame sets the AO index, forward the HDR one and bloom the bloom one.
     struct PassHandoff {
         std::uint32_t ao_texture_index = 0;
         render_pass::HdrTextureIndex hdr{};
         std::optional<render_pass::BloomTextureIndex> bloom;
     };
-
-    // Everything up to and including ambient occlusion, as one pass of the frame graph until its parts are migrated.
-    // Forward, bloom, composition, UI, screenshot and the end-of-frame bookkeeping are graph passes after it
-    // (renderer_frame_graph.cxx).
-    [[nodiscard]]
-    auto record_frame_legacy(FrameRecordInfo const &info, RendererFrame &frame, PassHandoff &handoff)
-            -> std::expected<void, RendererError>;
 
     // Both timestamps of a stage that did no work this frame. Every stage writes both every frame: one missing
     // query leaves vkGetQueryPoolResults NOT_READY and drops the whole frame's timings.

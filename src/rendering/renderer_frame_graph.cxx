@@ -14,8 +14,8 @@
 #include "rendering/renderer.hxx"
 #include "rendering/screenshot.hxx"
 
-// The frame as a graph (docs/frame-graph.md, phase 4). What has not been migrated yet stays inside the "frame_legacy"
-// pass, which runs first; the passes declared here follow it and derive their own barriers.
+// The frame as a graph (docs/frame-graph.md, phase 4): every pass is declared here, in recording order, and the
+// compiler derives the barriers between them.
 
 namespace {
     auto make_error(RendererErrorType type) -> RendererError {
@@ -30,7 +30,7 @@ namespace {
     // The editor clears the swapchain under its UI to this.
     constexpr auto ui_clear_colour = VkClearValue{.color = {.float32 = {0.0F, 0.0F, 0.0F, 1.0F}}};
 
-    // The state the legacy pass and the previous frame's readers leave a sampled image in.
+    // The state the previous frame's readers leave a sampled image in.
     constexpr auto sampled_by_fragment_or_compute = frame_graph::ResourceState{
             .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -43,7 +43,7 @@ namespace {
             .access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
     };
 
-    // What the legacy pass leaves the depth buffer in for the forward pass's LOAD_OP_LOAD.
+    // The depth buffer between the prepass that writes it and forward's LOAD_OP_LOAD.
     constexpr auto depth_attachment_state = frame_graph::ResourceState{
             .layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
             .stages = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -52,9 +52,9 @@ namespace {
 
     constexpr auto forward_clear_colour = VkClearValue{.color = {.float32 = {0.015F, 0.025F, 0.050F, 1.0F}}};
 
-    // Buffers enter and leave the graph with nothing outstanding: whatever wrote them before the frame graph (the
-    // prologue, the legacy pass) is ordered by the legacy pass's fences, and nothing outside the graph touches them
-    // after it before the frame slot's fence.
+    // Buffers enter and leave the graph with nothing outstanding: whatever wrote them before it (prepare_frame's
+    // uploads, which end with their own barriers to every consumer stage, or the host, which needs none) is already
+    // visible, and nothing outside the graph touches them after it before the frame slot's fence.
     constexpr auto buffer_idle = frame_graph::ResourceState{};
 
     // The host reads the occlusion statistics back once the slot's fence has passed.
@@ -162,11 +162,13 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     }
 
-    // Everything the legacy pass leaves for the passes after it enters the graph in the state it is left in: the
-    // legacy pass declares nothing, and its fences order its work before theirs.
+    // The targets, the shadow atlas and the AO images persist across frames. Most are written without loading first
+    // (discarding what the previous frame left), so what matters about their entry state is the readers it must wait
+    // for; the exit state is what the editor and the next frame find.
     auto const multisampled = targets->multisampled;
     auto const bloom_enabled = bloom_settings_.enabled;
     auto const ao_enabled = ao_settings_.enabled;
+    auto const environment_pending = environment_.has_pending_record();
 
     // Single-sample HDR: forward resolves (or draws) into it, bloom and composition sample it.
     auto hdr_image = frame_graph_.import_image({
@@ -263,6 +265,30 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     };
 
+    // main_cs always runs (it is plain frustum culling with occlusion off), so what it reads and writes is always
+    // imported: the batch bounds, the occlusion views (disabled with occlusion off) and the candidate lists.
+    auto const batch_bounds = import_frame_buffer(frame.batch_bounds_buffer, "batch_bounds", true);
+    auto const occlusion_views = import_frame_buffer(frame.occlusion_views_buffer, "occlusion_views", true);
+    auto occlusion_candidates = import_frame_buffer(frame.occlusion_candidates_buffer, "occlusion_candidates", false);
+    auto candidate_counts = import_frame_buffer(frame.candidate_counts_buffer, "candidate_counts", false);
+
+    // Clustered lighting: light_cull writes the visible lights, light_cluster the per-cluster lists and statistics
+    // (the first bytes of the one buffer), which the host reads back a frame later.
+    auto const clustered = clustered_lighting_;
+    auto visible_lights = frame_graph::BufferId{};
+    auto cluster_lights = frame_graph::BufferId{};
+    auto cluster_stats_readback = frame_graph::BufferId{};
+    if (clustered) {
+        visible_lights = import_frame_buffer(frame.visible_lights_buffer, "visible_lights", false);
+        cluster_lights = import_frame_buffer(frame.cluster_lights_buffer, "cluster_lights", false);
+        cluster_stats_readback = frame_graph_.import_buffer({
+                .entry = host_reads,
+                .exit = host_reads,
+                .debug_name = "cluster_stats_readback",
+                .buffer = physical_buffer(frame.cluster_stats_readback_buffer),
+        });
+    }
+
     // late_cs appends to the visible draws and transforms, so they are written when occlusion culling is on.
     auto visible_draws = import_frame_buffer(frame.visible_draw_buffer, "visible_draws", false);
     auto visible_transforms = import_frame_buffer(frame.visible_transform_buffer, "visible_transforms", false);
@@ -270,7 +296,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     auto const source_draws = import_frame_buffer(frame.draw_buffer, "draws", true);
     auto const source_transforms = import_frame_buffer(frame.transform_buffer, "transforms", true);
     auto const source_indirect = import_frame_buffer(frame.indirect_buffer, "indirect", true);
-    auto const culled_indirect = import_frame_buffer(frame.culled_indirect_buffer, "culled_indirect", true);
+    auto culled_indirect = import_frame_buffer(frame.culled_indirect_buffer, "culled_indirect", false);
     auto const frustum_planes = import_frame_buffer(frame.frustum_planes_buffer, "frustum_planes", true);
 
     auto const occlusion_active = frame.occlusion_active;
@@ -280,18 +306,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     // write was produced before the frame graph.
     auto late_indirect = frame_graph::BufferId{};
     auto merged_indirect = frame_graph::BufferId{};
-    auto occlusion_views = frame_graph::BufferId{};
-    auto batch_bounds = frame_graph::BufferId{};
-    auto occlusion_candidates = frame_graph::BufferId{};
-    auto candidate_counts = frame_graph::BufferId{};
     auto hiz_image = frame_graph::ImageId{};
     if (occlusion_active) {
         late_indirect = import_frame_buffer(frame.late_indirect_buffer, "late_indirect", false);
         merged_indirect = import_frame_buffer(frame.merged_indirect_buffer, "merged_indirect", false);
-        occlusion_views = import_frame_buffer(frame.occlusion_views_buffer, "occlusion_views", true);
-        batch_bounds = import_frame_buffer(frame.batch_bounds_buffer, "batch_bounds", true);
-        occlusion_candidates = import_frame_buffer(frame.occlusion_candidates_buffer, "occlusion_candidates", true);
-        candidate_counts = import_frame_buffer(frame.candidate_counts_buffer, "candidate_counts", true);
 
         // Rebuilt from the depth every frame; last frame's readers are what the build has to wait for.
         hiz_image = frame_graph_.import_image({
@@ -323,23 +341,262 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         PassHandoff handoff;
     } state;
 
-    frame_graph_.add_pass("frame_legacy", frame_graph::PassType::raster,
+    // CPU bookkeeping that used to sit in the legacy body.
+    if (frame.occlusion_active) {
+        // Next frame's phase 1 tests against this pyramid, projected as it was built.
+        hiz_history_view_projection_ = frame.view_projection;
+        hiz_history_valid_ = true;
+    } else {
+        // A pyramid from before this gap may not match what is on screen when culling resumes.
+        hiz_history_valid_ = false;
+    }
+    state.handoff.ao_texture_index =
+            ao_enabled ? frame.ao_target.denoised.handle().index : image_storage_.white().index;
+
+    // Overlays' prepare() hooks run before every pass, outside any rendering scope, and may write GPU data (debug
+    // geometry, indirect arguments) the overlay draws read. The token orders them before those draws.
+    auto overlay_data = frame_graph_.import_token("overlay_data", {}, {});
+    frame_graph_.add_pass("overlay_prepare", frame_graph::PassType::compute,
                           {
-                                  .name_id = "frame_legacy",
-                                  .label = "Frame (legacy)",
-                                  .color = static_cast<std::uint32_t>(tracy::Color::RoyalBlue),
+                                  .name_id = "overlay_prepare",
+                                  .label = "Overlay prepare",
+                                  .color = static_cast<std::uint32_t>(tracy::Color::Orchid),
                           },
                           [&](frame_graph::PassBuilder &pass) {
-                              // Touches nothing the graph knows about yet; the fences around it do the ordering.
-                              pass.legacy();
+                              pass.side_effect();
+                              overlay_data = pass.write(overlay_data, frame_graph::Use::token_write);
+
+                              return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                  auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                                  record_overlay_prepares(pass_context);
+                              }};
+                          });
+
+    // Temporary (deleted with RenderStage in phase 7): every stage of the old timings panel needs both of its
+    // timestamps every frame, so the stages whose pass is not part of this frame's graph write them empty.
+    frame_graph_.add_pass("stage_timestamps", frame_graph::PassType::compute,
+                          {
+                                  .name_id = "stage_timestamps",
+                                  .label = "Stage timestamps",
+                                  .color = static_cast<std::uint32_t>(tracy::Color::Gray),
+                          },
+                          [&](frame_graph::PassBuilder &pass) {
                               pass.side_effect();
 
                               return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                  auto legacy_info = info;
-                                  legacy_info.command_buffer = context.command_buffer;
-                                  state.result = record_frame_legacy(legacy_info, frame, state.handoff);
+                                  auto const empty = [&](RenderStage stage) {
+                                      write_empty_stage(context.command_buffer, info.frame_index, stage);
+                                  };
+
+                                  if (!environment_pending) {
+                                      empty(RenderStage::Environment);
+                                  }
+                                  if (frame.shadow_update_mask == 0) {
+                                      empty(RenderStage::ShadowPass);
+                                  }
+                                  if (!occlusion_active) {
+                                      empty(RenderStage::HiZBuild);
+                                      empty(RenderStage::OcclusionCulling);
+                                      empty(RenderStage::DepthPrepassLate);
+                                  }
+                                  if (!clustered) {
+                                      empty(RenderStage::LightClustering);
+                                  }
+                                  if (!ao_enabled) {
+                                      empty(RenderStage::AmbientOcclusion);
+                                  }
+                                  if (!bloom_enabled) {
+                                      empty(RenderStage::BloomPass);
+                                  }
                               }};
                           });
+
+    // Image-based lighting and the procedural sky: compute that (re)builds the radiance cube, the prefiltered specular
+    // cubes, the BRDF LUT and the SH coefficients, only on the frames the system planned work. It manages its own
+    // layouts per mip and face, and its rebuilds are amortized over frames (a partly filled set must survive between
+    // them), so the graph does not own those images: a token orders the build before the pass that samples the result.
+    auto environment_token = frame_graph::BufferId{};
+    if (environment_pending) {
+        environment_token = frame_graph_.import_token("environment", {}, {});
+
+        frame_graph_.add_pass("environment", frame_graph::PassType::compute,
+                              {
+                                      .name_id = "environment",
+                                      .label = "Environment",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::SkyBlue),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  environment_token = pass.write(environment_token, frame_graph::Use::token_write);
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      auto const pass_context =
+                                              make_pass_context(context.command_buffer, info.frame_index);
+                                      record_environment_pass(pass_context, frame);
+                                  }};
+                              });
+    }
+
+    // The statistics and the meshlet bitset are accumulated into by the culling and prepass shaders, so they start
+    // empty.
+    frame_graph_.add_pass("occlusion_stats_clear", frame_graph::PassType::transfer,
+                          {
+                                  .name_id = "occlusion_stats_clear",
+                                  .label = "Occlusion stats clear",
+                                  .color = static_cast<std::uint32_t>(tracy::Color::Gray),
+                          },
+                          [&](frame_graph::PassBuilder &pass) {
+                              stats_buffer = pass.write_discard(stats_buffer, frame_graph::Use::transfer_write);
+
+                              return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                  record_occlusion_stats_clear(context.command_buffer, frame);
+                              }};
+                          });
+
+    if (meshlet_occlusion_active) {
+        frame_graph_.add_pass("meshlet_visibility_clear", frame_graph::PassType::transfer,
+                              {
+                                      .name_id = "meshlet_visibility_clear",
+                                      .label = "Meshlet visibility clear",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::Gray),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  meshlet_bits = pass.write_discard(meshlet_bits, frame_graph::Use::transfer_write);
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      record_meshlet_visibility_clear(context.command_buffer, frame);
+                                  }};
+                              });
+    }
+
+    // main_cs: frustum culling of every batch and, with occlusion culling on, phase 1 against last frame's Hi-Z (the
+    // instances it defers become late_cs's candidates).
+    frame_graph_.add_pass("gpu_culling", frame_graph::PassType::compute,
+                          {
+                                  .name_id = "culling",
+                                  .label = "Culling",
+                                  .color = static_cast<std::uint32_t>(tracy::Color::SlateBlue),
+                          },
+                          [&](frame_graph::PassBuilder &pass) {
+                              constexpr auto compute = stages_of(ShaderStage::compute);
+                              using frame_graph::Use;
+
+                              [[maybe_unused]] auto const draws = pass.read(source_draws, Use::shader_read, compute);
+                              [[maybe_unused]] auto const transforms =
+                                      pass.read(source_transforms, Use::shader_read, compute);
+                              [[maybe_unused]] auto const bounds = pass.read(batch_bounds, Use::shader_read, compute);
+                              [[maybe_unused]] auto const commands =
+                                      pass.read(source_indirect, Use::shader_read, compute);
+                              [[maybe_unused]] auto const planes = pass.read(frustum_planes, Use::shader_read, compute);
+                              [[maybe_unused]] auto const views = pass.read(occlusion_views, Use::shader_read, compute);
+                              if (occlusion_active) {
+                                  // View [0] holds last frame's pyramid, sampled by the occlusion test.
+                                  [[maybe_unused]] auto const history = pass.read(hiz_image, Use::sampled, compute);
+                              }
+
+                              visible_draws = pass.write(visible_draws, Use::shader_write, compute);
+                              visible_transforms = pass.write(visible_transforms, Use::shader_write, compute);
+                              culled_indirect = pass.write(culled_indirect, Use::shader_write, compute);
+                              occlusion_candidates = pass.write(occlusion_candidates, Use::shader_write, compute);
+                              candidate_counts = pass.write(candidate_counts, Use::shader_write, compute);
+                              stats_buffer = pass.write(stats_buffer, Use::shader_read_write, compute);
+
+                              return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                  auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                                  if (auto const done = record_gpu_culling(pass_context, frame); !done) {
+                                      state.result = std::unexpected(done.error());
+                                  }
+                              }};
+                          });
+
+    // Clustered lighting: cull the lights to the frustum, then bin them into the screen-space clusters forward reads.
+    if (clustered) {
+        frame_graph_.add_pass("cluster_stats_clear", frame_graph::PassType::transfer,
+                              {
+                                      .name_id = "cluster_stats_clear",
+                                      .label = "Cluster stats clear",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::Gold),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  cluster_lights = pass.write(cluster_lights, frame_graph::Use::transfer_write);
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      auto const pass_context =
+                                              make_pass_context(context.command_buffer, info.frame_index);
+                                      record_cluster_stats_clear(pass_context, frame);
+                                  }};
+                              });
+
+        frame_graph_.add_pass("light_cull", frame_graph::PassType::compute,
+                              {
+                                      .name_id = "light_cull",
+                                      .label = "Light cull",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::Gold),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  constexpr auto compute = stages_of(ShaderStage::compute);
+
+                                  [[maybe_unused]] auto const planes =
+                                          pass.read(frustum_planes, frame_graph::Use::shader_read, compute);
+                                  visible_lights = pass.write(visible_lights, frame_graph::Use::shader_write, compute);
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      if (!state.result) {
+                                          return;
+                                      }
+
+                                      auto const pass_context =
+                                              make_pass_context(context.command_buffer, info.frame_index);
+                                      if (auto const done = record_light_cull(pass_context, frame); !done) {
+                                          state.result = std::unexpected(done.error());
+                                      }
+                                  }};
+                              });
+
+        frame_graph_.add_pass("light_cluster", frame_graph::PassType::compute,
+                              {
+                                      .name_id = "light_cluster",
+                                      .label = "Light cluster",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::Gold),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  constexpr auto compute = stages_of(ShaderStage::compute);
+
+                                  [[maybe_unused]] auto const lights =
+                                          pass.read(visible_lights, frame_graph::Use::shader_read, compute);
+                                  cluster_lights =
+                                          pass.write(cluster_lights, frame_graph::Use::shader_read_write, compute);
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      if (!state.result) {
+                                          return;
+                                      }
+
+                                      auto const pass_context =
+                                              make_pass_context(context.command_buffer, info.frame_index);
+                                      if (auto const done = record_light_cluster(pass_context, frame); !done) {
+                                          state.result = std::unexpected(done.error());
+                                      }
+                                  }};
+                              });
+
+        frame_graph_.add_pass(
+                "cluster_stats_readback", frame_graph::PassType::transfer,
+                {
+                        .name_id = "cluster_stats_readback",
+                        .label = "Cluster stats readback",
+                        .color = static_cast<std::uint32_t>(tracy::Color::Gold),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    pass.side_effect();
+                    [[maybe_unused]] auto const source = pass.read(cluster_lights, frame_graph::Use::transfer_read);
+                    cluster_stats_readback = pass.write(cluster_stats_readback, frame_graph::Use::transfer_write);
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        record_cluster_stats_readback(pass_context, frame);
+                    }};
+                });
+    }
 
     // Cascaded shadow maps into the atlas. Only the cascades in the update mask are cleared and redrawn; the rest keep
     // their contents, so the pass loads the atlas once it has any.
@@ -398,9 +655,12 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 [[maybe_unused]] auto const planes =
                         pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
                 if (meshlet_occlusion_active) {
-                    // View [0], the history Hi-Z's, and the bits and counters this phase's task shaders record.
+                    // View [0], the history Hi-Z's (sampled by the task shaders' meshlet test), and the bits and
+                    // counters this phase's task shaders record.
                     [[maybe_unused]] auto const views =
                             pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                    [[maybe_unused]] auto const history =
+                            pass.read(hiz_image, frame_graph::Use::sampled, stages_of(ShaderStage::task));
                     meshlet_bits =
                             pass.write(meshlet_bits, frame_graph::Use::shader_read_write, stages_of(ShaderStage::task));
                     stats_buffer =
@@ -528,8 +788,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const planes =
                             pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
                     if (meshlet_occlusion_active) {
+                        // View [1], this frame's pyramid, sampled by the task shaders' meshlet test.
                         [[maybe_unused]] auto const views =
                                 pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                        [[maybe_unused]] auto const pyramid =
+                                pass.read(hiz_image, frame_graph::Use::sampled, stages_of(ShaderStage::task));
                         meshlet_bits = pass.write(meshlet_bits, frame_graph::Use::shader_read_write,
                                                   stages_of(ShaderStage::task));
                         stats_buffer = pass.write(stats_buffer, frame_graph::Use::shader_read_write,
@@ -630,6 +893,13 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 // declare it here too.
                 [[maybe_unused]] auto const shadows =
                         pass.read(shadow_image, frame_graph::Use::sampled, fragment_stage);
+                // The scene overlays draw inside this pass, from what their prepare() hooks wrote.
+                [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
+                if (environment_pending) {
+                    // Samples the cubes, the LUT and the SH the environment pass just built.
+                    [[maybe_unused]] auto const environment =
+                            pass.read(environment_token, frame_graph::Use::token_read);
+                }
                 [[maybe_unused]] auto const draws =
                         pass.read(visible_draws, frame_graph::Use::shader_read, draw_stages);
                 [[maybe_unused]] auto const transforms =
@@ -643,6 +913,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
                     [[maybe_unused]] auto const bits =
                             pass.read(meshlet_bits, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                }
+                if (clustered) {
+                    // The per-cluster light lists (past the statistics) the fragment shader walks.
+                    [[maybe_unused]] auto const clusters =
+                            pass.read(cluster_lights, frame_graph::Use::shader_read, fragment_stage);
                 }
                 if (ao_enabled) {
                     [[maybe_unused]] auto const ao = pass.read(ao_image, frame_graph::Use::sampled, fragment_stage);
@@ -726,6 +1001,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     .color = static_cast<std::uint32_t>(tracy::Color::SeaGreen),
             },
             [&](frame_graph::PassBuilder &pass) {
+                if (fullscreen) {
+                    // The UI overlays draw inside this pass in fullscreen play.
+                    [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
+                }
                 if (bloom_enabled) {
                     [[maybe_unused]] auto const bloom =
                             pass.read(bloom_image, frame_graph::Use::sampled, fragment_stage);
@@ -784,9 +1063,12 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         .color = static_cast<std::uint32_t>(tracy::Color::Orchid),
                 },
                 [&](frame_graph::PassBuilder &pass) {
-                    // The UI draws the viewport panel by sampling the target the composition pass just wrote.
+                    // The UI draws the viewport panel by sampling the target the composition pass just wrote. ImGui
+                    // may only sample imports in SHADER_READ_ONLY (the viewport, the Hi-Z debug view) or images outside
+                    // the graph; see docs/frame-graph-status.md before making any ImGui-visible image a transient.
                     [[maybe_unused]] auto const sampled =
                             pass.read(viewport, frame_graph::Use::sampled, fragment_stage);
+                    [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
                     swapchain = pass.color(swapchain, frame_graph::LoadOp::clear, frame_graph::StoreOp::store,
                                            ui_clear_colour);
                     pass.render_area({.offset = {0, 0}, .extent = swapchain_image.extent});
