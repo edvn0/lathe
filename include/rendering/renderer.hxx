@@ -394,7 +394,8 @@ struct Renderer final : public IMeshSink, public IModelSink {
                       std::span<MaterialSlotOverride const> slot_overrides = {}) -> std::expected<void, RendererError>;
 
     // Submits many instances of one model sharing a material_override, without an entity per instance. Batching is
-    // the same as for individual submissions.
+    // the same as for individual submissions, but the transforms are copied in one block and prepare_frame() resolves
+    // each (submesh, LOD) batch once per call rather than once per instance.
     [[nodiscard]]
     auto submit_model_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
                                 MaterialHandle material_override = {}) -> std::expected<void, RendererError>;
@@ -1017,6 +1018,17 @@ private:
         std::uint32_t slot_override_count = 0;
     };
 
+    // One submit_model_instances() call: a range of instance_transforms_, batched in prepare_frame() just before
+    // model_submissions_[model_submission_position], so instances keep their order relative to individual
+    // submissions.
+    struct InstancedSubmission {
+        ModelHandle model{};
+        MaterialHandle material_override{};
+        std::uint32_t first_transform = 0;
+        std::uint32_t transform_count = 0;
+        std::size_t model_submission_position = 0;
+    };
+
     struct BatchEntry {
         MeshHandle mesh{};
         std::uint32_t submesh_index = 0;
@@ -1357,6 +1369,13 @@ private:
     std::vector<Submission> submissions_;
     std::vector<ModelSubmission> model_submissions_;
     std::vector<MaterialSlotOverride> slot_override_submissions_;
+    std::vector<InstancedSubmission> instanced_submissions_;
+    std::vector<glm::mat4> instance_transforms_;
+
+    // Model submissions this frame, individual and instanced: what maximum_submission_count_ bounds.
+    [[nodiscard]] auto submitted_model_count() const noexcept -> std::size_t {
+        return model_submissions_.size() + instance_transforms_.size();
+    }
 
     std::vector<RendererFrame> frames_;
 
