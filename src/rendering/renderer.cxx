@@ -1471,8 +1471,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.transform_upload_offset = transform_offset;
         frame.indirect_upload_offset = indirect_offset;
         frame.batch_bounds_upload_offset = batch_bounds_offset;
-        frame.draws.reserve(maximum_draw_count_);
-        frame.transforms.reserve(maximum_submission_count_);
         frame.indirect_commands.reserve(maximum_draw_count_);
         frame.batch_bounds.reserve(maximum_draw_count_);
     }
@@ -1658,8 +1656,8 @@ auto Renderer::destroy() noexcept -> void {
         frame.draw_buffer.destroy();
         frame.upload_buffer.destroy();
 
-        frame.draws.clear();
-        frame.transforms.clear();
+        frame.draw_count = 0;
+        frame.transform_count = 0;
         frame.indirect_commands.clear();
         frame.batch_bounds.clear();
 
@@ -2614,8 +2612,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     frame.view_projection = matrices.projection * matrices.view;
 
-    frame.draws.clear();
-    frame.transforms.clear();
+    frame.draw_count = 0;
+    frame.transform_count = 0;
+    computed_transforms_.clear();
     frame.indirect_commands.clear();
     frame.batch_bounds.clear();
 
@@ -2677,7 +2676,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     auto const append_batch_transform = [&batch_for](BatchKey const &key, MeshHandle mesh, std::uint32_t submesh_index,
                                                      MaterialHandle material, std::uint32_t lod_index,
-                                                     glm::mat4 const &transform) {
+                                                     glm::mat4 const *transform) {
         batch_for(key, mesh, submesh_index, material, lod_index).transforms.push_back(transform);
     };
 
@@ -2714,8 +2713,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             auto const identity_local = model_draw.local_transform == glm::mat4{1.0F};
 
             for (auto const &transform: transforms) {
-                auto const instance_transform = identity_local ? transform : transform * model_draw.local_transform;
-                auto const lod_index = select_lod_index(glm::vec3(instance_transform[3]));
+                // The block of transforms outlives the batches; only a non-identity local transform needs a copy.
+                auto const *instance_transform = &transform;
+                if (!identity_local) {
+                    instance_transform = &computed_transforms_.emplace_back(transform * model_draw.local_transform);
+                }
+                auto const lod_index = select_lod_index(glm::vec3((*instance_transform)[3]));
 
                 for (std::uint32_t submesh_index = 0; submesh_index < submesh_count; ++submesh_index) {
                     auto *&batch = instanced_batch_cache[submesh_index * lod_slot_count + lod_index];
@@ -2777,8 +2780,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 clear_submissions();
                 return std::unexpected(make_error(RendererErrorType::invalid_mesh));
             }
-            auto const instance_transform = model_submission.transform * model_draw.local_transform;
-            auto const lod_index = select_lod_index(glm::vec3(instance_transform[3]));
+            auto const *instance_transform = &model_submission.transform;
+            if (model_draw.local_transform != glm::mat4{1.0F}) {
+                instance_transform =
+                        &computed_transforms_.emplace_back(model_submission.transform * model_draw.local_transform);
+            }
+            auto const lod_index = select_lod_index(glm::vec3((*instance_transform)[3]));
             for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
                 auto const &submesh = mesh->submeshes[submesh_index];
                 auto material = model_submission.material_override.valid() ? model_submission.material_override
@@ -2822,7 +2829,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                     .lod_index = lod_index,
             };
 
-            append_batch_transform(key, submission.mesh, submesh_index, material, lod_index, submission.transform);
+            append_batch_transform(key, submission.mesh, submesh_index, material, lod_index, &submission.transform);
         }
     }
 
@@ -2848,8 +2855,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         auto const &geometry = submesh.lods[batch.lod_index];
         auto const instance_count = static_cast<std::uint32_t>(batch.transforms.size());
         submitted_triangle_count += (geometry.indices.index_count / 3) * instance_count;
-        if (frame.transforms.size() + instance_count > maximum_submission_count_ ||
-            frame.draws.size() + instance_count > maximum_draw_count_) {
+        if (frame.transform_count + instance_count > maximum_submission_count_ ||
+            frame.draw_count + instance_count > maximum_draw_count_) {
             clear_submissions();
             return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
         }
@@ -2859,9 +2866,21 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             return std::unexpected(make_error(RendererErrorType::invalid_mesh));
         }
 
-        frame.transforms.insert(frame.transforms.end(), batch.transforms.begin(), batch.transforms.end());
+        if (!frame.upload_buffer.mapped()) {
+            clear_submissions();
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
 
-        auto const first_instance = static_cast<std::uint32_t>(frame.draws.size());
+        // Straight into the upload buffer: one copy per transform, no intermediate frame-side array.
+        auto *const transform_out = frame.upload_buffer.mapped_data() + frame.transform_upload_offset +
+                                    static_cast<std::size_t>(frame.transform_count) * sizeof(glm::mat4);
+        for (std::uint32_t instance = 0; instance < instance_count; ++instance) {
+            std::memcpy(transform_out + static_cast<std::size_t>(instance) * sizeof(glm::mat4),
+                        batch.transforms[instance], sizeof(glm::mat4));
+        }
+        frame.transform_count += instance_count;
+
+        auto const first_instance = frame.draw_count;
         auto const vertex_address = geometry_arena_.vertex_address(geometry.vertices);
         auto const meshlet_address = geometry_arena_.device_address(geometry.meshlets.descriptors);
         auto const meshlet_data_address = geometry_arena_.device_address(geometry.meshlets.data);
@@ -2872,8 +2891,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                                ? meshlet_layout.reserve(instance_count, geometry.meshlets.meshlet_count)
                                                : std::uint64_t{0};
 
+        auto *const draw_out = frame.upload_buffer.mapped_data() + frame.draw_upload_offset +
+                               static_cast<std::size_t>(first_instance) * sizeof(GpuDraw);
         for (std::uint32_t instance = 0; instance < instance_count; ++instance) {
-            frame.draws.push_back(GpuDraw{
+            auto const draw = GpuDraw{
                     .vertex_address = vertex_address,
                     .meshlet_address = meshlet_address,
                     .meshlet_data_address = meshlet_data_address,
@@ -2882,8 +2903,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                                          ? meshlet_visibility_offset(first_meshlet_bit, instance,
                                                                                      geometry.meshlets.meshlet_count)
                                                          : 0U,
-            });
+            };
+            std::memcpy(draw_out + static_cast<std::size_t>(instance) * sizeof(GpuDraw), &draw, sizeof(GpuDraw));
         }
+        frame.draw_count += instance_count;
 
         // Un-culled command: drawn as-is by the shadow pass and culled by main_cs for the main view. Exactly one of its
         // halves is live, see uses_meshlet_path().
@@ -2950,7 +2973,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
                 auto const &submesh = mesh->submeshes[batch->submesh_index];
                 auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
-                auto const world_centre = glm::vec3(batch->transforms.front() * glm::vec4(local_centre, 1.0F));
+                auto const world_centre = glm::vec3(*batch->transforms.front() * glm::vec4(local_centre, 1.0F));
                 auto const distance = world_centre - camera_position;
                 blend_batches_.push_back(PendingBlendBatch{
                         .entry = batch,
@@ -3436,7 +3459,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     last_frame_stats_ = FrameStats{
             .submitted_triangle_count = submitted_triangle_count,
-            .submitted_instance_count = static_cast<std::uint32_t>(frame.transforms.size()),
+            .submitted_instance_count = frame.transform_count,
             .indirect_command_count = frame.indirect_command_count,
             .opaque_indirect_count = frame.opaque_indirect_count,
             .mask_indirect_count = frame.mask_indirect_count,
@@ -4527,21 +4550,20 @@ auto Renderer::model_slot(ModelHandle handle) const noexcept -> ModelSlotData co
 auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame)
         -> std::expected<void, RendererError> {
 
-    auto const draw_size = static_cast<VkDeviceSize>(frame.draws.size()) * sizeof(GpuDraw);
-    auto const transform_size = static_cast<VkDeviceSize>(frame.transforms.size()) * sizeof(glm::mat4);
+    auto const draw_size = static_cast<VkDeviceSize>(frame.draw_count) * sizeof(GpuDraw);
+    auto const transform_size = static_cast<VkDeviceSize>(frame.transform_count) * sizeof(glm::mat4);
     auto const indirect_size = static_cast<VkDeviceSize>(frame.indirect_commands.size()) * sizeof(GpuDrawCommand);
     auto const batch_bounds_size = static_cast<VkDeviceSize>(frame.batch_bounds.size()) * sizeof(GpuCullBounds);
 
+    // Draws and transforms were written in place by emit_batch(); only make them visible to the device.
     if (draw_size != 0) {
-        auto const data_span = std::as_bytes(std::span{frame.draws});
-        if (auto const result = frame.upload_buffer.write(frame.draw_upload_offset, data_span); !result) {
+        if (auto const result = frame.upload_buffer.flush(frame.draw_upload_offset, draw_size); !result) {
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
     }
 
     if (transform_size != 0) {
-        auto const data_span = std::as_bytes(std::span{frame.transforms});
-        if (auto const result = frame.upload_buffer.write(frame.transform_upload_offset, data_span); !result) {
+        if (auto const result = frame.upload_buffer.flush(frame.transform_upload_offset, transform_size); !result) {
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
     }
