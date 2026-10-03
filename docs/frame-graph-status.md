@@ -8,36 +8,36 @@ plan, where it deviates, and what to do next.
 - **Branch:** `claude/youthful-carson-5f71a0` (stacked on `frame-graph-plan`, which holds only `docs/frame-graph.md`).
 - **Pull request:** <https://github.com/edvn0/lathe/pull/47>, a draft, titled "Frame graph: compiler (phase 1), queue
   infrastructure (phase 2) and recording backend (phase 3)".
-- **Head at the time of writing:** `82efff7` (Phase 4, step 5d). CI builds `lathe-tests` and runs `ctest` in Debug,
-  RelWithDebInfo and Debug ASan+UBSan `-Werror` (see `.github/workflows/build.yml`); check the PR for the current state.
-- **Phases 0 and 4 (steps 1 to 5d) were implemented locally by the repository owner** (with Opus) on top of the Phase 1 to 3
-  work, and pushed to this branch. Hardware results for them are reported only in their commit messages (baselines
-  bit-identical, sync validation clean on an RTX 4070 Ti SUPER); they were not independently re-run. Read
-  [Verification status](#7-verification-status) before trusting any runtime behaviour.
+- **Head at the time of writing:** the Phase 6 commit (see `git log`). CI builds `lathe-tests` and runs `ctest` in
+  Debug, RelWithDebInfo and Debug ASan+UBSan `-Werror` (see `.github/workflows/build.yml`); check the PR for the state.
+- **Phases 0 and 4 to 6 were implemented on the repository owner's machine** (an RTX 4070 Ti SUPER with a dedicated
+  compute family) by Claude Sonnet 5.5 working at the owner's direction, on top of the Phase 1 to 3 work from a
+  machine without a GPU. Every step was checked on that GPU against baselines captured from `main` (see
+  [Verification status](#7-verification-status)); the unit tests and the pure parts were run there too.
 
 ## 1. Where we are in one page
 
 | Phase | What | State |
 |---|---|---|
-| 0 | Baseline harness (benchmark counters, deterministic screenshots, `compare_screenshots.py`, `capture_baselines.sh`, `--occlusion-test`) | **Done** (owner). |
+| 0 | Baseline harness (benchmark counters, deterministic screenshots, `compare_screenshots.py`, `capture_baselines.sh`, `--occlusion-test`) | **Done.** |
 | 1 | Device-free compiler core (`frame_graph::compile`) | **Done**, unit and property tested. |
-| 2 | Queue discovery, timeline semaphores, `QueueSet`, swapchain split, per-queue Tracy, smoke path | **Done in code, not run on a GPU.** |
-| 3 | Recording backend (`vk_translate`, `PassProfiler`, executor) and the frame wrapped as one legacy pass | **Done.** The builder now produces `RenderingDesc` and the executor does begin/end rendering; plan cache and `--frame-graph-serialize` landed with phase 4. |
-| 4 | Migrate passes out of the legacy body, back to front | **In progress, steps 1 to 5d done** (see section 6.1). Remaining: early depth prepass, shadows, culling/clustering out of `prepare_frame`, environment, overlays/ImGui. |
-| 5 | Transient allocation and aliasing | Not started. |
-| 6 | Enable async compute, one pass at a time, by measurement | Not started. |
+| 2 | Queue discovery, timeline semaphores, `QueueSet`, swapchain split, per-queue Tracy, smoke path | **Done and run** on a dedicated-compute-family GPU (see section 7). |
+| 3 | Recording backend (`vk_translate`, `PassProfiler`, executor) | **Done.** Builder `RenderingDesc`, begin/end rendering, plan cache and `--frame-graph-serialize` landed with phase 4. |
+| 4 | Migrate passes out of the legacy body, back to front | **Done**: no `legacy()` pass remains (section 6.1). |
+| 5 | Transient allocation and aliasing | **Done** for the AO, bloom and forward targets (section 6.2). |
+| 6 | Enable async compute, one pass at a time, by measurement | **Candidates implemented and correct; measurement in section 6.3.** |
 | 7 | Delete `RenderStage` / `write_empty_stage` | Not started. |
 | 8 | Concurrent sharing for read-mostly buffers | Not started (optional). |
 | 9 | Parallel batch recording | Not started. |
 
-What exists end to end today: every frame, `Renderer::record_frame` (now in `src/rendering/renderer_frame_graph.cxx`)
-declares a frame graph. The first pass is still a `legacy()` graphics pass (`frame_legacy`) holding what has not been
-migrated (overlay prepares, environment, shadows, the early depth prepass, empty-stage timestamps); after it come
-graph-visible passes in declaration order: `hiz_build`, `late_cs` (occlusion culling), `depth_prepass_late`, `gtao`,
-`gtao_denoise`, `forward`, `bloom`, `composition`, `ui`, `occlusion_stats_readback`, `screenshot` (when pending) and
-`frame_end`. Passes are conditional on the frame's features. The graph is compiled (through `PlanCache`) and executed
-by the new backend, and `main.cxx` submits the batches through `QueueSet` with timeline semaphores. Everything is on the
-graphics queue until phase 6 enables async compute.
+What exists end to end today: every frame, `Renderer::record_frame` (in `src/rendering/renderer_frame_graph.cxx`)
+declares the whole frame as a graph, in recording order: `overlay_prepare`, `stage_timestamps` (a shim), `environment`
+(when there is work), `occlusion_stats_clear`, `meshlet_visibility_clear`, `gpu_culling` (`main_cs`), the light
+clustering passes, `shadow_pass`, `depth_prepass`, `hiz_build`, `late_cs`, `depth_prepass_late`, `gtao`, `gtao_denoise`,
+`forward`, `bloom`, `composition`, `ui`, `occlusion_stats_readback`, `screenshot` (when pending) and `frame_end`. Passes
+are conditional on the frame's features. The graph is compiled (through `PlanCache`), its transients get memory from the
+`TransientAllocator`, and the new backend executes it; `main.cxx` submits the batches through `QueueSet` with timeline
+semaphores. Everything runs on the graphics queue unless `--async-passes` asks for the compute queue (phase 6).
 
 The compiler is already queue-aware (single, same-family and dedicated topologies, ownership transfers, semaphore waits,
 list scheduler), so phases 4 to 6 only need to *declare* passes, not extend the compiler, except for the gaps in
@@ -335,15 +335,80 @@ steady state work, not a joined two-frame plan).
   ownership halves keep their family indices, everything else is `VK_QUEUE_FAMILY_IGNORED`; `RenderingDesc` becomes a
   `VkRenderingInfo` with `COLOR_ATTACHMENT_OPTIMAL` / `DEPTH_ATTACHMENT_OPTIMAL` and the resolve target in the same layout.
 
-### 6.1 Phase 4 as built so far (owner's commits)
+### 6.1 Phase 4 as built
 
-Passes live in `src/rendering/renderer_frame_graph.cxx`. Imports declared there: swapchain, viewport, HDR and MSAA HDR,
-depth and resolved depth, shadow atlas, AO raw/denoised, bloom, the occlusion-chain buffers, Hi-Z, stats readback.
-`FrameState{result, PassHandoff handoff}` carries results and per-frame handoff data between passes. Migration steps
-completed: (1) composition, `ui`, screenshot, `frame_end`; (2) bloom; (3) forward; (4) gtao and denoise, stats readback;
-(5b) late depth prepass; (5c) `late_cs`; (5d) `hiz_build`. `frame_legacy` still contains overlay prepares, the
-environment pass, shadows, the early depth prepass and the empty-stage timestamps. Tests for this layer are in
-`test/frame_graph_rendering_test.cxx` (12 cases).
+Passes live in `src/rendering/renderer_frame_graph.cxx`; `FrameState{result, PassHandoff handoff}` carries results and
+the few bindless indices between pass lambdas. Deviations from the plan, all deliberate:
+
+- **Imports.** The swapchain, viewport target, shadow atlas, Hi-Z, per-frame buffers and the host readback buffers are
+  imports. Buffers enter and leave with nothing outstanding (`buffer_idle`): `upload_frame_data` ends with its own
+  barriers to every consumer stage and the host needs none. Material, texture and geometry storage, the UBO and the lights
+  buffer are not declared (host-written or persistent; nothing on the GPU produces them).
+- **Environment** is a compute pass ordered by a *token* (`environment`), not by graph-owned images: the system manages
+  its own layouts per mip and face and amortizes rebuilds over frames, so a whole-image graph write would discard partial
+  results. `EnvironmentSystem::has_pending_record()` decides whether the pass exists.
+- **Overlays** are ordered by an `overlay_data` token written by `overlay_prepare`; forward, composition (fullscreen) and
+  `ui` read it.
+- **The ImGui contract is not implemented** (`ImGuiRenderer` exposing draw-data texture indices and
+  `FrameGraph::find_by_bindless`). The `ui` pass declares the viewport read and the overlay token only. ImGui may sample
+  imports left in SHADER_READ_ONLY (the viewport, the Hi-Z debug view) or images outside the graph; before making any
+  ImGui-visible image a transient, implement the contract.
+- **Timestamps.** `RenderStage` queries still feed the old timings panel. Migrated bodies keep their `stage*2` writes,
+  now inside their rendering scope (so ForwardPass no longer covers the resolve), and `stage_timestamps` writes empty stages
+  for passes absent from the frame. Phase 7 removes all of it.
+- **Every buffer a shader reaches by device address is declared** by the passes that dereference it (the occlusion
+  chain, the draws, the lights and cluster lists, the Hi-Z history). The compiler's tests are the only guarantee.
+
+### 6.2 Phase 5 as built
+
+`aliasing.{hxx,cxx}` is the pure planner (`plan_transients`, `transients_disjoint`, `transient_usage`), with unit tests and
+a property test over seeded random graphs on all three topologies, checked against an independent happens-before in the
+test. `TransientAllocator` backs a slot's transients from VMA blocks (`vmaAllocateMemory` with explicit device-local flags,
+since the AUTO usages need a resource) and creates aliasing images (`Image` gained `ImageCreateInfo::alias`, created with
+`vmaCreateAliasingImage2` and destroyed with `vkDestroyImage`). Images are recreated only when a transient's description,
+usage or planned placement changes, not whenever the compiled plan does (that would recreate them whenever shadows toggle),
+and always after `vkDeviceWaitIdle` because every frame's descriptor set lists every image. A recreation refreshes the
+resource table so this frame's shaders see the new bindless indices. The executor records the planner's aliasing barrier
+before the first pass that uses recycled memory.
+
+Converted: AO raw and denoised, the bloom chain (with per-mip bindless slots), the MSAA and resolved HDR and depth.
+`ForwardTarget` is gone from the frame; a resize recreates the viewport targets and the Hi-Z pyramid only. The viewport
+target and Hi-Z stay imported. `--frame-graph-alias=on|off` and a log line with the aliased and unaliased bytes exist; a
+UI checkbox does not. Aliasing saves about 16% of the transient memory (435 vs 515 MiB across the frame slots at
+2560x1420, 4x MSAA): the large MSAA targets are alive at the same time as nearly everything else. `--stress-resize=<n>`
+alternates the render size every n frames; 930 resizes ran under validation with a clean exit.
+
+### 6.3 Phase 6 as built
+
+`--async-passes=light,occlusion,gtao` declares groups of compute passes with compute-queue affinity (light culling and
+clustering; the Hi-Z build and `late_cs`, with the shadows declared after the early prepass; GTAO and its denoise, with the
+shadows after the late prepass). The renderer logs the schedule whenever the plan is recompiled. Running on the dedicated
+compute family found two real bugs that the unit tests could not:
+
+- barriers on a compute-only family cannot name graphics stages: the executor masks them, and `render_pass::Context::
+  compute_only` makes the Hi-Z and bloom bodies keep to compute stages;
+- a layout transition has no source stage and could run ahead of a semaphore wait naming only the first-use stage (a WAW
+  hazard against the other queue's work): cross-queue waits now use ALL_COMMANDS, since a batch is the work between
+  cross-queue dependencies.
+
+**Measurement (inconclusive; nothing is enabled by default).** Release build, RTX 4070 Ti SUPER, 4x MSAA at 2560x1420,
+`--occlusion-culling=on`, 3000 frames after a 300-frame warmup, each configuration three times interleaved. The machine
+was also compiling a large project, so there is CPU contention, though the numbers are GPU timestamps. `full_frame`
+median in ms (graphics-queue span; compute that overlaps is not in it):
+
+| configuration | three repetitions | mean | vs base |
+|---|---|---|---|
+| base (all on graphics) | 2.550, 2.301, 2.874 | 2.575 | |
+| `light` | 2.481, 2.499, 2.830 | 2.603 | +1.1% |
+| `occlusion` | 2.503, 2.737, 2.969 | 2.736 | +6.3% |
+| `gtao` | 2.417, 2.950, 2.609 | 2.659 | +3.2% |
+| `light,occlusion,gtao` | 2.397, 2.953, 2.552 | 2.634 | +2.3% |
+
+Repetitions of one configuration differ by 0.35 to 0.57 ms (15 to 20%), far more than the differences between
+configurations, so none of them improves `full_frame` beyond the noise floor. Per the plan they stay off. Worth a rerun
+on a quiet machine with more repetitions (`tools/perf/run_benchmark.sh`, `compare_benchmarks.py`), and with the per-queue
+Tracy GPU contexts to see whether the overlap is real; the occlusion group needs 30 ownership transfers, which phase 8
+would remove.
 
 ## 7. Verification status
 
@@ -358,35 +423,26 @@ environment pass, shadows, the early depth prepass and the empty-stage timestamp
   configuration on every commit of this branch. Before pushing, the new engine files were also syntax-checked locally
   against the real Vulkan, volk, GLFW, VMA, Tracy, Slang and (docking) ImGui headers.
 
-### Not verified (needs hardware)
+### Verified on hardware (RTX 4070 Ti SUPER, dedicated compute family, Debug build with validation layers)
 
-I (the agent that wrote phases 1 to 3) never ran anything on a GPU. The owner reports in commit messages that
-baselines are bit-identical and sync validation is clean through phase 4 step 5d; treat that as reported, not
-re-verified here. Not reported as checked by anyone:
+Each step of phases 4 to 6 was checked against baselines captured from `main` with the same benchmark harness
+(`tools/perf/capture_baselines.sh`): all four variants bit-identical (15/15 keyframes each) with equal final occlusion and
+cluster counters, and `--sync-validation` clean (the depth-resolve hazards `main` has disappeared when the early prepass
+migrated). Also checked: MSAA off (occlusion off/on/meshlet identical), AO off, bloom off, clustering off, aliasing on and
+off, `--frame-graph-serialize`, `--async-compute=off|same-family`, `--async-compute-smoke`, each `--async-passes` group and
+all three together (with the same-family and off fallbacks), the shadow/environment/overlay paths, and 930 renderer resizes
+(`--stress-resize=1`) under validation. A short warmup makes a few keyframes differ run to run (streaming has not settled);
+use 60 or more for baselines and 240 for ad hoc configurations.
 
-- the frame submission path (`QueueSet`, timeline waits, swapchain `acquire`/`present`, resize/recreate);
-- the legacy pass wrapper: image-layout correctness of the swapchain through the new barrier plus the old body's own
-  transitions, validation-layer cleanliness, and that output is bit-identical to before;
-- the Tracy zone "Frame (legacy)", the per-queue Tracy contexts, and the "Frame graph" timings table;
-- `--async-compute-smoke`, `--async-compute=off|same-family`, `--sync-validation` (including the layer-settings path);
-- clang-tidy (`cargo xtask tidy`) on the new code.
+### Not verified (needs a person at the machine or a tool I did not have)
 
-### Hardware checklist (do these before phase 4, or at least before merging)
-
-The plan's acceptance checks, concretely:
-
-1. **Baselines.** Use `tools/perf/capture_baselines.sh` (four variants) and `tools/perf/compare_screenshots.py` against
-   images captured from `main`; confirm bit-identical output and matching occlusion statistics after every migrated pass.
-2. **Validation.** Debug build, `--sync-validation`, 300 frames including a window resize and toggling occlusion, meshlet,
-   AO and bloom: no new validation messages. Pay particular attention to swapchain image layout messages and anything
-   about queue submission, timeline values, or command pool reset.
-3. **Tracy.** A named, coloured GPU zone "Frame (legacy)" and a `frame_legacy` row (queue `graphics`, a time) in the
-   Frame graph table; the `RenderStage` timings unchanged.
-4. **Smoke path** on a dedicated-compute GPU: `--async-compute-smoke`, both Tracy GPU contexts ("graphics" and
-   "compute") present, validation clean.
-5. **Fallbacks:** `--async-compute=off` and `--async-compute=same-family` behave identically; the startup log line shows
-   the topology on a dedicated-family GPU and on a single-queue device (lavapipe/llvmpipe works).
-6. **`cargo xtask tidy`.**
+- a real window resize and a drag-resize with the editor (the compositor ignored window size changes, so `--stress-resize`
+  drives the renderer's own resize path instead), and toggling culling, meshlet, AO and bloom in the UI during a run;
+- the Tracy zones ("Frame graph" passes, the per-queue GPU contexts) and the Frame graph timings table;
+- RenderDoc event order against `docs/occlusion-culling.md`;
+- fullscreen play (`CompositeTarget::swapchain`): exercised only by a temporary hook, which ran clean under validation;
+- steady-state memory over a long resize run (a clean exit under VMA's debug leak asserts is the only evidence);
+- clang-tidy on the new code (deferred by the owner to the end of the PR).
 
 ### If something fails, where to look
 
@@ -416,10 +472,10 @@ Deliberate or forced differences, so they are not mistaken for oversights:
    it and the executor wraps raster passes in begin/end rendering (render area defaults to the first attachment's extent).
 3. ~~No plan cache~~ **Closed.** `PlanCache` (in `compiler.cxx`) reuses the plan when `declaration_hash` matches and
    there are no declaration errors; hits and misses are counted.
-4. **Transients are images only and have no memory.** `PassBuilder::create` makes transient *images* in the declaration,
-   but there is no allocator (phase 5) and no transient buffers; `CompileOptions::alias_transients` does not exist yet.
-5. **Missing CLI flags:** `--frame-graph-alias` and `--frame-graph-dump`. (`--frame-graph-serialize` now exists and maps
-   to `CompileOptions::serialize`.)
+4. **Transients are images only**, and `CompileOptions::alias_transients` does not exist: aliasing is decided after the
+   compile by `plan_transients` and switched by `--frame-graph-alias`. There are no transient buffers.
+5. **Missing CLI flag:** `--frame-graph-dump` (phase 7). `--frame-graph-alias`, `--frame-graph-serialize`,
+   `--async-passes` and `--stress-resize` exist.
 6. **`QueueSet` does not warn when the present family differs from graphics** (the plan says it should log a warning;
    the existing swapchain gap is unchanged).
 7. **`--async-compute=off` is compile-time only:** the compute queue is still created and, with `--async-compute-smoke`,
@@ -428,28 +484,25 @@ Deliberate or forced differences, so they are not mistaken for oversights:
 9. **Phase 0 exists now**: `tools/perf/capture_baselines.sh` (variants `occ_off`, `occ_on`, `occ_meshlet`,
    `always_defer`), `compare_screenshots.py`, benchmark counters, alongside `run_benchmark.sh`/`compare_benchmarks.py`
    for phase 6. Baseline images live outside the repo.
-10. **`docs/frame-graph.md` has not been updated** with an "As built" section (`docs/ibl-and-skybox.md` is the model for
+10. **Reallocating transients waits for the device to go idle** (rare: a resize, or a pass toggled so the placement
+    changes). A frame spike, not a correctness issue.
+11. **`docs/frame-graph.md` has not been updated** with an "As built" section (`docs/ibl-and-skybox.md` is the model for
     one). Do it when phase 4 settles the pass-declaration API.
 
 ## 9. What to do next
 
-**Before writing more code, run the hardware checklist in section 7.** Phases 2 and 3 changed how every frame is
-submitted and the legacy pass changes how the swapchain image is transitioned; a defect there would otherwise get buried
-under phase 4.
-
 ### Suggested order
 
-1. Run the unchecked items of the hardware checklist (async smoke, fallbacks, Tracy contexts, resize/recreate,
-   single-queue topology) and `cargo xtask tidy`; fix what they find.
-2. **Finish Phase 4** in the plan's order, one commit per pass with the acceptance check (bit-identical baselines,
-   `--sync-validation`, `--frame-graph-serialize` identical): the early depth prepass, shadows, culling and clustering
-   out of `prepare_frame` (`main_cs`, light clustering), environment, overlays and the ImGui contract. Then delete
-   `frame_legacy`.
-3. Audit migrated passes for buffers reached by device address that are not declared (the forward pass's BDA reads were
-   initially undeclared; the occlusion chain's buffers were declared in step 5b/5c). Sync validation cannot see these.
-4. Remove the temporary `managed_by_graph` flags once their passes own the transitions.
-5. Phases 5 to 9 (transient allocator and aliasing with `--frame-graph-alias`/`--frame-graph-dump`, async compute by
-   measurement, delete `RenderStage`, concurrent sharing, parallel recording), and wire `RendererError` when a migrated
+1. Run the "not verified" list above on the machine with a display (UI toggles, a drag-resize, Tracy) and
+   `cargo xtask tidy`; fix what they find.
+2. Finish phase 6: enable a candidate by default only if the measured `full_frame` median improves by more than the noise
+   floor (section 6.3); revert the others. Consider enabling `SchedulerMode::overlap` instead of moving the shadow
+   declaration by hand.
+3. Phase 7: delete `RenderStage`, `write_empty_stage` and the `stage_timestamps` shim; key the timings by `PassProfile`
+   names; add `FrameGraph::describe` and `--frame-graph-dump`.
+4. Phase 8 (optional): concurrent sharing for the read-mostly buffers, which removes most of the ownership transfers
+   async compute needs (30 for the occlusion group). Phase 9: parallel batch recording.
+5. Implement the ImGui contract before making any ImGui-visible image a transient, and wire `RendererError` when a
    pass needs to fail.
 
 ### Pitfalls to remember
