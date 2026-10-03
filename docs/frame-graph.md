@@ -1,5 +1,9 @@
 # Frame Graph with Async Compute: Implementation Plan
 
+> **Status:** phases 1 to 3 are implemented on branch `claude/youthful-carson-5f71a0` (PR #47) but not yet run on a GPU. See
+> [`docs/frame-graph-status.md`](frame-graph-status.md) for what is built, how it differs from this plan, what is
+> verified, and what to do next.
+
 ## Objective
 
 `Renderer::record_frame` (`src/rendering/renderer.cxx:4790`) and the culling and light-clustering regions of `Renderer::prepare_frame` (`renderer.cxx:2510`, `#pragma region Culling` / `LightClustering` at about 3337 and 3449) put about a dozen `record_*` functions in order by hand. Each one has hand-written `VkBufferMemoryBarrier2` / `VkImageMemoryBarrier2` / `transition_image_layout` calls, and timestamps come from fixed `RenderStage * 2` query slots. This plan replaces that with a **FrameGraph**. (The name avoids confusion with `PipelineGraphRepository`, which is the shader hot-reload DAG.) The FrameGraph:
