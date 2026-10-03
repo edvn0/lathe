@@ -2,8 +2,10 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
+#include "rendering/frame_graph/rendering_desc.hxx"
 #include "rendering/frame_graph/types.hxx"
 
 namespace frame_graph {
@@ -62,6 +64,7 @@ namespace frame_graph {
     struct CompiledPass {
         std::uint32_t pass = 0; // index into GraphDesc::passes
         BarrierSet before;
+        std::optional<RenderingDesc> rendering; // raster passes that declare attachments
         std::uint32_t timestamp_slot = 0; // begin = 2 * slot, end = 2 * slot + 1, in this queue's pool
     };
 

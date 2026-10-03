@@ -4,11 +4,13 @@
 #include <expected>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "rendering/frame_graph/frame_graph_error.hxx"
+#include "rendering/frame_graph/physical.hxx"
 #include "rendering/frame_graph/types.hxx"
 #include "rendering/frame_graph/use_table.hxx"
 
@@ -33,6 +35,9 @@ namespace frame_graph {
         bool read_only = false;
         bool swapchain = false; // touching it roots the pass; the present transition is the epilogue
         std::string_view debug_name;
+        // Handles for an imported image or buffer; the executor needs them to translate barriers.
+        PhysicalImage image{};
+        PhysicalBuffer buffer{};
     };
 
     // Where a pass runs and how it appears in profiles. `name_id` is the stable benchmark id, `label` the UI text.
@@ -54,6 +59,8 @@ namespace frame_graph {
         ResourceState entry;
         ResourceState exit;
         std::optional<TransientImageDesc> transient_image;
+        PhysicalImage image{};
+        PhysicalBuffer buffer{};
     };
 
     struct AccessDesc {
@@ -63,6 +70,8 @@ namespace frame_graph {
         ShaderStages stages = 0;
         bool discard = false; // the previous contents are not needed
         bool produces = false; // writes the next version
+        // The pass leaves the whole resource in this use's layout and scope instead of the one it entered with.
+        std::optional<Use> exit_use;
     };
 
     struct PassDesc {
@@ -84,6 +93,11 @@ namespace frame_graph {
         std::vector<std::vector<std::int64_t>> producers;
     };
 
+    // For a pass that manages subresources itself: it enters in one use and leaves the resource in another.
+    struct ExitUse {
+        Use use = Use::sampled;
+    };
+
     class FrameGraph;
 
     // Declares one pass's accesses. Handles are versioned: a write returns the next version, and using anything but the
@@ -98,6 +112,8 @@ namespace frame_graph {
         [[nodiscard]] auto read(ImageId image, Use use, ShaderStages stages = 0) -> ImageId;
         [[nodiscard]] auto write(ImageId image, Use use, ShaderStages stages = 0) -> ImageId;
         [[nodiscard]] auto read(BufferId buffer, Use use, ShaderStages stages = 0) -> BufferId;
+        // Enters as `use` and leaves the image as `exit.use` (e.g. bloom writes it as storage and leaves it sampled).
+        [[nodiscard]] auto write(ImageId image, Use use, ShaderStages stages, ExitUse exit) -> ImageId;
         [[nodiscard]] auto write(BufferId buffer, Use use, ShaderStages stages = 0) -> BufferId;
         // A buffer write that overwrites the whole buffer, so earlier contents are not needed.
         [[nodiscard]] auto write_discard(BufferId buffer, Use use, ShaderStages stages = 0) -> BufferId;
@@ -134,6 +150,9 @@ namespace frame_graph {
 
         [[nodiscard]] auto description() const -> GraphDesc const & { return desc_; }
         [[nodiscard]] auto declaration_errors() const -> std::vector<FrameGraphError> const & { return errors_; }
+
+        // The record lambdas, in pass declaration order. The compiler never calls them; the executor does.
+        [[nodiscard]] auto records() -> std::span<RecordFn> { return records_; }
 
     private:
         friend class PassBuilder;

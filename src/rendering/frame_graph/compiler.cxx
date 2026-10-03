@@ -6,6 +6,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
 
 namespace frame_graph {
     namespace {
@@ -52,6 +53,14 @@ namespace frame_graph {
             bool is_image = false;
             bool writes = false;
             bool discard = false;
+
+            // What the pass leaves the resource as, when that differs from what it entered as.
+            struct Exit {
+                VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_NONE;
+                VkAccessFlags2 access = VK_ACCESS_2_NONE;
+                VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+            };
+            std::optional<Exit> exit;
         };
 
         struct Edge {
@@ -214,6 +223,14 @@ namespace frame_graph {
             return queues;
         }
 
+        auto exit_of(AccessDesc const &access) -> std::optional<AccessSpec::Exit> {
+            if (!access.exit_use) {
+                return std::nullopt;
+            }
+            auto const exit = use_info(*access.exit_use, access.stages);
+            return AccessSpec::Exit{.stages = exit.stages, .access = exit.access, .layout = exit.layout};
+        }
+
         // Applies accesses to the tracked state and derives barriers, ownership transfers and cross-queue edges.
         class Tracker {
         public:
@@ -321,6 +338,26 @@ namespace frame_graph {
                     state.layout = spec.layout;
                 }
                 state.accessed = true;
+
+                // A pass that manages the resource itself leaves it as its exit use says, as if that were its write.
+                if (spec.exit) {
+                    state.has_write = true;
+                    state.write_queue = queue;
+                    state.write_stages = spec.exit->stages;
+                    state.write_access = spec.exit->access;
+                    state.read_stages = {};
+                    state.visible_stages = {};
+                    state.visible_access = {};
+                    // The pass made its writes visible to a read-only exit state itself, so readers in that scope need
+                    // no further barrier.
+                    if ((spec.exit->access & write_access_mask) == 0) {
+                        state.visible_stages[qi] = spec.exit->stages;
+                        state.visible_access[qi] = spec.exit->access;
+                    }
+                    if (spec.is_image) {
+                        state.layout = spec.exit->layout;
+                    }
+                }
             }
 
             [[nodiscard]] auto edges() const -> std::vector<Edge> const & { return edges_; }
@@ -560,6 +597,7 @@ namespace frame_graph {
                                       .is_image = info.is_image,
                                       .writes = info.writes,
                                       .discard = access.discard,
+                                      .exit = exit_of(access),
                               },
                               before[position + 1]);
             }
@@ -585,6 +623,30 @@ namespace frame_graph {
                                   .is_image = is_image,
                           },
                           epilogue_barriers);
+        }
+
+        // A legacy pass records its own barriers against everything outside the graph, so it is fenced by global
+        // barriers: one before it, and one at the start of the next pass on its queue (or the epilogue).
+        constexpr auto legacy_fence = MemoryBarrier{
+                .src_stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                .src_access = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .dst_stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                .dst_access = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        };
+        for (auto position = std::size_t{0}; position < node_count; ++position) {
+            if (!graph.passes[order[position]].legacy) {
+                continue;
+            }
+            before[position + 1].memory.push_back(legacy_fence);
+
+            auto after = &epilogue_barriers;
+            for (auto next = position + 1; next < node_count; ++next) {
+                if (queues[order[next]] == queues[order[position]]) {
+                    after = &before[next + 1];
+                    break;
+                }
+            }
+            after->memory.push_back(legacy_fence);
         }
 
         // Split each queue's nodes into batches. A node with an incoming cross-queue edge starts a batch and a node
@@ -765,6 +827,7 @@ namespace frame_graph {
                 hasher.mix(static_cast<std::uint64_t>(access.use));
                 hasher.mix(access.stages);
                 hasher.mix(static_cast<std::uint64_t>(access.discard));
+                hasher.mix(access.exit_use ? 1 + static_cast<std::uint64_t>(*access.exit_use) : 0);
             }
         }
         for (auto const &resource: graph.resources) {

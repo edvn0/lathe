@@ -45,6 +45,7 @@ namespace frame_graph {
                         .sharing = desc.sharing,
                         .entry = desc.entry,
                         .exit = desc.exit,
+                        .image = desc.image,
                 },
                 true);
         if (desc.exit.queue != LogicalQueue::graphics) {
@@ -63,6 +64,7 @@ namespace frame_graph {
                         .sharing = desc.sharing,
                         .entry = desc.entry,
                         .exit = desc.exit,
+                        .buffer = desc.buffer,
                 },
                 true);
         if (desc.exit.queue != LogicalQueue::graphics) {
@@ -190,6 +192,15 @@ namespace frame_graph {
         auto const discard = discards_contents(use, LoadOp::load);
         access(image.index, image.generation, use, stages, discard);
         return ImageId{.index = image.index, .generation = graph_->latest_version(image.index)};
+    }
+
+    auto PassBuilder::write(ImageId image, Use use, ShaderStages stages, ExitUse exit) -> ImageId {
+        auto const written = write(image, use, stages);
+        // The access recorded above is the pass's last, unless validation rejected it.
+        if (!pass_->accesses.empty() && pass_->accesses.back().resource == image.index) {
+            pass_->accesses.back().exit_use = exit.use;
+        }
+        return written;
     }
 
     auto PassBuilder::read(BufferId buffer, Use use, ShaderStages stages) -> BufferId {
