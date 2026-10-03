@@ -122,6 +122,32 @@ namespace {
         });
     }
 
+    auto instance_extension_available(std::string_view name) noexcept -> bool {
+        std::uint32_t extension_count = 0;
+
+        auto result = vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
+
+        if (result != VK_SUCCESS) {
+            report_vk_error("vkEnumerateInstanceExtensionProperties(count)", result);
+
+            return false;
+        }
+
+        std::vector<VkExtensionProperties> extensions(extension_count);
+
+        result = vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, extensions.data());
+
+        if (result != VK_SUCCESS) {
+            report_vk_error("vkEnumerateInstanceExtensionProperties(list)", result);
+
+            return false;
+        }
+
+        return std::ranges::any_of(extensions, [name](VkExtensionProperties const &extension) {
+            return std::string_view{extension.extensionName} == name;
+        });
+    }
+
     VKAPI_ATTR auto VKAPI_CALL vulkan_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                                      VkDebugUtilsMessageTypeFlagsEXT,
                                                      VkDebugUtilsMessengerCallbackDataEXT const *callback_data,
@@ -330,7 +356,51 @@ namespace {
             instance_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
 
+        // --sync-validation turns on the validation layer's synchronization checks through layer settings.
+        auto sync_validation_enabled = false;
+        if (context.sync_validation) {
+            if (!validation_enabled) {
+                warn("--sync-validation needs the validation layer (Debug builds); ignoring it");
+            } else if (!instance_extension_available(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME)) {
+                warn("{} is unavailable; ignoring --sync-validation", VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+            } else {
+                sync_validation_enabled = true;
+                instance_extensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+            }
+        }
+
         auto const debug_create_info = make_debug_messenger_create_info();
+
+        constexpr VkBool32 setting_enabled = VK_TRUE;
+        std::array const layer_settings{
+                VkLayerSettingEXT{
+                        .pLayerName = "VK_LAYER_KHRONOS_validation",
+                        .pSettingName = "validate_sync",
+                        .type = VK_LAYER_SETTING_TYPE_BOOL32_EXT,
+                        .valueCount = 1,
+                        .pValues = &setting_enabled,
+                },
+                VkLayerSettingEXT{
+                        .pLayerName = "VK_LAYER_KHRONOS_validation",
+                        .pSettingName = "syncval_submit_time_validation",
+                        .type = VK_LAYER_SETTING_TYPE_BOOL32_EXT,
+                        .valueCount = 1,
+                        .pValues = &setting_enabled,
+                },
+        };
+        VkLayerSettingsCreateInfoEXT const layer_settings_info{
+                .sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT,
+                .pNext = &debug_create_info,
+                .settingCount = static_cast<std::uint32_t>(layer_settings.size()),
+                .pSettings = layer_settings.data(),
+        };
+
+        void const *instance_next = nullptr;
+        if (sync_validation_enabled) {
+            instance_next = &layer_settings_info;
+        } else if (validation_enabled) {
+            instance_next = &debug_create_info;
+        }
 
         VkApplicationInfo const application_info{
                 .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -344,7 +414,7 @@ namespace {
 
         VkInstanceCreateInfo const create_info{
                 .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                .pNext = validation_enabled ? &debug_create_info : nullptr,
+                .pNext = instance_next,
                 .flags = 0,
                 .pApplicationInfo = &application_info,
                 .enabledLayerCount = validation_enabled ? static_cast<std::uint32_t>(validation_layers.size()) : 0,
@@ -374,6 +444,10 @@ namespace {
             }
 
             info("Vulkan validation enabled");
+
+            if (sync_validation_enabled) {
+                info("Synchronization validation enabled");
+            }
         }
 
         info("Vulkan instance created");
@@ -415,20 +489,15 @@ namespace {
         return true;
     }
 
-    auto find_queue_families(VkPhysicalDevice physical_device, VkSurfaceKHR surface) noexcept -> QueueFamilies {
+    auto find_queue_families(VkPhysicalDevice physical_device, VkSurfaceKHR surface,
+                             AsyncComputeMode mode) noexcept -> QueueFamilies {
         std::uint32_t queue_family_count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr);
         std::vector<VkQueueFamilyProperties> properties(queue_family_count);
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, properties.data());
 
-        QueueFamilies result{};
+        std::vector<QueueFamilyInfo> families(queue_family_count);
         for (std::uint32_t index = 0; index < queue_family_count; ++index) {
-            auto const supports_graphics = (properties[index].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
-
-            if (supports_graphics) {
-                result.graphics = index;
-            }
-
             VkBool32 supports_present = VK_FALSE;
 
             auto const present_result =
@@ -436,24 +505,21 @@ namespace {
 
             if (present_result != VK_SUCCESS) {
                 report_vk_error("vkGetPhysicalDeviceSurfaceSupportKHR", present_result);
-
-                continue;
             }
 
-            if (supports_present == VK_TRUE) {
-                result.present = index;
-            }
-
-            if (result.complete()) {
-                break;
-            }
+            families[index] = QueueFamilyInfo{
+                    .flags = properties[index].queueFlags,
+                    .queue_count = properties[index].queueCount,
+                    .timestamp_valid_bits = properties[index].timestampValidBits,
+                    .supports_present = present_result == VK_SUCCESS && supports_present == VK_TRUE,
+            };
         }
 
-        return result;
+        return choose_queue_families(families, mode);
     }
 
-    auto supports_device_extension(VkPhysicalDevice physical_device, std::string_view required_extension) noexcept
-            -> bool {
+    auto supports_device_extension(VkPhysicalDevice physical_device,
+                                   std::string_view required_extension) noexcept -> bool {
         std::uint32_t extension_count = 0;
         auto result = vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr);
         if (result != VK_SUCCESS) {
@@ -561,7 +627,9 @@ namespace {
 
             vkGetPhysicalDeviceFeatures2(physical_device, &features2);
 
-            if (features2.features.shaderInt64 != VK_TRUE || vulkan12_features.bufferDeviceAddress != VK_TRUE || vulkan13_features.synchronization2 != VK_TRUE ||
+            // Timeline semaphores order the graphics and compute queues and replace the per-frame fence.
+            if (features2.features.shaderInt64 != VK_TRUE || vulkan12_features.bufferDeviceAddress != VK_TRUE ||
+                vulkan12_features.timelineSemaphore != VK_TRUE || vulkan13_features.synchronization2 != VK_TRUE ||
                 vulkan13_features.dynamicRendering != VK_TRUE) {
                 continue;
             }
@@ -570,7 +638,8 @@ namespace {
                 continue;
             }
 
-            auto const queue_families = find_queue_families(physical_device, context.surface);
+            auto const queue_families =
+                    find_queue_families(physical_device, context.surface, context.async_compute_mode);
 
             if (!queue_families.complete()) {
                 continue;
@@ -678,26 +747,19 @@ namespace {
     }
 
     auto create_device(VulkanContext &context) noexcept -> bool {
-        constexpr float queue_priority = 1.0F;
+        // Every queue has priority 1; the same-family topology asks the graphics family for two.
+        constexpr std::array<float, 2> queue_priorities{1.0F, 1.0F};
 
-        std::array<std::uint32_t, 2> queue_family_indices{
-                context.queue_families.graphics,
-                context.queue_families.present,
-        };
-
-        auto const duplicates = std::ranges::unique(queue_family_indices);
-        auto const queue_count = static_cast<std::size_t>(duplicates.begin() - queue_family_indices.begin());
-
-        std::array<VkDeviceQueueCreateInfo, 2> queue_create_infos{};
-        for (std::size_t index = 0; index < queue_count; ++index) {
-            queue_create_infos[index] = VkDeviceQueueCreateInfo{
+        std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
+        for (auto const &request: queue_requests(context.queue_families)) {
+            queue_create_infos.push_back(VkDeviceQueueCreateInfo{
                     .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                     .pNext = nullptr,
                     .flags = 0,
-                    .queueFamilyIndex = queue_family_indices[index],
-                    .queueCount = 1,
-                    .pQueuePriorities = &queue_priority,
-            };
+                    .queueFamilyIndex = request.family,
+                    .queueCount = request.count,
+                    .pQueuePriorities = queue_priorities.data(),
+            });
         }
 
         std::vector<char const *> device_extensions{
@@ -729,6 +791,7 @@ namespace {
         vulkan12_features.runtimeDescriptorArray = VK_TRUE;
         vulkan12_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
         vulkan12_features.hostQueryReset = VK_TRUE;
+        vulkan12_features.timelineSemaphore = VK_TRUE;
         vulkan12_features.shaderFloat16 = VK_TRUE;
 
         VkPhysicalDeviceVulkan13Features vulkan13_features{};
@@ -793,7 +856,7 @@ namespace {
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                 .pNext = feature_chain,
                 .flags = 0,
-                .queueCreateInfoCount = static_cast<std::uint32_t>(queue_count),
+                .queueCreateInfoCount = static_cast<std::uint32_t>(queue_create_infos.size()),
                 .pQueueCreateInfos = queue_create_infos.data(),
                 .enabledLayerCount = 0,
                 .ppEnabledLayerNames = nullptr,
@@ -812,11 +875,18 @@ namespace {
         volkLoadDevice(context.device);
         vkGetDeviceQueue(context.device, context.queue_families.graphics, 0, &context.graphics_queue);
         vkGetDeviceQueue(context.device, context.queue_families.present, 0, &context.present_queue);
+        vkGetDeviceQueue(context.device, context.queue_families.compute, context.queue_families.compute_queue_index,
+                         &context.compute_queue);
 
-        if (context.graphics_queue == VK_NULL_HANDLE || context.present_queue == VK_NULL_HANDLE) {
+        if (context.graphics_queue == VK_NULL_HANDLE || context.present_queue == VK_NULL_HANDLE ||
+            context.compute_queue == VK_NULL_HANDLE) {
             error("One or more Vulkan queues are null");
             return false;
         }
+
+        info("Queues: graphics family {}, compute family {} queue {} ({})", context.queue_families.graphics,
+             context.queue_families.compute, context.queue_families.compute_queue_index,
+             queue_topology_name(context.queue_families.topology));
 
         info("Logical Vulkan device created");
 

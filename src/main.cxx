@@ -652,6 +652,22 @@ auto main(int argc, char **argv) -> int {
     }
 
     VulkanContext context{};
+
+    // --async-compute=auto|off|same-family picks the compute queue topology (off keeps one queue but still creates
+    // the compute queue); --sync-validation turns on the validation layer's synchronization checks in Debug builds.
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--async-compute="; arg.starts_with(prefix)) {
+            auto const mode = parse_async_compute_mode(arg.substr(prefix.size()));
+            if (!mode) {
+                error("Invalid --async-compute: '{}' (expected auto, off or same-family)", arg.substr(prefix.size()));
+                return EXIT_FAILURE;
+            }
+            context.async_compute_mode = *mode;
+        } else if (arg == "--sync-validation") {
+            context.sync_validation = true;
+        }
+    }
+
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
 

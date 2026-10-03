@@ -13,21 +13,10 @@
 
 #include "core/allocator.hxx"
 #include "gpu/host_query_context.hxx"
+#include "gpu/queue_selection.hxx"
 #include "gpu/swapchain.hxx"
 
 #include "core/forward.hxx"
-
-struct QueueFamilies {
-    std::uint32_t graphics = std::numeric_limits<std::uint32_t>::max();
-    std::uint32_t present = std::numeric_limits<std::uint32_t>::max();
-
-    [[nodiscard]]
-    auto complete() const noexcept -> bool {
-        constexpr auto invalid = std::numeric_limits<std::uint32_t>::max();
-
-        return graphics != invalid && present != invalid;
-    }
-};
 
 struct VulkanContext {
     GLFWwindow *window = nullptr;
@@ -60,6 +49,13 @@ struct VulkanContext {
 
     VkQueue graphics_queue = VK_NULL_HANDLE;
     VkQueue present_queue = VK_NULL_HANDLE;
+
+    // The async compute queue. Equals graphics_queue when queue_families.topology is single.
+    VkQueue compute_queue = VK_NULL_HANDLE;
+
+    // Set before initialize_vulkan: --async-compute=auto|off|same-family and --sync-validation.
+    AsyncComputeMode async_compute_mode = AsyncComputeMode::automatic;
+    bool sync_validation = false;
 
     QueueFamilies queue_families{};
 
