@@ -240,11 +240,14 @@ namespace {
         return *frame;
     }
 
-    // Ends the frame's command buffer, submits it and presents. With --async-compute-smoke on a GPU with a separate
-    // compute queue, the frame is instead three batches that exercise timeline values and multi-batch submission with
-    // no data dependency: the recorded graphics batch, an empty compute batch that waits on it, and an empty graphics
-    // batch that waits on the compute one and signals the swapchain.
-    auto end_gpu_frame(VulkanContext &context, SwapchainFrame const &frame) noexcept -> SwapchainFrameResult {
+    // Ends the frame's command buffer, submits the renderer's batches and presents. `planned` is what
+    // Renderer::submit_batches() produced; if it is empty (recording failed before producing any) the prologue buffer
+    // goes out alone. With --async-compute-smoke on a GPU with a separate compute queue and a single planned batch,
+    // the frame is instead three batches that exercise timeline values and multi-batch submission with no data
+    // dependency: the recorded graphics batch, an empty compute batch that waits on it, and an empty graphics batch
+    // that waits on the compute one and signals the swapchain.
+    auto end_gpu_frame(VulkanContext &context, SwapchainFrame const &frame,
+                       std::span<SubmitBatch const> planned) noexcept -> SwapchainFrameResult {
         if (auto const ended = vkEndCommandBuffer(frame.command_buffer); ended != VK_SUCCESS) {
             error("vkEndCommandBuffer failed with VkResult {}", static_cast<int>(ended));
 
@@ -258,36 +261,33 @@ namespace {
         auto const graphics_waits =
                 std::array{frame_graph::SemaphoreWait{frame_graph::LogicalQueue::compute, 0, all_commands}};
 
-        auto const smoke = context.async_compute_smoke && !context.queue_set.aliased();
+        std::vector<SubmitBatch> batches{planned.begin(), planned.end()};
+        if (batches.empty()) {
+            batches.push_back(SubmitBatch{
+                    .queue = frame_graph::LogicalQueue::graphics,
+                    .command_buffer = frame.command_buffer,
+                    .signal_index = 0,
+                    .waits_swapchain_acquire = true,
+                    .signals_render_finished = true,
+            });
+        }
 
-        std::array<SubmitBatch, 3> batches{};
-        auto batch_count = std::size_t{1};
-
-        batches[0] = SubmitBatch{
-                .queue = frame_graph::LogicalQueue::graphics,
-                .command_buffer = frame.command_buffer,
-                .signal_index = 0,
-                .waits_swapchain_acquire = true,
-                .signals_render_finished = !smoke,
-        };
-
-        if (smoke) {
-            batches[1] = SubmitBatch{
+        if (context.async_compute_smoke && !context.queue_set.aliased() && batches.size() == 1) {
+            batches[0].signals_render_finished = false;
+            batches.push_back(SubmitBatch{
                     .queue = frame_graph::LogicalQueue::compute,
                     .waits = compute_waits,
                     .signal_index = 0,
-            };
-            batches[2] = SubmitBatch{
+            });
+            batches.push_back(SubmitBatch{
                     .queue = frame_graph::LogicalQueue::graphics,
                     .waits = graphics_waits,
                     .signal_index = 1,
                     .signals_render_finished = true,
-            };
-            batch_count = batches.size();
+            });
         }
 
-        auto const submitted = context.queue_set.submit(std::span<SubmitBatch const>{batches.data(), batch_count},
-                                                        context.swapchain.image_available(frame.frame_index),
+        auto const submitted = context.queue_set.submit(batches, context.swapchain.image_available(frame.frame_index),
                                                         context.swapchain.render_finished(frame.image_index));
         if (!submitted) {
             return submitted.error().kind == QueueSetError::Kind::device_lost ? SwapchainFrameResult::device_lost
@@ -416,7 +416,7 @@ namespace {
         // Always retire the frame we began, so image_available and the slot's timeline values stay balanced whatever
         // failed above.
         // This assumes the renderer never fails with a rendering scope still open.
-        auto const end_result = end_gpu_frame(context, *frame);
+        auto const end_result = end_gpu_frame(context, *frame, application.renderer->submit_batches());
 
         if (!frame_ok) {
             return false;

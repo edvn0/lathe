@@ -2091,6 +2091,35 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImPlot::EndPlot();
         }
 
+        // The frame graph's own per-pass times, next to the stage timings above while both systems run.
+        if (auto const graph_timings = renderer->frame_graph_timings();
+            !graph_timings.empty() &&
+            ImGui::BeginTable("Frame graph", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Pass");
+            ImGui::TableSetupColumn("Id");
+            ImGui::TableSetupColumn("Queue");
+            ImGui::TableSetupColumn("GPU (ms)");
+            ImGui::TableHeadersRow();
+
+            for (auto const &timing: graph_timings) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(timing.label.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(timing.name_id.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(timing.queue == frame_graph::LogicalQueue::graphics ? "graphics" : "compute");
+                ImGui::TableNextColumn();
+                if (timing.milliseconds) {
+                    ImGui::Text("%.3f", static_cast<double>(*timing.milliseconds));
+                } else {
+                    ImGui::TextUnformatted("-");
+                }
+            }
+
+            ImGui::EndTable();
+        }
+
         // Overlay time is already included in the forward/composite stages above.
         auto const &overlay_timings = renderer->last_frame_timings().overlays;
 

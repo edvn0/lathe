@@ -1,6 +1,9 @@
 #include "rendering/renderer.hxx"
 
 #include "gpu/device_wait.hxx"
+#include "rendering/frame_graph/compiler.hxx"
+#include "rendering/frame_graph/executor.hxx"
+#include "rendering/frame_graph/pass_context.hxx"
 
 #include <algorithm>
 #include <array>
@@ -1531,6 +1534,18 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         vkResetQueryPool(context_.device, query_pool, 0, 1);
     }
 
+    if (!pass_profiler_.initialize(frame_graph::PassProfilerCreateInfo{
+                .physical_device = context_.physical_device,
+                .device = context_.device,
+                .queue_family = {context_.queue_families.graphics, context_.queue_families.compute},
+                .timestamp_period = timestamp_period_,
+                .slots = frames_in_flight,
+                .max_passes = 64,
+        })) {
+        error("Failed to create the frame graph pass profiler");
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
     ubos_.resize(frames_in_flight);
     for (auto &ubo: ubos_) {
         auto maybe_ubo = Buffer::create(context_, BufferCreateInfo{
@@ -1592,6 +1607,8 @@ auto Renderer::destroy() noexcept -> void {
 
     pipeline_stat_queries_.clear();
     last_frame_pipeline_stats_ = {};
+
+    pass_profiler_.destroy();
 
     for (auto &ubo: ubos_) {
         ubo.destroy();
@@ -4788,6 +4805,95 @@ auto Renderer::register_light_icon_overlay() -> std::expected<void, RendererErro
 }
 
 auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError> {
+    submit_batches_.clear();
+
+    auto const &swapchain_image = info.swapchain_image;
+
+    if (!initialized_ || info.command_buffer == VK_NULL_HANDLE || swapchain_image.image == VK_NULL_HANDLE ||
+        swapchain_image.view == VK_NULL_HANDLE || swapchain_image.format == VK_FORMAT_UNDEFINED ||
+        swapchain_image.extent.width == 0 || swapchain_image.extent.height == 0 || info.frame_index >= frames_.size()) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    // Reads back and resets this slot's pass timestamps: the slot's earlier work has finished.
+    pass_profiler_.begin_slot(info.frame_index);
+
+    // One legacy pass around the old body. It enters the swapchain as an attachment, which is what the first use of
+    // the image has always been, and leaves it in PRESENT: the body still does its own present transition, so the
+    // epilogue has nothing to add.
+    frame_graph_.reset();
+
+    auto swapchain = frame_graph_.import_image({
+            .entry = {.layout = VK_IMAGE_LAYOUT_UNDEFINED},
+            .exit = {.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR},
+            .swapchain = true,
+            .debug_name = "swapchain",
+            .image =
+                    frame_graph::PhysicalImage{
+                            .image = swapchain_image.image,
+                            .view = swapchain_image.view,
+                            .format = swapchain_image.format,
+                            .extent = {swapchain_image.extent.width, swapchain_image.extent.height, 1},
+                    },
+    });
+
+    auto legacy_result = std::expected<void, RendererError>{};
+
+    frame_graph_.add_pass("frame_legacy", frame_graph::PassType::raster,
+                          {
+                                  .name_id = "frame_legacy",
+                                  .label = "Frame (legacy)",
+                                  .color = static_cast<std::uint32_t>(tracy::Color::RoyalBlue),
+                          },
+                          [&](frame_graph::PassBuilder &pass) {
+                              pass.legacy();
+                              swapchain = pass.write(swapchain, frame_graph::Use::color_attachment, 0,
+                                                     frame_graph::ExitUse{frame_graph::Use::present});
+
+                              return frame_graph::RecordFn{
+                                      [this, &info, &legacy_result](frame_graph::PassContext &context) {
+                                          auto legacy_info = info;
+                                          legacy_info.command_buffer = context.command_buffer;
+                                          legacy_result = record_frame_legacy(legacy_info);
+                                      }};
+                          });
+
+    auto compiled = frame_graph::compile(frame_graph_, context_.queue_set.topology(),
+                                         {.async_compute = context_.async_compute_mode != AsyncComputeMode::off});
+    if (!compiled) {
+        error("Could not compile the frame graph: {}", compiled.error());
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+    frame_plan_ = std::move(*compiled);
+
+    auto const resources = frame_graph::physical_resources_of(frame_graph_.description());
+
+    auto const graphics_tracy = context_.host_query_context.context;
+    auto const compute_tracy = context_.compute_queue != context_.graphics_queue
+                                       ? context_.compute_host_query_context.context
+                                       : graphics_tracy;
+
+    auto batches = frame_graph::record(frame_graph::ExecuteInfo{
+            .graph = frame_graph_.description(),
+            .compiled = frame_plan_,
+            .records = frame_graph_.records(),
+            .resources = resources,
+            .queue_set = context_.queue_set,
+            .profiler = pass_profiler_,
+            .tracy_contexts = {graphics_tracy, compute_tracy},
+            .prologue = info.command_buffer,
+            .frame_index = info.frame_index,
+    });
+    if (!batches) {
+        error("Could not record the frame graph: {}", batches.error().message);
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+    submit_batches_ = std::move(*batches);
+
+    return legacy_result;
+}
+
+auto Renderer::record_frame_legacy(FrameRecordInfo const &info) -> std::expected<void, RendererError> {
     ZoneScopedNC("RecordFrame", tracy::Color::RoyalBlue);
 
     auto const command_buffer = info.command_buffer;

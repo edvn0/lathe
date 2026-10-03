@@ -14,7 +14,9 @@ add_library(
         environment.cxx
         file_browser.cxx
         frame_graph/compiler.cxx
+        frame_graph/executor.cxx
         frame_graph/frame_graph.cxx
+        frame_graph/pass_profiler.cxx
         frame_graph/scheduler.cxx
         frame_graph/vk_translate.cxx
         forward_target.cxx

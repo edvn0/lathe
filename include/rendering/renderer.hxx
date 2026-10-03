@@ -49,8 +49,12 @@
 #include "gpu/gpu_resource_table.hxx"
 #include "gpu/image_storage.hxx"
 #include "gpu/sampler_storage.hxx"
+#include "gpu/submission_plan.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "rendering/forward_target.hxx"
+#include "rendering/frame_graph/compiled_graph.hxx"
+#include "rendering/frame_graph/frame_graph.hxx"
+#include "rendering/frame_graph/pass_profiler.hxx"
 #include "rendering/hiz_occlusion.hxx"
 #include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
@@ -530,7 +534,20 @@ struct Renderer final : public IMeshSink, public IModelSink {
             -> std::expected<void, RendererError>;
 
     // Records the frame's passes and overlays. Call after prepare_frame() for the same frame_index.
+    //
+    // The frame runs through the frame graph: today one legacy pass around the old recording body, so the result is
+    // one graphics batch in `info.command_buffer`, which stays open for the caller to end. Submit submit_batches()
+    // after ending it.
     [[nodiscard]] auto record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError>;
+
+    // The batches the last record_frame() produced, in submission order. Empty if it failed before producing any.
+    // Valid until the next record_frame().
+    [[nodiscard]] auto submit_batches() const noexcept -> std::span<SubmitBatch const> { return submit_batches_; }
+
+    // The frame graph's per-pass GPU times from the most recent frame slot that finished (graphics queue first).
+    [[nodiscard]] auto frame_graph_timings() const noexcept -> std::span<frame_graph::PassTiming const> {
+        return pass_profiler_.timings();
+    }
 
     // Registers an overlay (see overlay.hxx). It runs until the registration is destroyed, which must happen before
     // the Renderer is.
@@ -1204,6 +1221,9 @@ private:
     auto create_frame_targets(std::uint32_t frame_index, VkExtent2D extent)
             -> std::expected<OwnedFrameTargets, RendererError>;
 
+    // The frame's whole recording body, as one pass of the frame graph until its parts are migrated.
+    [[nodiscard]] auto record_frame_legacy(FrameRecordInfo const &info) -> std::expected<void, RendererError>;
+
     // Both timestamps of a stage that did no work this frame. Every stage writes both every frame: one missing
     // query leaves vkGetQueryPoolResults NOT_READY and drops the whole frame's timings.
     auto write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage) -> void;
@@ -1353,6 +1373,13 @@ private:
 
     std::vector<FrameTimestamps> timestamp_queries_;
     float timestamp_period_{1.0F};
+
+    // The frame graph: rebuilt and recompiled every frame. frame_plan_ and submit_batches_ outlive record_frame() so
+    // the caller can submit them (the batches' waits point into the plan).
+    frame_graph::FrameGraph frame_graph_;
+    frame_graph::CompiledGraph frame_plan_;
+    std::vector<SubmitBatch> submit_batches_;
+    frame_graph::PassProfiler pass_profiler_;
 
     struct FramePipelineQuery {
         VkQueryPool query_pool{VK_NULL_HANDLE};
