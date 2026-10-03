@@ -521,7 +521,11 @@ namespace {
             -> std::expected<ImageSource, ModelLoadError> {
         if (auto const *uri_source = std::get_if<fastgltf::sources::URI>(&image.data)) {
             if (uri_source->uri.isLocalPath() && uri_source->fileByteOffset == 0) {
-                return ImageSource{.path = base_directory / uri_source->uri.fspath()};
+                // Some exporters write Windows separators into the URI; they are literal characters on POSIX.
+                auto relative = uri_source->uri.fspath().string();
+                std::ranges::replace(relative, '\\', '/');
+
+                return ImageSource{.path = base_directory / relative};
             }
 
             return std::unexpected(ModelLoadError{
@@ -792,8 +796,9 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
     static thread_local fastgltf::Parser parser{
             fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_lights_punctual,
     };
-    constexpr auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices |
-                             fastgltf::Options::LoadExternalImages;
+    // External images stay URIs: they are streamed from disk later, and eager loading fails the whole parse on
+    // exporter paths that don't resolve here (e.g. the Bistro's backslash-separated "Textures\\x.dds").
+    constexpr auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
     auto const base_directory = path.parent_path();
     auto asset_result = parser.loadGltf(file_data.get(), base_directory, options);
     gltf_sample.stop();
@@ -801,6 +806,10 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
     if (asset_result.error() != fastgltf::Error::None) {
         return std::unexpected(ModelLoadError{
                 .type = ModelLoadErrorType::parse_error,
+                .cause = ErrorCause{ErrorContext{
+                        .message = FlyString{std::format("{}: {}", fastgltf::getErrorName(asset_result.error()),
+                                                         fastgltf::getErrorMessage(asset_result.error()))},
+                }},
         });
     }
 
