@@ -306,5 +306,9 @@ The JSON `stages` list has `full_frame` plus one entry per frame graph pass seen
 (`gpu_culling`, `shadow_pass`, `depth_prepass`, `hiz_build`, `occlusion_culling`, `depth_prepass_late`, `gtao`,
 `gtao_denoise`, `forward_pass`, `bloom`, `composition`, `ui`, `environment`, `light_cull`, `light_cluster`, ...). A pass
 not part of a frame (occlusion off, no shadow update) counts as 0 ms for it, and a pass first seen mid-run is backfilled with
-0. `--frame-graph-dump` logs the compiled graph (passes, batches, waits, barriers, transfers) whenever it changes, and
+0. Both of a pass's timestamps are written at `ALL_COMMANDS`, so its time runs from the
+moment the earlier work on its queue has drained to its own end: passes on one queue don't overlap, and their times add
+up to at most the queue's span. Work a pass starts before the previous one drains isn't counted in either, so pass times
+are a slight underestimate rather than double-counted; results from before this (a `TOP_OF_PIPE` begin) credited a
+cheap pass with the tail of the expensive pass before it. `--frame-graph-dump` logs the compiled graph (passes, batches, waits, barriers, transfers) whenever it changes, and
 `--async-passes=` / `--frame-graph-alias=` / `--stress-resize=` are described in `docs/frame-graph-status.md`.

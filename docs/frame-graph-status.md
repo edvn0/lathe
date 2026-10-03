@@ -320,7 +320,7 @@ steady state work, not a joined two-frame plan).
 - **Executor** (`frame_graph::record`): for each compiled batch, batch 0 appends to the prologue command buffer (left
   open: `main.cxx` ends it) and later batches get fresh buffers from `QueueSet`. Per batch: acquire barriers, then each
   pass (its `before` barriers, a CPU `tracy::ScopedZone` and GPU `tracy::VkCtxScope` from the interned source location,
-  a `TOP_OF_PIPE` begin timestamp, the record lambda, a `BOTTOM_OF_PIPE` end timestamp), then releases and the epilogue;
+  an `ALL_COMMANDS` begin timestamp, the record lambda, an `ALL_COMMANDS` end timestamp), then releases and the epilogue;
   non-prologue buffers are ended. A batch with no content and no buffer yields a `SubmitBatch` with a null command
   buffer. The executor only fails if a barrier cannot be translated (a resource with no handle) or a buffer cannot be
   obtained; a record lambda that fails reports through its own channel.
