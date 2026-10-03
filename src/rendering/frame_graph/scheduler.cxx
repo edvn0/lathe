@@ -5,8 +5,8 @@
 
 namespace frame_graph {
 
-    auto dependency_successors(GraphDesc const &graph,
-                               std::vector<bool> const &live) -> std::vector<std::vector<std::size_t>> {
+    auto dependency_successors(GraphDesc const &graph, std::vector<bool> const &live)
+            -> std::vector<std::vector<std::size_t>> {
         auto successors = std::vector<std::vector<std::size_t>>(graph.passes.size());
         struct History {
             std::vector<std::size_t> accessors_since_write;

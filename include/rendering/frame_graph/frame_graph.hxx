@@ -11,6 +11,7 @@
 
 #include "rendering/frame_graph/frame_graph_error.hxx"
 #include "rendering/frame_graph/physical.hxx"
+#include "rendering/frame_graph/rendering_desc.hxx"
 #include "rendering/frame_graph/types.hxx"
 #include "rendering/frame_graph/use_table.hxx"
 
@@ -83,6 +84,9 @@ namespace frame_graph {
         bool side_effect = false;
         bool legacy = false;
         bool pinned = false;
+        // Set when the pass declares attachments. It lives in the description, not the compiled plan, so clear values
+        // and load/store ops can change every frame without invalidating a cached plan.
+        std::optional<RenderingDesc> rendering;
     };
 
     struct GraphDesc {
@@ -117,15 +121,25 @@ namespace frame_graph {
         [[nodiscard]] auto write(BufferId buffer, Use use, ShaderStages stages = 0) -> BufferId;
         // A buffer write that overwrites the whole buffer, so earlier contents are not needed.
         [[nodiscard]] auto write_discard(BufferId buffer, Use use, ShaderStages stages = 0) -> BufferId;
-        [[nodiscard]] auto color(ImageId image, LoadOp load, StoreOp store) -> ImageId;
-        [[nodiscard]] auto write_depth(ImageId image, LoadOp load, StoreOp store) -> ImageId;
+        // Attachments of a raster pass. `clear` is used when `load` is LoadOp::clear.
+        [[nodiscard]] auto color(ImageId image, LoadOp load, StoreOp store, VkClearValue clear = {}) -> ImageId;
+        [[nodiscard]] auto write_depth(ImageId image, LoadOp load, StoreOp store, VkClearValue clear = {}) -> ImageId;
+        // Resolves an attachment declared by color() or write_depth() in this pass (pass the id they returned) into
+        // `target`, whose previous contents are discarded. Returns the new version of `target`.
+        [[nodiscard]] auto resolve(ImageId attachment, ImageId target,
+                                   VkResolveModeFlagBits mode = VK_RESOLVE_MODE_AVERAGE_BIT) -> ImageId;
+        // The render area defaults to the first attachment's extent; the view mask to 0 (no multiview).
+        auto render_area(VkRect2D area) -> void;
+        auto view_mask(std::uint32_t mask) -> void;
         [[nodiscard]] auto create(TransientImageDesc const &desc) -> ImageId;
 
     private:
         friend class FrameGraph;
         PassBuilder(FrameGraph &graph, PassDesc &pass) : graph_(&graph), pass_(&pass) {}
 
-        auto access(std::uint32_t resource, std::uint32_t version, Use use, ShaderStages stages, bool discard) -> void;
+        // False if the access was rejected (and an error recorded).
+        auto access(std::uint32_t resource, std::uint32_t version, Use use, ShaderStages stages, bool discard) -> bool;
+        auto rendering() -> RenderingDesc &;
 
         FrameGraph *graph_;
         PassDesc *pass_;

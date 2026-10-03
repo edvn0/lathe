@@ -99,8 +99,8 @@ namespace frame_graph {
             }
         };
 
-        auto fail(FrameGraphErrorType type, PassDesc const &pass, GraphDesc const &graph,
-                  std::uint32_t resource) -> std::unexpected<FrameGraphError> {
+        auto fail(FrameGraphErrorType type, PassDesc const &pass, GraphDesc const &graph, std::uint32_t resource)
+                -> std::unexpected<FrameGraphError> {
             return std::unexpected(FrameGraphError{
                     .type = type,
                     .pass = pass.name,
@@ -188,8 +188,8 @@ namespace frame_graph {
 
         // compute_required goes to compute. compute_preferred goes to compute unless every live graphics pass is an
         // ancestor or descendant of it: that would cost two semaphores and overlap nothing.
-        auto resolve_queues(GraphDesc const &graph, std::vector<bool> const &live,
-                            bool async) -> std::vector<LogicalQueue> {
+        auto resolve_queues(GraphDesc const &graph, std::vector<bool> const &live, bool async)
+                -> std::vector<LogicalQueue> {
             auto queues = std::vector<LogicalQueue>(graph.passes.size(), LogicalQueue::graphics);
             if (!async) {
                 return queues;
@@ -554,9 +554,6 @@ namespace frame_graph {
 
     } // namespace
 
-    static auto declaration_hash(GraphDesc const &graph, QueueTopology const &topology,
-                                 CompileOptions const &options) -> std::uint64_t;
-
     // Builds the plan for one schedule. A node is a position in `order`; the prologue is -1 and the epilogue is
     // order.size(). Every cross-queue edge runs from a lower node to a higher one.
     static auto build_plan(GraphDesc const &graph, QueueTopology const &topology, CompileOptions const &options,
@@ -806,8 +803,8 @@ namespace frame_graph {
         return total;
     }
 
-    static auto declaration_hash(GraphDesc const &graph, QueueTopology const &topology,
-                                 CompileOptions const &options) -> std::uint64_t {
+    auto declaration_hash(GraphDesc const &graph, QueueTopology const &topology, CompileOptions const &options)
+            -> std::uint64_t {
         auto hasher = Hasher{};
         hasher.mix(static_cast<std::uint64_t>(options.async_compute));
         hasher.mix(static_cast<std::uint64_t>(options.scheduler));
@@ -820,7 +817,8 @@ namespace frame_graph {
             hasher.mix(pass.name);
             hasher.mix(static_cast<std::uint64_t>(pass.type));
             hasher.mix(static_cast<std::uint64_t>(pass.affinity));
-            hasher.mix(static_cast<std::uint64_t>(pass.side_effect) | (static_cast<std::uint64_t>(pass.legacy) << 1U));
+            hasher.mix(static_cast<std::uint64_t>(pass.side_effect) | (static_cast<std::uint64_t>(pass.legacy) << 1U) |
+                       (static_cast<std::uint64_t>(pass.pinned) << 2U));
             for (auto const &access: pass.accesses) {
                 hasher.mix(access.resource);
                 hasher.mix(access.version);
@@ -838,12 +836,19 @@ namespace frame_graph {
             hasher.mix(static_cast<std::uint64_t>(resource.exit.layout));
             hasher.mix(resource.entry.stages);
             hasher.mix(resource.exit.stages);
+            hasher.mix(resource.entry.access);
+            hasher.mix(resource.exit.access);
+            hasher.mix(static_cast<std::uint64_t>(resource.entry.queue) |
+                       (static_cast<std::uint64_t>(resource.exit.queue) << 8U) |
+                       (static_cast<std::uint64_t>(resource.imported) << 16U) |
+                       (static_cast<std::uint64_t>(resource.swapchain) << 17U) |
+                       (static_cast<std::uint64_t>(resource.read_only) << 18U));
         }
         return hasher.state;
     }
 
-    auto compile(GraphDesc const &graph, QueueTopology const &topology,
-                 CompileOptions const &options) -> std::expected<CompiledGraph, FrameGraphError> {
+    auto compile(GraphDesc const &graph, QueueTopology const &topology, CompileOptions const &options)
+            -> std::expected<CompiledGraph, FrameGraphError> {
         if (auto const valid = validate(graph); !valid) {
             return std::unexpected(valid.error());
         }
@@ -867,12 +872,33 @@ namespace frame_graph {
         return plan;
     }
 
-    auto compile(FrameGraph const &graph, QueueTopology const &topology,
-                 CompileOptions const &options) -> std::expected<CompiledGraph, FrameGraphError> {
+    auto compile(FrameGraph const &graph, QueueTopology const &topology, CompileOptions const &options)
+            -> std::expected<CompiledGraph, FrameGraphError> {
         if (!graph.declaration_errors().empty()) {
             return std::unexpected(graph.declaration_errors().front());
         }
         return compile(graph.description(), topology, options);
+    }
+
+    auto PlanCache::compile(FrameGraph const &graph, QueueTopology const &topology, CompileOptions const &options)
+            -> std::expected<CompiledGraph const *, FrameGraphError> {
+        // Declaration errors are not part of the hash, so a graph with any is never served from the cache.
+        if (graph.declaration_errors().empty() && plan_) {
+            if (declaration_hash(graph.description(), topology, options) == plan_->hash) {
+                ++hits_;
+                return &*plan_;
+            }
+        }
+
+        auto compiled = frame_graph::compile(graph, topology, options);
+        if (!compiled) {
+            plan_.reset();
+            return std::unexpected(std::move(compiled.error()));
+        }
+
+        ++misses_;
+        plan_ = std::move(*compiled);
+        return &*plan_;
     }
 
 } // namespace frame_graph

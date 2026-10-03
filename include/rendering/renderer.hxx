@@ -53,6 +53,7 @@
 #include "rendering/cluster_grid.hxx"
 #include "rendering/forward_target.hxx"
 #include "rendering/frame_graph/compiled_graph.hxx"
+#include "rendering/frame_graph/compiler.hxx"
 #include "rendering/frame_graph/frame_graph.hxx"
 #include "rendering/frame_graph/pass_profiler.hxx"
 #include "rendering/hiz_occlusion.hxx"
@@ -1374,10 +1375,11 @@ private:
     std::vector<FrameTimestamps> timestamp_queries_;
     float timestamp_period_{1.0F};
 
-    // The frame graph: rebuilt and recompiled every frame. frame_plan_ and submit_batches_ outlive record_frame() so
+    // The frame graph: rebuilt every frame, recompiled only when its declaration changes (plan_cache_). frame_plan_ and submit_batches_ outlive record_frame() so
     // the caller can submit them (the batches' waits point into the plan).
     frame_graph::FrameGraph frame_graph_;
-    frame_graph::CompiledGraph frame_plan_;
+    frame_graph::PlanCache plan_cache_;
+    frame_graph::CompiledGraph const *frame_plan_ = nullptr; // into plan_cache_, valid until the next record_frame
     std::vector<SubmitBatch> submit_batches_;
     frame_graph::PassProfiler pass_profiler_;
 

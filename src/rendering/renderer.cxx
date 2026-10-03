@@ -4858,13 +4858,14 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                       }};
                           });
 
-    auto compiled = frame_graph::compile(frame_graph_, context_.queue_set.topology(),
-                                         {.async_compute = context_.async_compute_mode != AsyncComputeMode::off});
+    auto const compiled = plan_cache_.compile(frame_graph_, context_.queue_set.topology(),
+                                              {.async_compute = context_.async_compute_mode != AsyncComputeMode::off,
+                                               .serialize = context_.frame_graph_serialize});
     if (!compiled) {
         error("Could not compile the frame graph: {}", compiled.error());
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
-    frame_plan_ = std::move(*compiled);
+    frame_plan_ = *compiled;
 
     auto const resources = frame_graph::physical_resources_of(frame_graph_.description());
 
@@ -4875,7 +4876,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
     auto batches = frame_graph::record(frame_graph::ExecuteInfo{
             .graph = frame_graph_.description(),
-            .compiled = frame_plan_,
+            .compiled = *frame_plan_,
             .records = frame_graph_.records(),
             .resources = resources,
             .queue_set = context_.queue_set,

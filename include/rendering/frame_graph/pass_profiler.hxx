@@ -74,8 +74,8 @@ namespace frame_graph {
 
         // A Tracy source location with this name and colour. Interned and never freed: Tracy keeps the pointer.
         // Null without TRACY_ENABLE.
-        [[nodiscard]] auto source_location(std::string_view label,
-                                           std::uint32_t color) -> tracy::SourceLocationData const *;
+        [[nodiscard]] auto source_location(std::string_view label, std::uint32_t color)
+                -> tracy::SourceLocationData const *;
 
     private:
         struct Written {

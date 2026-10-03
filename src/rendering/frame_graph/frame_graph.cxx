@@ -129,12 +129,12 @@ namespace frame_graph {
 
     auto PassBuilder::pinned() -> void { pass_->pinned = true; }
 
-    auto PassBuilder::access(std::uint32_t resource, std::uint32_t version, Use use, ShaderStages stages,
-                             bool discard) -> void {
+    auto PassBuilder::access(std::uint32_t resource, std::uint32_t version, Use use, ShaderStages stages, bool discard)
+            -> bool {
         auto &graph = *graph_;
         auto const &pass = *pass_;
         if (!graph.validate_access(pass, resource, version)) {
-            return;
+            return false;
         }
 
         auto const &desc = graph.desc_.resources[resource];
@@ -144,25 +144,25 @@ namespace frame_graph {
                                                   : desc.kind == ResourceKind::buffer;
         if (!kind_matches) {
             graph.record_error(FrameGraphErrorType::wrong_resource_kind, pass, resource);
-            return;
+            return false;
         }
         if (info.needs_shader_stages && stages == 0) {
             graph.record_error(FrameGraphErrorType::missing_shader_stages, pass, resource);
-            return;
+            return false;
         }
         if (std::ranges::any_of(pass.accesses, [&](AccessDesc const &a) { return a.resource == resource; })) {
             graph.record_error(FrameGraphErrorType::conflicting_use, pass, resource);
-            return;
+            return false;
         }
         if (info.writes && desc.read_only) {
             graph.record_error(FrameGraphErrorType::write_to_read_only_import, pass, resource);
-            return;
+            return false;
         }
 
         auto const written = graph.written_[resource];
         if (!written && !info.writes) {
             graph.record_error(FrameGraphErrorType::read_before_write, pass, resource);
-            return;
+            return false;
         }
 
         pass_->accesses.push_back(AccessDesc{
@@ -177,6 +177,7 @@ namespace frame_graph {
         if (info.writes) {
             graph.produce(resource);
         }
+        return true;
     }
 
     auto PassBuilder::read(ImageId image, Use use, ShaderStages stages) -> ImageId {
@@ -222,15 +223,60 @@ namespace frame_graph {
         return BufferId{.index = buffer.index, .generation = graph_->latest_version(buffer.index)};
     }
 
-    auto PassBuilder::color(ImageId image, LoadOp load, StoreOp) -> ImageId {
-        access(image.index, image.generation, Use::color_attachment, 0, discards_contents(Use::color_attachment, load));
+    auto PassBuilder::rendering() -> RenderingDesc & {
+        if (!pass_->rendering) {
+            pass_->rendering.emplace();
+        }
+        return *pass_->rendering;
+    }
+
+    auto PassBuilder::color(ImageId image, LoadOp load, StoreOp store, VkClearValue clear) -> ImageId {
+        if (access(image.index, image.generation, Use::color_attachment, 0,
+                   discards_contents(Use::color_attachment, load))) {
+            rendering().colors.push_back(
+                    AttachmentDesc{.resource = image.index, .load = load, .store = store, .clear = clear});
+        }
         return ImageId{.index = image.index, .generation = graph_->latest_version(image.index)};
     }
 
-    auto PassBuilder::write_depth(ImageId image, LoadOp load, StoreOp) -> ImageId {
-        access(image.index, image.generation, Use::depth_attachment, 0, discards_contents(Use::depth_attachment, load));
+    auto PassBuilder::write_depth(ImageId image, LoadOp load, StoreOp store, VkClearValue clear) -> ImageId {
+        if (access(image.index, image.generation, Use::depth_attachment, 0,
+                   discards_contents(Use::depth_attachment, load))) {
+            rendering().depth = AttachmentDesc{.resource = image.index, .load = load, .store = store, .clear = clear};
+        }
         return ImageId{.index = image.index, .generation = graph_->latest_version(image.index)};
     }
+
+    auto PassBuilder::resolve(ImageId attachment, ImageId target, VkResolveModeFlagBits mode) -> ImageId {
+        auto *attached = static_cast<AttachmentDesc *>(nullptr);
+        auto is_depth = false;
+        if (pass_->rendering) {
+            auto &desc = *pass_->rendering;
+            if (desc.depth && desc.depth->resource == attachment.index) {
+                attached = &*desc.depth;
+                is_depth = true;
+            } else if (auto const found = std::ranges::find_if(
+                               desc.colors, [&](AttachmentDesc const &c) { return c.resource == attachment.index; });
+                       found != desc.colors.end()) {
+                attached = &*found;
+            }
+        }
+        if (attached == nullptr) {
+            // Not an attachment of this pass, or one that already has its resolve.
+            graph_->record_error(FrameGraphErrorType::conflicting_use, *pass_, attachment.index);
+            return target;
+        }
+
+        auto const use = is_depth ? Use::depth_resolve : Use::color_resolve;
+        if (access(target.index, target.generation, use, 0, true)) {
+            attached->resolve = AttachmentResolve{.resource = target.index, .mode = mode};
+        }
+        return ImageId{.index = target.index, .generation = graph_->latest_version(target.index)};
+    }
+
+    auto PassBuilder::render_area(VkRect2D area) -> void { rendering().render_area = area; }
+
+    auto PassBuilder::view_mask(std::uint32_t mask) -> void { rendering().view_mask = mask; }
 
     auto PassBuilder::create(TransientImageDesc const &desc) -> ImageId {
         auto const index = graph_->add_resource(

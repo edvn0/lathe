@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <expected>
+#include <optional>
 
 #include "rendering/frame_graph/compiled_graph.hxx"
 #include "rendering/frame_graph/frame_graph.hxx"
@@ -27,7 +29,7 @@ namespace frame_graph {
     struct CompileOptions {
         bool async_compute = true;
         SchedulerMode scheduler = SchedulerMode::declaration_order;
-        bool serialize = false; // debug: ALL_COMMANDS barriers between all passes
+        bool serialize = false; // debug: every derived barrier is widened to ALL_COMMANDS / memory read-write
     };
 
     // Compiles the declared graph into barriers, batches, semaphore waits, ownership transfers and timestamp slots.
@@ -38,5 +40,29 @@ namespace frame_graph {
 
     [[nodiscard]] auto compile(FrameGraph const &graph, QueueTopology const &topology,
                                CompileOptions const &options = {}) -> std::expected<CompiledGraph, FrameGraphError>;
+
+    // Everything the compiler reads from the declaration, the topology and the options, and nothing it does not:
+    // physical handles, clear values, load/store ops, profiles and transient descs leave the plan unchanged.
+    [[nodiscard]] auto declaration_hash(GraphDesc const &graph, QueueTopology const &topology,
+                                        CompileOptions const &options) -> std::uint64_t;
+
+    // Holds the last compiled plan. The graph is rebuilt every frame but almost always declares the same thing, so a
+    // matching hash skips the compile. The returned plan stays valid until the next compile() or invalidate().
+    class PlanCache {
+    public:
+        [[nodiscard]] auto compile(FrameGraph const &graph, QueueTopology const &topology,
+                                   CompileOptions const &options = {})
+                -> std::expected<CompiledGraph const *, FrameGraphError>;
+
+        auto invalidate() -> void { plan_.reset(); }
+
+        [[nodiscard]] auto hits() const noexcept -> std::uint64_t { return hits_; }
+        [[nodiscard]] auto misses() const noexcept -> std::uint64_t { return misses_; }
+
+    private:
+        std::optional<CompiledGraph> plan_;
+        std::uint64_t hits_ = 0;
+        std::uint64_t misses_ = 0;
+    };
 
 } // namespace frame_graph

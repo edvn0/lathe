@@ -1,6 +1,7 @@
 #include "rendering/frame_graph/executor.hxx"
 
 #include <format>
+#include <optional>
 
 #include "rendering/frame_graph/pass_context.hxx"
 
@@ -19,8 +20,8 @@ namespace frame_graph {
         }
 
         // Records `barriers` as one vkCmdPipelineBarrier2, if there is anything to record.
-        auto record_barriers(VkCommandBuffer command_buffer, BarrierSet const &barriers,
-                             ExecuteInfo const &info) -> std::expected<void, ExecuteError> {
+        auto record_barriers(VkCommandBuffer command_buffer, BarrierSet const &barriers, ExecuteInfo const &info)
+                -> std::expected<void, ExecuteError> {
             if (barriers.empty()) {
                 return {};
             }
@@ -65,6 +66,29 @@ namespace frame_graph {
             info.profiler.write_begin(command_buffer, batch.queue, info.frame_index, compiled_pass.timestamp_slot,
                                       name_id, label);
 
+            // A raster pass that declared attachments is wrapped in dynamic rendering; the barrier above has put them
+            // in their attachment layouts.
+            auto rendering = std::optional<RenderingStorage>{};
+            if (pass.rendering) {
+                auto desc = *pass.rendering;
+                if (desc.render_area.extent.width == 0 || desc.render_area.extent.height == 0) {
+                    auto const first = !desc.colors.empty() ? desc.colors.front().resource
+                                       : desc.depth         ? desc.depth->resource
+                                                            : 0U;
+                    if (auto const *image = info.resources.image(first); image != nullptr) {
+                        desc.render_area =
+                                VkRect2D{.offset = {0, 0}, .extent = {image->extent.width, image->extent.height}};
+                    }
+                }
+                auto storage = translate(desc, info.resources);
+                if (!storage) {
+                    return std::unexpected(ExecuteError{describe(storage.error(), info.graph)});
+                }
+                rendering = std::move(*storage);
+                auto const rendering_info = rendering->info();
+                vkCmdBeginRendering(command_buffer, &rendering_info);
+            }
+
             if (compiled_pass.pass < info.records.size() && info.records[compiled_pass.pass]) {
                 auto context = PassContext{
                         .command_buffer = command_buffer,
@@ -73,6 +97,10 @@ namespace frame_graph {
                         .resources = &info.resources,
                 };
                 info.records[compiled_pass.pass](context);
+            }
+
+            if (rendering) {
+                vkCmdEndRendering(command_buffer);
             }
 
             info.profiler.write_end(command_buffer, batch.queue, info.frame_index, compiled_pass.timestamp_slot);

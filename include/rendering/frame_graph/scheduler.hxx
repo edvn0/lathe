@@ -18,14 +18,14 @@ namespace frame_graph {
 
     // For each live pass, the later live passes that depend on it: they touch a shared resource and at least one of
     // the two writes it. Indexed by declaration index; every successor has a higher index than its source.
-    [[nodiscard]] auto dependency_successors(GraphDesc const &graph,
-                                             std::vector<bool> const &live) -> std::vector<std::vector<std::size_t>>;
+    [[nodiscard]] auto dependency_successors(GraphDesc const &graph, std::vector<bool> const &live)
+            -> std::vector<std::vector<std::size_t>>;
 
     // The execution order of the live passes as declaration indices. Always a topological order of the dependency
     // graph. `pinned` and `legacy()` passes never move and are never crossed. Ties break by declaration index, so the
     // result is deterministic.
     [[nodiscard]] auto schedule(GraphDesc const &graph, std::vector<bool> const &live,
-                                std::vector<LogicalQueue> const &queues,
-                                SchedulerMode mode) -> std::vector<std::uint32_t>;
+                                std::vector<LogicalQueue> const &queues, SchedulerMode mode)
+            -> std::vector<std::uint32_t>;
 
 } // namespace frame_graph

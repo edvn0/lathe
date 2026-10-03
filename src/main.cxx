@@ -778,6 +778,8 @@ auto main(int argc, char **argv) -> int {
             context.sync_validation = true;
         } else if (arg == "--async-compute-smoke") {
             context.async_compute_smoke = true;
+        } else if (arg == "--frame-graph-serialize") {
+            context.frame_graph_serialize = true;
         }
     }
 

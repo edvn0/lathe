@@ -63,6 +63,10 @@ struct VulkanContext {
     // --async-compute-smoke: submit empty compute and graphics batches each frame to exercise the timelines.
     bool async_compute_smoke = false;
 
+    // --frame-graph-serialize: the frame graph compiler puts ALL_COMMANDS barriers between all passes, to tell a missing
+    // dependency from a real bug (CompileOptions::serialize).
+    bool frame_graph_serialize = false;
+
     QueueFamilies queue_families{};
 
     QueueSet queue_set{};
