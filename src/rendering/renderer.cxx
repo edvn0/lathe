@@ -2045,7 +2045,7 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, Mater
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
 
-    if (model_submissions_.size() >= maximum_submission_count_) {
+    if (submitted_model_count() >= maximum_submission_count_) {
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
     }
 
@@ -2070,7 +2070,7 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
 
-    if (model_submissions_.size() >= maximum_submission_count_) {
+    if (submitted_model_count() >= maximum_submission_count_) {
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
     }
 
@@ -2094,18 +2094,22 @@ auto Renderer::submit_model_instances(ModelHandle model, std::span<glm::mat4 con
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
 
-    if (model_submissions_.size() + transforms.size() > maximum_submission_count_) {
+    if (submitted_model_count() + transforms.size() > maximum_submission_count_) {
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
     }
 
-    model_submissions_.reserve(model_submissions_.size() + transforms.size());
-    for (auto const &transform: transforms) {
-        model_submissions_.push_back(ModelSubmission{
-                .model = model,
-                .transform = transform,
-                .material_override = material_override,
-        });
+    if (transforms.empty()) {
+        return {};
     }
+
+    instanced_submissions_.push_back(InstancedSubmission{
+            .model = model,
+            .material_override = material_override,
+            .first_transform = static_cast<std::uint32_t>(instance_transforms_.size()),
+            .transform_count = static_cast<std::uint32_t>(transforms.size()),
+            .model_submission_position = model_submissions_.size(),
+    });
+    instance_transforms_.insert(instance_transforms_.end(), transforms.begin(), transforms.end());
 
     return {};
 }
@@ -2652,9 +2656,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return lod_index;
     };
 
-    auto const append_batch_transform = [this](BatchKey const &key, MeshHandle mesh, std::uint32_t submesh_index,
-                                               MaterialHandle material, std::uint32_t lod_index,
-                                               glm::mat4 const &transform) {
+    // The batch for `key`, activated for this frame on first use. batches_ is node-based, so the reference stays valid
+    // while other batches are added.
+    auto const batch_for = [this](BatchKey const &key, MeshHandle mesh, std::uint32_t submesh_index,
+                                  MaterialHandle material, std::uint32_t lod_index) -> BatchEntry & {
         auto iterator = batches_.try_emplace(key).first;
         auto &batch = iterator->second;
 
@@ -2667,10 +2672,95 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             batch.frame_stamp = batch_frame_;
             active_batches_.push_back(&batch);
         }
-        batch.transforms.push_back(transform);
+        return batch;
     };
 
-    for (auto const &model_submission: model_submissions_) {
+    auto const append_batch_transform = [&batch_for](BatchKey const &key, MeshHandle mesh, std::uint32_t submesh_index,
+                                                     MaterialHandle material, std::uint32_t lod_index,
+                                                     glm::mat4 const &transform) {
+        batch_for(key, mesh, submesh_index, material, lod_index).transforms.push_back(transform);
+    };
+
+    // Instanced submissions share model, material and slot overrides across their instances, so materials resolve once
+    // per submesh and each (submesh, LOD) batch is looked up once per call; only the LOD is chosen per instance. False
+    // for a model that refers to a destroyed mesh.
+    auto const lod_slot_count = lod_distances.size() + 1;
+    std::vector<BatchEntry *> instanced_batch_cache;
+    std::vector<MaterialHandle> instanced_materials;
+
+    auto const append_instanced = [&](InstancedSubmission const &instanced) -> bool {
+        auto const *model = model_slot(instanced.model);
+        if (model == nullptr) {
+            return true; // destroyed after it was submitted, as for individual submissions
+        }
+
+        auto const transforms =
+                std::span{instance_transforms_}.subspan(instanced.first_transform, instanced.transform_count);
+
+        for (auto const &model_draw: model->draws) {
+            auto const *mesh = mesh_slot(model_draw.mesh);
+            if (mesh == nullptr) {
+                return false;
+            }
+
+            auto const submesh_count = mesh->submeshes.size();
+            instanced_materials.clear();
+            for (auto const &submesh: mesh->submeshes) {
+                instanced_materials.push_back(instanced.material_override.valid() ? instanced.material_override
+                                                                                  : submesh.material);
+            }
+            instanced_batch_cache.assign(submesh_count * lod_slot_count, nullptr);
+
+            auto const identity_local = model_draw.local_transform == glm::mat4{1.0F};
+
+            for (auto const &transform: transforms) {
+                auto const instance_transform = identity_local ? transform : transform * model_draw.local_transform;
+                auto const lod_index = select_lod_index(glm::vec3(instance_transform[3]));
+
+                for (std::uint32_t submesh_index = 0; submesh_index < submesh_count; ++submesh_index) {
+                    auto *&batch = instanced_batch_cache[submesh_index * lod_slot_count + lod_index];
+                    if (batch == nullptr) {
+                        auto const material = instanced_materials[submesh_index];
+                        batch = &batch_for(
+                                BatchKey{
+                                        .mesh_index = model_draw.mesh.index,
+                                        .submesh_index = submesh_index,
+                                        .material_index = material_storage_.gpu_index(material),
+                                        .lod_index = lod_index,
+                                },
+                                model_draw.mesh, submesh_index, material, lod_index);
+                    }
+                    batch->transforms.push_back(instance_transform);
+                }
+            }
+        }
+        return true;
+    };
+
+    // Instanced submissions are batched where they were submitted relative to individual ones, so every batch gets
+    // its instances in submission order.
+    auto next_instanced = std::size_t{0};
+    auto const append_instanced_before = [&](std::size_t model_submission_position) -> bool {
+        while (next_instanced < instanced_submissions_.size() &&
+               instanced_submissions_[next_instanced].model_submission_position <= model_submission_position) {
+            if (!append_instanced(instanced_submissions_[next_instanced])) {
+                return false;
+            }
+            ++next_instanced;
+        }
+        return true;
+    };
+
+    for (std::size_t position = 0; position <= model_submissions_.size(); ++position) {
+        if (!append_instanced_before(position)) {
+            clear_submissions();
+            return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+        }
+        if (position == model_submissions_.size()) {
+            break;
+        }
+
+        auto const &model_submission = model_submissions_[position];
         auto const *model = model_slot(model_submission.model);
 
         // Destroyed after it was submitted this frame, e.g. by the editor swapping an entity's model.
@@ -3351,7 +3441,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .opaque_indirect_count = frame.opaque_indirect_count,
             .mask_indirect_count = frame.mask_indirect_count,
             .blend_indirect_count = frame.blend_indirect_count,
-            .model_submission_count = static_cast<std::uint32_t>(model_submissions_.size()),
+            .model_submission_count = static_cast<std::uint32_t>(submitted_model_count()),
             .mesh_submission_count = static_cast<std::uint32_t>(submissions_.size()),
             .point_light_count = static_cast<std::uint32_t>(point_light_submissions_.size()),
             .spot_light_count = static_cast<std::uint32_t>(spot_light_submissions_.size()),
@@ -4648,6 +4738,8 @@ auto Renderer::clear_submissions() noexcept -> void {
     submissions_.clear();
     model_submissions_.clear();
     slot_override_submissions_.clear();
+    instanced_submissions_.clear();
+    instance_transforms_.clear();
     point_light_submissions_.clear();
     spot_light_submissions_.clear();
 }
