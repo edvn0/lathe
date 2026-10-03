@@ -25,9 +25,17 @@ namespace {
     }
 
     constexpr auto fragment_stage = static_cast<frame_graph::ShaderStages>(frame_graph::ShaderStage::fragment);
+    constexpr auto compute_stage = static_cast<frame_graph::ShaderStages>(frame_graph::ShaderStage::compute);
 
     // The editor clears the swapchain under its UI to this.
     constexpr auto ui_clear_colour = VkClearValue{.color = {.float32 = {0.0F, 0.0F, 0.0F, 1.0F}}};
+
+    // The state the legacy pass and the previous frame's readers leave a sampled image in.
+    constexpr auto sampled_by_fragment_or_compute = frame_graph::ResourceState{
+            .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+    };
 
     // What a viewport (or swapchain) image looks like to the graph: the sampled state the editor panel leaves it in.
     constexpr auto sampled_by_fragment = frame_graph::ResourceState{
@@ -101,6 +109,46 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     }
 
+    // Bloom reads the resolved HDR image, which the legacy pass leaves sampled, and rebuilds its mip chain every frame.
+    // Neither is imported when bloom is off: nothing touches them.
+    auto const bloom_enabled = bloom_settings_.enabled;
+    auto hdr_image = frame_graph::ImageId{};
+    auto bloom_image = frame_graph::ImageId{};
+    if (bloom_enabled) {
+        auto const &hdr = *targets->resolved_hdr;
+        hdr_image = frame_graph_.import_image({
+                .entry = sampled_by_fragment_or_compute,
+                .exit = sampled_by_fragment_or_compute,
+                .read_only = true,
+                .debug_name = "resolved_hdr",
+                .image =
+                        frame_graph::PhysicalImage{
+                                .image = hdr.image(),
+                                .view = hdr.view(),
+                                .format = hdr.format(),
+                                .extent = hdr.extent(),
+                                .mip_levels = hdr.mip_levels(),
+                                .array_layers = hdr.array_layers(),
+                        },
+        });
+
+        auto const &bloom = *frame.bloom_target.image;
+        bloom_image = frame_graph_.import_image({
+                .entry = sampled_by_fragment_or_compute,
+                .exit = sampled_by_fragment_or_compute,
+                .debug_name = "bloom",
+                .image =
+                        frame_graph::PhysicalImage{
+                                .image = bloom.image(),
+                                .view = bloom.view(),
+                                .format = bloom.format(),
+                                .extent = bloom.extent(),
+                                .mip_levels = bloom.mip_levels(),
+                                .array_layers = bloom.array_layers(),
+                        },
+        });
+    }
+
     // Shared by the record lambdas, which all run inside frame_graph::record() below.
     struct FrameState {
         std::expected<void, RendererError> result{};
@@ -125,6 +173,37 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               }};
                           });
 
+    if (bloom_enabled) {
+        frame_graph_.add_pass(
+                "bloom", frame_graph::PassType::compute,
+                {
+                        .name_id = "bloom",
+                        .label = "Bloom",
+                        .color = static_cast<std::uint32_t>(tracy::Color::Orange),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    [[maybe_unused]] auto const input = pass.read(hdr_image, frame_graph::Use::sampled, compute_stage);
+                    // The mip chain is written, sampled and written again inside the pass, one level at a time; the
+                    // graph only sees it enter writable and leave sampled.
+                    bloom_image = pass.write(bloom_image, frame_graph::Use::storage_write, compute_stage,
+                                             frame_graph::ExitUse{frame_graph::Use::sampled});
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        if (!state.result) {
+                            return;
+                        }
+
+                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        auto const bloom_result = record_bloom_pass(pass_context, frame, *targets, state.composite.hdr);
+                        if (bloom_result) {
+                            state.composite.bloom = *bloom_result;
+                        } else {
+                            state.result = std::unexpected(bloom_result.error());
+                        }
+                    }};
+                });
+    }
+
     frame_graph_.add_pass(
             "composition", frame_graph::PassType::raster,
             {
@@ -133,6 +212,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     .color = static_cast<std::uint32_t>(tracy::Color::SeaGreen),
             },
             [&](frame_graph::PassBuilder &pass) {
+                if (bloom_enabled) {
+                    [[maybe_unused]] auto const bloom =
+                            pass.read(bloom_image, frame_graph::Use::sampled, fragment_stage);
+                }
                 if (fullscreen) {
                     swapchain = pass.color(swapchain, frame_graph::LoadOp::dont_care, frame_graph::StoreOp::store);
                     pass.render_area({.offset = {0, 0}, .extent = swapchain_image.extent});

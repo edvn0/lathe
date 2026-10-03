@@ -1279,14 +1279,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.batch_bounds_buffer = std::move(*batch_bounds);
 
         // main_cs is the only writer.
-        auto culled_indirect = Buffer::create(
-                context_, BufferCreateInfo{
-                                  .size = culled_indirect_size,
-                                  .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                  .memory = BufferMemory::device,
-                                  .debug_name = "renderer.frame_culled_indirect",
-                          });
+        auto culled_indirect = Buffer::create(context_, BufferCreateInfo{
+                                                                .size = culled_indirect_size,
+                                                                .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                .memory = BufferMemory::device,
+                                                                .debug_name = "renderer.frame_culled_indirect",
+                                                        });
 
         if (!culled_indirect) {
             return std::unexpected(make_device_error(culled_indirect.error()));
@@ -3732,8 +3732,8 @@ auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
 
     frame.occlusion_stats_pending = false;
 
-    if (auto invalidated = frame.occlusion_stats_readback_buffer.invalidate(
-                0, VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t));
+    if (auto invalidated = frame.occlusion_stats_readback_buffer.invalidate(0, VkDeviceSize{occlusion_stat_count} *
+                                                                                       sizeof(std::uint32_t));
         !invalidated) {
         error("[Renderer] Failed to invalidate the occlusion statistics readback buffer");
         return;
@@ -4133,7 +4133,8 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
 }
 
 auto Renderer::record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Environment", tracy::Color::SkyBlue);
+    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Environment",
+                 tracy::Color::SkyBlue);
 
     auto const command_buffer = pass_context.command_buffer;
     constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Environment);
@@ -4485,8 +4486,6 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
 auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                                  FrameTargets const &targets, render_pass::HdrTextureIndex hdr)
         -> std::expected<std::optional<render_pass::BloomTextureIndex>, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Bloom Pass", tracy::Color::Orange);
-
     std::array<std::uint32_t, render_pass::bloom_mip_count> mip_texture_indices{};
     for (std::uint32_t mip = 0; mip < render_pass::bloom_mip_count; ++mip) {
         mip_texture_indices[mip] = frame.bloom_target.mip_slots[mip].handle().index;
@@ -4518,8 +4517,7 @@ auto Renderer::record_frame_end(VkCommandBuffer command_buffer, std::uint32_t fr
     pipeline_stat_queries_[frame_index].has_results = true;
 }
 
-auto Renderer::write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage)
-        -> void {
+auto Renderer::write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage) -> void {
     auto const query_pool = timestamp_queries_[frame_index].query_pool;
     auto const first_query = static_cast<std::uint32_t>(stage) * 2;
 
@@ -4792,12 +4790,12 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &f
         return std::unexpected(hdr.error());
     }
 
-    auto const bloom = record_bloom_pass(pass_context, frame, targets, *hdr);
-    if (!bloom) {
-        return std::unexpected(bloom.error());
+    // Bloom is its own graph pass when enabled; otherwise its stage still needs both timestamps.
+    if (!bloom_settings_.enabled) {
+        write_empty_stage(command_buffer, frame_index, RenderStage::BloomPass);
     }
 
-    composite_inputs = CompositeInputs{.hdr = *hdr, .bloom = *bloom};
+    composite_inputs = CompositeInputs{.hdr = *hdr, .bloom = std::nullopt};
 
     return {};
 }
