@@ -216,24 +216,24 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .image = physical_image(*targets->shadow_atlas),
     });
 
-    // With AO off forward samples a white texture that is not part of the graph. Both images are rebuilt every
-    // frame; the raw one is only sampled by the denoise, the denoised one by forward.
+    // With AO off forward samples a white texture that is not part of the graph. Otherwise both AO images are
+    // transients created by the passes that write them (GTAO's raw image, the denoise's output); the allocator gives
+    // them memory and bindless indices after the graph is compiled.
     auto ao_raw_image = frame_graph::ImageId{};
     auto ao_image = frame_graph::ImageId{};
-    if (ao_enabled) {
-        ao_raw_image = frame_graph_.import_image({
-                .entry = sampled_by_fragment_or_compute,
-                .exit = sampled_by_fragment_or_compute,
-                .debug_name = "ao_raw",
-                .image = physical_image(*targets->ao_raw),
-        });
-        ao_image = frame_graph_.import_image({
-                .entry = sampled_by_fragment,
-                .exit = sampled_by_fragment,
-                .debug_name = "ao_denoised",
-                .image = physical_image(*targets->ao_denoised),
-        });
-    }
+    auto const ao_description = [&](std::string_view name) {
+        return frame_graph::TransientImageDesc{
+                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                .extent = {targets->extent.width, targets->extent.height, 1},
+                .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                    image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                .debug_name = name,
+        };
+    };
+    // The bindless index of a transient, once the allocator has made it.
+    auto const transient_index = [&](frame_graph::ImageId image) {
+        return transient_allocator_.handle(info.frame_index, image.index).index;
+    };
 
     // Rebuilt every frame by the bloom pass, which leaves it sampled. Not imported when bloom is off: nothing
     // touches it.
@@ -350,8 +350,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         // A pyramid from before this gap may not match what is on screen when culling resumes.
         hiz_history_valid_ = false;
     }
-    state.handoff.ao_texture_index =
-            ao_enabled ? frame.ao_target.denoised.handle().index : image_storage_.white().index;
 
     // Overlays' prepare() hooks run before every pass, outside any rendering scope, and may write GPU data (debug
     // geometry, indirect arguments) the overlay draws read. The token orders them before those draws.
@@ -834,6 +832,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 [&](frame_graph::PassBuilder &pass) {
                     [[maybe_unused]] auto const depth =
                             pass.read(resolved_depth_image, frame_graph::Use::sampled, compute_stage);
+                    ao_raw_image = pass.create(ao_description("ao_raw"));
                     ao_raw_image = pass.write(ao_raw_image, frame_graph::Use::storage_write, compute_stage);
 
                     return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
@@ -842,8 +841,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         }
 
                         auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
-                        if (auto const done = render_pass::gtao(
-                                    pass_context, ambient_occlusion_info(frame, *targets, info.frame_index));
+                        if (auto const done = render_pass::gtao(pass_context,
+                                                                ambient_occlusion_info(*targets, info.frame_index,
+                                                                                       transient_index(ao_raw_image),
+                                                                                       transient_index(ao_image)));
                             !done) {
                             state.result = std::unexpected(done.error());
                         }
@@ -861,6 +862,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const raw = pass.read(ao_raw_image, frame_graph::Use::sampled, compute_stage);
                     [[maybe_unused]] auto const depth =
                             pass.read(resolved_depth_image, frame_graph::Use::sampled, compute_stage);
+                    ao_image = pass.create(ao_description("ao_denoised"));
                     ao_image = pass.write(ao_image, frame_graph::Use::storage_write, compute_stage,
                                           frame_graph::ExitUse{frame_graph::Use::sampled});
 
@@ -871,7 +873,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
                         auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
                         if (auto const done = render_pass::gtao_denoise(
-                                    pass_context, ambient_occlusion_info(frame, *targets, info.frame_index));
+                                    pass_context,
+                                    ambient_occlusion_info(*targets, info.frame_index, transient_index(ao_raw_image),
+                                                           transient_index(ao_image)));
                             !done) {
                             state.result = std::unexpected(done.error());
                         }
@@ -951,6 +955,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     auto scene_overlays = [&] {
                         record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
                     };
+
+                    // The denoised AO image, or white when AO is off.
+                    state.handoff.ao_texture_index =
+                            ao_enabled ? transient_index(ao_image) : image_storage_.white().index;
 
                     auto const hdr = record_forward_pass(pass_context, frame, *targets, state.handoff.ao_texture_index,
                                                          render_pass::Callback::bind(scene_overlays));
@@ -1171,7 +1179,25 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     }
     frame_plan_ = *compiled;
 
-    auto const resources = frame_graph::physical_resources_of(frame_graph_.description());
+    // Memory and images for the transients, recreated only when the compiled plan or a description changed. New
+    // images have new bindless slots, which this frame's descriptor set has not seen yet.
+    auto const allocated = transient_allocator_.prepare(info.frame_index, frame_graph_.description(), *frame_plan_,
+                                                        transient_aliasing_);
+    if (!allocated) {
+        error("Could not allocate the frame graph's transients: {}", allocated.error().message);
+        return std::unexpected(make_error(RendererErrorType::image_error));
+    }
+    if (*allocated) {
+        if (auto const refreshed =
+                    gpu_resource_table_.prepare_frame(info.frame_index, image_storage_, sampler_storage_);
+            !refreshed) {
+            error("Could not refresh the resource table for new transients");
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+    }
+
+    auto resources = frame_graph::physical_resources_of(frame_graph_.description());
+    transient_allocator_.fill(info.frame_index, resources);
 
     auto const graphics_tracy = context_.host_query_context.context;
     auto const compute_tracy = context_.compute_queue != context_.graphics_queue
@@ -1183,6 +1209,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .compiled = *frame_plan_,
             .records = frame_graph_.records(),
             .resources = resources,
+            .transients = &transient_allocator_.plan(info.frame_index),
             .queue_set = context_.queue_set,
             .profiler = pass_profiler_,
             .tracy_contexts = {graphics_tracy, compute_tracy},

@@ -57,6 +57,7 @@
 #include "rendering/frame_graph/compiler.hxx"
 #include "rendering/frame_graph/frame_graph.hxx"
 #include "rendering/frame_graph/pass_profiler.hxx"
+#include "rendering/frame_graph/transient_allocator.hxx"
 #include "rendering/hiz_occlusion.hxx"
 #include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
@@ -916,11 +917,6 @@ private:
         BloomTarget bloom_target{};
 
         // Per-frame GTAO targets: `raw` from the horizon search, `denoised` sampled by the forward pass.
-        struct AoTarget {
-            ImageHolder raw;
-            ImageHolder denoised;
-        };
-        AoTarget ao_target{};
 
         // Bit i means cascade i is redrawn into the persistent atlas this frame.
         ShadowCascadeMask shadow_update_mask = all_shadow_cascades_mask;
@@ -1002,7 +998,6 @@ private:
         ForwardTarget forward_target{};
         ImageHolder viewport_target{};
         RendererFrame::BloomTarget bloom_target{};
-        RendererFrame::AoTarget ao_target{};
     };
 
     struct ModelSubmission {
@@ -1110,8 +1105,6 @@ private:
         ImageHandle resolved_depth_handle{};
 
         Image const *shadow_atlas = nullptr;
-        Image const *ao_raw = nullptr;
-        Image const *ao_denoised = nullptr;
         Image const *viewport = nullptr;
 
         VkExtent2D extent{};
@@ -1192,8 +1185,8 @@ private:
 
     // The parameters of the two GTAO passes (they read AO settings, so they are built when the frame is recorded).
     [[nodiscard]]
-    auto ambient_occlusion_info(RendererFrame const &frame, FrameTargets const &targets,
-                                std::uint32_t frame_index) const -> render_pass::AmbientOcclusionInfo;
+    auto ambient_occlusion_info(FrameTargets const &targets, std::uint32_t frame_index, std::uint32_t raw_texture_index,
+                                std::uint32_t denoised_texture_index) const -> render_pass::AmbientOcclusionInfo;
 
     [[nodiscard]]
     auto record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
@@ -1391,6 +1384,10 @@ private:
     frame_graph::CompiledGraph const *frame_plan_ = nullptr; // into plan_cache_, valid until the next record_frame
     std::vector<SubmitBatch> submit_batches_;
     frame_graph::PassProfiler pass_profiler_;
+
+    // Backs the graph's transient images, per frame slot (record_frame()). Aliasing can be switched off for debugging.
+    frame_graph::TransientAllocator transient_allocator_;
+    bool transient_aliasing_ = true;
 
     struct FramePipelineQuery {
         VkQueryPool query_pool{VK_NULL_HANDLE};

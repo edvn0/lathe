@@ -36,9 +36,11 @@ namespace frame_graph {
 
         auto initialize(VulkanContext &context, ImageStorage &images, std::uint32_t slot_count) -> void;
 
-        // Makes the slot's transients match `graph`/`compiled`, recreating them only if they changed.
+        // Makes the slot's transients match `graph`/`compiled`, recreating them only if they changed. Returns whether
+        // it did: new images have new bindless slots, which the GPU resource table has to pick up before shaders
+        // sample them.
         [[nodiscard]] auto prepare(std::uint32_t slot, GraphDesc const &graph, CompiledGraph const &compiled,
-                                   bool alias) -> std::expected<void, TransientAllocationError>;
+                                   bool alias) -> std::expected<bool, TransientAllocationError>;
 
         // Destroys one slot's images and blocks (the GPU must be done with them), or all of them.
         auto release(std::uint32_t slot) -> void;
@@ -62,8 +64,12 @@ namespace frame_graph {
         };
 
         struct Slot {
-            std::uint64_t key = 0;
+            std::uint64_t key = 0; // of the images as created; see prepare()
             bool valid = false;
+            std::uint64_t requirements_key = 0;
+            bool requirements_valid = false;
+            std::vector<MemoryRequirement> requirements; // by resource slot
+            std::vector<ImageCreateInfo> infos; // by resource slot
             TransientPlan plan;
             std::vector<VmaAllocation> blocks;
             std::vector<Entry> entries; // by resource slot

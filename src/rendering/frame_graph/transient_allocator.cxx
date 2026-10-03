@@ -11,16 +11,19 @@ namespace frame_graph {
             state ^= value + 0x9e3779b97f4a7c15ULL + (state << 6U) + (state >> 2U);
         }
 
-        // Everything that decides what the slot's images are: the compiled plan (which fixes lifetimes) and each
-        // transient's description.
+        // What decides the images themselves: each live transient's slot, description and usage. Not the compiled
+        // plan as a whole: passes elsewhere in the graph coming and going must not recreate images.
         auto key_of(GraphDesc const &graph, CompiledGraph const &compiled, bool alias) -> std::uint64_t {
-            auto key = compiled.hash;
+            auto key = std::uint64_t{0x1234567};
             mix(key, alias ? 1U : 0U);
-            for (auto const &resource: graph.resources) {
+            for (auto resource_index = std::uint32_t{0}; resource_index < graph.resources.size(); ++resource_index) {
+                auto const &resource = graph.resources[resource_index];
                 if (!resource.transient_image) {
                     continue;
                 }
                 auto const &desc = *resource.transient_image;
+                mix(key, resource_index);
+                mix(key, transient_usage(graph, compiled, resource_index));
                 mix(key, static_cast<std::uint64_t>(desc.format));
                 mix(key, (std::uint64_t{desc.extent.width} << 32U) | desc.extent.height);
                 mix(key, desc.extent.depth);
@@ -78,6 +81,14 @@ namespace frame_graph {
         }
 
         auto &state = slots_[slot];
+
+        // The bindless table lists every image in every frame's descriptor set, so another slot's frame still in
+        // flight can reference this slot's images. Reallocation is rare (a resize, a pass toggled), so just wait.
+        if ((!state.entries.empty() || !state.blocks.empty()) && context_ != nullptr &&
+            context_->device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(context_->device);
+        }
+
         // Images first: they are bound into the blocks.
         state.entries.clear();
         for (auto const block: state.blocks) {
@@ -98,41 +109,58 @@ namespace frame_graph {
     }
 
     auto TransientAllocator::prepare(std::uint32_t slot, GraphDesc const &graph, CompiledGraph const &compiled,
-                                     bool alias) -> std::expected<void, TransientAllocationError> {
+                                     bool alias) -> std::expected<bool, TransientAllocationError> {
         if (context_ == nullptr || slot >= slots_.size()) {
             return std::unexpected(TransientAllocationError{"transient allocator not initialised"});
         }
 
         auto &state = slots_[slot];
         auto const key = key_of(graph, compiled, alias);
-        if (state.valid && state.key == key) {
-            return {};
+
+        // What each live transient needs; only asked of the device when a description changed.
+        if (!state.requirements_valid || state.requirements_key != key) {
+            state.requirements.assign(graph.resources.size(), MemoryRequirement{});
+            state.infos.assign(graph.resources.size(), ImageCreateInfo{});
+            for (auto resource = std::uint32_t{0}; resource < graph.resources.size(); ++resource) {
+                auto const &desc = graph.resources[resource].transient_image;
+                if (!desc) {
+                    continue;
+                }
+                auto const usage = transient_usage(graph, compiled, resource);
+                if (usage == 0) {
+                    continue; // culled away
+                }
+                state.infos[resource] = create_info_of(*desc, usage);
+                auto const memory = Image::memory_requirements(*context_, state.infos[resource]);
+                state.requirements[resource] = MemoryRequirement{
+                        .size = memory.size,
+                        .alignment = memory.alignment,
+                        .memory_type_bits = memory.memoryTypeBits,
+                };
+            }
+            state.requirements_key = key;
+            state.requirements_valid = true;
+        }
+
+        // The plan is recomputed every frame (its barriers follow the compiled graph); the images only change when
+        // the placement does.
+        auto plan = plan_transients(graph, compiled, state.requirements, alias);
+        auto signature = key;
+        for (auto const &block: plan.blocks) {
+            mix(signature, block.size);
+            mix(signature, block.memory_type_bits);
+        }
+        for (auto const &placement: plan.placements) {
+            mix(signature, (std::uint64_t{placement.resource} << 32U) | placement.block);
+            mix(signature, placement.offset);
+        }
+        if (state.valid && state.key == signature) {
+            state.plan = std::move(plan);
+            return false;
         }
 
         release(slot);
-
-        // What each live transient needs.
-        auto requirements = std::vector<MemoryRequirement>(graph.resources.size());
-        auto infos = std::vector<ImageCreateInfo>(graph.resources.size());
-        for (auto resource = std::uint32_t{0}; resource < graph.resources.size(); ++resource) {
-            auto const &desc = graph.resources[resource].transient_image;
-            if (!desc) {
-                continue;
-            }
-            auto const usage = transient_usage(graph, compiled, resource);
-            if (usage == 0) {
-                continue; // culled away
-            }
-            infos[resource] = create_info_of(*desc, usage);
-            auto const memory = Image::memory_requirements(*context_, infos[resource]);
-            requirements[resource] = MemoryRequirement{
-                    .size = memory.size,
-                    .alignment = memory.alignment,
-                    .memory_type_bits = memory.memoryTypeBits,
-            };
-        }
-
-        state.plan = plan_transients(graph, compiled, requirements, alias);
+        state.plan = std::move(plan);
 
         for (auto const &block: state.plan.blocks) {
             VkMemoryRequirements const memory{
@@ -142,9 +170,10 @@ namespace frame_graph {
             };
             VmaAllocationCreateInfo const allocation_info{
                     .flags = VMA_ALLOCATION_CREATE_CAN_ALIAS_BIT,
-                    .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-                    .requiredFlags = 0,
-                    .preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    // No resource to infer from, so the AUTO usages do not apply: ask for device-local memory.
+                    .usage = VMA_MEMORY_USAGE_UNKNOWN,
+                    .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    .preferredFlags = 0,
                     .memoryTypeBits = block.memory_type_bits,
                     .pool = VK_NULL_HANDLE,
                     .pUserData = nullptr,
@@ -164,7 +193,7 @@ namespace frame_graph {
         state.entries.clear();
         state.entries.resize(graph.resources.size());
         for (auto const &placement: state.plan.placements) {
-            auto info = infos[placement.resource];
+            auto info = state.infos[placement.resource];
             info.alias = ImageAliasing{.allocation = state.blocks[placement.block], .offset = placement.offset};
 
             auto image = create_held_image(*images_, info);
@@ -195,9 +224,9 @@ namespace frame_graph {
             }
         }
 
-        state.key = key;
+        state.key = signature;
         state.valid = true;
-        return {};
+        return true;
     }
 
     auto TransientAllocator::image(std::uint32_t slot, std::uint32_t resource) const noexcept -> Image const * {

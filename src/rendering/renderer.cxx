@@ -1200,6 +1200,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             (sizeof(glm::vec4) + sizeof(std::uint32_t)) * VkDeviceSize{maximum_light_count} + sizeof(std::uint32_t);
 
     frames_.resize(frames_in_flight);
+    transient_allocator_.initialize(context_, image_storage_, frames_in_flight);
 
     for (std::uint32_t frame_index = 0; frame_index < static_cast<std::uint32_t>(frames_.size()); ++frame_index) {
         auto &frame = frames_[frame_index];
@@ -1445,7 +1446,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.forward_target = std::move(targets->forward_target);
         frame.viewport_target = std::move(targets->viewport_target);
         frame.bloom_target = std::move(targets->bloom_target);
-        frame.ao_target = std::move(targets->ao_target);
 
         frame.draw_upload_offset = 0;
         frame.transform_upload_offset = transform_offset;
@@ -1653,6 +1653,9 @@ auto Renderer::destroy() noexcept -> void {
         frame.meshlet_visibility_words = 0;
         frame.cluster_stats_pending = false;
     }
+
+    // Transient images are bound into blocks and registered in image_storage_: gone before both.
+    transient_allocator_.release_all();
 
     frames_.clear();
 
@@ -3774,8 +3777,6 @@ auto Renderer::resolve_frame_targets(RendererFrame const &frame) const -> std::e
             .resolved_hdr_handle = resolved_hdr_handle,
             .resolved_depth_handle = resolved_depth_handle,
             .shadow_atlas = shadow_atlas_.get(),
-            .ao_raw = frame.ao_target.raw.get(),
-            .ao_denoised = frame.ao_target.denoised.get(),
             .viewport = frame.viewport_target.get(),
             .extent = frame.forward_target.extent(),
             .multisampled = multisampled,
@@ -3784,8 +3785,7 @@ auto Renderer::resolve_frame_targets(RendererFrame const &frame) const -> std::e
     auto const usable = [](Image const *image) { return image != nullptr && image->valid(); };
 
     if (!usable(targets.hdr) || !usable(targets.depth) || !usable(targets.resolved_hdr) ||
-        !usable(targets.resolved_depth) || !usable(targets.shadow_atlas) || !usable(targets.ao_raw) ||
-        !usable(targets.ao_denoised) || !usable(targets.viewport)) {
+        !usable(targets.resolved_depth) || !usable(targets.shadow_atlas) || !usable(targets.viewport)) {
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
 
@@ -4058,13 +4058,14 @@ auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, R
     frame.meshlet_occlusion_stats_active = frame.meshlet_occlusion_active;
 }
 
-auto Renderer::ambient_occlusion_info(RendererFrame const &frame, FrameTargets const &targets,
-                                      std::uint32_t frame_index) const -> render_pass::AmbientOcclusionInfo {
+auto Renderer::ambient_occlusion_info(FrameTargets const &targets, std::uint32_t frame_index,
+                                      std::uint32_t raw_texture_index, std::uint32_t denoised_texture_index) const
+        -> render_pass::AmbientOcclusionInfo {
     return render_pass::AmbientOcclusionInfo{
             .extent = targets.extent,
             .depth_texture_index = targets.resolved_depth_handle.index,
-            .raw_ao_texture_index = frame.ao_target.raw.handle().index,
-            .denoised_ao_texture_index = frame.ao_target.denoised.handle().index,
+            .raw_ao_texture_index = raw_texture_index,
+            .denoised_ao_texture_index = denoised_texture_index,
             .point_sampler_index = sampler_storage_.nearest_clamp().index,
             .ubo_address = ubos_[frame_index].device_address,
             .gtao_pipeline = gtao_pipeline_,
@@ -4404,50 +4405,7 @@ auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent
         targets.bloom_target.mip_slots[mip] = std::move(*mip_slot);
     }
 
-    auto const create_ao_image = [&](std::string_view kind) -> std::expected<ImageHolder, RendererError> {
-        auto const name = std::format("renderer.ao_{}_{}", kind, frame_index);
-
-        auto image = create_held_image(
-                image_storage_,
-                ImageCreateInfo{
-                        .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
-                        .format = VK_FORMAT_R8G8B8A8_UNORM,
-                        .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .image_type = VK_IMAGE_TYPE_2D,
-                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                            image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                        .flags = 0,
-                        .samples = VK_SAMPLE_COUNT_1_BIT,
-                        .tiling = VK_IMAGE_TILING_OPTIMAL,
-                        .mip_levels = 1,
-                        .array_layers = 1,
-                        .debug_name = name,
-                });
-
-        if (!image) {
-            return std::unexpected(make_image_error(image.error()));
-        }
-
-        return std::move(*image);
-    };
-
-    auto ao_raw = create_ao_image("raw");
-
-    if (!ao_raw) {
-        return std::unexpected(ao_raw.error());
-    }
-
-    targets.ao_target.raw = std::move(*ao_raw);
-
-    auto ao_denoised = create_ao_image("denoised");
-
-    if (!ao_denoised) {
-        return std::unexpected(ao_denoised.error());
-    }
-
-    targets.ao_target.denoised = std::move(*ao_denoised);
+    // The AO images are transients of the frame graph (renderer_frame_graph.cxx).
 
     return targets;
 }
@@ -4495,7 +4453,6 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         frame.forward_target = std::move(targets.forward_target);
         frame.viewport_target = std::move(targets.viewport_target);
         frame.bloom_target = std::move(targets.bloom_target);
-        frame.ao_target = std::move(targets.ao_target);
     }
 
     hiz_ = std::move(*hiz);
