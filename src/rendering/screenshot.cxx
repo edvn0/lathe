@@ -199,7 +199,9 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
             .pImageMemoryBarriers = &to_transfer_src,
     };
 
-    vkCmdPipelineBarrier2(command_buffer, &to_transfer_src_info);
+    if (!source.managed_by_graph) {
+        vkCmdPipelineBarrier2(command_buffer, &to_transfer_src_info);
+    }
 
     // Source image -> readback buffer.
     VkBufferImageCopy2 const region{
@@ -282,7 +284,7 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
             .pMemoryBarriers = nullptr,
             .bufferMemoryBarrierCount = 1,
             .pBufferMemoryBarriers = &to_host,
-            .imageMemoryBarrierCount = 1,
+            .imageMemoryBarrierCount = source.managed_by_graph ? 0U : 1U,
             .pImageMemoryBarriers = &to_present,
     };
 

@@ -24,6 +24,7 @@ add_library(
         overlay.cxx
         pipeline_graph_repository.cxx
         renderer.cxx
+        renderer_frame_graph.cxx
         rendering_error_describe.cxx
         render_passes.cxx
         scene.cxx

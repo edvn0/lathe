@@ -245,8 +245,6 @@ namespace render_pass {
     };
 
     struct CompositePassInfo {
-        VkImage swapchain_image = VK_NULL_HANDLE;
-        VkImageView swapchain_view = VK_NULL_HANDLE;
         VkExtent2D extent{};
 
         HdrTextureIndex hdr{};
@@ -349,23 +347,9 @@ namespace render_pass {
     auto bloom(Context const &context, BloomPassInfo const &info)
             -> std::expected<std::optional<BloomTextureIndex>, RendererError>;
 
+    // Tonemaps hdr + bloom with a fullscreen triangle, then runs `ui_overlay` (fullscreen play). The body of a frame
+    // graph raster pass: the executor has begun rendering into the swapchain or the viewport target.
     auto composite(Context const &context, CompositePassInfo const &info, Callback ui_overlay)
             -> std::expected<void, RendererError>;
-
-    // Clears `target_view` and runs `ui_overlay` on it. Used for the swapchain in the editor, where the scene was
-    // already composited into the viewport texture.
-    struct UiOnlyPassInfo {
-        VkImage target_image = VK_NULL_HANDLE;
-        VkImageView target_view = VK_NULL_HANDLE;
-        VkExtent2D extent{};
-        std::array<float, 4> clear_colour{0.0F, 0.0F, 0.0F, 1.0F};
-    };
-
-    auto ui_only(Context const &context, UiOnlyPassInfo const &info, Callback ui_overlay) noexcept -> void;
-
-    // COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL.
-    auto transition_to_shader_read(VkCommandBuffer command_buffer, Image const &image) noexcept -> void;
-
-    auto present_swapchain(VkCommandBuffer command_buffer, VkImage image) noexcept -> void;
 
 } // namespace render_pass

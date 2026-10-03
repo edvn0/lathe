@@ -1193,13 +1193,6 @@ private:
                            FrameTargets const &targets, render_pass::HdrTextureIndex hdr)
             -> std::expected<std::optional<render_pass::BloomTextureIndex>, RendererError>;
 
-    // Tonemaps hdr + bloom into the swapchain (fullscreen play) or the viewport target, then draws the UI.
-    [[nodiscard]]
-    auto record_composite_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
-                               SwapchainImage const &swapchain_image, render_pass::HdrTextureIndex hdr,
-                               std::optional<render_pass::BloomTextureIndex> bloom, CompositeTarget target,
-                               render_pass::Callback ui_overlays) -> std::expected<void, RendererError>;
-
     [[nodiscard]]
     auto make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> render_pass::Context;
 
@@ -1222,17 +1215,24 @@ private:
     auto create_frame_targets(std::uint32_t frame_index, VkExtent2D extent)
             -> std::expected<OwnedFrameTargets, RendererError>;
 
-    // The frame's whole recording body, as one pass of the frame graph until its parts are migrated.
-    [[nodiscard]] auto record_frame_legacy(FrameRecordInfo const &info) -> std::expected<void, RendererError>;
+    // What the legacy pass leaves for the composite pass to tonemap.
+    struct CompositeInputs {
+        render_pass::HdrTextureIndex hdr{};
+        std::optional<render_pass::BloomTextureIndex> bloom;
+    };
+
+    // Everything up to and including bloom, as one pass of the frame graph until its parts are migrated. Composite,
+    // UI, screenshot and the end-of-frame bookkeeping are graph passes after it (renderer_frame_graph.cxx).
+    [[nodiscard]]
+    auto record_frame_legacy(FrameRecordInfo const &info, RendererFrame &frame, FrameTargets const &targets,
+                             CompositeInputs &composite_inputs) -> std::expected<void, RendererError>;
 
     // Both timestamps of a stage that did no work this frame. Every stage writes both every frame: one missing
     // query leaves vkGetQueryPoolResults NOT_READY and drops the whole frame's timings.
     auto write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage) -> void;
 
-    // Screenshot copy or present transition, then the end-of-frame timestamp.
-    // viewport is null when the scene was composited straight into the swapchain.
-    auto record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, Image const *viewport,
-                          std::uint32_t frame_index) -> void;
+    // The end-of-frame timestamp and the flags that say this slot's queries hold results.
+    auto record_frame_end(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void;
 
     VulkanContext &context_;
 

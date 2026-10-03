@@ -247,72 +247,6 @@ namespace render_pass {
             vkCmdPipelineBarrier2(command_buffer, &dependency_info);
         }
 
-        auto transition_swapchain_to_attachment(VkCommandBuffer command_buffer, VkImage image) noexcept -> void {
-            VkImageMemoryBarrier2 const barrier{
-                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .pNext = nullptr,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-                    .srcAccessMask = VK_ACCESS_2_NONE,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                    .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = image,
-                    .subresourceRange =
-                            VkImageSubresourceRange{
-                                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                    .baseMipLevel = 0,
-                                    .levelCount = 1,
-                                    .baseArrayLayer = 0,
-                                    .layerCount = 1,
-                            },
-            };
-
-            VkDependencyInfo const dependency_info{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .pNext = nullptr,
-                    .imageMemoryBarrierCount = 1,
-                    .pImageMemoryBarriers = &barrier,
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        }
-
-        auto transition_swapchain_to_present(VkCommandBuffer command_buffer, VkImage image) noexcept -> void {
-            VkImageMemoryBarrier2 const barrier{
-                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .pNext = nullptr,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
-                    .dstAccessMask = VK_ACCESS_2_NONE,
-                    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = image,
-                    .subresourceRange =
-                            VkImageSubresourceRange{
-                                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                    .baseMipLevel = 0,
-                                    .levelCount = 1,
-                                    .baseArrayLayer = 0,
-                                    .layerCount = 1,
-                            },
-            };
-
-            VkDependencyInfo const dependency_info{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .pNext = nullptr,
-                    .imageMemoryBarrierCount = 1,
-                    .pImageMemoryBarriers = &barrier,
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        }
-
         auto set_forward_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent,
                                        ForwardDynamicStateMode mode) noexcept -> void {
             VkViewport const viewport{
@@ -731,8 +665,7 @@ namespace render_pass {
         }
 
         bool const late = info.phase == DepthPrepassPhase::late;
-        auto const stage =
-                static_cast<std::uint32_t>(late ? RenderStage::DepthPrepassLate : RenderStage::DepthPrepass);
+        auto const stage = static_cast<std::uint32_t>(late ? RenderStage::DepthPrepassLate : RenderStage::DepthPrepass);
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, context.timestamp_query_pool,
                              stage * 2);
 
@@ -842,12 +775,12 @@ namespace render_pass {
 
         // The late prepass loads the MSAA depth the early one stored (and its resolve read).
         if (info.multisampled_depth != nullptr) {
-            transition_image_layout(command_buffer, info.multisampled_depth->image(),
-                                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                                    attachment_stages, attachment_stages, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                                    VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
+            transition_image_layout(
+                    command_buffer, info.multisampled_depth->image(), VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, attachment_stages, attachment_stages,
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
         }
 
         // Written by the early prepass's depth writes (1x) or its resolve (MSAA).
@@ -872,8 +805,7 @@ namespace render_pass {
             auto const level_extent = hiz_level_extent(depth_extent, level);
 
             HizBuildPushConstants const build_pc{
-                    .src_texture_index =
-                            first_level ? info.source_texture_index : info.mip_texture_indices[level - 1],
+                    .src_texture_index = first_level ? info.source_texture_index : info.mip_texture_indices[level - 1],
                     .dst_storage_index = info.mip_texture_indices[level],
                     .src_width = source_extent.width,
                     .src_height = source_extent.height,
@@ -1367,39 +1299,11 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        detail::transition_swapchain_to_attachment(context.command_buffer, info.swapchain_image);
-
         constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Composition);
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                              context.timestamp_query_pool, stage * 2);
 
-        VkRenderingAttachmentInfo const swapchain_attachment{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .pNext = nullptr,
-                .imageView = info.swapchain_view,
-                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .resolveMode = VK_RESOLVE_MODE_NONE,
-                .resolveImageView = VK_NULL_HANDLE,
-                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue = {},
-        };
-
-        VkRenderingInfo const rendering_info{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .renderArea = VkRect2D{.offset = {0, 0}, .extent = info.extent},
-                .layerCount = 1,
-                .viewMask = 0,
-                .colorAttachmentCount = 1,
-                .pColorAttachments = &swapchain_attachment,
-                .pDepthAttachment = nullptr,
-                .pStencilAttachment = nullptr,
-        };
-
-        vkCmdBeginRendering(context.command_buffer, &rendering_info);
+        // The frame graph has begun rendering into the swapchain or the viewport target.
         detail::bind_graphics_node(context.pipeline_graph, info.pipeline, context.command_buffer, VK_SAMPLE_COUNT_1_BIT,
                                    1, false);
         context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1422,53 +1326,9 @@ namespace render_pass {
 
         ui_overlay();
 
-        vkCmdEndRendering(context.command_buffer);
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                              context.timestamp_query_pool, stage * 2 + 1);
         return {};
-    }
-
-    auto ui_only(Context const &context, UiOnlyPassInfo const &info, Callback ui_overlay) noexcept -> void {
-        detail::transition_swapchain_to_attachment(context.command_buffer, info.target_image);
-
-        VkRenderingAttachmentInfo const attachment{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .pNext = nullptr,
-                .imageView = info.target_view,
-                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .resolveMode = VK_RESOLVE_MODE_NONE,
-                .resolveImageView = VK_NULL_HANDLE,
-                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue = {.color = {.float32 = {info.clear_colour[0], info.clear_colour[1], info.clear_colour[2],
-                                                     info.clear_colour[3]}}},
-        };
-
-        VkRenderingInfo const rendering_info{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .renderArea = VkRect2D{.offset = {0, 0}, .extent = info.extent},
-                .layerCount = 1,
-                .viewMask = 0,
-                .colorAttachmentCount = 1,
-                .pColorAttachments = &attachment,
-                .pDepthAttachment = nullptr,
-                .pStencilAttachment = nullptr,
-        };
-
-        vkCmdBeginRendering(context.command_buffer, &rendering_info);
-        ui_overlay();
-        vkCmdEndRendering(context.command_buffer);
-    }
-
-    auto transition_to_shader_read(VkCommandBuffer command_buffer, Image const &image) noexcept -> void {
-        detail::transition_hdr_to_shader_read(command_buffer, image);
-    }
-
-    auto present_swapchain(VkCommandBuffer command_buffer, VkImage image) noexcept -> void {
-        detail::transition_swapchain_to_present(command_buffer, image);
     }
 
 } // namespace render_pass

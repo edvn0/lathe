@@ -26,6 +26,10 @@ struct ScreenshotImage {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
 
+    // A frame graph pass has already put the image in TRANSFER_SRC_OPTIMAL and will move it on afterwards: record()
+    // then emits no image barriers and ignores the before/after fields below.
+    bool managed_by_graph = false;
+
     VkImageLayout layout_before = VK_IMAGE_LAYOUT_UNDEFINED;
     VkPipelineStageFlags2 stage_before = VK_PIPELINE_STAGE_2_NONE;
     VkAccessFlags2 access_before = VK_ACCESS_2_NONE;

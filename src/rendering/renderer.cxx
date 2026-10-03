@@ -4508,96 +4508,7 @@ auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, Rende
                               });
 }
 
-auto Renderer::record_composite_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
-                                     SwapchainImage const &swapchain_image, render_pass::HdrTextureIndex hdr,
-                                     std::optional<render_pass::BloomTextureIndex> bloom, CompositeTarget target,
-                                     render_pass::Callback ui_overlays) -> std::expected<void, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Composition",
-                 tracy::Color::SeaGreen);
-
-    // Fullscreen play composites straight into the swapchain with the UI on top. Otherwise the scene goes into the
-    // viewport target the editor's Viewport panel samples, and a second pass draws the UI onto the swapchain.
-    bool const fullscreen = target == CompositeTarget::swapchain;
-
-    auto const result = render_pass::composite(
-            pass_context,
-            render_pass::CompositePassInfo{
-                    .swapchain_image = fullscreen ? swapchain_image.image : targets.viewport->image(),
-                    .swapchain_view = fullscreen ? swapchain_image.view : targets.viewport->view(),
-                    .extent = fullscreen ? swapchain_image.extent : targets.extent,
-                    .hdr = hdr,
-                    .bloom = bloom,
-                    .bloom_fallback_texture_index = image_storage_.emissive().index,
-                    .linear_sampler_index = sampler_storage_.linear_clamp().index,
-                    .pipeline = composite_pipeline_,
-                    .exposure = 1.0F,
-                    .bloom_intensity = bloom_settings_.intensity,
-            },
-            fullscreen ? ui_overlays : render_pass::Callback{});
-
-    if (!result) {
-        return std::unexpected(result.error());
-    }
-
-    if (fullscreen) {
-        return {};
-    }
-
-    render_pass::transition_to_shader_read(pass_context.command_buffer, *targets.viewport);
-
-    render_pass::ui_only(pass_context,
-                         render_pass::UiOnlyPassInfo{
-                                 .target_image = swapchain_image.image,
-                                 .target_view = swapchain_image.view,
-                                 .extent = swapchain_image.extent,
-                         },
-                         ui_overlays);
-
-    return {};
-}
-
-auto Renderer::record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
-                                Image const *viewport, std::uint32_t frame_index) -> void {
-    auto const pending = screenshot_->pending_source();
-
-    // The viewport target is left sampled by the UI pass; hand it back the same way so the next frame is unaffected.
-    if (pending == ScreenshotSource::viewport && viewport != nullptr) {
-        // The swapchain is presented as usual; the capture never touches it.
-        (void) screenshot_->record(
-                context_, command_buffer,
-                ScreenshotImage{
-                        .image = viewport->image(),
-                        .format = viewport->format(),
-                        .extent = {viewport->extent().width, viewport->extent().height},
-                        .layout_before = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        .stage_before = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                        .access_before = VK_ACCESS_2_NONE,
-                        .layout_after = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        .stage_after = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                        .access_after = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                },
-                frame_index);
-        render_pass::present_swapchain(command_buffer, swapchain_image.image);
-    } else {
-        bool const screenshot_recorded =
-                pending.has_value() &&
-                screenshot_->record(context_, command_buffer,
-                                    ScreenshotImage{
-                                            .image = swapchain_image.image,
-                                            .format = swapchain_image.format,
-                                            .extent = swapchain_image.extent,
-                                            .layout_before = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                            .stage_before = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                            .access_before = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                                            .layout_after = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                                    },
-                                    frame_index);
-
-        if (!screenshot_recorded) {
-            render_pass::present_swapchain(command_buffer, swapchain_image.image);
-        }
-    }
-
+auto Renderer::record_frame_end(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void {
     auto &frame_query = timestamp_queries_[frame_index];
 
     vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, frame_query.query_pool,
@@ -4804,156 +4715,38 @@ auto Renderer::register_light_icon_overlay() -> std::expected<void, RendererErro
     return {};
 }
 
-auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError> {
-    submit_batches_.clear();
-
-    auto const &swapchain_image = info.swapchain_image;
-
-    if (!initialized_ || info.command_buffer == VK_NULL_HANDLE || swapchain_image.image == VK_NULL_HANDLE ||
-        swapchain_image.view == VK_NULL_HANDLE || swapchain_image.format == VK_FORMAT_UNDEFINED ||
-        swapchain_image.extent.width == 0 || swapchain_image.extent.height == 0 || info.frame_index >= frames_.size()) {
-        return std::unexpected(make_error(RendererErrorType::invalid_argument));
-    }
-
-    // Reads back and resets this slot's pass timestamps: the slot's earlier work has finished.
-    pass_profiler_.begin_slot(info.frame_index);
-
-    // One legacy pass around the old body. It enters the swapchain as an attachment, which is what the first use of
-    // the image has always been, and leaves it in PRESENT: the body still does its own present transition, so the
-    // epilogue has nothing to add.
-    frame_graph_.reset();
-
-    auto swapchain = frame_graph_.import_image({
-            .entry = {.layout = VK_IMAGE_LAYOUT_UNDEFINED},
-            .exit = {.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR},
-            .swapchain = true,
-            .debug_name = "swapchain",
-            .image =
-                    frame_graph::PhysicalImage{
-                            .image = swapchain_image.image,
-                            .view = swapchain_image.view,
-                            .format = swapchain_image.format,
-                            .extent = {swapchain_image.extent.width, swapchain_image.extent.height, 1},
-                    },
-    });
-
-    auto legacy_result = std::expected<void, RendererError>{};
-
-    frame_graph_.add_pass("frame_legacy", frame_graph::PassType::raster,
-                          {
-                                  .name_id = "frame_legacy",
-                                  .label = "Frame (legacy)",
-                                  .color = static_cast<std::uint32_t>(tracy::Color::RoyalBlue),
-                          },
-                          [&](frame_graph::PassBuilder &pass) {
-                              pass.legacy();
-                              swapchain = pass.write(swapchain, frame_graph::Use::color_attachment, 0,
-                                                     frame_graph::ExitUse{frame_graph::Use::present});
-
-                              return frame_graph::RecordFn{
-                                      [this, &info, &legacy_result](frame_graph::PassContext &context) {
-                                          auto legacy_info = info;
-                                          legacy_info.command_buffer = context.command_buffer;
-                                          legacy_result = record_frame_legacy(legacy_info);
-                                      }};
-                          });
-
-    auto const compiled = plan_cache_.compile(frame_graph_, context_.queue_set.topology(),
-                                              {.async_compute = context_.async_compute_mode != AsyncComputeMode::off,
-                                               .serialize = context_.frame_graph_serialize});
-    if (!compiled) {
-        error("Could not compile the frame graph: {}", compiled.error());
-        return std::unexpected(make_error(RendererErrorType::invalid_argument));
-    }
-    frame_plan_ = *compiled;
-
-    auto const resources = frame_graph::physical_resources_of(frame_graph_.description());
-
-    auto const graphics_tracy = context_.host_query_context.context;
-    auto const compute_tracy = context_.compute_queue != context_.graphics_queue
-                                       ? context_.compute_host_query_context.context
-                                       : graphics_tracy;
-
-    auto batches = frame_graph::record(frame_graph::ExecuteInfo{
-            .graph = frame_graph_.description(),
-            .compiled = *frame_plan_,
-            .records = frame_graph_.records(),
-            .resources = resources,
-            .queue_set = context_.queue_set,
-            .profiler = pass_profiler_,
-            .tracy_contexts = {graphics_tracy, compute_tracy},
-            .prologue = info.command_buffer,
-            .frame_index = info.frame_index,
-    });
-    if (!batches) {
-        error("Could not record the frame graph: {}", batches.error().message);
-        return std::unexpected(make_error(RendererErrorType::invalid_argument));
-    }
-    submit_batches_ = std::move(*batches);
-
-    return legacy_result;
-}
-
-auto Renderer::record_frame_legacy(FrameRecordInfo const &info) -> std::expected<void, RendererError> {
+auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &frame, FrameTargets const &targets,
+                                   CompositeInputs &composite_inputs) -> std::expected<void, RendererError> {
     ZoneScopedNC("RecordFrame", tracy::Color::RoyalBlue);
 
     auto const command_buffer = info.command_buffer;
-    auto const &swapchain_image = info.swapchain_image;
     auto const frame_index = info.frame_index;
-
-    if (!initialized_ || command_buffer == VK_NULL_HANDLE || swapchain_image.image == VK_NULL_HANDLE ||
-        swapchain_image.view == VK_NULL_HANDLE || swapchain_image.format == VK_FORMAT_UNDEFINED ||
-        swapchain_image.extent.width == 0 || swapchain_image.extent.height == 0 || frame_index >= frames_.size()) {
-        return std::unexpected(make_error(RendererErrorType::invalid_argument));
-    }
-
-    screenshot_->try_resolve(frame_index);
-
-    auto &frame = frames_[frame_index];
-    consume_culled_readback(frame);
-
-    auto const targets = resolve_frame_targets(frame);
-    if (!targets) {
-        return std::unexpected(targets.error());
-    }
 
     auto const pass_context = make_pass_context(command_buffer, frame_index);
 
-    // Registration changes made by overlay callbacks land after recording, so prepare, stages and timing all see
-    // the same set.
-    auto const overlay_iteration = overlays_.iterate();
-
     OverlayScope const scene_scope{
-            .extent = targets->extent,
+            .extent = targets.extent,
             .colour_format = frame.forward_target.hdr_format(),
             .depth_format = frame.forward_target.depth_format(),
             .samples = samples_,
     };
 
-    OverlayScope const ui_scope{
-            .extent = swapchain_image.extent,
-            .colour_format = swapchain_image.format,
-            .depth_format = VK_FORMAT_UNDEFINED,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-    };
-
     auto scene_overlays = [&] {
         record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
     };
-    auto ui_overlays = [&] { record_overlay_stage(pass_context, OverlayStage::ui, ui_scope, frame.view_projection); };
 
     record_overlay_prepares(pass_context);
 
     record_environment_pass(pass_context, frame);
 
-    if (auto shadows = record_shadow_pass(pass_context, frame, *targets); !shadows) {
+    if (auto shadows = record_shadow_pass(pass_context, frame, targets); !shadows) {
         return shadows;
     }
 
     // Two-phase occlusion culling (docs/occlusion-culling.md): the early prepass draws what main_cs kept, late_cs
     // re-tests the rest against this frame's depth and the late prepass adds the survivors. Every stage still writes
     // its timestamps when skipped.
-    if (auto prepass = record_depth_prepass(pass_context, frame, *targets,
+    if (auto prepass = record_depth_prepass(pass_context, frame, targets,
                                             frame.occlusion_active ? render_pass::DepthPrepassPhase::early
                                                                    : render_pass::DepthPrepassPhase::only);
         !prepass) {
@@ -4961,7 +4754,7 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info) -> std::expected
     }
 
     if (frame.occlusion_active) {
-        if (auto built = record_hiz_build(pass_context, *targets); !built) {
+        if (auto built = record_hiz_build(pass_context, targets); !built) {
             return built;
         }
 
@@ -4973,7 +4766,7 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info) -> std::expected
             return culled;
         }
 
-        if (auto late = record_depth_prepass(pass_context, frame, *targets, render_pass::DepthPrepassPhase::late);
+        if (auto late = record_depth_prepass(pass_context, frame, targets, render_pass::DepthPrepassPhase::late);
             !late) {
             return late;
         }
@@ -4988,35 +4781,24 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info) -> std::expected
 
     record_occlusion_stats_readback(command_buffer, frame);
 
-    auto const ao_texture_index = record_ambient_occlusion_pass(pass_context, frame, *targets);
+    auto const ao_texture_index = record_ambient_occlusion_pass(pass_context, frame, targets);
     if (!ao_texture_index) {
         return std::unexpected(ao_texture_index.error());
     }
 
-    auto const hdr = record_forward_pass(pass_context, frame, *targets, *ao_texture_index,
+    auto const hdr = record_forward_pass(pass_context, frame, targets, *ao_texture_index,
                                          render_pass::Callback::bind(scene_overlays));
     if (!hdr) {
         return std::unexpected(hdr.error());
     }
 
-    auto const bloom = record_bloom_pass(pass_context, frame, *targets, *hdr);
+    auto const bloom = record_bloom_pass(pass_context, frame, targets, *hdr);
     if (!bloom) {
         return std::unexpected(bloom.error());
     }
 
-    if (auto composited = record_composite_pass(pass_context, *targets, swapchain_image, *hdr, *bloom,
-                                                info.composite_target, render_pass::Callback::bind(ui_overlays));
-        !composited) {
-        return composited;
-    }
+    composite_inputs = CompositeInputs{.hdr = *hdr, .bloom = *bloom};
 
-    record_frame_end(command_buffer, swapchain_image,
-                     info.composite_target == CompositeTarget::swapchain ? nullptr : targets->viewport, frame_index);
-
-    TracyVkCollectHost(context_.host_query_context.context);
-    if (context_.compute_host_query_context.context != nullptr) {
-        TracyVkCollectHost(context_.compute_host_query_context.context);
-    }
     return {};
 }
 
