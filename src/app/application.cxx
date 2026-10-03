@@ -45,9 +45,9 @@
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
+#include "rendering/environment_panel.hxx"
 #include "rendering/hiz_occlusion.hxx"
 #include "rendering/imgui_renderer.hxx"
-#include "rendering/environment_panel.hxx"
 #include "rendering/imgui_widget.hxx"
 #include "rendering/toast.hxx"
 #include "scene/components.hxx"
@@ -404,11 +404,29 @@ namespace {
     }
 } // namespace
 
+auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> passes) -> void {
+    timing_x += 1.0F;
+
+    for (auto const &pass: passes) {
+        if (std::ranges::none_of(timing_series,
+                                 [&](TimingSeries const &series) { return series.id == pass.name_id; })) {
+            auto buffer = timing_series.empty() ? ScrollingBuffer{600} : timing_series.back().buffer;
+            timing_series.push_back(TimingSeries{.id = pass.name_id, .label = pass.label, .buffer = std::move(buffer)});
+        }
+    }
+
+    auto running_total = 0.0F;
+    for (auto &series: timing_series) {
+        auto const found = std::ranges::find_if(
+                passes, [&](frame_graph::PassTiming const &pass) { return pass.name_id == series.id; });
+        running_total += found != passes.end() ? found->milliseconds.value_or(0.0F) : 0.0F;
+        series.buffer.add_point(timing_x, running_total);
+    }
+}
+
 Application::Application(VulkanContext &ctx) noexcept :
     context(ctx), renderer(std::make_unique<Renderer>(context)),
-    debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)) {
-    timing_buffers.fill(ScrollingBuffer{600});
-}
+    debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)) {}
 
 Application::~Application() {
     if (terrain) {
@@ -2057,10 +2075,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
             ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x, ImGuiCond_Always);
 
-            constexpr auto first_stage = static_cast<std::uint32_t>(RenderStage::Culling);
-
-            for (std::uint32_t stage = first_stage; stage < stage_count; ++stage) {
-                auto const &buf = timing_buffers[stage];
+            for (auto index = std::size_t{0}; index < timing_series.size(); ++index) {
+                auto const &buf = timing_series[index].buffer;
 
                 if (buf.data.empty()) {
                     continue;
@@ -2071,13 +2087,13 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 spec.Stride = sizeof(ImVec2);
                 spec.FillAlpha = 0.35F;
 
-                std::string const label{to_string(static_cast<RenderStage>(stage))};
+                auto const &label = timing_series[index].label;
 
-                if (stage == first_stage) {
+                if (index == 0) {
                     ImPlot::PlotShaded(label.c_str(), &buf.data[0].x, &buf.data[0].y, static_cast<int>(buf.data.size()),
                                        0.0, spec);
                 } else {
-                    auto const &prev = timing_buffers[stage - 1];
+                    auto const &prev = timing_series[index - 1].buffer;
 
                     ImPlotSpec prev_spec;
                     prev_spec.Offset = prev.offset;
@@ -2089,6 +2105,35 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
 
             ImPlot::EndPlot();
+        }
+
+        // Per-pass times of the last finished frame, graphics queue first.
+        if (auto const graph_timings = renderer->frame_graph_timings();
+            !graph_timings.empty() &&
+            ImGui::BeginTable("Frame graph", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Pass");
+            ImGui::TableSetupColumn("Id");
+            ImGui::TableSetupColumn("Queue");
+            ImGui::TableSetupColumn("GPU (ms)");
+            ImGui::TableHeadersRow();
+
+            for (auto const &timing: graph_timings) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(timing.label.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(timing.name_id.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(timing.queue == frame_graph::LogicalQueue::graphics ? "graphics" : "compute");
+                ImGui::TableNextColumn();
+                if (timing.milliseconds) {
+                    ImGui::Text("%.3f", static_cast<double>(*timing.milliseconds));
+                } else {
+                    ImGui::TextUnformatted("-");
+                }
+            }
+
+            ImGui::EndTable();
         }
 
         // Overlay time is already included in the forward/composite stages above.

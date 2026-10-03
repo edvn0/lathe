@@ -49,15 +49,20 @@
 #include "gpu/gpu_resource_table.hxx"
 #include "gpu/image_storage.hxx"
 #include "gpu/sampler_storage.hxx"
+#include "gpu/submission_plan.hxx"
 #include "rendering/cluster_grid.hxx"
+#include "rendering/environment.hxx"
 #include "rendering/forward_target.hxx"
+#include "rendering/frame_graph/compiled_graph.hxx"
+#include "rendering/frame_graph/compiler.hxx"
+#include "rendering/frame_graph/frame_graph.hxx"
+#include "rendering/frame_graph/pass_profiler.hxx"
+#include "rendering/frame_graph/transient_allocator.hxx"
 #include "rendering/hiz_occlusion.hxx"
 #include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/render_passes.hxx"
-#include "rendering/render_stage.hxx"
 #include "rendering/script_storage.hxx"
-#include "rendering/environment.hxx"
 #include "rendering/shadow_cascades.hxx"
 #include "scene/environment.hxx"
 
@@ -110,10 +115,14 @@ struct LightLodSettings {
     float fade_radius_pixels = 6.0F;
 };
 
-struct StageTimings {
-    std::array<float, stage_count> milliseconds{};
+// The last finished frame's GPU times: the frame graph's per-pass timings (graphics queue first, in execution order)
+// and the frame as a whole, from its first to its last graphics timestamp. Compute work that overlaps runs inside that
+// span.
+struct FrameTimings {
+    std::vector<frame_graph::PassTiming> passes;
+    float full_frame_ms = 0.0F;
 
-    // Overlays that ran in the timed frame, in draw order. Their time is already included in `milliseconds`.
+    // Overlays that ran in the timed frame, in draw order. Their time is already included in the passes'.
     std::vector<OverlayTiming> overlays;
 
     bool valid = false;
@@ -530,7 +539,20 @@ struct Renderer final : public IMeshSink, public IModelSink {
             -> std::expected<void, RendererError>;
 
     // Records the frame's passes and overlays. Call after prepare_frame() for the same frame_index.
+    //
+    // The frame runs through the frame graph: today one legacy pass around the old recording body, so the result is
+    // one graphics batch in `info.command_buffer`, which stays open for the caller to end. Submit submit_batches()
+    // after ending it.
     [[nodiscard]] auto record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError>;
+
+    // The batches the last record_frame() produced, in submission order. Empty if it failed before producing any.
+    // Valid until the next record_frame().
+    [[nodiscard]] auto submit_batches() const noexcept -> std::span<SubmitBatch const> { return submit_batches_; }
+
+    // The frame graph's per-pass GPU times from the most recent frame slot that finished (graphics queue first).
+    [[nodiscard]] auto frame_graph_timings() const noexcept -> std::span<frame_graph::PassTiming const> {
+        return pass_profiler_.timings();
+    }
 
     // Registers an overlay (see overlay.hxx). It runs until the registration is destroyed, which must happen before
     // the Renderer is.
@@ -552,8 +574,8 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto shader_change_queue() noexcept -> ShaderChangeQueue & { return shader_change_queue_; }
 
     [[nodiscard]] auto aspect(std::uint32_t index) const -> float {
-        return static_cast<float>(frames_[index].forward_target.extent().width) /
-               static_cast<float>(frames_[index].forward_target.extent().height);
+        static_cast<void>(index);
+        return static_cast<float>(extent_.width) / static_cast<float>(extent_.height);
     }
 
     // Valid once record_frame() has run for this frame_index in embedded mode.
@@ -565,9 +587,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto drain_event_queue() -> void;
 
     [[nodiscard]] auto context() noexcept -> VulkanContext & { return context_; }
-    [[nodiscard]] auto depth_format() const noexcept { return frames_[0].forward_target.depth_format(); }
-    [[nodiscard]] auto hdr_format() const noexcept { return frames_[0].forward_target.hdr_format(); }
-    [[nodiscard]] auto samples() const noexcept { return frames_[0].forward_target.samples(); }
+    [[nodiscard]] auto depth_format() const noexcept { return depth_format_; }
+    [[nodiscard]] auto hdr_format() const noexcept { return hdr_format_; }
+    [[nodiscard]] auto samples() const noexcept { return samples_; }
 
     [[nodiscard]] auto image_storage() noexcept -> ImageStorage & override { return image_storage_; }
     [[nodiscard]] auto material_storage() noexcept -> MaterialStorage & override { return material_storage_; }
@@ -606,8 +628,30 @@ struct Renderer final : public IMeshSink, public IModelSink {
         return *registered;
     }
 
-    [[nodiscard]] auto last_frame_timings() const noexcept -> StageTimings const & { return last_frame_timings_; }
+    [[nodiscard]] auto last_frame_timings() const noexcept -> FrameTimings const & { return last_frame_timings_; }
     [[nodiscard]] auto last_frame_stats() const noexcept -> FrameStats const & { return last_frame_stats_; }
+
+    // Frame graph transients (the AO and bloom images, over every frame slot): the device memory they occupy and what
+    // they would take if none shared memory. Aliasing is on by default; off is for A/B runs.
+    [[nodiscard]] auto transient_bytes() const noexcept -> std::uint64_t { return transient_allocator_.total_bytes(); }
+    [[nodiscard]] auto transient_unaliased_bytes() const noexcept -> std::uint64_t {
+        return transient_allocator_.unaliased_bytes();
+    }
+    // Which groups of compute passes are declared with compute-queue affinity (phase 6): each candidate is enabled by
+    // measurement. They only run on another queue when the device has one and --async-compute allows it.
+    enum AsyncCandidate : std::uint8_t {
+        async_light_clustering = 1U << 0U, // light_cull and light_cluster
+        async_occlusion = 1U << 1U, // hiz_build and late_cs, overlapping the shadows (declared after the early prepass)
+        async_gtao = 1U << 2U, // gtao and its denoise, overlapping the shadows (declared after the late prepass)
+    };
+    [[nodiscard]] auto async_candidates() const noexcept -> std::uint32_t { return async_candidates_; }
+    auto set_async_candidates(std::uint32_t mask) noexcept -> void { async_candidates_ = mask; }
+
+    [[nodiscard]] auto transient_aliasing() const noexcept -> bool { return transient_aliasing_; }
+    auto set_transient_aliasing(bool enabled) noexcept -> void { transient_aliasing_ = enabled; }
+
+    // Log the full compiled plan (batches, waits, barriers, transfers, transient placement) when it changes.
+    auto set_frame_graph_dump(bool enabled) noexcept -> void { dump_frame_graph_ = enabled; }
     [[nodiscard]] auto last_frame_pipeline_stats() const noexcept -> PipelineStats const & {
         return last_frame_pipeline_stats_;
     }
@@ -869,40 +913,10 @@ private:
         // Handed to scene overlays as OverlayRecordContext::view_projection.
         glm::mat4 view_projection{1.0F};
 
-        ForwardTarget forward_target{};
 
         // LDR composite output sampled by the editor's Viewport panel. Unused in fullscreen play.
         ImageHolder viewport_target{};
 
-        // mip_slots are register_view() aliases of image's mip views, so they're released before it: declared after
-        // it for destruction, and assigned first on a move.
-        struct BloomTarget {
-            ImageHolder image;
-            std::array<ImageHolder, render_pass::bloom_mip_count> mip_slots;
-
-            BloomTarget() = default;
-            ~BloomTarget() = default;
-
-            BloomTarget(BloomTarget const &) = delete;
-            auto operator=(BloomTarget const &) -> BloomTarget & = delete;
-
-            BloomTarget(BloomTarget &&) noexcept = default;
-
-            auto operator=(BloomTarget &&other) noexcept -> BloomTarget & {
-                mip_slots = std::move(other.mip_slots);
-                image = std::move(other.image);
-
-                return *this;
-            }
-        };
-        BloomTarget bloom_target{};
-
-        // Per-frame GTAO targets: `raw` from the horizon search, `denoised` sampled by the forward pass.
-        struct AoTarget {
-            ImageHolder raw;
-            ImageHolder denoised;
-        };
-        AoTarget ao_target{};
 
         // Bit i means cascade i is redrawn into the persistent atlas this frame.
         ShadowCascadeMask shadow_update_mask = all_shadow_cascades_mask;
@@ -981,10 +995,7 @@ private:
 
     // A frame's extent-sized render targets, built together so initialize() and resize() share one path.
     struct OwnedFrameTargets {
-        ForwardTarget forward_target{};
         ImageHolder viewport_target{};
-        RendererFrame::BloomTarget bloom_target{};
-        RendererFrame::AoTarget ao_target{};
     };
 
     struct ModelSubmission {
@@ -1081,19 +1092,10 @@ private:
     // record_frame() and its passes. Each record_*_pass owns one stage and passes its output to the next through
     // its return value.
 
-    // The frame's images, resolved and validated once. resolved_hdr/resolved_depth are the MSAA resolve targets
-    // when multisampled, otherwise hdr/depth.
+    // The frame's persistent images, resolved and validated once. The HDR and depth targets are transients of the
+    // frame graph, which hands their bindless indices to the passes that use them.
     struct FrameTargets {
-        Image const *hdr = nullptr;
-        Image const *depth = nullptr;
-        Image const *resolved_hdr = nullptr;
-        Image const *resolved_depth = nullptr;
-        ImageHandle resolved_hdr_handle{};
-        ImageHandle resolved_depth_handle{};
-
         Image const *shadow_atlas = nullptr;
-        Image const *ao_raw = nullptr;
-        Image const *ao_denoised = nullptr;
         Image const *viewport = nullptr;
 
         VkExtent2D extent{};
@@ -1132,8 +1134,8 @@ private:
     auto record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void;
 
     [[nodiscard]]
-    auto record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                            FrameTargets const &targets) -> std::expected<void, RendererError>;
+    auto record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
 
     // The `only`/`early` phases also transition the forward targets into attachment layouts.
     [[nodiscard]]
@@ -1143,47 +1145,56 @@ private:
 
     // Builds hiz_ from the early prepass's depth (the MIN resolve under MSAA) for late_cs and next frame's main_cs.
     [[nodiscard]]
-    auto record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets)
-            -> std::expected<void, RendererError>;
+    auto record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets,
+                          std::uint32_t depth_texture_index) -> std::expected<void, RendererError>;
 
     // Phase 2 of occlusion culling: late_cs re-tests main_cs's candidates against this frame's Hi-Z.
     [[nodiscard]]
     auto record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
             -> std::expected<void, RendererError>;
 
-    // Makes the task shaders' writes to the meshlet visibility bitset visible to the next task shader pass that reads
-    // it (`dst_access` is read for forward, read | write for the late prepass phase, which also records).
-    auto record_meshlet_visibility_barrier(VkCommandBuffer command_buffer, RendererFrame const &frame,
-                                           VkAccessFlags2 dst_access) -> void;
+    // The first graph passes of the frame (prepare_frame only uploads and validates): clears, main_cs (frustum culling
+    // and phase 1 of occlusion culling) and light culling and clustering.
+    auto record_occlusion_stats_clear(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void;
+    auto record_meshlet_visibility_clear(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void;
+    [[nodiscard]]
+    auto record_gpu_culling(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
+
+    // Begins the light clustering stage's timestamps, which record_cluster_stats_readback ends.
+    auto record_cluster_stats_clear(render_pass::Context const &pass_context, RendererFrame const &frame) -> void;
+    [[nodiscard]]
+    auto record_light_cull(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto record_light_cluster(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
+    auto record_cluster_stats_readback(render_pass::Context const &pass_context, RendererFrame &frame) -> void;
 
     // Copies the occlusion statistics into the frame's readback buffer.
     auto record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void;
 
-    // Returns the AO texture's bindless index: denoised GTAO, or white when disabled.
+    // The parameters of the two GTAO passes (they read AO settings, so they are built when the frame is recorded).
     [[nodiscard]]
-    auto record_ambient_occlusion_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                                       FrameTargets const &targets) -> std::expected<std::uint32_t, RendererError>;
+    auto ambient_occlusion_info(FrameTargets const &targets, std::uint32_t frame_index,
+                                std::uint32_t depth_texture_index, std::uint32_t raw_texture_index,
+                                std::uint32_t denoised_texture_index) const -> render_pass::AmbientOcclusionInfo;
 
     [[nodiscard]]
     auto record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                              FrameTargets const &targets, std::uint32_t ao_texture_index,
-                             render_pass::Callback scene_overlays)
+                             std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays)
             -> std::expected<render_pass::HdrTextureIndex, RendererError>;
 
     [[nodiscard]]
-    auto record_bloom_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                           FrameTargets const &targets, render_pass::HdrTextureIndex hdr)
+    auto record_bloom_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
+                           render_pass::HdrTextureIndex hdr, Image const &bloom_image,
+                           std::array<std::uint32_t, render_pass::bloom_mip_count> const &mip_texture_indices)
             -> std::expected<std::optional<render_pass::BloomTextureIndex>, RendererError>;
 
-    // Tonemaps hdr + bloom into the swapchain (fullscreen play) or the viewport target, then draws the UI.
     [[nodiscard]]
-    auto record_composite_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
-                               SwapchainImage const &swapchain_image, render_pass::HdrTextureIndex hdr,
-                               std::optional<render_pass::BloomTextureIndex> bloom, CompositeTarget target,
-                               render_pass::Callback ui_overlays) -> std::expected<void, RendererError>;
-
-    [[nodiscard]]
-    auto make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> render_pass::Context;
+    auto make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index, bool compute_only = false)
+            -> render_pass::Context;
 
     // Runs every overlay's prepare(), snapshots the overlay list for timing, and records one barrier if any
     // prepare() wrote GPU data.
@@ -1204,14 +1215,17 @@ private:
     auto create_frame_targets(std::uint32_t frame_index, VkExtent2D extent)
             -> std::expected<OwnedFrameTargets, RendererError>;
 
-    // Both timestamps of a stage that did no work this frame. Every stage writes both every frame: one missing
-    // query leaves vkGetQueryPoolResults NOT_READY and drops the whole frame's timings.
-    auto write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage) -> void;
+    // What the passes hand to the ones after them: bindless indices that used to be locals of one function.
+    // record_frame sets the AO index, forward the HDR one and bloom the bloom one.
+    struct PassHandoff {
+        std::uint32_t ao_texture_index = 0;
+        render_pass::HdrTextureIndex hdr{};
+        std::optional<render_pass::BloomTextureIndex> bloom;
+    };
 
-    // Screenshot copy or present transition, then the end-of-frame timestamp.
-    // viewport is null when the scene was composited straight into the swapchain.
-    auto record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image, Image const *viewport,
-                          std::uint32_t frame_index) -> void;
+
+    // The end-of-frame timestamp and the flags that say this slot's queries hold results.
+    auto record_frame_end(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void;
 
     VulkanContext &context_;
 
@@ -1340,7 +1354,7 @@ private:
     std::uint32_t maximum_draw_count_ = 0;
     std::uint32_t maximum_submission_count_ = 0;
 
-    StageTimings last_frame_timings_{};
+    FrameTimings last_frame_timings_{};
     FrameStats last_frame_stats_{};
 
     std::vector<GpuLight> light_staging_;
@@ -1353,6 +1367,22 @@ private:
 
     std::vector<FrameTimestamps> timestamp_queries_;
     float timestamp_period_{1.0F};
+
+    // The frame graph: rebuilt every frame, recompiled only when its declaration changes (plan_cache_). frame_plan_ and
+    // submit_batches_ outlive record_frame() so the caller can submit them (the batches' waits point into the plan).
+    frame_graph::FrameGraph frame_graph_;
+    frame_graph::PlanCache plan_cache_;
+    frame_graph::CompiledGraph const *frame_plan_ = nullptr; // into plan_cache_, valid until the next record_frame
+    std::vector<SubmitBatch> submit_batches_;
+    frame_graph::PassProfiler pass_profiler_;
+
+    // Backs the graph's transient images, per frame slot (record_frame()). Aliasing can be switched off for debugging.
+    // (--frame-graph-alias=on|off)
+    frame_graph::TransientAllocator transient_allocator_;
+    bool transient_aliasing_ = true;
+    std::uint32_t async_candidates_ = 0;
+    std::uint64_t logged_plan_misses_ = 0;
+    bool dump_frame_graph_ = false;
 
     struct FramePipelineQuery {
         VkQueryPool query_pool{VK_NULL_HANDLE};

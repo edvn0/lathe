@@ -7,9 +7,9 @@
 #include <expected>
 #include <future>
 #include <memory>
-#include <unordered_map>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -25,10 +25,11 @@
 
 // Image-based lighting and the skybox's resources. See docs/ibl-and-skybox.md.
 //
-// From one radiance cube (an HDR image projected to a cube, or the procedural sky rendered into one) compute passes build
-// an L2 spherical-harmonics irradiance and a GGX-prefiltered specular cube, and a split-sum BRDF LUT is built once.
-// The prefilter cube and SH are double buffered: the forward pass reads the live set while a rebuild writes the other,
-// so a half-built environment is never sampled. Procedural rebuilds are spread over frames; an HDR load builds at once.
+// From one radiance cube (an HDR image projected to a cube, or the procedural sky rendered into one) compute passes
+// build an L2 spherical-harmonics irradiance and a GGX-prefiltered specular cube, and a split-sum BRDF LUT is built
+// once. The prefilter cube and SH are double buffered: the forward pass reads the live set while a rebuild writes the
+// other, so a half-built environment is never sampled. Procedural rebuilds are spread over frames; an HDR load builds
+// at once.
 
 // Nine RGB spherical-harmonics coefficients, cosine-convolved and divided by pi. Mirrors GpuEnvironmentSh in
 // assets/shaders/scene_types.slang.
@@ -218,18 +219,24 @@ public:
         provided_.insert_or_assign(std::move(source), std::make_shared<HdrImage const>(std::move(image)));
     }
 
-    // Throws away the live environment and builds again from scratch (also after a hot reload of an environment shader).
+    // Throws away the live environment and builds again from scratch (also after a hot reload of an environment
+    // shader).
     auto rebuild() noexcept -> void { ++generation_; }
 
-    // Once per frame, before GpuResourceTable::prepare_frame() so images created here are visible this frame. Finishes an
-    // HDR decode (creating and uploading its images into `command_buffer`), retires what the GPU is done with, and plans
-    // this frame's compute work.
+    // Once per frame, before GpuResourceTable::prepare_frame() so images created here are visible this frame. Finishes
+    // an HDR decode (creating and uploading its images into `command_buffer`), retires what the GPU is done with, and
+    // plans this frame's compute work.
     [[nodiscard]]
     auto prepare(VkCommandBuffer command_buffer, std::uint64_t frame_number) -> std::expected<void, RendererError>;
 
     // The environment block of this frame's UBO; call after prepare().
     [[nodiscard]]
     auto ubo_block() const -> EnvironmentUboBlock;
+
+    // Whether record() has anything to do this frame: the BRDF LUT, a capture or some prefilter faces were planned by
+    // prepare(). The frame graph only adds the environment pass then.
+    [[nodiscard]]
+    auto has_pending_record() const -> bool;
 
     // Records this frame's compute work. `ubo_address` is this frame's UBO, which the procedural capture reads.
     auto record(VkCommandBuffer command_buffer, GpuResourceTable &resource_table, std::uint32_t frame_index,
@@ -246,9 +253,11 @@ public:
 
     // Bindless slots, for the editor's debug views. 0 when absent.
     [[nodiscard]] auto brdf_lut_texture_index() const noexcept -> std::uint32_t;
-    [[nodiscard]] auto radiance_face_texture_index(std::uint32_t mip, std::uint32_t face) const noexcept -> std::uint32_t;
+    [[nodiscard]] auto radiance_face_texture_index(std::uint32_t mip, std::uint32_t face) const noexcept
+            -> std::uint32_t;
     [[nodiscard]] auto radiance_mip_count() const noexcept -> std::uint32_t { return radiance_.mip_count; }
-    [[nodiscard]] auto prefilter_face_texture_index(std::uint32_t mip, std::uint32_t face) const noexcept -> std::uint32_t;
+    [[nodiscard]] auto prefilter_face_texture_index(std::uint32_t mip, std::uint32_t face) const noexcept
+            -> std::uint32_t;
     [[nodiscard]] static constexpr auto prefilter_mip_count() noexcept -> std::uint32_t { return prefilter_mips; }
 
     // True once the GPU has executed the build that produced the live set: the SH slot can then be read back.
@@ -291,8 +300,8 @@ private:
         }
     };
 
-    // The inputs the radiance of a build depends on. Rotation, exposure and the intensities apply at lookup, so they are
-    // not here and never trigger a rebuild.
+    // The inputs the radiance of a build depends on. Rotation, exposure and the intensities apply at lookup, so they
+    // are not here and never trigger a rebuild.
     struct BuildKey {
         EnvironmentSource source = EnvironmentSource::flat_ambient;
         std::string hdr_source;

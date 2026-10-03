@@ -1,6 +1,9 @@
 #include "rendering/renderer.hxx"
 
 #include "gpu/device_wait.hxx"
+#include "rendering/frame_graph/compiler.hxx"
+#include "rendering/frame_graph/executor.hxx"
+#include "rendering/frame_graph/pass_context.hxx"
 
 #include <algorithm>
 #include <array>
@@ -40,8 +43,11 @@
 namespace {
     // Per overlay timing slot: prepare() begin/end and record() begin/end.
     constexpr std::uint32_t queries_per_overlay = 4;
-    constexpr std::uint32_t overlay_query_base = query_count;
-    constexpr std::uint32_t total_query_count = query_count + (OverlayRegistry::max_overlays * queries_per_overlay);
+    // The frame's own begin and end timestamps come first; per-pass times are the frame graph profiler's.
+    constexpr std::uint32_t full_frame_query_count = 2;
+    constexpr std::uint32_t overlay_query_base = full_frame_query_count;
+    constexpr std::uint32_t total_query_count =
+            full_frame_query_count + (OverlayRegistry::max_overlays * queries_per_overlay);
 
     [[nodiscard]] constexpr auto overlay_query(std::uint32_t slot, std::uint32_t which) noexcept -> std::uint32_t {
         return overlay_query_base + (slot * queries_per_overlay) + which;
@@ -113,6 +119,23 @@ namespace {
         return RendererError{
                 .type = type,
         };
+    }
+
+    // Whether the buffers both queues touch are shared concurrently: only with a compute queue family of its own.
+    auto buffers_shared_between_queues(VulkanContext const &context) -> bool {
+        return context.queue_families.compute != context.queue_families.graphics;
+    }
+
+    // A per-frame GPU buffer that the compute and graphics queues both use. With a compute family of its own it is
+    // created for concurrent sharing, so the frame graph's imports of it (Sharing::concurrent) need no ownership
+    // transfers.
+    auto create_shared_buffer(VulkanContext &context, BufferCreateInfo info)
+            -> decltype(Buffer::create(context, info)) {
+        if (buffers_shared_between_queues(context)) {
+            info.concurrent_families = {context.queue_families.graphics, context.queue_families.compute};
+            info.concurrent_family_count = 2;
+        }
+        return Buffer::create(context, info);
     }
 
     auto make_resource_table_error(GpuResourceTableError error) -> RendererError {
@@ -1197,6 +1220,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             (sizeof(glm::vec4) + sizeof(std::uint32_t)) * VkDeviceSize{maximum_light_count} + sizeof(std::uint32_t);
 
     frames_.resize(frames_in_flight);
+    transient_allocator_.initialize(context_, image_storage_, frames_in_flight);
 
     for (std::uint32_t frame_index = 0; frame_index < static_cast<std::uint32_t>(frames_.size()); ++frame_index) {
         auto &frame = frames_[frame_index];
@@ -1214,14 +1238,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.upload_buffer = std::move(*upload);
 
-        auto draws = Buffer::create(context_, BufferCreateInfo{
-                                                      .size = draw_size,
-                                                      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                      .memory = BufferMemory::device,
-                                                      .debug_name = "renderer.frame_draws",
-                                              });
+        auto draws = create_shared_buffer(context_, BufferCreateInfo{
+                                                            .size = draw_size,
+                                                            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                            .memory = BufferMemory::device,
+                                                            .debug_name = "renderer.frame_draws",
+                                                    });
 
         if (!draws) {
             return std::unexpected(make_device_error(draws.error()));
@@ -1229,14 +1253,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.draw_buffer = std::move(*draws);
 
-        auto transforms = Buffer::create(context_, BufferCreateInfo{
-                                                           .size = transform_size,
-                                                           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                           .memory = BufferMemory::device,
-                                                           .debug_name = "renderer.frame_transforms",
-                                                   });
+        auto transforms = create_shared_buffer(context_, BufferCreateInfo{
+                                                                 .size = transform_size,
+                                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                 .memory = BufferMemory::device,
+                                                                 .debug_name = "renderer.frame_transforms",
+                                                         });
 
         if (!transforms) {
             return std::unexpected(make_device_error(transforms.error()));
@@ -1244,7 +1268,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.transform_buffer = std::move(*transforms);
 
-        auto indirect = Buffer::create(
+        auto indirect = create_shared_buffer(
                 context_,
                 BufferCreateInfo{
                         .size = indirect_size,
@@ -1260,14 +1284,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.indirect_buffer = std::move(*indirect);
 
-        auto batch_bounds = Buffer::create(context_, BufferCreateInfo{
-                                                             .size = batch_bounds_size,
-                                                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                             .memory = BufferMemory::device,
-                                                             .debug_name = "renderer.frame_batch_bounds",
-                                                     });
+        auto batch_bounds = create_shared_buffer(context_, BufferCreateInfo{
+                                                                   .size = batch_bounds_size,
+                                                                   .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                   .memory = BufferMemory::device,
+                                                                   .debug_name = "renderer.frame_batch_bounds",
+                                                           });
 
         if (!batch_bounds) {
             return std::unexpected(make_device_error(batch_bounds.error()));
@@ -1276,7 +1300,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.batch_bounds_buffer = std::move(*batch_bounds);
 
         // main_cs is the only writer.
-        auto culled_indirect = Buffer::create(
+        auto culled_indirect = create_shared_buffer(
                 context_, BufferCreateInfo{
                                   .size = culled_indirect_size,
                                   .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -1291,13 +1315,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.culled_indirect_buffer = std::move(*culled_indirect);
 
-        auto visible_draws = Buffer::create(context_, BufferCreateInfo{
-                                                              .size = draw_size,
-                                                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                              .memory = BufferMemory::device,
-                                                              .debug_name = "renderer.frame_visible_draws",
-                                                      });
+        auto visible_draws = create_shared_buffer(context_, BufferCreateInfo{
+                                                                    .size = draw_size,
+                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                    .memory = BufferMemory::device,
+                                                                    .debug_name = "renderer.frame_visible_draws",
+                                                            });
 
         if (!visible_draws) {
             return std::unexpected(make_device_error(visible_draws.error()));
@@ -1305,13 +1329,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.visible_draw_buffer = std::move(*visible_draws);
 
-        auto visible_transforms = Buffer::create(context_, BufferCreateInfo{
-                                                                   .size = transform_size,
-                                                                   .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                   .memory = BufferMemory::device,
-                                                                   .debug_name = "renderer.frame_visible_transforms",
-                                                           });
+        auto visible_transforms =
+                create_shared_buffer(context_, BufferCreateInfo{
+                                                       .size = transform_size,
+                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                       .memory = BufferMemory::device,
+                                                       .debug_name = "renderer.frame_visible_transforms",
+                                               });
 
         if (!visible_transforms) {
             return std::unexpected(make_device_error(visible_transforms.error()));
@@ -1374,12 +1399,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         };
 
         for (auto const &spec: occlusion_buffers) {
-            auto buffer = Buffer::create(context_, BufferCreateInfo{
-                                                           .size = spec.size,
-                                                           .usage = spec.usage,
-                                                           .memory = spec.memory,
-                                                           .debug_name = spec.debug_name,
-                                                   });
+            auto buffer = create_shared_buffer(context_, BufferCreateInfo{
+                                                                 .size = spec.size,
+                                                                 .usage = spec.usage,
+                                                                 .memory = spec.memory,
+                                                                 .debug_name = spec.debug_name,
+                                                         });
 
             if (!buffer) {
                 return std::unexpected(make_device_error(buffer.error()));
@@ -1390,13 +1415,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         // Host-written every frame.
         auto frustum_planes_buffer =
-                Buffer::create(context_, BufferCreateInfo{
-                                                 .size = sizeof(glm::vec4) * cull_plane_count,
-                                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                 .memory = BufferMemory::upload,
-                                                 .debug_name = "renderer.frame_frustum_planes",
-                                         });
+                create_shared_buffer(context_, BufferCreateInfo{
+                                                       .size = sizeof(glm::vec4) * cull_plane_count,
+                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                       .memory = BufferMemory::upload,
+                                                       .debug_name = "renderer.frame_frustum_planes",
+                                               });
 
         if (!frustum_planes_buffer) {
             return std::unexpected(make_device_error(frustum_planes_buffer.error()));
@@ -1404,13 +1429,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.frustum_planes_buffer = std::move(*frustum_planes_buffer);
 
-        auto lights_buffer = Buffer::create(context_, BufferCreateInfo{
-                                                              .size = sizeof(GpuLight) * maximum_light_count,
-                                                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                              .memory = BufferMemory::upload,
-                                                              .debug_name = "renderer.frame_lights",
-                                                      });
+        auto lights_buffer = create_shared_buffer(context_, BufferCreateInfo{
+                                                                    .size = sizeof(GpuLight) * maximum_light_count,
+                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                    .memory = BufferMemory::upload,
+                                                                    .debug_name = "renderer.frame_lights",
+                                                            });
 
         if (!lights_buffer) {
             return std::unexpected(make_device_error(lights_buffer.error()));
@@ -1419,13 +1444,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.lights_buffer = std::move(*lights_buffer);
 
         // light_cull.slang is the only writer.
-        auto visible_lights = Buffer::create(context_, BufferCreateInfo{
-                                                               .size = visible_lights_size,
-                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                               .memory = BufferMemory::device,
-                                                               .debug_name = "renderer.frame_visible_lights",
-                                                       });
+        auto visible_lights = create_shared_buffer(context_, BufferCreateInfo{
+                                                                     .size = visible_lights_size,
+                                                                     .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                     .memory = BufferMemory::device,
+                                                                     .debug_name = "renderer.frame_visible_lights",
+                                                             });
 
         if (!visible_lights) {
             return std::unexpected(make_device_error(visible_lights.error()));
@@ -1439,10 +1464,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             return std::unexpected(targets.error());
         }
 
-        frame.forward_target = std::move(targets->forward_target);
         frame.viewport_target = std::move(targets->viewport_target);
-        frame.bloom_target = std::move(targets->bloom_target);
-        frame.ao_target = std::move(targets->ao_target);
 
         frame.draw_upload_offset = 0;
         frame.transform_upload_offset = transform_offset;
@@ -1531,15 +1553,27 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         vkResetQueryPool(context_.device, query_pool, 0, 1);
     }
 
+    if (!pass_profiler_.initialize(frame_graph::PassProfilerCreateInfo{
+                .physical_device = context_.physical_device,
+                .device = context_.device,
+                .queue_family = {context_.queue_families.graphics, context_.queue_families.compute},
+                .timestamp_period = timestamp_period_,
+                .slots = frames_in_flight,
+                .max_passes = 64,
+        })) {
+        error("Failed to create the frame graph pass profiler");
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
     ubos_.resize(frames_in_flight);
     for (auto &ubo: ubos_) {
-        auto maybe_ubo = Buffer::create(context_, BufferCreateInfo{
-                                                          .size = sizeof(UBO),
-                                                          .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                                                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                          .memory = BufferMemory::upload,
-                                                          .debug_name = "renderer.ubo",
-                                                  });
+        auto maybe_ubo = create_shared_buffer(context_, BufferCreateInfo{
+                                                                .size = sizeof(UBO),
+                                                                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                .memory = BufferMemory::upload,
+                                                                .debug_name = "renderer.ubo",
+                                                        });
         if (!maybe_ubo) {
             error("Failed to create ubo");
             return std::unexpected(make_error(RendererErrorType::device_error));
@@ -1593,6 +1627,8 @@ auto Renderer::destroy() noexcept -> void {
     pipeline_stat_queries_.clear();
     last_frame_pipeline_stats_ = {};
 
+    pass_profiler_.destroy();
+
     for (auto &ubo: ubos_) {
         ubo.destroy();
     }
@@ -1636,6 +1672,9 @@ auto Renderer::destroy() noexcept -> void {
         frame.meshlet_visibility_words = 0;
         frame.cluster_stats_pending = false;
     }
+
+    // Transient images are bound into blocks and registered in image_storage_: gone before both.
+    transient_allocator_.release_all();
 
     frames_.clear();
 
@@ -2526,8 +2565,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     vkCmdResetQueryPool(command_buffer, frame_pipeline_query.query_pool, 0, 1);
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
-                         static_cast<std::uint32_t>(RenderStage::FullFrame) * 2);
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool, 0);
 
     pipeline_graph_.tick_retirement();
     geometry_arena_.tick_retirement();
@@ -2951,34 +2989,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(upload_result.error());
     }
 
-    // main_cs and late_cs accumulate into the occlusion statistics. This slot's previous readback copy finished
-    // before its fence was waited on.
-    {
-        auto const stats_size = VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t);
-        vkCmdFillBuffer(command_buffer, frame.occlusion_stats_buffer.buffer, 0, stats_size, 0);
-
-        VkBufferMemoryBarrier2 const stats_cleared{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = frame.occlusion_stats_buffer.buffer,
-                .offset = 0,
-                .size = stats_size,
-        };
-
-        VkDependencyInfo const stats_dependency{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .bufferMemoryBarrierCount = 1,
-                .pBufferMemoryBarriers = &stats_cleared,
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &stats_dependency);
-    }
-
     auto const &view = matrices.view;
     auto const &projection = matrices.projection;
     auto const light_direction = glm::normalize(light_.direction);
@@ -3083,8 +3093,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     // projection[1][1] is cot(fov_y / 2) (negated by a Vulkan Y flip), so this maps range / distance to pixels of
     // radius on the forward target.
-    auto const light_lod_pixel_scale =
-            std::abs(projection[1][1]) * static_cast<float>(frame.forward_target.extent().height) * 0.5F;
+    auto const light_lod_pixel_scale = std::abs(projection[1][1]) * static_cast<float>(extent_.height) * 0.5F;
     auto const light_lod_cull = std::max(light_lod_settings_.cull_radius_pixels, 0.0F);
     // smoothstep() needs fade > cull.
     auto const light_lod_fade = std::max(light_lod_settings_.fade_radius_pixels, light_lod_cull + 1e-3F);
@@ -3177,7 +3186,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     // Two-phase occlusion culling: record_frame follows this decision for the frame. The pyramid matches the render
     // extent except between a resize and the frames recreated with it.
-    auto const forward_extent = frame.forward_target.extent();
+    auto const forward_extent = extent_;
     frame.occlusion_active = occlusion_culling_ && occlusion_culling_supported() && static_cast<bool>(hiz_.image) &&
                              hiz_.depth_extent.width == forward_extent.width &&
                              hiz_.depth_extent.height == forward_extent.height;
@@ -3198,14 +3207,14 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     if (frame.meshlet_visibility_words > frame.meshlet_visibility_capacity_words) {
         auto const capacity_words = static_cast<std::uint32_t>(std::bit_ceil(frame.meshlet_visibility_words));
-        auto visibility = Buffer::create(context_, BufferCreateInfo{
-                                                           .size = VkDeviceSize{capacity_words} * sizeof(std::uint32_t),
-                                                           .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                                           .memory = BufferMemory::device,
-                                                           .debug_name = "renderer.frame_meshlet_visibility",
-                                                   });
+        auto visibility = create_shared_buffer(
+                context_, BufferCreateInfo{
+                                  .size = VkDeviceSize{capacity_words} * sizeof(std::uint32_t),
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                  .memory = BufferMemory::device,
+                                  .debug_name = "renderer.frame_meshlet_visibility",
+                          });
 
         if (!visibility) {
             clear_submissions();
@@ -3259,33 +3268,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
     }
 
-    // The bitset starts empty every frame: the early prepass phase records into it, the late phase skips what it
-    // holds and adds to it, and forward replays it.
-    if (frame.meshlet_occlusion_active) {
-        auto const visibility_size = VkDeviceSize{frame.meshlet_visibility_words} * sizeof(std::uint32_t);
-        vkCmdFillBuffer(command_buffer, frame.meshlet_visibility_buffer.buffer, 0, visibility_size, 0);
-
-        VkBufferMemoryBarrier2 const visibility_cleared{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .buffer = frame.meshlet_visibility_buffer.buffer,
-                .offset = 0,
-                .size = visibility_size,
-        };
-
-        VkDependencyInfo const visibility_dependency{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .bufferMemoryBarrierCount = 1,
-                .pBufferMemoryBarriers = &visibility_cleared,
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &visibility_dependency);
-    }
+    // The occlusion statistics and the meshlet visibility bitset are cleared by graph passes.
 
     if ((lights_dirty_mask_ & (1u << frame_index)) != 0) {
         light_staging_.clear();
@@ -3335,302 +3318,28 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     }
 
 #pragma region Culling
-    {
-        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Culling", tracy::Color::SlateBlue);
-
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Culling);
-        constexpr auto start_query = stage * 2;
-        constexpr auto end_query = start_query + 1;
-
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
-                             start_query);
-
-        if (frame.indirect_command_count != 0) {
-            if (frame.indirect_command_count > maximum_cull_batch_count) {
-                clear_submissions();
-                return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
-            }
-
-            auto const frustum_cull_pipeline = resolve_layout(pipeline_graph_, frustum_cull_pipeline_);
-
-            if (frustum_cull_pipeline == VK_NULL_HANDLE) {
-                clear_submissions();
-                return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
-            }
-
-            bind_compute_node(pipeline_graph_, frustum_cull_pipeline_, command_buffer);
-
-            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                     frustum_cull_pipeline);
-
-            CullPushConstants const cull_pc{
-                    .src_draws_address = frame.draw_buffer.device_address,
-                    .src_transforms_address = frame.transform_buffer.device_address,
-                    .batch_bounds_address = frame.batch_bounds_buffer.device_address,
-                    .src_indirect_address = frame.indirect_buffer.device_address,
-                    .dst_indirect_address = frame.culled_indirect_buffer.device_address,
-                    .dst_draws_address = frame.visible_draw_buffer.device_address,
-                    .dst_transforms_address = frame.visible_transform_buffer.device_address,
-                    .frustum_planes_address = frame.frustum_planes_buffer.device_address,
-                    .occlusion_address = frame.occlusion_views_buffer.device_address,
-                    .occlusion_candidates_address = frame.occlusion_candidates_buffer.device_address,
-                    .candidate_counts_address = frame.candidate_counts_buffer.device_address,
-                    .merged_indirect_address = frame.merged_indirect_buffer.device_address,
-                    .late_indirect_address = frame.late_indirect_buffer.device_address,
-                    .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
-                    .batch_count = frame.indirect_command_count,
-                    .occludable_batch_count = frame.opaque_indirect_count + frame.mask_indirect_count,
-                    .late_union_meshlet_batches = 0,
-                    ._padding = 0,
-            };
-
-            vkCmdPushConstants(command_buffer, frustum_cull_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc),
-                               &cull_pc);
-
-            vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
-
-            auto const compute_barrier = [](VkBuffer buffer, VkPipelineStageFlags2 dst_stages,
-                                            VkAccessFlags2 dst_access) -> VkBufferMemoryBarrier2 {
-                return VkBufferMemoryBarrier2{
-                        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                        .dstStageMask = dst_stages,
-                        .dstAccessMask = dst_access,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .buffer = buffer,
-                        .offset = 0,
-                        .size = VK_WHOLE_SIZE,
-                };
-            };
-
-            constexpr VkPipelineStageFlags2 geometry_stages = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                                              VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                                                              VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
-
-            // late_cs (record_frame) reads the candidates, counts and phase-1 commands, appends to the visible
-            // buffers past main_cs's survivors, and adds to the statistics, which are then copied for readback.
-            std::array const post_cull_barriers{
-                    compute_barrier(frame.visible_draw_buffer.buffer,
-                                    geometry_stages | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT),
-                    compute_barrier(frame.visible_transform_buffer.buffer,
-                                    geometry_stages | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT),
-                    // Read as the indirect command and as the task shader's per-batch payload.
-                    compute_barrier(frame.culled_indirect_buffer.buffer,
-                                    VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
-                    compute_barrier(frame.occlusion_candidates_buffer.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
-                    compute_barrier(frame.candidate_counts_buffer.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
-                    compute_barrier(frame.occlusion_stats_buffer.buffer,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
-                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                                            VK_ACCESS_2_TRANSFER_READ_BIT),
-            };
-
-            VkDependencyInfo const dependency_info{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = static_cast<std::uint32_t>(post_cull_barriers.size()),
-                    .pBufferMemoryBarriers = post_cull_barriers.data(),
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    // The dispatch is the gpu_culling graph pass (record_gpu_culling); fail here, where the error handling is, if it
+    // cannot run.
+    if (frame.indirect_command_count != 0) {
+        if (frame.indirect_command_count > maximum_cull_batch_count) {
+            clear_submissions();
+            return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
         }
 
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool, end_query);
+        if (resolve_layout(pipeline_graph_, frustum_cull_pipeline_) == VK_NULL_HANDLE) {
+            clear_submissions();
+            return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+        }
     }
 #pragma endregion
 
 #pragma region LightClustering
-    {
-        TracyVkZoneC(context_.host_query_context.context, command_buffer, "Light clustering", tracy::Color::Gold);
-
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::LightClustering);
-        constexpr auto start_query = stage * 2;
-        constexpr auto end_query = start_query + 1;
-
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool,
-                             start_query);
-
-        // Runs even with no lights: the forward pass reads every cluster's count whenever clustering is on.
-        if (clustered_lighting_) {
-            auto const light_cull_pipeline = resolve_layout(pipeline_graph_, light_cull_pipeline_);
-            auto const light_cluster_pipeline = resolve_layout(pipeline_graph_, light_cluster_pipeline_);
-
-            if (light_cull_pipeline == VK_NULL_HANDLE || light_cluster_pipeline == VK_NULL_HANDLE) {
-                clear_submissions();
-                return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
-            }
-
-            auto const visible_spheres_address = frame.visible_lights_buffer.device_address;
-            auto const visible_indices_address =
-                    visible_spheres_address + (sizeof(glm::vec4) * VkDeviceSize{maximum_light_count});
-            auto const visible_count_address =
-                    visible_indices_address + (sizeof(std::uint32_t) * VkDeviceSize{maximum_light_count});
-
-            auto const cluster_stats_address = frame.cluster_lights_buffer.device_address;
-            auto const cluster_lists_address = cluster_stats_address + cluster_stats_bytes;
-
-            // light_cluster.slang accumulates into the statistics.
-            vkCmdFillBuffer(command_buffer, frame.cluster_lights_buffer.buffer, 0, cluster_stats_bytes, 0);
-
-            bind_compute_node(pipeline_graph_, light_cull_pipeline_, command_buffer);
-            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, light_cull_pipeline);
-
-            LightCullPushConstants const cull_pc{
-                    .ubo_address = ubos_[frame_index].device_address,
-                    .lights_address = frame.lights_buffer.device_address,
-                    .frustum_planes_address = frame.frustum_planes_buffer.device_address,
-                    .visible_spheres_address = visible_spheres_address,
-                    .visible_light_indices_address = visible_indices_address,
-                    .visible_light_count_address = visible_count_address,
-                    .light_count = frame.light_count,
-            };
-
-            vkCmdPushConstants(command_buffer, light_cull_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
-
-            // A single workgroup walks every light, keeping the visible list in light-index order.
-            vkCmdDispatch(command_buffer, 1, 1, 1);
-
-            std::array const before_cluster{
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.visible_lights_buffer.buffer,
-                            .offset = 0,
-                            .size = VK_WHOLE_SIZE,
-                    },
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.cluster_lights_buffer.buffer,
-                            .offset = 0,
-                            .size = cluster_stats_bytes,
-                    },
-            };
-
-            VkDependencyInfo const visible_dependency{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = static_cast<std::uint32_t>(before_cluster.size()),
-                    .pBufferMemoryBarriers = before_cluster.data(),
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &visible_dependency);
-
-            bind_compute_node(pipeline_graph_, light_cluster_pipeline_, command_buffer);
-            gpu_resource_table_.bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                     light_cluster_pipeline);
-
-            LightClusterPushConstants const cluster_pc{
-                    .ubo_address = ubos_[frame_index].device_address,
-                    .visible_spheres_address = visible_spheres_address,
-                    .visible_light_indices_address = visible_indices_address,
-                    .visible_light_count_address = visible_count_address,
-                    .cluster_lights_address = cluster_lists_address,
-                    .cluster_stats_address = cluster_stats_address,
-            };
-
-            vkCmdPushConstants(command_buffer, light_cluster_pipeline, VK_SHADER_STAGE_ALL, 0, sizeof(cluster_pc),
-                               &cluster_pc);
-
-            // One workgroup per screen tile; each fills its tile's column of clusters.
-            vkCmdDispatch(command_buffer, cluster_tile_count(frame.cluster_grid), 1, 1);
-
-            // The previous use of this frame slot's lists finished before its fence was waited on, so only the
-            // write-to-read edges need barriers: the lists to the forward pass, the statistics to the readback copy.
-            std::array const after_cluster{
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.cluster_lights_buffer.buffer,
-                            .offset = cluster_stats_bytes,
-                            .size = VK_WHOLE_SIZE,
-                    },
-                    VkBufferMemoryBarrier2{
-                            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = frame.cluster_lights_buffer.buffer,
-                            .offset = 0,
-                            .size = cluster_stats_bytes,
-                    },
-            };
-
-            VkDependencyInfo const cluster_dependency{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = static_cast<std::uint32_t>(after_cluster.size()),
-                    .pBufferMemoryBarriers = after_cluster.data(),
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &cluster_dependency);
-
-            VkBufferCopy2 const stats_region{
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
-                    .srcOffset = 0,
-                    .dstOffset = 0,
-                    .size = cluster_stats_bytes,
-            };
-
-            VkCopyBufferInfo2 const stats_copy{
-                    .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
-                    .srcBuffer = frame.cluster_lights_buffer.buffer,
-                    .dstBuffer = frame.cluster_stats_readback_buffer.buffer,
-                    .regionCount = 1,
-                    .pRegions = &stats_region,
-            };
-
-            vkCmdCopyBuffer2(command_buffer, &stats_copy);
-
-            VkBufferMemoryBarrier2 const stats_to_host{
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-                    .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
-                    .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .buffer = frame.cluster_stats_readback_buffer.buffer,
-                    .offset = 0,
-                    .size = cluster_stats_bytes,
-            };
-
-            VkDependencyInfo const stats_dependency{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .bufferMemoryBarrierCount = 1,
-                    .pBufferMemoryBarriers = &stats_to_host,
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &stats_dependency);
-
-            frame.cluster_stats_grid = frame.cluster_grid;
-            frame.cluster_stats_pending = true;
-        }
-
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, frame_query.query_pool, end_query);
+    // The dispatches are graph passes (record_light_cull and friends); fail here, where the error handling is, if
+    // their pipelines are missing.
+    if (clustered_lighting_ && (resolve_layout(pipeline_graph_, light_cull_pipeline_) == VK_NULL_HANDLE ||
+                                resolve_layout(pipeline_graph_, light_cluster_pipeline_) == VK_NULL_HANDLE)) {
+        clear_submissions();
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
     }
 #pragma endregion
 
@@ -3651,22 +3360,18 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     if (frame_query.has_results) {
         last_frame_timings_.valid = false;
-        std::array<std::uint64_t, query_count> results{};
+        std::array<std::uint64_t, full_frame_query_count> results{};
         auto const query_result =
-                vkGetQueryPoolResults(context_.device, frame_query.query_pool, 0, query_count, sizeof(results),
-                                      results.data(), sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
+                vkGetQueryPoolResults(context_.device, frame_query.query_pool, 0, full_frame_query_count,
+                                      sizeof(results), results.data(), sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
 
         if (query_result == VK_NOT_READY) {
             warn("Timestamp queries not ready for frame {}", frame_index);
         }
 
         if (query_result == VK_SUCCESS) {
-            for (std::uint32_t i = 0; i < stage_count; ++i) {
-                auto const start = results[static_cast<std::size_t>(i) * 2];
-                auto const end = results[(static_cast<std::size_t>(i) * 2) + 1];
-                last_frame_timings_.milliseconds[i] =
-                        static_cast<float>(end - start) * timestamp_period_ / 1'000'000.0F;
-            }
+            last_frame_timings_.full_frame_ms =
+                    static_cast<float>(results[1] - results[0]) * timestamp_period_ / 1'000'000.0F;
 
             read_overlay_timings(frame_query);
             last_frame_timings_.valid = true;
@@ -3707,6 +3412,167 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     return {};
 }
 
+auto Renderer::record_occlusion_stats_clear(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void {
+    // main_cs and late_cs accumulate into the statistics, so they start at zero. This slot's previous readback copy
+    // finished before its fence was waited on.
+    vkCmdFillBuffer(command_buffer, frame.occlusion_stats_buffer.buffer, 0,
+                    VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t), 0);
+}
+
+auto Renderer::record_meshlet_visibility_clear(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void {
+    // The bitset starts empty every frame: the early prepass phase records into it, the late phase skips what it holds
+    // and adds to it, and forward replays it.
+    vkCmdFillBuffer(command_buffer, frame.meshlet_visibility_buffer.buffer, 0,
+                    VkDeviceSize{frame.meshlet_visibility_words} * sizeof(std::uint32_t), 0);
+}
+
+auto Renderer::record_gpu_culling(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    auto const command_buffer = pass_context.command_buffer;
+
+
+    if (frame.indirect_command_count != 0) {
+        auto const layout = resolve_layout(pipeline_graph_, frustum_cull_pipeline_);
+
+        if (layout == VK_NULL_HANDLE) {
+            return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+        }
+
+        bind_compute_node(pipeline_graph_, frustum_cull_pipeline_, command_buffer);
+        gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+        CullPushConstants const cull_pc{
+                .src_draws_address = frame.draw_buffer.device_address,
+                .src_transforms_address = frame.transform_buffer.device_address,
+                .batch_bounds_address = frame.batch_bounds_buffer.device_address,
+                .src_indirect_address = frame.indirect_buffer.device_address,
+                .dst_indirect_address = frame.culled_indirect_buffer.device_address,
+                .dst_draws_address = frame.visible_draw_buffer.device_address,
+                .dst_transforms_address = frame.visible_transform_buffer.device_address,
+                .frustum_planes_address = frame.frustum_planes_buffer.device_address,
+                .occlusion_address = frame.occlusion_views_buffer.device_address,
+                .occlusion_candidates_address = frame.occlusion_candidates_buffer.device_address,
+                .candidate_counts_address = frame.candidate_counts_buffer.device_address,
+                .merged_indirect_address = frame.merged_indirect_buffer.device_address,
+                .late_indirect_address = frame.late_indirect_buffer.device_address,
+                .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
+                .batch_count = frame.indirect_command_count,
+                .occludable_batch_count = frame.opaque_indirect_count + frame.mask_indirect_count,
+                .late_union_meshlet_batches = 0,
+                ._padding = 0,
+        };
+
+        vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
+        vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
+    }
+
+    return {};
+}
+
+auto Renderer::record_cluster_stats_clear(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> void {
+    // The light clustering stage spans the clear, the two dispatches and the statistics readback.
+
+    // light_cluster.slang accumulates into the statistics.
+    vkCmdFillBuffer(pass_context.command_buffer, frame.cluster_lights_buffer.buffer, 0, cluster_stats_bytes, 0);
+}
+
+auto Renderer::record_light_cull(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    auto const command_buffer = pass_context.command_buffer;
+    auto const layout = resolve_layout(pipeline_graph_, light_cull_pipeline_);
+
+    if (layout == VK_NULL_HANDLE) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    auto const visible_spheres_address = frame.visible_lights_buffer.device_address;
+    auto const visible_indices_address =
+            visible_spheres_address + (sizeof(glm::vec4) * VkDeviceSize{maximum_light_count});
+    auto const visible_count_address =
+            visible_indices_address + (sizeof(std::uint32_t) * VkDeviceSize{maximum_light_count});
+
+    bind_compute_node(pipeline_graph_, light_cull_pipeline_, command_buffer);
+    gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+    LightCullPushConstants const cull_pc{
+            .ubo_address = ubos_[pass_context.frame_index].device_address,
+            .lights_address = frame.lights_buffer.device_address,
+            .frustum_planes_address = frame.frustum_planes_buffer.device_address,
+            .visible_spheres_address = visible_spheres_address,
+            .visible_light_indices_address = visible_indices_address,
+            .visible_light_count_address = visible_count_address,
+            .light_count = frame.light_count,
+    };
+
+    vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
+
+    // A single workgroup walks every light, keeping the visible list in light-index order.
+    vkCmdDispatch(command_buffer, 1, 1, 1);
+    return {};
+}
+
+auto Renderer::record_light_cluster(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    auto const command_buffer = pass_context.command_buffer;
+    auto const layout = resolve_layout(pipeline_graph_, light_cluster_pipeline_);
+
+    if (layout == VK_NULL_HANDLE) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    auto const visible_spheres_address = frame.visible_lights_buffer.device_address;
+    auto const visible_indices_address =
+            visible_spheres_address + (sizeof(glm::vec4) * VkDeviceSize{maximum_light_count});
+    auto const visible_count_address =
+            visible_indices_address + (sizeof(std::uint32_t) * VkDeviceSize{maximum_light_count});
+
+    auto const cluster_stats_address = frame.cluster_lights_buffer.device_address;
+    auto const cluster_lists_address = cluster_stats_address + cluster_stats_bytes;
+
+    bind_compute_node(pipeline_graph_, light_cluster_pipeline_, command_buffer);
+    gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+    LightClusterPushConstants const cluster_pc{
+            .ubo_address = ubos_[pass_context.frame_index].device_address,
+            .visible_spheres_address = visible_spheres_address,
+            .visible_light_indices_address = visible_indices_address,
+            .visible_light_count_address = visible_count_address,
+            .cluster_lights_address = cluster_lists_address,
+            .cluster_stats_address = cluster_stats_address,
+    };
+
+    vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cluster_pc), &cluster_pc);
+
+    // One workgroup per screen tile; each fills its tile's column of clusters.
+    vkCmdDispatch(command_buffer, cluster_tile_count(frame.cluster_grid), 1, 1);
+    return {};
+}
+
+auto Renderer::record_cluster_stats_readback(render_pass::Context const &pass_context, RendererFrame &frame) -> void {
+    auto const command_buffer = pass_context.command_buffer;
+
+    VkBufferCopy2 const stats_region{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+            .srcOffset = 0,
+            .dstOffset = 0,
+            .size = cluster_stats_bytes,
+    };
+
+    VkCopyBufferInfo2 const stats_copy{
+            .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+            .srcBuffer = frame.cluster_lights_buffer.buffer,
+            .dstBuffer = frame.cluster_stats_readback_buffer.buffer,
+            .regionCount = 1,
+            .pRegions = &stats_region,
+    };
+
+    vkCmdCopyBuffer2(command_buffer, &stats_copy);
+
+    frame.cluster_stats_grid = frame.cluster_grid;
+    frame.cluster_stats_pending = true;
+}
+
 auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
     // This frame slot's fence has been waited on, so last use's readback copy has completed.
     if (!frame.occlusion_stats_pending) {
@@ -3715,8 +3581,8 @@ auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
 
     frame.occlusion_stats_pending = false;
 
-    if (auto invalidated = frame.occlusion_stats_readback_buffer.invalidate(
-                0, VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t));
+    if (auto invalidated = frame.occlusion_stats_readback_buffer.invalidate(0, VkDeviceSize{occlusion_stat_count} *
+                                                                                       sizeof(std::uint32_t));
         !invalidated) {
         error("[Renderer] Failed to invalidate the occlusion statistics readback buffer");
         return;
@@ -3877,7 +3743,7 @@ auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<vo
     }
 
     // light_cluster.slang is the only writer of the lists; the statistics are cleared and read back by copies.
-    auto cluster_lights = Buffer::create(
+    auto cluster_lights = create_shared_buffer(
             context_, BufferCreateInfo{
                               .size = cluster_buffer_bytes(cluster_grid_),
                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
@@ -3898,42 +3764,20 @@ auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<vo
 }
 
 auto Renderer::resolve_frame_targets(RendererFrame const &frame) const -> std::expected<FrameTargets, RendererError> {
-    bool const multisampled = frame.forward_target.is_multisampled();
-
-    auto const hdr_handle = frame.forward_target.hdr();
-    auto const depth_handle = frame.forward_target.depth();
-    auto const resolved_hdr_handle = multisampled ? frame.forward_target.resolved_hdr() : hdr_handle;
-    auto const resolved_depth_handle = multisampled ? frame.forward_target.resolved_depth() : depth_handle;
-
     FrameTargets const targets{
-            .hdr = image_storage_.get(hdr_handle),
-            .depth = image_storage_.get(depth_handle),
-            .resolved_hdr = image_storage_.get(resolved_hdr_handle),
-            .resolved_depth = image_storage_.get(resolved_depth_handle),
-            .resolved_hdr_handle = resolved_hdr_handle,
-            .resolved_depth_handle = resolved_depth_handle,
             .shadow_atlas = shadow_atlas_.get(),
-            .ao_raw = frame.ao_target.raw.get(),
-            .ao_denoised = frame.ao_target.denoised.get(),
             .viewport = frame.viewport_target.get(),
-            .extent = frame.forward_target.extent(),
-            .multisampled = multisampled,
+            .extent = extent_,
+            .multisampled = samples_ != VK_SAMPLE_COUNT_1_BIT,
     };
 
     auto const usable = [](Image const *image) { return image != nullptr && image->valid(); };
 
-    if (!usable(targets.hdr) || !usable(targets.depth) || !usable(targets.resolved_hdr) ||
-        !usable(targets.resolved_depth) || !usable(targets.shadow_atlas) || !usable(targets.ao_raw) ||
-        !usable(targets.ao_denoised) || !usable(targets.viewport)) {
+    if (!usable(targets.shadow_atlas) || !usable(targets.viewport)) {
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
 
-    auto const matches_extent = [&](Image const &image) {
-        return image.extent_2d().width == targets.extent.width && image.extent_2d().height == targets.extent.height;
-    };
-
-    if (targets.extent.width == 0 || targets.extent.height == 0 || !matches_extent(*targets.hdr) ||
-        !matches_extent(*targets.depth)) {
+    if (targets.extent.width == 0 || targets.extent.height == 0) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
@@ -3975,17 +3819,14 @@ auto Renderer::batch_counts(RendererFrame const &frame) noexcept -> render_pass:
     };
 }
 
-auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                                  FrameTargets const &targets) -> std::expected<void, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Shadow Pass", tracy::Color::Purple);
-
+auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
     auto const frame_index = pass_context.frame_index;
 
     // Shadows draw every caster, so this uses the un-culled buffers.
     auto const result = render_pass::shadow(
             pass_context,
             render_pass::ShadowPassInfo{
-                    .shadow_atlas = *targets.shadow_atlas,
                     .draws =
                             {
                                     .draws = frame.draw_buffer,
@@ -4042,17 +3883,6 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
         -> std::expected<void, RendererError> {
     bool const late = phase == render_pass::DepthPrepassPhase::late;
 
-    // The late phase draws on top of the early phase's depth.
-    if (!late) {
-        render_pass::prepare_forward_targets(
-                pass_context, render_pass::ForwardTargets{
-                                      .hdr = *targets.hdr,
-                                      .depth = *targets.depth,
-                                      .resolved_hdr = targets.multisampled ? targets.resolved_hdr : nullptr,
-                                      .resolved_depth = targets.multisampled ? targets.resolved_depth : nullptr,
-                              });
-    }
-
     auto const frame_index = pass_context.frame_index;
 
     // Meshlet-level occlusion: the early phase tests against the history Hi-Z (view [0]) and records the meshlets it
@@ -4068,76 +3898,40 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
                                        render_pass::cull_stats
                             : render_pass::cull_occlusion | render_pass::cull_record | render_pass::cull_stats);
 
-    // The early phase's task shaders wrote the bitset; the late phase reads and extends it.
-    if (late && frame.meshlet_occlusion_active) {
-        record_meshlet_visibility_barrier(pass_context.command_buffer, frame,
-                                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    }
-
-    auto const record = [&]() -> std::expected<void, RendererError> {
-        return render_pass::depth_prepass(
-                pass_context, render_pass::DepthPrepassInfo{
-                                      .depth = *targets.depth,
-                                      .resolved_depth = targets.multisampled ? targets.resolved_depth : nullptr,
-                                      .extent = targets.extent,
-                                      .samples = samples_,
-                                      .phase = phase,
-                                      // The Hi-Z needs each pixel's farthest sample; the late phase's resolve then
-                                      // leaves the SAMPLE_ZERO depth everything else expects.
-                                      .depth_resolve_mode = phase == render_pass::DepthPrepassPhase::early
-                                                                    ? VK_RESOLVE_MODE_MIN_BIT
-                                                                    : VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
-                                      .draws = late ? late_view_draws(frame) : early_view_draws(frame),
-                                      .counts = batch_counts(frame),
-                                      .cull_planes_address = frame.frustum_planes_buffer.device_address,
-                                      .materials_address = material_storage_.device_address(),
-                                      .ubo_address = ubos_[frame_index].device_address,
-                                      .lights_address = frame.lights_buffer.device_address,
-                                      .occlusion_view_address = meshlet_view_address,
-                                      .extra_cull_flags = meshlet_flags,
-                                      .opaque_pipeline = depth_prepass_pipeline_,
-                                      .mask_pipeline = depth_prepass_mask_pipeline_,
-                                      .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
-                                      .mask_instanced_pipeline = depth_prepass_mask_instanced_pipeline_,
-                                      .meshlet_culling = meshlet_culling_,
-                              });
-    };
-
-    // Tracy zone names must be literals.
-    if (late) {
-        TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Depth Prepass (late)",
-                     tracy::Color::SlateGray);
-        return record();
-    }
-
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Depth Prepass",
-                 tracy::Color::SlateGray);
-    return record();
+    return render_pass::depth_prepass(pass_context,
+                                      render_pass::DepthPrepassInfo{
+                                              .extent = targets.extent,
+                                              .samples = samples_,
+                                              .phase = phase,
+                                              .draws = late ? late_view_draws(frame) : early_view_draws(frame),
+                                              .counts = batch_counts(frame),
+                                              .cull_planes_address = frame.frustum_planes_buffer.device_address,
+                                              .materials_address = material_storage_.device_address(),
+                                              .ubo_address = ubos_[frame_index].device_address,
+                                              .lights_address = frame.lights_buffer.device_address,
+                                              .occlusion_view_address = meshlet_view_address,
+                                              .extra_cull_flags = meshlet_flags,
+                                              .opaque_pipeline = depth_prepass_pipeline_,
+                                              .mask_pipeline = depth_prepass_mask_pipeline_,
+                                              .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
+                                              .mask_instanced_pipeline = depth_prepass_mask_instanced_pipeline_,
+                                              .meshlet_culling = meshlet_culling_,
+                                      });
 }
 
 auto Renderer::record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Environment", tracy::Color::SkyBlue);
-
     auto const command_buffer = pass_context.command_buffer;
-    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Environment);
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, pass_context.timestamp_query_pool,
-                         stage * 2);
 
     environment_.record(command_buffer, gpu_resource_table_, pass_context.frame_index,
                         ubos_[pass_context.frame_index].device_address);
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, pass_context.timestamp_query_pool,
-                         stage * 2 + 1);
 
     static_cast<void>(frame);
 }
 
-auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets)
-        -> std::expected<void, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Hi-Z Build",
-                 tracy::Color::DarkOrange);
-
+auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets,
+                                std::uint32_t depth_texture_index) -> std::expected<void, RendererError> {
     auto const *hiz_image = hiz_.image.get();
 
     if (hiz_image == nullptr || hiz_.mip_count == 0 || hiz_.mip_count > hiz_max_mip_count) {
@@ -4152,10 +3946,8 @@ auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameT
 
     auto const built = render_pass::build_hiz(
             pass_context, render_pass::HizBuildInfo{
-                                  .source_depth = *targets.resolved_depth,
-                                  .source_texture_index = targets.resolved_depth_handle.index,
+                                  .source_texture_index = depth_texture_index,
                                   .depth_extent = targets.extent,
-                                  .multisampled_depth = targets.multisampled ? targets.depth : nullptr,
                                   .hiz = *hiz_image,
                                   .mip_texture_indices = std::span{mip_texture_indices}.first(hiz_.mip_count),
                                   .pipeline = hiz_build_pipeline_,
@@ -4171,14 +3963,8 @@ auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameT
 
 auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
         -> std::expected<void, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Occlusion Culling",
-                 tracy::Color::SlateBlue);
-
     auto const command_buffer = pass_context.command_buffer;
-    auto const query_pool = pass_context.timestamp_query_pool;
-    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::OcclusionCulling);
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2);
 
     if (frame.indirect_command_count != 0) {
         auto const layout = resolve_layout(pipeline_graph_, occlusion_cull_pipeline_);
@@ -4186,28 +3972,6 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
         if (layout == VK_NULL_HANDLE) {
             return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
         }
-
-        constexpr VkPipelineStageFlags2 geometry_stages = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                                          VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                                                          VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
-
-        // late_cs appends past the ranges the early prepass reads, but device-address accesses can't be tracked per
-        // range, so order it after those reads.
-        VkMemoryBarrier2 const after_early_prepass{
-                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                .srcStageMask = geometry_stages,
-                .srcAccessMask = VK_ACCESS_2_NONE,
-                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_NONE,
-        };
-
-        VkDependencyInfo const before_dependency{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .memoryBarrierCount = 1,
-                .pMemoryBarriers = &after_early_prepass,
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &before_dependency);
 
         bind_compute_node(pipeline_graph_, occlusion_cull_pipeline_, command_buffer);
         gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
@@ -4238,104 +4002,13 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
 
         vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
         vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
-
-        auto const compute_barrier = [](VkBuffer buffer, VkPipelineStageFlags2 dst_stages,
-                                        VkAccessFlags2 dst_access) -> VkBufferMemoryBarrier2 {
-            return VkBufferMemoryBarrier2{
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                    .dstStageMask = dst_stages,
-                    .dstAccessMask = dst_access,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .buffer = buffer,
-                    .offset = 0,
-                    .size = VK_WHOLE_SIZE,
-            };
-        };
-
-        // The late prepass and forward pass read the appended instances and the new commands; the statistics go to
-        // the readback copy.
-        constexpr VkPipelineStageFlags2 indirect_stages =
-                VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT;
-        constexpr VkAccessFlags2 indirect_access =
-                VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-
-        std::array const after_cull{
-                compute_barrier(frame.visible_draw_buffer.buffer, geometry_stages, VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
-                compute_barrier(frame.visible_transform_buffer.buffer, geometry_stages,
-                                VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
-                compute_barrier(frame.late_indirect_buffer.buffer, indirect_stages, indirect_access),
-                compute_barrier(frame.merged_indirect_buffer.buffer, indirect_stages, indirect_access),
-                compute_barrier(frame.occlusion_stats_buffer.buffer, VK_PIPELINE_STAGE_2_COPY_BIT,
-                                VK_ACCESS_2_TRANSFER_READ_BIT),
-        };
-
-        VkDependencyInfo const after_dependency{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .bufferMemoryBarrierCount = static_cast<std::uint32_t>(after_cull.size()),
-                .pBufferMemoryBarriers = after_cull.data(),
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &after_dependency);
     }
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2 + 1);
     return {};
-}
-
-auto Renderer::record_meshlet_visibility_barrier(VkCommandBuffer command_buffer, RendererFrame const &frame,
-                                                 VkAccessFlags2 dst_access) -> void {
-    // Task shaders are the only writers (InterlockedOr) and readers of the bitset.
-    VkBufferMemoryBarrier2 const barrier{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-            .dstAccessMask = dst_access,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = frame.meshlet_visibility_buffer.buffer,
-            .offset = 0,
-            .size = VkDeviceSize{frame.meshlet_visibility_words} * sizeof(std::uint32_t),
-    };
-
-    VkDependencyInfo const dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &barrier,
-    };
-
-    vkCmdPipelineBarrier2(command_buffer, &dependency);
 }
 
 auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void {
     auto const stats_size = VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t);
-
-    // The last writer is late_cs, main_cs, the depth prepass phases' task shaders (meshlet counters) or, with no
-    // batches, prepare_frame's clear.
-    VkBufferMemoryBarrier2 const to_copy{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                            VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = frame.occlusion_stats_buffer.buffer,
-            .offset = 0,
-            .size = stats_size,
-    };
-
-    VkDependencyInfo const copy_dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &to_copy,
-    };
-
-    vkCmdPipelineBarrier2(command_buffer, &copy_dependency);
 
     VkBufferCopy2 const region{
             .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
@@ -4354,87 +4027,41 @@ auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, R
 
     vkCmdCopyBuffer2(command_buffer, &copy);
 
-    VkBufferMemoryBarrier2 const to_host{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
-            .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = frame.occlusion_stats_readback_buffer.buffer,
-            .offset = 0,
-            .size = stats_size,
-    };
-
-    VkDependencyInfo const dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &to_host,
-    };
-
-    vkCmdPipelineBarrier2(command_buffer, &dependency);
-
     frame.occlusion_stats_pending = true;
     frame.occlusion_stats_active = frame.occlusion_active;
     frame.meshlet_occlusion_stats_active = frame.meshlet_occlusion_active;
 }
 
-auto Renderer::record_ambient_occlusion_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                                             FrameTargets const &targets)
-        -> std::expected<std::uint32_t, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Ambient Occlusion",
-                 tracy::Color::DarkSlateGray);
-
-    auto const ao_output = render_pass::ambient_occlusion(
-            pass_context, render_pass::AmbientOcclusionInfo{
-                                  .enabled = ao_settings_.enabled,
-                                  .depth = *targets.resolved_depth,
-                                  .raw_ao = *targets.ao_raw,
-                                  .denoised_ao = *targets.ao_denoised,
-                                  .extent = targets.extent,
-                                  .depth_texture_index = targets.resolved_depth_handle.index,
-                                  .raw_ao_texture_index = frame.ao_target.raw.handle().index,
-                                  .denoised_ao_texture_index = frame.ao_target.denoised.handle().index,
-                                  .point_sampler_index = sampler_storage_.nearest_clamp().index,
-                                  .ubo_address = ubos_[pass_context.frame_index].device_address,
-                                  .gtao_pipeline = gtao_pipeline_,
-                                  .denoise_pipeline = gtao_denoise_pipeline_,
-                                  .radius_view = ao_settings_.radius,
-                                  .falloff_range = ao_settings_.falloff_range,
-                                  .slice_count = ao_settings_.slice_count,
-                                  .step_count = ao_settings_.step_count,
-                                  .denoise_depth_sigma = ao_settings_.denoise_depth_sigma,
-                          });
-
-    if (!ao_output) {
-        return std::unexpected(ao_output.error());
-    }
-
-    return ao_output->has_value() ? (*ao_output)->index : image_storage_.white().index;
+auto Renderer::ambient_occlusion_info(FrameTargets const &targets, std::uint32_t frame_index,
+                                      std::uint32_t depth_texture_index, std::uint32_t raw_texture_index,
+                                      std::uint32_t denoised_texture_index) const -> render_pass::AmbientOcclusionInfo {
+    return render_pass::AmbientOcclusionInfo{
+            .extent = targets.extent,
+            .depth_texture_index = depth_texture_index,
+            .raw_ao_texture_index = raw_texture_index,
+            .denoised_ao_texture_index = denoised_texture_index,
+            .point_sampler_index = sampler_storage_.nearest_clamp().index,
+            .ubo_address = ubos_[frame_index].device_address,
+            .gtao_pipeline = gtao_pipeline_,
+            .denoise_pipeline = gtao_denoise_pipeline_,
+            .radius_view = ao_settings_.radius,
+            .falloff_range = ao_settings_.falloff_range,
+            .slice_count = ao_settings_.slice_count,
+            .step_count = ao_settings_.step_count,
+            .denoise_depth_sigma = ao_settings_.denoise_depth_sigma,
+    };
 }
 
 auto Renderer::record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                                    FrameTargets const &targets, std::uint32_t ao_texture_index,
-                                   render_pass::Callback scene_overlays)
+                                   std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays)
         -> std::expected<render_pass::HdrTextureIndex, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Forward Pass",
-                 tracy::Color::RoyalBlue);
-
     auto const frame_index = pass_context.frame_index;
-
-    // The late prepass phase's task shaders wrote the last bits; forward only reads them.
-    if (frame.meshlet_occlusion_active) {
-        record_meshlet_visibility_barrier(pass_context.command_buffer, frame, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-    }
 
     return render_pass::forward_geometry(
             pass_context,
             render_pass::ForwardGeometryInfo{
-                    .hdr = *targets.hdr,
-                    .depth = *targets.depth,
-                    .resolved_hdr = targets.multisampled ? targets.resolved_hdr : nullptr,
-                    .output_hdr = {.index = targets.resolved_hdr_handle.index},
+                    .output_hdr = {.index = hdr_texture_index},
                     .extent = targets.extent,
                     .samples = samples_,
                     .draws = forward_view_draws(frame),
@@ -4465,147 +4092,43 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
             scene_overlays);
 }
 
-auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                                 FrameTargets const &targets, render_pass::HdrTextureIndex hdr)
+auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
+                                 render_pass::HdrTextureIndex hdr, Image const &bloom_image,
+                                 std::array<std::uint32_t, render_pass::bloom_mip_count> const &mip_texture_indices)
         -> std::expected<std::optional<render_pass::BloomTextureIndex>, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Bloom Pass", tracy::Color::Orange);
-
-    std::array<std::uint32_t, render_pass::bloom_mip_count> mip_texture_indices{};
-    for (std::uint32_t mip = 0; mip < render_pass::bloom_mip_count; ++mip) {
-        mip_texture_indices[mip] = frame.bloom_target.mip_slots[mip].handle().index;
-    }
-
-    return render_pass::bloom(pass_context,
-                              render_pass::BloomPassInfo{
-                                      .enabled = bloom_settings_.enabled,
-                                      .input_hdr = hdr,
-                                      .target = bloom_settings_.enabled ? frame.bloom_target.image.get() : nullptr,
-                                      .mip_texture_indices = mip_texture_indices,
-                                      .input_extent = targets.extent,
-                                      .downsample_pipeline = bloom_downsample_pipeline_,
-                                      .upsample_pipeline = bloom_upsample_pipeline_,
-                                      .linear_sampler_index = sampler_storage_.linear_clamp().index,
-                                      .threshold = bloom_settings_.threshold,
-                                      .knee = bloom_settings_.knee,
-                                      .filter_radius = bloom_settings_.filter_radius,
-                              });
+    return render_pass::bloom(pass_context, render_pass::BloomPassInfo{
+                                                    .enabled = bloom_settings_.enabled,
+                                                    .input_hdr = hdr,
+                                                    .target = bloom_settings_.enabled ? &bloom_image : nullptr,
+                                                    .mip_texture_indices = mip_texture_indices,
+                                                    .input_extent = targets.extent,
+                                                    .downsample_pipeline = bloom_downsample_pipeline_,
+                                                    .upsample_pipeline = bloom_upsample_pipeline_,
+                                                    .linear_sampler_index = sampler_storage_.linear_clamp().index,
+                                                    .threshold = bloom_settings_.threshold,
+                                                    .knee = bloom_settings_.knee,
+                                                    .filter_radius = bloom_settings_.filter_radius,
+                                            });
 }
 
-auto Renderer::record_composite_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
-                                     SwapchainImage const &swapchain_image, render_pass::HdrTextureIndex hdr,
-                                     std::optional<render_pass::BloomTextureIndex> bloom, CompositeTarget target,
-                                     render_pass::Callback ui_overlays) -> std::expected<void, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Composition",
-                 tracy::Color::SeaGreen);
-
-    // Fullscreen play composites straight into the swapchain with the UI on top. Otherwise the scene goes into the
-    // viewport target the editor's Viewport panel samples, and a second pass draws the UI onto the swapchain.
-    bool const fullscreen = target == CompositeTarget::swapchain;
-
-    auto const result = render_pass::composite(
-            pass_context,
-            render_pass::CompositePassInfo{
-                    .swapchain_image = fullscreen ? swapchain_image.image : targets.viewport->image(),
-                    .swapchain_view = fullscreen ? swapchain_image.view : targets.viewport->view(),
-                    .extent = fullscreen ? swapchain_image.extent : targets.extent,
-                    .hdr = hdr,
-                    .bloom = bloom,
-                    .bloom_fallback_texture_index = image_storage_.emissive().index,
-                    .linear_sampler_index = sampler_storage_.linear_clamp().index,
-                    .pipeline = composite_pipeline_,
-                    .exposure = 1.0F,
-                    .bloom_intensity = bloom_settings_.intensity,
-            },
-            fullscreen ? ui_overlays : render_pass::Callback{});
-
-    if (!result) {
-        return std::unexpected(result.error());
-    }
-
-    if (fullscreen) {
-        return {};
-    }
-
-    render_pass::transition_to_shader_read(pass_context.command_buffer, *targets.viewport);
-
-    render_pass::ui_only(pass_context,
-                         render_pass::UiOnlyPassInfo{
-                                 .target_image = swapchain_image.image,
-                                 .target_view = swapchain_image.view,
-                                 .extent = swapchain_image.extent,
-                         },
-                         ui_overlays);
-
-    return {};
-}
-
-auto Renderer::record_frame_end(VkCommandBuffer command_buffer, SwapchainImage const &swapchain_image,
-                                Image const *viewport, std::uint32_t frame_index) -> void {
-    auto const pending = screenshot_->pending_source();
-
-    // The viewport target is left sampled by the UI pass; hand it back the same way so the next frame is unaffected.
-    if (pending == ScreenshotSource::viewport && viewport != nullptr) {
-        // The swapchain is presented as usual; the capture never touches it.
-        (void) screenshot_->record(
-                context_, command_buffer,
-                ScreenshotImage{
-                        .image = viewport->image(),
-                        .format = viewport->format(),
-                        .extent = {viewport->extent().width, viewport->extent().height},
-                        .layout_before = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        .stage_before = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                        .access_before = VK_ACCESS_2_NONE,
-                        .layout_after = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        .stage_after = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                        .access_after = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                },
-                frame_index);
-        render_pass::present_swapchain(command_buffer, swapchain_image.image);
-    } else {
-        bool const screenshot_recorded =
-                pending.has_value() &&
-                screenshot_->record(context_, command_buffer,
-                                    ScreenshotImage{
-                                            .image = swapchain_image.image,
-                                            .format = swapchain_image.format,
-                                            .extent = swapchain_image.extent,
-                                            .layout_before = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                            .stage_before = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                            .access_before = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                                            .layout_after = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                                    },
-                                    frame_index);
-
-        if (!screenshot_recorded) {
-            render_pass::present_swapchain(command_buffer, swapchain_image.image);
-        }
-    }
-
+auto Renderer::record_frame_end(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void {
     auto &frame_query = timestamp_queries_[frame_index];
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, frame_query.query_pool,
-                         (static_cast<std::uint32_t>(RenderStage::FullFrame) * 2) + 1);
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, frame_query.query_pool, 1);
 
     frame_query.has_results = true;
     pipeline_stat_queries_[frame_index].has_results = true;
 }
 
-auto Renderer::write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage)
-        -> void {
-    auto const query_pool = timestamp_queries_[frame_index].query_pool;
-    auto const first_query = static_cast<std::uint32_t>(stage) * 2;
-
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, first_query);
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, first_query + 1);
-}
-
-auto Renderer::make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> render_pass::Context {
+auto Renderer::make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index, bool compute_only)
+        -> render_pass::Context {
     return render_pass::Context{
             .command_buffer = command_buffer,
             .frame_index = frame_index,
             .pipeline_graph = pipeline_graph_,
             .resource_table = gpu_resource_table_,
             .timestamp_query_pool = timestamp_queries_[frame_index].query_pool,
+            .compute_only = compute_only,
     };
 }
 
@@ -4614,8 +4137,6 @@ auto Renderer::record_overlay_prepares(render_pass::Context const &pass_context)
     auto &frame_query = timestamp_queries_[pass_context.frame_index];
 
     frame_query.overlays.clear();
-
-    bool any_gpu_writes = false;
 
     for (auto &entry: overlays_.all()) {
         frame_query.overlays.push_back(RecordedOverlay{
@@ -4633,49 +4154,16 @@ auto Renderer::record_overlay_prepares(render_pass::Context const &pass_context)
             TracyVkZoneTransient(context_.host_query_context.context, gpu_zone, command_buffer, entry.desc.name.c_str(),
                                  true);
 
-            auto const result = entry.desc.prepare(OverlayPrepareContext{
+            // Whether it wrote GPU data or not, the overlay_data token orders it before every overlay draw.
+            static_cast<void>(entry.desc.prepare(OverlayPrepareContext{
                     .command_buffer = command_buffer,
                     .frame_index = pass_context.frame_index,
-            });
-
-            any_gpu_writes = any_gpu_writes || result == OverlayPrepareResult::recorded_gpu_writes;
+            }));
         }
 
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pass_context.timestamp_query_pool,
                              overlay_query(entry.slot, 1));
     }
-
-    if (!any_gpu_writes) {
-        return;
-    }
-
-    // Makes every prepare() write visible to the stages an overlay's draw can read from.
-    VkMemoryBarrier2 const barrier{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-            .pNext = nullptr,
-            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
-                            VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                            VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
-                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT |
-                             VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT,
-    };
-
-    VkDependencyInfo const dependency_info{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext = nullptr,
-            .dependencyFlags = 0,
-            .memoryBarrierCount = 1,
-            .pMemoryBarriers = &barrier,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers = nullptr,
-            .imageMemoryBarrierCount = 0,
-            .pImageMemoryBarriers = nullptr,
-    };
-
-    vkCmdPipelineBarrier2(command_buffer, &dependency_info);
 }
 
 auto Renderer::record_overlay_stage(render_pass::Context const &pass_context, OverlayStage stage,
@@ -4787,150 +4275,11 @@ auto Renderer::register_light_icon_overlay() -> std::expected<void, RendererErro
     return {};
 }
 
-auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError> {
-    ZoneScopedNC("RecordFrame", tracy::Color::RoyalBlue);
-
-    auto const command_buffer = info.command_buffer;
-    auto const &swapchain_image = info.swapchain_image;
-    auto const frame_index = info.frame_index;
-
-    if (!initialized_ || command_buffer == VK_NULL_HANDLE || swapchain_image.image == VK_NULL_HANDLE ||
-        swapchain_image.view == VK_NULL_HANDLE || swapchain_image.format == VK_FORMAT_UNDEFINED ||
-        swapchain_image.extent.width == 0 || swapchain_image.extent.height == 0 || frame_index >= frames_.size()) {
-        return std::unexpected(make_error(RendererErrorType::invalid_argument));
-    }
-
-    screenshot_->try_resolve(frame_index);
-
-    auto &frame = frames_[frame_index];
-    consume_culled_readback(frame);
-
-    auto const targets = resolve_frame_targets(frame);
-    if (!targets) {
-        return std::unexpected(targets.error());
-    }
-
-    auto const pass_context = make_pass_context(command_buffer, frame_index);
-
-    // Registration changes made by overlay callbacks land after recording, so prepare, stages and timing all see
-    // the same set.
-    auto const overlay_iteration = overlays_.iterate();
-
-    OverlayScope const scene_scope{
-            .extent = targets->extent,
-            .colour_format = frame.forward_target.hdr_format(),
-            .depth_format = frame.forward_target.depth_format(),
-            .samples = samples_,
-    };
-
-    OverlayScope const ui_scope{
-            .extent = swapchain_image.extent,
-            .colour_format = swapchain_image.format,
-            .depth_format = VK_FORMAT_UNDEFINED,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-    };
-
-    auto scene_overlays = [&] {
-        record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
-    };
-    auto ui_overlays = [&] { record_overlay_stage(pass_context, OverlayStage::ui, ui_scope, frame.view_projection); };
-
-    record_overlay_prepares(pass_context);
-
-    record_environment_pass(pass_context, frame);
-
-    if (auto shadows = record_shadow_pass(pass_context, frame, *targets); !shadows) {
-        return shadows;
-    }
-
-    // Two-phase occlusion culling (docs/occlusion-culling.md): the early prepass draws what main_cs kept, late_cs
-    // re-tests the rest against this frame's depth and the late prepass adds the survivors. Every stage still writes
-    // its timestamps when skipped.
-    if (auto prepass = record_depth_prepass(pass_context, frame, *targets,
-                                            frame.occlusion_active ? render_pass::DepthPrepassPhase::early
-                                                                   : render_pass::DepthPrepassPhase::only);
-        !prepass) {
-        return prepass;
-    }
-
-    if (frame.occlusion_active) {
-        if (auto built = record_hiz_build(pass_context, *targets); !built) {
-            return built;
-        }
-
-        // Next frame's phase 1 tests against this pyramid, projected as it was built.
-        hiz_history_view_projection_ = frame.view_projection;
-        hiz_history_valid_ = true;
-
-        if (auto culled = record_occlusion_cull_pass(pass_context, frame); !culled) {
-            return culled;
-        }
-
-        if (auto late = record_depth_prepass(pass_context, frame, *targets, render_pass::DepthPrepassPhase::late);
-            !late) {
-            return late;
-        }
-    } else {
-        write_empty_stage(command_buffer, frame_index, RenderStage::HiZBuild);
-        write_empty_stage(command_buffer, frame_index, RenderStage::OcclusionCulling);
-        write_empty_stage(command_buffer, frame_index, RenderStage::DepthPrepassLate);
-
-        // A pyramid from before this gap may not match what is on screen when culling resumes.
-        hiz_history_valid_ = false;
-    }
-
-    record_occlusion_stats_readback(command_buffer, frame);
-
-    auto const ao_texture_index = record_ambient_occlusion_pass(pass_context, frame, *targets);
-    if (!ao_texture_index) {
-        return std::unexpected(ao_texture_index.error());
-    }
-
-    auto const hdr = record_forward_pass(pass_context, frame, *targets, *ao_texture_index,
-                                         render_pass::Callback::bind(scene_overlays));
-    if (!hdr) {
-        return std::unexpected(hdr.error());
-    }
-
-    auto const bloom = record_bloom_pass(pass_context, frame, *targets, *hdr);
-    if (!bloom) {
-        return std::unexpected(bloom.error());
-    }
-
-    if (auto composited = record_composite_pass(pass_context, *targets, swapchain_image, *hdr, *bloom,
-                                                info.composite_target, render_pass::Callback::bind(ui_overlays));
-        !composited) {
-        return composited;
-    }
-
-    record_frame_end(command_buffer, swapchain_image,
-                     info.composite_target == CompositeTarget::swapchain ? nullptr : targets->viewport, frame_index);
-
-    TracyVkCollectHost(context_.host_query_context.context);
-    return {};
-}
-
 auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent)
         -> std::expected<OwnedFrameTargets, RendererError> {
     OwnedFrameTargets targets;
 
-    auto const target_name = std::format("renderer.forward_target_{}", frame_index);
-    auto forward_target = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
-                                                                        .extent = extent,
-                                                                        .hdr_format = hdr_format_,
-                                                                        .depth_format = depth_format_,
-                                                                        .samples = samples_,
-                                                                        .debug_name = target_name,
-                                                                });
-
-    if (!forward_target) {
-        return std::unexpected(RendererError{
-                .type = RendererErrorType::forward_target_error,
-                .cause = ErrorCause{Boxed<ForwardTargetError>{forward_target.error()}},
-        });
-    }
-
-    targets.forward_target = std::move(*forward_target);
+    // The HDR and depth targets and the AO and bloom images are transients of the frame graph.
 
     auto const viewport_target_name = std::format("renderer.viewport_target_{}", frame_index);
     auto viewport_target = create_held_image(
@@ -4957,95 +4306,7 @@ auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent
 
     targets.viewport_target = std::move(*viewport_target);
 
-    auto const bloom_target_name = std::format("renderer.bloom_target_{}", frame_index);
-    auto bloom_image = create_held_image(
-            image_storage_,
-            ImageCreateInfo{
-                    .extent = VkExtent3D{.width = extent.width / 2, .height = extent.height / 2, .depth = 1},
-                    .format = VK_FORMAT_R16G16B16A16_SFLOAT,
-                    .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .image_type = VK_IMAGE_TYPE_2D,
-                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                        image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                    .flags = 0,
-                    .samples = VK_SAMPLE_COUNT_1_BIT,
-                    .tiling = VK_IMAGE_TILING_OPTIMAL,
-                    .mip_levels = render_pass::bloom_mip_count,
-                    .array_layers = 1,
-                    .create_mip_layer_views = true,
-                    .debug_name = bloom_target_name,
-            });
-
-    if (!bloom_image) {
-        return std::unexpected(make_image_error(bloom_image.error()));
-    }
-
-    // Into the BloomTarget before its mip slots, so a failed registration still releases the slots first.
-    targets.bloom_target.image = std::move(*bloom_image);
-
-    auto const *bloom_image_ptr = targets.bloom_target.image.get();
-
-    for (std::uint32_t mip = 0; mip < render_pass::bloom_mip_count; ++mip) {
-        auto const view = bloom_image_ptr->mip_layer_view(mip, 0);
-
-        auto mip_slot = register_held_view(image_storage_, ImageViewRegistration{
-                                                                   .sampled_2d = view,
-                                                                   .storage_2d = view,
-                                                           });
-
-        if (!mip_slot) {
-            return std::unexpected(make_image_error(mip_slot.error()));
-        }
-
-        targets.bloom_target.mip_slots[mip] = std::move(*mip_slot);
-    }
-
-    auto const create_ao_image = [&](std::string_view kind) -> std::expected<ImageHolder, RendererError> {
-        auto const name = std::format("renderer.ao_{}_{}", kind, frame_index);
-
-        auto image = create_held_image(
-                image_storage_,
-                ImageCreateInfo{
-                        .extent = VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1},
-                        .format = VK_FORMAT_R8G8B8A8_UNORM,
-                        .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .image_type = VK_IMAGE_TYPE_2D,
-                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                            image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                        .flags = 0,
-                        .samples = VK_SAMPLE_COUNT_1_BIT,
-                        .tiling = VK_IMAGE_TILING_OPTIMAL,
-                        .mip_levels = 1,
-                        .array_layers = 1,
-                        .debug_name = name,
-                });
-
-        if (!image) {
-            return std::unexpected(make_image_error(image.error()));
-        }
-
-        return std::move(*image);
-    };
-
-    auto ao_raw = create_ao_image("raw");
-
-    if (!ao_raw) {
-        return std::unexpected(ao_raw.error());
-    }
-
-    targets.ao_target.raw = std::move(*ao_raw);
-
-    auto ao_denoised = create_ao_image("denoised");
-
-    if (!ao_denoised) {
-        return std::unexpected(ao_denoised.error());
-    }
-
-    targets.ao_target.denoised = std::move(*ao_denoised);
+    // The bloom chain and the AO images are transients of the frame graph (renderer_frame_graph.cxx).
 
     return targets;
 }
@@ -5090,10 +4351,7 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         auto &frame = frames_[index];
         auto &targets = replacements[index];
 
-        frame.forward_target = std::move(targets.forward_target);
         frame.viewport_target = std::move(targets.viewport_target);
-        frame.bloom_target = std::move(targets.bloom_target);
-        frame.ao_target = std::move(targets.ao_target);
     }
 
     hiz_ = std::move(*hiz);

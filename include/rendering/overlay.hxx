@@ -30,7 +30,7 @@
 // Per-frame resources must be indexed by frame_index; only that slot's previous use is guaranteed retired.
 //
 // The renderer times each overlay's prepare() and record() on the GPU and opens a Tracy zone for them (see
-// StageTimings::overlays).
+// FrameTimings::overlays).
 //
 // Registration is render-thread only. Callbacks may add or remove overlays: removals apply once the frame's
 // recording finishes, additions take effect next frame.

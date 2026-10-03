@@ -27,10 +27,12 @@
 namespace {
 
     constexpr VkPipelineStageFlags2 compute_stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    constexpr VkPipelineStageFlags2 reader_stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    constexpr VkPipelineStageFlags2 reader_stages =
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 
     // GGX samples for prefilter mips 0-5; mip 0 is a mirror copy and uses none.
-    constexpr std::array<std::uint32_t, EnvironmentSystem::prefilter_mips> prefilter_sample_counts{0, 32, 48, 64, 64, 64};
+    constexpr std::array<std::uint32_t, EnvironmentSystem::prefilter_mips> prefilter_sample_counts{0,  32, 48,
+                                                                                                   64, 64, 64};
 
     // The widest equirect uploaded; larger panoramas are downscaled on the CPU first.
     constexpr std::uint32_t max_equirect_width = 8192;
@@ -54,7 +56,8 @@ namespace {
     }
 
     template<typename PushConstants>
-    auto push(VkCommandBuffer command_buffer, VkPipelineLayout layout, PushConstants const &constants) noexcept -> void {
+    auto push(VkCommandBuffer command_buffer, VkPipelineLayout layout, PushConstants const &constants) noexcept
+            -> void {
         vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(PushConstants), &constants);
     }
 
@@ -78,7 +81,8 @@ namespace {
         auto const azimuth = glm::radians(sun.azimuth_degrees);
         auto const elevation = glm::radians(sun.elevation_degrees);
 
-        return glm::vec3{std::cos(elevation) * std::cos(azimuth), std::sin(elevation), std::cos(elevation) * std::sin(azimuth)};
+        return glm::vec3{std::cos(elevation) * std::cos(azimuth), std::sin(elevation),
+                         std::cos(elevation) * std::sin(azimuth)};
     }
 
 } // namespace
@@ -111,23 +115,24 @@ auto EnvironmentSystem::create_cube(std::uint32_t size, std::uint32_t mip_count,
     cube.mip_count = mip_count;
 
     auto image = create_held_image(
-            *images_, ImageCreateInfo{
-                              .extent = VkExtent3D{.width = size, .height = size, .depth = 1},
-                              .format = VK_FORMAT_R16G16B16A16_SFLOAT,
-                              .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | (transfer_dst ? static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_TRANSFER_DST_BIT) : 0U),
-                              .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                              .image_type = VK_IMAGE_TYPE_2D,
-                              .view_type = VK_IMAGE_VIEW_TYPE_CUBE,
-                              .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_cube),
-                              .flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
-                              .samples = VK_SAMPLE_COUNT_1_BIT,
-                              .tiling = VK_IMAGE_TILING_OPTIMAL,
-                              .mip_levels = mip_count,
-                              .array_layers = 6,
-                              .create_mip_layer_views = true,
-                              .debug_name = name,
-                      });
+            *images_,
+            ImageCreateInfo{
+                    .extent = VkExtent3D{.width = size, .height = size, .depth = 1},
+                    .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                    .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                             (transfer_dst ? static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_TRANSFER_DST_BIT) : 0U),
+                    .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .image_type = VK_IMAGE_TYPE_2D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_CUBE,
+                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_cube),
+                    .flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .mip_levels = mip_count,
+                    .array_layers = 6,
+                    .create_mip_layer_views = true,
+                    .debug_name = name,
+            });
 
     if (!image) {
         return std::unexpected(make_error(RendererErrorType::image_error));
@@ -170,22 +175,22 @@ auto EnvironmentSystem::initialize(CreateInfo const &create_info) -> std::expect
     frames_in_flight_ = create_info.frames_in_flight;
 
     auto lut = create_held_image(
-            *images_, ImageCreateInfo{
-                              .extent = VkExtent3D{.width = brdf_lut_size, .height = brdf_lut_size, .depth = 1},
-                              .format = VK_FORMAT_R16G16B16A16_SFLOAT,
-                              .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                              .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                              .image_type = VK_IMAGE_TYPE_2D,
-                              .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                              .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                                  image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                              .samples = VK_SAMPLE_COUNT_1_BIT,
-                              .tiling = VK_IMAGE_TILING_OPTIMAL,
-                              .mip_levels = 1,
-                              .array_layers = 1,
-                              .debug_name = "environment.brdf_lut",
-                      });
+            *images_,
+            ImageCreateInfo{
+                    .extent = VkExtent3D{.width = brdf_lut_size, .height = brdf_lut_size, .depth = 1},
+                    .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                    .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .image_type = VK_IMAGE_TYPE_2D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                        image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .mip_levels = 1,
+                    .array_layers = 1,
+                    .debug_name = "environment.brdf_lut",
+            });
 
     if (!lut) {
         return std::unexpected(make_error(RendererErrorType::image_error));
@@ -194,7 +199,8 @@ auto EnvironmentSystem::initialize(CreateInfo const &create_info) -> std::expect
     brdf_lut_ = std::move(*lut);
 
     for (std::uint32_t set = 0; set < 2; ++set) {
-        auto cube = create_cube(prefilter_size, prefilter_mips, set == 0 ? "environment.prefilter.0" : "environment.prefilter.1", false);
+        auto cube = create_cube(prefilter_size, prefilter_mips,
+                                set == 0 ? "environment.prefilter.0" : "environment.prefilter.1", false);
 
         if (!cube) {
             return std::unexpected(cube.error());
@@ -306,7 +312,8 @@ auto EnvironmentSystem::desired_key() const -> BuildKey {
         key.elevation_centidegrees = quantise(desired_.sun.elevation_degrees, 100.0F);
         key.turbidity_milli = quantise(desired_.sun.turbidity, 1000.0F);
         key.sky_intensity_milli = quantise(desired_.sky_intensity, 1000.0F);
-        key.ground_milli = {quantise(desired_.sun.ground_albedo.x, 1000.0F), quantise(desired_.sun.ground_albedo.y, 1000.0F),
+        key.ground_milli = {quantise(desired_.sun.ground_albedo.x, 1000.0F),
+                            quantise(desired_.sun.ground_albedo.y, 1000.0F),
                             quantise(desired_.sun.ground_albedo.z, 1000.0F)};
     }
 
@@ -385,7 +392,10 @@ auto EnvironmentSystem::upload_equirect(VkCommandBuffer command_buffer, HdrImage
             .bufferOffset = 0,
             .bufferRowLength = 0,
             .bufferImageHeight = 0,
-            .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+            .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                 .mipLevel = 0,
+                                 .baseArrayLayer = 0,
+                                 .layerCount = 1},
             .imageOffset = {0, 0, 0},
             .imageExtent = {.width = image.width, .height = image.height, .depth = 1},
     };
@@ -403,7 +413,8 @@ auto EnvironmentSystem::upload_equirect(VkCommandBuffer command_buffer, HdrImage
 
     transition_image_layout(command_buffer, vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, compute_stage,
-                            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                            VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
 
     if (equirect_.handle().valid()) {
         retire(std::move(equirect_));
@@ -433,9 +444,10 @@ auto EnvironmentSystem::upload_cube(VkCommandBuffer command_buffer, HdrImage con
 
     auto const vk_image = radiance_.image->image();
 
-    transition_image_subresources(command_buffer, vk_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                  VK_PIPELINE_STAGE_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_NONE,
-                                  VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6);
+    transition_image_subresources(command_buffer, vk_image, VK_IMAGE_LAYOUT_UNDEFINED,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE,
+                                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_NONE, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                  VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6);
 
     std::array<VkBufferImageCopy2, 6> regions{};
 
@@ -445,7 +457,10 @@ auto EnvironmentSystem::upload_cube(VkCommandBuffer command_buffer, HdrImage con
                 .bufferOffset = face * face_bytes,
                 .bufferRowLength = 0,
                 .bufferImageHeight = 0,
-                .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = face, .layerCount = 1},
+                .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                     .mipLevel = 0,
+                                     .baseArrayLayer = face,
+                                     .layerCount = 1},
                 .imageOffset = {0, 0, 0},
                 .imageExtent = {.width = image.width, .height = image.height, .depth = 1},
         };
@@ -560,7 +575,8 @@ auto EnvironmentSystem::prepare(VkCommandBuffer command_buffer, std::uint64_t fr
         auto const wanted = desired_.hdr_source;
 
         auto const loaded_matches = radiance_source_ == EnvironmentSource::hdr_image && radiance_hdr_ == wanted &&
-                                    (radiance_is_cube_source_ || radiance_.size == std::clamp(std::bit_ceil(desired_.hdr_cube_size), 256U, 1024U));
+                                    (radiance_is_cube_source_ ||
+                                     radiance_.size == std::clamp(std::bit_ceil(desired_.hdr_cube_size), 256U, 1024U));
 
         if (!wanted.empty() && !loaded_matches && (!decode_ || decode_->path != wanted) && decode_error_ != wanted) {
             if (auto const provided = provided_.find(wanted); provided != provided_.end()) {
@@ -607,8 +623,9 @@ auto EnvironmentSystem::prepare(VkCommandBuffer command_buffer, std::uint64_t fr
 
     auto const key = desired_key();
 
-    auto const have_radiance = radiance_.image.handle().valid() && radiance_source_ == desired_.source &&
-                               (desired_.source == EnvironmentSource::procedural_sky || radiance_hdr_ == desired_.hdr_source);
+    auto const have_radiance =
+            radiance_.image.handle().valid() && radiance_source_ == desired_.source &&
+            (desired_.source == EnvironmentSource::procedural_sky || radiance_hdr_ == desired_.hdr_source);
 
     if (!building_ && have_radiance && (!live_key_ || !(*live_key_ == key))) {
         auto const first_build = !live_key_.has_value();
@@ -616,7 +633,8 @@ auto EnvironmentSystem::prepare(VkCommandBuffer command_buffer, std::uint64_t fr
         building_ = Build{
                 .key = key,
                 .target_set = first_build ? 0U : 1U - live_set_,
-                .amortized = debug_.amortize_rebuilds && key.source == EnvironmentSource::procedural_sky && !first_build,
+                .amortized =
+                        debug_.amortize_rebuilds && key.source == EnvironmentSource::procedural_sky && !first_build,
         };
     }
 
@@ -662,14 +680,16 @@ auto EnvironmentSystem::ubo_block() const -> EnvironmentUboBlock {
     EnvironmentUboBlock block;
 
     auto const &env = desired_;
-    auto const live = env.source != EnvironmentSource::flat_ambient && live_key_.has_value() && (lut_ready_ || plan_.brdf_lut);
+    auto const live =
+            env.source != EnvironmentSource::flat_ambient && live_key_.has_value() && (lut_ready_ || plan_.brdf_lut);
 
     block.sampler = samplers_ != nullptr ? samplers_->linear_clamp().index : 0U;
     block.exposure = std::exp2(env.exposure_ev);
 
     auto const yaw = env.source == EnvironmentSource::hdr_image ? glm::radians(env.rotation_degrees) : 0.0F;
 
-    block.rotation = glm::vec4{std::cos(yaw), std::sin(yaw), static_cast<float>(prefilter_mips - 1), env.specular_occlusion};
+    block.rotation =
+            glm::vec4{std::cos(yaw), std::sin(yaw), static_cast<float>(prefilter_mips - 1), env.specular_occlusion};
     block.intensity = glm::vec4{env.diffuse_intensity, env.specular_intensity, 0.0F, debug_.prefilter_lod};
 
     auto flags = static_cast<std::uint32_t>(debug_.view) << environment_flag::debug_shift;
@@ -681,7 +701,8 @@ auto EnvironmentSystem::ubo_block() const -> EnvironmentUboBlock {
     if (live) {
         flags |= environment_flag::ibl_valid;
         block.prefilter_cube_texture = prefilter_[live_set_].image.handle().index;
-        block.sh_address = sh_buffer_.device_address + (static_cast<VkDeviceSize>(live_set_) * sizeof(GpuEnvironmentSh));
+        block.sh_address =
+                sh_buffer_.device_address + (static_cast<VkDeviceSize>(live_set_) * sizeof(GpuEnvironmentSh));
 
         if (env.specular_occlusion > 0.0F) {
             flags |= environment_flag::specular_occlusion;
@@ -761,7 +782,8 @@ auto EnvironmentSystem::status() const -> EnvironmentStatus {
         return result;
     }
 
-    if (!error_message_.empty() && decode_error_ == desired_.hdr_source && desired_.source == EnvironmentSource::hdr_image) {
+    if (!error_message_.empty() && decode_error_ == desired_.hdr_source &&
+        desired_.source == EnvironmentSource::hdr_image) {
         result.phase = EnvironmentPhase::failed;
         result.message = error_message_;
 
@@ -783,7 +805,8 @@ auto EnvironmentSystem::status() const -> EnvironmentStatus {
         return result;
     }
 
-    result.phase = live_key_.has_value() && *live_key_ == desired_key() ? EnvironmentPhase::ready : EnvironmentPhase::building;
+    result.phase =
+            live_key_.has_value() && *live_key_ == desired_key() ? EnvironmentPhase::ready : EnvironmentPhase::building;
 
     return result;
 }
@@ -792,7 +815,8 @@ auto EnvironmentSystem::brdf_lut_texture_index() const noexcept -> std::uint32_t
     return brdf_lut_.handle().valid() ? brdf_lut_.handle().index : 0U;
 }
 
-auto EnvironmentSystem::radiance_face_texture_index(std::uint32_t mip, std::uint32_t face) const noexcept -> std::uint32_t {
+auto EnvironmentSystem::radiance_face_texture_index(std::uint32_t mip, std::uint32_t face) const noexcept
+        -> std::uint32_t {
     if (!radiance_.image.handle().valid() || mip >= radiance_.mip_count || face >= 6) {
         return 0;
     }
@@ -800,7 +824,8 @@ auto EnvironmentSystem::radiance_face_texture_index(std::uint32_t mip, std::uint
     return radiance_.face_slot(mip, face).index;
 }
 
-auto EnvironmentSystem::prefilter_face_texture_index(std::uint32_t mip, std::uint32_t face) const noexcept -> std::uint32_t {
+auto EnvironmentSystem::prefilter_face_texture_index(std::uint32_t mip, std::uint32_t face) const noexcept
+        -> std::uint32_t {
     auto const &cube = prefilter_[live_set_];
 
     if (!cube.image.handle().valid() || mip >= cube.mip_count || face >= 6) {
@@ -812,6 +837,10 @@ auto EnvironmentSystem::prefilter_face_texture_index(std::uint32_t mip, std::uin
 
 auto EnvironmentSystem::live_sh_address() const noexcept -> VkDeviceAddress {
     return sh_buffer_.device_address + (static_cast<VkDeviceSize>(live_set_) * sizeof(GpuEnvironmentSh));
+}
+
+auto EnvironmentSystem::has_pending_record() const -> bool {
+    return initialised_ && pipelines_ready() && (plan_.brdf_lut || plan_.capture || plan_.face_count != 0);
 }
 
 auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable &resource_table,
@@ -834,8 +863,8 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
     if (plan_.brdf_lut) {
         auto const image = brdf_lut_->image();
 
-        transition_image_layout(command_buffer, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, reader_stages,
-                                compute_stage, VK_ACCESS_2_NONE, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        transition_image_layout(command_buffer, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                reader_stages, compute_stage, VK_ACCESS_2_NONE, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                                 VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
 
         auto const layout = bind(handles_.brdf_lut);
@@ -849,9 +878,10 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
 
         vkCmdDispatch(command_buffer, dispatch_groups(brdf_lut_size), dispatch_groups(brdf_lut_size), 1);
 
-        transition_image_layout(command_buffer, image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                compute_stage, reader_stages, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+        transition_image_layout(command_buffer, image, VK_IMAGE_LAYOUT_GENERAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, compute_stage, reader_stages,
+                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
 
         lut_ready_ = true;
     }
@@ -863,8 +893,8 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
     if (plan_.capture && radiance_image != VK_NULL_HANDLE) {
         // Mip 0: projected from an equirect or rendered from the sky. A cubemap source was uploaded straight into it.
         if (!radiance_is_cube_source_) {
-            transition_image_subresources(command_buffer, radiance_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-                                          reader_stages, compute_stage, VK_ACCESS_2_NONE,
+            transition_image_subresources(command_buffer, radiance_image, VK_IMAGE_LAYOUT_UNDEFINED,
+                                          VK_IMAGE_LAYOUT_GENERAL, reader_stages, compute_stage, VK_ACCESS_2_NONE,
                                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6);
 
             if (radiance_source_ == EnvironmentSource::procedural_sky) {
@@ -913,9 +943,10 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
         auto const downsample_layout = bind(handles_.downsample);
 
         for (std::uint32_t mip = 1; mip < radiance_.mip_count; ++mip) {
-            transition_image_subresources(command_buffer, radiance_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-                                          reader_stages, compute_stage, VK_ACCESS_2_NONE,
-                                          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 6);
+            transition_image_subresources(command_buffer, radiance_image, VK_IMAGE_LAYOUT_UNDEFINED,
+                                          VK_IMAGE_LAYOUT_GENERAL, reader_stages, compute_stage, VK_ACCESS_2_NONE,
+                                          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0,
+                                          6);
 
             auto const size = std::max(radiance_.size >> mip, 1U);
 
@@ -986,7 +1017,8 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
         // The target prefilter set is rewritten from scratch; the whole image stays GENERAL until it flips.
         transition_image_subresources(command_buffer, prefilter.image->image(), VK_IMAGE_LAYOUT_UNDEFINED,
                                       VK_IMAGE_LAYOUT_GENERAL, reader_stages, compute_stage, VK_ACCESS_2_NONE,
-                                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, prefilter_mips, 0, 6);
+                                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                      prefilter_mips, 0, 6);
     }
 
     if (radiance_image != VK_NULL_HANDLE && (plan_.capture || plan_.face_count != 0)) {
@@ -1034,7 +1066,8 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
 auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
     EnvironmentValidation result;
 
-    if (!initialised_ || !lut_ready_ || !live_key_.has_value() || !radiance_.image.handle().valid() || building_.has_value()) {
+    if (!initialised_ || !lut_ready_ || !live_key_.has_value() || !radiance_.image.handle().valid() ||
+        building_.has_value()) {
         result.summary = "Nothing to validate yet: wait for the environment to finish building.";
         return result;
     }
@@ -1076,7 +1109,10 @@ auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
 
         VkBufferImageCopy2 const lut_region{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-                .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+                .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                     .mipLevel = 0,
+                                     .baseArrayLayer = 0,
+                                     .layerCount = 1},
                 .imageExtent = {.width = brdf_lut_size, .height = brdf_lut_size, .depth = 1},
         };
 
@@ -1093,7 +1129,8 @@ auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
 
         transition_image_layout(command_buffer, lut_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, reader_stages,
-                                VK_ACCESS_2_TRANSFER_READ_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+                                VK_ACCESS_2_TRANSFER_READ_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
 
         transition_image_subresources(command_buffer, radiance_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, reader_stages | compute_stage,
@@ -1106,7 +1143,10 @@ auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
             regions[face] = VkBufferImageCopy2{
                     .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
                     .bufferOffset = face * face_bytes,
-                    .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = sh_level, .baseArrayLayer = face, .layerCount = 1},
+                    .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                         .mipLevel = sh_level,
+                                         .baseArrayLayer = face,
+                                         .layerCount = 1},
                     .imageExtent = {.width = level_size, .height = level_size, .depth = 1},
             };
         }
@@ -1123,8 +1163,8 @@ auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
         vkCmdCopyImageToBuffer2(command_buffer, &radiance_copy);
 
         transition_image_subresources(command_buffer, radiance_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, reader_stages,
-                                      VK_ACCESS_2_TRANSFER_READ_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                                      reader_stages, VK_ACCESS_2_TRANSFER_READ_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                                       VK_IMAGE_ASPECT_COLOR_BIT, sh_level, 1, 0, 6);
 
         VkBufferMemoryBarrier2 const sh_barrier{
@@ -1169,9 +1209,9 @@ auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
             auto const x = (gx * 32U) + 16U;
             auto const y = (gy * 32U) + 16U;
 
-            auto const reference =
-                    integrate_brdf(std::max((static_cast<float>(x) + 0.5F) / static_cast<float>(brdf_lut_size), 1e-3F),
-                                   std::max((static_cast<float>(y) + 0.5F) / static_cast<float>(brdf_lut_size), 0.045F), 1024);
+            auto const reference = integrate_brdf(
+                    std::max((static_cast<float>(x) + 0.5F) / static_cast<float>(brdf_lut_size), 1e-3F),
+                    std::max((static_cast<float>(y) + 0.5F) / static_cast<float>(brdf_lut_size), 0.045F), 1024);
 
             auto const texel = ((static_cast<std::size_t>(y) * brdf_lut_size) + x) * 4U;
             glm::vec2 const gpu{glm::unpackHalf1x16(lut_halves[texel]), glm::unpackHalf1x16(lut_halves[texel + 1])};
@@ -1190,10 +1230,12 @@ auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
                                           (static_cast<float>(y) + 0.5F) / static_cast<float>(level_size)};
 
                 auto const texel = ((((static_cast<std::size_t>(face) * level_size) + y) * level_size) + x) * 4U;
-                glm::vec3 const radiance{glm::unpackHalf1x16(radiance_halves[texel]), glm::unpackHalf1x16(radiance_halves[texel + 1]),
+                glm::vec3 const radiance{glm::unpackHalf1x16(radiance_halves[texel]),
+                                         glm::unpackHalf1x16(radiance_halves[texel + 1]),
                                          glm::unpackHalf1x16(radiance_halves[texel + 2])};
 
-                sh9_accumulate(cpu_sh, cube_texel_direction(face, uv), radiance, cube_texel_solid_angle(x, y, level_size));
+                sh9_accumulate(cpu_sh, cube_texel_direction(face, uv), radiance,
+                               cube_texel_solid_angle(x, y, level_size));
             }
         }
     }

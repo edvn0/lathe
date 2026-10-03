@@ -2,6 +2,7 @@
 
 // ImGuizmo.h needs imgui.h included first.
 #include "rendering/imgui_renderer.hxx"
+#include "rendering/frame_graph/pass_profiler.hxx"
 #include "rendering/overlay.hxx"
 
 #include <ImGuizmo.h>
@@ -10,6 +11,7 @@
 #include "rendering/file_browser.hxx"
 
 #include <array>
+#include <span>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -26,7 +28,6 @@
 #include "rendering/cluster_grid.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
-#include "rendering/render_stage.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/terminal_widget.hxx"
 #include "scene/editor_camera.hxx"
@@ -121,7 +122,18 @@ struct Application {
     static constexpr auto stats_record_start_time = 5.0F;
     [[nodiscard]] constexpr auto can_start_recording_statistics() { return elapsed_time > stats_record_start_time; }
 
-    std::array<ScrollingBuffer, stage_count> timing_buffers;
+    // Cumulative GPU time per frame graph pass for the timings plot, in order of first appearance; buffers[i] stacks on
+    // buffers[i - 1]. Keyed by the pass's stable name_id, label for display.
+    struct TimingSeries {
+        std::string id;
+        std::string label;
+        ScrollingBuffer buffer;
+    };
+    std::vector<TimingSeries> timing_series;
+
+    // Adds this frame's pass times to the series (a pass not in the frame counts as 0 ms); a pass seen for the first
+    // time starts as a copy of the series below it, so it stacks with zero thickness until now.
+    auto add_pass_timings(std::span<frame_graph::PassTiming const> passes) -> void;
     float timing_x = 0.0F;
 
     EditorCamera camera;

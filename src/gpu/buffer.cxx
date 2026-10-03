@@ -262,9 +262,11 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
             .flags = create_info.flags,
             .size = create_info.size,
             .usage = create_info.usage,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = nullptr,
+            .sharingMode =
+                    create_info.concurrent_family_count > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = create_info.concurrent_family_count > 1 ? create_info.concurrent_family_count : 0U,
+            .pQueueFamilyIndices =
+                    create_info.concurrent_family_count > 1 ? create_info.concurrent_families.data() : nullptr,
     };
 
     auto allocation_create_info = make_allocation_create_info(create_info.memory);

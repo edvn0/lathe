@@ -38,6 +38,11 @@ namespace render_pass {
         PipelineGraphRepository &pipeline_graph;
         GpuResourceTable &resource_table;
         VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
+
+        // The command buffer belongs to a compute-only queue family, whose barriers cannot name graphics stages
+        // (fragment, task, ...). A pass body that records its own barriers keeps to compute stages then; whoever reads
+        // the result on the graphics queue is covered by the barrier the frame graph derives for it.
+        bool compute_only = false;
     };
 
     // `indirect` holds one GpuDrawCommand per batch, ordered opaque | mask | blend like DrawCounts. `index_buffer`
@@ -55,8 +60,9 @@ namespace render_pass {
         std::uint32_t blend = 0;
     };
 
+    // The body of a frame graph raster pass: the executor has begun rendering into the atlas, loading it when
+    // `preserve_contents` and discarding it otherwise, and leaves it sampled.
     struct ShadowPassInfo {
-        Image const &shadow_atlas;
         DrawBuffers draws;
         DrawCounts counts;
         std::array<std::uint32_t, shadow_cascade_count> const &opaque_cascade_counts;
@@ -84,13 +90,6 @@ namespace render_pass {
         float depth_bias_slope = -2.5F;
     };
 
-    struct ForwardTargets {
-        Image const &hdr;
-        Image const &depth;
-        Image const *resolved_hdr = nullptr;
-        Image const *resolved_depth = nullptr;
-    };
-
     // Two-phase occlusion culling splits the prepass (docs/occlusion-culling.md): `early` clears and draws the
     // phase-1 instances, `late` loads that depth and adds the phase-2 ones. `only` is the single pass without it.
     enum class DepthPrepassPhase : std::uint8_t {
@@ -107,18 +106,15 @@ namespace render_pass {
     inline constexpr std::uint32_t cull_replay = 32U;
     inline constexpr std::uint32_t cull_stats = 64U;
 
+    // The body of a frame graph raster pass: the executor has begun rendering into the depth buffer (clearing it, or
+    // loading the early phase's) and resolves it into the single-sample depth under MSAA: MIN for the early phase
+    // (the Hi-Z needs each pixel's farthest sample, reverse-Z), SAMPLE_ZERO otherwise (what GTAO and the rest expect).
     struct DepthPrepassInfo {
-        Image const &depth;
-        Image const *resolved_depth = nullptr;
         VkExtent2D extent{};
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 
-        // only/early time RenderStage::DepthPrepass and clear; late times RenderStage::DepthPrepassLate and loads.
+        // only/early clear the depth buffer; late loads what the early phase wrote.
         DepthPrepassPhase phase = DepthPrepassPhase::only;
-
-        // How `depth` resolves into `resolved_depth` when multisampled. MIN keeps each pixel's farthest sample
-        // (reverse-Z), which the Hi-Z needs to stay conservative; SAMPLE_ZERO is what GTAO and the rest expect.
-        VkResolveModeFlagBits depth_resolve_mode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
 
         DrawBuffers draws;
         DrawCounts counts;
@@ -144,15 +140,10 @@ namespace render_pass {
         bool meshlet_culling = true;
     };
 
-    // GTAO from depth alone, then a depth-aware blur, as two compute dispatches between the prepass and forward.
-    // `depth` is the single-sample depth in DEPTH_ATTACHMENT_OPTIMAL and is left in that layout.
+    // GTAO from depth alone, then a depth-aware blur: two compute passes of the frame graph between the prepass and
+    // forward. The graph puts the single-sample depth in SHADER_READ_ONLY_OPTIMAL for both and the AO images in the
+    // layouts they are written and sampled in.
     struct AmbientOcclusionInfo {
-        bool enabled = true;
-
-        Image const &depth;
-        Image const &raw_ao;
-        Image const &denoised_ao;
-
         VkExtent2D extent{};
 
         std::uint32_t depth_texture_index = 0;
@@ -172,10 +163,9 @@ namespace render_pass {
         float denoise_depth_sigma = 40.0F;
     };
 
+    // The body of a frame graph raster pass: the executor has begun rendering into the (multisampled) HDR target,
+    // resolving into the single-sample one, with the depth attachment loaded.
     struct ForwardGeometryInfo {
-        Image const &hdr;
-        Image const &depth;
-        Image const *resolved_hdr = nullptr;
         HdrTextureIndex output_hdr{};
 
         VkExtent2D extent{};
@@ -245,8 +235,6 @@ namespace render_pass {
     };
 
     struct CompositePassInfo {
-        VkImage swapchain_image = VK_NULL_HANDLE;
-        VkImageView swapchain_view = VK_NULL_HANDLE;
         VkExtent2D extent{};
 
         HdrTextureIndex hdr{};
@@ -282,8 +270,6 @@ namespace render_pass {
         }
     };
 
-    auto prepare_forward_targets(Context const &context, ForwardTargets const &targets) noexcept -> void;
-
     auto shadow(Context const &context, ShadowPassInfo const &info) -> std::expected<void, RendererError>;
 
     auto depth_prepass(Context const &context, DepthPrepassInfo const &info) -> std::expected<void, RendererError>;
@@ -298,10 +284,8 @@ namespace render_pass {
     // late prepass loads. Every pyramid level ends in SHADER_READ_ONLY_OPTIMAL, visible to compute, task and fragment
     // shaders (the occlusion tests and the debug view); the previous contents are discarded.
     struct HizBuildInfo {
-        Image const &source_depth;
         std::uint32_t source_texture_index = 0;
         VkExtent2D depth_extent{};
-        Image const *multisampled_depth = nullptr;
 
         Image const &hiz;
         std::span<std::uint32_t const> mip_texture_indices;
@@ -311,8 +295,10 @@ namespace render_pass {
 
     auto build_hiz(Context const &context, HizBuildInfo const &info) -> std::expected<void, RendererError>;
 
-    auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)
-            -> std::expected<std::optional<AoTextureIndex>, RendererError>;
+    // Both write their half of the stage's timestamps (the stage is AmbientOcclusion): gtao the first, the denoise the
+    // second.
+    auto gtao(Context const &context, AmbientOcclusionInfo const &info) -> std::expected<void, RendererError>;
+    auto gtao_denoise(Context const &context, AmbientOcclusionInfo const &info) -> std::expected<void, RendererError>;
 
     // scene_overlays runs inside the forward rendering scope after the scene draws.
     auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback scene_overlays)
@@ -349,23 +335,9 @@ namespace render_pass {
     auto bloom(Context const &context, BloomPassInfo const &info)
             -> std::expected<std::optional<BloomTextureIndex>, RendererError>;
 
+    // Tonemaps hdr + bloom with a fullscreen triangle, then runs `ui_overlay` (fullscreen play). The body of a frame
+    // graph raster pass: the executor has begun rendering into the swapchain or the viewport target.
     auto composite(Context const &context, CompositePassInfo const &info, Callback ui_overlay)
             -> std::expected<void, RendererError>;
-
-    // Clears `target_view` and runs `ui_overlay` on it. Used for the swapchain in the editor, where the scene was
-    // already composited into the viewport texture.
-    struct UiOnlyPassInfo {
-        VkImage target_image = VK_NULL_HANDLE;
-        VkImageView target_view = VK_NULL_HANDLE;
-        VkExtent2D extent{};
-        std::array<float, 4> clear_colour{0.0F, 0.0F, 0.0F, 1.0F};
-    };
-
-    auto ui_only(Context const &context, UiOnlyPassInfo const &info, Callback ui_overlay) noexcept -> void;
-
-    // COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL.
-    auto transition_to_shader_read(VkCommandBuffer command_buffer, Image const &image) noexcept -> void;
-
-    auto present_swapchain(VkCommandBuffer command_buffer, VkImage image) noexcept -> void;
 
 } // namespace render_pass

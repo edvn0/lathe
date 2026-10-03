@@ -32,10 +32,35 @@ little about how passes compare on one.
                [--seed=1337] [--benchmark-screenshots]
                [--cluster-grid=16x9x24:256] [--occlusion-culling=on|off]
                [--meshlet-occlusion=on|off]
+               [--occlusion-test=hiz|never_occluded|always_defer]
 ```
 
 `--benchmark-screenshots` saves one screenshot per keyframe into
-`screenshots/`, which shows what the run looked at.
+`screenshots/`, which shows what the run looked at. It captures the viewport
+target, not the window: the editor panels show live counters and log lines that
+can never match between runs. The shader clock (`time`) starts at 0 with the
+first measured frame, so the length of the warmup (which ends when streaming
+settles) cannot change what frame N looks like. Two runs of one build give
+byte-identical screenshots; `tools/perf/compare_screenshots.py --base <dir>
+--head <dir>` checks that (exit 0 only if every keyframe is identical, otherwise
+it prints the first differing pixel).
+
+`--occlusion-test=` selects `Renderer::occlusion_test_mode()`. The two stubs
+(`never_occluded`, `always_defer`) must render exactly like occlusion culling
+off.
+
+The JSON has a `counters` object: for each culling and clustering counter
+(`frustum_visible_instances`, `early_instances`, `occlusion_candidates`,
+`late_instances`, `occluded_instances`, `deferred_meshlets`,
+`occluded_meshlets`, `occupied_clusters`, `overflowing_clusters`,
+`maximum_lights`, `stored_lights`) the mean over the measured frames it was
+read back for and the last such value (`null` if it never was, e.g. occlusion
+counters with occlusion off). They lag the frame by the frames in flight.
+
+`tools/perf/capture_baselines.sh <build dir> perf/baseline` captures the four
+baselines the frame-graph migration is checked against (`occ_off`, `occ_on`,
+`occ_meshlet`, `always_defer`): JSON plus screenshots each. `perf/` is
+gitignored.
 
 `--cluster-grid=XxYxZ[:capacity]` sets the clustered-lighting grid (see
 `docs/clustered-lighting.md`), so two runs of one build can compare grids.
@@ -92,3 +117,12 @@ from the same machine, with nothing else loading it.
 To change what gets measured, edit `BasicGame::benchmark_camera_path()`.
 Runs from before and after that change fly different loops, so they don't
 compare.
+
+## Stage ids
+
+The JSON `stages` list has `full_frame` plus one entry per frame graph pass seen, keyed by the pass's stable id
+(`gpu_culling`, `shadow_pass`, `depth_prepass`, `hiz_build`, `occlusion_culling`, `depth_prepass_late`, `gtao`,
+`gtao_denoise`, `forward_pass`, `bloom`, `composition`, `ui`, `environment`, `light_cull`, `light_cluster`, ...). A pass
+not part of a frame (occlusion off, no shadow update) counts as 0 ms for it, and a pass first seen mid-run is backfilled with
+0. `--frame-graph-dump` logs the compiled graph (passes, batches, waits, barriers, transfers) whenever it changes, and
+`--async-passes=` / `--frame-graph-alias=` / `--stress-resize=` are described in `docs/frame-graph-status.md`.

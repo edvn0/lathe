@@ -207,10 +207,100 @@ namespace {
         return true;
     }
 
+    auto to_begin_error(QueueSetError queue_error) noexcept -> SwapchainBeginFrameError {
+        return SwapchainBeginFrameError{
+                .kind = queue_error.kind == QueueSetError::Kind::device_lost
+                                ? SwapchainBeginFrameError::Kind::device_lost
+                                : SwapchainBeginFrameError::Kind::fatal_error,
+                .context = std::move(queue_error.context),
+        };
+    }
+
+    // Waits for the frame slot's timelines, acquires the next image and begins the slot's graphics command buffer, the
+    // frame's prologue. A timeout in the wait is reported as a device loss, as a hung fence used to be.
+    auto begin_gpu_frame(VulkanContext &context) noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError> {
+        auto const slot = context.swapchain.current_slot();
+
+        if (auto begun = context.queue_set.begin_slot(slot); !begun) {
+            return std::unexpected(to_begin_error(std::move(begun.error())));
+        }
+
+        auto frame = context.swapchain.acquire(slot);
+        if (!frame) {
+            return std::unexpected(std::move(frame.error()));
+        }
+
+        auto buffer = context.queue_set.command_buffer(frame_graph::LogicalQueue::graphics);
+        if (!buffer) {
+            return std::unexpected(to_begin_error(std::move(buffer.error())));
+        }
+
+        frame->command_buffer = *buffer;
+
+        return *frame;
+    }
+
+    // Ends the frame's command buffer, submits the renderer's batches and presents. `planned` is what
+    // Renderer::submit_batches() produced; if it is empty (recording failed before producing any) the prologue buffer
+    // goes out alone. With --async-compute-smoke on a GPU with a separate compute queue and a single planned batch,
+    // the frame is instead three batches that exercise timeline values and multi-batch submission with no data
+    // dependency: the recorded graphics batch, an empty compute batch that waits on it, and an empty graphics batch
+    // that waits on the compute one and signals the swapchain.
+    auto end_gpu_frame(VulkanContext &context, SwapchainFrame const &frame,
+                       std::span<SubmitBatch const> planned) noexcept -> SwapchainFrameResult {
+        if (auto const ended = vkEndCommandBuffer(frame.command_buffer); ended != VK_SUCCESS) {
+            error("vkEndCommandBuffer failed with VkResult {}", static_cast<int>(ended));
+
+            return ended == VK_ERROR_DEVICE_LOST ? SwapchainFrameResult::device_lost
+                                                 : SwapchainFrameResult::fatal_error;
+        }
+
+        constexpr auto all_commands = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        auto const compute_waits = std::array{frame_graph::SemaphoreWait{
+                .queue = frame_graph::LogicalQueue::graphics, .signal_index = 0, .stages = all_commands}};
+        auto const graphics_waits = std::array{frame_graph::SemaphoreWait{
+                .queue = frame_graph::LogicalQueue::compute, .signal_index = 0, .stages = all_commands}};
+
+        std::vector<SubmitBatch> batches{planned.begin(), planned.end()};
+        if (batches.empty()) {
+            batches.push_back(SubmitBatch{
+                    .queue = frame_graph::LogicalQueue::graphics,
+                    .command_buffer = frame.command_buffer,
+                    .signal_index = 0,
+                    .waits_swapchain_acquire = true,
+                    .signals_render_finished = true,
+            });
+        }
+
+        if (context.async_compute_smoke && !context.queue_set.aliased() && batches.size() == 1) {
+            batches[0].signals_render_finished = false;
+            batches.push_back(SubmitBatch{
+                    .queue = frame_graph::LogicalQueue::compute,
+                    .waits = compute_waits,
+                    .signal_index = 0,
+            });
+            batches.push_back(SubmitBatch{
+                    .queue = frame_graph::LogicalQueue::graphics,
+                    .waits = graphics_waits,
+                    .signal_index = 1,
+                    .signals_render_finished = true,
+            });
+        }
+
+        auto const submitted = context.queue_set.submit(batches, context.swapchain.image_available(frame.frame_index),
+                                                        context.swapchain.render_finished(frame.image_index));
+        if (!submitted) {
+            return submitted.error().kind == QueueSetError::Kind::device_lost ? SwapchainFrameResult::device_lost
+                                                                              : SwapchainFrameResult::fatal_error;
+        }
+
+        return context.swapchain.present(frame);
+    }
+
     auto draw(VulkanContext &context, Application &application) noexcept -> bool {
         ZoneScopedNC("Draw", tracy::Color::RoyalBlue);
 
-        auto frame = context.swapchain.begin_frame();
+        auto frame = begin_gpu_frame(context);
 
         if (!frame) {
             switch (frame.error().kind) {
@@ -289,18 +379,6 @@ namespace {
         }
 
         if (frame_ok) {
-            if (auto const &timings = application.renderer->last_frame_timings();
-                timings.valid && application.can_start_recording_statistics()) {
-                application.timing_x += 1.0F;
-
-                float running_total = 0.0F;
-
-                for (auto stage = static_cast<std::uint32_t>(RenderStage::Culling); stage < stage_count; ++stage) {
-                    running_total += timings.milliseconds[stage];
-                    application.timing_buffers[stage].add_point(application.timing_x, running_total);
-                }
-            }
-
             auto record_result = application.renderer->record_frame(FrameRecordInfo{
                     .command_buffer = frame->command_buffer,
                     .swapchain_image =
@@ -323,9 +401,10 @@ namespace {
             }
         }
 
-        // Always retire the frame we began, so image_available and in_flight stay balanced whatever failed above.
+        // Always retire the frame we began, so image_available and the slot's timeline values stay balanced whatever
+        // failed above.
         // This assumes the renderer never fails with a rendering scope still open.
-        auto const end_result = context.swapchain.end_frame(*frame);
+        auto const end_result = end_gpu_frame(context, *frame, application.renderer->submit_batches());
 
         if (!frame_ok) {
             return false;
@@ -646,12 +725,110 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    // --occlusion-test=hiz|never_occluded|always_defer picks Renderer::occlusion_test_mode(). The stubs must render
+    // exactly like occlusion culling off, which makes them baselines for the two-phase draw lists.
+    std::optional<OcclusionTestMode> occlusion_test;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--occlusion-test="; arg.starts_with(prefix)) {
+            auto const value = arg.substr(prefix.size());
+
+            if (value == "hiz") {
+                occlusion_test = OcclusionTestMode::hiz;
+            } else if (value == "never_occluded") {
+                occlusion_test = OcclusionTestMode::never_occluded;
+            } else if (value == "always_defer") {
+                occlusion_test = OcclusionTestMode::always_defer;
+            } else {
+                error("Invalid --occlusion-test: '{}' (expected hiz, never_occluded or always_defer)", value);
+                return EXIT_FAILURE;
+            }
+        }
+    }
+
+    // --frame-graph-alias=on|off lets the frame graph's transient images share memory (default on); off is for A/B
+    // runs of the same frames.
+    std::optional<bool> transient_aliasing;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--frame-graph-alias="; arg.starts_with(prefix)) {
+            auto const value = arg.substr(prefix.size());
+
+            if (value == "on") {
+                transient_aliasing = true;
+            } else if (value == "off") {
+                transient_aliasing = false;
+            } else {
+                error("Invalid --frame-graph-alias: '{}' (expected on or off)", value);
+                return EXIT_FAILURE;
+            }
+        }
+    }
+
+    // --stress-resize=<n> flips the render size between two values every n frames, to exercise the renderer's resize
+    // path unattended (frame graph transients are recreated, the Hi-Z pyramid is rebuilt) under validation.
+    std::uint32_t stress_resize_interval = 0;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--stress-resize="; arg.starts_with(prefix)) {
+            stress_resize_interval = static_cast<std::uint32_t>(
+                    std::strtoul(std::string{arg.substr(prefix.size())}.c_str(), nullptr, 10));
+        }
+    }
+
+    // --frame-graph-dump logs the compiled frame graph (passes, batches, waits, barriers, transfers, transient
+    // placement) whenever it changes, instead of reading it off the code.
+    auto const dump_frame_graph =
+            std::ranges::any_of(std::span<char const *const>{argv + 1, argv + argc},
+                                [](char const *arg) { return std::string_view{arg} == "--frame-graph-dump"; });
+
+    // --async-passes=light,occlusion,gtao declares those groups of compute passes with compute-queue affinity, which
+    // only matters on a device with a second queue (see --async-compute). Each is enabled by measurement (phase 6).
+    std::uint32_t async_passes = 0;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--async-passes="; arg.starts_with(prefix)) {
+            auto list = arg.substr(prefix.size());
+            while (!list.empty()) {
+                auto const comma = list.find(',');
+                auto const name = list.substr(0, comma);
+                if (name == "light") {
+                    async_passes |= Renderer::async_light_clustering;
+                } else if (name == "occlusion") {
+                    async_passes |= Renderer::async_occlusion;
+                } else if (name == "gtao") {
+                    async_passes |= Renderer::async_gtao;
+                } else {
+                    error("Invalid --async-passes entry: '{}' (expected light, occlusion or gtao)", name);
+                    return EXIT_FAILURE;
+                }
+                list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
+            }
+        }
+    }
+
     // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
         set_fixed_random_seed((*benchmark_options)->seed);
     }
 
     VulkanContext context{};
+
+    // --async-compute=auto|off|same-family picks the compute queue topology (off keeps one queue but still creates
+    // the compute queue); --sync-validation turns on the validation layer's synchronization checks in Debug builds.
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--async-compute="; arg.starts_with(prefix)) {
+            auto const mode = parse_async_compute_mode(arg.substr(prefix.size()));
+            if (!mode) {
+                error("Invalid --async-compute: '{}' (expected auto, off or same-family)", arg.substr(prefix.size()));
+                return EXIT_FAILURE;
+            }
+            context.async_compute_mode = *mode;
+        } else if (arg == "--sync-validation") {
+            context.sync_validation = true;
+        } else if (arg == "--async-compute-smoke") {
+            context.async_compute_smoke = true;
+        } else if (arg == "--frame-graph-serialize") {
+            context.frame_graph_serialize = true;
+        }
+    }
+
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
 
@@ -683,6 +860,17 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    if (occlusion_test) {
+        application.renderer->set_occlusion_test_mode(*occlusion_test);
+    }
+
+    if (transient_aliasing) {
+        application.renderer->set_transient_aliasing(*transient_aliasing);
+    }
+
+    application.renderer->set_async_candidates(async_passes);
+    application.renderer->set_frame_graph_dump(dump_frame_graph);
+
     if (meshlet_occlusion) {
         application.renderer->set_meshlet_occlusion_culling(*meshlet_occlusion);
 
@@ -711,6 +899,8 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    std::uint64_t stress_resize_frames = 0;
+    bool stress_resize_large = false;
     std::optional<BenchmarkRun> benchmark;
     if (*benchmark_options) {
         auto keyframes = application.game->benchmark_camera_path();
@@ -769,7 +959,8 @@ auto main(int argc, char **argv) -> int {
                 benchmark ? benchmark_timestep : std::chrono::duration<float>(now - last_frame_time).count();
         last_frame_time = now;
 
-        application.elapsed_time += delta_time;
+        // Under --benchmark the shader clock restarts with the measured lap, so warmup length can't shift frame N.
+        application.elapsed_time = benchmark ? benchmark->simulated_time() : application.elapsed_time + delta_time;
 
         application.camera.update(std::min(delta_time, 0.1F));
 
@@ -779,7 +970,7 @@ auto main(int argc, char **argv) -> int {
             application.camera.look_at(keyframe.position, keyframe.target);
 
             if (benchmark->options().keyframe_screenshots && benchmark->at_keyframe()) {
-                application.renderer->request_screenshot(ScreenshotSource::window);
+                application.renderer->request_screenshot(ScreenshotSource::viewport);
             }
         }
 
@@ -794,10 +985,34 @@ auto main(int argc, char **argv) -> int {
 
         FrameMark;
 
+        // The timings of the frame slot just recorded (its previous use finished), for the plot.
+        if (auto const &timings = application.renderer->last_frame_timings();
+            timings.valid && application.can_start_recording_statistics()) {
+            application.add_pass_timings(timings.passes);
+        }
+
         if (benchmark) {
             auto const streaming_idle = application.renderer->texture_streamer().pending_count() == 0 &&
                                         (!application.terrain || application.terrain->streaming_idle());
-            benchmark->on_frame_drawn(application.renderer->last_frame_timings(), streaming_idle);
+            auto const &frame_stats = application.renderer->last_frame_stats();
+            auto const &cluster_stats = application.renderer->last_cluster_stats();
+            benchmark->on_frame_drawn(application.renderer->last_frame_timings(), streaming_idle,
+                                      BenchmarkCounters{
+                                              .occlusion_valid = frame_stats.occlusion_stats_valid,
+                                              .frustum_visible_instances = frame_stats.frustum_visible_instance_count,
+                                              .early_instances = frame_stats.early_instance_count,
+                                              .occlusion_candidates = frame_stats.occlusion_candidate_count,
+                                              .late_instances = frame_stats.late_instance_count,
+                                              .occluded_instances = frame_stats.occluded_instance_count,
+                                              .meshlet_valid = frame_stats.meshlet_occlusion_stats_valid,
+                                              .deferred_meshlets = frame_stats.deferred_meshlet_count,
+                                              .occluded_meshlets = frame_stats.occluded_meshlet_count,
+                                              .cluster_valid = cluster_stats.valid,
+                                              .occupied_clusters = cluster_stats.occupied_clusters,
+                                              .overflowing_clusters = cluster_stats.overflowing_clusters,
+                                              .maximum_lights = cluster_stats.maximum_lights,
+                                              .stored_lights = cluster_stats.stored_lights,
+                                      });
 
             if (benchmark->finished()) {
                 VkPhysicalDeviceProperties properties{};
@@ -845,8 +1060,18 @@ auto main(int argc, char **argv) -> int {
             };
         }();
 
-        if (!compare(desired_render_extent, renderer_extent)) {
-            auto resize_result = application.renderer->resize(desired_render_extent);
+        // --stress-resize: alternate between two render sizes every n frames, whatever the panel says.
+        auto target_render_extent = desired_render_extent;
+        if (stress_resize_interval != 0) {
+            if (++stress_resize_frames % stress_resize_interval == 0) {
+                stress_resize_large = !stress_resize_large;
+            }
+            target_render_extent = stress_resize_large ? VkExtent2D{.width = 1400, .height = 800}
+                                                       : VkExtent2D{.width = 1000, .height = 640};
+        }
+
+        if (!compare(target_render_extent, renderer_extent)) {
+            auto resize_result = application.renderer->resize(target_render_extent);
 
             if (!resize_result) {
                 error("Could not resize renderer: {}", describe(resize_result.error()));
@@ -855,8 +1080,8 @@ auto main(int argc, char **argv) -> int {
                 break;
             }
 
-            info("Resizing renderer to {}x{}", desired_render_extent.width, desired_render_extent.height);
-            renderer_extent = desired_render_extent;
+            info("Resizing renderer to {}x{}", target_render_extent.width, target_render_extent.height);
+            renderer_extent = target_render_extent;
         }
     }
 

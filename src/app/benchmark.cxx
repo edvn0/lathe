@@ -5,7 +5,9 @@
 #include <cmath>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <numeric>
+#include <span>
 #include <utility>
 
 #include "rendering/renderer.hxx"
@@ -132,45 +134,17 @@ auto summarise_timings(std::span<float const> samples_ms) -> TimingSummary {
     };
 }
 
-auto benchmark_stage_id(RenderStage stage) noexcept -> std::string_view {
-    switch (stage) {
-        using enum RenderStage;
-        case FullFrame:
-            return "full_frame";
-        case Culling:
-            return "gpu_culling";
-        case LightClustering:
-            return "light_clustering";
-        case ShadowPass:
-            return "shadow_pass";
-        case DepthPrepass:
-            return "depth_prepass";
-        case HiZBuild:
-            return "hiz_build";
-        case OcclusionCulling:
-            return "occlusion_culling";
-        case DepthPrepassLate:
-            return "depth_prepass_late";
-        case AmbientOcclusion:
-            return "ambient_occlusion";
-        case ForwardPass:
-            return "forward_pass";
-        case Composition:
-            return "composition";
-        case BloomPass:
-            return "bloom";
-        case Environment:
-            return "environment";
-        default:
-            return "unknown";
-    }
-}
+namespace {
+    constexpr std::array<std::string_view, 11> counter_names{
+            "frustum_visible_instances", "early_instances",   "occlusion_candidates", "late_instances",
+            "occluded_instances",        "deferred_meshlets", "occluded_meshlets",    "occupied_clusters",
+            "overflowing_clusters",      "maximum_lights",    "stored_lights",
+    };
+} // namespace
 
 BenchmarkRun::BenchmarkRun(BenchmarkOptions options, std::vector<CameraKeyframe> keyframes) :
     options_(std::move(options)), keyframes_(std::move(keyframes)) {
-    for (auto &samples: samples_ms_) {
-        samples.reserve(options_.frame_count);
-    }
+    full_frame_ms_.reserve(options_.frame_count);
 }
 
 auto BenchmarkRun::camera() const noexcept -> CameraKeyframe {
@@ -195,7 +169,8 @@ auto BenchmarkRun::at_keyframe() const noexcept -> bool {
     return measured_frames_ == 0 || segment(measured_frames_) != segment(measured_frames_ - 1);
 }
 
-auto BenchmarkRun::on_frame_drawn(StageTimings const &timings, bool streaming_idle) -> void {
+auto BenchmarkRun::on_frame_drawn(FrameTimings const &timings, bool streaming_idle, BenchmarkCounters const &counters)
+        -> void {
     if (finished()) {
         return;
     }
@@ -215,10 +190,51 @@ auto BenchmarkRun::on_frame_drawn(StageTimings const &timings, bool streaming_id
     }
 
     if (timings.valid) {
-        for (std::uint32_t stage = 0; stage < stage_count; ++stage) {
-            samples_ms_[stage].push_back(timings.milliseconds[stage]);
+        full_frame_ms_.push_back(timings.full_frame_ms);
+
+        auto touched = std::vector<bool>(stages_.size(), false);
+        for (auto const &pass: timings.passes) {
+            auto found =
+                    std::ranges::find_if(stages_, [&](StageSamples const &stage) { return stage.id == pass.name_id; });
+            if (found == stages_.end()) {
+                // First seen: the frames before it count as 0 ms.
+                stages_.push_back(StageSamples{.id = pass.name_id,
+                                               .name = pass.label,
+                                               .samples_ms = std::vector<float>(full_frame_ms_.size() - 1, 0.0F)});
+                touched.push_back(false);
+                found = std::prev(stages_.end());
+            }
+            auto const index = static_cast<std::size_t>(found - stages_.begin());
+            found->samples_ms.push_back(pass.milliseconds.value_or(0.0F));
+            touched[index] = true;
+        }
+        for (auto index = std::size_t{0}; index < stages_.size(); ++index) {
+            if (!touched[index]) {
+                stages_[index].samples_ms.push_back(0.0F);
+            }
         }
     }
+
+    auto const record = [this](std::size_t first, bool valid, std::initializer_list<std::uint32_t> values) {
+        if (!valid) {
+            return;
+        }
+
+        auto index = first;
+        for (auto const value: values) {
+            counter_sums_[index] += value;
+            ++counter_samples_[index];
+            counter_final_[index] = value;
+            ++index;
+        }
+    };
+    record(0, counters.occlusion_valid,
+           {counters.frustum_visible_instances, counters.early_instances, counters.occlusion_candidates,
+            counters.late_instances, counters.occluded_instances});
+    record(5, counters.meshlet_valid, {counters.deferred_meshlets, counters.occluded_meshlets});
+    record(7, counters.cluster_valid,
+           {counters.occupied_clusters, counters.overflowing_clusters, counters.maximum_lights,
+            counters.stored_lights});
 
     ++measured_frames_;
 }
@@ -238,30 +254,47 @@ auto BenchmarkRun::to_json(BenchmarkEnvironment const &environment) const -> std
     json += std::format("  \"seed\": {},\n", options_.seed);
     json += std::format("  \"keyframes\": {},\n", keyframes_.size());
     json += std::format("  \"frames\": {},\n", measured_frames_);
-    json += std::format("  \"frames_with_timings\": {},\n", samples_ms_[0].size());
+    json += std::format("  \"frames_with_timings\": {},\n", full_frame_ms_.size());
     json += std::format("  \"warmup_frames\": {},\n", warmup_frames_);
     json += std::format("  \"streaming_settled\": {},\n", streaming_settled_);
     json += "  \"stages\": [\n";
 
-    for (std::uint32_t stage = 0; stage < stage_count; ++stage) {
-        auto const render_stage = static_cast<RenderStage>(stage);
-        auto const summary = summarise_timings(samples_ms_[stage]);
-
+    auto const append_stage = [&](std::string_view id, std::string_view name, std::span<float const> samples,
+                                  bool last) {
+        auto const summary = summarise_timings(samples);
         json += std::format("    {{\"id\": \"{}\", \"name\": \"{}\", \"mean_ms\": {:.4f}, \"median_ms\": {:.4f}, "
                             "\"p95_ms\": {:.4f}, \"min_ms\": {:.4f}, \"max_ms\": {:.4f}}}{}\n",
-                            benchmark_stage_id(render_stage), to_string(render_stage), summary.mean_ms,
-                            summary.median_ms, summary.p95_ms, summary.min_ms, summary.max_ms,
-                            stage + 1 < stage_count ? "," : "");
+                            id, json_escape(name), summary.mean_ms, summary.median_ms, summary.p95_ms, summary.min_ms,
+                            summary.max_ms, last ? "" : ",");
+    };
+
+    append_stage("full_frame", "Full Frame", full_frame_ms_, stages_.empty());
+    for (auto index = std::size_t{0}; index < stages_.size(); ++index) {
+        append_stage(stages_[index].id, stages_[index].name, stages_[index].samples_ms, index + 1 == stages_.size());
     }
 
     json += "  ],\n";
 
+    // Per-frame means over the frames the counter was read back for, and the last such frame's value. Counters whose
+    // group was never valid (occlusion off, no lights) are null.
+    json += "  \"counters\": {\n";
+    for (std::size_t i = 0; i < counter_count; ++i) {
+        auto const separator = i + 1 < counter_count ? "," : "";
+
+        if (counter_samples_[i] == 0) {
+            json += std::format("    \"{}\": {{\"mean\": null, \"final\": null}}{}\n", counter_names[i], separator);
+        } else {
+            json += std::format("    \"{}\": {{\"mean\": {:.4f}, \"final\": {}}}{}\n", counter_names[i],
+                                counter_sums_[i] / counter_samples_[i], counter_final_[i], separator);
+        }
+    }
+    json += "  },\n";
+
     // Every measured frame's time, in path order.
     json += "  \"full_frame_ms\": [";
 
-    auto const &full_frame = samples_ms_[static_cast<std::uint32_t>(RenderStage::FullFrame)];
-    for (std::size_t i = 0; i < full_frame.size(); ++i) {
-        json += std::format("{}{:.4f}", i == 0 ? "" : ", ", full_frame[i]);
+    for (std::size_t i = 0; i < full_frame_ms_.size(); ++i) {
+        json += std::format("{}{:.4f}", i == 0 ? "" : ", ", full_frame_ms_[i]);
     }
 
     json += "]\n}\n";

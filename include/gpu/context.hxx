@@ -13,21 +13,11 @@
 
 #include "core/allocator.hxx"
 #include "gpu/host_query_context.hxx"
+#include "gpu/queue_selection.hxx"
+#include "gpu/queue_set.hxx"
 #include "gpu/swapchain.hxx"
 
 #include "core/forward.hxx"
-
-struct QueueFamilies {
-    std::uint32_t graphics = std::numeric_limits<std::uint32_t>::max();
-    std::uint32_t present = std::numeric_limits<std::uint32_t>::max();
-
-    [[nodiscard]]
-    auto complete() const noexcept -> bool {
-        constexpr auto invalid = std::numeric_limits<std::uint32_t>::max();
-
-        return graphics != invalid && present != invalid;
-    }
-};
 
 struct VulkanContext {
     GLFWwindow *window = nullptr;
@@ -56,12 +46,30 @@ struct VulkanContext {
     // MSAA, Hi-Z occlusion culling needs it to resolve the farthest sample (reverse-Z) of each pixel.
     bool depth_resolve_min_supported = false;
 
+    // Tracy's GPU contexts: graphics, and compute when it is a separate queue (null otherwise).
     HostQueryContext host_query_context{};
+    HostQueryContext compute_host_query_context{};
 
     VkQueue graphics_queue = VK_NULL_HANDLE;
     VkQueue present_queue = VK_NULL_HANDLE;
 
+    // The async compute queue. Equals graphics_queue when queue_families.topology is single.
+    VkQueue compute_queue = VK_NULL_HANDLE;
+
+    // Set before initialize_vulkan: --async-compute=auto|off|same-family and --sync-validation.
+    AsyncComputeMode async_compute_mode = AsyncComputeMode::automatic;
+    bool sync_validation = false;
+
+    // --async-compute-smoke: submit empty compute and graphics batches each frame to exercise the timelines.
+    bool async_compute_smoke = false;
+
+    // --frame-graph-serialize: the frame graph compiler puts ALL_COMMANDS barriers between all passes, to tell a missing
+    // dependency from a real bug (CompileOptions::serialize).
+    bool frame_graph_serialize = false;
+
     QueueFamilies queue_families{};
+
+    QueueSet queue_set{};
 
     Swapchain swapchain{};
 

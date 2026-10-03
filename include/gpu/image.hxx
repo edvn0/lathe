@@ -59,6 +59,13 @@ struct ImageError {
     std::optional<ErrorCause> cause;
 };
 
+// Binds the image into memory somebody else allocated (a frame graph transient block) instead of giving it its own.
+// The allocation must outlive the image; the image does not free it.
+struct ImageAliasing {
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+};
+
 struct ImageCreateInfo {
     VkExtent3D extent{
             .width = 1,
@@ -88,6 +95,8 @@ struct ImageCreateInfo {
 
     bool create_mip_layer_views = false;
 
+    std::optional<ImageAliasing> alias;
+
     std::string_view debug_name = "image";
 };
 
@@ -110,6 +119,10 @@ public:
     [[nodiscard]]
     static auto create(VulkanContext &context, ImageCreateInfo const &create_info, std::span<const std::byte> pixels)
             -> std::expected<Image, ImageError>;
+
+    // What an image of `create_info` needs from memory (vkGetDeviceImageMemoryRequirements), without creating it.
+    [[nodiscard]]
+    static auto memory_requirements(VulkanContext &context, ImageCreateInfo const &create_info) -> VkMemoryRequirements;
 
     auto destroy() noexcept -> void;
 
@@ -234,6 +247,7 @@ private:
 
     std::vector<VkImageView> mip_layer_views_;
     VmaAllocation allocation_ = VK_NULL_HANDLE;
+    bool aliased_ = false; // image_ is bound into someone else's allocation_-less memory: vkDestroyImage, no VMA
 
     VmaAllocationInfo allocation_info_{};
 

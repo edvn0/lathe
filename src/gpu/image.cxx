@@ -109,7 +109,7 @@ Image::Image(Image &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), image_(std::exchange(other.image_, VK_NULL_HANDLE)),
     view_(std::exchange(other.view_, VK_NULL_HANDLE)), descriptor_views_(std::exchange(other.descriptor_views_, {})),
     mip_layer_views_(std::exchange(other.mip_layer_views_, {})),
-    allocation_(std::exchange(other.allocation_, VK_NULL_HANDLE)),
+    allocation_(std::exchange(other.allocation_, VK_NULL_HANDLE)), aliased_(std::exchange(other.aliased_, false)),
     allocation_info_(std::exchange(other.allocation_info_, VmaAllocationInfo{})),
     format_(std::exchange(other.format_, VK_FORMAT_UNDEFINED)), extent_(std::exchange(other.extent_, VkExtent3D{})),
     usage_(std::exchange(other.usage_, VkImageUsageFlags{0})),
@@ -130,6 +130,7 @@ auto Image::operator=(Image &&other) noexcept -> Image & {
     descriptor_views_ = std::exchange(other.descriptor_views_, {});
     mip_layer_views_ = std::exchange(other.mip_layer_views_, {});
     allocation_ = std::exchange(other.allocation_, VK_NULL_HANDLE);
+    aliased_ = std::exchange(other.aliased_, false);
     allocation_info_ = std::exchange(other.allocation_info_, VmaAllocationInfo{});
     format_ = std::exchange(other.format_, VK_FORMAT_UNDEFINED);
     extent_ = std::exchange(other.extent_, VkExtent3D{});
@@ -184,14 +185,25 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
     Image image;
     image.context_ = &context;
 
-    auto result = vmaCreateImage(context.allocator, &image_info, &allocation_info, &image.image_, &image.allocation_,
-                                 &image.allocation_info_);
+    VkResult result = VK_SUCCESS;
+    if (create_info.alias.has_value()) {
+        // Memory comes from the caller's block; only the VkImage is ours.
+        image.aliased_ = true;
+        result = vmaCreateAliasingImage2(context.allocator, create_info.alias->allocation, create_info.alias->offset,
+                                         &image_info, &image.image_);
+    } else {
+        result = vmaCreateImage(context.allocator, &image_info, &allocation_info, &image.image_, &image.allocation_,
+                                &image.allocation_info_);
+    }
 
     if (result != VK_SUCCESS) {
         image.context_ = nullptr;
+        image.aliased_ = false;
 
         return std::unexpected(make_error(ImageErrorType::image_creation_failed,
-                                          std::format("vmaCreateImage failed for image '{}'", create_info.debug_name),
+                                          std::format("{} failed for image '{}'",
+                                                      create_info.alias ? "vmaCreateAliasingImage2" : "vmaCreateImage",
+                                                      create_info.debug_name),
                                           result));
     }
 
@@ -222,11 +234,7 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
     result = vkCreateImageView(context.device, &view_info, nullptr, &image.view_);
 
     if (result != VK_SUCCESS) {
-        vmaDestroyImage(context.allocator, image.image_, image.allocation_);
-
-        image.context_ = nullptr;
-        image.image_ = VK_NULL_HANDLE;
-        image.allocation_ = VK_NULL_HANDLE;
+        image.destroy();
 
         return std::unexpected(
                 make_error(ImageErrorType::view_creation_failed,
@@ -489,6 +497,35 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
     return image;
 }
 
+auto Image::memory_requirements(VulkanContext &context, ImageCreateInfo const &create_info) -> VkMemoryRequirements {
+    VkImageCreateInfo const image_info{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = create_info.flags,
+            .imageType = create_info.image_type,
+            .format = create_info.format,
+            .extent = create_info.extent,
+            .mipLevels = create_info.mip_levels,
+            .arrayLayers = create_info.array_layers,
+            .samples = create_info.samples,
+            .tiling = create_info.tiling,
+            .usage = create_info.usage,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VkDeviceImageMemoryRequirements const query{
+            .sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
+            .pNext = nullptr,
+            .pCreateInfo = &image_info,
+            .planeAspect = VK_IMAGE_ASPECT_NONE,
+    };
+    VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    vkGetDeviceImageMemoryRequirements(context.device, &query, &requirements);
+    return requirements.memoryRequirements;
+}
+
 auto Image::destroy() noexcept -> void {
     if (context_ == nullptr) {
         return;
@@ -508,7 +545,11 @@ auto Image::destroy() noexcept -> void {
 
     view_ = VK_NULL_HANDLE;
 
-    if (image_ != VK_NULL_HANDLE && allocation_ != VK_NULL_HANDLE && context_->allocator != VK_NULL_HANDLE) {
+    if (aliased_) {
+        if (image_ != VK_NULL_HANDLE && context_->device != VK_NULL_HANDLE) {
+            vkDestroyImage(context_->device, image_, nullptr);
+        }
+    } else if (image_ != VK_NULL_HANDLE && allocation_ != VK_NULL_HANDLE && context_->allocator != VK_NULL_HANDLE) {
         vmaDestroyImage(context_->allocator, image_, allocation_);
     }
 
@@ -522,6 +563,7 @@ auto Image::destroy() noexcept -> void {
 
     image_ = VK_NULL_HANDLE;
     allocation_ = VK_NULL_HANDLE;
+    aliased_ = false;
     allocation_info_ = {};
 
     format_ = VK_FORMAT_UNDEFINED;

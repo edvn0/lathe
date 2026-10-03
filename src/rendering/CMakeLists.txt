@@ -13,11 +13,21 @@ add_library(
         environment_panel.cxx
         environment.cxx
         file_browser.cxx
+        frame_graph/aliasing.cxx
+        frame_graph/compiler.cxx
+        frame_graph/describe.cxx
+        frame_graph/executor.cxx
+        frame_graph/frame_graph.cxx
+        frame_graph/pass_profiler.cxx
+        frame_graph/scheduler.cxx
+        frame_graph/transient_allocator.cxx
+        frame_graph/vk_translate.cxx
         forward_target.cxx
         imgui_renderer.cxx
         overlay.cxx
         pipeline_graph_repository.cxx
         renderer.cxx
+        renderer_frame_graph.cxx
         rendering_error_describe.cxx
         render_passes.cxx
         scene.cxx

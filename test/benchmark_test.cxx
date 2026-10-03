@@ -126,9 +126,12 @@ TEST_CASE("benchmark run warms up until streaming settles, then records one lap"
     auto const keyframes = square_path();
     BenchmarkRun run{options, keyframes};
 
-    StageTimings timings{};
+    FrameTimings timings{};
     timings.valid = true;
-    timings.milliseconds.fill(1.0F);
+    timings.full_frame_ms = 1.0F;
+    for (auto const *id: {"forward_pass", "hiz_build", "occlusion_culling", "depth_prepass_late"}) {
+        timings.passes.push_back(frame_graph::PassTiming{.name_id = id, .label = id, .milliseconds = 1.0F});
+    }
 
     // Still streaming: stays parked at the first keyframe past the minimum.
     for (int i = 0; i < 5; ++i) {
@@ -160,13 +163,12 @@ TEST_CASE("benchmark run warms up until streaming settles, then records one lap"
     CHECK(json.find("\"cluster_grid\": [16, 9, 24, 256]") != std::string::npos);
     CHECK(json.find("\"occlusion_culling\": false") != std::string::npos);
 
-    // The occlusion stages are always present, so on/off runs compare stage by stage.
+    // A stage appears once its pass has been seen, so on/off runs compare stage by stage.
     CHECK(json.find("\"id\": \"hiz_build\"") != std::string::npos);
     CHECK(json.find("\"id\": \"occlusion_culling\"") != std::string::npos);
     CHECK(json.find("\"id\": \"depth_prepass_late\"") != std::string::npos);
 
-    auto const occlusion_json =
-            run.to_json(BenchmarkEnvironment{.device_name = "gpu", .occlusion_culling = true});
+    auto const occlusion_json = run.to_json(BenchmarkEnvironment{.device_name = "gpu", .occlusion_culling = true});
     CHECK(occlusion_json.find("\"occlusion_culling\": true") != std::string::npos);
 
     // Meshlet-level occlusion is recorded separately, so runs with and without it aren't mistaken for one another.
@@ -176,6 +178,56 @@ TEST_CASE("benchmark run warms up until streaming settles, then records one lap"
     auto const meshlet_json = run.to_json(
             BenchmarkEnvironment{.device_name = "gpu", .occlusion_culling = true, .meshlet_occlusion = true});
     CHECK(meshlet_json.find("\"meshlet_occlusion\": true") != std::string::npos);
+}
+
+TEST_CASE("benchmark counters average over valid frames and report the last value") {
+    BenchmarkOptions options;
+    options.frame_count = 3;
+    options.warmup_frame_count = 1;
+
+    BenchmarkRun run{options, square_path()};
+
+    FrameTimings timings{};
+    timings.valid = true;
+
+    run.on_frame_drawn(timings, true); // warmup
+
+    // Occlusion readbacks: 10, an invalid frame that must not count as zero, then 20.
+    run.on_frame_drawn(timings, true, BenchmarkCounters{.occlusion_valid = true, .frustum_visible_instances = 10});
+    run.on_frame_drawn(timings, true, BenchmarkCounters{.frustum_visible_instances = 99});
+    run.on_frame_drawn(timings, true,
+                       BenchmarkCounters{.occlusion_valid = true,
+                                         .frustum_visible_instances = 20,
+                                         .cluster_valid = true,
+                                         .stored_lights = 7});
+    REQUIRE(run.finished());
+
+    auto const json = run.to_json(BenchmarkEnvironment{.device_name = "gpu"});
+    CHECK(json.find("\"frustum_visible_instances\": {\"mean\": 15.0000, \"final\": 20}") != std::string::npos);
+    CHECK(json.find("\"stored_lights\": {\"mean\": 7.0000, \"final\": 7}") != std::string::npos);
+
+    // Never read back: null, not zero.
+    CHECK(json.find("\"occluded_meshlets\": {\"mean\": null, \"final\": null}") != std::string::npos);
+}
+
+TEST_CASE("simulated time restarts with the measured lap, independent of warmup length") {
+    BenchmarkOptions options;
+    options.frame_count = 4;
+    options.warmup_frame_count = 3;
+
+    BenchmarkRun run{options, square_path()};
+
+    FrameTimings timings{};
+    timings.valid = true;
+
+    for (int i = 0; i < 3; ++i) {
+        CHECK(run.simulated_time() == 0.0F);
+        run.on_frame_drawn(timings, true);
+    }
+
+    CHECK(run.simulated_time() == 0.0F);
+    run.on_frame_drawn(timings, true);
+    CHECK(run.simulated_time() == doctest::Approx(benchmark_timestep));
 }
 
 TEST_CASE("a fixed seed reproduces random sequences, per stream") {
@@ -190,4 +242,33 @@ TEST_CASE("a fixed seed reproduces random sequences, per stream") {
     CHECK(a != other_stream());
 
     set_fixed_random_seed(std::nullopt);
+}
+
+TEST_CASE("stages are keyed by pass id: absent frames count as 0 ms and late arrivals are backfilled") {
+    BenchmarkOptions options;
+    options.frame_count = 3;
+    options.warmup_frame_count = 0;
+
+    BenchmarkRun run{options, square_path()};
+    run.on_frame_drawn(FrameTimings{.valid = true}, true); // leaves warmup (nothing to measure yet)
+
+    auto const frame = [](float full, std::vector<std::pair<char const *, float>> const &passes) {
+        auto timings = FrameTimings{.full_frame_ms = full, .valid = true};
+        for (auto const &[id, ms]: passes) {
+            timings.passes.push_back(frame_graph::PassTiming{.name_id = id, .label = id, .milliseconds = ms});
+        }
+        return timings;
+    };
+
+    run.on_frame_drawn(frame(2.0F, {{"a", 1.0F}}), true);
+    run.on_frame_drawn(frame(3.0F, {{"a", 1.0F}, {"b", 2.0F}}), true);
+    run.on_frame_drawn(frame(1.0F, {{"b", 0.5F}}), true);
+    REQUIRE(run.finished());
+
+    auto const json = run.to_json(BenchmarkEnvironment{.device_name = "gpu"});
+    CHECK(json.find("\"id\": \"full_frame\"") != std::string::npos);
+    // a: 1, 1, 0 (absent in the last frame); b: 0 (backfilled), 2, 0.5.
+    CHECK(json.find("\"id\": \"a\", \"name\": \"a\", \"mean_ms\": 0.6667") != std::string::npos);
+    CHECK(json.find("\"id\": \"b\", \"name\": \"b\", \"mean_ms\": 0.8333") != std::string::npos);
+    CHECK(json.find("\"full_frame_ms\": [2.0000, 3.0000, 1.0000]") != std::string::npos);
 }

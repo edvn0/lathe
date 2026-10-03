@@ -13,10 +13,13 @@ add_library(
         image.cxx
         image_storage.cxx
         model_vertex.cxx
+        queue_selection.cxx
+        queue_set.cxx
         sampler_storage.cxx
         shader_binary_cache.cxx
         shader_object.cxx
         shader_object_storage.cxx
+        submission_plan.cxx
         swapchain.cxx
         vk_barrier.cxx
         vma.cxx
