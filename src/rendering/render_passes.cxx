@@ -636,40 +636,42 @@ namespace render_pass {
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, context.timestamp_query_pool,
                              stage * 2);
 
-        VkRenderingAttachmentInfo depth_attachment{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .pNext = nullptr,
-                .imageView = info.depth.view(),
-                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                .resolveMode = VK_RESOLVE_MODE_NONE,
-                .resolveImageView = VK_NULL_HANDLE,
-                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp = late ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue = {},
-        };
+        if (!info.managed_by_graph) {
+            VkRenderingAttachmentInfo depth_attachment{
+                    .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                    .pNext = nullptr,
+                    .imageView = info.depth.view(),
+                    .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                    .resolveMode = VK_RESOLVE_MODE_NONE,
+                    .resolveImageView = VK_NULL_HANDLE,
+                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .loadOp = late ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR,
+                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                    .clearValue = {},
+            };
 
-        // The late phase begins rendering even with nothing to draw, so the resolve sees the final depth.
-        if (info.resolved_depth != nullptr) {
-            depth_attachment.resolveMode = info.depth_resolve_mode;
-            depth_attachment.resolveImageView = info.resolved_depth->view();
-            depth_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            // The late phase begins rendering even with nothing to draw, so the resolve sees the final depth.
+            if (info.resolved_depth != nullptr) {
+                depth_attachment.resolveMode = info.depth_resolve_mode;
+                depth_attachment.resolveImageView = info.resolved_depth->view();
+                depth_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            }
+
+            VkRenderingInfo const rendering_info{
+                    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .renderArea = VkRect2D{.offset = {0, 0}, .extent = info.extent},
+                    .layerCount = 1,
+                    .viewMask = 0,
+                    .colorAttachmentCount = 0,
+                    .pColorAttachments = nullptr,
+                    .pDepthAttachment = &depth_attachment,
+                    .pStencilAttachment = nullptr,
+            };
+
+            vkCmdBeginRendering(context.command_buffer, &rendering_info);
         }
-
-        VkRenderingInfo const rendering_info{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .renderArea = VkRect2D{.offset = {0, 0}, .extent = info.extent},
-                .layerCount = 1,
-                .viewMask = 0,
-                .colorAttachmentCount = 0,
-                .pColorAttachments = nullptr,
-                .pDepthAttachment = &depth_attachment,
-                .pStencilAttachment = nullptr,
-        };
-
-        vkCmdBeginRendering(context.command_buffer, &rendering_info);
 
         ForwardPushConstants const pc{
                 .draws_address = info.draws.draws.device_address,
@@ -702,7 +704,9 @@ namespace render_pass {
             detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.opaque, info.counts.mask, mask_pc);
         }
 
-        vkCmdEndRendering(context.command_buffer);
+        if (!info.managed_by_graph) {
+            vkCmdEndRendering(context.command_buffer);
+        }
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                              context.timestamp_query_pool, stage * 2 + 1);
         return {};

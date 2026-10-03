@@ -237,6 +237,56 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     }
 
+    // The per-frame buffers the occlusion chain and the draws reach by device address. Every pass that dereferences one
+    // must declare it, because neither sync validation nor the compiler can see a device-address access otherwise.
+    // Read-only until a graph pass takes over writing them.
+    using frame_graph::ShaderStage;
+    constexpr auto geometry_stages = ShaderStage::vertex | ShaderStage::task | ShaderStage::mesh;
+    constexpr auto draw_stages = geometry_stages | ShaderStage::fragment;
+
+    auto const import_frame_buffer = [&](Buffer const &buffer, std::string_view name,
+                                         bool read_only) -> frame_graph::BufferId {
+        return frame_graph_.import_buffer({
+                .entry = buffer_idle,
+                .exit = buffer_idle,
+                .read_only = read_only,
+                .debug_name = name,
+                .buffer = physical_buffer(buffer),
+        });
+    };
+
+    auto const visible_draws = import_frame_buffer(frame.visible_draw_buffer, "visible_draws", true);
+    auto const visible_transforms = import_frame_buffer(frame.visible_transform_buffer, "visible_transforms", true);
+    auto const culled_indirect = import_frame_buffer(frame.culled_indirect_buffer, "culled_indirect", true);
+    auto const frustum_planes = import_frame_buffer(frame.frustum_planes_buffer, "frustum_planes", true);
+
+    auto const occlusion_active = frame.occlusion_active;
+    auto const meshlet_occlusion_active = frame.meshlet_occlusion_active;
+
+    auto late_indirect = frame_graph::BufferId{};
+    auto merged_indirect = frame_graph::BufferId{};
+    if (occlusion_active) {
+        late_indirect = import_frame_buffer(frame.late_indirect_buffer, "late_indirect", true);
+        merged_indirect = import_frame_buffer(frame.merged_indirect_buffer, "merged_indirect", true);
+    }
+
+    // Meshlet-level occlusion: the prepass phases' task shaders write the visibility bitset and the statistics
+    // counters, forward replays the bitset.
+    auto occlusion_views = frame_graph::BufferId{};
+    auto meshlet_bits = frame_graph::BufferId{};
+    if (meshlet_occlusion_active) {
+        occlusion_views = import_frame_buffer(frame.occlusion_views_buffer, "occlusion_views", true);
+        meshlet_bits = import_frame_buffer(frame.meshlet_visibility_buffer, "meshlet_visibility", false);
+    }
+
+    auto stats_buffer = import_frame_buffer(frame.occlusion_stats_buffer, "occlusion_stats", false);
+    auto stats_readback = frame_graph_.import_buffer({
+            .entry = host_reads,
+            .exit = host_reads,
+            .debug_name = "occlusion_stats_readback",
+            .buffer = physical_buffer(frame.occlusion_stats_readback_buffer),
+    });
+
     // Shared by the record lambdas, which all run inside frame_graph::record() below.
     struct FrameState {
         std::expected<void, RendererError> result{};
@@ -260,6 +310,57 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                   state.result = record_frame_legacy(legacy_info, frame, *targets, state.handoff);
                               }};
                           });
+
+    // Phase 2 of occlusion culling: draws what late_cs added on top of the early prepass's depth, and leaves the final
+    // single-sample depth.
+    if (occlusion_active) {
+        frame_graph_.add_pass(
+                "depth_prepass_late", frame_graph::PassType::raster,
+                {
+                        .name_id = "depth_prepass_late",
+                        .label = "Depth prepass (late)",
+                        .color = static_cast<std::uint32_t>(tracy::Color::SlateGray),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    [[maybe_unused]] auto const draws =
+                            pass.read(visible_draws, frame_graph::Use::shader_read, geometry_stages);
+                    [[maybe_unused]] auto const transforms =
+                            pass.read(visible_transforms, frame_graph::Use::shader_read, geometry_stages);
+                    [[maybe_unused]] auto const commands = pass.read(late_indirect, frame_graph::Use::indirect_read);
+                    [[maybe_unused]] auto const planes =
+                            pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                    if (meshlet_occlusion_active) {
+                        [[maybe_unused]] auto const views =
+                                pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                        meshlet_bits = pass.write(meshlet_bits, frame_graph::Use::shader_read_write,
+                                                  stages_of(ShaderStage::task));
+                        stats_buffer = pass.write(stats_buffer, frame_graph::Use::shader_read_write,
+                                                  stages_of(ShaderStage::task));
+                    }
+
+                    depth_image = pass.write_depth(depth_image, frame_graph::LoadOp::load, frame_graph::StoreOp::store);
+                    if (multisampled) {
+                        resolved_depth_image =
+                                pass.resolve(depth_image, resolved_depth_image, VK_RESOLVE_MODE_SAMPLE_ZERO_BIT);
+                    } else {
+                        resolved_depth_image = depth_image;
+                    }
+                    pass.render_area({.offset = {0, 0}, .extent = targets->extent});
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        if (!state.result) {
+                            return;
+                        }
+
+                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        if (auto const done = record_depth_prepass(pass_context, frame, *targets,
+                                                                   render_pass::DepthPrepassPhase::late);
+                            !done) {
+                            state.result = std::unexpected(done.error());
+                        }
+                    }};
+                });
+    }
 
     if (ao_enabled) {
         frame_graph_.add_pass(
@@ -325,11 +426,26 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     .color = static_cast<std::uint32_t>(tracy::Color::RoyalBlue),
             },
             [&](frame_graph::PassBuilder &pass) {
-                // Images only. The buffers forward reads by device address (draws, transforms, indirect commands,
-                // lights, cluster lists, the UBO, the meshlet visibility bits) are ordered by the legacy pass's fences
-                // for now; whichever pass takes over producing one must declare it here too.
+                // The buffers forward reads by device address. Declared so far: the occlusion chain's (draws,
+                // transforms, indirect commands, culling planes, meshlet views and bits). Lights, cluster lists and
+                // the UBO are still ordered by the legacy pass's fences; whichever pass takes over producing one must
+                // declare it here too.
                 [[maybe_unused]] auto const shadows =
                         pass.read(shadow_image, frame_graph::Use::sampled, fragment_stage);
+                [[maybe_unused]] auto const draws =
+                        pass.read(visible_draws, frame_graph::Use::shader_read, draw_stages);
+                [[maybe_unused]] auto const transforms =
+                        pass.read(visible_transforms, frame_graph::Use::shader_read, draw_stages);
+                [[maybe_unused]] auto const commands = pass.read(occlusion_active ? merged_indirect : culled_indirect,
+                                                                 frame_graph::Use::indirect_read);
+                [[maybe_unused]] auto const planes =
+                        pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                if (meshlet_occlusion_active) {
+                    [[maybe_unused]] auto const views =
+                            pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                    [[maybe_unused]] auto const bits =
+                            pass.read(meshlet_bits, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                }
                 if (ao_enabled) {
                     [[maybe_unused]] auto const ao = pass.read(ao_image, frame_graph::Use::sampled, fragment_stage);
                 }
@@ -496,38 +612,22 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     }
 
     // The host reads the stats a frame later; the copy and the host-visibility barrier are the graph's.
-    {
-        auto const stats = frame_graph_.import_buffer({
-                .entry = buffer_idle,
-                .exit = buffer_idle,
-                .read_only = true,
-                .debug_name = "occlusion_stats",
-                .buffer = physical_buffer(frame.occlusion_stats_buffer),
-        });
-        auto stats_readback = frame_graph_.import_buffer({
-                .entry = host_reads,
-                .exit = host_reads,
-                .debug_name = "occlusion_stats_readback",
-                .buffer = physical_buffer(frame.occlusion_stats_readback_buffer),
-        });
+    frame_graph_.add_pass("occlusion_stats_readback", frame_graph::PassType::transfer,
+                          {
+                                  .name_id = "occlusion_stats_readback",
+                                  .label = "Occlusion stats readback",
+                                  .color = static_cast<std::uint32_t>(tracy::Color::Gray),
+                          },
+                          [&](frame_graph::PassBuilder &pass) {
+                              pass.side_effect();
+                              [[maybe_unused]] auto const source =
+                                      pass.read(stats_buffer, frame_graph::Use::transfer_read);
+                              stats_readback = pass.write(stats_readback, frame_graph::Use::transfer_write);
 
-        frame_graph_.add_pass("occlusion_stats_readback", frame_graph::PassType::transfer,
-                              {
-                                      .name_id = "occlusion_stats_readback",
-                                      .label = "Occlusion stats readback",
-                                      .color = static_cast<std::uint32_t>(tracy::Color::Gray),
-                              },
-                              [&](frame_graph::PassBuilder &pass) {
-                                  pass.side_effect();
-                                  [[maybe_unused]] auto const source =
-                                          pass.read(stats, frame_graph::Use::transfer_read);
-                                  stats_readback = pass.write(stats_readback, frame_graph::Use::transfer_write);
-
-                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                      record_occlusion_stats_readback(context.command_buffer, frame);
-                                  }};
-                              });
-    }
+                              return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                  record_occlusion_stats_readback(context.command_buffer, frame);
+                              }};
+                          });
 
     // A pending capture of the viewport target is only honoured in the editor; fullscreen takes the swapchain.
     if (auto const pending = screenshot_->pending_source(); pending.has_value()) {

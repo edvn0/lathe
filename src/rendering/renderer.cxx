@@ -4085,12 +4085,6 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
                                        render_pass::cull_stats
                             : render_pass::cull_occlusion | render_pass::cull_record | render_pass::cull_stats);
 
-    // The early phase's task shaders wrote the bitset; the late phase reads and extends it.
-    if (late && frame.meshlet_occlusion_active) {
-        record_meshlet_visibility_barrier(pass_context.command_buffer, frame,
-                                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    }
-
     auto const record = [&]() -> std::expected<void, RendererError> {
         return render_pass::depth_prepass(
                 pass_context, render_pass::DepthPrepassInfo{
@@ -4117,13 +4111,13 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
                                       .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
                                       .mask_instanced_pipeline = depth_prepass_mask_instanced_pipeline_,
                                       .meshlet_culling = meshlet_culling_,
+                                      // The late phase is a graph pass, which has begun rendering.
+                                      .managed_by_graph = late,
                               });
     };
 
-    // Tracy zone names must be literals.
+    // The late phase is a graph pass with its own Tracy zone.
     if (late) {
-        TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Depth Prepass (late)",
-                     tracy::Color::SlateGray);
         return record();
     }
 
@@ -4301,31 +4295,6 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
 
     vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2 + 1);
     return {};
-}
-
-auto Renderer::record_meshlet_visibility_barrier(VkCommandBuffer command_buffer, RendererFrame const &frame,
-                                                 VkAccessFlags2 dst_access) -> void {
-    // Task shaders are the only writers (InterlockedOr) and readers of the bitset.
-    VkBufferMemoryBarrier2 const barrier{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT,
-            .dstAccessMask = dst_access,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = frame.meshlet_visibility_buffer.buffer,
-            .offset = 0,
-            .size = VkDeviceSize{frame.meshlet_visibility_words} * sizeof(std::uint32_t),
-    };
-
-    VkDependencyInfo const dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &barrier,
-    };
-
-    vkCmdPipelineBarrier2(command_buffer, &dependency);
 }
 
 auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void {
@@ -4682,10 +4651,7 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &f
             return culled;
         }
 
-        if (auto late = record_depth_prepass(pass_context, frame, targets, render_pass::DepthPrepassPhase::late);
-            !late) {
-            return late;
-        }
+        // The late prepass follows as a graph pass (renderer_frame_graph.cxx).
     } else {
         write_empty_stage(command_buffer, frame_index, RenderStage::HiZBuild);
         write_empty_stage(command_buffer, frame_index, RenderStage::OcclusionCulling);

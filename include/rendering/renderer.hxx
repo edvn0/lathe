@@ -1169,11 +1169,6 @@ private:
     auto record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
             -> std::expected<void, RendererError>;
 
-    // Makes the task shaders' writes to the meshlet visibility bitset visible to the next task shader pass that reads
-    // it (`dst_access` is read for forward, read | write for the late prepass phase, which also records).
-    auto record_meshlet_visibility_barrier(VkCommandBuffer command_buffer, RendererFrame const &frame,
-                                           VkAccessFlags2 dst_access) -> void;
-
     // Copies the occlusion statistics into the frame's readback buffer.
     auto record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void;
 

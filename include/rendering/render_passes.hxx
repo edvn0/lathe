@@ -142,6 +142,10 @@ namespace render_pass {
 
         // Must match ForwardGeometryInfo::meshlet_culling, since forward depth-tests EQUAL.
         bool meshlet_culling = true;
+
+        // The frame graph has begun rendering (and ends it); `depth`, `resolved_depth` and `depth_resolve_mode` are
+        // then unused. Temporary: the early prepass still begins its own rendering until it is migrated too.
+        bool managed_by_graph = false;
     };
 
     // GTAO from depth alone, then a depth-aware blur: two compute passes of the frame graph between the prepass and
