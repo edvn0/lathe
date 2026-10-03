@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "app/benchmark.hxx"
+#include "assets/material.hxx"
 #include "scene/camera_path.hxx"
 
 class Scene;
@@ -35,6 +36,11 @@ struct BenchmarkScenarioContext {
     Renderer &renderer;
     EngineModels const &engine_models;
     std::uint32_t load = 0;
+
+    // Materials the scene uses that no component holds a reference to. Only MaterialOverride components keep their
+    // materials alive; InstancedModel::material_override is a plain handle, so a populate() that hands one out must
+    // keep its reference here. The driver releases them when the scene is replaced.
+    std::vector<MaterialHandle> &owned_materials;
 };
 
 struct BenchmarkScenario {

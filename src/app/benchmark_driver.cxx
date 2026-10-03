@@ -128,6 +128,9 @@ auto BenchmarkDriver::start_case(Application &application) -> void {
         if (options_.mode == BenchmarkMode::suite) {
             application.game->on_populate(*application.editor_scene, *application.renderer, application.engine_models);
             application.mark_editor_scene_clean();
+
+            // on_populate() waited for the GPU and replaced the previous scene.
+            release_scenario_materials(application);
         }
 
         keyframes = application.game->benchmark_camera_path();
@@ -139,11 +142,13 @@ auto BenchmarkDriver::start_case(Application &application) -> void {
             warn("Benchmark: could not wait for the GPU before repopulating");
         }
         application.editor_scene->get_registry().clear();
+        release_scenario_materials(application);
         scenario.populate(BenchmarkScenarioContext{
                 .scene = *application.editor_scene,
                 .renderer = *application.renderer,
                 .engine_models = application.engine_models,
                 .load = current.id.load,
+                .owned_materials = scenario_materials_,
         });
         application.mark_editor_scene_clean();
 
@@ -171,6 +176,13 @@ auto BenchmarkDriver::start_case(Application &application) -> void {
     auto const memory = MemoryTracker::stats();
     last_allocations_ = memory.total_allocations;
     last_allocated_bytes_ = memory.total_allocated_bytes;
+}
+
+auto BenchmarkDriver::release_scenario_materials(Application &application) -> void {
+    for (auto const material: scenario_materials_) {
+        application.renderer->release_material(material);
+    }
+    scenario_materials_.clear();
 }
 
 auto BenchmarkDriver::begin_frame(Application &application) -> void {

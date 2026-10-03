@@ -49,6 +49,15 @@ namespace {
             }
         }
 
+        // Hands `material`'s creation reference to `owned` instead of releasing it at the end of populate().
+        auto keep(MaterialHandle material, std::vector<MaterialHandle> &owned) -> MaterialHandle {
+            if (auto const found = std::ranges::find(created_, material); found != created_.end()) {
+                created_.erase(found);
+                owned.push_back(material);
+            }
+            return material;
+        }
+
         MaterialSet(MaterialSet const &) = delete;
         MaterialSet(MaterialSet &&) = delete;
         auto operator=(MaterialSet const &) -> MaterialSet & = delete;
@@ -199,7 +208,8 @@ namespace {
         auto const field = GeneratedEntity{&context.scene, "bench_instances"};
         field.emplace<Components::InstancedModel>(Components::InstancedModel{
                 .model = context.engine_models.cube,
-                .material_override = material,
+                // InstancedModel holds no reference to its material, so the scenario keeps one.
+                .material_override = materials.keep(material, context.owned_materials),
                 .transforms = std::move(transforms),
         });
     }
