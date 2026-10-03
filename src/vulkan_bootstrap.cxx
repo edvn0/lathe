@@ -122,10 +122,10 @@ namespace {
         });
     }
 
-    auto instance_extension_available(std::string_view name) noexcept -> bool {
+    auto instance_extension_available(std::string_view name, char const *layer_name = nullptr) noexcept -> bool {
         std::uint32_t extension_count = 0;
 
-        auto result = vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
+        auto result = vkEnumerateInstanceExtensionProperties(layer_name, &extension_count, nullptr);
 
         if (result != VK_SUCCESS) {
             report_vk_error("vkEnumerateInstanceExtensionProperties(count)", result);
@@ -135,7 +135,7 @@ namespace {
 
         std::vector<VkExtensionProperties> extensions(extension_count);
 
-        result = vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, extensions.data());
+        result = vkEnumerateInstanceExtensionProperties(layer_name, &extension_count, extensions.data());
 
         if (result != VK_SUCCESS) {
             report_vk_error("vkEnumerateInstanceExtensionProperties(list)", result);
@@ -361,7 +361,9 @@ namespace {
         if (context.sync_validation) {
             if (!validation_enabled) {
                 warn("--sync-validation needs the validation layer (Debug builds); ignoring it");
-            } else if (!instance_extension_available(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME)) {
+            } else if (!instance_extension_available(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) &&
+                       !instance_extension_available(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME, validation_layers.front())) {
+                // The validation layer itself exports VK_EXT_layer_settings, so it is not in the loader's own list.
                 warn("{} is unavailable; ignoring --sync-validation", VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
             } else {
                 sync_validation_enabled = true;
@@ -489,8 +491,8 @@ namespace {
         return true;
     }
 
-    auto find_queue_families(VkPhysicalDevice physical_device, VkSurfaceKHR surface,
-                             AsyncComputeMode mode) noexcept -> QueueFamilies {
+    auto find_queue_families(VkPhysicalDevice physical_device, VkSurfaceKHR surface, AsyncComputeMode mode) noexcept
+            -> QueueFamilies {
         std::uint32_t queue_family_count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr);
         std::vector<VkQueueFamilyProperties> properties(queue_family_count);
@@ -518,8 +520,8 @@ namespace {
         return choose_queue_families(families, mode);
     }
 
-    auto supports_device_extension(VkPhysicalDevice physical_device,
-                                   std::string_view required_extension) noexcept -> bool {
+    auto supports_device_extension(VkPhysicalDevice physical_device, std::string_view required_extension) noexcept
+            -> bool {
         std::uint32_t extension_count = 0;
         auto result = vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr);
         if (result != VK_SUCCESS) {
