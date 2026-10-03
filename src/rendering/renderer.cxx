@@ -121,6 +121,23 @@ namespace {
         };
     }
 
+    // Whether the buffers both queues touch are shared concurrently: only with a compute queue family of its own.
+    auto buffers_shared_between_queues(VulkanContext const &context) -> bool {
+        return context.queue_families.compute != context.queue_families.graphics;
+    }
+
+    // A per-frame GPU buffer that the compute and graphics queues both use. With a compute family of its own it is
+    // created for concurrent sharing, so the frame graph's imports of it (Sharing::concurrent) need no ownership
+    // transfers.
+    auto create_shared_buffer(VulkanContext &context, BufferCreateInfo info)
+            -> decltype(Buffer::create(context, info)) {
+        if (buffers_shared_between_queues(context)) {
+            info.concurrent_families = {context.queue_families.graphics, context.queue_families.compute};
+            info.concurrent_family_count = 2;
+        }
+        return Buffer::create(context, info);
+    }
+
     auto make_resource_table_error(GpuResourceTableError error) -> RendererError {
         return RendererError{
                 .type = RendererErrorType::gpu_resource_table_error,
@@ -1221,14 +1238,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.upload_buffer = std::move(*upload);
 
-        auto draws = Buffer::create(context_, BufferCreateInfo{
-                                                      .size = draw_size,
-                                                      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                      .memory = BufferMemory::device,
-                                                      .debug_name = "renderer.frame_draws",
-                                              });
+        auto draws = create_shared_buffer(context_, BufferCreateInfo{
+                                                            .size = draw_size,
+                                                            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                            .memory = BufferMemory::device,
+                                                            .debug_name = "renderer.frame_draws",
+                                                    });
 
         if (!draws) {
             return std::unexpected(make_device_error(draws.error()));
@@ -1236,14 +1253,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.draw_buffer = std::move(*draws);
 
-        auto transforms = Buffer::create(context_, BufferCreateInfo{
-                                                           .size = transform_size,
-                                                           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                           .memory = BufferMemory::device,
-                                                           .debug_name = "renderer.frame_transforms",
-                                                   });
+        auto transforms = create_shared_buffer(context_, BufferCreateInfo{
+                                                                 .size = transform_size,
+                                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                 .memory = BufferMemory::device,
+                                                                 .debug_name = "renderer.frame_transforms",
+                                                         });
 
         if (!transforms) {
             return std::unexpected(make_device_error(transforms.error()));
@@ -1251,7 +1268,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.transform_buffer = std::move(*transforms);
 
-        auto indirect = Buffer::create(
+        auto indirect = create_shared_buffer(
                 context_,
                 BufferCreateInfo{
                         .size = indirect_size,
@@ -1267,14 +1284,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.indirect_buffer = std::move(*indirect);
 
-        auto batch_bounds = Buffer::create(context_, BufferCreateInfo{
-                                                             .size = batch_bounds_size,
-                                                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                             .memory = BufferMemory::device,
-                                                             .debug_name = "renderer.frame_batch_bounds",
-                                                     });
+        auto batch_bounds = create_shared_buffer(context_, BufferCreateInfo{
+                                                                   .size = batch_bounds_size,
+                                                                   .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                   .memory = BufferMemory::device,
+                                                                   .debug_name = "renderer.frame_batch_bounds",
+                                                           });
 
         if (!batch_bounds) {
             return std::unexpected(make_device_error(batch_bounds.error()));
@@ -1283,14 +1300,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.batch_bounds_buffer = std::move(*batch_bounds);
 
         // main_cs is the only writer.
-        auto culled_indirect = Buffer::create(context_, BufferCreateInfo{
-                                                                .size = culled_indirect_size,
-                                                                .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                .memory = BufferMemory::device,
-                                                                .debug_name = "renderer.frame_culled_indirect",
-                                                        });
+        auto culled_indirect = create_shared_buffer(
+                context_, BufferCreateInfo{
+                                  .size = culled_indirect_size,
+                                  .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                  .memory = BufferMemory::device,
+                                  .debug_name = "renderer.frame_culled_indirect",
+                          });
 
         if (!culled_indirect) {
             return std::unexpected(make_device_error(culled_indirect.error()));
@@ -1298,13 +1315,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.culled_indirect_buffer = std::move(*culled_indirect);
 
-        auto visible_draws = Buffer::create(context_, BufferCreateInfo{
-                                                              .size = draw_size,
-                                                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                              .memory = BufferMemory::device,
-                                                              .debug_name = "renderer.frame_visible_draws",
-                                                      });
+        auto visible_draws = create_shared_buffer(context_, BufferCreateInfo{
+                                                                    .size = draw_size,
+                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                    .memory = BufferMemory::device,
+                                                                    .debug_name = "renderer.frame_visible_draws",
+                                                            });
 
         if (!visible_draws) {
             return std::unexpected(make_device_error(visible_draws.error()));
@@ -1312,13 +1329,14 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.visible_draw_buffer = std::move(*visible_draws);
 
-        auto visible_transforms = Buffer::create(context_, BufferCreateInfo{
-                                                                   .size = transform_size,
-                                                                   .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                   .memory = BufferMemory::device,
-                                                                   .debug_name = "renderer.frame_visible_transforms",
-                                                           });
+        auto visible_transforms =
+                create_shared_buffer(context_, BufferCreateInfo{
+                                                       .size = transform_size,
+                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                       .memory = BufferMemory::device,
+                                                       .debug_name = "renderer.frame_visible_transforms",
+                                               });
 
         if (!visible_transforms) {
             return std::unexpected(make_device_error(visible_transforms.error()));
@@ -1381,12 +1399,12 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         };
 
         for (auto const &spec: occlusion_buffers) {
-            auto buffer = Buffer::create(context_, BufferCreateInfo{
-                                                           .size = spec.size,
-                                                           .usage = spec.usage,
-                                                           .memory = spec.memory,
-                                                           .debug_name = spec.debug_name,
-                                                   });
+            auto buffer = create_shared_buffer(context_, BufferCreateInfo{
+                                                                 .size = spec.size,
+                                                                 .usage = spec.usage,
+                                                                 .memory = spec.memory,
+                                                                 .debug_name = spec.debug_name,
+                                                         });
 
             if (!buffer) {
                 return std::unexpected(make_device_error(buffer.error()));
@@ -1397,13 +1415,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         // Host-written every frame.
         auto frustum_planes_buffer =
-                Buffer::create(context_, BufferCreateInfo{
-                                                 .size = sizeof(glm::vec4) * cull_plane_count,
-                                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                 .memory = BufferMemory::upload,
-                                                 .debug_name = "renderer.frame_frustum_planes",
-                                         });
+                create_shared_buffer(context_, BufferCreateInfo{
+                                                       .size = sizeof(glm::vec4) * cull_plane_count,
+                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                       .memory = BufferMemory::upload,
+                                                       .debug_name = "renderer.frame_frustum_planes",
+                                               });
 
         if (!frustum_planes_buffer) {
             return std::unexpected(make_device_error(frustum_planes_buffer.error()));
@@ -1411,13 +1429,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.frustum_planes_buffer = std::move(*frustum_planes_buffer);
 
-        auto lights_buffer = Buffer::create(context_, BufferCreateInfo{
-                                                              .size = sizeof(GpuLight) * maximum_light_count,
-                                                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                              .memory = BufferMemory::upload,
-                                                              .debug_name = "renderer.frame_lights",
-                                                      });
+        auto lights_buffer = create_shared_buffer(context_, BufferCreateInfo{
+                                                                    .size = sizeof(GpuLight) * maximum_light_count,
+                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                    .memory = BufferMemory::upload,
+                                                                    .debug_name = "renderer.frame_lights",
+                                                            });
 
         if (!lights_buffer) {
             return std::unexpected(make_device_error(lights_buffer.error()));
@@ -1426,13 +1444,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.lights_buffer = std::move(*lights_buffer);
 
         // light_cull.slang is the only writer.
-        auto visible_lights = Buffer::create(context_, BufferCreateInfo{
-                                                               .size = visible_lights_size,
-                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                               .memory = BufferMemory::device,
-                                                               .debug_name = "renderer.frame_visible_lights",
-                                                       });
+        auto visible_lights = create_shared_buffer(context_, BufferCreateInfo{
+                                                                     .size = visible_lights_size,
+                                                                     .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                     .memory = BufferMemory::device,
+                                                                     .debug_name = "renderer.frame_visible_lights",
+                                                             });
 
         if (!visible_lights) {
             return std::unexpected(make_device_error(visible_lights.error()));
@@ -1549,13 +1567,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     ubos_.resize(frames_in_flight);
     for (auto &ubo: ubos_) {
-        auto maybe_ubo = Buffer::create(context_, BufferCreateInfo{
-                                                          .size = sizeof(UBO),
-                                                          .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                                                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                          .memory = BufferMemory::upload,
-                                                          .debug_name = "renderer.ubo",
-                                                  });
+        auto maybe_ubo = create_shared_buffer(context_, BufferCreateInfo{
+                                                                .size = sizeof(UBO),
+                                                                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                .memory = BufferMemory::upload,
+                                                                .debug_name = "renderer.ubo",
+                                                        });
         if (!maybe_ubo) {
             error("Failed to create ubo");
             return std::unexpected(make_error(RendererErrorType::device_error));
@@ -3189,14 +3207,14 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     if (frame.meshlet_visibility_words > frame.meshlet_visibility_capacity_words) {
         auto const capacity_words = static_cast<std::uint32_t>(std::bit_ceil(frame.meshlet_visibility_words));
-        auto visibility = Buffer::create(context_, BufferCreateInfo{
-                                                           .size = VkDeviceSize{capacity_words} * sizeof(std::uint32_t),
-                                                           .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                                           .memory = BufferMemory::device,
-                                                           .debug_name = "renderer.frame_meshlet_visibility",
-                                                   });
+        auto visibility = create_shared_buffer(
+                context_, BufferCreateInfo{
+                                  .size = VkDeviceSize{capacity_words} * sizeof(std::uint32_t),
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                  .memory = BufferMemory::device,
+                                  .debug_name = "renderer.frame_meshlet_visibility",
+                          });
 
         if (!visibility) {
             clear_submissions();
@@ -3725,7 +3743,7 @@ auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<vo
     }
 
     // light_cluster.slang is the only writer of the lists; the statistics are cleared and read back by copies.
-    auto cluster_lights = Buffer::create(
+    auto cluster_lights = create_shared_buffer(
             context_, BufferCreateInfo{
                               .size = cluster_buffer_bytes(cluster_grid_),
                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |

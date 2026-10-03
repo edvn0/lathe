@@ -27,7 +27,7 @@ plan, where it deviates, and what to do next.
 | 5 | Transient allocation and aliasing | **Done** for the AO, bloom and forward targets (section 6.2). |
 | 6 | Enable async compute, one pass at a time, by measurement | **Candidates implemented and correct; measurement in section 6.3.** |
 | 7 | Delete `RenderStage` / `write_empty_stage` | **Done** (section 6.4). |
-| 8 | Concurrent sharing for read-mostly buffers | Not started (optional). |
+| 8 | Concurrent sharing for read-mostly buffers | **Done** (section 6.5). |
 | 9 | Parallel batch recording | Not started. |
 
 What exists end to end today: every frame, `Renderer::record_frame` (in `src/rendering/renderer_frame_graph.cxx`)
@@ -393,6 +393,22 @@ timings plot is keyed by pass id. `frame_graph::describe` (moved from the test s
 compiled plan, with the transient placement, whenever it changes. Deviation: the overlay timings still use their own
 queries in the old pool rather than `PassContext::profile_scope`.
 
+### 6.5 Phase 8 as built
+
+`BufferCreateInfo::concurrent_families` creates a buffer with `VK_SHARING_MODE_CONCURRENT` between the graphics and compute
+families. With a compute family of its own the renderer creates every per-frame GPU buffer that both queues may touch that
+way (draws, transforms, indirect commands, batch bounds, the culled, visible, late and merged buffers, candidate lists,
+occlusion views and statistics, planes, lights, visible lights, cluster lists, the meshlet bits, the UBOs) through
+`create_shared_buffer`, and the graph imports them with `Sharing::concurrent`. The host readback buffers and the upload
+staging buffer stay exclusive. On the plan dump the ownership transfers fall from 6 to 0 (`light`), 30 to 2
+(`occlusion`) and 38 to 4 (all three groups); the rest are images, which stay exclusive. The two must always agree:
+a buffer created exclusive but imported as concurrent would skip the transfer it needs.
+
+Caveat from testing: while the machine was under heavy CPU load (a large compile), a few sequential four-variant runs showed
+intermittent keyframe mismatches in async configurations; with the machine quiet, 32 consecutive variant runs and 24
+single-variant runs (concurrent and exclusive) were all identical. Treat benchmark comparisons made on a loaded machine
+with suspicion (the warmup may end before streaming has settled).
+
 ### 6.3 Phase 6 as built
 
 `--async-passes=light,occlusion,gtao` declares groups of compute passes with compute-queue affinity (light culling and
@@ -514,8 +530,8 @@ Deliberate or forced differences, so they are not mistaken for oversights:
    floor (section 6.3); revert the others. Consider enabling `SchedulerMode::overlap` instead of moving the shadow
    declaration by hand.
 3. Move the overlay timings onto the graph profiler (`PassContext::profile_scope`) and drop the last old queries.
-4. Phase 8 (optional): concurrent sharing for the read-mostly buffers, which removes most of the ownership transfers
-   async compute needs (30 for the occlusion group). Phase 9: parallel batch recording.
+4. Re-measure phase 6 now that the transfers are mostly gone (section 6.3), on a quiet machine. Phase 9: parallel batch
+   recording.
 5. Implement the ImGui contract before making any ImGui-visible image a transient, and wire `RendererError` when a
    pass needs to fail.
 

@@ -6,6 +6,7 @@
 #include "core/forward.hxx"
 #include "gpu/device_error.hxx"
 
+#include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -30,6 +31,12 @@ struct BufferCreateInfo {
     VkBufferUsageFlags usage = 0;
     BufferMemory memory = BufferMemory::device;
     VkBufferCreateFlags flags = 0;
+
+    // Concurrent sharing between these queue families (VK_SHARING_MODE_CONCURRENT) instead of exclusive ownership;
+    // empty is exclusive. For buffers two queue families both touch, so the frame graph needs no ownership transfers.
+    std::array<std::uint32_t, 2> concurrent_families{};
+    std::uint32_t concurrent_family_count = 0;
+
     std::string_view debug_name{};
 };
 

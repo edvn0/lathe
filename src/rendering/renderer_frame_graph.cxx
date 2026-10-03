@@ -233,11 +233,16 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     constexpr auto geometry_stages = ShaderStage::vertex | ShaderStage::task | ShaderStage::mesh;
     constexpr auto draw_stages = geometry_stages | ShaderStage::fragment;
 
+    // These buffers were created for concurrent sharing when the compute queue has a family of its own (see
+    // create_shared_buffer), so no pass moving between the queues needs an ownership transfer for them.
+    auto const buffers_concurrent = context_.queue_families.compute != context_.queue_families.graphics;
+
     auto const import_frame_buffer = [&](Buffer const &buffer, std::string_view name,
                                          bool read_only) -> frame_graph::BufferId {
         return frame_graph_.import_buffer({
                 .entry = buffer_idle,
                 .exit = buffer_idle,
+                .sharing = buffers_concurrent ? frame_graph::Sharing::concurrent : frame_graph::Sharing::exclusive,
                 .read_only = read_only,
                 .debug_name = name,
                 .buffer = physical_buffer(buffer),
