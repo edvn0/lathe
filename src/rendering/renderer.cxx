@@ -1445,7 +1445,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.forward_target = std::move(targets->forward_target);
         frame.viewport_target = std::move(targets->viewport_target);
-        frame.bloom_target = std::move(targets->bloom_target);
 
         frame.draw_upload_offset = 0;
         frame.transform_upload_offset = transform_offset;
@@ -4118,28 +4117,23 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
             scene_overlays);
 }
 
-auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                                 FrameTargets const &targets, render_pass::HdrTextureIndex hdr)
+auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
+                                 render_pass::HdrTextureIndex hdr, Image const &bloom_image,
+                                 std::array<std::uint32_t, render_pass::bloom_mip_count> const &mip_texture_indices)
         -> std::expected<std::optional<render_pass::BloomTextureIndex>, RendererError> {
-    std::array<std::uint32_t, render_pass::bloom_mip_count> mip_texture_indices{};
-    for (std::uint32_t mip = 0; mip < render_pass::bloom_mip_count; ++mip) {
-        mip_texture_indices[mip] = frame.bloom_target.mip_slots[mip].handle().index;
-    }
-
-    return render_pass::bloom(pass_context,
-                              render_pass::BloomPassInfo{
-                                      .enabled = bloom_settings_.enabled,
-                                      .input_hdr = hdr,
-                                      .target = bloom_settings_.enabled ? frame.bloom_target.image.get() : nullptr,
-                                      .mip_texture_indices = mip_texture_indices,
-                                      .input_extent = targets.extent,
-                                      .downsample_pipeline = bloom_downsample_pipeline_,
-                                      .upsample_pipeline = bloom_upsample_pipeline_,
-                                      .linear_sampler_index = sampler_storage_.linear_clamp().index,
-                                      .threshold = bloom_settings_.threshold,
-                                      .knee = bloom_settings_.knee,
-                                      .filter_radius = bloom_settings_.filter_radius,
-                              });
+    return render_pass::bloom(pass_context, render_pass::BloomPassInfo{
+                                                    .enabled = bloom_settings_.enabled,
+                                                    .input_hdr = hdr,
+                                                    .target = bloom_settings_.enabled ? &bloom_image : nullptr,
+                                                    .mip_texture_indices = mip_texture_indices,
+                                                    .input_extent = targets.extent,
+                                                    .downsample_pipeline = bloom_downsample_pipeline_,
+                                                    .upsample_pipeline = bloom_upsample_pipeline_,
+                                                    .linear_sampler_index = sampler_storage_.linear_clamp().index,
+                                                    .threshold = bloom_settings_.threshold,
+                                                    .knee = bloom_settings_.knee,
+                                                    .filter_radius = bloom_settings_.filter_radius,
+                                            });
 }
 
 auto Renderer::record_frame_end(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void {
@@ -4360,52 +4354,7 @@ auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent
 
     targets.viewport_target = std::move(*viewport_target);
 
-    auto const bloom_target_name = std::format("renderer.bloom_target_{}", frame_index);
-    auto bloom_image = create_held_image(
-            image_storage_,
-            ImageCreateInfo{
-                    .extent = VkExtent3D{.width = extent.width / 2, .height = extent.height / 2, .depth = 1},
-                    .format = VK_FORMAT_R16G16B16A16_SFLOAT,
-                    .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .image_type = VK_IMAGE_TYPE_2D,
-                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
-                                        image_descriptor_view_bit(ImageDescriptorView::storage_2d),
-                    .flags = 0,
-                    .samples = VK_SAMPLE_COUNT_1_BIT,
-                    .tiling = VK_IMAGE_TILING_OPTIMAL,
-                    .mip_levels = render_pass::bloom_mip_count,
-                    .array_layers = 1,
-                    .create_mip_layer_views = true,
-                    .debug_name = bloom_target_name,
-            });
-
-    if (!bloom_image) {
-        return std::unexpected(make_image_error(bloom_image.error()));
-    }
-
-    // Into the BloomTarget before its mip slots, so a failed registration still releases the slots first.
-    targets.bloom_target.image = std::move(*bloom_image);
-
-    auto const *bloom_image_ptr = targets.bloom_target.image.get();
-
-    for (std::uint32_t mip = 0; mip < render_pass::bloom_mip_count; ++mip) {
-        auto const view = bloom_image_ptr->mip_layer_view(mip, 0);
-
-        auto mip_slot = register_held_view(image_storage_, ImageViewRegistration{
-                                                                   .sampled_2d = view,
-                                                                   .storage_2d = view,
-                                                           });
-
-        if (!mip_slot) {
-            return std::unexpected(make_image_error(mip_slot.error()));
-        }
-
-        targets.bloom_target.mip_slots[mip] = std::move(*mip_slot);
-    }
-
-    // The AO images are transients of the frame graph (renderer_frame_graph.cxx).
+    // The bloom chain and the AO images are transients of the frame graph (renderer_frame_graph.cxx).
 
     return targets;
 }
@@ -4452,7 +4401,6 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
 
         frame.forward_target = std::move(targets.forward_target);
         frame.viewport_target = std::move(targets.viewport_target);
-        frame.bloom_target = std::move(targets.bloom_target);
     }
 
     hiz_ = std::move(*hiz);

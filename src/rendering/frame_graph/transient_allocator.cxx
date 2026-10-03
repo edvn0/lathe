@@ -256,6 +256,22 @@ namespace frame_graph {
         return slot < slots_.size() ? slots_[slot].plan : empty_plan();
     }
 
+    auto TransientAllocator::total_bytes() const noexcept -> std::uint64_t {
+        auto total = std::uint64_t{0};
+        for (auto const &slot: slots_) {
+            total += slot.plan.total_bytes;
+        }
+        return total;
+    }
+
+    auto TransientAllocator::unaliased_bytes() const noexcept -> std::uint64_t {
+        auto total = std::uint64_t{0};
+        for (auto const &slot: slots_) {
+            total += slot.plan.unaliased_bytes;
+        }
+        return total;
+    }
+
     auto TransientAllocator::fill(std::uint32_t slot, PhysicalResources &resources) const -> void {
         if (slot >= slots_.size()) {
             return;

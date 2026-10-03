@@ -54,6 +54,10 @@ namespace frame_graph {
         // The slot's placement and sizes (empty before the first prepare).
         [[nodiscard]] auto plan(std::uint32_t slot) const noexcept -> TransientPlan const &;
 
+        // Bytes of device memory the slot's transients occupy, and what they would take without aliasing.
+        [[nodiscard]] auto total_bytes() const noexcept -> std::uint64_t;
+        [[nodiscard]] auto unaliased_bytes() const noexcept -> std::uint64_t;
+
         // Adds the slot's transient images to the handles the executor translates barriers with.
         auto fill(std::uint32_t slot, PhysicalResources &resources) const -> void;
 

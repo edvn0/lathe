@@ -627,6 +627,15 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     [[nodiscard]] auto last_frame_timings() const noexcept -> StageTimings const & { return last_frame_timings_; }
     [[nodiscard]] auto last_frame_stats() const noexcept -> FrameStats const & { return last_frame_stats_; }
+
+    // Frame graph transients (the AO and bloom images, over every frame slot): the device memory they occupy and what
+    // they would take if none shared memory. Aliasing is on by default; off is for A/B runs.
+    [[nodiscard]] auto transient_bytes() const noexcept -> std::uint64_t { return transient_allocator_.total_bytes(); }
+    [[nodiscard]] auto transient_unaliased_bytes() const noexcept -> std::uint64_t {
+        return transient_allocator_.unaliased_bytes();
+    }
+    [[nodiscard]] auto transient_aliasing() const noexcept -> bool { return transient_aliasing_; }
+    auto set_transient_aliasing(bool enabled) noexcept -> void { transient_aliasing_ = enabled; }
     [[nodiscard]] auto last_frame_pipeline_stats() const noexcept -> PipelineStats const & {
         return last_frame_pipeline_stats_;
     }
@@ -893,30 +902,6 @@ private:
         // LDR composite output sampled by the editor's Viewport panel. Unused in fullscreen play.
         ImageHolder viewport_target{};
 
-        // mip_slots are register_view() aliases of image's mip views, so they're released before it: declared after
-        // it for destruction, and assigned first on a move.
-        struct BloomTarget {
-            ImageHolder image;
-            std::array<ImageHolder, render_pass::bloom_mip_count> mip_slots;
-
-            BloomTarget() = default;
-            ~BloomTarget() = default;
-
-            BloomTarget(BloomTarget const &) = delete;
-            auto operator=(BloomTarget const &) -> BloomTarget & = delete;
-
-            BloomTarget(BloomTarget &&) noexcept = default;
-
-            auto operator=(BloomTarget &&other) noexcept -> BloomTarget & {
-                mip_slots = std::move(other.mip_slots);
-                image = std::move(other.image);
-
-                return *this;
-            }
-        };
-        BloomTarget bloom_target{};
-
-        // Per-frame GTAO targets: `raw` from the horizon search, `denoised` sampled by the forward pass.
 
         // Bit i means cascade i is redrawn into the persistent atlas this frame.
         ShadowCascadeMask shadow_update_mask = all_shadow_cascades_mask;
@@ -997,7 +982,6 @@ private:
     struct OwnedFrameTargets {
         ForwardTarget forward_target{};
         ImageHolder viewport_target{};
-        RendererFrame::BloomTarget bloom_target{};
     };
 
     struct ModelSubmission {
@@ -1195,8 +1179,9 @@ private:
             -> std::expected<render_pass::HdrTextureIndex, RendererError>;
 
     [[nodiscard]]
-    auto record_bloom_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                           FrameTargets const &targets, render_pass::HdrTextureIndex hdr)
+    auto record_bloom_pass(render_pass::Context const &pass_context, FrameTargets const &targets,
+                           render_pass::HdrTextureIndex hdr, Image const &bloom_image,
+                           std::array<std::uint32_t, render_pass::bloom_mip_count> const &mip_texture_indices)
             -> std::expected<std::optional<render_pass::BloomTextureIndex>, RendererError>;
 
     [[nodiscard]]
@@ -1386,6 +1371,7 @@ private:
     frame_graph::PassProfiler pass_profiler_;
 
     // Backs the graph's transient images, per frame slot (record_frame()). Aliasing can be switched off for debugging.
+    // (--frame-graph-alias=on|off)
     frame_graph::TransientAllocator transient_allocator_;
     bool transient_aliasing_ = true;
 

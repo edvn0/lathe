@@ -235,17 +235,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         return transient_allocator_.handle(info.frame_index, image.index).index;
     };
 
-    // Rebuilt every frame by the bloom pass, which leaves it sampled. Not imported when bloom is off: nothing
-    // touches it.
+    // The bloom mip chain (half resolution) is a transient created by the bloom pass, which leaves it sampled. With
+    // bloom off nothing creates it.
     auto bloom_image = frame_graph::ImageId{};
-    if (bloom_enabled) {
-        bloom_image = frame_graph_.import_image({
-                .entry = sampled_by_fragment_or_compute,
-                .exit = sampled_by_fragment_or_compute,
-                .debug_name = "bloom",
-                .image = physical_image(*frame.bloom_target.image),
-        });
-    }
 
     // The per-frame buffers the occlusion chain and the draws reach by device address. Every pass that dereferences one
     // must declare it, because neither sync validation nor the compiler can see a device-address access otherwise.
@@ -982,6 +974,17 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const input = pass.read(hdr_image, frame_graph::Use::sampled, compute_stage);
                     // The mip chain is written, sampled and written again inside the pass, one level at a time; the
                     // graph only sees it enter writable and leave sampled.
+                    // Single-mip views registered in the bindless table are what the dispatches address.
+                    bloom_image = pass.create({
+                            .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                            .extent = {targets->extent.width / 2, targets->extent.height / 2, 1},
+                            .mip_levels = render_pass::bloom_mip_count,
+                            .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d) |
+                                                image_descriptor_view_bit(ImageDescriptorView::storage_2d),
+                            .mip_layer_views = true,
+                            .mip_slots = true,
+                            .debug_name = "bloom",
+                    });
                     bloom_image = pass.write(bloom_image, frame_graph::Use::storage_write, compute_stage,
                                              frame_graph::ExitUse{frame_graph::Use::sampled});
 
@@ -991,7 +994,15 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         }
 
                         auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
-                        auto const bloom_result = record_bloom_pass(pass_context, frame, *targets, state.handoff.hdr);
+                        auto mip_texture_indices = std::array<std::uint32_t, render_pass::bloom_mip_count>{};
+                        for (auto mip = std::uint32_t{0}; mip < render_pass::bloom_mip_count; ++mip) {
+                            mip_texture_indices[mip] =
+                                    transient_allocator_.mip_handle(info.frame_index, bloom_image.index, mip).index;
+                        }
+
+                        auto const bloom_result = record_bloom_pass(
+                                pass_context, *targets, state.handoff.hdr,
+                                *transient_allocator_.image(info.frame_index, bloom_image.index), mip_texture_indices);
                         if (bloom_result) {
                             state.handoff.bloom = *bloom_result;
                         } else {
@@ -1188,6 +1199,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
     if (*allocated) {
+        ::info("Frame graph transients: {:.1f} MiB for all frame slots, {:.1f} MiB without aliasing",
+             static_cast<double>(transient_allocator_.total_bytes()) / (1024.0 * 1024.0),
+             static_cast<double>(transient_allocator_.unaliased_bytes()) / (1024.0 * 1024.0));
         if (auto const refreshed =
                     gpu_resource_table_.prepare_frame(info.frame_index, image_storage_, sampler_storage_);
             !refreshed) {

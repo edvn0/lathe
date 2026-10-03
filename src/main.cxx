@@ -757,6 +757,24 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    // --frame-graph-alias=on|off lets the frame graph's transient images share memory (default on); off is for A/B
+    // runs of the same frames.
+    std::optional<bool> transient_aliasing;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--frame-graph-alias="; arg.starts_with(prefix)) {
+            auto const value = arg.substr(prefix.size());
+
+            if (value == "on") {
+                transient_aliasing = true;
+            } else if (value == "off") {
+                transient_aliasing = false;
+            } else {
+                error("Invalid --frame-graph-alias: '{}' (expected on or off)", value);
+                return EXIT_FAILURE;
+            }
+        }
+    }
+
     // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
         set_fixed_random_seed((*benchmark_options)->seed);
@@ -816,6 +834,10 @@ auto main(int argc, char **argv) -> int {
 
     if (occlusion_test) {
         application.renderer->set_occlusion_test_mode(*occlusion_test);
+    }
+
+    if (transient_aliasing) {
+        application.renderer->set_transient_aliasing(*transient_aliasing);
     }
 
     if (meshlet_occlusion) {
