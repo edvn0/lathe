@@ -61,6 +61,10 @@ namespace frame_graph {
         }
     };
 
+    // The usage flags a transient image needs for the uses the live passes declare of it (including exit uses).
+    [[nodiscard]] auto transient_usage(GraphDesc const &graph, CompiledGraph const &compiled, std::uint32_t resource)
+            -> VkImageUsageFlags;
+
     // Whether every access of `first` happens before every access of `second` in `compiled`: on one queue by schedule
     // order, across queues through the semaphore waits (a wait on a timeline value orders the whole earlier prefix of
     // the signalling queue before the waiting batch). Exposed so tests can check the planner against it.

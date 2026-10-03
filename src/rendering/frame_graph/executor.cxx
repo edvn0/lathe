@@ -45,6 +45,20 @@ namespace frame_graph {
                          ExecuteInfo const &info) -> std::expected<void, ExecuteError> {
             auto const &pass = info.graph.passes[compiled_pass.pass];
 
+            // Memory another transient used until now: wait for its accesses before this pass's own barriers.
+            if (info.transients != nullptr) {
+                for (auto const &aliasing: info.transients->barriers) {
+                    if (aliasing.pass != compiled_pass.pass) {
+                        continue;
+                    }
+                    auto handoff = BarrierSet{};
+                    handoff.memory.push_back(aliasing.barrier);
+                    if (auto recorded = record_barriers(command_buffer, handoff, info); !recorded) {
+                        return recorded;
+                    }
+                }
+            }
+
             if (auto recorded = record_barriers(command_buffer, compiled_pass.before, info); !recorded) {
                 return recorded;
             }

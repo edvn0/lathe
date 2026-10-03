@@ -19,6 +19,7 @@ add_library(
         frame_graph/frame_graph.cxx
         frame_graph/pass_profiler.cxx
         frame_graph/scheduler.cxx
+        frame_graph/transient_allocator.cxx
         frame_graph/vk_translate.cxx
         forward_target.cxx
         imgui_renderer.cxx

@@ -138,6 +138,47 @@ namespace frame_graph {
 
     } // namespace
 
+    auto transient_usage(GraphDesc const &graph, CompiledGraph const &compiled, std::uint32_t resource)
+            -> VkImageUsageFlags {
+        auto usage = VkImageUsageFlags{0};
+        for (auto const pass: touching_passes(graph, compiled, resource)) {
+            for (auto const &access: graph.passes[pass].accesses) {
+                if (access.resource != resource) {
+                    continue;
+                }
+                for (auto const use: {access.use, access.exit_use.value_or(access.use)}) {
+                    switch (use) {
+                        case Use::color_attachment:
+                        case Use::color_resolve:
+                            usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+                            break;
+                        case Use::depth_attachment:
+                        case Use::depth_resolve:
+                            usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+                            break;
+                        case Use::sampled:
+                            usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+                            break;
+                        case Use::storage_read:
+                        case Use::storage_write:
+                        case Use::storage_read_write:
+                            usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+                            break;
+                        case Use::transfer_src:
+                            usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                            break;
+                        case Use::transfer_dst:
+                            usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+        }
+        return usage;
+    }
+
     auto transients_disjoint(GraphDesc const &graph, CompiledGraph const &compiled, std::uint32_t first_resource,
                              std::uint32_t second_resource) -> bool {
         auto const order = build_order(graph, compiled);

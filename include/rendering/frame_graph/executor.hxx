@@ -13,6 +13,7 @@
 
 #include "gpu/queue_set.hxx"
 #include "gpu/submission_plan.hxx"
+#include "rendering/frame_graph/aliasing.hxx"
 #include "rendering/frame_graph/compiled_graph.hxx"
 #include "rendering/frame_graph/frame_graph.hxx"
 #include "rendering/frame_graph/pass_profiler.hxx"
@@ -35,6 +36,10 @@ namespace frame_graph {
 
         // The handles behind every resource the barriers and passes touch.
         PhysicalResources const &resources;
+
+        // Where transients share memory: the dependencies to record before the pass that first uses recycled memory.
+        // Null when nothing is aliased.
+        TransientPlan const *transients = nullptr;
 
         // Batches after the first get fresh command buffers from here.
         QueueSet &queue_set;

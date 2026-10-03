@@ -26,6 +26,12 @@ namespace frame_graph {
         std::uint32_t mip_levels = 1;
         std::uint32_t array_layers = 1;
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+        // What the allocator has to register for shaders that reach the image by bindless index: the descriptor views
+        // (ImageDescriptorView bit flags), one view per mip level (for passes that write or read a single level), and a
+        // bindless slot for each of those level views. The compiler ignores all three.
+        std::uint32_t descriptor_views = 0;
+        bool mip_layer_views = false;
+        bool mip_slots = false;
         std::string_view debug_name;
     };
 
