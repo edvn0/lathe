@@ -4147,9 +4147,6 @@ auto Renderer::record_environment_pass(render_pass::Context const &pass_context,
 
 auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets)
         -> std::expected<void, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Hi-Z Build",
-                 tracy::Color::DarkOrange);
-
     auto const *hiz_image = hiz_.image.get();
 
     if (hiz_image == nullptr || hiz_.mip_count == 0 || hiz_.mip_count > hiz_max_mip_count) {
@@ -4164,10 +4161,8 @@ auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameT
 
     auto const built = render_pass::build_hiz(
             pass_context, render_pass::HizBuildInfo{
-                                  .source_depth = *targets.resolved_depth,
                                   .source_texture_index = targets.resolved_depth_handle.index,
                                   .depth_extent = targets.extent,
-                                  .multisampled_depth = targets.multisampled ? targets.depth : nullptr,
                                   .hiz = *hiz_image,
                                   .mip_texture_indices = std::span{mip_texture_indices}.first(hiz_.mip_count),
                                   .pipeline = hiz_build_pipeline_,
@@ -4573,16 +4568,11 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &f
     }
 
     if (frame.occlusion_active) {
-        if (auto built = record_hiz_build(pass_context, targets); !built) {
-            return built;
-        }
-
         // Next frame's phase 1 tests against this pyramid, projected as it was built.
         hiz_history_view_projection_ = frame.view_projection;
         hiz_history_valid_ = true;
 
-        // late_cs and the late prepass follow as graph passes (renderer_frame_graph.cxx).
-        // The late prepass follows as a graph pass (renderer_frame_graph.cxx).
+        // The Hi-Z build, late_cs and the late prepass follow as graph passes (renderer_frame_graph.cxx).
     } else {
         write_empty_stage(command_buffer, frame_index, RenderStage::HiZBuild);
         write_empty_stage(command_buffer, frame_index, RenderStage::OcclusionCulling);

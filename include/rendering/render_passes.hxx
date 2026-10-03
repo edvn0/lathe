@@ -294,10 +294,8 @@ namespace render_pass {
     // late prepass loads. Every pyramid level ends in SHADER_READ_ONLY_OPTIMAL, visible to compute, task and fragment
     // shaders (the occlusion tests and the debug view); the previous contents are discarded.
     struct HizBuildInfo {
-        Image const &source_depth;
         std::uint32_t source_texture_index = 0;
         VkExtent2D depth_extent{};
-        Image const *multisampled_depth = nullptr;
 
         Image const &hiz;
         std::span<std::uint32_t const> mip_texture_indices;

@@ -732,41 +732,13 @@ namespace render_pass {
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, context.timestamp_query_pool,
                              stage * 2);
 
-        constexpr VkPipelineStageFlags2 fragment_tests =
-                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-
-        // Multisample resolves, depth included, run in COLOR_ATTACHMENT_OUTPUT with COLOR_ATTACHMENT_* accesses.
-        constexpr VkPipelineStageFlags2 attachment_stages =
-                fragment_tests | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-
         // The occlusion tests (main_cs, late_cs, and task shaders for meshlet occlusion) and the debug view.
         constexpr VkPipelineStageFlags2 hiz_reader_stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                                                             VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
                                                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 
-        // The late prepass loads the MSAA depth the early one stored (and its resolve read).
-        if (info.multisampled_depth != nullptr) {
-            transition_image_layout(
-                    command_buffer, info.multisampled_depth->image(), VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, attachment_stages, attachment_stages,
-                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
-        }
-
-        // Written by the early prepass's depth writes (1x) or its resolve (MSAA).
-        transition_image_layout(command_buffer, info.source_depth.image(), VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, attachment_stages,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
-
-        // Rebuilt from scratch, so discard the contents. The source scope covers the earlier readers of the previous
-        // build, this frame's main_cs among them.
-        transition_image_layout(command_buffer, info.hiz.image(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-                                hiz_reader_stages, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_NONE,
-                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, mip_count);
-
+        // The frame graph has put the source depth in SHADER_READ_ONLY_OPTIMAL and every level of the pyramid in
+        // GENERAL (it is rebuilt from scratch), and takes the depth back for the late prepass afterwards.
         detail::bind_compute_node(context.pipeline_graph, info.pipeline, command_buffer);
         context.resource_table.bind(command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
 
@@ -793,15 +765,6 @@ namespace render_pass {
                                     hiz_reader_stages, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, level, 1);
         }
-
-        // Back for the late prepass, which loads it at 1x or overwrites it with its resolve under MSAA.
-        transition_image_layout(command_buffer, info.source_depth.image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                attachment_stages, VK_ACCESS_2_NONE,
-                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                                VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
 
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, context.timestamp_query_pool,
                              stage * 2 + 1);

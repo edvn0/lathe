@@ -82,6 +82,14 @@ namespace {
         };
     }
 
+    // The Hi-Z pyramid as the occlusion tests (compute, task shaders) and the editor's debug view leave it.
+    constexpr auto hiz_readers = frame_graph::ResourceState{
+            .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+    };
+
     // What a viewport (or swapchain) image looks like to the graph: the sampled state the editor panel leaves it in.
     constexpr auto sampled_by_fragment = frame_graph::ResourceState{
             .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -265,7 +273,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     auto const meshlet_occlusion_active = frame.meshlet_occlusion_active;
 
     // Phase 2 (late_cs): re-tests main_cs's candidates against this frame's Hi-Z. Everything it reads but does not
-    // write was produced before the frame graph; the Hi-Z is built by the legacy pass for now.
+    // write was produced before the frame graph.
     auto late_indirect = frame_graph::BufferId{};
     auto merged_indirect = frame_graph::BufferId{};
     auto occlusion_views = frame_graph::BufferId{};
@@ -287,11 +295,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         occlusion_candidates = import_frame_buffer(frame.occlusion_candidates_buffer, "occlusion_candidates", true);
         candidate_counts = import_frame_buffer(frame.candidate_counts_buffer, "candidate_counts", true);
 
-        // The pyramid the build leaves sampled (the editor's debug view samples it too).
+        // Rebuilt from the depth every frame; last frame's readers are what the build has to wait for.
         hiz_image = frame_graph_.import_image({
-                .entry = sampled_by_fragment_or_compute,
-                .exit = sampled_by_fragment_or_compute,
-                .read_only = true,
+                .entry = hiz_readers,
+                .exit = hiz_readers,
                 .debug_name = "hiz",
                 .image = physical_image(*hiz_.image),
         });
@@ -335,6 +342,37 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                   state.result = record_frame_legacy(legacy_info, frame, *targets, state.handoff);
                               }};
                           });
+
+    // The Hi-Z pyramid: the single-sample depth reduced into a mip chain, one dispatch per level. The levels are
+    // written and sampled one at a time inside the pass; the graph sees it enter writable and leave sampled.
+    if (occlusion_active) {
+        frame_graph_.add_pass("hiz_build", frame_graph::PassType::compute,
+                              {
+                                      .name_id = "hiz_build",
+                                      .label = "Hi-Z build",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::DarkOrange),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  constexpr auto compute = stages_of(ShaderStage::compute);
+
+                                  [[maybe_unused]] auto const depth =
+                                          pass.read(resolved_depth_image, frame_graph::Use::sampled, compute);
+                                  hiz_image = pass.write(hiz_image, frame_graph::Use::storage_write, compute,
+                                                         frame_graph::ExitUse{frame_graph::Use::sampled});
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      if (!state.result) {
+                                          return;
+                                      }
+
+                                      auto const pass_context =
+                                              make_pass_context(context.command_buffer, info.frame_index);
+                                      if (auto const done = record_hiz_build(pass_context, *targets); !done) {
+                                          state.result = std::unexpected(done.error());
+                                      }
+                                  }};
+                              });
+    }
 
     // Phase 2 of occlusion culling, culling: re-tests the candidates main_cs deferred against this frame's Hi-Z and
     // appends the survivors to the visible draws, with the late and merged indirect commands.
