@@ -8,32 +8,36 @@ plan, where it deviates, and what to do next.
 - **Branch:** `claude/youthful-carson-5f71a0` (stacked on `frame-graph-plan`, which holds only `docs/frame-graph.md`).
 - **Pull request:** <https://github.com/edvn0/lathe/pull/47>, a draft, titled "Frame graph: compiler (phase 1), queue
   infrastructure (phase 2) and recording backend (phase 3)".
-- **Head at the time of writing:** `2fd46af`. CI is green on it: `linux-native / Debug`, `RelWithDebInfo` and
-  `Debug / ASan+UBSan / -Werror` all build `lathe-tests` and run `ctest` (see `.github/workflows/build.yml`).
-- **Nothing in this branch has been run on a GPU.** Read [Verification status](#verification-status) before trusting
-  any runtime behaviour.
+- **Head at the time of writing:** `82efff7` (Phase 4, step 5d). CI builds `lathe-tests` and runs `ctest` in Debug,
+  RelWithDebInfo and Debug ASan+UBSan `-Werror` (see `.github/workflows/build.yml`); check the PR for the current state.
+- **Phases 0 and 4 (steps 1 to 5d) were implemented locally by the repository owner** (with Opus) on top of the Phase 1 to 3
+  work, and pushed to this branch. Hardware results for them are reported only in their commit messages (baselines
+  bit-identical, sync validation clean on an RTX 4070 Ti SUPER); they were not independently re-run. Read
+  [Verification status](#7-verification-status) before trusting any runtime behaviour.
 
 ## 1. Where we are in one page
 
 | Phase | What | State |
 |---|---|---|
-| 0 | Baseline harness (occlusion statistics in the benchmark JSON, `compare_screenshots.py`, stored baselines) | **Not started.** Every later acceptance check depends on it. |
+| 0 | Baseline harness (benchmark counters, deterministic screenshots, `compare_screenshots.py`, `capture_baselines.sh`, `--occlusion-test`) | **Done** (owner). |
 | 1 | Device-free compiler core (`frame_graph::compile`) | **Done**, unit and property tested. |
 | 2 | Queue discovery, timeline semaphores, `QueueSet`, swapchain split, per-queue Tracy, smoke path | **Done in code, not run on a GPU.** |
-| 3 | Recording backend (`vk_translate`, `PassProfiler`, executor) and the frame wrapped as one legacy pass | **Done in code, not run on a GPU.** `RenderingDesc` is translated but nothing produces it yet. |
-| 4 | Migrate passes out of the legacy body, back to front | **Not started.** First change that alters renderer behaviour. |
+| 3 | Recording backend (`vk_translate`, `PassProfiler`, executor) and the frame wrapped as one legacy pass | **Done.** The builder now produces `RenderingDesc` and the executor does begin/end rendering; plan cache and `--frame-graph-serialize` landed with phase 4. |
+| 4 | Migrate passes out of the legacy body, back to front | **In progress, steps 1 to 5d done** (see section 6.1). Remaining: early depth prepass, shadows, culling/clustering out of `prepare_frame`, environment, overlays/ImGui. |
 | 5 | Transient allocation and aliasing | Not started. |
 | 6 | Enable async compute, one pass at a time, by measurement | Not started. |
 | 7 | Delete `RenderStage` / `write_empty_stage` | Not started. |
 | 8 | Concurrent sharing for read-mostly buffers | Not started (optional). |
 | 9 | Parallel batch recording | Not started. |
 
-What exists end to end today: every frame, `Renderer::record_frame` declares a frame graph containing **one**
-`legacy()` graphics pass ("`frame_legacy`") that wraps the entire old recording body. The graph is compiled and executed
-through the new backend, and `main.cxx` submits the resulting batches through `QueueSet` with timeline semaphores. With
-one pass the plan is one graphics batch, so the *result should be the same GPU work as before*; the value of the
-change is that all the infrastructure (queues, submission, profiling, translation) is now live and exercised every
-frame, and the migration in phase 4 can proceed one pass at a time.
+What exists end to end today: every frame, `Renderer::record_frame` (now in `src/rendering/renderer_frame_graph.cxx`)
+declares a frame graph. The first pass is still a `legacy()` graphics pass (`frame_legacy`) holding what has not been
+migrated (overlay prepares, environment, shadows, the early depth prepass, empty-stage timestamps); after it come
+graph-visible passes in declaration order: `hiz_build`, `late_cs` (occlusion culling), `depth_prepass_late`, `gtao`,
+`gtao_denoise`, `forward`, `bloom`, `composition`, `ui`, `occlusion_stats_readback`, `screenshot` (when pending) and
+`frame_end`. Passes are conditional on the frame's features. The graph is compiled (through `PlanCache`) and executed
+by the new backend, and `main.cxx` submits the batches through `QueueSet` with timeline semaphores. Everything is on the
+graphics queue until phase 6 enables async compute.
 
 The compiler is already queue-aware (single, same-family and dedicated topologies, ownership transfers, semaphore waits,
 list scheduler), so phases 4 to 6 only need to *declare* passes, not extend the compiler, except for the gaps in
@@ -331,11 +335,21 @@ steady state work, not a joined two-frame plan).
   ownership halves keep their family indices, everything else is `VK_QUEUE_FAMILY_IGNORED`; `RenderingDesc` becomes a
   `VkRenderingInfo` with `COLOR_ATTACHMENT_OPTIMAL` / `DEPTH_ATTACHMENT_OPTIMAL` and the resolve target in the same layout.
 
+### 6.1 Phase 4 as built so far (owner's commits)
+
+Passes live in `src/rendering/renderer_frame_graph.cxx`. Imports declared there: swapchain, viewport, HDR and MSAA HDR,
+depth and resolved depth, shadow atlas, AO raw/denoised, bloom, the occlusion-chain buffers, Hi-Z, stats readback.
+`FrameState{result, PassHandoff handoff}` carries results and per-frame handoff data between passes. Migration steps
+completed: (1) composition, `ui`, screenshot, `frame_end`; (2) bloom; (3) forward; (4) gtao and denoise, stats readback;
+(5b) late depth prepass; (5c) `late_cs`; (5d) `hiz_build`. `frame_legacy` still contains overlay prepares, the
+environment pass, shadows, the early depth prepass and the empty-stage timestamps. Tests for this layer are in
+`test/frame_graph_rendering_test.cxx` (12 cases).
+
 ## 7. Verification status
 
 ### Verified
 
-- **Pure logic:** 74 unit/property test cases pass locally with the strict warning flags under ASan+UBSan, and in CI
+- **Pure logic:** 86 unit/property test cases (74 at first writing; the rest are the owner's `frame_graph_rendering_test.cxx` and builder tests) pass locally with the strict warning flags under ASan+UBSan, and in CI
   (`ctest` in the normal and sanitizer jobs). The happens-before property tests were additionally run ad hoc over
   20,000 seeded random graphs per topology with no failures (average about 5 ownership transfers and 5 waits per
   dedicated-topology graph, so the cross-queue paths are exercised); the scheduler property test over 20,000 compiles
@@ -346,7 +360,9 @@ steady state work, not a joined two-frame plan).
 
 ### Not verified (needs hardware)
 
-Nothing from phases 2 and 3 has executed. In particular:
+I (the agent that wrote phases 1 to 3) never ran anything on a GPU. The owner reports in commit messages that
+baselines are bit-identical and sync validation is clean through phase 4 step 5d; treat that as reported, not
+re-verified here. Not reported as checked by anyone:
 
 - the frame submission path (`QueueSet`, timeline waits, swapchain `acquire`/`present`, resize/recreate);
 - the legacy pass wrapper: image-layout correctness of the swapchain through the new barrier plus the old body's own
@@ -359,11 +375,8 @@ Nothing from phases 2 and 3 has executed. In particular:
 
 The plan's acceptance checks, concretely:
 
-1. **Baselines.** Phase 0 does not exist yet, so first capture "before" output from `main` (or the commit before this
-   branch): the four variants are occlusion off, occlusion on, occlusion on with `--meshlet-occlusion=on`, and the
-   `always_defer` stub, using `--benchmark-screenshots` and `--occlusion-culling=on|off`. Then confirm this branch is
-   bit-identical (a byte compare of the PNGs in keyframe order is enough until `compare_screenshots.py` exists) and the
-   occlusion statistics match.
+1. **Baselines.** Use `tools/perf/capture_baselines.sh` (four variants) and `tools/perf/compare_screenshots.py` against
+   images captured from `main`; confirm bit-identical output and matching occlusion statistics after every migrated pass.
 2. **Validation.** Debug build, `--sync-validation`, 300 frames including a window resize and toggling occlusion, meshlet,
    AO and bloom: no new validation messages. Pay particular attention to swapchain image layout messages and anything
    about queue submission, timeline values, or command pool reset.
@@ -398,25 +411,23 @@ Deliberate or forced differences, so they are not mistaken for oversights:
    returning `std::expected<void, RendererError>`: the plan's version would make the compiler headers depend on
    renderer errors (and `slang.h`), which the isolation rule forbids, so the legacy adapter captures its
    `std::expected` result by reference. Revisit when a real migrated pass needs to fail.
-2. **`RenderingDesc` is not produced and not consumed by the executor.** The type, its translation and
-   `CompiledPass::rendering` exist and are tested, but `PassBuilder::color`/`write_depth` record only a load-derived
-   discard flag (store ops, clear values and resolve targets are dropped), and `executor.cxx` does **not** call
-   `vkCmdBeginRendering` / `vkCmdEndRendering`. Phase 4's first raster pass needs both: the builder must fill
-   `RenderingDesc` (including resolve targets as `color_resolve` / `depth_resolve` accesses) and `record_pass` must wrap
-   the record lambda with begin/end rendering when `compiled_pass.rendering` is set.
-3. **No plan cache.** `CompiledGraph::hash` is computed but unused; the graph is recompiled every frame. The plan lists the
-   hash-skip cache under phase 3; it is cheap for one pass but should land before the pass count grows.
+2. ~~`RenderingDesc` not produced/consumed~~ **Closed.** `RenderingDesc` now lives in `PassDesc`; the builder
+   (`color`/`write_depth` with a `VkClearValue`, `resolve(attachment, target, mode)`, `render_area`, `view_mask`) fills
+   it and the executor wraps raster passes in begin/end rendering (render area defaults to the first attachment's extent).
+3. ~~No plan cache~~ **Closed.** `PlanCache` (in `compiler.cxx`) reuses the plan when `declaration_hash` matches and
+   there are no declaration errors; hits and misses are counted.
 4. **Transients are images only and have no memory.** `PassBuilder::create` makes transient *images* in the declaration,
    but there is no allocator (phase 5) and no transient buffers; `CompileOptions::alias_transients` does not exist yet.
-5. **Missing CLI flags:** `--frame-graph-serialize` (maps to `CompileOptions::serialize`), `--frame-graph-alias`,
-   `--frame-graph-dump`. Phase 4's acceptance check uses the first.
+5. **Missing CLI flags:** `--frame-graph-alias` and `--frame-graph-dump`. (`--frame-graph-serialize` now exists and maps
+   to `CompileOptions::serialize`.)
 6. **`QueueSet` does not warn when the present family differs from graphics** (the plan says it should log a warning;
    the existing swapchain gap is unchanged).
 7. **`--async-compute=off` is compile-time only:** the compute queue is still created and, with `--async-compute-smoke`,
    used; only the compiler's placement changes.
 8. **Hi-Z two-frame check is not modelled** in the checker (see 4.5).
-9. **Phase 0 does not exist** (benchmark statistics, `compare_screenshots.py`, baselines), although `tools/perf/` already
-   has `run_benchmark.sh` and `compare_benchmarks.py` that phase 6 will use.
+9. **Phase 0 exists now**: `tools/perf/capture_baselines.sh` (variants `occ_off`, `occ_on`, `occ_meshlet`,
+   `always_defer`), `compare_screenshots.py`, benchmark counters, alongside `run_benchmark.sh`/`compare_benchmarks.py`
+   for phase 6. Baseline images live outside the repo.
 10. **`docs/frame-graph.md` has not been updated** with an "As built" section (`docs/ibl-and-skybox.md` is the model for
     one). Do it when phase 4 settles the pass-declaration API.
 
@@ -428,23 +439,18 @@ under phase 4.
 
 ### Suggested order
 
-1. Fix whatever the checklist and `cargo xtask tidy` find.
-2. **Phase 0** (small, and everything after needs it): add the occlusion and cluster statistics to the benchmark JSON,
-   `tools/perf/compare_screenshots.py` (bit-identical PNG compare in keyframe order, report the first differing pixel),
-   and capture and store the four baselines outside the repo. See `docs/frame-graph.md`, Phase 0.
-3. **Close the gaps phase 4 needs** (section 8, items 2, 3, 5): fill `RenderingDesc` from the builder
-   (load/store/clear/resolve), add `vkCmdBeginRendering`/`vkCmdEndRendering` to `executor.cxx`, add the plan cache keyed
-   by `CompiledGraph::hash`, and add `--frame-graph-serialize`. Add unit tests for the builder's `RenderingDesc`
-   (the compiler tests are the model) before using it on a real pass.
-4. **Phase 4, step 1 of the plan: composite, `ui_only` and screenshot.** Create `src/rendering/renderer_frame_graph.cxx`
-   (add it to `src/rendering/CMakeLists.txt`) holding `Renderer::build_frame_graph` and one `add_*_pass` per pass. Keep
-   `frame_legacy` as the first pass but shrink it: it now covers "everything except composite/ui/screenshot", declares
-   the layouts it expects and leaves for every graph-visible resource it touches (use `ExitUse`), and the new passes
-   follow it (`legacy()` already fences both sides). Delete the hand barriers that the graph now derives in the same
-   commit. One commit per migrated pass, each with the acceptance check (bit-identical baselines, `--sync-validation`,
-   `--frame-graph-serialize` identical).
-5. Continue in the plan's order (bloom, forward, AO, depth prepass/Hi-Z/occlusion, shadows, culling and clustering out of
-   `prepare_frame`, environment, overlays and UI), then phases 5 to 9.
+1. Run the unchecked items of the hardware checklist (async smoke, fallbacks, Tracy contexts, resize/recreate,
+   single-queue topology) and `cargo xtask tidy`; fix what they find.
+2. **Finish Phase 4** in the plan's order, one commit per pass with the acceptance check (bit-identical baselines,
+   `--sync-validation`, `--frame-graph-serialize` identical): the early depth prepass, shadows, culling and clustering
+   out of `prepare_frame` (`main_cs`, light clustering), environment, overlays and the ImGui contract. Then delete
+   `frame_legacy`.
+3. Audit migrated passes for buffers reached by device address that are not declared (the forward pass's BDA reads were
+   initially undeclared; the occlusion chain's buffers were declared in step 5b/5c). Sync validation cannot see these.
+4. Remove the temporary `managed_by_graph` flags once their passes own the transitions.
+5. Phases 5 to 9 (transient allocator and aliasing with `--frame-graph-alias`/`--frame-graph-dump`, async compute by
+   measurement, delete `RenderStage`, concurrent sharing, parallel recording), and wire `RendererError` when a migrated
+   pass needs to fail.
 
 ### Pitfalls to remember
 
@@ -457,6 +463,10 @@ under phase 4.
 - Do not split device-address buffers into sub-range graph resources; transfers and barriers are whole-buffer on purpose.
 - Keep `SchedulerMode::declaration_order` as the default until phase 6; reordering can expose undeclared dependencies.
 - The strict CI flags (`-Wconversion -Wshadow -Wpedantic -Werror`) are what failed first. Build with them locally.
+- `--sync-validation` silently did nothing at first because `VK_EXT_layer_settings` is exported by the validation layer,
+  not the loader; check the layer's extensions, not the instance's.
+- A new engine header needs its own includes (a missing `pass_context.hxx` in `renderer.cxx` was only caught by
+  compiling the wrapper in isolation); CI is the only full build available to a no-Docker agent.
 - If a new test uses `REQUIRE`, remember the no-exceptions doctest configuration (section 2).
 
 ## 10. Glossary
