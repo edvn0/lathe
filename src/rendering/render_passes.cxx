@@ -141,39 +141,6 @@ namespace render_pass {
             vkCmdPipelineBarrier2(command_buffer, &dependency_info);
         }
 
-        auto transition_hdr_to_shader_read(VkCommandBuffer command_buffer, Image const &hdr) noexcept -> void {
-            VkImageMemoryBarrier2 const barrier{
-                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .pNext = nullptr,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = hdr.image(),
-                    .subresourceRange =
-                            VkImageSubresourceRange{
-                                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                    .baseMipLevel = 0,
-                                    .levelCount = hdr.mip_levels(),
-                                    .baseArrayLayer = 0,
-                                    .layerCount = hdr.array_layers(),
-                            },
-            };
-
-            VkDependencyInfo const dependency_info{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .pNext = nullptr,
-                    .imageMemoryBarrierCount = 1,
-                    .pImageMemoryBarriers = &barrier,
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        }
-
         auto transition_shadow_atlas_to_attachment(VkCommandBuffer command_buffer, Image const &atlas,
                                                    bool preserve_contents) noexcept -> void {
             VkImageMemoryBarrier2 const barrier{
@@ -969,53 +936,7 @@ namespace render_pass {
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                              context.timestamp_query_pool, stage * 2);
 
-        VkRenderingAttachmentInfo hdr_attachment{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .pNext = nullptr,
-                .imageView = info.hdr.view(),
-                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .resolveMode = VK_RESOLVE_MODE_NONE,
-                .resolveImageView = VK_NULL_HANDLE,
-                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue = VkClearValue{.color = VkClearColorValue{.float32 = {0.015F, 0.025F, 0.050F, 1.0F}}},
-        };
-
-        if (info.resolved_hdr != nullptr) {
-            hdr_attachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-            hdr_attachment.resolveImageView = info.resolved_hdr->view();
-            hdr_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            hdr_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        }
-
-        VkRenderingAttachmentInfo const depth_attachment{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .pNext = nullptr,
-                .imageView = info.depth.view(),
-                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                .resolveMode = VK_RESOLVE_MODE_NONE,
-                .resolveImageView = VK_NULL_HANDLE,
-                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .clearValue = {},
-        };
-
-        VkRenderingInfo const rendering_info{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .renderArea = VkRect2D{.offset = {0, 0}, .extent = info.extent},
-                .layerCount = 1,
-                .viewMask = 0,
-                .colorAttachmentCount = 1,
-                .pColorAttachments = &hdr_attachment,
-                .pDepthAttachment = &depth_attachment,
-                .pStencilAttachment = nullptr,
-        };
-
-        vkCmdBeginRendering(context.command_buffer, &rendering_info);
+        // The frame graph has begun rendering.
         vkCmdBeginQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0, 0);
 
         ForwardPushConstants const pc{
@@ -1097,12 +1018,10 @@ namespace render_pass {
 
         scene_overlays();
 
-        vkCmdEndRendering(context.command_buffer);
+        // Inside the rendering scope, so it no longer covers the end-of-scope resolve.
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                              context.timestamp_query_pool, stage * 2 + 1);
 
-        detail::transition_hdr_to_shader_read(context.command_buffer,
-                                              info.resolved_hdr != nullptr ? *info.resolved_hdr : info.hdr);
         return info.output_hdr;
     }
 

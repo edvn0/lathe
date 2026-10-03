@@ -4436,22 +4436,11 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                                    FrameTargets const &targets, std::uint32_t ao_texture_index,
                                    render_pass::Callback scene_overlays)
         -> std::expected<render_pass::HdrTextureIndex, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Forward Pass",
-                 tracy::Color::RoyalBlue);
-
     auto const frame_index = pass_context.frame_index;
-
-    // The late prepass phase's task shaders wrote the last bits; forward only reads them.
-    if (frame.meshlet_occlusion_active) {
-        record_meshlet_visibility_barrier(pass_context.command_buffer, frame, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-    }
 
     return render_pass::forward_geometry(
             pass_context,
             render_pass::ForwardGeometryInfo{
-                    .hdr = *targets.hdr,
-                    .depth = *targets.depth,
-                    .resolved_hdr = targets.multisampled ? targets.resolved_hdr : nullptr,
                     .output_hdr = {.index = targets.resolved_hdr_handle.index},
                     .extent = targets.extent,
                     .samples = samples_,
@@ -4714,24 +4703,13 @@ auto Renderer::register_light_icon_overlay() -> std::expected<void, RendererErro
 }
 
 auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &frame, FrameTargets const &targets,
-                                   CompositeInputs &composite_inputs) -> std::expected<void, RendererError> {
+                                   PassHandoff &handoff) -> std::expected<void, RendererError> {
     ZoneScopedNC("RecordFrame", tracy::Color::RoyalBlue);
 
     auto const command_buffer = info.command_buffer;
     auto const frame_index = info.frame_index;
 
     auto const pass_context = make_pass_context(command_buffer, frame_index);
-
-    OverlayScope const scene_scope{
-            .extent = targets.extent,
-            .colour_format = frame.forward_target.hdr_format(),
-            .depth_format = frame.forward_target.depth_format(),
-            .samples = samples_,
-    };
-
-    auto scene_overlays = [&] {
-        record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
-    };
 
     record_overlay_prepares(pass_context);
 
@@ -4784,18 +4762,12 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &f
         return std::unexpected(ao_texture_index.error());
     }
 
-    auto const hdr = record_forward_pass(pass_context, frame, targets, *ao_texture_index,
-                                         render_pass::Callback::bind(scene_overlays));
-    if (!hdr) {
-        return std::unexpected(hdr.error());
-    }
-
     // Bloom is its own graph pass when enabled; otherwise its stage still needs both timestamps.
     if (!bloom_settings_.enabled) {
         write_empty_stage(command_buffer, frame_index, RenderStage::BloomPass);
     }
 
-    composite_inputs = CompositeInputs{.hdr = *hdr, .bloom = std::nullopt};
+    handoff.ao_texture_index = *ao_texture_index;
 
     return {};
 }

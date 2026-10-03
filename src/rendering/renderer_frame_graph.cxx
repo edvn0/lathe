@@ -37,6 +37,32 @@ namespace {
             .access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
     };
 
+    constexpr auto color_attachment_state = frame_graph::ResourceState{
+            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .stages = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+    };
+
+    // What the legacy pass leaves the depth buffer in for the forward pass's LOAD_OP_LOAD.
+    constexpr auto depth_attachment_state = frame_graph::ResourceState{
+            .layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            .stages = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            .access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+    };
+
+    constexpr auto forward_clear_colour = VkClearValue{.color = {.float32 = {0.015F, 0.025F, 0.050F, 1.0F}}};
+
+    auto physical_image(Image const &image) -> frame_graph::PhysicalImage {
+        return frame_graph::PhysicalImage{
+                .image = image.image(),
+                .view = image.view(),
+                .format = image.format(),
+                .extent = image.extent(),
+                .mip_levels = image.mip_levels(),
+                .array_layers = image.array_layers(),
+        };
+    }
+
     // What a viewport (or swapchain) image looks like to the graph: the sampled state the editor panel leaves it in.
     constexpr auto sampled_by_fragment = frame_graph::ResourceState{
             .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -109,50 +135,74 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     }
 
-    // Bloom reads the resolved HDR image, which the legacy pass leaves sampled, and rebuilds its mip chain every frame.
-    // Neither is imported when bloom is off: nothing touches them.
+    // Everything the legacy pass leaves for the passes after it enters the graph in the state it is left in: the
+    // legacy pass declares nothing, and its fences order its work before theirs.
+    auto const multisampled = targets->multisampled;
     auto const bloom_enabled = bloom_settings_.enabled;
-    auto hdr_image = frame_graph::ImageId{};
+    auto const ao_enabled = ao_settings_.enabled;
+
+    // Single-sample HDR: forward resolves (or draws) into it, bloom and composition sample it.
+    auto hdr_image = frame_graph_.import_image({
+            .entry = sampled_by_fragment_or_compute,
+            .exit = sampled_by_fragment_or_compute,
+            .debug_name = "resolved_hdr",
+            .image = physical_image(*targets->resolved_hdr),
+    });
+
+    auto msaa_hdr_image = frame_graph::ImageId{};
+    if (multisampled) {
+        msaa_hdr_image = frame_graph_.import_image({
+                .entry = color_attachment_state,
+                .exit = color_attachment_state,
+                .debug_name = "hdr_msaa",
+                .image = physical_image(*targets->hdr),
+        });
+    }
+
+    auto depth_image = frame_graph_.import_image({
+            .entry = depth_attachment_state,
+            .exit = depth_attachment_state,
+            .debug_name = "depth",
+            .image = physical_image(*targets->depth),
+    });
+
+    // Shadows are always rendered before the first frame's forward pass, so the atlas is sampled by then.
+    auto const shadow_image = frame_graph_.import_image({
+            .entry = sampled_by_fragment,
+            .exit = sampled_by_fragment,
+            .read_only = true,
+            .debug_name = "shadow_atlas",
+            .image = physical_image(*targets->shadow_atlas),
+    });
+
+    // With AO off forward samples a white texture that is not part of the graph.
+    auto ao_image = frame_graph::ImageId{};
+    if (ao_enabled) {
+        ao_image = frame_graph_.import_image({
+                .entry = sampled_by_fragment,
+                .exit = sampled_by_fragment,
+                .read_only = true,
+                .debug_name = "ao_denoised",
+                .image = physical_image(*targets->ao_denoised),
+        });
+    }
+
+    // Rebuilt every frame by the bloom pass, which leaves it sampled. Not imported when bloom is off: nothing
+    // touches it.
     auto bloom_image = frame_graph::ImageId{};
     if (bloom_enabled) {
-        auto const &hdr = *targets->resolved_hdr;
-        hdr_image = frame_graph_.import_image({
-                .entry = sampled_by_fragment_or_compute,
-                .exit = sampled_by_fragment_or_compute,
-                .read_only = true,
-                .debug_name = "resolved_hdr",
-                .image =
-                        frame_graph::PhysicalImage{
-                                .image = hdr.image(),
-                                .view = hdr.view(),
-                                .format = hdr.format(),
-                                .extent = hdr.extent(),
-                                .mip_levels = hdr.mip_levels(),
-                                .array_layers = hdr.array_layers(),
-                        },
-        });
-
-        auto const &bloom = *frame.bloom_target.image;
         bloom_image = frame_graph_.import_image({
                 .entry = sampled_by_fragment_or_compute,
                 .exit = sampled_by_fragment_or_compute,
                 .debug_name = "bloom",
-                .image =
-                        frame_graph::PhysicalImage{
-                                .image = bloom.image(),
-                                .view = bloom.view(),
-                                .format = bloom.format(),
-                                .extent = bloom.extent(),
-                                .mip_levels = bloom.mip_levels(),
-                                .array_layers = bloom.array_layers(),
-                        },
+                .image = physical_image(*frame.bloom_target.image),
         });
     }
 
     // Shared by the record lambdas, which all run inside frame_graph::record() below.
     struct FrameState {
         std::expected<void, RendererError> result{};
-        CompositeInputs composite;
+        PassHandoff handoff;
     } state;
 
     frame_graph_.add_pass("frame_legacy", frame_graph::PassType::raster,
@@ -169,9 +219,65 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
                                   auto legacy_info = info;
                                   legacy_info.command_buffer = context.command_buffer;
-                                  state.result = record_frame_legacy(legacy_info, frame, *targets, state.composite);
+                                  state.result = record_frame_legacy(legacy_info, frame, *targets, state.handoff);
                               }};
                           });
+
+    frame_graph_.add_pass(
+            "forward", frame_graph::PassType::raster,
+            {
+                    .name_id = "forward_pass",
+                    .label = "Forward",
+                    .color = static_cast<std::uint32_t>(tracy::Color::RoyalBlue),
+            },
+            [&](frame_graph::PassBuilder &pass) {
+                // Images only. The buffers forward reads by device address (draws, transforms, indirect commands,
+                // lights, cluster lists, the UBO, the meshlet visibility bits) are ordered by the legacy pass's fences
+                // for now; whichever pass takes over producing one must declare it here too.
+                [[maybe_unused]] auto const shadows =
+                        pass.read(shadow_image, frame_graph::Use::sampled, fragment_stage);
+                if (ao_enabled) {
+                    [[maybe_unused]] auto const ao = pass.read(ao_image, frame_graph::Use::sampled, fragment_stage);
+                }
+
+                // Multisampled: draw into the MSAA target and resolve; the MSAA contents are not kept.
+                if (multisampled) {
+                    auto const msaa = pass.color(msaa_hdr_image, frame_graph::LoadOp::clear,
+                                                 frame_graph::StoreOp::dont_care, forward_clear_colour);
+                    hdr_image = pass.resolve(msaa, hdr_image, VK_RESOLVE_MODE_AVERAGE_BIT);
+                } else {
+                    hdr_image = pass.color(hdr_image, frame_graph::LoadOp::clear, frame_graph::StoreOp::store,
+                                           forward_clear_colour);
+                }
+                depth_image = pass.write_depth(depth_image, frame_graph::LoadOp::load, frame_graph::StoreOp::store);
+                pass.render_area({.offset = {0, 0}, .extent = targets->extent});
+
+                return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                    if (!state.result) {
+                        return;
+                    }
+
+                    auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+
+                    OverlayScope const scene_scope{
+                            .extent = targets->extent,
+                            .colour_format = frame.forward_target.hdr_format(),
+                            .depth_format = frame.forward_target.depth_format(),
+                            .samples = samples_,
+                    };
+                    auto scene_overlays = [&] {
+                        record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
+                    };
+
+                    auto const hdr = record_forward_pass(pass_context, frame, *targets, state.handoff.ao_texture_index,
+                                                         render_pass::Callback::bind(scene_overlays));
+                    if (hdr) {
+                        state.handoff.hdr = *hdr;
+                    } else {
+                        state.result = std::unexpected(hdr.error());
+                    }
+                }};
+            });
 
     if (bloom_enabled) {
         frame_graph_.add_pass(
@@ -194,9 +300,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         }
 
                         auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
-                        auto const bloom_result = record_bloom_pass(pass_context, frame, *targets, state.composite.hdr);
+                        auto const bloom_result = record_bloom_pass(pass_context, frame, *targets, state.handoff.hdr);
                         if (bloom_result) {
-                            state.composite.bloom = *bloom_result;
+                            state.handoff.bloom = *bloom_result;
                         } else {
                             state.result = std::unexpected(bloom_result.error());
                         }
@@ -246,8 +352,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             pass_context,
                             render_pass::CompositePassInfo{
                                     .extent = fullscreen ? swapchain_image.extent : targets->extent,
-                                    .hdr = state.composite.hdr,
-                                    .bloom = state.composite.bloom,
+                                    .hdr = state.handoff.hdr,
+                                    .bloom = state.handoff.bloom,
                                     .bloom_fallback_texture_index = image_storage_.emissive().index,
                                     .linear_sampler_index = sampler_storage_.linear_clamp().index,
                                     .pipeline = composite_pipeline_,

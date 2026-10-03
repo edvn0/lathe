@@ -172,10 +172,9 @@ namespace render_pass {
         float denoise_depth_sigma = 40.0F;
     };
 
+    // The body of a frame graph raster pass: the executor has begun rendering into the (multisampled) HDR target,
+    // resolving into the single-sample one, with the depth attachment loaded.
     struct ForwardGeometryInfo {
-        Image const &hdr;
-        Image const &depth;
-        Image const *resolved_hdr = nullptr;
         HdrTextureIndex output_hdr{};
 
         VkExtent2D extent{};
