@@ -14,6 +14,7 @@
 #include "core/allocator.hxx"
 #include "gpu/host_query_context.hxx"
 #include "gpu/queue_selection.hxx"
+#include "gpu/queue_set.hxx"
 #include "gpu/swapchain.hxx"
 
 #include "core/forward.hxx"
@@ -45,7 +46,9 @@ struct VulkanContext {
     // MSAA, Hi-Z occlusion culling needs it to resolve the farthest sample (reverse-Z) of each pixel.
     bool depth_resolve_min_supported = false;
 
+    // Tracy's GPU contexts: graphics, and compute when it is a separate queue (null otherwise).
     HostQueryContext host_query_context{};
+    HostQueryContext compute_host_query_context{};
 
     VkQueue graphics_queue = VK_NULL_HANDLE;
     VkQueue present_queue = VK_NULL_HANDLE;
@@ -57,7 +60,12 @@ struct VulkanContext {
     AsyncComputeMode async_compute_mode = AsyncComputeMode::automatic;
     bool sync_validation = false;
 
+    // --async-compute-smoke: submit empty compute and graphics batches each frame to exercise the timelines.
+    bool async_compute_smoke = false;
+
     QueueFamilies queue_families{};
+
+    QueueSet queue_set{};
 
     Swapchain swapchain{};
 

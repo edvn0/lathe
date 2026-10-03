@@ -21,8 +21,8 @@ namespace {
         error("{} failed with VkResult {}", operation, static_cast<int>(result));
     }
 
-    auto make_vk_error(SwapchainBeginFrameError::Kind kind, std::string_view operation, VkResult result) noexcept
-            -> SwapchainBeginFrameError {
+    auto make_vk_error(SwapchainBeginFrameError::Kind kind, std::string_view operation,
+                       VkResult result) noexcept -> SwapchainBeginFrameError {
         error("{} failed with VkResult {}", operation, static_cast<int>(result));
 
         return SwapchainBeginFrameError{
@@ -35,8 +35,8 @@ namespace {
         };
     }
 
-    auto make_error(SwapchainBeginFrameError::Kind kind, std::string_view message = {}) noexcept
-            -> SwapchainBeginFrameError {
+    auto make_error(SwapchainBeginFrameError::Kind kind,
+                    std::string_view message = {}) noexcept -> SwapchainBeginFrameError {
         if (message.empty()) {
             return SwapchainBeginFrameError{.kind = kind};
         }
@@ -90,8 +90,7 @@ auto Swapchain::initialize(SwapchainCreateInfo const &create_info) noexcept -> b
 
     frames_.resize(frames_in_flight);
 
-    if (!create_swapchain(VK_NULL_HANDLE) || !create_image_views() || !create_command_resources() ||
-        !create_synchronization()) {
+    if (!create_swapchain(VK_NULL_HANDLE) || !create_image_views() || !create_synchronization()) {
         destroy();
         return false;
     }
@@ -102,7 +101,7 @@ auto Swapchain::initialize(SwapchainCreateInfo const &create_info) noexcept -> b
     return true;
 }
 
-auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError> {
+auto Swapchain::acquire(std::uint32_t slot) noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError> {
     using Kind = SwapchainBeginFrameError::Kind;
 
     if (recreate_requested_) {
@@ -120,27 +119,21 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
         return std::unexpected(make_error(Kind::fatal_error, "swapchain has no frames / VK_NULL_HANDLE"));
     }
 
+    if (slot != current_frame_) {
+        return std::unexpected(
+                make_error(Kind::fatal_error,
+                           std::format("acquire for slot {} but the swapchain is on slot {}", slot, current_frame_)));
+    }
+
     auto &frame = frames_[current_frame_];
 
-    // A bounded wait so a stuck fence surfaces as a fatal error instead of hanging shutdown.
-    constexpr std::uint64_t frame_wait_timeout_ns = 2'000'000'000ULL;
-
-    auto result = vkWaitForFences(device_, 1, &frame.in_flight, VK_TRUE, frame_wait_timeout_ns);
-
-    // The wait is bounded, so a GPU that hangs rather than faults shows up as a timeout. Report it like a loss: the
-    // device is unusable either way and the user gets the same restart notice.
-    if (result == VK_ERROR_DEVICE_LOST || result == VK_TIMEOUT) {
-        return std::unexpected(make_error(Kind::device_lost, "vkWaitForFences"));
-    }
-
-    if (result != VK_SUCCESS) {
-        return std::unexpected(make_vk_error(Kind::fatal_error, "vkWaitForFences", result));
-    }
+    // A bounded wait so a stuck presentation engine surfaces as an error instead of hanging shutdown.
+    constexpr std::uint64_t acquire_timeout_ns = 2'000'000'000ULL;
 
     std::uint32_t image_index = 0;
 
-    result = vkAcquireNextImageKHR(device_, swapchain_, frame_wait_timeout_ns, frame.image_available, VK_NULL_HANDLE,
-                                   &image_index);
+    auto result = vkAcquireNextImageKHR(device_, swapchain_, acquire_timeout_ns, frame.image_available, VK_NULL_HANDLE,
+                                        &image_index);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         if (!recreate()) {
@@ -173,27 +166,8 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
                 make_error(Kind::fatal_error, std::format("swapchain returned invalid image index {}", image_index)));
     }
 
-    result = vkResetCommandBuffer(frame.command_buffer, 0);
-
-    if (result != VK_SUCCESS) {
-        return std::unexpected(make_vk_error(Kind::fatal_error, "vkResetCommandBuffer", result));
-    }
-
-    VkCommandBufferBeginInfo const begin_info{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .pNext = nullptr,
-            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            .pInheritanceInfo = nullptr,
-    };
-
-    result = vkBeginCommandBuffer(frame.command_buffer, &begin_info);
-
-    if (result != VK_SUCCESS) {
-        return std::unexpected(make_vk_error(Kind::fatal_error, "vkBeginCommandBuffer", result));
-    }
-
     return SwapchainFrame{
-            .command_buffer = frame.command_buffer,
+            .command_buffer = VK_NULL_HANDLE,
             .image = images_[image_index],
             .image_view = image_views_[image_index],
             .extent = extent_,
@@ -204,91 +178,15 @@ auto Swapchain::begin_frame() noexcept -> std::expected<SwapchainFrame, Swapchai
     };
 }
 
-auto Swapchain::end_frame(SwapchainFrame const &active_frame) noexcept -> SwapchainFrameResult {
+auto Swapchain::present(SwapchainFrame const &active_frame) noexcept -> SwapchainFrameResult {
     if (active_frame.frame_index >= frames_.size() || active_frame.image_index >= render_finished_semaphores_.size() ||
-        active_frame.command_buffer == VK_NULL_HANDLE || active_frame.frame_index != current_frame_) {
-        error("Invalid swapchain frame passed to end_frame");
+        active_frame.frame_index != current_frame_) {
+        error("Invalid swapchain frame passed to present");
 
         return SwapchainFrameResult::fatal_error;
     }
-
-    auto &frame = frames_[active_frame.frame_index];
-
-    if (frame.command_buffer != active_frame.command_buffer) {
-        error("Swapchain frame command buffer does not "
-              "match its frame resource");
-
-        return SwapchainFrameResult::fatal_error;
-    }
-
-    auto result = vkEndCommandBuffer(active_frame.command_buffer);
-
-    if (result != VK_SUCCESS) {
-        report_vk_error("vkEndCommandBuffer", result);
-
-        return SwapchainFrameResult::fatal_error;
-    }
-
-    result = vkResetFences(device_, 1, &frame.in_flight);
-
-    if (result != VK_SUCCESS) {
-        report_vk_error("vkResetFences", result);
-
-        return SwapchainFrameResult::fatal_error;
-    }
-
-    VkSemaphoreSubmitInfo const wait_info{
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .pNext = nullptr,
-            .semaphore = frame.image_available,
-            .value = 0,
-
-            .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-
-            .deviceIndex = 0,
-    };
-
-    VkCommandBufferSubmitInfo const command_info{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-            .pNext = nullptr,
-            .commandBuffer = active_frame.command_buffer,
-            .deviceMask = 0,
-    };
 
     auto const render_finished = render_finished_semaphores_[active_frame.image_index];
-
-    VkSemaphoreSubmitInfo const signal_info{
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .pNext = nullptr,
-            .semaphore = render_finished,
-            .value = 0,
-            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            .deviceIndex = 0,
-    };
-
-    VkSubmitInfo2 const submit_info{
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-            .pNext = nullptr,
-            .flags = 0,
-            .waitSemaphoreInfoCount = 1,
-            .pWaitSemaphoreInfos = &wait_info,
-            .commandBufferInfoCount = 1,
-            .pCommandBufferInfos = &command_info,
-            .signalSemaphoreInfoCount = 1,
-            .pSignalSemaphoreInfos = &signal_info,
-    };
-
-    result = vkQueueSubmit2(graphics_queue_, 1, &submit_info, frame.in_flight);
-
-    if (result == VK_ERROR_DEVICE_LOST) {
-        return SwapchainFrameResult::device_lost;
-    }
-
-    if (result != VK_SUCCESS) {
-        report_vk_error("vkQueueSubmit2", result);
-
-        return SwapchainFrameResult::fatal_error;
-    }
 
     VkPresentInfoKHR const present_info{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -301,7 +199,7 @@ auto Swapchain::end_frame(SwapchainFrame const &active_frame) noexcept -> Swapch
             .pResults = nullptr,
     };
 
-    result = vkQueuePresentKHR(present_queue_, &present_info);
+    auto const result = vkQueuePresentKHR(present_queue_, &present_info);
 
     auto const advance_frame = [this] {
         current_frame_ = (current_frame_ + 1) % static_cast<std::uint32_t>(frames_.size());
@@ -526,45 +424,6 @@ auto Swapchain::create_image_views() noexcept -> bool {
     return true;
 }
 
-auto Swapchain::create_command_resources() noexcept -> bool {
-    const VkCommandPoolCreateInfo pool_info{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = graphics_queue_family_,
-    };
-
-    VkResult result = vkCreateCommandPool(device_, &pool_info, nullptr, &command_pool_);
-
-    if (result != VK_SUCCESS) {
-        report_vk_error("vkCreateCommandPool", result);
-        return false;
-    }
-
-    std::vector<VkCommandBuffer> command_buffers(frames_.size());
-
-    const VkCommandBufferAllocateInfo allocate_info{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .pNext = nullptr,
-            .commandPool = command_pool_,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = static_cast<std::uint32_t>(command_buffers.size()),
-    };
-
-    result = vkAllocateCommandBuffers(device_, &allocate_info, command_buffers.data());
-
-    if (result != VK_SUCCESS) {
-        report_vk_error("vkAllocateCommandBuffers", result);
-        return false;
-    }
-
-    for (std::size_t index = 0; index < frames_.size(); ++index) {
-        frames_[index].command_buffer = command_buffers[index];
-    }
-
-    return true;
-}
-
 auto Swapchain::create_synchronization() noexcept -> bool {
     const VkSemaphoreCreateInfo semaphore_info{
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -572,24 +431,11 @@ auto Swapchain::create_synchronization() noexcept -> bool {
             .flags = 0,
     };
 
-    const VkFenceCreateInfo fence_info{
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
-    };
-
     for (FrameResources &frame: frames_) {
         VkResult result = vkCreateSemaphore(device_, &semaphore_info, nullptr, &frame.image_available);
 
         if (result != VK_SUCCESS) {
             report_vk_error("vkCreateSemaphore(image available)", result);
-            return false;
-        }
-
-        result = vkCreateFence(device_, &fence_info, nullptr, &frame.in_flight);
-
-        if (result != VK_SUCCESS) {
-            report_vk_error("vkCreateFence", result);
             return false;
         }
     }
@@ -705,25 +551,13 @@ auto Swapchain::destroy_swapchain_resources() noexcept -> void {
 
 auto Swapchain::destroy_frame_resources() noexcept -> void {
     for (FrameResources &frame: frames_) {
-        if (frame.in_flight != VK_NULL_HANDLE) {
-            vkDestroyFence(device_, frame.in_flight, nullptr);
-            frame.in_flight = VK_NULL_HANDLE;
-        }
-
         if (frame.image_available != VK_NULL_HANDLE) {
             vkDestroySemaphore(device_, frame.image_available, nullptr);
             frame.image_available = VK_NULL_HANDLE;
         }
-
-        frame.command_buffer = VK_NULL_HANDLE;
     }
 
     frames_.clear();
-
-    if (command_pool_ != VK_NULL_HANDLE) {
-        vkDestroyCommandPool(device_, command_pool_, nullptr);
-        command_pool_ = VK_NULL_HANDLE;
-    }
 }
 
 auto Swapchain::choose_surface_format(std::vector<VkSurfaceFormatKHR> const &formats) const noexcept

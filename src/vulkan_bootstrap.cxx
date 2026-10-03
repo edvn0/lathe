@@ -916,7 +916,33 @@ namespace {
     }
 
     auto create_host_query_context(VulkanContext &context) noexcept -> bool {
-        context.host_query_context.initialize(context);
+        context.host_query_context.initialize(context, context.graphics_queue, context.queue_families.graphics,
+                                              "graphics");
+
+        // A second context only when compute is its own queue; otherwise its zones belong to the graphics track.
+        if (context.compute_queue != context.graphics_queue) {
+            context.compute_host_query_context.initialize(context, context.compute_queue,
+                                                          context.queue_families.compute, "compute");
+        }
+
+        return true;
+    }
+
+    auto create_queue_set(VulkanContext &context) noexcept -> bool {
+        auto const created = context.queue_set.initialize(QueueSetCreateInfo{
+                .device = context.device,
+                .graphics_queue = context.graphics_queue,
+                .compute_queue = context.compute_queue,
+                .graphics_family = context.queue_families.graphics,
+                .compute_family = context.queue_families.compute,
+                .compute_queue_index = context.queue_families.compute_queue_index,
+        });
+
+        if (!created) {
+            error("Could not create the queue set");
+
+            return false;
+        }
 
         return true;
     }
@@ -1029,5 +1055,6 @@ auto parse_screen_type(int argc, char **argv) noexcept -> ScreenType {
 auto initialize_vulkan(VulkanContext &context, ScreenType screen_type) noexcept -> bool {
     return initialize_glfw(context, screen_type) && create_instance(context, screen_type) &&
            create_surface(context, screen_type) && select_physical_device(context) && create_device(context) &&
-           create_host_query_context(context) && create_allocator(context) && create_swapchain(context);
+           create_host_query_context(context) && create_queue_set(context) && create_allocator(context) &&
+           create_swapchain(context);
 }

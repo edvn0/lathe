@@ -4907,6 +4907,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                      info.composite_target == CompositeTarget::swapchain ? nullptr : targets->viewport, frame_index);
 
     TracyVkCollectHost(context_.host_query_context.context);
+    if (context_.compute_host_query_context.context != nullptr) {
+        TracyVkCollectHost(context_.compute_host_query_context.context);
+    }
     return {};
 }
 

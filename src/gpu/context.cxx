@@ -10,6 +10,10 @@ auto VulkanContext::destroy() -> void {
 
     context.swapchain.destroy();
 
+    // The swapchain waits for the device to go idle, so nothing is still using the queue set.
+    context.queue_set.destroy();
+
+    context.compute_host_query_context.destroy();
     context.host_query_context.destroy();
 
     if (context.one_time_pool != VK_NULL_HANDLE) {

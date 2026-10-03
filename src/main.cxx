@@ -207,10 +207,100 @@ namespace {
         return true;
     }
 
+    auto to_begin_error(QueueSetError queue_error) noexcept -> SwapchainBeginFrameError {
+        return SwapchainBeginFrameError{
+                .kind = queue_error.kind == QueueSetError::Kind::device_lost
+                                ? SwapchainBeginFrameError::Kind::device_lost
+                                : SwapchainBeginFrameError::Kind::fatal_error,
+                .context = std::move(queue_error.context),
+        };
+    }
+
+    // Waits for the frame slot's timelines, acquires the next image and begins the slot's graphics command buffer, the
+    // frame's prologue. A timeout in the wait is reported as a device loss, as a hung fence used to be.
+    auto begin_gpu_frame(VulkanContext &context) noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError> {
+        auto const slot = context.swapchain.current_slot();
+
+        if (auto begun = context.queue_set.begin_slot(slot); !begun) {
+            return std::unexpected(to_begin_error(std::move(begun.error())));
+        }
+
+        auto frame = context.swapchain.acquire(slot);
+        if (!frame) {
+            return std::unexpected(std::move(frame.error()));
+        }
+
+        auto buffer = context.queue_set.command_buffer(frame_graph::LogicalQueue::graphics);
+        if (!buffer) {
+            return std::unexpected(to_begin_error(std::move(buffer.error())));
+        }
+
+        frame->command_buffer = *buffer;
+
+        return *frame;
+    }
+
+    // Ends the frame's command buffer, submits it and presents. With --async-compute-smoke on a GPU with a separate
+    // compute queue, the frame is instead three batches that exercise timeline values and multi-batch submission with
+    // no data dependency: the recorded graphics batch, an empty compute batch that waits on it, and an empty graphics
+    // batch that waits on the compute one and signals the swapchain.
+    auto end_gpu_frame(VulkanContext &context, SwapchainFrame const &frame) noexcept -> SwapchainFrameResult {
+        if (auto const ended = vkEndCommandBuffer(frame.command_buffer); ended != VK_SUCCESS) {
+            error("vkEndCommandBuffer failed with VkResult {}", static_cast<int>(ended));
+
+            return ended == VK_ERROR_DEVICE_LOST ? SwapchainFrameResult::device_lost
+                                                 : SwapchainFrameResult::fatal_error;
+        }
+
+        constexpr auto all_commands = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        auto const compute_waits =
+                std::array{frame_graph::SemaphoreWait{frame_graph::LogicalQueue::graphics, 0, all_commands}};
+        auto const graphics_waits =
+                std::array{frame_graph::SemaphoreWait{frame_graph::LogicalQueue::compute, 0, all_commands}};
+
+        auto const smoke = context.async_compute_smoke && !context.queue_set.aliased();
+
+        std::array<SubmitBatch, 3> batches{};
+        auto batch_count = std::size_t{1};
+
+        batches[0] = SubmitBatch{
+                .queue = frame_graph::LogicalQueue::graphics,
+                .command_buffer = frame.command_buffer,
+                .signal_index = 0,
+                .waits_swapchain_acquire = true,
+                .signals_render_finished = !smoke,
+        };
+
+        if (smoke) {
+            batches[1] = SubmitBatch{
+                    .queue = frame_graph::LogicalQueue::compute,
+                    .waits = compute_waits,
+                    .signal_index = 0,
+            };
+            batches[2] = SubmitBatch{
+                    .queue = frame_graph::LogicalQueue::graphics,
+                    .waits = graphics_waits,
+                    .signal_index = 1,
+                    .signals_render_finished = true,
+            };
+            batch_count = batches.size();
+        }
+
+        auto const submitted = context.queue_set.submit(std::span<SubmitBatch const>{batches.data(), batch_count},
+                                                        context.swapchain.image_available(frame.frame_index),
+                                                        context.swapchain.render_finished(frame.image_index));
+        if (!submitted) {
+            return submitted.error().kind == QueueSetError::Kind::device_lost ? SwapchainFrameResult::device_lost
+                                                                              : SwapchainFrameResult::fatal_error;
+        }
+
+        return context.swapchain.present(frame);
+    }
+
     auto draw(VulkanContext &context, Application &application) noexcept -> bool {
         ZoneScopedNC("Draw", tracy::Color::RoyalBlue);
 
-        auto frame = context.swapchain.begin_frame();
+        auto frame = begin_gpu_frame(context);
 
         if (!frame) {
             switch (frame.error().kind) {
@@ -323,9 +413,10 @@ namespace {
             }
         }
 
-        // Always retire the frame we began, so image_available and in_flight stay balanced whatever failed above.
+        // Always retire the frame we began, so image_available and the slot's timeline values stay balanced whatever
+        // failed above.
         // This assumes the renderer never fails with a rendering scope still open.
-        auto const end_result = context.swapchain.end_frame(*frame);
+        auto const end_result = end_gpu_frame(context, *frame);
 
         if (!frame_ok) {
             return false;
@@ -665,6 +756,8 @@ auto main(int argc, char **argv) -> int {
             context.async_compute_mode = *mode;
         } else if (arg == "--sync-validation") {
             context.sync_validation = true;
+        } else if (arg == "--async-compute-smoke") {
+            context.async_compute_smoke = true;
         }
     }
 

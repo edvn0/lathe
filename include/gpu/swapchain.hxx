@@ -88,6 +88,7 @@ struct std::formatter<SwapchainBeginFrameError::Kind> : std::formatter<std::stri
 };
 
 struct SwapchainFrame {
+    // Filled in by the caller from QueueSet::command_buffer(); acquire() leaves it null.
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
 
     VkImage image = VK_NULL_HANDLE;
@@ -128,11 +129,35 @@ public:
         recreate_requested_ = true;
     }
 
+    // The frame slot the next acquire() is for; QueueSet::begin_slot() must have run for it. The slot advances when a
+    // frame is presented.
     [[nodiscard]]
-    auto begin_frame() noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError>;
+    auto current_slot() const noexcept -> std::uint32_t {
+        return current_frame_;
+    }
+
+    // Acquires the next image into `slot`'s image_available semaphore. Handles pending and out-of-date recreation
+    // (reported as Kind::recreated, with no image acquired). The returned frame has no command buffer: the caller
+    // records into one from QueueSet.
+    [[nodiscard]]
+    auto acquire(std::uint32_t slot) noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError>;
+
+    // Presents the frame's image, waiting on render_finished(frame.image_index), then advances the slot. The caller
+    // has submitted work that signals that semaphore.
+    [[nodiscard]]
+    auto present(SwapchainFrame const &frame) noexcept -> SwapchainFrameResult;
+
+    // Binary semaphores the acquire signals and presentation waits on, for the submit in between.
+    [[nodiscard]]
+    auto image_available(std::uint32_t slot) const noexcept -> VkSemaphore {
+        return slot < frames_.size() ? frames_[slot].image_available : VK_NULL_HANDLE;
+    }
 
     [[nodiscard]]
-    auto end_frame(SwapchainFrame const &frame) noexcept -> SwapchainFrameResult;
+    auto render_finished(std::uint32_t image_index) const noexcept -> VkSemaphore {
+        return image_index < render_finished_semaphores_.size() ? render_finished_semaphores_[image_index]
+                                                                : VK_NULL_HANDLE;
+    }
 
     [[nodiscard]]
     auto extent() const noexcept -> VkExtent2D {
@@ -146,11 +171,7 @@ public:
 
 private:
     struct FrameResources {
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-
         VkSemaphore image_available = VK_NULL_HANDLE;
-
-        VkFence in_flight = VK_NULL_HANDLE;
     };
 
     [[nodiscard]]
@@ -158,9 +179,6 @@ private:
 
     [[nodiscard]]
     auto create_image_views() noexcept -> bool;
-
-    [[nodiscard]]
-    auto create_command_resources() noexcept -> bool;
 
     [[nodiscard]]
     auto create_synchronization() noexcept -> bool;
@@ -204,7 +222,6 @@ private:
 
     std::vector<VkSemaphore> render_finished_semaphores_;
 
-    VkCommandPool command_pool_ = VK_NULL_HANDLE;
     std::vector<FrameResources> frames_;
 
     std::uint32_t current_frame_ = 0;
