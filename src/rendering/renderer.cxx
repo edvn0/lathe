@@ -4398,38 +4398,23 @@ auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, R
     frame.meshlet_occlusion_stats_active = frame.meshlet_occlusion_active;
 }
 
-auto Renderer::record_ambient_occlusion_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                                             FrameTargets const &targets)
-        -> std::expected<std::uint32_t, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Ambient Occlusion",
-                 tracy::Color::DarkSlateGray);
-
-    auto const ao_output = render_pass::ambient_occlusion(
-            pass_context, render_pass::AmbientOcclusionInfo{
-                                  .enabled = ao_settings_.enabled,
-                                  .depth = *targets.resolved_depth,
-                                  .raw_ao = *targets.ao_raw,
-                                  .denoised_ao = *targets.ao_denoised,
-                                  .extent = targets.extent,
-                                  .depth_texture_index = targets.resolved_depth_handle.index,
-                                  .raw_ao_texture_index = frame.ao_target.raw.handle().index,
-                                  .denoised_ao_texture_index = frame.ao_target.denoised.handle().index,
-                                  .point_sampler_index = sampler_storage_.nearest_clamp().index,
-                                  .ubo_address = ubos_[pass_context.frame_index].device_address,
-                                  .gtao_pipeline = gtao_pipeline_,
-                                  .denoise_pipeline = gtao_denoise_pipeline_,
-                                  .radius_view = ao_settings_.radius,
-                                  .falloff_range = ao_settings_.falloff_range,
-                                  .slice_count = ao_settings_.slice_count,
-                                  .step_count = ao_settings_.step_count,
-                                  .denoise_depth_sigma = ao_settings_.denoise_depth_sigma,
-                          });
-
-    if (!ao_output) {
-        return std::unexpected(ao_output.error());
-    }
-
-    return ao_output->has_value() ? (*ao_output)->index : image_storage_.white().index;
+auto Renderer::ambient_occlusion_info(RendererFrame const &frame, FrameTargets const &targets,
+                                      std::uint32_t frame_index) const -> render_pass::AmbientOcclusionInfo {
+    return render_pass::AmbientOcclusionInfo{
+            .extent = targets.extent,
+            .depth_texture_index = targets.resolved_depth_handle.index,
+            .raw_ao_texture_index = frame.ao_target.raw.handle().index,
+            .denoised_ao_texture_index = frame.ao_target.denoised.handle().index,
+            .point_sampler_index = sampler_storage_.nearest_clamp().index,
+            .ubo_address = ubos_[frame_index].device_address,
+            .gtao_pipeline = gtao_pipeline_,
+            .denoise_pipeline = gtao_denoise_pipeline_,
+            .radius_view = ao_settings_.radius,
+            .falloff_range = ao_settings_.falloff_range,
+            .slice_count = ao_settings_.slice_count,
+            .step_count = ao_settings_.step_count,
+            .denoise_depth_sigma = ao_settings_.denoise_depth_sigma,
+    };
 }
 
 auto Renderer::record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
@@ -4757,9 +4742,13 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &f
 
     record_occlusion_stats_readback(command_buffer, frame);
 
-    auto const ao_texture_index = record_ambient_occlusion_pass(pass_context, frame, targets);
-    if (!ao_texture_index) {
-        return std::unexpected(ao_texture_index.error());
+    // The two GTAO passes follow when AO is enabled (renderer_frame_graph.cxx); otherwise forward samples white and
+    // the stage still needs both timestamps.
+    if (ao_settings_.enabled) {
+        handoff.ao_texture_index = frame.ao_target.denoised.handle().index;
+    } else {
+        write_empty_stage(command_buffer, frame_index, RenderStage::AmbientOcclusion);
+        handoff.ao_texture_index = image_storage_.white().index;
     }
 
     // Bloom is its own graph pass when enabled; otherwise its stage still needs both timestamps.
@@ -4767,7 +4756,6 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &f
         write_empty_stage(command_buffer, frame_index, RenderStage::BloomPass);
     }
 
-    handoff.ao_texture_index = *ao_texture_index;
 
     return {};
 }

@@ -166,6 +166,18 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .image = physical_image(*targets->depth),
     });
 
+    // The single-sample depth AO samples: its own image under MSAA, the depth buffer itself otherwise. One graph
+    // resource per image, so it must not be imported twice.
+    auto resolved_depth_image = depth_image;
+    if (multisampled) {
+        resolved_depth_image = frame_graph_.import_image({
+                .entry = depth_attachment_state,
+                .exit = depth_attachment_state,
+                .debug_name = "resolved_depth",
+                .image = physical_image(*targets->resolved_depth),
+        });
+    }
+
     // Shadows are always rendered before the first frame's forward pass, so the atlas is sampled by then.
     auto const shadow_image = frame_graph_.import_image({
             .entry = sampled_by_fragment,
@@ -175,13 +187,20 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .image = physical_image(*targets->shadow_atlas),
     });
 
-    // With AO off forward samples a white texture that is not part of the graph.
+    // With AO off forward samples a white texture that is not part of the graph. Both images are rebuilt every
+    // frame; the raw one is only sampled by the denoise, the denoised one by forward.
+    auto ao_raw_image = frame_graph::ImageId{};
     auto ao_image = frame_graph::ImageId{};
     if (ao_enabled) {
+        ao_raw_image = frame_graph_.import_image({
+                .entry = sampled_by_fragment_or_compute,
+                .exit = sampled_by_fragment_or_compute,
+                .debug_name = "ao_raw",
+                .image = physical_image(*targets->ao_raw),
+        });
         ao_image = frame_graph_.import_image({
                 .entry = sampled_by_fragment,
                 .exit = sampled_by_fragment,
-                .read_only = true,
                 .debug_name = "ao_denoised",
                 .image = physical_image(*targets->ao_denoised),
         });
@@ -222,6 +241,62 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                   state.result = record_frame_legacy(legacy_info, frame, *targets, state.handoff);
                               }};
                           });
+
+    if (ao_enabled) {
+        frame_graph_.add_pass(
+                "gtao", frame_graph::PassType::compute,
+                {
+                        .name_id = "gtao",
+                        .label = "GTAO",
+                        .color = static_cast<std::uint32_t>(tracy::Color::DarkSlateGray),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    [[maybe_unused]] auto const depth =
+                            pass.read(resolved_depth_image, frame_graph::Use::sampled, compute_stage);
+                    ao_raw_image = pass.write(ao_raw_image, frame_graph::Use::storage_write, compute_stage);
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        if (!state.result) {
+                            return;
+                        }
+
+                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        if (auto const done = render_pass::gtao(
+                                    pass_context, ambient_occlusion_info(frame, *targets, info.frame_index));
+                            !done) {
+                            state.result = std::unexpected(done.error());
+                        }
+                    }};
+                });
+
+        frame_graph_.add_pass(
+                "gtao_denoise", frame_graph::PassType::compute,
+                {
+                        .name_id = "gtao_denoise",
+                        .label = "GTAO denoise",
+                        .color = static_cast<std::uint32_t>(tracy::Color::SlateGray),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    [[maybe_unused]] auto const raw = pass.read(ao_raw_image, frame_graph::Use::sampled, compute_stage);
+                    [[maybe_unused]] auto const depth =
+                            pass.read(resolved_depth_image, frame_graph::Use::sampled, compute_stage);
+                    ao_image = pass.write(ao_image, frame_graph::Use::storage_write, compute_stage,
+                                          frame_graph::ExitUse{frame_graph::Use::sampled});
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        if (!state.result) {
+                            return;
+                        }
+
+                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        if (auto const done = render_pass::gtao_denoise(
+                                    pass_context, ambient_occlusion_info(frame, *targets, info.frame_index));
+                            !done) {
+                            state.result = std::unexpected(done.error());
+                        }
+                    }};
+                });
+    }
 
     frame_graph_.add_pass(
             "forward", frame_graph::PassType::raster,

@@ -144,15 +144,10 @@ namespace render_pass {
         bool meshlet_culling = true;
     };
 
-    // GTAO from depth alone, then a depth-aware blur, as two compute dispatches between the prepass and forward.
-    // `depth` is the single-sample depth in DEPTH_ATTACHMENT_OPTIMAL and is left in that layout.
+    // GTAO from depth alone, then a depth-aware blur: two compute passes of the frame graph between the prepass and
+    // forward. The graph puts the single-sample depth in SHADER_READ_ONLY_OPTIMAL for both and the AO images in the
+    // layouts they are written and sampled in.
     struct AmbientOcclusionInfo {
-        bool enabled = true;
-
-        Image const &depth;
-        Image const &raw_ao;
-        Image const &denoised_ao;
-
         VkExtent2D extent{};
 
         std::uint32_t depth_texture_index = 0;
@@ -308,8 +303,10 @@ namespace render_pass {
 
     auto build_hiz(Context const &context, HizBuildInfo const &info) -> std::expected<void, RendererError>;
 
-    auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)
-            -> std::expected<std::optional<AoTextureIndex>, RendererError>;
+    // Both write their half of the stage's timestamps (the stage is AmbientOcclusion): gtao the first, the denoise the
+    // second.
+    auto gtao(Context const &context, AmbientOcclusionInfo const &info) -> std::expected<void, RendererError>;
+    auto gtao_denoise(Context const &context, AmbientOcclusionInfo const &info) -> std::expected<void, RendererError>;
 
     // scene_overlays runs inside the forward rendering scope after the scene draws.
     auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback scene_overlays)

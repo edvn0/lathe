@@ -805,37 +805,15 @@ namespace render_pass {
         return {};
     }
 
-    auto ambient_occlusion(Context const &context, AmbientOcclusionInfo const &info)
-            -> std::expected<std::optional<AoTextureIndex>, RendererError> {
+    auto gtao(Context const &context, AmbientOcclusionInfo const &info) -> std::expected<void, RendererError> {
         constexpr auto stage = static_cast<std::uint32_t>(RenderStage::AmbientOcclusion);
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                              context.timestamp_query_pool, stage * 2);
 
-        if (!info.enabled) {
-            vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                                 context.timestamp_query_pool, stage * 2 + 1);
-            return std::optional<AoTextureIndex>{};
-        }
-
         auto const gtao_layout = detail::resolve_layout(context.pipeline_graph, info.gtao_pipeline);
-        auto const denoise_layout = detail::resolve_layout(context.pipeline_graph, info.denoise_pipeline);
-
-        if (gtao_layout == VK_NULL_HANDLE || denoise_layout == VK_NULL_HANDLE) {
+        if (gtao_layout == VK_NULL_HANDLE) {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
-
-        // Written by the depth prepass; only read below.
-        transition_image_layout(context.command_buffer, info.depth.image(), VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                                VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
-
-        transition_image_layout(context.command_buffer, info.raw_ao.image(), VK_IMAGE_LAYOUT_UNDEFINED,
-                                VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0, VK_ACCESS_2_SHADER_WRITE_BIT,
-                                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
 
         detail::bind_compute_node(context.pipeline_graph, info.gtao_pipeline, context.command_buffer);
         context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -858,16 +836,16 @@ namespace render_pass {
 
         vkCmdPushConstants(context.command_buffer, gtao_layout, VK_SHADER_STAGE_ALL, 0, sizeof(gtao_pc), &gtao_pc);
         vkCmdDispatch(context.command_buffer, (info.extent.width + 7U) / 8U, (info.extent.height + 7U) / 8U, 1);
+        return {};
+    }
 
-        transition_image_layout(context.command_buffer, info.raw_ao.image(), VK_IMAGE_LAYOUT_GENERAL,
-                                VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
-                                VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+    auto gtao_denoise(Context const &context, AmbientOcclusionInfo const &info) -> std::expected<void, RendererError> {
+        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::AmbientOcclusion);
 
-        transition_image_layout(context.command_buffer, info.denoised_ao.image(), VK_IMAGE_LAYOUT_UNDEFINED,
-                                VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0, VK_ACCESS_2_SHADER_WRITE_BIT,
-                                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+        auto const denoise_layout = detail::resolve_layout(context.pipeline_graph, info.denoise_pipeline);
+        if (denoise_layout == VK_NULL_HANDLE) {
+            return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
+        }
 
         detail::bind_compute_node(context.pipeline_graph, info.denoise_pipeline, context.command_buffer);
         context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -890,24 +868,9 @@ namespace render_pass {
                            &denoise_pc);
         vkCmdDispatch(context.command_buffer, (info.extent.width + 7U) / 8U, (info.extent.height + 7U) / 8U, 1);
 
-        transition_image_layout(context.command_buffer, info.denoised_ao.image(), VK_IMAGE_LAYOUT_GENERAL,
-                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
-                                VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
-
-        // Back to what forward_geometry's LOAD_OP_LOAD expects.
-        transition_image_layout(
-                context.command_buffer, info.depth.image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                VK_ACCESS_2_SHADER_READ_BIT,
-                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1);
-
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                              context.timestamp_query_pool, stage * 2 + 1);
-
-        return std::optional<AoTextureIndex>{AoTextureIndex{.index = info.denoised_ao_texture_index}};
+        return {};
     }
 
     auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback scene_overlays)

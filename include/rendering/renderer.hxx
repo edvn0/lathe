@@ -51,6 +51,7 @@
 #include "gpu/sampler_storage.hxx"
 #include "gpu/submission_plan.hxx"
 #include "rendering/cluster_grid.hxx"
+#include "rendering/environment.hxx"
 #include "rendering/forward_target.hxx"
 #include "rendering/frame_graph/compiled_graph.hxx"
 #include "rendering/frame_graph/compiler.hxx"
@@ -62,7 +63,6 @@
 #include "rendering/render_passes.hxx"
 #include "rendering/render_stage.hxx"
 #include "rendering/script_storage.hxx"
-#include "rendering/environment.hxx"
 #include "rendering/shadow_cascades.hxx"
 #include "scene/environment.hxx"
 
@@ -1177,10 +1177,10 @@ private:
     // Copies the occlusion statistics into the frame's readback buffer.
     auto record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void;
 
-    // Returns the AO texture's bindless index: denoised GTAO, or white when disabled.
+    // The parameters of the two GTAO passes (they read AO settings, so they are built when the frame is recorded).
     [[nodiscard]]
-    auto record_ambient_occlusion_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                                       FrameTargets const &targets) -> std::expected<std::uint32_t, RendererError>;
+    auto ambient_occlusion_info(RendererFrame const &frame, FrameTargets const &targets,
+                                std::uint32_t frame_index) const -> render_pass::AmbientOcclusionInfo;
 
     [[nodiscard]]
     auto record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
@@ -1379,8 +1379,8 @@ private:
     std::vector<FrameTimestamps> timestamp_queries_;
     float timestamp_period_{1.0F};
 
-    // The frame graph: rebuilt every frame, recompiled only when its declaration changes (plan_cache_). frame_plan_ and submit_batches_ outlive record_frame() so
-    // the caller can submit them (the batches' waits point into the plan).
+    // The frame graph: rebuilt every frame, recompiled only when its declaration changes (plan_cache_). frame_plan_ and
+    // submit_batches_ outlive record_frame() so the caller can submit them (the batches' waits point into the plan).
     frame_graph::FrameGraph frame_graph_;
     frame_graph::PlanCache plan_cache_;
     frame_graph::CompiledGraph const *frame_plan_ = nullptr; // into plan_cache_, valid until the next record_frame
