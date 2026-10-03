@@ -436,10 +436,24 @@ median in ms (graphics-queue span; compute that overlaps is not in it):
 | `light,occlusion,gtao` | 2.397, 2.953, 2.552 | 2.634 | +2.3% |
 
 Repetitions of one configuration differ by 0.35 to 0.57 ms (15 to 20%), far more than the differences between
-configurations, so none of them improves `full_frame` beyond the noise floor. Per the plan they stay off. Worth a rerun
-on a quiet machine with more repetitions (`tools/perf/run_benchmark.sh`, `compare_benchmarks.py`), and with the per-queue
-Tracy GPU contexts to see whether the overlap is real; the occlusion group needs 30 ownership transfers, which phase 8
-would remove.
+configurations, so none of them improves `full_frame` beyond the noise floor.
+
+**Re-measured on a quiet machine after phase 8 (concurrent buffers, so 0 to 4 ownership transfers instead of 6 to 38),**
+same protocol, `full_frame` median in ms:
+
+| configuration | three repetitions | mean | vs base |
+|---|---|---|---|
+| base | 2.384, 2.368, 2.361 | 2.371 | |
+| `light` | 2.419, 2.325, 2.391 | 2.378 | +0.3% |
+| `occlusion` | 2.482, 2.360, 2.435 | 2.425 | +2.3% |
+| `gtao` | 2.329, 2.366, 2.309 | 2.335 | -1.5% |
+| `light,occlusion,gtao` | 2.360, 2.348, 2.343 | 2.350 | -0.9% |
+
+The spread is now 0.02 to 0.12 ms, and the best result (GTAO, -1.5%) is about the size of it, while `occlusion` is
+slightly worse. The compute passes here are tiny (light culling and clustering about 0.02 ms, Hi-Z and late culling a
+few hundredths, GTAO about 0.4 ms) and there is little raster work to hide them behind, so there is little to gain.
+**None is enabled by default**, as the plan requires; revisit on a scene where those passes are heavier (more lights, a
+larger Hi-Z) or with the per-queue Tracy GPU contexts to confirm the overlap.
 
 ## 7. Verification status
 
