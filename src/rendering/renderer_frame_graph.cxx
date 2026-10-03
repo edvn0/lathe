@@ -170,42 +170,22 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     auto const ao_enabled = ao_settings_.enabled;
     auto const environment_pending = environment_.has_pending_record();
 
-    // Single-sample HDR: forward resolves (or draws) into it, bloom and composition sample it.
-    auto hdr_image = frame_graph_.import_image({
-            .entry = sampled_by_fragment_or_compute,
-            .exit = sampled_by_fragment_or_compute,
-            .debug_name = "resolved_hdr",
-            .image = physical_image(*targets->resolved_hdr),
-    });
-
-    auto msaa_hdr_image = frame_graph::ImageId{};
-    if (multisampled) {
-        msaa_hdr_image = frame_graph_.import_image({
-                .entry = color_attachment_state,
-                .exit = color_attachment_state,
-                .debug_name = "hdr_msaa",
-                .image = physical_image(*targets->hdr),
-        });
-    }
-
-    auto depth_image = frame_graph_.import_image({
-            .entry = depth_attachment_state,
-            .exit = depth_attachment_state,
-            .debug_name = "depth",
-            .image = physical_image(*targets->depth),
-    });
-
-    // The single-sample depth AO samples: its own image under MSAA, the depth buffer itself otherwise. One graph
-    // resource per image, so it must not be imported twice.
-    auto resolved_depth_image = depth_image;
-    if (multisampled) {
-        resolved_depth_image = frame_graph_.import_image({
-                .entry = depth_attachment_state,
-                .exit = depth_attachment_state,
-                .debug_name = "resolved_depth",
-                .image = physical_image(*targets->resolved_depth),
-        });
-    }
+    // The HDR and depth targets are transients: created by the first pass that writes them (the prepass for depth,
+    // forward for colour) and given memory after the graph is compiled. Under MSAA each has a multisampled image that
+    // is never sampled and a single-sample resolve target that is; without MSAA one image is both.
+    auto hdr_image = frame_graph::ImageId{};
+    auto depth_image = frame_graph::ImageId{};
+    auto resolved_depth_image = frame_graph::ImageId{};
+    auto const target_description = [&](VkFormat format, VkSampleCountFlagBits samples, bool bindless,
+                                        std::string_view name) {
+        return frame_graph::TransientImageDesc{
+                .format = format,
+                .extent = {targets->extent.width, targets->extent.height, 1},
+                .samples = samples,
+                .descriptor_views = bindless ? image_descriptor_view_bit(ImageDescriptorView::sampled_2d) : 0U,
+                .debug_name = name,
+        };
+    };
 
     // The shadow atlas persists across frames: only the cascades that moved are redrawn, so the pass loads it, and
     // forward samples it whether or not any was. Before the first shadow pass it has no contents (and no layout).
@@ -657,8 +637,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             pass.write(stats_buffer, frame_graph::Use::shader_read_write, stages_of(ShaderStage::task));
                 }
 
+                depth_image = pass.create(target_description(depth_format_, samples_, !multisampled, "depth"));
                 depth_image = pass.write_depth(depth_image, frame_graph::LoadOp::clear, frame_graph::StoreOp::store);
                 if (multisampled) {
+                    resolved_depth_image = pass.create(
+                            target_description(depth_format_, VK_SAMPLE_COUNT_1_BIT, true, "resolved_depth"));
                     resolved_depth_image =
                             pass.resolve(depth_image, resolved_depth_image,
                                          occlusion_active ? VK_RESOLVE_MODE_MIN_BIT : VK_RESOLVE_MODE_SAMPLE_ZERO_BIT);
@@ -706,7 +689,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
                                       auto const pass_context =
                                               make_pass_context(context.command_buffer, info.frame_index);
-                                      if (auto const done = record_hiz_build(pass_context, *targets); !done) {
+                                      if (auto const done = record_hiz_build(pass_context, *targets,
+                                                                             transient_index(resolved_depth_image));
+                                          !done) {
                                           state.result = std::unexpected(done.error());
                                       }
                                   }};
@@ -833,10 +818,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         }
 
                         auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
-                        if (auto const done = render_pass::gtao(pass_context,
-                                                                ambient_occlusion_info(*targets, info.frame_index,
-                                                                                       transient_index(ao_raw_image),
-                                                                                       transient_index(ao_image)));
+                        if (auto const done = render_pass::gtao(
+                                    pass_context,
+                                    ambient_occlusion_info(*targets, info.frame_index,
+                                                           transient_index(resolved_depth_image),
+                                                           transient_index(ao_raw_image), transient_index(ao_image)));
                             !done) {
                             state.result = std::unexpected(done.error());
                         }
@@ -866,8 +852,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
                         if (auto const done = render_pass::gtao_denoise(
                                     pass_context,
-                                    ambient_occlusion_info(*targets, info.frame_index, transient_index(ao_raw_image),
-                                                           transient_index(ao_image)));
+                                    ambient_occlusion_info(*targets, info.frame_index,
+                                                           transient_index(resolved_depth_image),
+                                                           transient_index(ao_raw_image), transient_index(ao_image)));
                             !done) {
                             state.result = std::unexpected(done.error());
                         }
@@ -921,10 +908,14 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
                 // Multisampled: draw into the MSAA target and resolve; the MSAA contents are not kept.
                 if (multisampled) {
-                    auto const msaa = pass.color(msaa_hdr_image, frame_graph::LoadOp::clear,
-                                                 frame_graph::StoreOp::dont_care, forward_clear_colour);
+                    auto const msaa = pass.color(
+                            pass.create(target_description(hdr_format_, samples_, false, "hdr_msaa")),
+                            frame_graph::LoadOp::clear, frame_graph::StoreOp::dont_care, forward_clear_colour);
+                    hdr_image =
+                            pass.create(target_description(hdr_format_, VK_SAMPLE_COUNT_1_BIT, true, "resolved_hdr"));
                     hdr_image = pass.resolve(msaa, hdr_image, VK_RESOLVE_MODE_AVERAGE_BIT);
                 } else {
+                    hdr_image = pass.create(target_description(hdr_format_, VK_SAMPLE_COUNT_1_BIT, true, "hdr"));
                     hdr_image = pass.color(hdr_image, frame_graph::LoadOp::clear, frame_graph::StoreOp::store,
                                            forward_clear_colour);
                 }
@@ -940,8 +931,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
                     OverlayScope const scene_scope{
                             .extent = targets->extent,
-                            .colour_format = frame.forward_target.hdr_format(),
-                            .depth_format = frame.forward_target.depth_format(),
+                            .colour_format = hdr_format_,
+                            .depth_format = depth_format_,
                             .samples = samples_,
                     };
                     auto scene_overlays = [&] {
@@ -953,6 +944,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             ao_enabled ? transient_index(ao_image) : image_storage_.white().index;
 
                     auto const hdr = record_forward_pass(pass_context, frame, *targets, state.handoff.ao_texture_index,
+                                                         transient_index(hdr_image),
                                                          render_pass::Callback::bind(scene_overlays));
                     if (hdr) {
                         state.handoff.hdr = *hdr;
@@ -1200,8 +1192,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     }
     if (*allocated) {
         ::info("Frame graph transients: {:.1f} MiB for all frame slots, {:.1f} MiB without aliasing",
-             static_cast<double>(transient_allocator_.total_bytes()) / (1024.0 * 1024.0),
-             static_cast<double>(transient_allocator_.unaliased_bytes()) / (1024.0 * 1024.0));
+               static_cast<double>(transient_allocator_.total_bytes()) / (1024.0 * 1024.0),
+               static_cast<double>(transient_allocator_.unaliased_bytes()) / (1024.0 * 1024.0));
         if (auto const refreshed =
                     gpu_resource_table_.prepare_frame(info.frame_index, image_storage_, sampler_storage_);
             !refreshed) {

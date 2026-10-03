@@ -775,6 +775,16 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    // --stress-resize=<n> flips the render size between two values every n frames, to exercise the renderer's resize
+    // path unattended (frame graph transients are recreated, the Hi-Z pyramid is rebuilt) under validation.
+    std::uint32_t stress_resize_interval = 0;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--stress-resize="; arg.starts_with(prefix)) {
+            stress_resize_interval = static_cast<std::uint32_t>(
+                    std::strtoul(std::string{arg.substr(prefix.size())}.c_str(), nullptr, 10));
+        }
+    }
+
     // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
         set_fixed_random_seed((*benchmark_options)->seed);
@@ -868,6 +878,8 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    std::uint64_t stress_resize_frames = 0;
+    bool stress_resize_large = false;
     std::optional<BenchmarkRun> benchmark;
     if (*benchmark_options) {
         auto keyframes = application.game->benchmark_camera_path();
@@ -1021,8 +1033,18 @@ auto main(int argc, char **argv) -> int {
             };
         }();
 
-        if (!compare(desired_render_extent, renderer_extent)) {
-            auto resize_result = application.renderer->resize(desired_render_extent);
+        // --stress-resize: alternate between two render sizes every n frames, whatever the panel says.
+        auto target_render_extent = desired_render_extent;
+        if (stress_resize_interval != 0) {
+            if (++stress_resize_frames % stress_resize_interval == 0) {
+                stress_resize_large = !stress_resize_large;
+            }
+            target_render_extent = stress_resize_large ? VkExtent2D{.width = 1400, .height = 800}
+                                                       : VkExtent2D{.width = 1000, .height = 640};
+        }
+
+        if (!compare(target_render_extent, renderer_extent)) {
+            auto resize_result = application.renderer->resize(target_render_extent);
 
             if (!resize_result) {
                 error("Could not resize renderer: {}", describe(resize_result.error()));
@@ -1031,8 +1053,8 @@ auto main(int argc, char **argv) -> int {
                 break;
             }
 
-            info("Resizing renderer to {}x{}", desired_render_extent.width, desired_render_extent.height);
-            renderer_extent = desired_render_extent;
+            info("Resizing renderer to {}x{}", target_render_extent.width, target_render_extent.height);
+            renderer_extent = target_render_extent;
         }
     }
 

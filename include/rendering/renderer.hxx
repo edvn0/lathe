@@ -571,8 +571,8 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto shader_change_queue() noexcept -> ShaderChangeQueue & { return shader_change_queue_; }
 
     [[nodiscard]] auto aspect(std::uint32_t index) const -> float {
-        return static_cast<float>(frames_[index].forward_target.extent().width) /
-               static_cast<float>(frames_[index].forward_target.extent().height);
+        static_cast<void>(index);
+        return static_cast<float>(extent_.width) / static_cast<float>(extent_.height);
     }
 
     // Valid once record_frame() has run for this frame_index in embedded mode.
@@ -584,9 +584,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto drain_event_queue() -> void;
 
     [[nodiscard]] auto context() noexcept -> VulkanContext & { return context_; }
-    [[nodiscard]] auto depth_format() const noexcept { return frames_[0].forward_target.depth_format(); }
-    [[nodiscard]] auto hdr_format() const noexcept { return frames_[0].forward_target.hdr_format(); }
-    [[nodiscard]] auto samples() const noexcept { return frames_[0].forward_target.samples(); }
+    [[nodiscard]] auto depth_format() const noexcept { return depth_format_; }
+    [[nodiscard]] auto hdr_format() const noexcept { return hdr_format_; }
+    [[nodiscard]] auto samples() const noexcept { return samples_; }
 
     [[nodiscard]] auto image_storage() noexcept -> ImageStorage & override { return image_storage_; }
     [[nodiscard]] auto material_storage() noexcept -> MaterialStorage & override { return material_storage_; }
@@ -897,7 +897,6 @@ private:
         // Handed to scene overlays as OverlayRecordContext::view_projection.
         glm::mat4 view_projection{1.0F};
 
-        ForwardTarget forward_target{};
 
         // LDR composite output sampled by the editor's Viewport panel. Unused in fullscreen play.
         ImageHolder viewport_target{};
@@ -980,7 +979,6 @@ private:
 
     // A frame's extent-sized render targets, built together so initialize() and resize() share one path.
     struct OwnedFrameTargets {
-        ForwardTarget forward_target{};
         ImageHolder viewport_target{};
     };
 
@@ -1078,16 +1076,9 @@ private:
     // record_frame() and its passes. Each record_*_pass owns one stage and passes its output to the next through
     // its return value.
 
-    // The frame's images, resolved and validated once. resolved_hdr/resolved_depth are the MSAA resolve targets
-    // when multisampled, otherwise hdr/depth.
+    // The frame's persistent images, resolved and validated once. The HDR and depth targets are transients of the
+    // frame graph, which hands their bindless indices to the passes that use them.
     struct FrameTargets {
-        Image const *hdr = nullptr;
-        Image const *depth = nullptr;
-        Image const *resolved_hdr = nullptr;
-        Image const *resolved_depth = nullptr;
-        ImageHandle resolved_hdr_handle{};
-        ImageHandle resolved_depth_handle{};
-
         Image const *shadow_atlas = nullptr;
         Image const *viewport = nullptr;
 
@@ -1138,8 +1129,8 @@ private:
 
     // Builds hiz_ from the early prepass's depth (the MIN resolve under MSAA) for late_cs and next frame's main_cs.
     [[nodiscard]]
-    auto record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets)
-            -> std::expected<void, RendererError>;
+    auto record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets,
+                          std::uint32_t depth_texture_index) -> std::expected<void, RendererError>;
 
     // Phase 2 of occlusion culling: late_cs re-tests main_cs's candidates against this frame's Hi-Z.
     [[nodiscard]]
@@ -1169,13 +1160,14 @@ private:
 
     // The parameters of the two GTAO passes (they read AO settings, so they are built when the frame is recorded).
     [[nodiscard]]
-    auto ambient_occlusion_info(FrameTargets const &targets, std::uint32_t frame_index, std::uint32_t raw_texture_index,
+    auto ambient_occlusion_info(FrameTargets const &targets, std::uint32_t frame_index,
+                                std::uint32_t depth_texture_index, std::uint32_t raw_texture_index,
                                 std::uint32_t denoised_texture_index) const -> render_pass::AmbientOcclusionInfo;
 
     [[nodiscard]]
     auto record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                              FrameTargets const &targets, std::uint32_t ao_texture_index,
-                             render_pass::Callback scene_overlays)
+                             std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays)
             -> std::expected<render_pass::HdrTextureIndex, RendererError>;
 
     [[nodiscard]]

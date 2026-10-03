@@ -1443,7 +1443,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             return std::unexpected(targets.error());
         }
 
-        frame.forward_target = std::move(targets->forward_target);
         frame.viewport_target = std::move(targets->viewport_target);
 
         frame.draw_upload_offset = 0;
@@ -3074,8 +3073,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     // projection[1][1] is cot(fov_y / 2) (negated by a Vulkan Y flip), so this maps range / distance to pixels of
     // radius on the forward target.
-    auto const light_lod_pixel_scale =
-            std::abs(projection[1][1]) * static_cast<float>(frame.forward_target.extent().height) * 0.5F;
+    auto const light_lod_pixel_scale = std::abs(projection[1][1]) * static_cast<float>(extent_.height) * 0.5F;
     auto const light_lod_cull = std::max(light_lod_settings_.cull_radius_pixels, 0.0F);
     // smoothstep() needs fade > cull.
     auto const light_lod_fade = std::max(light_lod_settings_.fade_radius_pixels, light_lod_cull + 1e-3F);
@@ -3168,7 +3166,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     // Two-phase occlusion culling: record_frame follows this decision for the frame. The pyramid matches the render
     // extent except between a resize and the frames recreated with it.
-    auto const forward_extent = frame.forward_target.extent();
+    auto const forward_extent = extent_;
     frame.occlusion_active = occlusion_culling_ && occlusion_culling_supported() && static_cast<bool>(hiz_.image) &&
                              hiz_.depth_extent.width == forward_extent.width &&
                              hiz_.depth_extent.height == forward_extent.height;
@@ -3761,39 +3759,20 @@ auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<vo
 }
 
 auto Renderer::resolve_frame_targets(RendererFrame const &frame) const -> std::expected<FrameTargets, RendererError> {
-    bool const multisampled = frame.forward_target.is_multisampled();
-
-    auto const hdr_handle = frame.forward_target.hdr();
-    auto const depth_handle = frame.forward_target.depth();
-    auto const resolved_hdr_handle = multisampled ? frame.forward_target.resolved_hdr() : hdr_handle;
-    auto const resolved_depth_handle = multisampled ? frame.forward_target.resolved_depth() : depth_handle;
-
     FrameTargets const targets{
-            .hdr = image_storage_.get(hdr_handle),
-            .depth = image_storage_.get(depth_handle),
-            .resolved_hdr = image_storage_.get(resolved_hdr_handle),
-            .resolved_depth = image_storage_.get(resolved_depth_handle),
-            .resolved_hdr_handle = resolved_hdr_handle,
-            .resolved_depth_handle = resolved_depth_handle,
             .shadow_atlas = shadow_atlas_.get(),
             .viewport = frame.viewport_target.get(),
-            .extent = frame.forward_target.extent(),
-            .multisampled = multisampled,
+            .extent = extent_,
+            .multisampled = samples_ != VK_SAMPLE_COUNT_1_BIT,
     };
 
     auto const usable = [](Image const *image) { return image != nullptr && image->valid(); };
 
-    if (!usable(targets.hdr) || !usable(targets.depth) || !usable(targets.resolved_hdr) ||
-        !usable(targets.resolved_depth) || !usable(targets.shadow_atlas) || !usable(targets.viewport)) {
+    if (!usable(targets.shadow_atlas) || !usable(targets.viewport)) {
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
 
-    auto const matches_extent = [&](Image const &image) {
-        return image.extent_2d().width == targets.extent.width && image.extent_2d().height == targets.extent.height;
-    };
-
-    if (targets.extent.width == 0 || targets.extent.height == 0 || !matches_extent(*targets.hdr) ||
-        !matches_extent(*targets.depth)) {
+    if (targets.extent.width == 0 || targets.extent.height == 0) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
@@ -3951,8 +3930,8 @@ auto Renderer::record_environment_pass(render_pass::Context const &pass_context,
     static_cast<void>(frame);
 }
 
-auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets)
-        -> std::expected<void, RendererError> {
+auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameTargets const &targets,
+                                std::uint32_t depth_texture_index) -> std::expected<void, RendererError> {
     auto const *hiz_image = hiz_.image.get();
 
     if (hiz_image == nullptr || hiz_.mip_count == 0 || hiz_.mip_count > hiz_max_mip_count) {
@@ -3967,7 +3946,7 @@ auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameT
 
     auto const built = render_pass::build_hiz(
             pass_context, render_pass::HizBuildInfo{
-                                  .source_texture_index = targets.resolved_depth_handle.index,
+                                  .source_texture_index = depth_texture_index,
                                   .depth_extent = targets.extent,
                                   .hiz = *hiz_image,
                                   .mip_texture_indices = std::span{mip_texture_indices}.first(hiz_.mip_count),
@@ -4058,11 +4037,11 @@ auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, R
 }
 
 auto Renderer::ambient_occlusion_info(FrameTargets const &targets, std::uint32_t frame_index,
-                                      std::uint32_t raw_texture_index, std::uint32_t denoised_texture_index) const
-        -> render_pass::AmbientOcclusionInfo {
+                                      std::uint32_t depth_texture_index, std::uint32_t raw_texture_index,
+                                      std::uint32_t denoised_texture_index) const -> render_pass::AmbientOcclusionInfo {
     return render_pass::AmbientOcclusionInfo{
             .extent = targets.extent,
-            .depth_texture_index = targets.resolved_depth_handle.index,
+            .depth_texture_index = depth_texture_index,
             .raw_ao_texture_index = raw_texture_index,
             .denoised_ao_texture_index = denoised_texture_index,
             .point_sampler_index = sampler_storage_.nearest_clamp().index,
@@ -4079,14 +4058,14 @@ auto Renderer::ambient_occlusion_info(FrameTargets const &targets, std::uint32_t
 
 auto Renderer::record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                                    FrameTargets const &targets, std::uint32_t ao_texture_index,
-                                   render_pass::Callback scene_overlays)
+                                   std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays)
         -> std::expected<render_pass::HdrTextureIndex, RendererError> {
     auto const frame_index = pass_context.frame_index;
 
     return render_pass::forward_geometry(
             pass_context,
             render_pass::ForwardGeometryInfo{
-                    .output_hdr = {.index = targets.resolved_hdr_handle.index},
+                    .output_hdr = {.index = hdr_texture_index},
                     .extent = targets.extent,
                     .samples = samples_,
                     .draws = forward_view_draws(frame),
@@ -4311,23 +4290,7 @@ auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent
         -> std::expected<OwnedFrameTargets, RendererError> {
     OwnedFrameTargets targets;
 
-    auto const target_name = std::format("renderer.forward_target_{}", frame_index);
-    auto forward_target = ForwardTarget::create(image_storage_, ForwardTargetCreateInfo{
-                                                                        .extent = extent,
-                                                                        .hdr_format = hdr_format_,
-                                                                        .depth_format = depth_format_,
-                                                                        .samples = samples_,
-                                                                        .debug_name = target_name,
-                                                                });
-
-    if (!forward_target) {
-        return std::unexpected(RendererError{
-                .type = RendererErrorType::forward_target_error,
-                .cause = ErrorCause{Boxed<ForwardTargetError>{forward_target.error()}},
-        });
-    }
-
-    targets.forward_target = std::move(*forward_target);
+    // The HDR and depth targets and the AO and bloom images are transients of the frame graph.
 
     auto const viewport_target_name = std::format("renderer.viewport_target_{}", frame_index);
     auto viewport_target = create_held_image(
@@ -4399,7 +4362,6 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         auto &frame = frames_[index];
         auto &targets = replacements[index];
 
-        frame.forward_target = std::move(targets.forward_target);
         frame.viewport_target = std::move(targets.viewport_target);
     }
 
