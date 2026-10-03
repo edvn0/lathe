@@ -43,8 +43,11 @@
 namespace {
     // Per overlay timing slot: prepare() begin/end and record() begin/end.
     constexpr std::uint32_t queries_per_overlay = 4;
-    constexpr std::uint32_t overlay_query_base = query_count;
-    constexpr std::uint32_t total_query_count = query_count + (OverlayRegistry::max_overlays * queries_per_overlay);
+    // The frame's own begin and end timestamps come first; per-pass times are the frame graph profiler's.
+    constexpr std::uint32_t full_frame_query_count = 2;
+    constexpr std::uint32_t overlay_query_base = full_frame_query_count;
+    constexpr std::uint32_t total_query_count =
+            full_frame_query_count + (OverlayRegistry::max_overlays * queries_per_overlay);
 
     [[nodiscard]] constexpr auto overlay_query(std::uint32_t slot, std::uint32_t which) noexcept -> std::uint32_t {
         return overlay_query_base + (slot * queries_per_overlay) + which;
@@ -2544,8 +2547,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     vkCmdResetQueryPool(command_buffer, frame_pipeline_query.query_pool, 0, 1);
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool,
-                         static_cast<std::uint32_t>(RenderStage::FullFrame) * 2);
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool, 0);
 
     pipeline_graph_.tick_retirement();
     geometry_arena_.tick_retirement();
@@ -3340,22 +3342,18 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     if (frame_query.has_results) {
         last_frame_timings_.valid = false;
-        std::array<std::uint64_t, query_count> results{};
+        std::array<std::uint64_t, full_frame_query_count> results{};
         auto const query_result =
-                vkGetQueryPoolResults(context_.device, frame_query.query_pool, 0, query_count, sizeof(results),
-                                      results.data(), sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
+                vkGetQueryPoolResults(context_.device, frame_query.query_pool, 0, full_frame_query_count,
+                                      sizeof(results), results.data(), sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT);
 
         if (query_result == VK_NOT_READY) {
             warn("Timestamp queries not ready for frame {}", frame_index);
         }
 
         if (query_result == VK_SUCCESS) {
-            for (std::uint32_t i = 0; i < stage_count; ++i) {
-                auto const start = results[static_cast<std::size_t>(i) * 2];
-                auto const end = results[(static_cast<std::size_t>(i) * 2) + 1];
-                last_frame_timings_.milliseconds[i] =
-                        static_cast<float>(end - start) * timestamp_period_ / 1'000'000.0F;
-            }
+            last_frame_timings_.full_frame_ms =
+                    static_cast<float>(results[1] - results[0]) * timestamp_period_ / 1'000'000.0F;
 
             read_overlay_timings(frame_query);
             last_frame_timings_.valid = true;
@@ -3413,10 +3411,7 @@ auto Renderer::record_meshlet_visibility_clear(VkCommandBuffer command_buffer, R
 auto Renderer::record_gpu_culling(render_pass::Context const &pass_context, RendererFrame const &frame)
         -> std::expected<void, RendererError> {
     auto const command_buffer = pass_context.command_buffer;
-    auto const query_pool = pass_context.timestamp_query_pool;
-    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Culling);
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2);
 
     if (frame.indirect_command_count != 0) {
         auto const layout = resolve_layout(pipeline_graph_, frustum_cull_pipeline_);
@@ -3453,16 +3448,12 @@ auto Renderer::record_gpu_culling(render_pass::Context const &pass_context, Rend
         vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
     }
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2 + 1);
     return {};
 }
 
 auto Renderer::record_cluster_stats_clear(render_pass::Context const &pass_context, RendererFrame const &frame)
         -> void {
     // The light clustering stage spans the clear, the two dispatches and the statistics readback.
-    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::LightClustering);
-    vkCmdWriteTimestamp2(pass_context.command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         pass_context.timestamp_query_pool, stage * 2);
 
     // light_cluster.slang accumulates into the statistics.
     vkCmdFillBuffer(pass_context.command_buffer, frame.cluster_lights_buffer.buffer, 0, cluster_stats_bytes, 0);
@@ -3562,10 +3553,6 @@ auto Renderer::record_cluster_stats_readback(render_pass::Context const &pass_co
 
     frame.cluster_stats_grid = frame.cluster_grid;
     frame.cluster_stats_pending = true;
-
-    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::LightClustering);
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, pass_context.timestamp_query_pool,
-                         stage * 2 + 1);
 }
 
 auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
@@ -3916,16 +3903,11 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
 
 auto Renderer::record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void {
     auto const command_buffer = pass_context.command_buffer;
-    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Environment);
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, pass_context.timestamp_query_pool,
-                         stage * 2);
 
     environment_.record(command_buffer, gpu_resource_table_, pass_context.frame_index,
                         ubos_[pass_context.frame_index].device_address);
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, pass_context.timestamp_query_pool,
-                         stage * 2 + 1);
 
     static_cast<void>(frame);
 }
@@ -3964,10 +3946,7 @@ auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameT
 auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
         -> std::expected<void, RendererError> {
     auto const command_buffer = pass_context.command_buffer;
-    auto const query_pool = pass_context.timestamp_query_pool;
-    constexpr auto stage = static_cast<std::uint32_t>(RenderStage::OcclusionCulling);
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2);
 
     if (frame.indirect_command_count != 0) {
         auto const layout = resolve_layout(pipeline_graph_, occlusion_cull_pipeline_);
@@ -4007,7 +3986,6 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
         vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
     }
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2 + 1);
     return {};
 }
 
@@ -4118,19 +4096,10 @@ auto Renderer::record_bloom_pass(render_pass::Context const &pass_context, Frame
 auto Renderer::record_frame_end(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void {
     auto &frame_query = timestamp_queries_[frame_index];
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, frame_query.query_pool,
-                         (static_cast<std::uint32_t>(RenderStage::FullFrame) * 2) + 1);
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, frame_query.query_pool, 1);
 
     frame_query.has_results = true;
     pipeline_stat_queries_[frame_index].has_results = true;
-}
-
-auto Renderer::write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage) -> void {
-    auto const query_pool = timestamp_queries_[frame_index].query_pool;
-    auto const first_query = static_cast<std::uint32_t>(stage) * 2;
-
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, first_query);
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, first_query + 1);
 }
 
 auto Renderer::make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index, bool compute_only)

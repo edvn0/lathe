@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "rendering/frame_graph/compiler.hxx"
+#include "rendering/frame_graph/describe.hxx"
 
 // Test support for the frame graph compiler: an independent happens-before checker. Given the declarations and a
 // compiled plan it asks, for every hazard pair (RAW, WAR, WAW on one resource), whether the plan orders the two
@@ -68,40 +69,7 @@ namespace frame_graph::test {
 
     // A readable dump of a plan, for failure messages.
     inline auto describe(GraphDesc const &graph, CompiledGraph const &compiled) -> std::string {
-        auto text = std::string{};
-        auto const set_text = [&](char const *label, BarrierSet const &set) {
-            for (auto const &b: set.images) {
-                text += std::format("      {} image '{}' src({:#x},{:#x}) dst({:#x},{:#x}) layout {}->{} op {}\n",
-                                    label, graph.resources[b.resource].name, b.src_stages, b.src_access, b.dst_stages,
-                                    b.dst_access, static_cast<int>(b.old_layout), static_cast<int>(b.new_layout),
-                                    static_cast<int>(b.op));
-            }
-            for (auto const &b: set.buffers) {
-                text += std::format("      {} buffer '{}' src({:#x},{:#x}) dst({:#x},{:#x}) op {}\n", label,
-                                    graph.resources[b.resource].name, b.src_stages, b.src_access, b.dst_stages,
-                                    b.dst_access, static_cast<int>(b.op));
-            }
-        };
-        for (auto index = std::size_t{0}; index < compiled.batches.size(); ++index) {
-            auto const &batch = compiled.batches[index];
-            text += std::format("batch {} queue {} signal {} waits {}\n", index, static_cast<int>(batch.queue),
-                                batch.signal_index, batch.waits.size());
-            set_text("acquire", batch.acquires);
-            for (auto const &pass: batch.passes) {
-                auto const &desc = graph.passes[pass.pass];
-                text += std::format("    pass {}\n", desc.name);
-                for (auto const &access: desc.accesses) {
-                    auto const info = use_info(access.use, access.stages);
-                    text += std::format("      use '{}' {} stages {:#x} access {:#x}{}\n",
-                                        graph.resources[access.resource].name, static_cast<int>(access.use),
-                                        info.stages, info.access, access.discard ? " discard" : "");
-                }
-                set_text("before", pass.before);
-            }
-            set_text("release", batch.releases);
-            set_text("epilogue", batch.epilogue);
-        }
-        return text;
+        return frame_graph::describe(graph, compiled);
     }
 
     // Returns one message per violation; empty means the plan is sound.

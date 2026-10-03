@@ -62,7 +62,6 @@
 #include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/render_passes.hxx"
-#include "rendering/render_stage.hxx"
 #include "rendering/script_storage.hxx"
 #include "rendering/shadow_cascades.hxx"
 #include "scene/environment.hxx"
@@ -116,10 +115,14 @@ struct LightLodSettings {
     float fade_radius_pixels = 6.0F;
 };
 
-struct StageTimings {
-    std::array<float, stage_count> milliseconds{};
+// The last finished frame's GPU times: the frame graph's per-pass timings (graphics queue first, in execution order)
+// and the frame as a whole, from its first to its last graphics timestamp. Compute work that overlaps runs inside that
+// span.
+struct FrameTimings {
+    std::vector<frame_graph::PassTiming> passes;
+    float full_frame_ms = 0.0F;
 
-    // Overlays that ran in the timed frame, in draw order. Their time is already included in `milliseconds`.
+    // Overlays that ran in the timed frame, in draw order. Their time is already included in the passes'.
     std::vector<OverlayTiming> overlays;
 
     bool valid = false;
@@ -625,7 +628,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
         return *registered;
     }
 
-    [[nodiscard]] auto last_frame_timings() const noexcept -> StageTimings const & { return last_frame_timings_; }
+    [[nodiscard]] auto last_frame_timings() const noexcept -> FrameTimings const & { return last_frame_timings_; }
     [[nodiscard]] auto last_frame_stats() const noexcept -> FrameStats const & { return last_frame_stats_; }
 
     // Frame graph transients (the AO and bloom images, over every frame slot): the device memory they occupy and what
@@ -646,6 +649,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     [[nodiscard]] auto transient_aliasing() const noexcept -> bool { return transient_aliasing_; }
     auto set_transient_aliasing(bool enabled) noexcept -> void { transient_aliasing_ = enabled; }
+
+    // Log the full compiled plan (batches, waits, barriers, transfers, transient placement) when it changes.
+    auto set_frame_graph_dump(bool enabled) noexcept -> void { dump_frame_graph_ = enabled; }
     [[nodiscard]] auto last_frame_pipeline_stats() const noexcept -> PipelineStats const & {
         return last_frame_pipeline_stats_;
     }
@@ -1217,9 +1223,6 @@ private:
         std::optional<render_pass::BloomTextureIndex> bloom;
     };
 
-    // Both timestamps of a stage that did no work this frame. Every stage writes both every frame: one missing
-    // query leaves vkGetQueryPoolResults NOT_READY and drops the whole frame's timings.
-    auto write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t frame_index, RenderStage stage) -> void;
 
     // The end-of-frame timestamp and the flags that say this slot's queries hold results.
     auto record_frame_end(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void;
@@ -1351,7 +1354,7 @@ private:
     std::uint32_t maximum_draw_count_ = 0;
     std::uint32_t maximum_submission_count_ = 0;
 
-    StageTimings last_frame_timings_{};
+    FrameTimings last_frame_timings_{};
     FrameStats last_frame_stats_{};
 
     std::vector<GpuLight> light_staging_;
@@ -1379,6 +1382,7 @@ private:
     bool transient_aliasing_ = true;
     std::uint32_t async_candidates_ = 0;
     std::uint64_t logged_plan_misses_ = 0;
+    bool dump_frame_graph_ = false;
 
     struct FramePipelineQuery {
         VkQueryPool query_pool{VK_NULL_HANDLE};

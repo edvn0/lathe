@@ -26,7 +26,7 @@ plan, where it deviates, and what to do next.
 | 4 | Migrate passes out of the legacy body, back to front | **Done**: no `legacy()` pass remains (section 6.1). |
 | 5 | Transient allocation and aliasing | **Done** for the AO, bloom and forward targets (section 6.2). |
 | 6 | Enable async compute, one pass at a time, by measurement | **Candidates implemented and correct; measurement in section 6.3.** |
-| 7 | Delete `RenderStage` / `write_empty_stage` | Not started. |
+| 7 | Delete `RenderStage` / `write_empty_stage` | **Done** (section 6.4). |
 | 8 | Concurrent sharing for read-mostly buffers | Not started (optional). |
 | 9 | Parallel batch recording | Not started. |
 
@@ -378,6 +378,21 @@ UI checkbox does not. Aliasing saves about 16% of the transient memory (435 vs 5
 2560x1420, 4x MSAA): the large MSAA targets are alive at the same time as nearly everything else. `--stress-resize=<n>`
 alternates the render size every n frames; 930 resizes ran under validation with a clean exit.
 
+### 6.4 Phase 7 as built
+
+`RenderStage`, `render_stage.hxx`, the per-stage query pairs, `write_empty_stage` and the `stage_timestamps` shim are gone.
+`Renderer::last_frame_timings()` returns a `FrameTimings`: the frame graph profiler's per-pass times (graphics queue
+first, in execution order, keyed by each pass's stable `name_id`), `full_frame_ms` (the frame's first to last graphics
+timestamp; the only two queries left in the old pool besides the overlay ones) and the overlay timings. The benchmark JSON
+lists a stage per pass seen, in order of first appearance, with frames the pass was not part of counting as 0 ms and frames
+before its first appearance backfilled with 0, plus `full_frame`. Ids unchanged from before: `gpu_culling`, `shadow_pass`,
+`depth_prepass`, `hiz_build`, `occlusion_culling`, `depth_prepass_late`, `forward_pass`, `composition`, `bloom`,
+`environment`; the split passes have new ids (`light_cull`, `light_cluster`, `cluster_stats_clear`,
+`cluster_stats_readback`, `gtao`, `gtao_denoise`, `ui`, ...). `compare_benchmarks.py` lists new ids on their own. The
+timings plot is keyed by pass id. `frame_graph::describe` (moved from the test support) and `--frame-graph-dump` print the
+compiled plan, with the transient placement, whenever it changes. Deviation: the overlay timings still use their own
+queries in the old pool rather than `PassContext::profile_scope`.
+
 ### 6.3 Phase 6 as built
 
 `--async-passes=light,occlusion,gtao` declares groups of compute passes with compute-queue affinity (light culling and
@@ -474,8 +489,8 @@ Deliberate or forced differences, so they are not mistaken for oversights:
    there are no declaration errors; hits and misses are counted.
 4. **Transients are images only**, and `CompileOptions::alias_transients` does not exist: aliasing is decided after the
    compile by `plan_transients` and switched by `--frame-graph-alias`. There are no transient buffers.
-5. **Missing CLI flag:** `--frame-graph-dump` (phase 7). `--frame-graph-alias`, `--frame-graph-serialize`,
-   `--async-passes` and `--stress-resize` exist.
+5. **CLI flags that exist:** `--frame-graph-dump`, `--frame-graph-alias`, `--frame-graph-serialize`,
+   `--async-passes` and `--stress-resize`.
 6. **`QueueSet` does not warn when the present family differs from graphics** (the plan says it should log a warning;
    the existing swapchain gap is unchanged).
 7. **`--async-compute=off` is compile-time only:** the compute queue is still created and, with `--async-compute-smoke`,
@@ -498,8 +513,7 @@ Deliberate or forced differences, so they are not mistaken for oversights:
 2. Finish phase 6: enable a candidate by default only if the measured `full_frame` median improves by more than the noise
    floor (section 6.3); revert the others. Consider enabling `SchedulerMode::overlap` instead of moving the shadow
    declaration by hand.
-3. Phase 7: delete `RenderStage`, `write_empty_stage` and the `stage_timestamps` shim; key the timings by `PassProfile`
-   names; add `FrameGraph::describe` and `--frame-graph-dump`.
+3. Move the overlay timings onto the graph profiler (`PassContext::profile_scope`) and drop the last old queries.
 4. Phase 8 (optional): concurrent sharing for the read-mostly buffers, which removes most of the ownership transfers
    async compute needs (30 for the occlusion group). Phase 9: parallel batch recording.
 5. Implement the ImGui contract before making any ImGui-visible image a transient, and wire `RendererError` when a

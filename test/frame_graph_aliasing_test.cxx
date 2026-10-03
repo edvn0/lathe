@@ -5,6 +5,7 @@
 #include "frame_graph_test_support.hxx"
 #include "rendering/frame_graph/aliasing.hxx"
 #include "rendering/frame_graph/compiler.hxx"
+#include "rendering/frame_graph/describe.hxx"
 
 using namespace frame_graph;
 
@@ -479,5 +480,25 @@ TEST_SUITE("unit") {
         // The generator makes transients and orders them, so aliasing must actually have been exercised.
         CHECK(graphs_with_transients > 100);
         CHECK(aliased_pairs > 0);
+    }
+}
+
+TEST_SUITE("unit") {
+    TEST_CASE("describe lists passes, uses, barriers and the transient placement") {
+        auto graph = FrameGraph{};
+        disjoint_chains(graph);
+        auto const compiled = compile(graph, single_queue());
+        REQUIRE(compiled.has_value());
+
+        auto const &desc = graph.description();
+        auto const plan = plan_transients(desc, *compiled, uniform(desc, 256), true);
+        auto const text = describe(desc, *compiled, &plan);
+
+        CHECK(text.find("batch 0 queue graphics") != std::string::npos);
+        CHECK(text.find("pass write_first") != std::string::npos);
+        CHECK(text.find("use 'first'") != std::string::npos);
+        CHECK(text.find("alias memory") != std::string::npos); // before write_second
+        CHECK(text.find("transients: 256 bytes in 1 blocks (512 without aliasing)") != std::string::npos);
+        CHECK(text.find("'second' block 0 offset 0 size 256") != std::string::npos);
     }
 }

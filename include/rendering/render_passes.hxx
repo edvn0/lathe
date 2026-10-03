@@ -113,7 +113,7 @@ namespace render_pass {
         VkExtent2D extent{};
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 
-        // only/early time RenderStage::DepthPrepass and clear; late times RenderStage::DepthPrepassLate and loads.
+        // only/early clear the depth buffer; late loads what the early phase wrote.
         DepthPrepassPhase phase = DepthPrepassPhase::only;
 
         DrawBuffers draws;

@@ -12,10 +12,9 @@
 #include <vector>
 
 #include "rendering/cluster_grid.hxx"
-#include "rendering/render_stage.hxx"
 #include "scene/camera_path.hxx"
 
-struct StageTimings;
+struct FrameTimings;
 
 // --benchmark mode: fly the editor camera around the game's benchmark_camera_path() at a fixed timestep with
 // a fixed seed, record per-stage GPU timings for every frame, write a JSON summary and exit. Runs of two
@@ -55,10 +54,6 @@ struct TimingSummary {
 // Nearest-rank percentiles over `samples_ms`; all zero when empty.
 [[nodiscard]]
 auto summarise_timings(std::span<float const> samples_ms) -> TimingSummary;
-
-// Stable snake_case key for a stage in the JSON output.
-[[nodiscard]]
-auto benchmark_stage_id(RenderStage stage) noexcept -> std::string_view;
 
 // Culling and clustering counters for one frame, copied from FrameStats / ClusterStats (which lag the frame by the
 // frames in flight). The `*_valid` flags say whether a group was read back; invalid groups are left out of the means.
@@ -105,7 +100,7 @@ public:
 
     // Call after each drawn frame. `timings` lag by the frames in flight. Warmup ends only once
     // `streaming_idle`.
-    auto on_frame_drawn(StageTimings const &timings, bool streaming_idle, BenchmarkCounters const &counters = {})
+    auto on_frame_drawn(FrameTimings const &timings, bool streaming_idle, BenchmarkCounters const &counters = {})
             -> void;
 
     // Simulated seconds for the frame about to be drawn: 0 while warming up, then measured_frames * timestep. Warmup
@@ -150,6 +145,14 @@ private:
     std::array<std::uint32_t, counter_count> counter_samples_{};
     std::array<std::uint32_t, counter_count> counter_final_{};
 
-    // Per stage, one sample per measured frame with valid timings.
-    std::array<std::vector<float>, stage_count> samples_ms_{};
+    // One entry per frame graph pass seen (keyed by its stable name_id, in order of first appearance), each with one
+    // sample per measured frame with valid timings: 0 for a frame the pass was not part of, so stages compare as
+    // before.
+    struct StageSamples {
+        std::string id;
+        std::string name;
+        std::vector<float> samples_ms;
+    };
+    std::vector<StageSamples> stages_;
+    std::vector<float> full_frame_ms_;
 };

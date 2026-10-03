@@ -15,6 +15,7 @@ add_library(
         file_browser.cxx
         frame_graph/aliasing.cxx
         frame_graph/compiler.cxx
+        frame_graph/describe.cxx
         frame_graph/executor.cxx
         frame_graph/frame_graph.cxx
         frame_graph/pass_profiler.cxx

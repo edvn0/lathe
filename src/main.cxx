@@ -379,18 +379,6 @@ namespace {
         }
 
         if (frame_ok) {
-            if (auto const &timings = application.renderer->last_frame_timings();
-                timings.valid && application.can_start_recording_statistics()) {
-                application.timing_x += 1.0F;
-
-                float running_total = 0.0F;
-
-                for (auto stage = static_cast<std::uint32_t>(RenderStage::Culling); stage < stage_count; ++stage) {
-                    running_total += timings.milliseconds[stage];
-                    application.timing_buffers[stage].add_point(application.timing_x, running_total);
-                }
-            }
-
             auto record_result = application.renderer->record_frame(FrameRecordInfo{
                     .command_buffer = frame->command_buffer,
                     .swapchain_image =
@@ -785,6 +773,12 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    // --frame-graph-dump logs the compiled frame graph (passes, batches, waits, barriers, transfers, transient
+    // placement) whenever it changes, instead of reading it off the code.
+    auto const dump_frame_graph =
+            std::ranges::any_of(std::span<char const *const>{argv + 1, argv + argc},
+                                [](char const *arg) { return std::string_view{arg} == "--frame-graph-dump"; });
+
     // --async-passes=light,occlusion,gtao declares those groups of compute passes with compute-queue affinity, which
     // only matters on a device with a second queue (see --async-compute). Each is enabled by measurement (phase 6).
     std::uint32_t async_passes = 0;
@@ -875,6 +869,7 @@ auto main(int argc, char **argv) -> int {
     }
 
     application.renderer->set_async_candidates(async_passes);
+    application.renderer->set_frame_graph_dump(dump_frame_graph);
 
     if (meshlet_occlusion) {
         application.renderer->set_meshlet_occlusion_culling(*meshlet_occlusion);
@@ -989,6 +984,12 @@ auto main(int argc, char **argv) -> int {
         }
 
         FrameMark;
+
+        // The timings of the frame slot just recorded (its previous use finished), for the plot.
+        if (auto const &timings = application.renderer->last_frame_timings();
+            timings.valid && application.can_start_recording_statistics()) {
+            application.add_pass_timings(timings.passes);
+        }
 
         if (benchmark) {
             auto const streaming_idle = application.renderer->texture_streamer().pending_count() == 0 &&

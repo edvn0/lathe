@@ -8,6 +8,7 @@
 #include "core/logger.hxx"
 #include "gpu/context.hxx"
 #include "rendering/frame_graph/compiler.hxx"
+#include "rendering/frame_graph/describe.hxx"
 #include "rendering/frame_graph/executor.hxx"
 #include "rendering/frame_graph/pass_context.hxx"
 #include "rendering/render_passes.hxx"
@@ -111,6 +112,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
     // Reads back and resets this slot's pass timestamps: the slot's earlier work has finished.
     pass_profiler_.begin_slot(info.frame_index);
+    last_frame_timings_.passes.assign(pass_profiler_.timings().begin(), pass_profiler_.timings().end());
 
     screenshot_->try_resolve(info.frame_index);
 
@@ -356,45 +358,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               }};
                           });
 
-    // Temporary (deleted with RenderStage in phase 7): every stage of the old timings panel needs both of its
-    // timestamps every frame, so the stages whose pass is not part of this frame's graph write them empty.
-    frame_graph_.add_pass("stage_timestamps", frame_graph::PassType::compute,
-                          {
-                                  .name_id = "stage_timestamps",
-                                  .label = "Stage timestamps",
-                                  .color = static_cast<std::uint32_t>(tracy::Color::Gray),
-                          },
-                          [&](frame_graph::PassBuilder &pass) {
-                              pass.side_effect();
-
-                              return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                  auto const empty = [&](RenderStage stage) {
-                                      write_empty_stage(context.command_buffer, info.frame_index, stage);
-                                  };
-
-                                  if (!environment_pending) {
-                                      empty(RenderStage::Environment);
-                                  }
-                                  if (frame.shadow_update_mask == 0) {
-                                      empty(RenderStage::ShadowPass);
-                                  }
-                                  if (!occlusion_active) {
-                                      empty(RenderStage::HiZBuild);
-                                      empty(RenderStage::OcclusionCulling);
-                                      empty(RenderStage::DepthPrepassLate);
-                                  }
-                                  if (!clustered) {
-                                      empty(RenderStage::LightClustering);
-                                  }
-                                  if (!ao_enabled) {
-                                      empty(RenderStage::AmbientOcclusion);
-                                  }
-                                  if (!bloom_enabled) {
-                                      empty(RenderStage::BloomPass);
-                                  }
-                              }};
-                          });
-
     // Image-based lighting and the procedural sky: compute that (re)builds the radiance cube, the prefiltered specular
     // cubes, the BRDF LUT and the SH coefficients, only on the frames the system planned work. It manages its own
     // layouts per mip and face, and its rebuilds are amortized over frames (a partly filled set must survive between
@@ -455,7 +418,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     // instances it defers become late_cs's candidates).
     frame_graph_.add_pass("gpu_culling", frame_graph::PassType::compute,
                           {
-                                  .name_id = "culling",
+                                  .name_id = "gpu_culling",
                                   .label = "Culling",
                                   .color = static_cast<std::uint32_t>(tracy::Color::SlateBlue),
                           },
@@ -1236,7 +1199,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     frame_plan_ = *compiled;
 
     // One line whenever the plan was recompiled, so the schedule is visible without a debugger.
-    if (plan_cache_.misses() != logged_plan_misses_) {
+    auto const plan_changed = plan_cache_.misses() != logged_plan_misses_;
+    if (plan_changed) {
         logged_plan_misses_ = plan_cache_.misses();
         auto per_queue = std::array<std::size_t, frame_graph::logical_queue_count>{};
         auto passes_per_queue = std::array<std::size_t, frame_graph::logical_queue_count>{};
@@ -1270,6 +1234,12 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             error("Could not refresh the resource table for new transients");
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
+    }
+
+    if (plan_changed && dump_frame_graph_) {
+        ::info("Frame graph (slot {}):\n{}", info.frame_index,
+               frame_graph::describe(frame_graph_.description(), *frame_plan_,
+                                     &transient_allocator_.plan(info.frame_index)));
     }
 
     auto resources = frame_graph::physical_resources_of(frame_graph_.description());

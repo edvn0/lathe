@@ -8,7 +8,6 @@
 #include "assets/meshlet.hxx"
 #include "gpu/vk_barrier.hxx"
 #include "rendering/hiz_occlusion.hxx"
-#include "rendering/render_stage.hxx"
 #include "rendering/shadow_cascades.hxx"
 #include "shader_push_constants.hxx"
 
@@ -257,13 +256,8 @@ namespace render_pass {
     } // namespace detail
 
     auto shadow(Context const &context, ShadowPassInfo const &info) -> std::expected<void, RendererError> {
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::ShadowPass);
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, context.timestamp_query_pool,
-                             stage * 2);
 
         if (info.update_mask == 0) {
-            vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                                 context.timestamp_query_pool, stage * 2 + 1);
             return {};
         }
 
@@ -383,8 +377,6 @@ namespace render_pass {
             }
         }
 
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                             context.timestamp_query_pool, stage * 2 + 1);
         return {};
     }
 
@@ -404,11 +396,6 @@ namespace render_pass {
             (info.counts.mask != 0 && !detail::scene_layouts_valid(context.pipeline_graph, mask_draw))) {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
-
-        bool const late = info.phase == DepthPrepassPhase::late;
-        auto const stage = static_cast<std::uint32_t>(late ? RenderStage::DepthPrepassLate : RenderStage::DepthPrepass);
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, context.timestamp_query_pool,
-                             stage * 2);
 
         // The frame graph has begun rendering.
 
@@ -443,8 +430,6 @@ namespace render_pass {
             detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.opaque, info.counts.mask, mask_pc);
         }
 
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                             context.timestamp_query_pool, stage * 2 + 1);
         return {};
     }
 
@@ -463,10 +448,7 @@ namespace render_pass {
         }
 
         auto const command_buffer = context.command_buffer;
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::HiZBuild);
 
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, context.timestamp_query_pool,
-                             stage * 2);
 
         // The occlusion tests (main_cs, late_cs, and task shaders for meshlet occlusion) and the debug view.
         // (On a compute-only family only the compute reader can be named; the graph covers the others.)
@@ -505,16 +487,11 @@ namespace render_pass {
                                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, level, 1);
         }
 
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, context.timestamp_query_pool,
-                             stage * 2 + 1);
 
         return {};
     }
 
     auto gtao(Context const &context, AmbientOcclusionInfo const &info) -> std::expected<void, RendererError> {
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::AmbientOcclusion);
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                             context.timestamp_query_pool, stage * 2);
 
         auto const gtao_layout = detail::resolve_layout(context.pipeline_graph, info.gtao_pipeline);
         if (gtao_layout == VK_NULL_HANDLE) {
@@ -546,7 +523,6 @@ namespace render_pass {
     }
 
     auto gtao_denoise(Context const &context, AmbientOcclusionInfo const &info) -> std::expected<void, RendererError> {
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::AmbientOcclusion);
 
         auto const denoise_layout = detail::resolve_layout(context.pipeline_graph, info.denoise_pipeline);
         if (denoise_layout == VK_NULL_HANDLE) {
@@ -574,8 +550,6 @@ namespace render_pass {
                            &denoise_pc);
         vkCmdDispatch(context.command_buffer, (info.extent.width + 7U) / 8U, (info.extent.height + 7U) / 8U, 1);
 
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                             context.timestamp_query_pool, stage * 2 + 1);
         return {};
     }
 
@@ -601,9 +575,6 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::ForwardPass);
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                             context.timestamp_query_pool, stage * 2);
 
         // The frame graph has begun rendering.
         vkCmdBeginQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0, 0);
@@ -688,8 +659,6 @@ namespace render_pass {
         scene_overlays();
 
         // Inside the rendering scope, so it no longer covers the end-of-scope resolve.
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             context.timestamp_query_pool, stage * 2 + 1);
 
         return info.output_hdr;
     }
@@ -765,14 +734,7 @@ namespace render_pass {
 
     auto bloom(Context const &context, BloomPassInfo const &info)
             -> std::expected<std::optional<BloomTextureIndex>, RendererError> {
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::BloomPass);
-        auto const timestamp_stage =
-                info.enabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-
-        vkCmdWriteTimestamp2(context.command_buffer, timestamp_stage, context.timestamp_query_pool, stage * 2);
-
         if (!info.enabled) {
-            vkCmdWriteTimestamp2(context.command_buffer, timestamp_stage, context.timestamp_query_pool, stage * 2 + 1);
             return std::optional<BloomTextureIndex>{};
         }
 
@@ -873,8 +835,6 @@ namespace render_pass {
             to_sampled(target_mip);
         }
 
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, context.timestamp_query_pool,
-                             stage * 2 + 1);
 
         return std::optional<BloomTextureIndex>{BloomTextureIndex{.index = info.mip_texture_indices[0]}};
     }
@@ -886,9 +846,6 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        constexpr auto stage = static_cast<std::uint32_t>(RenderStage::Composition);
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             context.timestamp_query_pool, stage * 2);
 
         // The frame graph has begun rendering into the swapchain or the viewport target.
         detail::bind_graphics_node(context.pipeline_graph, info.pipeline, context.command_buffer, VK_SAMPLE_COUNT_1_BIT,
@@ -913,8 +870,6 @@ namespace render_pass {
 
         ui_overlay();
 
-        vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             context.timestamp_query_pool, stage * 2 + 1);
         return {};
     }
 

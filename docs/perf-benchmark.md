@@ -117,3 +117,12 @@ from the same machine, with nothing else loading it.
 To change what gets measured, edit `BasicGame::benchmark_camera_path()`.
 Runs from before and after that change fly different loops, so they don't
 compare.
+
+## Stage ids
+
+The JSON `stages` list has `full_frame` plus one entry per frame graph pass seen, keyed by the pass's stable id
+(`gpu_culling`, `shadow_pass`, `depth_prepass`, `hiz_build`, `occlusion_culling`, `depth_prepass_late`, `gtao`,
+`gtao_denoise`, `forward_pass`, `bloom`, `composition`, `ui`, `environment`, `light_cull`, `light_cluster`, ...). A pass
+not part of a frame (occlusion off, no shadow update) counts as 0 ms for it, and a pass first seen mid-run is backfilled with
+0. `--frame-graph-dump` logs the compiled graph (passes, batches, waits, barriers, transfers) whenever it changes, and
+`--async-passes=` / `--frame-graph-alias=` / `--stress-resize=` are described in `docs/frame-graph-status.md`.
