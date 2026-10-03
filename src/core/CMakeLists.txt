@@ -8,6 +8,7 @@ add_library(
         error_describe.cxx
         fly_string.cxx
         human_readable_bytes.cxx
+        json.cxx
         logger.cxx
         memory_tracker.cxx
         random.cxx

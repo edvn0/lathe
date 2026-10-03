@@ -67,6 +67,10 @@ struct VulkanContext {
     // dependency from a real bug (CompileOptions::serialize).
     bool frame_graph_serialize = false;
 
+    // --vsync=on|off: FIFO presentation, or MAILBOX/IMMEDIATE when available. Benchmarks default to off, so the refresh
+    // rate doesn't cap what they measure.
+    bool vsync = true;
+
     QueueFamilies queue_families{};
 
     QueueSet queue_set{};

@@ -1,4 +1,5 @@
 #include "gpu/swapchain.hxx"
+#include "core/perf_events.hxx"
 
 #include "core/logger.hxx"
 #include "gpu/device_wait.hxx"
@@ -311,6 +312,7 @@ auto Swapchain::create_swapchain(VkSwapchainKHR old_swapchain) noexcept -> bool 
 
     surface_format_ = choose_surface_format(formats);
     const VkPresentModeKHR present_mode = choose_present_mode(present_modes);
+    present_mode_ = present_mode;
     extent_ = choose_extent(capabilities);
 
     if (extent_.width == 0 || extent_.height == 0) {
@@ -458,6 +460,8 @@ auto Swapchain::recreate() noexcept -> bool {
     if (requested_extent_.width == 0 || requested_extent_.height == 0) {
         return true;
     }
+
+    perf_events::record(PerfEvent::swapchain_recreate);
 
     const VkResult wait_result = wait_idle_bounded(device_, "Swapchain::recreate");
 

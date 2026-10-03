@@ -30,7 +30,10 @@
 
 #include "app/application.hxx"
 #include "app/benchmark.hxx"
+#include "app/benchmark_compare.hxx"
+#include "app/benchmark_driver.hxx"
 #include "app/fatal_dialog.hxx"
+#include "app/frame_clock.hxx"
 #include "app/game.hxx"
 #include "assets/shader_hot_reload_watcher.hxx"
 #include "core/allocator.hxx"
@@ -180,8 +183,8 @@ namespace {
             }
         }
 
-        if (application.terrain) {
-            application.terrain->submit(*application.renderer);
+        if (auto *const terrain = application.active_terrain(); terrain != nullptr) {
+            terrain->submit(*application.renderer);
         }
 
         return {};
@@ -218,14 +221,21 @@ namespace {
 
     // Waits for the frame slot's timelines, acquires the next image and begins the slot's graphics command buffer, the
     // frame's prologue. A timeout in the wait is reported as a device loss, as a hung fence used to be.
-    auto begin_gpu_frame(VulkanContext &context) noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError> {
+    auto begin_gpu_frame(VulkanContext &context,
+                         FrameClock &clock) noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError> {
         auto const slot = context.swapchain.current_slot();
 
-        if (auto begun = context.queue_set.begin_slot(slot); !begun) {
-            return std::unexpected(to_begin_error(std::move(begun.error())));
+        {
+            auto const waiting = clock.scope(CpuPhase::slot_wait);
+            if (auto begun = context.queue_set.begin_slot(slot); !begun) {
+                return std::unexpected(to_begin_error(std::move(begun.error())));
+            }
         }
 
-        auto frame = context.swapchain.acquire(slot);
+        auto frame = [&] {
+            auto const acquiring = clock.scope(CpuPhase::acquire);
+            return context.swapchain.acquire(slot);
+        }();
         if (!frame) {
             return std::unexpected(std::move(frame.error()));
         }
@@ -246,8 +256,11 @@ namespace {
     // the frame is instead three batches that exercise timeline values and multi-batch submission with no data
     // dependency: the recorded graphics batch, an empty compute batch that waits on it, and an empty graphics batch
     // that waits on the compute one and signals the swapchain.
-    auto end_gpu_frame(VulkanContext &context, SwapchainFrame const &frame,
-                       std::span<SubmitBatch const> planned) noexcept -> SwapchainFrameResult {
+    auto end_gpu_frame(VulkanContext &context, SwapchainFrame const &frame, std::span<SubmitBatch const> planned,
+                       FrameClock &clock) noexcept -> SwapchainFrameResult {
+        auto submitting = std::optional<FrameClock::Scope>{};
+        submitting.emplace(clock, CpuPhase::submit);
+
         if (auto const ended = vkEndCommandBuffer(frame.command_buffer); ended != VK_SUCCESS) {
             error("vkEndCommandBuffer failed with VkResult {}", static_cast<int>(ended));
 
@@ -294,13 +307,15 @@ namespace {
                                                                               : SwapchainFrameResult::fatal_error;
         }
 
+        submitting.reset();
+        auto const presenting = clock.scope(CpuPhase::present);
         return context.swapchain.present(frame);
     }
 
-    auto draw(VulkanContext &context, Application &application) noexcept -> bool {
+    auto draw(VulkanContext &context, Application &application, FrameClock &clock) noexcept -> bool {
         ZoneScopedNC("Draw", tracy::Color::RoyalBlue);
 
-        auto frame = begin_gpu_frame(context);
+        auto frame = begin_gpu_frame(context, clock);
 
         if (!frame) {
             switch (frame.error().kind) {
@@ -326,17 +341,21 @@ namespace {
             return false;
         }
 
-        if (application.terrain) {
-            // Before submit_scene(), so the vertex copies precede every draw in this command buffer.
-            application.terrain->process_ready(*application.renderer, frame->command_buffer,
-                                               application.active_scene()->physics_world.get());
-        }
-
         auto frame_ok = true;
-        auto submit_result = submit_scene(application);
-        if (!submit_result) {
-            error("Could not submit scene: {}", describe(submit_result.error()));
-            frame_ok = false;
+        {
+            auto const submitting = clock.scope(CpuPhase::scene_submit);
+
+            if (auto *const terrain = application.active_terrain(); terrain != nullptr) {
+                // Before submit_scene(), so the vertex copies precede every draw in this command buffer.
+                terrain->process_ready(*application.renderer, frame->command_buffer,
+                                       application.active_scene()->physics_world.get());
+            }
+
+            auto submit_result = submit_scene(application);
+            if (!submit_result) {
+                error("Could not submit scene: {}", describe(submit_result.error()));
+                frame_ok = false;
+            }
         }
 
         auto const active_aspect = application.renderer->aspect(frame->frame_index);
@@ -352,12 +371,14 @@ namespace {
                           };
 
         if (frame_ok) {
-            application.imgui_renderer->begin_frame(gui::ImGuiFramebuffer{frame->extent, frame->format});
             {
+                auto const ui = clock.scope(CpuPhase::ui);
+                application.imgui_renderer->begin_frame(gui::ImGuiFramebuffer{frame->extent, frame->format});
                 application.on_ui(frame->frame_index);
+                application.imgui_renderer->end_frame();
             }
-            application.imgui_renderer->end_frame();
 
+            auto const preparing = clock.scope(CpuPhase::prepare);
             auto prepare_result = application.renderer->prepare_frame(
                     frame->command_buffer,
                     {
@@ -379,6 +400,7 @@ namespace {
         }
 
         if (frame_ok) {
+            auto const recording = clock.scope(CpuPhase::record);
             auto record_result = application.renderer->record_frame(FrameRecordInfo{
                     .command_buffer = frame->command_buffer,
                     .swapchain_image =
@@ -404,7 +426,8 @@ namespace {
         // Always retire the frame we began, so image_available and the slot's timeline values stay balanced whatever
         // failed above.
         // This assumes the renderer never fails with a rendering scope still open.
-        auto const end_result = end_gpu_frame(context, *frame, application.renderer->submit_batches());
+        auto const end_result = end_gpu_frame(context, *frame, application.renderer->submit_batches(), clock);
+        clock.mark_present();
 
         if (!frame_ok) {
             return false;
@@ -665,6 +688,17 @@ static auto ctrl_c_handler(int) -> void {
 auto create_game() -> std::unique_ptr<IGame>;
 
 auto main(int argc, char **argv) -> int {
+    // --benchmark-compare=<base>,<head> reads two results and exits, without a window or a device. Before any logging,
+    // so the report on stdout can be redirected as it is.
+    auto compare_options = parse_benchmark_compare_options(std::span<char const *const>{argv + 1, argv + argc});
+    if (!compare_options) {
+        error("Invalid benchmark compare arguments: {}", compare_options.error());
+        return EXIT_FAILURE;
+    }
+    if (*compare_options) {
+        return run_benchmark_compare(**compare_options);
+    }
+
     info("Starting GLFW Vulkan test at {}", std::filesystem::current_path().string());
 
     std::signal(SIGINT, ctrl_c_handler);
@@ -674,6 +708,13 @@ auto main(int argc, char **argv) -> int {
     auto benchmark_options = parse_benchmark_options(std::span<char const *const>{argv + 1, argv + argc});
     if (!benchmark_options) {
         error("Invalid benchmark arguments: {}", benchmark_options.error());
+        return EXIT_FAILURE;
+    }
+
+    // Vsync caps the displayed frame rate at the refresh rate, so benchmarks turn it off unless asked otherwise.
+    auto const vsync = parse_vsync_option(std::span<char const *const>{argv + 1, argv + argc});
+    if (!vsync) {
+        error("Invalid arguments: {}", vsync.error());
         return EXIT_FAILURE;
     }
 
@@ -809,6 +850,7 @@ auto main(int argc, char **argv) -> int {
     }
 
     VulkanContext context{};
+    context.vsync = vsync->value_or(!benchmark_options->has_value());
 
     // --async-compute=auto|off|same-family picks the compute queue topology (off keeps one queue but still creates
     // the compute queue); --sync-validation turns on the validation layer's synchronization checks in Debug builds.
@@ -901,12 +943,12 @@ auto main(int argc, char **argv) -> int {
 
     std::uint64_t stress_resize_frames = 0;
     bool stress_resize_large = false;
-    std::optional<BenchmarkRun> benchmark;
+    std::optional<BenchmarkDriver> benchmark;
     if (*benchmark_options) {
-        auto keyframes = application.game->benchmark_camera_path();
+        auto driver = BenchmarkDriver::create(std::move(**benchmark_options), application);
 
-        if (keyframes.empty()) {
-            error("--benchmark: this game defines no benchmark_camera_path()");
+        if (!driver) {
+            error("{}", driver.error());
             destroy_application(context, application);
             return EXIT_FAILURE;
         }
@@ -915,10 +957,13 @@ auto main(int argc, char **argv) -> int {
         // the same size every run.
         ImGui::GetIO().IniFilename = nullptr;
 
-        info("Benchmark: {} frames along {} keyframes, seed {}, writing {}", (*benchmark_options)->frame_count,
-             keyframes.size(), (*benchmark_options)->seed, (*benchmark_options)->output_path.string());
-        benchmark.emplace(std::move(**benchmark_options), std::move(keyframes));
+        info("Benchmark: {} measured frames per run, seed {}, writing {}{}", driver->options().frame_count,
+             driver->options().seed, driver->options().output_path.string(),
+             context.vsync ? " (vsync on: displayed intervals are capped at the refresh rate)" : "");
+        benchmark.emplace(std::move(*driver));
     }
+
+    FrameClock frame_clock;
 
     info("Initialization complete; close the window to exit");
 
@@ -930,20 +975,29 @@ auto main(int argc, char **argv) -> int {
            glfwWindowShouldClose(context.window) != GLFW_TRUE) {
         ZoneScopedNC("MainLoop", tracy::Color::Gray);
 
+        frame_clock.begin_frame();
+
         auto const width = context.framebuffer_width.load(std::memory_order_relaxed);
         auto const height = context.framebuffer_height.load(std::memory_order_relaxed);
 
-        if (width <= 0 || height <= 0) {
-            glfwWaitEvents();
-        } else {
-            glfwPollEvents();
+        {
+            auto const polling = frame_clock.scope(CpuPhase::events);
+
+            if (width <= 0 || height <= 0) {
+                glfwWaitEvents();
+            } else {
+                glfwPollEvents();
+            }
         }
 
         if (glfwWindowShouldClose(context.window) == GLFW_TRUE) {
             break;
         }
 
-        application.renderer->drain_event_queue();
+        {
+            auto const draining = frame_clock.scope(CpuPhase::events);
+            application.renderer->drain_event_queue();
+        }
 
         auto const current_width = context.framebuffer_width.load(std::memory_order_relaxed);
         auto const current_height = context.framebuffer_height.load(std::memory_order_relaxed);
@@ -959,26 +1013,24 @@ auto main(int argc, char **argv) -> int {
                 benchmark ? benchmark_timestep : std::chrono::duration<float>(now - last_frame_time).count();
         last_frame_time = now;
 
-        // Under --benchmark the shader clock restarts with the measured lap, so warmup length can't shift frame N.
-        application.elapsed_time = benchmark ? benchmark->simulated_time() : application.elapsed_time + delta_time;
+        {
+            auto const updating = frame_clock.scope(CpuPhase::update);
 
-        application.camera.update(std::min(delta_time, 0.1F));
+            application.elapsed_time += delta_time;
+            application.camera.update(std::min(delta_time, 0.1F));
 
-        // Terrain streaming follows the camera.
-        if (benchmark) {
-            auto const keyframe = benchmark->camera();
-            application.camera.look_at(keyframe.position, keyframe.target);
-
-            if (benchmark->options().keyframe_screenshots && benchmark->at_keyframe()) {
-                application.renderer->request_screenshot(ScreenshotSource::viewport);
+            // Sets up the next case's scene when one starts, then the camera (terrain streaming follows it) and the
+            // shader clock, which restarts with the measured lap so warmup length can't shift frame N.
+            if (benchmark) {
+                benchmark->begin_frame(application);
             }
-        }
 
-        application.update(delta_time);
+            application.update(delta_time);
+        }
 
         request_resize_if_needed(context, current_width, current_height);
 
-        if (!draw(context, application)) {
+        if (!draw(context, application, frame_clock)) {
             exit_code = EXIT_FAILURE;
             break;
         }
@@ -992,52 +1044,15 @@ auto main(int argc, char **argv) -> int {
         }
 
         if (benchmark) {
-            auto const streaming_idle = application.renderer->texture_streamer().pending_count() == 0 &&
-                                        (!application.terrain || application.terrain->streaming_idle());
-            auto const &frame_stats = application.renderer->last_frame_stats();
-            auto const &cluster_stats = application.renderer->last_cluster_stats();
-            benchmark->on_frame_drawn(application.renderer->last_frame_timings(), streaming_idle,
-                                      BenchmarkCounters{
-                                              .occlusion_valid = frame_stats.occlusion_stats_valid,
-                                              .frustum_visible_instances = frame_stats.frustum_visible_instance_count,
-                                              .early_instances = frame_stats.early_instance_count,
-                                              .occlusion_candidates = frame_stats.occlusion_candidate_count,
-                                              .late_instances = frame_stats.late_instance_count,
-                                              .occluded_instances = frame_stats.occluded_instance_count,
-                                              .meshlet_valid = frame_stats.meshlet_occlusion_stats_valid,
-                                              .deferred_meshlets = frame_stats.deferred_meshlet_count,
-                                              .occluded_meshlets = frame_stats.occluded_meshlet_count,
-                                              .cluster_valid = cluster_stats.valid,
-                                              .occupied_clusters = cluster_stats.occupied_clusters,
-                                              .overflowing_clusters = cluster_stats.overflowing_clusters,
-                                              .maximum_lights = cluster_stats.maximum_lights,
-                                              .stored_lights = cluster_stats.stored_lights,
-                                      });
+            auto const status = benchmark->end_frame(
+                    application, context, frame_clock.finish_frame(),
+                    BenchmarkRenderSize{.width = renderer_extent.width, .height = renderer_extent.height});
 
-            if (benchmark->finished()) {
-                VkPhysicalDeviceProperties properties{};
-                vkGetPhysicalDeviceProperties(context.physical_device, &properties);
-
-                auto const written = benchmark->write(BenchmarkEnvironment{
-                        .device_name = properties.deviceName,
-                        .render_width = renderer_extent.width,
-                        .render_height = renderer_extent.height,
-                        .cluster_grid = application.renderer->cluster_grid(),
-                        .occlusion_culling = application.renderer->occlusion_culling() &&
-                                             application.renderer->occlusion_culling_supported(),
-                        .meshlet_occlusion = application.renderer->occlusion_culling() &&
-                                             application.renderer->occlusion_culling_supported() &&
-                                             application.renderer->meshlet_culling() &&
-                                             application.renderer->meshlet_occlusion_culling(),
-                });
-
-                if (written) {
-                    info("Benchmark written to {}", benchmark->options().output_path.string());
-                } else {
-                    error("Could not write benchmark results: {}", written.error());
-                    exit_code = EXIT_FAILURE;
-                }
-
+            if (status == BenchmarkDriver::Status::failed) {
+                exit_code = EXIT_FAILURE;
+                break;
+            }
+            if (status == BenchmarkDriver::Status::finished) {
                 break;
             }
         }
@@ -1062,6 +1077,13 @@ auto main(int argc, char **argv) -> int {
 
         // --stress-resize: alternate between two render sizes every n frames, whatever the panel says.
         auto target_render_extent = desired_render_extent;
+
+        // Benchmarks render at a fixed size (and the resolution scenario scales it), whatever the window.
+        if (benchmark) {
+            auto const size = benchmark->render_size(
+                    BenchmarkRenderSize{.width = desired_render_extent.width, .height = desired_render_extent.height});
+            target_render_extent = VkExtent2D{.width = size.width, .height = size.height};
+        }
         if (stress_resize_interval != 0) {
             if (++stress_resize_frames % stress_resize_interval == 0) {
                 stress_resize_large = !stress_resize_large;
@@ -1093,7 +1115,7 @@ auto main(int argc, char **argv) -> int {
     }
 
     if (benchmark && !benchmark->finished()) {
-        error("Benchmark interrupted before it finished; no results written");
+        error("Benchmark interrupted before it finished; results of unfinished runs were not written");
         exit_code = EXIT_FAILURE;
     }
 

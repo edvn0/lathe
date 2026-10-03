@@ -6,6 +6,7 @@
 #include <optional>
 
 #include "core/logger.hxx"
+#include "core/perf_events.hxx"
 #include "gpu/context.hxx"
 #include "rendering/frame_graph/compiler.hxx"
 #include "rendering/frame_graph/describe.hxx"
@@ -1206,6 +1207,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     // One line whenever the plan was recompiled, so the schedule is visible without a debugger.
     auto const plan_changed = plan_cache_.misses() != logged_plan_misses_;
     if (plan_changed) {
+        perf_events::record(PerfEvent::frame_graph_compile);
         logged_plan_misses_ = plan_cache_.misses();
         auto per_queue = std::array<std::size_t, frame_graph::logical_queue_count>{};
         auto passes_per_queue = std::array<std::size_t, frame_graph::logical_queue_count>{};
@@ -1230,6 +1232,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
     if (*allocated) {
+        perf_events::record(PerfEvent::transient_allocation);
         ::info("Frame graph transients: {:.1f} MiB for all frame slots, {:.1f} MiB without aliasing",
                static_cast<double>(transient_allocator_.total_bytes()) / (1024.0 * 1024.0),
                static_cast<double>(transient_allocator_.unaliased_bytes()) / (1024.0 * 1024.0));

@@ -126,6 +126,11 @@ struct FrameTimings {
     std::vector<OverlayTiming> overlays;
 
     bool valid = false;
+
+    // Which recorded frame these timings belong to: Renderer::recorded_frame_count() just after that frame was
+    // recorded. Readback lags by the frames in flight, so this is how a consumer lines them up with its own per-frame
+    // data. 0 for timings that were never tagged.
+    std::uint64_t frame_serial = 0;
 };
 
 struct FrameStats {
@@ -629,6 +634,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     }
 
     [[nodiscard]] auto last_frame_timings() const noexcept -> FrameTimings const & { return last_frame_timings_; }
+
+    // Frames recorded through record_frame_end() so far. Read it right after recording a frame to get the serial its
+    // FrameTimings will carry once they are read back.
+    [[nodiscard]] auto recorded_frame_count() const noexcept -> std::uint64_t { return recorded_frame_count_; }
     [[nodiscard]] auto last_frame_stats() const noexcept -> FrameStats const & { return last_frame_stats_; }
 
     // Frame graph transients (the AO and bloom images, over every frame slot): the device memory they occupy and what
@@ -1087,6 +1096,8 @@ private:
     struct FrameTimestamps {
         VkQueryPool query_pool{VK_NULL_HANDLE};
         bool has_results{false};
+        // recorded_frame_count_ of the frame that wrote these queries.
+        std::uint64_t serial{0};
         std::vector<RecordedOverlay> overlays;
     };
     // record_frame() and its passes. Each record_*_pass owns one stage and passes its output to the next through
@@ -1356,6 +1367,7 @@ private:
 
     FrameTimings last_frame_timings_{};
     FrameStats last_frame_stats_{};
+    std::uint64_t recorded_frame_count_ = 0;
 
     std::vector<GpuLight> light_staging_;
     std::uint32_t lights_dirty_mask_ = 0;

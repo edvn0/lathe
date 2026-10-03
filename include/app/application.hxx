@@ -117,6 +117,15 @@ struct Application {
     // Null when the game has no streaming terrain.
     std::unique_ptr<TerrainWorld> terrain;
 
+    // Cleared by the benchmark while it runs a scene of its own (app/benchmark_scenarios.hxx): the terrain is neither
+    // streamed nor drawn, and IGame::on_ui() isn't called, so nothing of the game's appears in that scene.
+    bool terrain_enabled = true;
+    bool game_hooks_enabled = true;
+
+    [[nodiscard]] auto active_terrain() const noexcept -> TerrainWorld * {
+        return terrain_enabled ? terrain.get() : nullptr;
+    }
+
     // Seconds since startup.
     float elapsed_time = 0.0F;
     static constexpr auto stats_record_start_time = 5.0F;

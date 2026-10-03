@@ -1,4 +1,5 @@
 #include "gpu/shader_object_storage.hxx"
+#include "core/perf_events.hxx"
 
 #include <utility>
 
@@ -93,6 +94,8 @@ auto ShaderObjectStorage::create_linked(ShaderObjectCreateInfo const &create_inf
         return std::unexpected(make_error(ShaderObjectStorageErrorType::invalid_argument));
     }
 
+    perf_events::record(PerfEvent::shader_object_build);
+
     // Creation shares no state, so it runs unlocked; only the free list needs the mutex.
     auto shader_object =
             ShaderObjectSet::create_linked(*context_, create_info, global_descriptor_set_layout(), binary_cache());
@@ -122,6 +125,8 @@ auto ShaderObjectStorage::create_compute(ComputeShaderCreateInfo const &create_i
     if (context_ == nullptr) {
         return std::unexpected(make_error(ShaderObjectStorageErrorType::invalid_argument));
     }
+
+    perf_events::record(PerfEvent::shader_object_build);
 
     auto shader_object =
             ShaderObjectSet::create_compute(*context_, create_info, global_descriptor_set_layout(), binary_cache());
