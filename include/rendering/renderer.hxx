@@ -1215,17 +1215,21 @@ private:
     auto create_frame_targets(std::uint32_t frame_index, VkExtent2D extent)
             -> std::expected<OwnedFrameTargets, RendererError>;
 
-    // What the legacy pass leaves for the composite pass to tonemap.
-    struct CompositeInputs {
+    // What the passes hand to the ones after them while parts of the frame are still being migrated: bindless indices
+    // and the like that used to be locals of one function. The legacy pass sets the AO index, forward the HDR one and
+    // bloom the bloom one.
+    struct PassHandoff {
+        std::uint32_t ao_texture_index = 0;
         render_pass::HdrTextureIndex hdr{};
         std::optional<render_pass::BloomTextureIndex> bloom;
     };
 
-    // Everything up to and including bloom, as one pass of the frame graph until its parts are migrated. Composite,
-    // UI, screenshot and the end-of-frame bookkeeping are graph passes after it (renderer_frame_graph.cxx).
+    // Everything up to and including ambient occlusion, as one pass of the frame graph until its parts are migrated.
+    // Forward, bloom, composition, UI, screenshot and the end-of-frame bookkeeping are graph passes after it
+    // (renderer_frame_graph.cxx).
     [[nodiscard]]
     auto record_frame_legacy(FrameRecordInfo const &info, RendererFrame &frame, FrameTargets const &targets,
-                             CompositeInputs &composite_inputs) -> std::expected<void, RendererError>;
+                             PassHandoff &handoff) -> std::expected<void, RendererError>;
 
     // Both timestamps of a stage that did no work this frame. Every stage writes both every frame: one missing
     // query leaves vkGetQueryPoolResults NOT_READY and drops the whole frame's timings.
