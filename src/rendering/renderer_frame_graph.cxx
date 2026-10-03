@@ -239,7 +239,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
     // The per-frame buffers the occlusion chain and the draws reach by device address. Every pass that dereferences one
     // must declare it, because neither sync validation nor the compiler can see a device-address access otherwise.
-    // Read-only until a graph pass takes over writing them.
+    // The ones nothing in the graph writes are imports marked read-only.
     using frame_graph::ShaderStage;
     constexpr auto geometry_stages = ShaderStage::vertex | ShaderStage::task | ShaderStage::mesh;
     constexpr auto draw_stages = geometry_stages | ShaderStage::fragment;
@@ -255,27 +255,52 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     };
 
-    auto const visible_draws = import_frame_buffer(frame.visible_draw_buffer, "visible_draws", true);
-    auto const visible_transforms = import_frame_buffer(frame.visible_transform_buffer, "visible_transforms", true);
+    // late_cs appends to the visible draws and transforms, so they are written when occlusion culling is on.
+    auto visible_draws = import_frame_buffer(frame.visible_draw_buffer, "visible_draws", false);
+    auto visible_transforms = import_frame_buffer(frame.visible_transform_buffer, "visible_transforms", false);
     auto const culled_indirect = import_frame_buffer(frame.culled_indirect_buffer, "culled_indirect", true);
     auto const frustum_planes = import_frame_buffer(frame.frustum_planes_buffer, "frustum_planes", true);
 
     auto const occlusion_active = frame.occlusion_active;
     auto const meshlet_occlusion_active = frame.meshlet_occlusion_active;
 
+    // Phase 2 (late_cs): re-tests main_cs's candidates against this frame's Hi-Z. Everything it reads but does not
+    // write was produced before the frame graph; the Hi-Z is built by the legacy pass for now.
     auto late_indirect = frame_graph::BufferId{};
     auto merged_indirect = frame_graph::BufferId{};
+    auto occlusion_views = frame_graph::BufferId{};
+    auto source_draws = frame_graph::BufferId{};
+    auto source_transforms = frame_graph::BufferId{};
+    auto batch_bounds = frame_graph::BufferId{};
+    auto source_indirect = frame_graph::BufferId{};
+    auto occlusion_candidates = frame_graph::BufferId{};
+    auto candidate_counts = frame_graph::BufferId{};
+    auto hiz_image = frame_graph::ImageId{};
     if (occlusion_active) {
-        late_indirect = import_frame_buffer(frame.late_indirect_buffer, "late_indirect", true);
-        merged_indirect = import_frame_buffer(frame.merged_indirect_buffer, "merged_indirect", true);
+        late_indirect = import_frame_buffer(frame.late_indirect_buffer, "late_indirect", false);
+        merged_indirect = import_frame_buffer(frame.merged_indirect_buffer, "merged_indirect", false);
+        occlusion_views = import_frame_buffer(frame.occlusion_views_buffer, "occlusion_views", true);
+        source_draws = import_frame_buffer(frame.draw_buffer, "draws", true);
+        source_transforms = import_frame_buffer(frame.transform_buffer, "transforms", true);
+        batch_bounds = import_frame_buffer(frame.batch_bounds_buffer, "batch_bounds", true);
+        source_indirect = import_frame_buffer(frame.indirect_buffer, "indirect", true);
+        occlusion_candidates = import_frame_buffer(frame.occlusion_candidates_buffer, "occlusion_candidates", true);
+        candidate_counts = import_frame_buffer(frame.candidate_counts_buffer, "candidate_counts", true);
+
+        // The pyramid the build leaves sampled (the editor's debug view samples it too).
+        hiz_image = frame_graph_.import_image({
+                .entry = sampled_by_fragment_or_compute,
+                .exit = sampled_by_fragment_or_compute,
+                .read_only = true,
+                .debug_name = "hiz",
+                .image = physical_image(*hiz_.image),
+        });
     }
 
     // Meshlet-level occlusion: the prepass phases' task shaders write the visibility bitset and the statistics
     // counters, forward replays the bitset.
-    auto occlusion_views = frame_graph::BufferId{};
     auto meshlet_bits = frame_graph::BufferId{};
     if (meshlet_occlusion_active) {
-        occlusion_views = import_frame_buffer(frame.occlusion_views_buffer, "occlusion_views", true);
         meshlet_bits = import_frame_buffer(frame.meshlet_visibility_buffer, "meshlet_visibility", false);
     }
 
@@ -310,6 +335,52 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                   state.result = record_frame_legacy(legacy_info, frame, *targets, state.handoff);
                               }};
                           });
+
+    // Phase 2 of occlusion culling, culling: re-tests the candidates main_cs deferred against this frame's Hi-Z and
+    // appends the survivors to the visible draws, with the late and merged indirect commands.
+    if (occlusion_active) {
+        frame_graph_.add_pass(
+                "late_cs", frame_graph::PassType::compute,
+                {
+                        .name_id = "occlusion_culling",
+                        .label = "Occlusion culling",
+                        .color = static_cast<std::uint32_t>(tracy::Color::SlateBlue),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    constexpr auto compute = stages_of(ShaderStage::compute);
+                    using frame_graph::Use;
+
+                    [[maybe_unused]] auto const hiz = pass.read(hiz_image, Use::sampled, compute);
+                    [[maybe_unused]] auto const draws = pass.read(source_draws, Use::shader_read, compute);
+                    [[maybe_unused]] auto const transforms = pass.read(source_transforms, Use::shader_read, compute);
+                    [[maybe_unused]] auto const bounds = pass.read(batch_bounds, Use::shader_read, compute);
+                    [[maybe_unused]] auto const commands = pass.read(source_indirect, Use::shader_read, compute);
+                    [[maybe_unused]] auto const culled = pass.read(culled_indirect, Use::shader_read, compute);
+                    [[maybe_unused]] auto const planes = pass.read(frustum_planes, Use::shader_read, compute);
+                    [[maybe_unused]] auto const views = pass.read(occlusion_views, Use::shader_read, compute);
+                    [[maybe_unused]] auto const candidates = pass.read(occlusion_candidates, Use::shader_read, compute);
+                    [[maybe_unused]] auto const counts = pass.read(candidate_counts, Use::shader_read, compute);
+
+                    // Appends past the ranges the early prepass reads, but device-address accesses are not tracked
+                    // per range, so the early prepass's reads are ordered before these writes as a whole.
+                    visible_draws = pass.write(visible_draws, Use::shader_read_write, compute);
+                    visible_transforms = pass.write(visible_transforms, Use::shader_read_write, compute);
+                    late_indirect = pass.write(late_indirect, Use::shader_write, compute);
+                    merged_indirect = pass.write(merged_indirect, Use::shader_write, compute);
+                    stats_buffer = pass.write(stats_buffer, Use::shader_read_write, compute);
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        if (!state.result) {
+                            return;
+                        }
+
+                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        if (auto const done = record_occlusion_cull_pass(pass_context, frame); !done) {
+                            state.result = std::unexpected(done.error());
+                        }
+                    }};
+                });
+    }
 
     // Phase 2 of occlusion culling: draws what late_cs added on top of the early prepass's depth, and leaves the final
     // single-sample depth.

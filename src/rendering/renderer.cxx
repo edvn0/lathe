@@ -4183,9 +4183,6 @@ auto Renderer::record_hiz_build(render_pass::Context const &pass_context, FrameT
 
 auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
         -> std::expected<void, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Occlusion Culling",
-                 tracy::Color::SlateBlue);
-
     auto const command_buffer = pass_context.command_buffer;
     auto const query_pool = pass_context.timestamp_query_pool;
     constexpr auto stage = static_cast<std::uint32_t>(RenderStage::OcclusionCulling);
@@ -4198,28 +4195,6 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
         if (layout == VK_NULL_HANDLE) {
             return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
         }
-
-        constexpr VkPipelineStageFlags2 geometry_stages = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
-                                                          VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                                                          VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
-
-        // late_cs appends past the ranges the early prepass reads, but device-address accesses can't be tracked per
-        // range, so order it after those reads.
-        VkMemoryBarrier2 const after_early_prepass{
-                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                .srcStageMask = geometry_stages,
-                .srcAccessMask = VK_ACCESS_2_NONE,
-                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_NONE,
-        };
-
-        VkDependencyInfo const before_dependency{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .memoryBarrierCount = 1,
-                .pMemoryBarriers = &after_early_prepass,
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &before_dependency);
 
         bind_compute_node(pipeline_graph_, occlusion_cull_pipeline_, command_buffer);
         gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
@@ -4250,47 +4225,6 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
 
         vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
         vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
-
-        auto const compute_barrier = [](VkBuffer buffer, VkPipelineStageFlags2 dst_stages,
-                                        VkAccessFlags2 dst_access) -> VkBufferMemoryBarrier2 {
-            return VkBufferMemoryBarrier2{
-                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                    .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                    .dstStageMask = dst_stages,
-                    .dstAccessMask = dst_access,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .buffer = buffer,
-                    .offset = 0,
-                    .size = VK_WHOLE_SIZE,
-            };
-        };
-
-        // The late prepass and forward pass read the appended instances and the new commands; the statistics go to
-        // the readback copy.
-        constexpr VkPipelineStageFlags2 indirect_stages =
-                VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT;
-        constexpr VkAccessFlags2 indirect_access =
-                VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-
-        std::array const after_cull{
-                compute_barrier(frame.visible_draw_buffer.buffer, geometry_stages, VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
-                compute_barrier(frame.visible_transform_buffer.buffer, geometry_stages,
-                                VK_ACCESS_2_SHADER_STORAGE_READ_BIT),
-                compute_barrier(frame.late_indirect_buffer.buffer, indirect_stages, indirect_access),
-                compute_barrier(frame.merged_indirect_buffer.buffer, indirect_stages, indirect_access),
-                compute_barrier(frame.occlusion_stats_buffer.buffer, VK_PIPELINE_STAGE_2_COPY_BIT,
-                                VK_ACCESS_2_TRANSFER_READ_BIT),
-        };
-
-        VkDependencyInfo const after_dependency{
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .bufferMemoryBarrierCount = static_cast<std::uint32_t>(after_cull.size()),
-                .pBufferMemoryBarriers = after_cull.data(),
-        };
-
-        vkCmdPipelineBarrier2(command_buffer, &after_dependency);
     }
 
     vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, query_pool, stage * 2 + 1);
@@ -4647,10 +4581,7 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &f
         hiz_history_view_projection_ = frame.view_projection;
         hiz_history_valid_ = true;
 
-        if (auto culled = record_occlusion_cull_pass(pass_context, frame); !culled) {
-            return culled;
-        }
-
+        // late_cs and the late prepass follow as graph passes (renderer_frame_graph.cxx).
         // The late prepass follows as a graph pass (renderer_frame_graph.cxx).
     } else {
         write_empty_stage(command_buffer, frame_index, RenderStage::HiZBuild);
