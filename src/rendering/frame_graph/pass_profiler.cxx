@@ -161,7 +161,12 @@ namespace frame_graph {
             return;
         }
 
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, entry.pool, 2 * timestamp_slot);
+        // ALL_COMMANDS, not TOP_OF_PIPE: the begin timestamp is written once every earlier command on the queue has
+        // finished. A TOP_OF_PIPE begin is written as soon as the pass is reached, while its end waits for all earlier
+        // work, so a cheap pass recorded behind an expensive one reported that one's remaining time as its own (e.g.
+        // cluster_stats_clear reading exactly gpu_culling's time). Now passes on a queue don't overlap: a pass's time
+        // is from the queue draining before it to its own end, and the times of one queue add up to at most its span.
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, entry.pool, 2 * timestamp_slot);
     }
 
     auto PassProfiler::write_end(VkCommandBuffer command_buffer, LogicalQueue queue, std::uint32_t slot,
@@ -175,8 +180,7 @@ namespace frame_graph {
             return;
         }
 
-        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, entry.pool,
-                             2 * timestamp_slot + 1);
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, entry.pool, 2 * timestamp_slot + 1);
     }
 
     auto PassProfiler::source_location([[maybe_unused]] std::string_view label, [[maybe_unused]] std::uint32_t color)
