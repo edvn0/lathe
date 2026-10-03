@@ -343,6 +343,59 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               }};
                           });
 
+    // The depth prepass (phase 1 with occlusion culling, the only phase without): clears the depth buffer and draws
+    // what main_cs kept. Under MSAA it resolves into the single-sample depth; MIN keeps each pixel's farthest sample,
+    // which the Hi-Z needs to stay conservative (reverse-Z), otherwise SAMPLE_ZERO is what the rest expects.
+    frame_graph_.add_pass(
+            "depth_prepass", frame_graph::PassType::raster,
+            {
+                    .name_id = "depth_prepass",
+                    .label = occlusion_active ? "Depth prepass (early)" : "Depth prepass",
+                    .color = static_cast<std::uint32_t>(tracy::Color::SlateGray),
+            },
+            [&](frame_graph::PassBuilder &pass) {
+                [[maybe_unused]] auto const draws =
+                        pass.read(visible_draws, frame_graph::Use::shader_read, geometry_stages);
+                [[maybe_unused]] auto const transforms =
+                        pass.read(visible_transforms, frame_graph::Use::shader_read, geometry_stages);
+                [[maybe_unused]] auto const commands = pass.read(culled_indirect, frame_graph::Use::indirect_read);
+                [[maybe_unused]] auto const planes =
+                        pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                if (meshlet_occlusion_active) {
+                    // View [0], the history Hi-Z's, and the bits and counters this phase's task shaders record.
+                    [[maybe_unused]] auto const views =
+                            pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                    meshlet_bits =
+                            pass.write(meshlet_bits, frame_graph::Use::shader_read_write, stages_of(ShaderStage::task));
+                    stats_buffer =
+                            pass.write(stats_buffer, frame_graph::Use::shader_read_write, stages_of(ShaderStage::task));
+                }
+
+                depth_image = pass.write_depth(depth_image, frame_graph::LoadOp::clear, frame_graph::StoreOp::store);
+                if (multisampled) {
+                    resolved_depth_image =
+                            pass.resolve(depth_image, resolved_depth_image,
+                                         occlusion_active ? VK_RESOLVE_MODE_MIN_BIT : VK_RESOLVE_MODE_SAMPLE_ZERO_BIT);
+                } else {
+                    resolved_depth_image = depth_image;
+                }
+                pass.render_area({.offset = {0, 0}, .extent = targets->extent});
+
+                return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                    if (!state.result) {
+                        return;
+                    }
+
+                    auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                    if (auto const done = record_depth_prepass(pass_context, frame, *targets,
+                                                               occlusion_active ? render_pass::DepthPrepassPhase::early
+                                                                                : render_pass::DepthPrepassPhase::only);
+                        !done) {
+                        state.result = std::unexpected(done.error());
+                    }
+                }};
+            });
+
     // The Hi-Z pyramid: the single-sample depth reduced into a mip chain, one dispatch per level. The levels are
     // written and sampled one at a time inside the pass; the graph sees it enter writable and leave sampled.
     if (occlusion_active) {

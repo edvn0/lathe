@@ -84,13 +84,6 @@ namespace render_pass {
         float depth_bias_slope = -2.5F;
     };
 
-    struct ForwardTargets {
-        Image const &hdr;
-        Image const &depth;
-        Image const *resolved_hdr = nullptr;
-        Image const *resolved_depth = nullptr;
-    };
-
     // Two-phase occlusion culling splits the prepass (docs/occlusion-culling.md): `early` clears and draws the
     // phase-1 instances, `late` loads that depth and adds the phase-2 ones. `only` is the single pass without it.
     enum class DepthPrepassPhase : std::uint8_t {
@@ -107,18 +100,15 @@ namespace render_pass {
     inline constexpr std::uint32_t cull_replay = 32U;
     inline constexpr std::uint32_t cull_stats = 64U;
 
+    // The body of a frame graph raster pass: the executor has begun rendering into the depth buffer (clearing it, or
+    // loading the early phase's) and resolves it into the single-sample depth under MSAA: MIN for the early phase
+    // (the Hi-Z needs each pixel's farthest sample, reverse-Z), SAMPLE_ZERO otherwise (what GTAO and the rest expect).
     struct DepthPrepassInfo {
-        Image const &depth;
-        Image const *resolved_depth = nullptr;
         VkExtent2D extent{};
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 
         // only/early time RenderStage::DepthPrepass and clear; late times RenderStage::DepthPrepassLate and loads.
         DepthPrepassPhase phase = DepthPrepassPhase::only;
-
-        // How `depth` resolves into `resolved_depth` when multisampled. MIN keeps each pixel's farthest sample
-        // (reverse-Z), which the Hi-Z needs to stay conservative; SAMPLE_ZERO is what GTAO and the rest expect.
-        VkResolveModeFlagBits depth_resolve_mode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
 
         DrawBuffers draws;
         DrawCounts counts;
@@ -142,10 +132,6 @@ namespace render_pass {
 
         // Must match ForwardGeometryInfo::meshlet_culling, since forward depth-tests EQUAL.
         bool meshlet_culling = true;
-
-        // The frame graph has begun rendering (and ends it); `depth`, `resolved_depth` and `depth_resolve_mode` are
-        // then unused. Temporary: the early prepass still begins its own rendering until it is migrated too.
-        bool managed_by_graph = false;
     };
 
     // GTAO from depth alone, then a depth-aware blur: two compute passes of the frame graph between the prepass and
@@ -277,8 +263,6 @@ namespace render_pass {
             }
         }
     };
-
-    auto prepare_forward_targets(Context const &context, ForwardTargets const &targets) noexcept -> void;
 
     auto shadow(Context const &context, ShadowPassInfo const &info) -> std::expected<void, RendererError>;
 

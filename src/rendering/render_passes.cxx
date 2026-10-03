@@ -24,123 +24,6 @@ namespace render_pass {
 
         [[nodiscard]] auto make_error(RendererErrorType type) -> RendererError { return RendererError{.type = type}; }
 
-        auto transition_forward_target_to_attachments(VkCommandBuffer command_buffer, Image const &hdr,
-                                                      Image const &depth, Image const *resolved_hdr,
-                                                      Image const *resolved_depth) noexcept -> void {
-            std::array<VkImageMemoryBarrier2, 4> barriers{};
-            std::uint32_t barrier_count = 0;
-
-            barriers[barrier_count++] = VkImageMemoryBarrier2{
-                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .pNext = nullptr,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-                    .srcAccessMask = VK_ACCESS_2_NONE,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                    .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = hdr.image(),
-                    .subresourceRange =
-                            VkImageSubresourceRange{
-                                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                    .baseMipLevel = 0,
-                                    .levelCount = hdr.mip_levels(),
-                                    .baseArrayLayer = 0,
-                                    .layerCount = hdr.array_layers(),
-                            },
-            };
-
-            barriers[barrier_count++] = VkImageMemoryBarrier2{
-                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .pNext = nullptr,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-                    .srcAccessMask = VK_ACCESS_2_NONE,
-                    .dstStageMask =
-                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                    .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                    .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = depth.image(),
-                    .subresourceRange =
-                            VkImageSubresourceRange{
-                                    .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                                    .baseMipLevel = 0,
-                                    .levelCount = depth.mip_levels(),
-                                    .baseArrayLayer = 0,
-                                    .layerCount = depth.array_layers(),
-                            },
-            };
-
-            if (resolved_hdr != nullptr) {
-                barriers[barrier_count++] = VkImageMemoryBarrier2{
-                        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                        .pNext = nullptr,
-                        .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-                        .srcAccessMask = VK_ACCESS_2_NONE,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .image = resolved_hdr->image(),
-                        .subresourceRange =
-                                VkImageSubresourceRange{
-                                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                        .baseMipLevel = 0,
-                                        .levelCount = resolved_hdr->mip_levels(),
-                                        .baseArrayLayer = 0,
-                                        .layerCount = resolved_hdr->array_layers(),
-                                },
-                };
-            }
-
-            if (resolved_depth != nullptr) {
-                barriers[barrier_count++] = VkImageMemoryBarrier2{
-                        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                        .pNext = nullptr,
-                        .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-                        .srcAccessMask = VK_ACCESS_2_NONE,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                        .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                        .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .image = resolved_depth->image(),
-                        .subresourceRange =
-                                VkImageSubresourceRange{
-                                        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                                        .baseMipLevel = 0,
-                                        .levelCount = resolved_depth->mip_levels(),
-                                        .baseArrayLayer = 0,
-                                        .layerCount = resolved_depth->array_layers(),
-                                },
-                };
-            }
-
-            VkDependencyInfo const dependency_info{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .pNext = nullptr,
-                    .dependencyFlags = 0,
-                    .memoryBarrierCount = 0,
-                    .pMemoryBarriers = nullptr,
-                    .bufferMemoryBarrierCount = 0,
-                    .pBufferMemoryBarriers = nullptr,
-                    .imageMemoryBarrierCount = barrier_count,
-                    .pImageMemoryBarriers = barriers.data(),
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        }
-
         auto transition_shadow_atlas_to_attachment(VkCommandBuffer command_buffer, Image const &atlas,
                                                    bool preserve_contents) noexcept -> void {
             VkImageMemoryBarrier2 const barrier{
@@ -446,11 +329,6 @@ namespace render_pass {
 
     } // namespace detail
 
-    auto prepare_forward_targets(Context const &context, ForwardTargets const &targets) noexcept -> void {
-        detail::transition_forward_target_to_attachments(context.command_buffer, targets.hdr, targets.depth,
-                                                         targets.resolved_hdr, targets.resolved_depth);
-    }
-
     auto shadow(Context const &context, ShadowPassInfo const &info) -> std::expected<void, RendererError> {
         constexpr auto stage = static_cast<std::uint32_t>(RenderStage::ShadowPass);
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, context.timestamp_query_pool,
@@ -636,42 +514,7 @@ namespace render_pass {
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, context.timestamp_query_pool,
                              stage * 2);
 
-        if (!info.managed_by_graph) {
-            VkRenderingAttachmentInfo depth_attachment{
-                    .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                    .pNext = nullptr,
-                    .imageView = info.depth.view(),
-                    .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                    .resolveMode = VK_RESOLVE_MODE_NONE,
-                    .resolveImageView = VK_NULL_HANDLE,
-                    .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                    .loadOp = late ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR,
-                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                    .clearValue = {},
-            };
-
-            // The late phase begins rendering even with nothing to draw, so the resolve sees the final depth.
-            if (info.resolved_depth != nullptr) {
-                depth_attachment.resolveMode = info.depth_resolve_mode;
-                depth_attachment.resolveImageView = info.resolved_depth->view();
-                depth_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-            }
-
-            VkRenderingInfo const rendering_info{
-                    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                    .pNext = nullptr,
-                    .flags = 0,
-                    .renderArea = VkRect2D{.offset = {0, 0}, .extent = info.extent},
-                    .layerCount = 1,
-                    .viewMask = 0,
-                    .colorAttachmentCount = 0,
-                    .pColorAttachments = nullptr,
-                    .pDepthAttachment = &depth_attachment,
-                    .pStencilAttachment = nullptr,
-            };
-
-            vkCmdBeginRendering(context.command_buffer, &rendering_info);
-        }
+        // The frame graph has begun rendering.
 
         ForwardPushConstants const pc{
                 .draws_address = info.draws.draws.device_address,
@@ -704,9 +547,6 @@ namespace render_pass {
             detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.opaque, info.counts.mask, mask_pc);
         }
 
-        if (!info.managed_by_graph) {
-            vkCmdEndRendering(context.command_buffer);
-        }
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                              context.timestamp_query_pool, stage * 2 + 1);
         return {};

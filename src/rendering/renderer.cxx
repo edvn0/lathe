@@ -4059,17 +4059,6 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
         -> std::expected<void, RendererError> {
     bool const late = phase == render_pass::DepthPrepassPhase::late;
 
-    // The late phase draws on top of the early phase's depth.
-    if (!late) {
-        render_pass::prepare_forward_targets(
-                pass_context, render_pass::ForwardTargets{
-                                      .hdr = *targets.hdr,
-                                      .depth = *targets.depth,
-                                      .resolved_hdr = targets.multisampled ? targets.resolved_hdr : nullptr,
-                                      .resolved_depth = targets.multisampled ? targets.resolved_depth : nullptr,
-                              });
-    }
-
     auto const frame_index = pass_context.frame_index;
 
     // Meshlet-level occlusion: the early phase tests against the history Hi-Z (view [0]) and records the meshlets it
@@ -4085,45 +4074,25 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
                                        render_pass::cull_stats
                             : render_pass::cull_occlusion | render_pass::cull_record | render_pass::cull_stats);
 
-    auto const record = [&]() -> std::expected<void, RendererError> {
-        return render_pass::depth_prepass(
-                pass_context, render_pass::DepthPrepassInfo{
-                                      .depth = *targets.depth,
-                                      .resolved_depth = targets.multisampled ? targets.resolved_depth : nullptr,
-                                      .extent = targets.extent,
-                                      .samples = samples_,
-                                      .phase = phase,
-                                      // The Hi-Z needs each pixel's farthest sample; the late phase's resolve then
-                                      // leaves the SAMPLE_ZERO depth everything else expects.
-                                      .depth_resolve_mode = phase == render_pass::DepthPrepassPhase::early
-                                                                    ? VK_RESOLVE_MODE_MIN_BIT
-                                                                    : VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
-                                      .draws = late ? late_view_draws(frame) : early_view_draws(frame),
-                                      .counts = batch_counts(frame),
-                                      .cull_planes_address = frame.frustum_planes_buffer.device_address,
-                                      .materials_address = material_storage_.device_address(),
-                                      .ubo_address = ubos_[frame_index].device_address,
-                                      .lights_address = frame.lights_buffer.device_address,
-                                      .occlusion_view_address = meshlet_view_address,
-                                      .extra_cull_flags = meshlet_flags,
-                                      .opaque_pipeline = depth_prepass_pipeline_,
-                                      .mask_pipeline = depth_prepass_mask_pipeline_,
-                                      .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
-                                      .mask_instanced_pipeline = depth_prepass_mask_instanced_pipeline_,
-                                      .meshlet_culling = meshlet_culling_,
-                                      // The late phase is a graph pass, which has begun rendering.
-                                      .managed_by_graph = late,
-                              });
-    };
-
-    // The late phase is a graph pass with its own Tracy zone.
-    if (late) {
-        return record();
-    }
-
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Depth Prepass",
-                 tracy::Color::SlateGray);
-    return record();
+    return render_pass::depth_prepass(pass_context,
+                                      render_pass::DepthPrepassInfo{
+                                              .extent = targets.extent,
+                                              .samples = samples_,
+                                              .phase = phase,
+                                              .draws = late ? late_view_draws(frame) : early_view_draws(frame),
+                                              .counts = batch_counts(frame),
+                                              .cull_planes_address = frame.frustum_planes_buffer.device_address,
+                                              .materials_address = material_storage_.device_address(),
+                                              .ubo_address = ubos_[frame_index].device_address,
+                                              .lights_address = frame.lights_buffer.device_address,
+                                              .occlusion_view_address = meshlet_view_address,
+                                              .extra_cull_flags = meshlet_flags,
+                                              .opaque_pipeline = depth_prepass_pipeline_,
+                                              .mask_pipeline = depth_prepass_mask_pipeline_,
+                                              .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
+                                              .mask_instanced_pipeline = depth_prepass_mask_instanced_pipeline_,
+                                              .meshlet_culling = meshlet_culling_,
+                                      });
 }
 
 auto Renderer::record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void {
@@ -4557,16 +4526,9 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &f
         return shadows;
     }
 
-    // Two-phase occlusion culling (docs/occlusion-culling.md): the early prepass draws what main_cs kept, late_cs
-    // re-tests the rest against this frame's depth and the late prepass adds the survivors. Every stage still writes
-    // its timestamps when skipped.
-    if (auto prepass = record_depth_prepass(pass_context, frame, targets,
-                                            frame.occlusion_active ? render_pass::DepthPrepassPhase::early
-                                                                   : render_pass::DepthPrepassPhase::only);
-        !prepass) {
-        return prepass;
-    }
-
+    // Two-phase occlusion culling (docs/occlusion-culling.md): the early prepass draws what main_cs kept, the Hi-Z is
+    // built from its depth, late_cs re-tests the rest against it and the late prepass adds the survivors. They are
+    // graph passes after this one (renderer_frame_graph.cxx); every stage still writes its timestamps when skipped.
     if (frame.occlusion_active) {
         // Next frame's phase 1 tests against this pyramid, projected as it was built.
         hiz_history_view_projection_ = frame.view_projection;
