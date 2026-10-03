@@ -109,6 +109,53 @@ auto parse_vsync_option(std::span<char const *const> args) -> std::expected<std:
     return vsync;
 }
 
+auto parse_present_mode_option(std::span<char const *const> args)
+        -> std::expected<std::optional<PresentModeChoice>, std::string> {
+    std::optional<PresentModeChoice> mode;
+
+    for (auto const *raw: args) {
+        std::string_view const arg = raw;
+        if (constexpr std::string_view prefix = "--present-mode="; arg.starts_with(prefix)) {
+            auto const value = arg.substr(prefix.size());
+            if (value == "immediate") {
+                mode = PresentModeChoice::immediate;
+            } else if (value == "mailbox") {
+                mode = PresentModeChoice::mailbox;
+            } else if (value == "fifo") {
+                mode = PresentModeChoice::fifo;
+            } else if (value == "fifo_relaxed") {
+                mode = PresentModeChoice::fifo_relaxed;
+            } else {
+                return std::unexpected(
+                        std::format("--present-mode: '{}' (expected immediate, mailbox, fifo or fifo_relaxed)", value));
+            }
+        }
+    }
+
+    return mode;
+}
+
+auto parse_swapchain_images_option(std::span<char const *const> args)
+        -> std::expected<std::optional<std::uint32_t>, std::string> {
+    std::optional<std::uint32_t> count;
+
+    for (auto const *raw: args) {
+        std::string_view const arg = raw;
+        if (constexpr std::string_view prefix = "--swapchain-images="; arg.starts_with(prefix)) {
+            auto const value = parse_count("--swapchain-images", arg.substr(prefix.size()));
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            if (*value < 2 || *value > 8) {
+                return std::unexpected(std::string{"--swapchain-images must be between 2 and 8"});
+            }
+            count = *value;
+        }
+    }
+
+    return count;
+}
+
 auto parse_benchmark_options(std::span<char const *const> args)
         -> std::expected<std::optional<BenchmarkOptions>, std::string> {
     BenchmarkOptions options;
@@ -566,6 +613,8 @@ auto write_environment_json(JsonWriter &writer, std::string_view key, BenchmarkE
             .value({}, environment.swapchain_height)
             .end_array();
     writer.value("present_mode", environment.present_mode)
+            .value("requested_present_mode", environment.requested_present_mode)
+            .value("swapchain_images", environment.swapchain_images)
             .value("frames_in_flight", environment.frames_in_flight)
             .value("occlusion_culling", environment.occlusion_culling)
             .value("meshlet_occlusion", environment.meshlet_occlusion);
@@ -673,7 +722,10 @@ auto write_analysis_json(JsonWriter &writer, std::string_view key, FrameAnalysis
             .value("frames_with_gpu", analysis.bound.frames_with_gpu)
             .value("gpu_bound", analysis.bound.gpu_bound)
             .value("cpu_bound", analysis.bound.cpu_bound)
+            .value("presentation_bound", analysis.bound.presentation_bound)
             .value("gpu_bound_fraction", analysis.bound.gpu_bound_fraction(), 3)
+            .value("cpu_bound_fraction", analysis.bound.cpu_bound_fraction(), 3)
+            .value("presentation_bound_fraction", analysis.bound.presentation_bound_fraction(), 3)
             .end_object();
 
     auto const &workload = analysis.workload;
@@ -1004,6 +1056,9 @@ auto aggregate_cases(std::span<BenchmarkCaseResult const> results) -> std::vecto
         });
         add("hitches", [](BenchmarkCaseResult const &r) { return static_cast<double>(r.analysis.hitches.size()); });
         add("gpu_bound_fraction", [](BenchmarkCaseResult const &r) { return r.analysis.bound.gpu_bound_fraction(); });
+        add("cpu_bound_fraction", [](BenchmarkCaseResult const &r) { return r.analysis.bound.cpu_bound_fraction(); });
+        add("presentation_bound_fraction",
+            [](BenchmarkCaseResult const &r) { return r.analysis.bound.presentation_bound_fraction(); });
 
         // Every stage seen in any repeat, 0 in a repeat without it.
         std::vector<std::string> stage_ids;
@@ -1186,6 +1241,25 @@ namespace {
                            precision);
     }
 
+    // The dominant limiter across a case's repeats, e.g. "GPU 100%" or "presentation 97%".
+    [[nodiscard]] auto limiter_text(BenchmarkAggregate const &aggregate) -> std::string {
+        constexpr std::array<std::pair<std::string_view, std::string_view>, 3> limiters{{
+                {"GPU", "gpu_bound_fraction"},
+                {"CPU", "cpu_bound_fraction"},
+                {"presentation", "presentation_bound_fraction"},
+        }};
+
+        std::string_view best_name;
+        auto best = -1.0;
+        for (auto const &[name, metric]: limiters) {
+            if (auto const *stats = aggregate.metric(metric); stats != nullptr && stats->median > best) {
+                best = stats->median;
+                best_name = name;
+            }
+        }
+        return best < 0.0 ? std::string{"--"} : std::format("{} {:.0f}%", best_name, best * 100.0);
+    }
+
     [[nodiscard]] auto describe_fit(ScalingFit const &fit, std::string_view axis, std::uint32_t largest_load,
                                     double budget_ms) -> std::string {
         if (fit.points < 2) {
@@ -1220,9 +1294,10 @@ auto suite_report_markdown(BenchmarkOptions const &options, BenchmarkEnvironment
                        environment.device_type, environment.driver_version, environment.api_version);
     out += std::format("- **CPU**: {} ({} threads), governor `{}`; {}\n", environment.cpu_name, environment.cpu_threads,
                        environment.cpu_governor.empty() ? "unknown" : environment.cpu_governor, environment.os);
-    out += std::format("- **Build**: {} at `{}`, present mode `{}`, {} frames in flight\n", environment.build_type,
+    out += std::format("- **Build**: {} at `{}`, present mode `{}` with {} swapchain images, {} frames in flight\n",
+                       environment.build_type,
                        environment.source_revision.empty() ? "unknown" : environment.source_revision,
-                       environment.present_mode, environment.frames_in_flight);
+                       environment.present_mode, environment.swapchain_images, environment.frames_in_flight);
     out += std::format("- **Method**: {} measured frames per run at a fixed {:.4f} s step, seed {}, {} repeat(s) per "
                        "case run interleaved; budget {:.2f} ms ({:.0f} Hz)\n",
                        options.frame_count, static_cast<double>(benchmark_timestep), options.seed, options.repeats,
@@ -1233,25 +1308,40 @@ auto suite_report_markdown(BenchmarkOptions const &options, BenchmarkEnvironment
         out += std::format("- :warning: {}\n", warning);
     }
 
+    // Cases whose frames were mostly paced by the swapchain: their displayed times say little about the engine.
+    std::vector<std::string> presentation_paced;
+    for (auto const &aggregate: aggregates) {
+        if (auto const *paced = aggregate.metric("presentation_bound_fraction");
+            paced != nullptr && paced->median > 0.5) {
+            presentation_paced.push_back(aggregate.key);
+        }
+    }
+    if (!presentation_paced.empty()) {
+        out += std::format("- :warning: {} of {} cases were mostly **presentation-bound**: the CPU sat in acquire or "
+                           "present while the GPU had time to spare, so their displayed times are set by the swapchain "
+                           "or compositor, not the engine. Read GPU p50 and CPU busy for those; to measure displayed "
+                           "times, try `--present-mode=immediate`, `--swapchain-images=4`, or an X11 session.\n",
+                           presentation_paced.size(), aggregates.size());
+    }
+
     out += "\n## Cases\n\n";
     out += "Median across repeats, with the range in brackets. *Displayed* is present-to-present time, what a player "
-           "sees. *CPU busy* excludes time blocked on the GPU or the swapchain. *Bound* is the share of frames whose "
-           "GPU time was at least their CPU busy time.\n\n";
+           "sees. *CPU busy* excludes time blocked on the GPU or the swapchain. *Over budget* allows 1% for refresh "
+           "jitter. *Limited by* is what held most frames back: the GPU, the CPU, or presentation (the swapchain "
+           "made the CPU wait while the GPU had time to spare).\n\n";
     out += "| Case | Displayed p50 (ms) | Displayed p99 (ms) | p99.9 (ms) | GPU p50 (ms) | CPU busy p50 (ms) | Over "
-           "budget | Hitches | GPU-bound |\n";
+           "budget | Hitches | Limited by |\n";
     out += "|---|---:|---:|---:|---:|---:|---:|---:|---:|\n";
 
     for (auto const &aggregate: aggregates) {
         auto const *miss = aggregate.metric("budget_miss_fraction");
-        auto const *bound = aggregate.metric("gpu_bound_fraction");
         out += std::format(
                 "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n", aggregate.key,
                 format_stats(aggregate.metric("displayed_median_ms")),
                 format_stats(aggregate.metric("displayed_p99_ms")), format_stats(aggregate.metric("displayed_p999_ms")),
                 format_stats(aggregate.metric("gpu_median_ms")), format_stats(aggregate.metric("cpu_busy_median_ms")),
                 miss == nullptr ? "--" : std::format("{:.1f}%", miss->median * 100.0),
-                format_stats(aggregate.metric("hitches"), 0),
-                bound == nullptr ? "--" : std::format("{:.0f}%", bound->median * 100.0));
+                format_stats(aggregate.metric("hitches"), 0), limiter_text(aggregate));
     }
 
     if (auto const scaling = scaling_of(aggregates); !scaling.empty()) {

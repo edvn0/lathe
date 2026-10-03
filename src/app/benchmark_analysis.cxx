@@ -95,6 +95,7 @@ auto analyse_frames(std::span<BenchmarkFrameSample const> samples, AnalysisOptio
     }
 
     analysis.hitch_threshold_ms = std::max(options.hitch_factor * analysis.displayed.median_ms, budget_ms);
+    auto const over_budget_ms = budget_ms * (1.0F + options.budget_tolerance);
 
     std::array<double, perf_event_count> with_sum{};
     std::array<double, perf_event_count> without_sum{};
@@ -103,15 +104,20 @@ auto analyse_frames(std::span<BenchmarkFrameSample const> samples, AnalysisOptio
         auto const &sample = samples[i];
         auto const displayed = sample.displayed_ms();
 
-        analysis.budget.displayed_over_budget += displayed > budget_ms ? 1U : 0U;
-        analysis.budget.cpu_busy_over_budget += sample.cpu.busy_ms() > budget_ms ? 1U : 0U;
+        analysis.budget.displayed_over_budget += displayed > over_budget_ms ? 1U : 0U;
+        analysis.budget.cpu_busy_over_budget += sample.cpu.busy_ms() > over_budget_ms ? 1U : 0U;
 
         if (sample.gpu_valid) {
             ++analysis.budget.frames_with_gpu;
-            analysis.budget.gpu_over_budget += sample.gpu_frame_ms > budget_ms ? 1U : 0U;
+            analysis.budget.gpu_over_budget += sample.gpu_frame_ms > over_budget_ms ? 1U : 0U;
 
             ++analysis.bound.frames_with_gpu;
-            if (sample.gpu_frame_ms >= sample.cpu.busy_ms()) {
+            auto const presentation_wait = sample.cpu.phase(CpuPhase::acquire) + sample.cpu.phase(CpuPhase::present);
+            auto const presentation_bound = presentation_wait >= options.presentation_wait_share * displayed &&
+                                            sample.gpu_frame_ms < options.gpu_idle_share * displayed;
+            if (presentation_bound) {
+                ++analysis.bound.presentation_bound;
+            } else if (sample.gpu_frame_ms >= sample.cpu.busy_ms()) {
                 ++analysis.bound.gpu_bound;
             } else {
                 ++analysis.bound.cpu_bound;

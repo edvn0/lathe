@@ -54,8 +54,8 @@ namespace {
         auto operator=(MaterialSet const &) -> MaterialSet & = delete;
         auto operator=(MaterialSet &&) -> MaterialSet & = delete;
 
-        auto make(glm::vec4 const &colour, AlphaMode alpha_mode = AlphaMode::opaque,
-                  float roughness = 0.6F) -> MaterialHandle {
+        auto make(glm::vec4 const &colour, AlphaMode alpha_mode = AlphaMode::opaque, float roughness = 0.6F,
+                  std::uint32_t max_shadow_cascade = shadow_cascade_count - 1) -> MaterialHandle {
             auto &images = renderer_->image_storage();
             auto &samplers = renderer_->sampler_storage();
 
@@ -70,6 +70,7 @@ namespace {
                     .emissive_texture = images.emissive(),
                     .sampler = samplers.linear_repeat(),
                     .alpha_mode = alpha_mode,
+                    .max_shadow_cascade = max_shadow_cascade,
             });
 
             if (!material) {
@@ -158,11 +159,13 @@ namespace {
         return orbit_path(glm::vec3{0.0F}, extent * 0.55F + 8.0F, 4.0F, extent * 0.35F + 6.0F, 8);
     }
 
-    // ---- instancing: one entity holding every instance, so the cost is GPU culling and geometry, not submission.
+    // ---- instancing: one entity holding every instance, so the cost is GPU culling and per-instance work, not
+    // submission. Cubes (12 triangles) keep it from turning into a triangle-throughput test; instancing_no_shadows
+    // is the same field casting no shadows, so the difference between the two is the shadow passes' share.
 
     constexpr float instance_spacing = 1.6F;
 
-    auto populate_instancing(BenchmarkScenarioContext const &context) -> void {
+    auto populate_instances(BenchmarkScenarioContext const &context, bool cast_shadows) -> void {
         MaterialSet materials{context.renderer};
 
         auto const side = grid_side(context.load);
@@ -180,20 +183,31 @@ namespace {
             auto const z = static_cast<float>(row) * instance_spacing - extent * 0.5F;
             auto const scale = 0.5F + 0.5F * unit(engine);
             auto const lift = unit(engine) * 2.0F;
+            auto const yaw = unit(engine) * 2.0F * std::numbers::pi_v<float>;
 
             transforms.push_back(Components::Transform{
                     .position = glm::vec3{x, scale * 0.5F + lift, z},
+                    .rotation = glm::angleAxis(yaw, glm::vec3{0.0F, 1.0F, 0.0F}),
                     .scale = glm::vec3{scale},
             }
                                          .matrix());
         }
 
+        auto const material = materials.make(glm::vec4{0.75F, 0.55F, 0.3F, 1.0F}, AlphaMode::opaque, 0.6F,
+                                             cast_shadows ? shadow_cascade_count - 1 : GpuMaterial::no_shadow_cascade);
+
         auto const field = GeneratedEntity{&context.scene, "bench_instances"};
         field.emplace<Components::InstancedModel>(Components::InstancedModel{
-                .model = context.engine_models.sphere,
-                .material_override = materials.make(glm::vec4{0.75F, 0.55F, 0.3F, 1.0F}),
+                .model = context.engine_models.cube,
+                .material_override = material,
                 .transforms = std::move(transforms),
         });
+    }
+
+    auto populate_instancing(BenchmarkScenarioContext const &context) -> void { populate_instances(context, true); }
+
+    auto populate_instancing_no_shadows(BenchmarkScenarioContext const &context) -> void {
+        populate_instances(context, false);
     }
 
     [[nodiscard]] auto instancing_path(std::uint32_t load) -> std::vector<CameraKeyframe> {
@@ -311,9 +325,18 @@ auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<Be
     });
     scenarios.push_back(BenchmarkScenario{
             .info = {.name = "instancing", .load_axis = "instances", .default_loads = {10000, 50000, 200000}},
-            .description = "One instanced model with many instances: GPU culling and geometry throughput without "
-                           "per-object CPU cost.",
+            .description = "One instanced model (cubes) with many instances: GPU culling and per-instance cost, "
+                           "shadows included, without per-object CPU cost.",
             .populate = populate_instancing,
+            .camera_path = instancing_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "instancing_no_shadows",
+                     .load_axis = "instances",
+                     .default_loads = {10000, 50000, 200000}},
+            .description = "The instancing field with shadow casting off: subtract from instancing for the shadow "
+                           "passes' share.",
+            .populate = populate_instancing_no_shadows,
             .camera_path = instancing_path,
     });
     scenarios.push_back(BenchmarkScenario{

@@ -96,6 +96,24 @@ inline constexpr std::uint32_t benchmark_default_suite_repeats = 3;
 auto parse_benchmark_options(std::span<char const *const> args)
         -> std::expected<std::optional<BenchmarkOptions>, std::string>;
 
+// --present-mode=immediate|mailbox|fifo|fifo_relaxed. Benchmarks prefer immediate when none is given: MAILBOX still
+// lets some compositors pace acquisition to the refresh rate.
+enum class PresentModeChoice : std::uint8_t {
+    immediate,
+    mailbox,
+    fifo,
+    fifo_relaxed,
+};
+
+[[nodiscard]]
+auto parse_present_mode_option(std::span<char const *const> args)
+        -> std::expected<std::optional<PresentModeChoice>, std::string>;
+
+// --swapchain-images=<n> (2..8), nullopt when absent.
+[[nodiscard]]
+auto parse_swapchain_images_option(std::span<char const *const> args)
+        -> std::expected<std::optional<std::uint32_t>, std::string>;
+
 // --vsync=on|off, nullopt when absent.
 [[nodiscard]]
 auto parse_vsync_option(std::span<char const *const> args) -> std::expected<std::optional<bool>, std::string>;
@@ -150,6 +168,9 @@ struct BenchmarkEnvironment {
     std::uint32_t swapchain_width = 0;
     std::uint32_t swapchain_height = 0;
     std::string present_mode;
+    // --present-mode= or the benchmark's default; empty when the vsync setting decided.
+    std::string requested_present_mode;
+    std::uint32_t swapchain_images = 0;
     std::uint32_t frames_in_flight = 0;
     ClusterGridSettings cluster_grid{};
 

@@ -54,14 +54,16 @@ namespace {
     auto log_case_summary(BenchmarkCaseResult const &result) -> void {
         auto const &analysis = result.analysis;
         info("Benchmark {} (repeat {}): displayed p50 {:.2f} ms / p99 {:.2f} ms / max {:.2f} ms, GPU p50 {:.2f} ms, "
-             "CPU busy p50 {:.2f} ms, {} hitch(es), {:.1f}% over the {:.2f} ms budget, {:.0f}% GPU-bound",
+             "CPU busy p50 {:.2f} ms, {} hitch(es), {:.1f}% over the {:.2f} ms budget; frames limited by GPU {:.0f}% / "
+             "CPU {:.0f}% / presentation {:.0f}%",
              result.id.key(), result.id.repeat, analysis.displayed.median_ms, analysis.displayed.p99_ms,
              analysis.displayed.max_ms, analysis.gpu_frame.median_ms, analysis.cpu_busy.median_ms,
              analysis.hitches.size(),
              analysis.budget.frames == 0 ? 0.0
                                          : 100.0 * static_cast<double>(analysis.budget.displayed_over_budget) /
                                                    static_cast<double>(analysis.budget.frames),
-             analysis.budget.budget_ms, analysis.bound.gpu_bound_fraction() * 100.0F);
+             analysis.budget.budget_ms, analysis.bound.gpu_bound_fraction() * 100.0F,
+             analysis.bound.cpu_bound_fraction() * 100.0F, analysis.bound.presentation_bound_fraction() * 100.0F);
     }
 
 } // namespace
@@ -228,6 +230,8 @@ auto BenchmarkDriver::environment(Application const &application, VulkanContext 
     environment.swapchain_width = context.swapchain.extent().width;
     environment.swapchain_height = context.swapchain.extent().height;
     environment.present_mode = present_mode_name(context.swapchain.present_mode());
+    environment.requested_present_mode = context.present_mode ? present_mode_name(*context.present_mode) : "";
+    environment.swapchain_images = context.swapchain.image_count();
     environment.frames_in_flight = frames_in_flight;
 
     auto const &renderer = *application.renderer;
