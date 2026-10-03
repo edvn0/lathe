@@ -4331,30 +4331,6 @@ auto Renderer::record_meshlet_visibility_barrier(VkCommandBuffer command_buffer,
 auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, RendererFrame &frame) -> void {
     auto const stats_size = VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t);
 
-    // The last writer is late_cs, main_cs, the depth prepass phases' task shaders (meshlet counters) or, with no
-    // batches, prepare_frame's clear.
-    VkBufferMemoryBarrier2 const to_copy{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                            VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = frame.occlusion_stats_buffer.buffer,
-            .offset = 0,
-            .size = stats_size,
-    };
-
-    VkDependencyInfo const copy_dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &to_copy,
-    };
-
-    vkCmdPipelineBarrier2(command_buffer, &copy_dependency);
-
     VkBufferCopy2 const region{
             .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
             .srcOffset = 0,
@@ -4371,27 +4347,6 @@ auto Renderer::record_occlusion_stats_readback(VkCommandBuffer command_buffer, R
     };
 
     vkCmdCopyBuffer2(command_buffer, &copy);
-
-    VkBufferMemoryBarrier2 const to_host{
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
-            .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = frame.occlusion_stats_readback_buffer.buffer,
-            .offset = 0,
-            .size = stats_size,
-    };
-
-    VkDependencyInfo const dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &to_host,
-    };
-
-    vkCmdPipelineBarrier2(command_buffer, &dependency);
 
     frame.occlusion_stats_pending = true;
     frame.occlusion_stats_active = frame.occlusion_active;
@@ -4739,8 +4694,6 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &f
         // A pyramid from before this gap may not match what is on screen when culling resumes.
         hiz_history_valid_ = false;
     }
-
-    record_occlusion_stats_readback(command_buffer, frame);
 
     // The two GTAO passes follow when AO is enabled (renderer_frame_graph.cxx); otherwise forward samples white and
     // the stage still needs both timestamps.

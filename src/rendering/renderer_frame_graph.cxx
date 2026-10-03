@@ -52,6 +52,25 @@ namespace {
 
     constexpr auto forward_clear_colour = VkClearValue{.color = {.float32 = {0.015F, 0.025F, 0.050F, 1.0F}}};
 
+    // Buffers enter and leave the graph with nothing outstanding: whatever wrote them before the frame graph (the
+    // prologue, the legacy pass) is ordered by the legacy pass's fences, and nothing outside the graph touches them
+    // after it before the frame slot's fence.
+    constexpr auto buffer_idle = frame_graph::ResourceState{};
+
+    // The host reads the occlusion statistics back once the slot's fence has passed.
+    constexpr auto host_reads = frame_graph::ResourceState{
+            .stages = VK_PIPELINE_STAGE_2_HOST_BIT,
+            .access = VK_ACCESS_2_HOST_READ_BIT,
+    };
+
+    auto physical_buffer(Buffer const &buffer) -> frame_graph::PhysicalBuffer {
+        return frame_graph::PhysicalBuffer{
+                .buffer = buffer.buffer,
+                .address = buffer.device_address,
+                .size = buffer.size(),
+        };
+    }
+
     auto physical_image(Image const &image) -> frame_graph::PhysicalImage {
         return frame_graph::PhysicalImage{
                 .image = image.image(),
@@ -474,6 +493,40 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         record_overlay_stage(pass_context, OverlayStage::ui, ui_scope, frame.view_projection);
                     }};
                 });
+    }
+
+    // The host reads the stats a frame later; the copy and the host-visibility barrier are the graph's.
+    {
+        auto const stats = frame_graph_.import_buffer({
+                .entry = buffer_idle,
+                .exit = buffer_idle,
+                .read_only = true,
+                .debug_name = "occlusion_stats",
+                .buffer = physical_buffer(frame.occlusion_stats_buffer),
+        });
+        auto stats_readback = frame_graph_.import_buffer({
+                .entry = host_reads,
+                .exit = host_reads,
+                .debug_name = "occlusion_stats_readback",
+                .buffer = physical_buffer(frame.occlusion_stats_readback_buffer),
+        });
+
+        frame_graph_.add_pass("occlusion_stats_readback", frame_graph::PassType::transfer,
+                              {
+                                      .name_id = "occlusion_stats_readback",
+                                      .label = "Occlusion stats readback",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::Gray),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  pass.side_effect();
+                                  [[maybe_unused]] auto const source =
+                                          pass.read(stats, frame_graph::Use::transfer_read);
+                                  stats_readback = pass.write(stats_readback, frame_graph::Use::transfer_write);
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      record_occlusion_stats_readback(context.command_buffer, frame);
+                                  }};
+                              });
     }
 
     // A pending capture of the viewport target is only honoured in the editor; fullscreen takes the swapchain.
