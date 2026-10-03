@@ -28,7 +28,7 @@ plan, where it deviates, and what to do next.
 | 6 | Enable async compute, one pass at a time, by measurement | **Candidates implemented and correct; measurement in section 6.3.** |
 | 7 | Delete `RenderStage` / `write_empty_stage` | **Done** (section 6.4). |
 | 8 | Concurrent sharing for read-mostly buffers | **Done** (section 6.5). |
-| 9 | Parallel batch recording | Not started. |
+| 9 | Parallel batch recording | **Evaluated and deferred** (section 6.6): CPU recording is under 6% of the frame. |
 
 What exists end to end today: every frame, `Renderer::record_frame` (in `src/rendering/renderer_frame_graph.cxx`)
 declares the whole frame as a graph, in recording order: `overlay_prepare`, `stage_timestamps` (a shim), `environment`
@@ -409,6 +409,18 @@ intermittent keyframe mismatches in async configurations; with the machine quiet
 single-variant runs (concurrent and exclusive) were all identical. Treat benchmark comparisons made on a loaded machine
 with suspicion (the warmup may end before streaming has settled).
 
+### 6.6 Phase 9: evaluated, not implemented
+
+The plan makes parallel recording conditional on it paying off, so it was measured first (a temporary timer, removed):
+in a Release build at 2560x1420 the benchmark scene spends about **0.03 ms** declaring, compiling (a plan-cache hit)
+and allocating the graph and about **0.11 ms** in the executor recording every pass, per frame, against a GPU frame of about
+2.4 ms. Splitting that across threads could save at most about 0.08 ms, and the work it would take is large: per-thread
+command pools in `QueueSet`, more than one command buffer per submit batch, and above all a thread-safety audit of the
+record lambdas, most of which write shared renderer state (the handoff indices, shadow cache bookkeeping, readback flags,
+screenshot and overlay state, ImGui). Revisit with a scene that has many more draw calls or lights, where recording
+time would be larger; the executor already keeps passes independent (barriers are compiled, a pass touches its own command
+buffer), which is the property the plan relies on.
+
 ### 6.3 Phase 6 as built
 
 `--async-passes=light,occlusion,gtao` declares groups of compute passes with compute-queue affinity (light culling and
@@ -544,8 +556,8 @@ Deliberate or forced differences, so they are not mistaken for oversights:
    floor (section 6.3); revert the others. Consider enabling `SchedulerMode::overlap` instead of moving the shadow
    declaration by hand.
 3. Move the overlay timings onto the graph profiler (`PassContext::profile_scope`) and drop the last old queries.
-4. Re-measure phase 6 now that the transfers are mostly gone (section 6.3), on a quiet machine. Phase 9: parallel batch
-   recording.
+4. Re-measure phase 6 now that the transfers are mostly gone (section 6.3), on a quiet machine. Phase 9 only if a heavier scene makes
+   recording a real share of the frame (section 6.6).
 5. Implement the ImGui contract before making any ImGui-visible image a transient, and wire `RendererError` when a
    pass needs to fail.
 
