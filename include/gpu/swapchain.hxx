@@ -169,6 +169,12 @@ public:
         return surface_format_.format;
     }
 
+    // The mode the current swapchain was created with.
+    [[nodiscard]]
+    auto present_mode() const noexcept -> VkPresentModeKHR {
+        return present_mode_;
+    }
+
 private:
     struct FrameResources {
         VkSemaphore image_available = VK_NULL_HANDLE;
@@ -210,6 +216,7 @@ private:
     std::uint32_t present_queue_family_ = 0;
 
     bool vsync_ = true;
+    VkPresentModeKHR present_mode_ = VK_PRESENT_MODE_FIFO_KHR;
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkSurfaceFormatKHR surface_format_{};

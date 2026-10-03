@@ -1,4 +1,5 @@
 #include "assets/model_streamer.hxx"
+#include "core/perf_events.hxx"
 
 #include <algorithm>
 #include <chrono>
@@ -153,6 +154,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             }
 
             debug("model_streamer: '{}' uploaded to GPU", request.debug_name);
+            perf_events::record(PerfEvent::model_install);
 
             request.installed = true;
             path_cache_[request.path_hash] = request.handle;

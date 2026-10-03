@@ -1,4 +1,5 @@
 #include "assets/slang_compiler.hxx"
+#include "core/perf_events.hxx"
 
 #include <slang-com-ptr.h>
 
@@ -283,6 +284,8 @@ namespace renderer {
 
     auto SlangCompiler::compile(ShaderCompileRequest const &request) const
             -> std::expected<CompiledShader, ShaderCompileError> {
+        perf_events::record(PerfEvent::shader_compile);
+
         if (!valid()) {
             return std::unexpected{make_error(ShaderCompileErrorType::slang_global_session_failed,
                                               SLANG_E_NOT_AVAILABLE, "SlangCompiler is not initialized.")};

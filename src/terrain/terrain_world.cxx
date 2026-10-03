@@ -1,4 +1,5 @@
 #include "terrain/terrain_world.hxx"
+#include "core/perf_events.hxx"
 
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
@@ -121,6 +122,7 @@ auto TerrainWorld::upload_ready(IMeshSink &mesh_sink, VkCommandBuffer command_bu
         }
 
         ++uploaded_this_frame;
+        perf_events::record(PerfEvent::terrain_chunk_upload);
 
         auto const centre = terrain_chunk_centre(key, create_info_.lod_settings);
 

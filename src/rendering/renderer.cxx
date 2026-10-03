@@ -1,4 +1,5 @@
 #include "rendering/renderer.hxx"
+#include "core/perf_events.hxx"
 
 #include "gpu/device_wait.hxx"
 #include "rendering/frame_graph/compiler.hxx"
@@ -3374,6 +3375,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                     static_cast<float>(results[1] - results[0]) * timestamp_period_ / 1'000'000.0F;
 
             read_overlay_timings(frame_query);
+            last_frame_timings_.frame_serial = frame_query.serial;
             last_frame_timings_.valid = true;
         }
 
@@ -4117,6 +4119,7 @@ auto Renderer::record_frame_end(VkCommandBuffer command_buffer, std::uint32_t fr
     vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, frame_query.query_pool, 1);
 
     frame_query.has_results = true;
+    frame_query.serial = ++recorded_frame_count_;
     pipeline_stat_queries_[frame_index].has_results = true;
 }
 
@@ -4320,6 +4323,8 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         return {};
     }
 
+    perf_events::record(PerfEvent::render_resize);
+
     // The forward targets below are destroyed, so wait for the GPU regardless of what the caller did.
     if (auto waited = wait_idle(); !waited) {
         return std::unexpected(waited.error());
@@ -4401,6 +4406,7 @@ auto Renderer::mark_shadow_casters_dirty() noexcept -> void {
 
 auto Renderer::request_screenshot(ScreenshotSource source) noexcept -> void { screenshot_->request(source); }
 auto Renderer::wait_idle() -> std::expected<void, RendererError> {
+    perf_events::record(PerfEvent::device_wait_idle);
     auto const result = wait_idle_bounded(context_.device, "Renderer::wait_idle");
 
     if (is_device_failure(result)) {

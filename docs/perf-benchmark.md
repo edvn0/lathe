@@ -1,10 +1,189 @@
 # Perf benchmark
 
-`--benchmark` turns the app into a repeatable GPU benchmark. It is run by
-hand, on real hardware: CI runners have no GPU, and lavapipe's timings say
-little about how passes compare on one.
+The engine measures itself: `--benchmark` and `--benchmark-suite` turn the app
+into a repeatable benchmark, and `--benchmark-compare` compares two results.
+Everything (running, statistics, reports, comparison) is C++ in the engine;
+no scripts are needed. Run it by hand, on real hardware: CI runners have no
+GPU, and lavapipe's timings say little about how passes compare on one.
 
-## What a run does
+```
+# Everything: every scenario at each load level, 3 interleaved repeats
+./lathe --benchmark-suite=perf/head
+
+# Compare two suites (or two single runs); exit 1 on a real regression
+./lathe --benchmark-compare=perf/base/suite.json,perf/head/suite.json \
+        --benchmark-report=perf/compare.md
+```
+
+Run from the build's `bin/` (where the build copies `assets/`), and from a
+Release or RelWithDebInfo build: the results record the build type and warn
+about Debug. Without a display, add `--screen-type=headless`. A suite with the
+default 600 frames per run takes a few minutes on a GPU; lower
+`--benchmark-frames` or narrow `--benchmark-scenarios` while iterating.
+
+## The suite
+
+`--benchmark-suite=<dir>` runs each scenario at each of its load levels, each
+`--benchmark-repeats` times (3 by default), and writes:
+
+- `report.md`: per-case table (median across repeats, range in brackets),
+  scaling fits, hitch attribution and any warnings about the machine.
+- `suite.json`: every run's statistics, the per-case aggregates across
+  repeats, and the scaling fits.
+- `frames/<case>_r<repeat>.csv`: one row per measured frame (below).
+
+### Scenarios
+
+One heavy scene gives you one data point. Each scenario stresses one axis and
+is swept over a load, so the result says how cost grows, not just what it is
+in one place:
+
+| Scenario | Load axis (defaults) | Stresses |
+|---|---|---|
+| `game` | -- | the game's own scene and camera path: the realistic mix |
+| `game_resolution` | `render_scale_percent` (50, 100, 150) | the game scene at several resolutions: cost that follows resolution is GPU pixel work, cost that doesn't is CPU or per-draw |
+| `draw_calls` | `objects` (1000, 4000, 16000) | one entity per object, 16 materials: per-object CPU submission, culling, draw count |
+| `instancing` | `instances` (10000, 50000, 200000) | one instanced model: GPU culling and geometry throughput without per-object CPU cost |
+| `lights` | `point_lights` (64, 512, 4096) | 400 boxes lit by many point lights: light culling, clustering, shading per light |
+| `overdraw` | `layers` (4, 16, 64) | full-screen alpha-blended layers: fill rate and blending |
+
+The synthetic scenes are built from engine primitives
+(`src/app/benchmark_scenarios.cxx`); while they run, the game's terrain is
+neither streamed nor drawn and `IGame::on_ui()` isn't called. Add a scenario
+there to cover a new system.
+
+Suite flags:
+
+```
+--benchmark-scenarios=lights,draw_calls     only these (default: all)
+--benchmark-sweep=lights:256,1024,8192      replace a scenario's loads (repeatable)
+--benchmark-repeats=5                       runs per case (3)
+--benchmark-render-size=2560x1440           render resolution (1920x1080)
+--benchmark-target-hz=240                   the frame budget is 1000 / this (144)
+```
+
+plus the shared ones below (`--benchmark-frames`, `--benchmark-warmup`,
+`--seed`, ...).
+
+### Method
+
+What the suite does so that numbers are repeatable and comparable:
+
+- **Determinism**: a fixed seed for every case and repeat, a fixed simulated
+  step per frame, and a scripted camera loop, so frame N of a case shows the
+  same thing in every run, however fast the device is.
+- **Warmup**: each case waits at its first keyframe until streaming has
+  settled (`--benchmark-warmup`, capped by `--benchmark-max-warmup`), so
+  pipeline creation, uploads and allocator growth stay out of the measured lap.
+- **Interleaved repeats**: cases run repeat-major (every case once, then every
+  case again), so slow drift such as heat soak spreads across all of them
+  instead of landing on whichever ran last. The spread across repeats is the
+  noise floor of that metric on that machine.
+- **Uncapped presentation**: vsync is off while benchmarking (MAILBOX, or
+  IMMEDIATE), so the display doesn't cap what is measured. `--vsync=on` brings
+  FIFO back to check whether frames make every refresh; results record the
+  present mode and warn about FIFO.
+- **Fixed resolution**: the suite renders at `--benchmark-render-size`,
+  whatever the window.
+- **Environment**: device, driver, Vulkan version, present mode, build type,
+  source revision, CPU, OS, CPU governor and time go into every result, plus
+  GPU/CPU temperature, power and clocks before and after each run where hwmon
+  exposes them (amdgpu, i915/xe, nouveau; not NVIDIA's proprietary driver).
+  Warnings flag a governor other than `performance`, FIFO, lavapipe, Debug
+  builds and memory tracking.
+
+Measuring has a small cost of its own: a few clock reads per frame and one
+atomic add per recorded event. Build without Tracy (or don't connect it) when
+benchmarking; use Tracy afterwards to find out *why* a case is slow.
+
+## What is recorded per frame
+
+Every measured frame becomes a row in the CSV (`BenchmarkFrameSample`):
+
+- **Displayed interval**: present to present, as the CPU sees it
+  (`present_interval_ms`). This is the closest thing to what a player sees;
+  `displayed_ms` falls back to the CPU frame when there is no previous present.
+- **CPU phases** (`app/frame_clock.hxx`): `events`, `update`, `slot_wait`
+  (blocked on the frame slot's timeline: the GPU is behind), `acquire`
+  (blocked on vkAcquireNextImageKHR), `scene_submit`, `ui`, `prepare`,
+  `record`, `submit`, `present` (blocked in vkQueuePresentKHR). *CPU busy* is
+  the frame minus the three waits.
+- **GPU**: the full frame and every frame graph pass, from timestamp queries.
+  They are read back frames-in-flight later; each readback carries the serial
+  of the frame that recorded it (`FrameTimings::frame_serial`), so GPU and CPU
+  numbers in a row belong to the same frame. After the lap the camera stays
+  parked for a few frames to collect the last frames' GPU timings.
+- **Workload**: submitted triangles, instances, indirect commands, model and
+  mesh submissions, point and spot lights.
+- **Events** (`core/perf_events.hxx`): texture uploads, model installs,
+  terrain chunk uploads, shader compiles, shader object builds, frame graph
+  recompiles, transient (re)allocations, swapchain recreations, render
+  resizes and device-wide waits that happened during the frame. Engine code
+  records them with `perf_events::record()`.
+- **Allocations**: heap allocations and bytes during the frame, in builds
+  with memory tracking (not Release).
+
+## Reading the results
+
+- **Distributions, not averages**: every timing is summarised as mean,
+  standard deviation, min, p50, p90, p95, p99, p99.9 and max. Average and
+  "1% low" frame rates are 1000 / mean and 1000 / p99 of the displayed
+  interval. A steady 6 ms beats a 4 ms average with 20 ms spikes, and only the
+  tail shows that.
+- **Budget**: the share of frames whose displayed interval, CPU busy time or
+  GPU time exceeds 1000 / `--benchmark-target-hz` ms.
+- **Hitches**: displayed frames longer than both twice the run's median and
+  the budget. Each lists the events of its frame and the one before (work in
+  frame N often shows up in N's or N+1's present); the report counts how many
+  hitches each event kind coincided with, and how many had none recorded.
+  Per event, the analysis also gives the mean displayed interval of frames
+  with and without it.
+- **CPU- or GPU-bound**: a frame is GPU-bound when its GPU time is at least
+  its CPU busy time. `slot_wait` growing means the CPU is waiting on the GPU.
+  `game_resolution` confirms it: GPU-bound cost follows the resolution.
+- **Scaling**: for each scenario with a load axis, least-squares fits of GPU
+  p50, CPU busy p50 and displayed p99 against the load: the marginal cost per
+  unit, R², an exponent from a log-log fit (about 1 is linear, below 1 means a
+  fixed cost dominates, above 1 means each unit gets more expensive) and the
+  load at which the linear fit reaches the budget.
+
+## Making a claim
+
+A performance claim is conditional and comparative. State the conditions the
+report header records (device, driver, resolution, build) and quote tails, not
+means: "On <GPU> / <CPU>, 1920x1080, Release: the game scene holds p99 under
+<x> ms; GPU cost grows linearly with point lights (+<y> ms per 1000, R² <r>)
+up to 4096." Back it with a suite of at least three repeats whose ranges are tight,
+and compare against your own previous commits more than against other
+engines: equivalent content across engines is hard to build.
+
+## Comparing
+
+`--benchmark-compare=<base.json>,<head.json>` reads two results (suites, or
+single runs of either schema), prints a Markdown report and exits without
+opening a window:
+
+```
+--benchmark-report=<out.md>        also write the report to a file
+--benchmark-threshold=<percent>    flag a timing whose median moved more (10)
+--benchmark-fail-threshold=<pct>   exit 1 past this on a headline metric (20)
+```
+
+Headline metrics are displayed p50 and p99, GPU p50 and CPU busy p50. With
+repeats on both sides, a change past the threshold only counts when the two
+builds' ranges across repeats don't overlap; otherwise it is reported as
+within noise. Single runs have no spread, so they are judged on the
+thresholds alone. Timings under 0.5 ms are never flagged. Mismatched device,
+resolution, present mode, build type, frame count or seed are called out.
+
+## Single runs
+
+`--benchmark=<out.json>` is one run of the game's scene, as before the suite
+existed, and also writes the per-frame samples to `<out>.frames.csv`. Its JSON
+keeps the earlier keys, so `tools/perf/compare_benchmarks.py` and the other
+scripts still read it, and adds `environment` and `analysis` sections.
+
+### What a single run does
 
 - **Scene**: the game's normal editor scene, with every procedural RNG
   seeded from `--seed` (`core/random.hxx`), so grass and props land in the
@@ -23,13 +202,16 @@ little about how passes compare on one.
   same at frame N in every run, however slow the device is.
 - **Output**: per-stage GPU timings (the same timestamps as the Frame
   timings panel) for every measured frame, summarised as mean / median /
-  p95 / min / max in JSON, plus the full-frame time of each frame in path
-  order.
+  p95 / min / max (plus p99 and standard deviation) in JSON, the full-frame
+  time of each frame in path order, the analysis described above, and the
+  per-frame CSV.
 
 ```
 ./lathe --benchmark=perf/head.json [--benchmark-frames=600]
                [--benchmark-warmup=60] [--benchmark-max-warmup=1200]
                [--seed=1337] [--benchmark-screenshots]
+               [--benchmark-target-hz=144] [--benchmark-render-size=WxH]
+               [--vsync=on|off]
                [--cluster-grid=16x9x24:256] [--occlusion-culling=on|off]
                [--meshlet-occlusion=on|off]
                [--occlusion-test=hiz|never_occluded|always_defer]
@@ -85,7 +267,7 @@ inert unless `--occlusion-culling=on`). The JSON records it as
 an `--occlusion-culling=on` run with the same stage sum, and look at the forward
 pass's task/mesh invocations in Scene stats.
 
-## Locally
+### Locally, with the scripts
 
 ```
 tools/perf/run_benchmark.sh build/linux-native-relwithdebinfo perf/base.json
@@ -118,7 +300,7 @@ To change what gets measured, edit `BasicGame::benchmark_camera_path()`.
 Runs from before and after that change fly different loops, so they don't
 compare.
 
-## Stage ids
+### Stage ids
 
 The JSON `stages` list has `full_frame` plus one entry per frame graph pass seen, keyed by the pass's stable id
 (`gpu_culling`, `shadow_pass`, `depth_prepass`, `hiz_build`, `occlusion_culling`, `depth_prepass_late`, `gtao`,

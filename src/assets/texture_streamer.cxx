@@ -1,4 +1,5 @@
 #include "assets/texture_streamer.hxx"
+#include "core/perf_events.hxx"
 
 #include <chrono>
 #include <format>
@@ -177,6 +178,7 @@ auto TextureStreamer::process_ready(ImageStorage &images, VkCommandBuffer comman
         }
 
         debug("texture_streamer: '{}' uploaded to GPU", request.debug_name);
+        perf_events::record(PerfEvent::texture_upload);
 
         retiring_staging_[frame_index].push_back(std::move(*uploaded));
 

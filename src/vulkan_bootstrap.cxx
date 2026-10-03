@@ -1013,7 +1013,7 @@ namespace {
                                 .width = static_cast<std::uint32_t>(framebuffer_width),
                                 .height = static_cast<std::uint32_t>(framebuffer_height),
                         },
-                .vsync = true,
+                .vsync = context.vsync,
         });
     }
 

@@ -548,7 +548,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     });
     ImGui::PopStyleVar();
 
-    if (game) {
+    if (game && game_hooks_enabled) {
         game->on_ui(*active_scene(), *renderer);
     }
 #if LATHE_TRACK_MEMORY
@@ -2594,7 +2594,7 @@ auto Application::update(float delta_time) -> void {
 
 
     // Keyed off the player's Transform rather than the follow camera, which springs and would jitter residency.
-    if (terrain) {
+    if (auto *const streaming_terrain = active_terrain(); streaming_terrain != nullptr) {
         auto camera_xz = glm::vec2{camera.position().x, camera.position().z};
 
         if (is_playing) {
@@ -2607,7 +2607,7 @@ auto Application::update(float delta_time) -> void {
             }
         }
 
-        terrain->update(camera_xz);
+        streaming_terrain->update(camera_xz);
     }
 
     std::erase_if(pending_deletions, [this](PendingDeletion &pending) {
