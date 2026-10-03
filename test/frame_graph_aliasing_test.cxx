@@ -426,7 +426,7 @@ TEST_SUITE("unit") {
                 for (auto index = std::size_t{0}; index < desc.resources.size(); ++index) {
                     if (desc.resources[index].transient_image.has_value()) {
                         requirements[index] = MemoryRequirement{
-                                .size = 64U * (1U + ((seed + static_cast<std::uint32_t>(index)) % 7U)),
+                                .size = std::uint64_t{64} * (1U + ((seed + static_cast<std::uint32_t>(index)) % 7U)),
                                 .alignment = 16U << ((seed + index) % 3U),
                                 .memory_type_bits = ((seed + index) % 5U == 0) ? 0b01U : 0b11U,
                         };

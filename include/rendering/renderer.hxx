@@ -639,7 +639,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     }
     // Which groups of compute passes are declared with compute-queue affinity (phase 6): each candidate is enabled by
     // measurement. They only run on another queue when the device has one and --async-compute allows it.
-    enum AsyncCandidate : std::uint32_t {
+    enum AsyncCandidate : std::uint8_t {
         async_light_clustering = 1U << 0U, // light_cull and light_cluster
         async_occlusion = 1U << 1U, // hiz_build and late_cs, overlapping the shadows (declared after the early prepass)
         async_gtao = 1U << 2U, // gtao and its denoise, overlapping the shadows (declared after the late prepass)

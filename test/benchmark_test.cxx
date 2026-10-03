@@ -252,7 +252,7 @@ TEST_CASE("stages are keyed by pass id: absent frames count as 0 ms and late arr
     BenchmarkRun run{options, square_path()};
     run.on_frame_drawn(FrameTimings{.valid = true}, true); // leaves warmup (nothing to measure yet)
 
-    auto const frame = [](float full, std::vector<std::pair<char const *, float>> passes) {
+    auto const frame = [](float full, std::vector<std::pair<char const *, float>> const &passes) {
         auto timings = FrameTimings{.full_frame_ms = full, .valid = true};
         for (auto const &[id, ms]: passes) {
             timings.passes.push_back(frame_graph::PassTiming{.name_id = id, .label = id, .milliseconds = ms});
