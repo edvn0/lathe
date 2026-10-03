@@ -61,6 +61,11 @@ private:
     std::vector<BenchmarkCase> cases_;
     std::size_t case_index_ = 0;
 
+    // Materials synthetic scenes keep alive (BenchmarkScenarioContext::owned_materials), released when the scene is
+    // next replaced. Ones still held at exit go with the renderer.
+    std::vector<MaterialHandle> scenario_materials_;
+    auto release_scenario_materials(Application &application) -> void;
+
     std::optional<BenchmarkRun> run_;
     std::uint32_t render_scale_percent_ = 100;
     ThermalSample thermals_start_{};
