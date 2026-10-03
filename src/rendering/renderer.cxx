@@ -4133,13 +4133,15 @@ auto Renderer::write_empty_stage(VkCommandBuffer command_buffer, std::uint32_t f
     vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, query_pool, first_query + 1);
 }
 
-auto Renderer::make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> render_pass::Context {
+auto Renderer::make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index, bool compute_only)
+        -> render_pass::Context {
     return render_pass::Context{
             .command_buffer = command_buffer,
             .frame_index = frame_index,
             .pipeline_graph = pipeline_graph_,
             .resource_table = gpu_resource_table_,
             .timestamp_query_pool = timestamp_queries_[frame_index].query_pool,
+            .compute_only = compute_only,
     };
 }
 

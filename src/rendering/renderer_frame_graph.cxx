@@ -170,6 +170,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     auto const ao_enabled = ao_settings_.enabled;
     auto const environment_pending = environment_.has_pending_record();
 
+    // Phase 6: which groups of compute passes ask for the compute queue (--async-passes).
+    auto const async_occlusion_enabled = (async_candidates_ & async_occlusion) != 0;
+    auto const async_gtao_enabled = (async_candidates_ & async_gtao) != 0;
+    auto const async_light_enabled = (async_candidates_ & async_light_clustering) != 0;
+
     // The HDR and depth targets are transients: created by the first pass that writes them (the prepass for depth,
     // forward for colour) and given memory after the graph is compiled. Under MSAA each has a multisampled image that
     // is never sampled and a single-sample resolve target that is; without MSAA one image is both.
@@ -307,6 +312,15 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .buffer = physical_buffer(frame.occlusion_stats_readback_buffer),
     });
 
+    // The render_pass context of a pass: on a compute-only queue family it keeps its own barriers to compute stages.
+    auto const topology = context_.queue_set.topology();
+    auto const pass_context_of = [&](frame_graph::PassContext const &context) {
+        auto const compute_only =
+                context.queue == frame_graph::LogicalQueue::compute &&
+                !topology.same_family(frame_graph::LogicalQueue::graphics, frame_graph::LogicalQueue::compute);
+        return make_pass_context(context.command_buffer, info.frame_index, compute_only);
+    };
+
     // Shared by the record lambdas, which all run inside frame_graph::record() below.
     struct FrameState {
         std::expected<void, RendererError> result{};
@@ -337,7 +351,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               overlay_data = pass.write(overlay_data, frame_graph::Use::token_write);
 
                               return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                  auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                                  auto const pass_context = pass_context_of(context);
                                   record_overlay_prepares(pass_context);
                               }};
                           });
@@ -399,8 +413,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                   environment_token = pass.write(environment_token, frame_graph::Use::token_write);
 
                                   return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                      auto const pass_context =
-                                              make_pass_context(context.command_buffer, info.frame_index);
+                                      auto const pass_context = pass_context_of(context);
                                       record_environment_pass(pass_context, frame);
                                   }};
                               });
@@ -471,7 +484,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               stats_buffer = pass.write(stats_buffer, Use::shader_read_write, compute);
 
                               return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                  auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                                  auto const pass_context = pass_context_of(context);
                                   if (auto const done = record_gpu_culling(pass_context, frame); !done) {
                                       state.result = std::unexpected(done.error());
                                   }
@@ -490,8 +503,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                   cluster_lights = pass.write(cluster_lights, frame_graph::Use::transfer_write);
 
                                   return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                      auto const pass_context =
-                                              make_pass_context(context.command_buffer, info.frame_index);
+                                      auto const pass_context = pass_context_of(context);
                                       record_cluster_stats_clear(pass_context, frame);
                                   }};
                               });
@@ -503,6 +515,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                       .color = static_cast<std::uint32_t>(tracy::Color::Gold),
                               },
                               [&](frame_graph::PassBuilder &pass) {
+                                  if (async_light_enabled) {
+                                      pass.queue(frame_graph::QueueAffinity::compute_preferred);
+                                  }
+
                                   constexpr auto compute = stages_of(ShaderStage::compute);
 
                                   [[maybe_unused]] auto const planes =
@@ -514,8 +530,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                           return;
                                       }
 
-                                      auto const pass_context =
-                                              make_pass_context(context.command_buffer, info.frame_index);
+                                      auto const pass_context = pass_context_of(context);
                                       if (auto const done = record_light_cull(pass_context, frame); !done) {
                                           state.result = std::unexpected(done.error());
                                       }
@@ -529,6 +544,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                       .color = static_cast<std::uint32_t>(tracy::Color::Gold),
                               },
                               [&](frame_graph::PassBuilder &pass) {
+                                  if (async_light_enabled) {
+                                      pass.queue(frame_graph::QueueAffinity::compute_preferred);
+                                  }
+
                                   constexpr auto compute = stages_of(ShaderStage::compute);
 
                                   [[maybe_unused]] auto const lights =
@@ -541,36 +560,39 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                           return;
                                       }
 
-                                      auto const pass_context =
-                                              make_pass_context(context.command_buffer, info.frame_index);
+                                      auto const pass_context = pass_context_of(context);
                                       if (auto const done = record_light_cluster(pass_context, frame); !done) {
                                           state.result = std::unexpected(done.error());
                                       }
                                   }};
                               });
 
-        frame_graph_.add_pass(
-                "cluster_stats_readback", frame_graph::PassType::transfer,
-                {
-                        .name_id = "cluster_stats_readback",
-                        .label = "Cluster stats readback",
-                        .color = static_cast<std::uint32_t>(tracy::Color::Gold),
-                },
-                [&](frame_graph::PassBuilder &pass) {
-                    pass.side_effect();
-                    [[maybe_unused]] auto const source = pass.read(cluster_lights, frame_graph::Use::transfer_read);
-                    cluster_stats_readback = pass.write(cluster_stats_readback, frame_graph::Use::transfer_write);
+        frame_graph_.add_pass("cluster_stats_readback", frame_graph::PassType::transfer,
+                              {
+                                      .name_id = "cluster_stats_readback",
+                                      .label = "Cluster stats readback",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::Gold),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  pass.side_effect();
+                                  [[maybe_unused]] auto const source =
+                                          pass.read(cluster_lights, frame_graph::Use::transfer_read);
+                                  cluster_stats_readback =
+                                          pass.write(cluster_stats_readback, frame_graph::Use::transfer_write);
 
-                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
-                        record_cluster_stats_readback(pass_context, frame);
-                    }};
-                });
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      auto const pass_context = pass_context_of(context);
+                                      record_cluster_stats_readback(pass_context, frame);
+                                  }};
+                              });
     }
 
     // Cascaded shadow maps into the atlas. Only the cascades in the update mask are cleared and redrawn; the rest keep
     // their contents, so the pass loads the atlas once it has any.
-    if (frame.shadow_update_mask != 0) {
+    auto const declare_shadows = [&] {
+        if (frame.shadow_update_mask == 0) {
+            return;
+        }
         frame_graph_.add_pass(
                 "shadow_pass", frame_graph::PassType::raster,
                 {
@@ -598,12 +620,20 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             return;
                         }
 
-                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        auto const pass_context = pass_context_of(context);
                         if (auto const done = record_shadow_pass(pass_context, frame); !done) {
                             state.result = std::unexpected(done.error());
                         }
                     }};
                 });
+    };
+
+    // With compute passes on another queue the shadows go after the passes that feed them, so there is raster work to
+    // overlap the compute with: after the early prepass (the Hi-Z and late culling) or the late prepass (GTAO).
+    auto const shadows_after_early_prepass = async_occlusion_enabled;
+    auto const shadows_after_late_prepass = !async_occlusion_enabled && async_gtao_enabled;
+    if (!shadows_after_early_prepass && !shadows_after_late_prepass) {
+        declare_shadows();
     }
 
     // The depth prepass (phase 1 with occlusion culling, the only phase without): clears the depth buffer and draws
@@ -655,7 +685,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         return;
                     }
 
-                    auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                    auto const pass_context = pass_context_of(context);
                     if (auto const done = record_depth_prepass(pass_context, frame, *targets,
                                                                occlusion_active ? render_pass::DepthPrepassPhase::early
                                                                                 : render_pass::DepthPrepassPhase::only);
@@ -664,6 +694,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     }
                 }};
             });
+
+    if (shadows_after_early_prepass) {
+        declare_shadows();
+    }
 
     // The Hi-Z pyramid: the single-sample depth reduced into a mip chain, one dispatch per level. The levels are
     // written and sampled one at a time inside the pass; the graph sees it enter writable and leave sampled.
@@ -675,6 +709,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                       .color = static_cast<std::uint32_t>(tracy::Color::DarkOrange),
                               },
                               [&](frame_graph::PassBuilder &pass) {
+                                  if (async_occlusion_enabled) {
+                                      pass.queue(frame_graph::QueueAffinity::compute_preferred);
+                                  }
+
                                   constexpr auto compute = stages_of(ShaderStage::compute);
 
                                   [[maybe_unused]] auto const depth =
@@ -687,8 +725,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                           return;
                                       }
 
-                                      auto const pass_context =
-                                              make_pass_context(context.command_buffer, info.frame_index);
+                                      auto const pass_context = pass_context_of(context);
                                       if (auto const done = record_hiz_build(pass_context, *targets,
                                                                              transient_index(resolved_depth_image));
                                           !done) {
@@ -709,6 +746,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         .color = static_cast<std::uint32_t>(tracy::Color::SlateBlue),
                 },
                 [&](frame_graph::PassBuilder &pass) {
+                    if (async_occlusion_enabled) {
+                        pass.queue(frame_graph::QueueAffinity::compute_preferred);
+                    }
+
                     constexpr auto compute = stages_of(ShaderStage::compute);
                     using frame_graph::Use;
 
@@ -736,7 +777,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             return;
                         }
 
-                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        auto const pass_context = pass_context_of(context);
                         if (auto const done = record_occlusion_cull_pass(pass_context, frame); !done) {
                             state.result = std::unexpected(done.error());
                         }
@@ -788,7 +829,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             return;
                         }
 
-                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        auto const pass_context = pass_context_of(context);
                         if (auto const done = record_depth_prepass(pass_context, frame, *targets,
                                                                    render_pass::DepthPrepassPhase::late);
                             !done) {
@@ -796,6 +837,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         }
                     }};
                 });
+    }
+
+    if (shadows_after_late_prepass) {
+        declare_shadows();
     }
 
     if (ao_enabled) {
@@ -807,6 +852,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         .color = static_cast<std::uint32_t>(tracy::Color::DarkSlateGray),
                 },
                 [&](frame_graph::PassBuilder &pass) {
+                    if (async_gtao_enabled) {
+                        pass.queue(frame_graph::QueueAffinity::compute_preferred);
+                    }
+
                     [[maybe_unused]] auto const depth =
                             pass.read(resolved_depth_image, frame_graph::Use::sampled, compute_stage);
                     ao_raw_image = pass.create(ao_description("ao_raw"));
@@ -817,7 +866,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             return;
                         }
 
-                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        auto const pass_context = pass_context_of(context);
                         if (auto const done = render_pass::gtao(
                                     pass_context,
                                     ambient_occlusion_info(*targets, info.frame_index,
@@ -837,6 +886,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         .color = static_cast<std::uint32_t>(tracy::Color::SlateGray),
                 },
                 [&](frame_graph::PassBuilder &pass) {
+                    if (async_gtao_enabled) {
+                        pass.queue(frame_graph::QueueAffinity::compute_preferred);
+                    }
+
                     [[maybe_unused]] auto const raw = pass.read(ao_raw_image, frame_graph::Use::sampled, compute_stage);
                     [[maybe_unused]] auto const depth =
                             pass.read(resolved_depth_image, frame_graph::Use::sampled, compute_stage);
@@ -849,7 +902,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             return;
                         }
 
-                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        auto const pass_context = pass_context_of(context);
                         if (auto const done = render_pass::gtao_denoise(
                                     pass_context,
                                     ambient_occlusion_info(*targets, info.frame_index,
@@ -927,7 +980,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         return;
                     }
 
-                    auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                    auto const pass_context = pass_context_of(context);
 
                     OverlayScope const scene_scope{
                             .extent = targets->extent,
@@ -985,7 +1038,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             return;
                         }
 
-                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        auto const pass_context = pass_context_of(context);
                         auto mip_texture_indices = std::array<std::uint32_t, render_pass::bloom_mip_count>{};
                         for (auto mip = std::uint32_t{0}; mip < render_pass::bloom_mip_count; ++mip) {
                             mip_texture_indices[mip] =
@@ -1033,7 +1086,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         return;
                     }
 
-                    auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                    auto const pass_context = pass_context_of(context);
 
                     OverlayScope const ui_scope{
                             .extent = swapchain_image.extent,
@@ -1089,7 +1142,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             return;
                         }
 
-                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        auto const pass_context = pass_context_of(context);
 
                         OverlayScope const ui_scope{
                                 .extent = swapchain_image.extent,
@@ -1181,6 +1234,23 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
     frame_plan_ = *compiled;
+
+    // One line whenever the plan was recompiled, so the schedule is visible without a debugger.
+    if (plan_cache_.misses() != logged_plan_misses_) {
+        logged_plan_misses_ = plan_cache_.misses();
+        auto per_queue = std::array<std::size_t, frame_graph::logical_queue_count>{};
+        auto passes_per_queue = std::array<std::size_t, frame_graph::logical_queue_count>{};
+        auto waits = std::size_t{0};
+        for (auto const &batch: frame_plan_->batches) {
+            ++per_queue[static_cast<std::size_t>(batch.queue)];
+            passes_per_queue[static_cast<std::size_t>(batch.queue)] += batch.passes.size();
+            waits += batch.waits.size();
+        }
+        ::info("Frame graph plan: {} batches (graphics {}, compute {}), {} passes on graphics, {} on compute, {} "
+               "waits, {} ownership transfers",
+               frame_plan_->batches.size(), per_queue[0], per_queue[1], passes_per_queue[0], passes_per_queue[1], waits,
+               frame_plan_->transfers.size());
+    }
 
     // Memory and images for the transients, recreated only when the compiled plan or a description changed. New
     // images have new bindless slots, which this frame's descriptor set has not seen yet.

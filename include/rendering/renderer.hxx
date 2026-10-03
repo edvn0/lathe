@@ -634,6 +634,16 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto transient_unaliased_bytes() const noexcept -> std::uint64_t {
         return transient_allocator_.unaliased_bytes();
     }
+    // Which groups of compute passes are declared with compute-queue affinity (phase 6): each candidate is enabled by
+    // measurement. They only run on another queue when the device has one and --async-compute allows it.
+    enum AsyncCandidate : std::uint32_t {
+        async_light_clustering = 1U << 0U, // light_cull and light_cluster
+        async_occlusion = 1U << 1U, // hiz_build and late_cs, overlapping the shadows (declared after the early prepass)
+        async_gtao = 1U << 2U, // gtao and its denoise, overlapping the shadows (declared after the late prepass)
+    };
+    [[nodiscard]] auto async_candidates() const noexcept -> std::uint32_t { return async_candidates_; }
+    auto set_async_candidates(std::uint32_t mask) noexcept -> void { async_candidates_ = mask; }
+
     [[nodiscard]] auto transient_aliasing() const noexcept -> bool { return transient_aliasing_; }
     auto set_transient_aliasing(bool enabled) noexcept -> void { transient_aliasing_ = enabled; }
     [[nodiscard]] auto last_frame_pipeline_stats() const noexcept -> PipelineStats const & {
@@ -1177,7 +1187,8 @@ private:
             -> std::expected<std::optional<render_pass::BloomTextureIndex>, RendererError>;
 
     [[nodiscard]]
-    auto make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> render_pass::Context;
+    auto make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index, bool compute_only = false)
+            -> render_pass::Context;
 
     // Runs every overlay's prepare(), snapshots the overlay list for timing, and records one barrier if any
     // prepare() wrote GPU data.
@@ -1366,6 +1377,8 @@ private:
     // (--frame-graph-alias=on|off)
     frame_graph::TransientAllocator transient_allocator_;
     bool transient_aliasing_ = true;
+    std::uint32_t async_candidates_ = 0;
+    std::uint64_t logged_plan_misses_ = 0;
 
     struct FramePipelineQuery {
         VkQueryPool query_pool{VK_NULL_HANDLE};

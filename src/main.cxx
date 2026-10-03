@@ -785,6 +785,30 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    // --async-passes=light,occlusion,gtao declares those groups of compute passes with compute-queue affinity, which
+    // only matters on a device with a second queue (see --async-compute). Each is enabled by measurement (phase 6).
+    std::uint32_t async_passes = 0;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--async-passes="; arg.starts_with(prefix)) {
+            auto list = arg.substr(prefix.size());
+            while (!list.empty()) {
+                auto const comma = list.find(',');
+                auto const name = list.substr(0, comma);
+                if (name == "light") {
+                    async_passes |= Renderer::async_light_clustering;
+                } else if (name == "occlusion") {
+                    async_passes |= Renderer::async_occlusion;
+                } else if (name == "gtao") {
+                    async_passes |= Renderer::async_gtao;
+                } else {
+                    error("Invalid --async-passes entry: '{}' (expected light, occlusion or gtao)", name);
+                    return EXIT_FAILURE;
+                }
+                list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
+            }
+        }
+    }
+
     // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
         set_fixed_random_seed((*benchmark_options)->seed);
@@ -849,6 +873,8 @@ auto main(int argc, char **argv) -> int {
     if (transient_aliasing) {
         application.renderer->set_transient_aliasing(*transient_aliasing);
     }
+
+    application.renderer->set_async_candidates(async_passes);
 
     if (meshlet_occlusion) {
         application.renderer->set_meshlet_occlusion_culling(*meshlet_occlusion);

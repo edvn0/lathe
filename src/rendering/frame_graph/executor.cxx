@@ -19,14 +19,62 @@ namespace frame_graph {
                                failure.kind == TranslateFailureKind::missing_image ? "image" : "buffer", name);
         }
 
+        // The stages and accesses a command buffer of a compute-only queue family may name in a barrier.
+        constexpr auto compute_family_stages =
+                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_RESOLVE_BIT |
+                VK_PIPELINE_STAGE_2_BLIT_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_HOST_BIT |
+                VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT |
+                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+        constexpr auto compute_family_access =
+                VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT |
+                VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                VK_ACCESS_2_UNIFORM_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+
+        // A barrier recorded on a compute-only family cannot name graphics stages: a resource a graphics pass reads
+        // is acquired on the compute queue by a barrier that carries the compute part of its scope only, and the
+        // graphics reader's own barrier covers the rest.
+        auto restrict_to_compute_family(BarrierSet barriers) -> BarrierSet {
+            for (auto &image: barriers.images) {
+                image.src_stages &= compute_family_stages;
+                image.dst_stages &= compute_family_stages;
+                image.src_access &= compute_family_access;
+                image.dst_access &= compute_family_access;
+            }
+            for (auto &buffer: barriers.buffers) {
+                buffer.src_stages &= compute_family_stages;
+                buffer.dst_stages &= compute_family_stages;
+                buffer.src_access &= compute_family_access;
+                buffer.dst_access &= compute_family_access;
+            }
+            for (auto &memory: barriers.memory) {
+                memory.src_stages &= compute_family_stages;
+                memory.dst_stages &= compute_family_stages;
+                memory.src_access &= compute_family_access;
+                memory.dst_access &= compute_family_access;
+            }
+            return barriers;
+        }
+
+        // Whether batches of `queue` are recorded on a family that cannot run graphics work: the compute queue of a
+        // topology where it has a family of its own.
+        auto is_compute_only(LogicalQueue queue, ExecuteInfo const &info) -> bool {
+            auto const topology = info.queue_set.topology();
+            return queue == LogicalQueue::compute &&
+                   !topology.same_family(LogicalQueue::graphics, LogicalQueue::compute);
+        }
+
         // Records `barriers` as one vkCmdPipelineBarrier2, if there is anything to record.
-        auto record_barriers(VkCommandBuffer command_buffer, BarrierSet const &barriers, ExecuteInfo const &info)
-                -> std::expected<void, ExecuteError> {
+        auto record_barriers(VkCommandBuffer command_buffer, BarrierSet const &barriers, ExecuteInfo const &info,
+                             bool compute_only) -> std::expected<void, ExecuteError> {
             if (barriers.empty()) {
                 return {};
             }
 
-            auto const storage = translate(barriers, info.resources);
+            auto const storage =
+                    translate(compute_only ? restrict_to_compute_family(barriers) : barriers, info.resources);
             if (!storage) {
                 return std::unexpected(ExecuteError{describe(storage.error(), info.graph)});
             }
@@ -44,6 +92,7 @@ namespace frame_graph {
         auto record_pass(VkCommandBuffer command_buffer, Batch const &batch, CompiledPass const &compiled_pass,
                          ExecuteInfo const &info) -> std::expected<void, ExecuteError> {
             auto const &pass = info.graph.passes[compiled_pass.pass];
+            auto const compute_only = is_compute_only(batch.queue, info);
 
             // Memory another transient used until now: wait for its accesses before this pass's own barriers.
             if (info.transients != nullptr) {
@@ -53,13 +102,13 @@ namespace frame_graph {
                     }
                     auto handoff = BarrierSet{};
                     handoff.memory.push_back(aliasing.barrier);
-                    if (auto recorded = record_barriers(command_buffer, handoff, info); !recorded) {
+                    if (auto recorded = record_barriers(command_buffer, handoff, info, compute_only); !recorded) {
                         return recorded;
                     }
                 }
             }
 
-            if (auto recorded = record_barriers(command_buffer, compiled_pass.before, info); !recorded) {
+            if (auto recorded = record_barriers(command_buffer, compiled_pass.before, info, compute_only); !recorded) {
                 return recorded;
             }
 
@@ -143,7 +192,8 @@ namespace frame_graph {
             }
 
             if (command_buffer != VK_NULL_HANDLE) {
-                if (auto recorded = record_barriers(command_buffer, batch.acquires, info); !recorded) {
+                auto const compute_only = is_compute_only(batch.queue, info);
+                if (auto recorded = record_barriers(command_buffer, batch.acquires, info, compute_only); !recorded) {
                     return std::unexpected(recorded.error());
                 }
 
@@ -153,10 +203,10 @@ namespace frame_graph {
                     }
                 }
 
-                if (auto recorded = record_barriers(command_buffer, batch.releases, info); !recorded) {
+                if (auto recorded = record_barriers(command_buffer, batch.releases, info, compute_only); !recorded) {
                     return std::unexpected(recorded.error());
                 }
-                if (auto recorded = record_barriers(command_buffer, batch.epilogue, info); !recorded) {
+                if (auto recorded = record_barriers(command_buffer, batch.epilogue, info, compute_only); !recorded) {
                     return std::unexpected(recorded.error());
                 }
 

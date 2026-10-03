@@ -469,9 +469,12 @@ namespace render_pass {
                              stage * 2);
 
         // The occlusion tests (main_cs, late_cs, and task shaders for meshlet occlusion) and the debug view.
-        constexpr VkPipelineStageFlags2 hiz_reader_stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                                                            VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
-                                                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        // (On a compute-only family only the compute reader can be named; the graph covers the others.)
+        VkPipelineStageFlags2 const hiz_reader_stages = context.compute_only
+                                                                ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                                                : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                                                                          VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
+                                                                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 
         // The frame graph has put the source depth in SHADER_READ_ONLY_OPTIMAL and every level of the pyramid in
         // GENERAL (it is rebuilt from scratch), and takes the depth back for the late prepass afterwards.
@@ -800,7 +803,9 @@ namespace render_pass {
         auto const to_sampled = [&](std::uint32_t mip) {
             transition_image_layout(command_buffer, bloom_image, VK_IMAGE_LAYOUT_GENERAL,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                    context.compute_only ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                                                         : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                                                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                                     VK_IMAGE_ASPECT_COLOR_BIT, mip, 1);
         };

@@ -757,6 +757,15 @@ namespace frame_graph {
             }
         }
 
+        // A batch is the work between cross-queue dependencies, so what it waits for it waits for entirely. The layout
+        // transitions in its leading barriers have no source stage and could otherwise run ahead of a wait that names
+        // only the stage of the first pass using the resource.
+        for (auto &batch: result.batches) {
+            for (auto &wait: batch.waits) {
+                wait.stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            }
+        }
+
         for (auto const &pending: tracker.transfers()) {
             result.transfers.push_back(OwnershipTransfer{
                     .resource = pending.resource,

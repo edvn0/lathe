@@ -38,6 +38,11 @@ namespace render_pass {
         PipelineGraphRepository &pipeline_graph;
         GpuResourceTable &resource_table;
         VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
+
+        // The command buffer belongs to a compute-only queue family, whose barriers cannot name graphics stages
+        // (fragment, task, ...). A pass body that records its own barriers keeps to compute stages then; whoever reads
+        // the result on the graphics queue is covered by the barrier the frame graph derives for it.
+        bool compute_only = false;
     };
 
     // `indirect` holds one GpuDrawCommand per batch, ordered opaque | mask | blend like DrawCounts. `index_buffer`
