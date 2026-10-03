@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 
 #include <GLFW/glfw3.h>
 
@@ -70,6 +71,10 @@ struct VulkanContext {
     // --vsync=on|off: FIFO presentation, or MAILBOX/IMMEDIATE when available. Benchmarks default to off, so the refresh
     // rate doesn't cap what they measure.
     bool vsync = true;
+
+    // --present-mode= and --swapchain-images=: override the vsync choice and the image count (0: default).
+    std::optional<VkPresentModeKHR> present_mode;
+    std::uint32_t swapchain_image_count = 0;
 
     QueueFamilies queue_families{};
 

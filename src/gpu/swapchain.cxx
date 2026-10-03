@@ -82,6 +82,8 @@ auto Swapchain::initialize(SwapchainCreateInfo const &create_info) noexcept -> b
     present_queue_family_ = create_info.present_queue_family;
     requested_extent_ = create_info.framebuffer_extent;
     vsync_ = create_info.vsync;
+    preferred_present_mode_ = create_info.preferred_present_mode;
+    requested_image_count_ = create_info.image_count;
 
     if (requested_extent_.width == 0 || requested_extent_.height == 0) {
         error("Initial framebuffer extent must be non-zero");
@@ -319,8 +321,9 @@ auto Swapchain::create_swapchain(VkSwapchainKHR old_swapchain) noexcept -> bool 
         return false;
     }
 
-    constexpr auto requested = 3u;
-    std::uint32_t image_count = std::max(requested, capabilities.minImageCount + 1);
+    auto const requested = requested_image_count_ != 0 ? requested_image_count_ : 3U;
+    std::uint32_t image_count =
+            std::max(requested, capabilities.minImageCount + (requested_image_count_ != 0 ? 0U : 1U));
 
     if (capabilities.maxImageCount != 0) {
         image_count = std::min(image_count, capabilities.maxImageCount);
@@ -588,6 +591,14 @@ auto Swapchain::choose_surface_format(std::vector<VkSurfaceFormatKHR> const &for
 
 auto Swapchain::choose_present_mode(std::vector<VkPresentModeKHR> const &present_modes) const noexcept
         -> VkPresentModeKHR {
+    if (preferred_present_mode_) {
+        if (std::ranges::find(present_modes, *preferred_present_mode_) != present_modes.end()) {
+            return *preferred_present_mode_;
+        }
+        warn("The requested present mode ({}) is not supported by this surface; choosing another",
+             static_cast<int>(*preferred_present_mode_));
+    }
+
     if (!vsync_) {
         auto const mailbox = std::ranges::find(present_modes, VK_PRESENT_MODE_MAILBOX_KHR);
 

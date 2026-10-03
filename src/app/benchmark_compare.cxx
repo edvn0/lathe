@@ -72,6 +72,12 @@ namespace {
         if (name == "gpu_bound_fraction") {
             return "GPU-bound (fraction)";
         }
+        if (name == "cpu_bound_fraction") {
+            return "CPU-bound (fraction)";
+        }
+        if (name == "presentation_bound_fraction") {
+            return "Presentation-bound (fraction)";
+        }
         constexpr std::string_view stage_prefix = "stage_";
         constexpr std::string_view stage_suffix = "_median_ms";
         if (name.starts_with(stage_prefix) && name.ends_with(stage_suffix)) {
@@ -260,6 +266,8 @@ namespace {
                 return ":green_circle: faster";
             case CompareVerdict::within_noise:
                 return "within noise";
+            case CompareVerdict::not_judged:
+                return "presentation-paced, not judged";
             case CompareVerdict::unchanged:
                 break;
         }
@@ -343,7 +351,8 @@ auto compare_benchmark_results(JsonValue const &base_root, JsonValue const &head
                                                base.kind, head.kind));
     }
     if (head.device.find("llvmpipe") != std::string::npos) {
-        comparison.notes.emplace_back("Head ran on a software rasterizer (lavapipe): don't read much into the timings.");
+        comparison.notes.emplace_back(
+                "Head ran on a software rasterizer (lavapipe): don't read much into the timings.");
     }
 
     // Cases in head order, then those only in base.
@@ -375,9 +384,29 @@ auto compare_benchmark_results(JsonValue const &base_root, JsonValue const &head
             }
         }
 
+        // When either side was paced by presentation, its displayed times measure the swapchain, so they inform
+        // but don't decide.
+        auto const paced = [](Case const *entry) {
+            auto const *metric = entry != nullptr ? entry->find("presentation_bound_fraction") : nullptr;
+            return metric != nullptr && metric->median > 0.5;
+        };
+        auto const presentation_paced = paced(base_case) || paced(head_case);
+        if (presentation_paced) {
+            comparison.notes.push_back(std::format("`{}` was mostly presentation-bound: its displayed times are not "
+                                                   "judged, only GPU and CPU times.",
+                                                   key));
+        }
+
         for (auto const &name: names) {
             auto metric = compare_metric(name, base_case != nullptr ? base_case->find(name) : nullptr,
                                          head_case != nullptr ? head_case->find(name) : nullptr, options);
+
+            if (presentation_paced && name.starts_with("displayed_")) {
+                metric.headline = false;
+                if (metric.verdict != CompareVerdict::unchanged) {
+                    metric.verdict = CompareVerdict::not_judged;
+                }
+            }
 
             if (metric.headline && metric.verdict == CompareVerdict::regressed && metric.change_percent &&
                 *metric.change_percent > options.fail_threshold_percent) {

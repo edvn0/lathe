@@ -1014,6 +1014,8 @@ namespace {
                                 .height = static_cast<std::uint32_t>(framebuffer_height),
                         },
                 .vsync = context.vsync,
+                .preferred_present_mode = context.present_mode,
+                .image_count = context.swapchain_image_count,
         });
     }
 

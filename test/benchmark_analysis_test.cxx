@@ -143,3 +143,37 @@ TEST_CASE("scaling fits give marginal cost, exponent and the load that fills the
     std::array const two_costs{1.0, 2.0};
     CHECK_FALSE(fit_scaling(one_load, two_costs).load_at(6.0).has_value());
 }
+
+TEST_CASE("frames the swapchain paced are presentation-bound, and refresh jitter is not a budget miss") {
+    std::vector<BenchmarkFrameSample> samples;
+    samples.reserve(10);
+
+    // Refresh-paced: 6.95 ms displayed at 144 Hz (a hair over 6.944), 6 ms of it in acquire, the GPU done in 3.4.
+    for (std::uint32_t i = 0; i < 8; ++i) {
+        auto sample = frame(i, 6.95F, 0.8F, 3.4F);
+        sample.cpu.phase_ms[static_cast<std::size_t>(CpuPhase::slot_wait)] = 0.15F;
+        sample.cpu.phase_ms[static_cast<std::size_t>(CpuPhase::acquire)] = 6.0F;
+        samples.push_back(sample);
+    }
+
+    // GPU-bound: waiting on the frame slot, the GPU using the whole interval.
+    samples.push_back(frame(8, 10.5F, 0.4F, 10.4F));
+
+    // Blocked in acquire, but the GPU used most of the interval: GPU-bound, not presentation-bound.
+    auto busy_gpu = frame(9, 10.0F, 0.4F, 9.5F);
+    busy_gpu.cpu.phase_ms[static_cast<std::size_t>(CpuPhase::slot_wait)] = 0.0F;
+    busy_gpu.cpu.phase_ms[static_cast<std::size_t>(CpuPhase::acquire)] = 9.6F;
+    samples.push_back(busy_gpu);
+
+    auto const analysis = analyse_frames(samples, AnalysisOptions{.target_hz = 144.0F});
+    CHECK(analysis.bound.presentation_bound == 8);
+    CHECK(analysis.bound.gpu_bound == 2);
+    CHECK(analysis.bound.cpu_bound == 0);
+    CHECK(analysis.bound.presentation_bound_fraction() == doctest::Approx(0.8F));
+
+    // 6.95 ms is within 1% of the 6.944 ms budget; only the two 10 ms frames miss it.
+    CHECK(analysis.budget.displayed_over_budget == 2);
+
+    auto const strict = analyse_frames(samples, AnalysisOptions{.target_hz = 144.0F, .budget_tolerance = 0.0F});
+    CHECK(strict.budget.displayed_over_budget == 10);
+}

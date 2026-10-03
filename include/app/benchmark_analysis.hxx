@@ -79,6 +79,16 @@ struct AnalysisOptions {
 
     // A hitch is a displayed frame longer than this many times the run's median, and over budget.
     float hitch_factor = 2.0F;
+
+    // A frame counts as over budget only past budget * (1 + this). Frames paced to the refresh rate land a hair
+    // either side of it, and that jitter is not a miss.
+    float budget_tolerance = 0.01F;
+
+    // A frame is presentation-bound when the CPU spent at least this share of its displayed interval blocked in
+    // acquire or present while the GPU used less than gpu_idle_share of it: the swapchain, not the engine, set the
+    // pace.
+    float presentation_wait_share = 0.25F;
+    float gpu_idle_share = 0.9F;
 };
 
 struct BudgetStats {
@@ -109,16 +119,21 @@ struct EventCorrelation {
     std::uint32_t hitches_with = 0;
 };
 
-// Which side limits the frame rate. A frame is GPU-bound when its GPU time is at least its CPU busy time: the CPU
-// would have had time to spare.
+// What limits the frame rate, per frame with GPU timings. Presentation-bound: the swapchain held the CPU back (see
+// AnalysisOptions::presentation_wait_share), so displayed intervals measure the display or compositor, not the
+// engine. Otherwise GPU-bound when its GPU time is at least its CPU busy time, else CPU-bound.
 struct BoundStats {
     std::uint32_t frames_with_gpu = 0;
     std::uint32_t gpu_bound = 0;
     std::uint32_t cpu_bound = 0;
+    std::uint32_t presentation_bound = 0;
 
-    [[nodiscard]] auto gpu_bound_fraction() const noexcept -> float {
-        return frames_with_gpu == 0 ? 0.0F : static_cast<float>(gpu_bound) / static_cast<float>(frames_with_gpu);
+    [[nodiscard]] auto fraction(std::uint32_t count) const noexcept -> float {
+        return frames_with_gpu == 0 ? 0.0F : static_cast<float>(count) / static_cast<float>(frames_with_gpu);
     }
+    [[nodiscard]] auto gpu_bound_fraction() const noexcept -> float { return fraction(gpu_bound); }
+    [[nodiscard]] auto cpu_bound_fraction() const noexcept -> float { return fraction(cpu_bound); }
+    [[nodiscard]] auto presentation_bound_fraction() const noexcept -> float { return fraction(presentation_bound); }
 };
 
 struct WorkloadSummary {

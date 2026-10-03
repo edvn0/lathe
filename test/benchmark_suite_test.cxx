@@ -98,6 +98,19 @@ TEST_CASE("suite options: defaults, sweeps, scenarios and errors") {
         CHECK_FALSE(parse_args({"--benchmark-suite=b", "--benchmark-sweep=lights:0"}).has_value());
     }
 
+    SUBCASE("present mode and swapchain images") {
+        std::array<char const *, 2> args{"--present-mode=immediate", "--swapchain-images=4"};
+        CHECK(parse_present_mode_option(args).value() == PresentModeChoice::immediate);
+        CHECK(parse_swapchain_images_option(args).value() == 4U);
+
+        std::array<char const *, 1> bad_mode{"--present-mode=tearing"};
+        std::array<char const *, 1> too_many{"--swapchain-images=9"};
+        std::array<char const *, 1> none{"--seed=1"};
+        CHECK_FALSE(parse_present_mode_option(bad_mode).has_value());
+        CHECK_FALSE(parse_swapchain_images_option(too_many).has_value());
+        CHECK_FALSE(parse_present_mode_option(none).value().has_value());
+    }
+
     SUBCASE("vsync") {
         std::array<char const *, 1> on{"--vsync=on"};
         std::array<char const *, 1> bad{"--vsync=maybe"};
@@ -326,6 +339,35 @@ TEST_CASE("compare flags regressions only outside the noise between repeats") {
         CHECK_FALSE(comparison.failed);
         CHECK(comparison.markdown.find("faster") != std::string::npos);
     }
+}
+
+TEST_CASE("compare does not judge displayed times of presentation-paced cases") {
+    auto const options = BenchmarkOptions{.mode = BenchmarkMode::suite, .repeats = 3};
+    auto const environment = BenchmarkEnvironment{.device_name = "gpu"};
+
+    auto const suite_of = [&](float displayed_ms) {
+        std::vector<BenchmarkCaseResult> results;
+        for (std::uint32_t repeat = 0; repeat < 3; ++repeat) {
+            auto result =
+                    case_result("game", "", 0, repeat, displayed_ms + 0.01F * static_cast<float>(repeat), 3.0F, 0.8F);
+            result.analysis.bound.frames_with_gpu = 100;
+            result.analysis.bound.presentation_bound = 95;
+            results.push_back(std::move(result));
+        }
+        auto parsed = parse_json(suite_to_json(options, environment, results));
+        REQUIRE(parsed.has_value());
+        return std::move(*parsed);
+    };
+
+    // The displayed time doubles (say, the refresh rate halved) but GPU and CPU are unchanged: not a regression.
+    auto const comparison = compare_benchmark_results(suite_of(6.94F), suite_of(13.88F), BenchmarkCompareOptions{});
+    CHECK_FALSE(comparison.failed);
+    REQUIRE(comparison.cases.size() == 1);
+    auto const displayed =
+            std::ranges::find(comparison.cases[0].metrics, "displayed_median_ms", &MetricComparison::name);
+    REQUIRE(displayed != comparison.cases[0].metrics.end());
+    CHECK(displayed->verdict == CompareVerdict::not_judged);
+    CHECK(comparison.markdown.find("presentation-paced, not judged") != std::string::npos);
 }
 
 TEST_CASE("compare reads schema 1 single runs") {

@@ -43,7 +43,8 @@ in one place:
 | `game` | -- | the game's own scene and camera path: the realistic mix |
 | `game_resolution` | `render_scale_percent` (50, 100, 150) | the game scene at several resolutions: cost that follows resolution is GPU pixel work, cost that doesn't is CPU or per-draw |
 | `draw_calls` | `objects` (1000, 4000, 16000) | one entity per object, 16 materials: per-object CPU submission, culling, draw count |
-| `instancing` | `instances` (10000, 50000, 200000) | one instanced model: GPU culling and geometry throughput without per-object CPU cost |
+| `instancing` | `instances` (10000, 50000, 200000) | one instanced model of 12-triangle cubes: GPU culling and per-instance cost, shadows included, without per-object CPU cost |
+| `instancing_no_shadows` | `instances` (10000, 50000, 200000) | the same field casting no shadows: subtract it from `instancing` for the shadow passes' share |
 | `lights` | `point_lights` (64, 512, 4096) | 400 boxes lit by many point lights: light culling, clustering, shading per light |
 | `overdraw` | `layers` (4, 16, 64) | full-screen alpha-blended layers: fill rate and blending |
 
@@ -79,10 +80,13 @@ What the suite does so that numbers are repeatable and comparable:
   case again), so slow drift such as heat soak spreads across all of them
   instead of landing on whichever ran last. The spread across repeats is the
   noise floor of that metric on that machine.
-- **Uncapped presentation**: vsync is off while benchmarking (MAILBOX, or
-  IMMEDIATE), so the display doesn't cap what is measured. `--vsync=on` brings
-  FIFO back to check whether frames make every refresh; results record the
-  present mode and warn about FIFO.
+- **Uncapped presentation**: vsync is off while benchmarking and IMMEDIATE is
+  preferred (then MAILBOX), so the display doesn't cap what is measured. Some
+  compositors still pace MAILBOX to the refresh rate by holding images back,
+  which shows up as time in `acquire`. `--present-mode=immediate|mailbox|fifo|fifo_relaxed`
+  and `--swapchain-images=<2..8>` override the choice; `--vsync=on` brings FIFO
+  back to check whether frames make every refresh. Results record the present
+  mode, whether it was the one requested, and the image count.
 - **Fixed resolution**: the suite renders at `--benchmark-render-size`,
   whatever the window.
 - **Environment**: device, driver, Vulkan version, present mode, build type,
@@ -131,16 +135,23 @@ Every measured frame becomes a row in the CSV (`BenchmarkFrameSample`):
   interval. A steady 6 ms beats a 4 ms average with 20 ms spikes, and only the
   tail shows that.
 - **Budget**: the share of frames whose displayed interval, CPU busy time or
-  GPU time exceeds 1000 / `--benchmark-target-hz` ms.
+  GPU time exceeds 1000 / `--benchmark-target-hz` ms by more than 1%: frames
+  paced to the refresh rate land a hair either side of it, and that is not a
+  miss.
 - **Hitches**: displayed frames longer than both twice the run's median and
   the budget. Each lists the events of its frame and the one before (work in
   frame N often shows up in N's or N+1's present); the report counts how many
   hitches each event kind coincided with, and how many had none recorded.
   Per event, the analysis also gives the mean displayed interval of frames
   with and without it.
-- **CPU- or GPU-bound**: a frame is GPU-bound when its GPU time is at least
-  its CPU busy time. `slot_wait` growing means the CPU is waiting on the GPU.
-  `game_resolution` confirms it: GPU-bound cost follows the resolution.
+- **What limits a frame**: *presentation-bound* when the CPU spent at least a
+  quarter of the displayed interval blocked in `acquire` or `present` while
+  the GPU used less than 90% of it: the swapchain or compositor set the pace,
+  so that case's displayed times say nothing about the engine (the report
+  warns, and the comparison doesn't judge them). Otherwise *GPU-bound* when
+  the GPU time is at least the CPU busy time, else *CPU-bound*. `slot_wait`
+  growing means the CPU is waiting on the GPU; `game_resolution` confirms it,
+  since GPU-bound cost follows the resolution.
 - **Scaling**: for each scenario with a load axis, least-squares fits of GPU
   p50, CPU busy p50 and displayed p99 against the load: the marginal cost per
   unit, R², an exponent from a log-log fit (about 1 is linear, below 1 means a
@@ -169,7 +180,9 @@ opening a window:
 --benchmark-fail-threshold=<pct>   exit 1 past this on a headline metric (20)
 ```
 
-Headline metrics are displayed p50 and p99, GPU p50 and CPU busy p50. With
+Headline metrics are displayed p50 and p99, GPU p50 and CPU busy p50; the
+displayed ones are reported but not judged for a case either side ran mostly
+presentation-bound. With
 repeats on both sides, a change past the threshold only counts when the two
 builds' ranges across repeats don't overlap; otherwise it is reported as
 within noise. Single runs have no spread, so they are judged on the

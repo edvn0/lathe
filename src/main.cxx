@@ -718,6 +718,14 @@ auto main(int argc, char **argv) -> int {
         return EXIT_FAILURE;
     }
 
+    // --present-mode= picks the mode outright; --swapchain-images= how many images to ask for.
+    auto const present_mode = parse_present_mode_option(std::span<char const *const>{argv + 1, argv + argc});
+    auto const swapchain_images = parse_swapchain_images_option(std::span<char const *const>{argv + 1, argv + argc});
+    if (!present_mode || !swapchain_images) {
+        error("Invalid arguments: {}", !present_mode ? present_mode.error() : swapchain_images.error());
+        return EXIT_FAILURE;
+    }
+
     // --cluster-grid=XxYxZ[:capacity] picks the clustered-lighting grid, for comparing grids in benchmarks.
     std::optional<ClusterGridSettings> cluster_grid;
     for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
@@ -851,6 +859,30 @@ auto main(int argc, char **argv) -> int {
 
     VulkanContext context{};
     context.vsync = vsync->value_or(!benchmark_options->has_value());
+    context.swapchain_image_count = swapchain_images->value_or(0U);
+
+    // Benchmarks without vsync prefer IMMEDIATE: under MAILBOX some compositors still hand images back only once per
+    // refresh, which caps the frame rate just like vsync.
+    auto const chosen_present_mode = present_mode->has_value() ? *present_mode
+                                     : (benchmark_options->has_value() && !context.vsync)
+                                             ? std::optional{PresentModeChoice::immediate}
+                                             : std::nullopt;
+    if (chosen_present_mode) {
+        switch (*chosen_present_mode) {
+            case PresentModeChoice::immediate:
+                context.present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+                break;
+            case PresentModeChoice::mailbox:
+                context.present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+                break;
+            case PresentModeChoice::fifo:
+                context.present_mode = VK_PRESENT_MODE_FIFO_KHR;
+                break;
+            case PresentModeChoice::fifo_relaxed:
+                context.present_mode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+                break;
+        }
+    }
 
     // --async-compute=auto|off|same-family picks the compute queue topology (off keeps one queue but still creates
     // the compute queue); --sync-validation turns on the validation layer's synchronization checks in Debug builds.
@@ -960,6 +992,7 @@ auto main(int argc, char **argv) -> int {
         info("Benchmark: {} measured frames per run, seed {}, writing {}{}", driver->options().frame_count,
              driver->options().seed, driver->options().output_path.string(),
              context.vsync ? " (vsync on: displayed intervals are capped at the refresh rate)" : "");
+        info("Benchmark: presenting with {} swapchain images", context.swapchain.image_count());
         benchmark.emplace(std::move(*driver));
     }
 

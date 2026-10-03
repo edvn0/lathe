@@ -41,6 +41,7 @@ enum class CompareVerdict : std::uint8_t {
     within_noise, // moved past the threshold, but the repeat ranges overlap
     improved,
     regressed,
+    not_judged, // a displayed time of a presentation-paced case: it measures the swapchain, not the engine
 };
 
 struct MetricComparison {

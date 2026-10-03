@@ -198,9 +198,15 @@ auto add_environment_warnings(BenchmarkEnvironment &environment) -> void {
                                        environment.cpu_governor));
     }
 
+    if (!environment.requested_present_mode.empty() && environment.requested_present_mode != environment.present_mode) {
+        warnings.push_back(
+                std::format("present mode '{}' was requested but the surface doesn't offer it; ran with '{}'",
+                            environment.requested_present_mode, environment.present_mode));
+    }
+
     if (environment.present_mode == "fifo" || environment.present_mode == "fifo_relaxed") {
         warnings.emplace_back("presentation is vsynced (FIFO): displayed intervals are capped at the refresh rate, so "
-                           "they show whether frames make it, not how fast they could be");
+                              "they show whether frames make it, not how fast they could be");
     }
 
     if (environment.device_name.find("llvmpipe") != std::string::npos || environment.device_type == "cpu") {
@@ -213,6 +219,6 @@ auto add_environment_warnings(BenchmarkEnvironment &environment) -> void {
 
     if (environment.memory_tracking) {
         warnings.emplace_back("memory tracking is on (non-Release build): every allocation is counted, which costs a "
-                           "little CPU time");
+                              "little CPU time");
     }
 }

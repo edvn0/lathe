@@ -24,6 +24,12 @@ struct SwapchainCreateInfo {
 
     VkExtent2D framebuffer_extent{};
     bool vsync = true;
+
+    // Used instead of the vsync choice when the surface supports it (--present-mode=).
+    std::optional<VkPresentModeKHR> preferred_present_mode;
+
+    // Swapchain images to ask for (--swapchain-images=), clamped to what the surface allows; 0 means 3.
+    std::uint32_t image_count = 0;
 };
 
 enum class SwapchainFrameResult : std::uint8_t {
@@ -169,6 +175,12 @@ public:
         return surface_format_.format;
     }
 
+    // Images in the current swapchain.
+    [[nodiscard]]
+    auto image_count() const noexcept -> std::uint32_t {
+        return static_cast<std::uint32_t>(images_.size());
+    }
+
     // The mode the current swapchain was created with.
     [[nodiscard]]
     auto present_mode() const noexcept -> VkPresentModeKHR {
@@ -216,6 +228,8 @@ private:
     std::uint32_t present_queue_family_ = 0;
 
     bool vsync_ = true;
+    std::optional<VkPresentModeKHR> preferred_present_mode_;
+    std::uint32_t requested_image_count_ = 0;
     VkPresentModeKHR present_mode_ = VK_PRESENT_MODE_FIFO_KHR;
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
