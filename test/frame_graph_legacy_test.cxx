@@ -161,7 +161,7 @@ TEST_SUITE("unit") {
                     .debug_name = "swapchain",
                     .image =
                             PhysicalImage{
-                                    .image = reinterpret_cast<VkImage>(handle),
+                                    .image = reinterpret_cast<VkImage>(handle), // NOLINT(performance-no-int-to-ptr)
                                     .format = VK_FORMAT_B8G8R8A8_UNORM,
                             },
             });
@@ -171,7 +171,8 @@ TEST_SUITE("unit") {
             });
             auto const compiled = compile(graph, QueueTopology{});
             REQUIRE(compiled.has_value());
-            CHECK(graph.description().resources.front().image.image == reinterpret_cast<VkImage>(handle));
+            CHECK(graph.description().resources.front().image.image ==
+                  reinterpret_cast<VkImage>(handle)); // NOLINT(performance-no-int-to-ptr)
             return compiled->hash;
         };
         CHECK(build(0x1000) == build(0x2000));

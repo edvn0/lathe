@@ -422,9 +422,9 @@ TEST_SUITE("unit") {
             QueueTopology topology;
         };
         auto const topologies = std::array{
-                Topology{"single", single_queue()},
-                Topology{"same_family", same_family()},
-                Topology{"dedicated", dedicated()},
+                Topology{.name = "single", .topology = single_queue()},
+                Topology{.name = "same_family", .topology = same_family()},
+                Topology{.name = "dedicated", .topology = dedicated()},
         };
 
         for (auto seed = std::uint32_t{1}; seed <= 500; ++seed) {

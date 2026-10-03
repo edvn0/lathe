@@ -256,10 +256,10 @@ namespace {
         }
 
         constexpr auto all_commands = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        auto const compute_waits =
-                std::array{frame_graph::SemaphoreWait{frame_graph::LogicalQueue::graphics, 0, all_commands}};
-        auto const graphics_waits =
-                std::array{frame_graph::SemaphoreWait{frame_graph::LogicalQueue::compute, 0, all_commands}};
+        auto const compute_waits = std::array{frame_graph::SemaphoreWait{
+                .queue = frame_graph::LogicalQueue::graphics, .signal_index = 0, .stages = all_commands}};
+        auto const graphics_waits = std::array{frame_graph::SemaphoreWait{
+                .queue = frame_graph::LogicalQueue::compute, .signal_index = 0, .stages = all_commands}};
 
         std::vector<SubmitBatch> batches{planned.begin(), planned.end()};
         if (batches.empty()) {
@@ -737,6 +737,26 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    // --occlusion-test=hiz|never_occluded|always_defer picks Renderer::occlusion_test_mode(). The stubs must render
+    // exactly like occlusion culling off, which makes them baselines for the two-phase draw lists.
+    std::optional<OcclusionTestMode> occlusion_test;
+    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
+        if (constexpr std::string_view prefix = "--occlusion-test="; arg.starts_with(prefix)) {
+            auto const value = arg.substr(prefix.size());
+
+            if (value == "hiz") {
+                occlusion_test = OcclusionTestMode::hiz;
+            } else if (value == "never_occluded") {
+                occlusion_test = OcclusionTestMode::never_occluded;
+            } else if (value == "always_defer") {
+                occlusion_test = OcclusionTestMode::always_defer;
+            } else {
+                error("Invalid --occlusion-test: '{}' (expected hiz, never_occluded or always_defer)", value);
+                return EXIT_FAILURE;
+            }
+        }
+    }
+
     // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
         set_fixed_random_seed((*benchmark_options)->seed);
@@ -790,6 +810,10 @@ auto main(int argc, char **argv) -> int {
         if (*occlusion_culling && !application.renderer->occlusion_culling_supported()) {
             warn("--occlusion-culling=on: this device has no MIN depth resolve for MSAA, so it stays inactive");
         }
+    }
+
+    if (occlusion_test) {
+        application.renderer->set_occlusion_test_mode(*occlusion_test);
     }
 
     if (meshlet_occlusion) {
@@ -878,7 +902,8 @@ auto main(int argc, char **argv) -> int {
                 benchmark ? benchmark_timestep : std::chrono::duration<float>(now - last_frame_time).count();
         last_frame_time = now;
 
-        application.elapsed_time += delta_time;
+        // Under --benchmark the shader clock restarts with the measured lap, so warmup length can't shift frame N.
+        application.elapsed_time = benchmark ? benchmark->simulated_time() : application.elapsed_time + delta_time;
 
         application.camera.update(std::min(delta_time, 0.1F));
 
@@ -888,7 +913,7 @@ auto main(int argc, char **argv) -> int {
             application.camera.look_at(keyframe.position, keyframe.target);
 
             if (benchmark->options().keyframe_screenshots && benchmark->at_keyframe()) {
-                application.renderer->request_screenshot(ScreenshotSource::window);
+                application.renderer->request_screenshot(ScreenshotSource::viewport);
             }
         }
 
@@ -906,7 +931,25 @@ auto main(int argc, char **argv) -> int {
         if (benchmark) {
             auto const streaming_idle = application.renderer->texture_streamer().pending_count() == 0 &&
                                         (!application.terrain || application.terrain->streaming_idle());
-            benchmark->on_frame_drawn(application.renderer->last_frame_timings(), streaming_idle);
+            auto const &frame_stats = application.renderer->last_frame_stats();
+            auto const &cluster_stats = application.renderer->last_cluster_stats();
+            benchmark->on_frame_drawn(application.renderer->last_frame_timings(), streaming_idle,
+                                      BenchmarkCounters{
+                                              .occlusion_valid = frame_stats.occlusion_stats_valid,
+                                              .frustum_visible_instances = frame_stats.frustum_visible_instance_count,
+                                              .early_instances = frame_stats.early_instance_count,
+                                              .occlusion_candidates = frame_stats.occlusion_candidate_count,
+                                              .late_instances = frame_stats.late_instance_count,
+                                              .occluded_instances = frame_stats.occluded_instance_count,
+                                              .meshlet_valid = frame_stats.meshlet_occlusion_stats_valid,
+                                              .deferred_meshlets = frame_stats.deferred_meshlet_count,
+                                              .occluded_meshlets = frame_stats.occluded_meshlet_count,
+                                              .cluster_valid = cluster_stats.valid,
+                                              .occupied_clusters = cluster_stats.occupied_clusters,
+                                              .overflowing_clusters = cluster_stats.overflowing_clusters,
+                                              .maximum_lights = cluster_stats.maximum_lights,
+                                              .stored_lights = cluster_stats.stored_lights,
+                                      });
 
             if (benchmark->finished()) {
                 VkPhysicalDeviceProperties properties{};

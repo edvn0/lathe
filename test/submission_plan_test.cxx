@@ -60,10 +60,10 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("graphics, compute, graphics: each wait names the absolute value it needs") {
-        auto const compute_waits =
-                std::array{SemaphoreWait{LogicalQueue::graphics, 0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT}};
-        auto const graphics_waits =
-                std::array{SemaphoreWait{LogicalQueue::compute, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT}};
+        auto const compute_waits = std::array{SemaphoreWait{
+                .queue = LogicalQueue::graphics, .signal_index = 0, .stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT}};
+        auto const graphics_waits = std::array{SemaphoreWait{
+                .queue = LogicalQueue::compute, .signal_index = 0, .stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT}};
         auto const batches =
                 std::array{graphics_batch(0), compute_batch(0, compute_waits), graphics_batch(1, graphics_waits)};
 
@@ -91,10 +91,10 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("one physical queue: both logical queues count on the same timeline") {
-        auto const compute_waits =
-                std::array{SemaphoreWait{LogicalQueue::graphics, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
-        auto const graphics_waits =
-                std::array{SemaphoreWait{LogicalQueue::compute, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
+        auto const compute_waits = std::array{SemaphoreWait{
+                .queue = LogicalQueue::graphics, .signal_index = 0, .stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
+        auto const graphics_waits = std::array{SemaphoreWait{
+                .queue = LogicalQueue::compute, .signal_index = 0, .stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
         auto const batches =
                 std::array{graphics_batch(0), compute_batch(0, compute_waits), graphics_batch(1, graphics_waits)};
 
@@ -113,7 +113,8 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("a wait with no stages waits for everything") {
-        auto const waits = std::array{SemaphoreWait{LogicalQueue::graphics, 0, VK_PIPELINE_STAGE_2_NONE}};
+        auto const waits = std::array{
+                SemaphoreWait{.queue = LogicalQueue::graphics, .signal_index = 0, .stages = VK_PIPELINE_STAGE_2_NONE}};
         auto const batches = std::array{graphics_batch(0), compute_batch(0, waits)};
 
         auto const plan = plan_submissions(batches, no_values, separate_timelines);
@@ -144,16 +145,17 @@ TEST_SUITE("unit") {
             CHECK(plan.error() == SubmissionPlanError::signal_out_of_order);
         }
         SUBCASE("a wait for a signal that comes later") {
-            auto const waits =
-                    std::array{SemaphoreWait{LogicalQueue::compute, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
+            auto const waits = std::array{SemaphoreWait{
+                    .queue = LogicalQueue::compute, .signal_index = 0, .stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
             auto const batches = std::array{graphics_batch(0, waits), compute_batch(0)};
             auto const plan = plan_submissions(batches, no_values, separate_timelines);
             REQUIRE_FALSE(plan.has_value());
             CHECK(plan.error() == SubmissionPlanError::wait_before_signal);
         }
         SUBCASE("a wait for a signal that never happens") {
-            auto const waits =
-                    std::array{SemaphoreWait{LogicalQueue::graphics, 7, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
+            auto const waits = std::array{SemaphoreWait{.queue = LogicalQueue::graphics,
+                                                        .signal_index = 7,
+                                                        .stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
             auto const batches = std::array{graphics_batch(0), compute_batch(0, waits)};
             auto const plan = plan_submissions(batches, no_values, separate_timelines);
             REQUIRE_FALSE(plan.has_value());

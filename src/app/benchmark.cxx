@@ -166,6 +166,14 @@ auto benchmark_stage_id(RenderStage stage) noexcept -> std::string_view {
     }
 }
 
+namespace {
+    constexpr std::array<std::string_view, 11> counter_names{
+            "frustum_visible_instances", "early_instances",   "occlusion_candidates", "late_instances",
+            "occluded_instances",        "deferred_meshlets", "occluded_meshlets",    "occupied_clusters",
+            "overflowing_clusters",      "maximum_lights",    "stored_lights",
+    };
+} // namespace
+
 BenchmarkRun::BenchmarkRun(BenchmarkOptions options, std::vector<CameraKeyframe> keyframes) :
     options_(std::move(options)), keyframes_(std::move(keyframes)) {
     for (auto &samples: samples_ms_) {
@@ -195,7 +203,8 @@ auto BenchmarkRun::at_keyframe() const noexcept -> bool {
     return measured_frames_ == 0 || segment(measured_frames_) != segment(measured_frames_ - 1);
 }
 
-auto BenchmarkRun::on_frame_drawn(StageTimings const &timings, bool streaming_idle) -> void {
+auto BenchmarkRun::on_frame_drawn(StageTimings const &timings, bool streaming_idle, BenchmarkCounters const &counters)
+        -> void {
     if (finished()) {
         return;
     }
@@ -219,6 +228,27 @@ auto BenchmarkRun::on_frame_drawn(StageTimings const &timings, bool streaming_id
             samples_ms_[stage].push_back(timings.milliseconds[stage]);
         }
     }
+
+    auto const record = [this](std::size_t first, bool valid, std::initializer_list<std::uint32_t> values) {
+        if (!valid) {
+            return;
+        }
+
+        auto index = first;
+        for (auto const value: values) {
+            counter_sums_[index] += value;
+            ++counter_samples_[index];
+            counter_final_[index] = value;
+            ++index;
+        }
+    };
+    record(0, counters.occlusion_valid,
+           {counters.frustum_visible_instances, counters.early_instances, counters.occlusion_candidates,
+            counters.late_instances, counters.occluded_instances});
+    record(5, counters.meshlet_valid, {counters.deferred_meshlets, counters.occluded_meshlets});
+    record(7, counters.cluster_valid,
+           {counters.occupied_clusters, counters.overflowing_clusters, counters.maximum_lights,
+            counters.stored_lights});
 
     ++measured_frames_;
 }
@@ -255,6 +285,21 @@ auto BenchmarkRun::to_json(BenchmarkEnvironment const &environment) const -> std
     }
 
     json += "  ],\n";
+
+    // Per-frame means over the frames the counter was read back for, and the last such frame's value. Counters whose
+    // group was never valid (occlusion off, no lights) are null.
+    json += "  \"counters\": {\n";
+    for (std::size_t i = 0; i < counter_count; ++i) {
+        auto const separator = i + 1 < counter_count ? "," : "";
+
+        if (counter_samples_[i] == 0) {
+            json += std::format("    \"{}\": {{\"mean\": null, \"final\": null}}{}\n", counter_names[i], separator);
+        } else {
+            json += std::format("    \"{}\": {{\"mean\": {:.4f}, \"final\": {}}}{}\n", counter_names[i],
+                                counter_sums_[i] / counter_samples_[i], counter_final_[i], separator);
+        }
+    }
+    json += "  },\n";
 
     // Every measured frame's time, in path order.
     json += "  \"full_frame_ms\": [";

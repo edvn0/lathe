@@ -29,7 +29,8 @@ namespace frame_graph {
                 -> std::expected<VkRenderingAttachmentInfo, TranslateFailure> {
             auto const *image = resources.image(attachment.resource);
             if (image == nullptr) {
-                return std::unexpected(TranslateFailure{TranslateFailureKind::missing_image, attachment.resource});
+                return std::unexpected(
+                        TranslateFailure{.kind = TranslateFailureKind::missing_image, .resource = attachment.resource});
             }
 
             auto info = VkRenderingAttachmentInfo{
@@ -48,8 +49,8 @@ namespace frame_graph {
             if (attachment.resolve) {
                 auto const *target = resources.image(attachment.resolve->resource);
                 if (target == nullptr) {
-                    return std::unexpected(
-                            TranslateFailure{TranslateFailureKind::missing_image, attachment.resolve->resource});
+                    return std::unexpected(TranslateFailure{.kind = TranslateFailureKind::missing_image,
+                                                            .resource = attachment.resolve->resource});
                 }
                 info.resolveMode = attachment.resolve->mode;
                 info.resolveImageView = target->view;
@@ -106,8 +107,8 @@ namespace frame_graph {
         };
     }
 
-    auto translate(BarrierSet const &barriers,
-                   PhysicalResources const &resources) -> std::expected<DependencyStorage, TranslateFailure> {
+    auto translate(BarrierSet const &barriers, PhysicalResources const &resources)
+            -> std::expected<DependencyStorage, TranslateFailure> {
         auto storage = DependencyStorage{};
 
         for (auto const &barrier: barriers.memory) {
@@ -124,7 +125,8 @@ namespace frame_graph {
         for (auto const &barrier: barriers.images) {
             auto const *image = resources.image(barrier.resource);
             if (image == nullptr) {
-                return std::unexpected(TranslateFailure{TranslateFailureKind::missing_image, barrier.resource});
+                return std::unexpected(
+                        TranslateFailure{.kind = TranslateFailureKind::missing_image, .resource = barrier.resource});
             }
             storage.images.push_back(VkImageMemoryBarrier2{
                     .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -152,7 +154,8 @@ namespace frame_graph {
         for (auto const &barrier: barriers.buffers) {
             auto const *buffer = resources.buffer(barrier.resource);
             if (buffer == nullptr) {
-                return std::unexpected(TranslateFailure{TranslateFailureKind::missing_buffer, barrier.resource});
+                return std::unexpected(
+                        TranslateFailure{.kind = TranslateFailureKind::missing_buffer, .resource = barrier.resource});
             }
             storage.buffers.push_back(VkBufferMemoryBarrier2{
                     .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -187,8 +190,8 @@ namespace frame_graph {
         };
     }
 
-    auto translate(RenderingDesc const &rendering,
-                   PhysicalResources const &resources) -> std::expected<RenderingStorage, TranslateFailure> {
+    auto translate(RenderingDesc const &rendering, PhysicalResources const &resources)
+            -> std::expected<RenderingStorage, TranslateFailure> {
         auto storage = RenderingStorage{
                 .render_area = rendering.render_area,
                 .layer_count = rendering.layer_count,

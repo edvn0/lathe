@@ -9,7 +9,7 @@ namespace {
     // Fake handles: the translation only copies them.
     template<typename Handle>
     auto handle(std::uintptr_t value) -> Handle {
-        return reinterpret_cast<Handle>(value);
+        return reinterpret_cast<Handle>(value); // NOLINT(performance-no-int-to-ptr)
     }
 
     auto make_resources() -> PhysicalResources {

@@ -99,7 +99,10 @@ namespace frame_graph {
             if (entry.pool == VK_NULL_HANDLE) {
                 // No timestamps on this queue: still list the passes, without a time.
                 for (auto const &written: entry.written) {
-                    timings_.push_back(PassTiming{written.name_id, written.label, logical, std::nullopt});
+                    timings_.push_back(PassTiming{.name_id = written.name_id,
+                                                  .label = written.label,
+                                                  .queue = logical,
+                                                  .milliseconds = std::nullopt});
                 }
                 entry.written.clear();
                 continue;
@@ -117,7 +120,10 @@ namespace frame_graph {
 
                 for (auto index = std::size_t{0}; index < entry.written.size(); ++index) {
                     auto const &written = entry.written[index];
-                    auto timing = PassTiming{written.name_id, written.label, logical, std::nullopt};
+                    auto timing = PassTiming{.name_id = written.name_id,
+                                             .label = written.label,
+                                             .queue = logical,
+                                             .milliseconds = std::nullopt};
 
                     if (result == VK_SUCCESS) {
                         auto const begin = ticks[2 * static_cast<std::size_t>(written.timestamp_slot)];
@@ -137,8 +143,8 @@ namespace frame_graph {
     }
 
     auto PassProfiler::write_begin(VkCommandBuffer command_buffer, LogicalQueue queue, std::uint32_t slot,
-                                   std::uint32_t timestamp_slot, std::string_view name_id,
-                                   std::string_view label) -> void {
+                                   std::uint32_t timestamp_slot, std::string_view name_id, std::string_view label)
+            -> void {
         if (slot >= pools_.size()) {
             return;
         }
@@ -147,7 +153,8 @@ namespace frame_graph {
 
         // Without timestamps, remember the pass so it is still listed.
         if (timestamp_slot < max_passes_) {
-            entry.written.push_back(Written{std::string{name_id}, std::string{label}, timestamp_slot});
+            entry.written.push_back(Written{
+                    .name_id = std::string{name_id}, .label = std::string{label}, .timestamp_slot = timestamp_slot});
         }
 
         if (entry.pool == VK_NULL_HANDLE || timestamp_slot >= max_passes_) {
@@ -172,8 +179,8 @@ namespace frame_graph {
                              2 * timestamp_slot + 1);
     }
 
-    auto PassProfiler::source_location([[maybe_unused]] std::string_view label,
-                                       [[maybe_unused]] std::uint32_t color) -> tracy::SourceLocationData const * {
+    auto PassProfiler::source_location([[maybe_unused]] std::string_view label, [[maybe_unused]] std::uint32_t color)
+            -> tracy::SourceLocationData const * {
 #ifdef TRACY_ENABLE
         auto key = std::pair<std::string, std::uint32_t>{std::string{label}, color};
         if (auto const found = interned_.find(key); found != interned_.end()) {

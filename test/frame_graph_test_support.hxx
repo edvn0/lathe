@@ -137,7 +137,7 @@ namespace frame_graph::test {
             }
         }
         if (per_queue_count != compiled.signal_count) {
-            problems.push_back("signal_count does not match the batches per queue");
+            problems.emplace_back("signal_count does not match the batches per queue");
         }
 
         // done[y] = batches that are complete before batch y starts.
@@ -304,10 +304,10 @@ namespace frame_graph::test {
             auto const &release = compiled.batches[t.release_batch];
             auto const &acquire = compiled.batches[t.acquire_batch];
             if (release.queue != t.from || acquire.queue != t.to) {
-                problems.push_back("transfer halves are on the wrong queues");
+                problems.emplace_back("transfer halves are on the wrong queues");
             }
             if (!done[t.acquire_batch][t.release_batch]) {
-                problems.push_back("transfer acquire is not ordered after its release");
+                problems.emplace_back("transfer acquire is not ordered after its release");
             }
             auto const has_half = [&](BarrierSet const &set, OwnershipOp op) {
                 auto match = false;
@@ -345,10 +345,10 @@ namespace frame_graph::test {
         }
         if (finished != 1 || last_graphics < 0 ||
             !compiled.batches[static_cast<std::size_t>(last_graphics)].signals_render_finished) {
-            problems.push_back("render_finished is not signalled exactly once by the last graphics batch");
+            problems.emplace_back("render_finished is not signalled exactly once by the last graphics batch");
         }
         if (acquires > 1) {
-            problems.push_back("more than one batch waits on the swapchain acquire");
+            problems.emplace_back("more than one batch waits on the swapchain acquire");
         }
         return problems;
     }

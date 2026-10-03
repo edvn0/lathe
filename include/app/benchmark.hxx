@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -59,6 +60,27 @@ auto summarise_timings(std::span<float const> samples_ms) -> TimingSummary;
 [[nodiscard]]
 auto benchmark_stage_id(RenderStage stage) noexcept -> std::string_view;
 
+// Culling and clustering counters for one frame, copied from FrameStats / ClusterStats (which lag the frame by the
+// frames in flight). The `*_valid` flags say whether a group was read back; invalid groups are left out of the means.
+struct BenchmarkCounters {
+    bool occlusion_valid = false;
+    std::uint32_t frustum_visible_instances = 0;
+    std::uint32_t early_instances = 0;
+    std::uint32_t occlusion_candidates = 0;
+    std::uint32_t late_instances = 0;
+    std::uint32_t occluded_instances = 0;
+
+    bool meshlet_valid = false;
+    std::uint32_t deferred_meshlets = 0;
+    std::uint32_t occluded_meshlets = 0;
+
+    bool cluster_valid = false;
+    std::uint32_t occupied_clusters = 0;
+    std::uint32_t overflowing_clusters = 0;
+    std::uint32_t maximum_lights = 0;
+    std::uint32_t stored_lights = 0;
+};
+
 struct BenchmarkEnvironment {
     std::string device_name;
     std::uint32_t render_width = 0;
@@ -83,7 +105,15 @@ public:
 
     // Call after each drawn frame. `timings` lag by the frames in flight. Warmup ends only once
     // `streaming_idle`.
-    auto on_frame_drawn(StageTimings const &timings, bool streaming_idle) -> void;
+    auto on_frame_drawn(StageTimings const &timings, bool streaming_idle, BenchmarkCounters const &counters = {})
+            -> void;
+
+    // Simulated seconds for the frame about to be drawn: 0 while warming up, then measured_frames * timestep. Warmup
+    // length depends on when streaming settles, so shader time must not accumulate through it.
+    [[nodiscard]]
+    auto simulated_time() const noexcept -> float {
+        return measuring_ ? static_cast<float>(measured_frames_) * benchmark_timestep : 0.0F;
+    }
 
     // True if the frame about to be drawn is the first measured one at or past a keyframe.
     [[nodiscard]]
@@ -112,6 +142,13 @@ private:
     bool streaming_settled_ = true;
     std::uint32_t warmup_frames_ = 0;
     std::uint32_t measured_frames_ = 0;
+
+    // Per counter (BenchmarkCounters field order, see counter_names in benchmark.cxx): the sum over the measured frames
+    // whose group was valid, how many those were, and the value of the last such frame.
+    static constexpr std::size_t counter_count = 11;
+    std::array<double, counter_count> counter_sums_{};
+    std::array<std::uint32_t, counter_count> counter_samples_{};
+    std::array<std::uint32_t, counter_count> counter_final_{};
 
     // Per stage, one sample per measured frame with valid timings.
     std::array<std::vector<float>, stage_count> samples_ms_{};
