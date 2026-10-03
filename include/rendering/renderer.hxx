@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -942,8 +943,10 @@ private:
         VkDeviceSize indirect_upload_offset = 0;
         VkDeviceSize batch_bounds_upload_offset = 0;
 
-        std::vector<GpuDraw> draws;
-        std::vector<glm::mat4> transforms;
+        // Draws and transforms are written straight into upload_buffer (at draw_upload_offset and
+        // transform_upload_offset) as batches are emitted; these count them. One draw per instance, so they are equal.
+        std::uint32_t draw_count = 0;
+        std::uint32_t transform_count = 0;
 
         // One un-culled command per batch; the shadow pass draws these directly.
         std::vector<GpuDrawCommand> indirect_commands;
@@ -1035,7 +1038,10 @@ private:
         MaterialHandle material{};
         std::uint32_t lod_index = 0;
 
-        std::vector<glm::mat4> transforms;
+        // Where each instance's transform lives until emit_batch() writes it to the upload buffer: the submission
+        // itself, instance_transforms_, or computed_transforms_. Pointers rather than copies, so each transform is
+        // copied once per frame.
+        std::vector<glm::mat4 const *> transforms;
 
         std::uint64_t frame_stamp = 0;
     };
@@ -1371,6 +1377,10 @@ private:
     std::vector<MaterialSlotOverride> slot_override_submissions_;
     std::vector<InstancedSubmission> instanced_submissions_;
     std::vector<glm::mat4> instance_transforms_;
+
+    // Transforms prepare_frame() has to compute (a submission's transform times a model draw's local transform), kept
+    // until the batches are emitted. A deque, so BatchEntry::transforms can point into it while it grows.
+    std::deque<glm::mat4> computed_transforms_;
 
     // Model submissions this frame, individual and instanced: what maximum_submission_count_ bounds.
     [[nodiscard]] auto submitted_model_count() const noexcept -> std::size_t {
