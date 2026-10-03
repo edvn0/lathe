@@ -205,11 +205,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     }
 
-    // Shadows are always rendered before the first frame's forward pass, so the atlas is sampled by then.
-    auto const shadow_image = frame_graph_.import_image({
-            .entry = sampled_by_fragment,
+    // The shadow atlas persists across frames: only the cascades that moved are redrawn, so the pass loads it, and
+    // forward samples it whether or not any was. Before the first shadow pass it has no contents (and no layout).
+    auto shadow_image = frame_graph_.import_image({
+            .entry = shadow_atlas_initialized_ ? sampled_by_fragment : frame_graph::ResourceState{},
             .exit = sampled_by_fragment,
-            .read_only = true,
             .debug_name = "shadow_atlas",
             .image = physical_image(*targets->shadow_atlas),
     });
@@ -266,6 +266,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     // late_cs appends to the visible draws and transforms, so they are written when occlusion culling is on.
     auto visible_draws = import_frame_buffer(frame.visible_draw_buffer, "visible_draws", false);
     auto visible_transforms = import_frame_buffer(frame.visible_transform_buffer, "visible_transforms", false);
+    // Every caster, un-culled: the shadow pass draws these, and late_cs culls from them.
+    auto const source_draws = import_frame_buffer(frame.draw_buffer, "draws", true);
+    auto const source_transforms = import_frame_buffer(frame.transform_buffer, "transforms", true);
+    auto const source_indirect = import_frame_buffer(frame.indirect_buffer, "indirect", true);
     auto const culled_indirect = import_frame_buffer(frame.culled_indirect_buffer, "culled_indirect", true);
     auto const frustum_planes = import_frame_buffer(frame.frustum_planes_buffer, "frustum_planes", true);
 
@@ -277,10 +281,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     auto late_indirect = frame_graph::BufferId{};
     auto merged_indirect = frame_graph::BufferId{};
     auto occlusion_views = frame_graph::BufferId{};
-    auto source_draws = frame_graph::BufferId{};
-    auto source_transforms = frame_graph::BufferId{};
     auto batch_bounds = frame_graph::BufferId{};
-    auto source_indirect = frame_graph::BufferId{};
     auto occlusion_candidates = frame_graph::BufferId{};
     auto candidate_counts = frame_graph::BufferId{};
     auto hiz_image = frame_graph::ImageId{};
@@ -288,10 +289,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         late_indirect = import_frame_buffer(frame.late_indirect_buffer, "late_indirect", false);
         merged_indirect = import_frame_buffer(frame.merged_indirect_buffer, "merged_indirect", false);
         occlusion_views = import_frame_buffer(frame.occlusion_views_buffer, "occlusion_views", true);
-        source_draws = import_frame_buffer(frame.draw_buffer, "draws", true);
-        source_transforms = import_frame_buffer(frame.transform_buffer, "transforms", true);
         batch_bounds = import_frame_buffer(frame.batch_bounds_buffer, "batch_bounds", true);
-        source_indirect = import_frame_buffer(frame.indirect_buffer, "indirect", true);
         occlusion_candidates = import_frame_buffer(frame.occlusion_candidates_buffer, "occlusion_candidates", true);
         candidate_counts = import_frame_buffer(frame.candidate_counts_buffer, "candidate_counts", true);
 
@@ -339,9 +337,47 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
                                   auto legacy_info = info;
                                   legacy_info.command_buffer = context.command_buffer;
-                                  state.result = record_frame_legacy(legacy_info, frame, *targets, state.handoff);
+                                  state.result = record_frame_legacy(legacy_info, frame, state.handoff);
                               }};
                           });
+
+    // Cascaded shadow maps into the atlas. Only the cascades in the update mask are cleared and redrawn; the rest keep
+    // their contents, so the pass loads the atlas once it has any.
+    if (frame.shadow_update_mask != 0) {
+        frame_graph_.add_pass(
+                "shadow_pass", frame_graph::PassType::raster,
+                {
+                        .name_id = "shadow_pass",
+                        .label = "Shadows",
+                        .color = static_cast<std::uint32_t>(tracy::Color::Purple),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    [[maybe_unused]] auto const draws =
+                            pass.read(source_draws, frame_graph::Use::shader_read, draw_stages);
+                    [[maybe_unused]] auto const transforms =
+                            pass.read(source_transforms, frame_graph::Use::shader_read, draw_stages);
+                    [[maybe_unused]] auto const commands = pass.read(source_indirect, frame_graph::Use::indirect_read);
+                    [[maybe_unused]] auto const planes =
+                            pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+
+                    shadow_image = pass.write_depth(shadow_image,
+                                                    shadow_atlas_initialized_ ? frame_graph::LoadOp::load
+                                                                              : frame_graph::LoadOp::dont_care,
+                                                    frame_graph::StoreOp::store);
+                    pass.render_area({.offset = {0, 0}, .extent = {shadow_atlas_width, shadow_atlas_height}});
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        if (!state.result) {
+                            return;
+                        }
+
+                        auto const pass_context = make_pass_context(context.command_buffer, info.frame_index);
+                        if (auto const done = record_shadow_pass(pass_context, frame); !done) {
+                            state.result = std::unexpected(done.error());
+                        }
+                    }};
+                });
+    }
 
     // The depth prepass (phase 1 with occlusion culling, the only phase without): clears the depth buffer and draws
     // what main_cs kept. Under MSAA it resolves into the single-sample depth; MIN keeps each pixel's farthest sample,

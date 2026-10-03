@@ -55,8 +55,9 @@ namespace render_pass {
         std::uint32_t blend = 0;
     };
 
+    // The body of a frame graph raster pass: the executor has begun rendering into the atlas, loading it when
+    // `preserve_contents` and discarding it otherwise, and leaves it sampled.
     struct ShadowPassInfo {
-        Image const &shadow_atlas;
         DrawBuffers draws;
         DrawCounts counts;
         std::array<std::uint32_t, shadow_cascade_count> const &opaque_cascade_counts;

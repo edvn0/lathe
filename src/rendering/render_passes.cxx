@@ -24,79 +24,6 @@ namespace render_pass {
 
         [[nodiscard]] auto make_error(RendererErrorType type) -> RendererError { return RendererError{.type = type}; }
 
-        auto transition_shadow_atlas_to_attachment(VkCommandBuffer command_buffer, Image const &atlas,
-                                                   bool preserve_contents) noexcept -> void {
-            VkImageMemoryBarrier2 const barrier{
-                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .pNext = nullptr,
-                    .srcStageMask =
-                            preserve_contents ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_2_NONE,
-                    .srcAccessMask = preserve_contents ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : VK_ACCESS_2_NONE,
-                    .dstStageMask =
-                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                    .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    .oldLayout =
-                            preserve_contents ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
-                    .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = atlas.image(),
-                    .subresourceRange =
-                            VkImageSubresourceRange{
-                                    .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                                    .baseMipLevel = 0,
-                                    .levelCount = atlas.mip_levels(),
-                                    .baseArrayLayer = 0,
-                                    .layerCount = atlas.array_layers(),
-                            },
-            };
-
-            VkDependencyInfo const dependency_info{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .pNext = nullptr,
-                    .imageMemoryBarrierCount = 1,
-                    .pImageMemoryBarriers = &barrier,
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        }
-
-        auto transition_shadow_atlas_to_shader_read(VkCommandBuffer command_buffer, Image const &atlas) noexcept
-                -> void {
-            VkImageMemoryBarrier2 const barrier{
-                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                    .pNext = nullptr,
-                    .srcStageMask =
-                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                    .srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                    .oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                    .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = atlas.image(),
-                    .subresourceRange =
-                            VkImageSubresourceRange{
-                                    .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                                    .baseMipLevel = 0,
-                                    .levelCount = atlas.mip_levels(),
-                                    .baseArrayLayer = 0,
-                                    .layerCount = atlas.array_layers(),
-                            },
-            };
-
-            VkDependencyInfo const dependency_info{
-                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                    .pNext = nullptr,
-                    .imageMemoryBarrierCount = 1,
-                    .pImageMemoryBarriers = &barrier,
-            };
-
-            vkCmdPipelineBarrier2(command_buffer, &dependency_info);
-        }
-
         auto set_forward_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent,
                                        ForwardDynamicStateMode mode) noexcept -> void {
             VkViewport const viewport{
@@ -366,35 +293,7 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        detail::transition_shadow_atlas_to_attachment(context.command_buffer, info.shadow_atlas,
-                                                      info.preserve_contents);
-
-        VkRenderingAttachmentInfo shadow_attachment{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .pNext = nullptr,
-                .imageView = info.shadow_atlas.view(),
-                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                .resolveMode = VK_RESOLVE_MODE_NONE,
-                .resolveImageView = VK_NULL_HANDLE,
-                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .loadOp = info.preserve_contents ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        };
-
-        VkRenderingInfo const rendering_info{
-                .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                .pNext = nullptr,
-                .flags = 0,
-                .renderArea = VkRect2D{.offset = {0, 0}, .extent = {shadow_atlas_width, shadow_atlas_height}},
-                .layerCount = 1,
-                .viewMask = 0,
-                .colorAttachmentCount = 0,
-                .pColorAttachments = nullptr,
-                .pDepthAttachment = &shadow_attachment,
-                .pStencilAttachment = nullptr,
-        };
-
-        vkCmdBeginRendering(context.command_buffer, &rendering_info);
+        // The frame graph has begun rendering into the atlas, loading it when `preserve_contents`.
 
         // LOAD keeps cached tiles; clear only the ones being redrawn. Reverse-Z clears to zero.
         VkClearAttachment const clear_attachment{
@@ -483,9 +382,6 @@ namespace render_pass {
                 detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.opaque, cascade_draw_count, pc);
             }
         }
-
-        vkCmdEndRendering(context.command_buffer);
-        detail::transition_shadow_atlas_to_shader_read(context.command_buffer, info.shadow_atlas);
 
         vkCmdWriteTimestamp2(context.command_buffer, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                              context.timestamp_query_pool, stage * 2 + 1);

@@ -3992,17 +3992,14 @@ auto Renderer::batch_counts(RendererFrame const &frame) noexcept -> render_pass:
     };
 }
 
-auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                                  FrameTargets const &targets) -> std::expected<void, RendererError> {
-    TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Shadow Pass", tracy::Color::Purple);
-
+auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
     auto const frame_index = pass_context.frame_index;
 
     // Shadows draw every caster, so this uses the un-culled buffers.
     auto const result = render_pass::shadow(
             pass_context,
             render_pass::ShadowPassInfo{
-                    .shadow_atlas = *targets.shadow_atlas,
                     .draws =
                             {
                                     .draws = frame.draw_buffer,
@@ -4509,8 +4506,8 @@ auto Renderer::register_light_icon_overlay() -> std::expected<void, RendererErro
     return {};
 }
 
-auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &frame, FrameTargets const &targets,
-                                   PassHandoff &handoff) -> std::expected<void, RendererError> {
+auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &frame, PassHandoff &handoff)
+        -> std::expected<void, RendererError> {
     ZoneScopedNC("RecordFrame", tracy::Color::RoyalBlue);
 
     auto const command_buffer = info.command_buffer;
@@ -4522,8 +4519,10 @@ auto Renderer::record_frame_legacy(FrameRecordInfo const &info, RendererFrame &f
 
     record_environment_pass(pass_context, frame);
 
-    if (auto shadows = record_shadow_pass(pass_context, frame, targets); !shadows) {
-        return shadows;
+    // The shadow pass follows as a graph pass when any cascade is redrawn (renderer_frame_graph.cxx); otherwise its
+    // stage still needs both timestamps.
+    if (frame.shadow_update_mask == 0) {
+        write_empty_stage(command_buffer, frame_index, RenderStage::ShadowPass);
     }
 
     // Two-phase occlusion culling (docs/occlusion-culling.md): the early prepass draws what main_cs kept, the Hi-Z is

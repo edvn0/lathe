@@ -1150,8 +1150,8 @@ private:
     auto record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void;
 
     [[nodiscard]]
-    auto record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
-                            FrameTargets const &targets) -> std::expected<void, RendererError>;
+    auto record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
 
     // The `only`/`early` phases also transition the forward targets into attachment layouts.
     [[nodiscard]]
@@ -1223,8 +1223,8 @@ private:
     // Forward, bloom, composition, UI, screenshot and the end-of-frame bookkeeping are graph passes after it
     // (renderer_frame_graph.cxx).
     [[nodiscard]]
-    auto record_frame_legacy(FrameRecordInfo const &info, RendererFrame &frame, FrameTargets const &targets,
-                             PassHandoff &handoff) -> std::expected<void, RendererError>;
+    auto record_frame_legacy(FrameRecordInfo const &info, RendererFrame &frame, PassHandoff &handoff)
+            -> std::expected<void, RendererError>;
 
     // Both timestamps of a stage that did no work this frame. Every stage writes both every frame: one missing
     // query leaves vkGetQueryPoolResults NOT_READY and drops the whole frame's timings.
