@@ -272,3 +272,27 @@ None of this has been run on a GPU yet. Before flipping the default:
 - `src/app/application.cxx` (Lighting and Scene stats panels), `src/main.cxx` (`--occlusion-culling`,
   `--meshlet-occlusion`),
   `src/vulkan_bootstrap.cxx` (`depth_resolve_min_supported`), `include/rendering/render_stage.hxx`.
+
+## Resident instances
+
+An `InstancedModel` is submitted with its `revision` (`Renderer::submit_model_instances()`). The first submission of a
+revision uploads its transforms into a GPU buffer (`resident_instance_sets_`), which stays there for as long as that
+revision keeps being submitted. From then on a frame costs the CPU nothing per instance:
+
+- Per submesh, `prepare_frame` emits one batch per distinct (geometry, material) its LODs use (an LOD group: the grass
+  clump has three, since LOD3 reuses LOD2's cards). Each batch reserves a slot per instance in the source draw and
+  transform arrays, plus one `GpuLodJob` tying the groups together.
+- At the start of the `gpu_culling` pass, `instance_lod.slang` picks each instance's LOD exactly as
+  `select_lod_index()` does. It writes the instance's `GpuDraw` and transform into its group's slots, in source order,
+  and writes the group's instance count into its indirect command. Like `main_cs` it runs as test, scan and scatter,
+  and its chunks share `cull_chunks_buffer`.
+- Everything after that (shadows, `main_cs`, `late_cs`, the draws) reads the source arrays as if the CPU had filled
+  them.
+
+Whoever changes `transforms` must call `InstancedModel::touch()` for a new revision. Sets nobody submits for
+`resident_set_idle_frames` are freed.
+
+A model qualifies if it has one draw at its node's origin and none of its LODs blend. Anything else, or a frame whose
+reserved slots would pass the draw capacity, takes the per-instance path. Resident groups' casters redraw their shadow
+cascades every frame, since their LODs change on the GPU. `submitted_triangle_count` leaves them out because the CPU no
+longer knows it.

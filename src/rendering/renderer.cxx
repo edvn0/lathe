@@ -996,6 +996,26 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.skybox_pipeline",
     }); // index 29: skybox
 
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = "assets/shaders/instance_lod.slang",
+                                    .entry_point = FlyString{"main_cs"},
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.instance_lod_pipeline",
+    }); // index 30: instance_lod
+
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
@@ -1035,6 +1055,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     occlusion_cull_pipeline_ = *registered_pipelines[21];
     hiz_build_pipeline_ = *registered_pipelines[22];
     skybox_pipeline_ = *registered_pipelines[29];
+    instance_lod_pipeline_ = *registered_pipelines[30];
 
     {
         auto initialised = environment_.initialize(EnvironmentSystem::CreateInfo{
@@ -1178,6 +1199,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             static_cast<VkDeviceSize>(cull_batch_capacity) +
             (static_cast<VkDeviceSize>(maximum_draw_count_) + cull_chunk_size - 1) / cull_chunk_size;
     auto const cull_chunks_size = cull_chunk_capacity * cull_chunk_bytes;
+    cull_chunk_capacity_ = cull_chunk_capacity;
     auto const occlusion_candidates_size = static_cast<VkDeviceSize>(maximum_draw_count_) * sizeof(std::uint32_t);
     auto const batch_bounds_size = *batch_bounds_size_result;
     auto const transform_offset = align_up(draw_size, 16);
@@ -1434,6 +1456,23 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.frustum_planes_buffer = std::move(*frustum_planes_buffer);
 
+        // Host-written every frame: the resident instanced models' LOD jobs (instance_lod.slang).
+        auto lod_jobs_buffer =
+                create_shared_buffer(context_, BufferCreateInfo{
+                                                       .size = sizeof(GpuLodJob) * maximum_lod_job_count,
+                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                       .memory = BufferMemory::upload,
+                                                       .debug_name = "renderer.frame_lod_jobs",
+                                               });
+
+        if (!lod_jobs_buffer) {
+            return std::unexpected(make_device_error(lod_jobs_buffer.error()));
+        }
+
+        frame.lod_jobs_buffer = std::move(*lod_jobs_buffer);
+        frame.lod_jobs.reserve(maximum_lod_job_count);
+
         auto lights_buffer = create_shared_buffer(context_, BufferCreateInfo{
                                                                     .size = sizeof(GpuLight) * maximum_light_count,
                                                                     .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -1636,6 +1675,9 @@ auto Renderer::destroy() noexcept -> void {
         ubo.destroy();
     }
 
+    resident_instance_sets_.clear();
+    pending_resident_uploads_.clear();
+
     // The frames' image targets are Holders, destroyed by frames_.clear() below, before image_storage_.
     for (auto &frame: frames_) {
         frame.cluster_stats_readback_buffer.destroy();
@@ -1651,6 +1693,8 @@ auto Renderer::destroy() noexcept -> void {
         frame.merged_indirect_buffer.destroy();
         frame.late_indirect_buffer.destroy();
         frame.cull_chunks_buffer.destroy();
+        frame.lod_jobs_buffer.destroy();
+        frame.retired_buffers.clear();
         frame.occlusion_candidates_buffer.destroy();
         frame.occlusion_views_buffer.destroy();
         frame.culled_indirect_buffer.destroy();
@@ -2090,10 +2134,150 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
     return {};
 }
 
+auto Renderer::resident_lod_groups(Submesh const &submesh,
+                                   MaterialHandle base_material) const noexcept -> ResidentLodGroups {
+    ResidentLodGroups result;
+
+    for (std::uint32_t lod = 0; lod < lod_count; ++lod) {
+        auto const material = material_storage_.material_for_lod(base_material, lod);
+        auto const &indices = submesh.lods[lod].indices;
+
+        auto group = result.count;
+        for (std::uint32_t existing = 0; existing < result.count; ++existing) {
+            auto const representative = result.representative_lod[existing];
+            auto const &existing_indices = submesh.lods[representative].indices;
+            if (existing_indices.bytes.offset == indices.bytes.offset &&
+                existing_indices.index_count == indices.index_count && result.material[existing] == material) {
+                group = existing;
+                break;
+            }
+        }
+
+        if (group == result.count) {
+            result.representative_lod[group] = lod;
+            result.material[group] = material;
+            ++result.count;
+        }
+
+        result.lod_groups |= group << (8U * lod);
+    }
+
+    return result;
+}
+
+auto Renderer::submit_resident_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
+                                         MaterialHandle material_override, std::uint64_t revision) -> bool {
+    auto const *model_data = model_slot(model);
+
+    // One draw at its node's origin: the LOD is picked from the instance origin, as for the per-instance path.
+    if (model_data == nullptr || model_data->draws.size() != 1 ||
+        model_data->draws.front().local_transform != glm::mat4{1.0F}) {
+        return false;
+    }
+
+    auto const *mesh = mesh_slot(model_data->draws.front().mesh);
+    if (mesh == nullptr || mesh->submeshes.empty()) {
+        return false;
+    }
+
+    auto const instance_count = static_cast<std::uint64_t>(transforms.size());
+    std::uint64_t slots = 0;
+
+    for (auto const &submesh: mesh->submeshes) {
+        auto const base = material_override.valid() ? material_override : submesh.material;
+        auto const groups = resident_lod_groups(submesh, base);
+
+        // Blended batches are sorted by their first transform on the CPU, which a resident model doesn't have.
+        for (std::uint32_t group = 0; group < groups.count; ++group) {
+            auto const *material = material_storage_.get(groups.material[group]);
+            if (material != nullptr && material->alpha_mode == AlphaMode::blend) {
+                return false;
+            }
+        }
+
+        slots += instance_count * groups.count;
+    }
+
+    // Every group reserves a slot per instance in the frame's draw and transform arrays.
+    auto const capacity = std::min<std::uint64_t>(maximum_draw_count_, maximum_submission_count_);
+    auto const jobs = static_cast<std::uint32_t>(mesh->submeshes.size());
+    if (submitted_model_count() + resident_slots_this_frame_ + slots > capacity ||
+        resident_jobs_this_frame_ + jobs > maximum_lod_job_count) {
+        return false;
+    }
+
+    auto set = resident_instance_sets_.find(revision);
+
+    if (set == resident_instance_sets_.end() || set->second.count != transforms.size()) {
+        auto const size = static_cast<VkDeviceSize>(transforms.size_bytes());
+
+        auto staging = Buffer::create(context_, BufferCreateInfo{
+                                                        .size = size,
+                                                        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                        .memory = BufferMemory::upload,
+                                                        .debug_name = "renderer.resident_instances_staging",
+                                                });
+        auto resident = create_shared_buffer(context_, BufferCreateInfo{
+                                                               .size = size,
+                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                               .memory = BufferMemory::device,
+                                                               .debug_name = "renderer.resident_instances",
+                                                       });
+
+        if (!staging || !resident || !staging->write(0, std::as_bytes(transforms))) {
+            return false;
+        }
+
+        // A set replaced under the same revision may still be read by frames in flight.
+        if (set != resident_instance_sets_.end()) {
+            retired_resident_buffers_.push_back(std::move(set->second.transforms));
+            resident_instance_sets_.erase(set);
+        }
+
+        pending_resident_uploads_.push_back(PendingResidentUpload{
+                .staging = std::move(*staging),
+                .destination = resident->buffer,
+                .size = size,
+        });
+
+        set = resident_instance_sets_
+                      .emplace(revision,
+                               ResidentInstanceSet{
+                                       .transforms = std::move(*resident),
+                                       .count = static_cast<std::uint32_t>(transforms.size()),
+                               })
+                      .first;
+    }
+
+    set->second.last_used_frame = frame_counter_;
+
+    resident_slots_this_frame_ += slots;
+    resident_jobs_this_frame_ += jobs;
+
+    instanced_submissions_.push_back(InstancedSubmission{
+            .model = model,
+            .material_override = material_override,
+            .first_transform = 0,
+            .transform_count = static_cast<std::uint32_t>(transforms.size()),
+            .model_submission_position = model_submissions_.size(),
+            .resident_revision = revision,
+    });
+
+    return true;
+}
+
 auto Renderer::submit_model_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
-                                      MaterialHandle material_override) -> std::expected<void, RendererError> {
+                                      MaterialHandle material_override,
+                                      std::uint64_t resident_revision) -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
+    }
+
+    if (resident_revision != 0 && !transforms.empty() &&
+        submit_resident_instances(model, transforms, material_override, resident_revision)) {
+        return {};
     }
 
     if (submitted_model_count() + transforms.size() > maximum_submission_count_) {
@@ -2269,9 +2453,9 @@ namespace {
         vkCmdDispatch(command_buffer, width, height, 1);
     }
 
-    // The test, scan and scatter stages of main_cs or late_cs (frustum_cull.slang), each reading what the one before
-    // wrote. Compute-only barriers, so this also records on a compute-only queue.
-    auto record_cull_stages(VkCommandBuffer command_buffer, VkPipelineLayout layout, CullPushConstants pc) -> void {
+    // Compute writes before it, compute reads and writes after. Compute-only, so it also records on a compute-only
+    // queue.
+    auto record_compute_barrier(VkCommandBuffer command_buffer) -> void {
         VkMemoryBarrier2 const between_stages{
                 .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                 .pNext = nullptr,
@@ -2291,13 +2475,18 @@ namespace {
                 .imageMemoryBarrierCount = 0,
                 .pImageMemoryBarriers = nullptr,
         };
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+    }
 
+    // The test, scan and scatter stages of main_cs or late_cs (frustum_cull.slang), each reading what the one before
+    // wrote.
+    auto record_cull_stages(VkCommandBuffer command_buffer, VkPipelineLayout layout, CullPushConstants pc) -> void {
         auto const base_flags = pc.flags;
         constexpr std::array stages{0U, 1U, 2U}; // test, scan, scatter
 
         for (auto const stage: stages) {
             if (stage != 0U) {
-                vkCmdPipelineBarrier2(command_buffer, &dependency);
+                record_compute_barrier(command_buffer);
             }
 
             pc.flags = base_flags | (stage << cull_stage_shift);
@@ -2689,6 +2878,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     frame.view_projection = matrices.projection * matrices.view;
 
+    // This slot's previous submission has completed, so what it may still have been reading can go.
+    frame.retired_buffers.clear();
+    record_resident_instance_uploads(command_buffer, frame);
+
     frame.draw_count = 0;
     frame.transform_count = 0;
     computed_transforms_.clear();
@@ -2697,6 +2890,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     frame.indirect_command_count = 0;
     frame.cull_chunk_count = 0;
+    frame.lod_chunk_count = 0;
+    frame.lod_jobs.clear();
     frame.opaque_indirect_count = 0;
     frame.double_sided_indirect_count = 0;
     frame.mask_indirect_count = 0;
@@ -2704,6 +2899,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     frame.shadow_update_mask = 0;
 
     auto const camera_position = glm::vec3(glm::inverse(matrices.view)[3]);
+    frame.lod_camera_position = camera_position;
 
     ++batch_frame_;
 
@@ -2747,6 +2943,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             batch.submesh_index = submesh_index;
             batch.material = material;
             batch.lod_index = lod_index;
+            batch.lod_job = BatchEntry::no_lod_job;
+            batch.lod_group = 0;
+            batch.resident_capacity = 0;
             batch.transforms.clear();
             batch.frame_stamp = batch_frame_;
             active_batches_.push_back(&batch);
@@ -2767,7 +2966,69 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     std::vector<BatchEntry *> instanced_batch_cache;
     std::vector<MaterialHandle> instanced_materials;
 
+    // A resident model: per submesh, one LodJob and a batch per LOD group, each reserving a slot per instance for
+    // instance_lod.slang to fill. submit_resident_instances() checked it qualifies.
+    std::uint64_t resident_instance_count = 0;
+    std::uint64_t resident_reserved_slots = 0;
+
+    auto const append_resident = [&](InstancedSubmission const &instanced) -> bool {
+        auto const *model = model_slot(instanced.model);
+        auto const set = resident_instance_sets_.find(instanced.resident_revision);
+        if (model == nullptr || set == resident_instance_sets_.end()) {
+            return true; // destroyed after it was submitted
+        }
+
+        auto const &model_draw = model->draws.front();
+        auto const *mesh = mesh_slot(model_draw.mesh);
+        if (mesh == nullptr) {
+            return false;
+        }
+
+        auto const instance_count = set->second.count;
+        resident_instance_count += instance_count;
+
+        for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
+            auto const &submesh = mesh->submeshes[submesh_index];
+            auto const base = instanced.material_override.valid() ? instanced.material_override : submesh.material;
+            auto const groups = resident_lod_groups(submesh, base);
+
+            auto const job_index = static_cast<std::uint32_t>(frame.lod_jobs.size());
+            frame.lod_jobs.push_back(GpuLodJob{
+                    .transforms_address = set->second.transforms.device_address,
+                    .instance_count = instance_count,
+                    .first_chunk = frame.lod_chunk_count,
+                    .group_count = groups.count,
+                    .lod_groups = groups.lod_groups,
+            });
+            frame.lod_chunk_count += (instance_count + cull_chunk_size - 1) / cull_chunk_size;
+
+            for (std::uint32_t group = 0; group < groups.count; ++group) {
+                auto const lod_index = groups.representative_lod[group];
+                auto const material = groups.material[group];
+                auto &batch = batch_for(
+                        BatchKey{
+                                .mesh_index = model_draw.mesh.index,
+                                .submesh_index = submesh_index,
+                                .material_index = material_storage_.gpu_index(material),
+                                .lod_index = lod_index,
+                                .lod_job_key = job_index + 1,
+                        },
+                        model_draw.mesh, submesh_index, material, lod_index);
+                batch.lod_job = job_index;
+                batch.lod_group = group;
+                batch.resident_capacity = instance_count;
+                resident_reserved_slots += instance_count;
+            }
+        }
+
+        return true;
+    };
+
     auto const append_instanced = [&](InstancedSubmission const &instanced) -> bool {
+        if (instanced.resident_revision != 0) {
+            return append_resident(instanced);
+        }
+
         auto const *model = model_slot(instanced.model);
         if (model == nullptr) {
             return true; // destroyed after it was submitted, as for individual submissions
@@ -2936,8 +3197,16 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
         auto const &submesh = mesh->submeshes[batch.submesh_index];
         auto const &geometry = submesh.lods[batch.lod_index];
-        auto const instance_count = static_cast<std::uint32_t>(batch.transforms.size());
-        submitted_triangle_count += (geometry.indices.index_count / 3) * instance_count;
+        auto const resident = batch.lod_job != BatchEntry::no_lod_job;
+
+        // A resident group reserves a slot per instance of its model; instance_lod.slang fills the ones at its LOD.
+        auto const instance_count =
+                resident ? batch.resident_capacity : static_cast<std::uint32_t>(batch.transforms.size());
+
+        // Unknown for resident groups until the GPU picks their LODs; the stats leave them out.
+        if (!resident) {
+            submitted_triangle_count += (geometry.indices.index_count / 3) * instance_count;
+        }
         if (frame.transform_count + instance_count > maximum_submission_count_ ||
             frame.draw_count + instance_count > maximum_draw_count_) {
             clear_submissions();
@@ -2954,10 +3223,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
 
-        // Straight into the upload buffer: one copy per transform, no intermediate frame-side array.
+        // Straight into the upload buffer: one copy per transform, no intermediate frame-side array. Resident groups'
+        // slots are left for the GPU.
         auto *const transform_out = frame.upload_buffer.mapped_data() + frame.transform_upload_offset +
                                     static_cast<std::size_t>(frame.transform_count) * sizeof(glm::mat4);
-        for (std::uint32_t instance = 0; instance < instance_count; ++instance) {
+        for (std::uint32_t instance = 0; !resident && instance < instance_count; ++instance) {
             std::memcpy(transform_out + static_cast<std::size_t>(instance) * sizeof(glm::mat4),
                         batch.transforms[instance], sizeof(glm::mat4));
         }
@@ -2976,7 +3246,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
         auto *const draw_out = frame.upload_buffer.mapped_data() + frame.draw_upload_offset +
                                static_cast<std::size_t>(first_instance) * sizeof(GpuDraw);
-        for (std::uint32_t instance = 0; instance < instance_count; ++instance) {
+        for (std::uint32_t instance = 0; !resident && instance < instance_count; ++instance) {
             auto const draw = GpuDraw{
                     .vertex_address = vertex_address,
                     .meshlet_address = meshlet_address,
@@ -2992,9 +3262,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         frame.draw_count += instance_count;
 
         // Un-culled command: drawn as-is by the shadow pass and culled by main_cs for the main view. Exactly one of its
-        // halves is live, see uses_meshlet_path().
+        // halves is live, see uses_meshlet_path(). A resident group's instance count is instance_lod.slang's to write.
         GpuDrawCommand command{
-                .instance_count = instance_count,
+                .instance_count = resident ? 0U : instance_count,
                 .first_instance = first_instance,
         };
 
@@ -3018,6 +3288,27 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
 
         set_task_group_counts(command);
+
+        if (resident) {
+            auto const first_bit = meshlet_path && allocate_meshlet_bits ? first_meshlet_bit : std::uint64_t{0};
+            frame.lod_jobs[batch.lod_job].groups[batch.lod_group] = GpuLodGroup{
+                    .batch = static_cast<std::uint32_t>(frame.indirect_commands.size()),
+                    .first_instance = first_instance,
+                    .meshlet_count = meshlet_path && allocate_meshlet_bits ? geometry.meshlets.meshlet_count : 0U,
+                    // Past the bitset, the offsets clamp to 0 as meshlet_visibility_offset() does.
+                    .first_meshlet_bit = static_cast<std::uint32_t>(
+                            std::min<std::uint64_t>(first_bit, std::numeric_limits<std::uint32_t>::max())),
+                    .draw =
+                            GpuDraw{
+                                    .vertex_address = vertex_address,
+                                    .meshlet_address = meshlet_address,
+                                    .meshlet_data_address = meshlet_data_address,
+                                    .material_index = material_index,
+                                    .meshlet_visibility_offset = 0,
+                            },
+            };
+        }
+
         frame.indirect_commands.push_back(command);
 
         auto const *material = material_storage_.get(batch.material);
@@ -3062,7 +3353,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
                 auto const &submesh = mesh->submeshes[batch->submesh_index];
                 auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
-                auto const world_centre = glm::vec3(*batch->transforms.front() * glm::vec4(local_centre, 1.0F));
+                // Resident models never have blended LODs (submit_resident_instances()), but a material can turn to
+                // blend after submission; such a batch sorts as if at the origin.
+                auto const world_centre =
+                        batch->transforms.empty()
+                                ? glm::vec3{0.0F}
+                                : glm::vec3(*batch->transforms.front() * glm::vec4(local_centre, 1.0F));
                 auto const distance = world_centre - camera_position;
                 blend_batches_.push_back(PendingBlendBatch{
                         .entry = batch,
@@ -3122,8 +3418,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         current_shadow_scene_signature ^= shadow_signature_mix(batch_signature);
         ++shadow_caster_batch_count;
 
-        has_animated_shadow_casters =
-                has_animated_shadow_casters || (material != nullptr && std::abs(material->wind_strength) > 1e-6F);
+        // A resident group's instances change LOD on the GPU as the camera moves, which this signature can't see.
+        has_animated_shadow_casters = has_animated_shadow_casters ||
+                                      (material != nullptr && std::abs(material->wind_strength) > 1e-6F) ||
+                                      batch->lod_job != BatchEntry::no_lod_job;
     }
     current_shadow_scene_signature =
             shadow_signature_combine(current_shadow_scene_signature, shadow_caster_batch_count);
@@ -3191,6 +3489,13 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                  frame.mask_indirect_count;
 
     frame.indirect_command_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
+
+    if (!frame.lod_jobs.empty()) {
+        if (auto written = frame.lod_jobs_buffer.write(0, std::span<GpuLodJob const>{frame.lod_jobs}); !written) {
+            clear_submissions();
+            return std::unexpected(make_device_error(written.error()));
+        }
+    }
 
     auto material_result = material_storage_.prepare_frame(command_buffer, frame_index);
     if (!material_result) {
@@ -3535,6 +3840,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     // The dispatch is the gpu_culling graph pass (record_gpu_culling); fail here, where the error handling is, if it
     // cannot run.
     if (frame.indirect_command_count != 0) {
+        // instance_lod.slang's chunks share cull_chunks_buffer, at 32 bytes each.
+        if (frame.lod_chunk_count > cull_chunk_capacity_ * (cull_chunk_bytes / lod_chunk_bytes)) {
+            clear_submissions();
+            return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+        }
+
         if (frame.indirect_command_count > maximum_cull_batch_count) {
             clear_submissions();
             return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
@@ -3559,7 +3870,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     last_frame_stats_ = FrameStats{
             .submitted_triangle_count = submitted_triangle_count,
-            .submitted_instance_count = frame.transform_count,
+            // Resident groups reserve a slot per instance of their model; count the instances once.
+            .submitted_instance_count = static_cast<std::uint32_t>(frame.transform_count - resident_reserved_slots +
+                                                                   resident_instance_count),
             .indirect_command_count = frame.indirect_command_count,
             .opaque_indirect_count = frame.opaque_indirect_count,
             .double_sided_indirect_count = frame.double_sided_indirect_count,
@@ -3642,9 +3955,110 @@ auto Renderer::record_meshlet_visibility_clear(VkCommandBuffer command_buffer, R
                     VkDeviceSize{frame.meshlet_visibility_words} * sizeof(std::uint32_t), 0);
 }
 
+auto Renderer::record_resident_instance_uploads(VkCommandBuffer command_buffer, RendererFrame &frame) -> void {
+    for (auto &upload: pending_resident_uploads_) {
+        VkBufferCopy const region{.srcOffset = 0, .dstOffset = 0, .size = upload.size};
+        vkCmdCopyBuffer(command_buffer, upload.staging.buffer, upload.destination, 1, &region);
+        frame.retired_buffers.push_back(std::move(upload.staging));
+    }
+
+    if (!pending_resident_uploads_.empty()) {
+        // instance_lod.slang reads them by address, which the frame graph doesn't track.
+        VkMemoryBarrier2 const uploaded{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+        };
+        VkDependencyInfo const dependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = nullptr,
+                .dependencyFlags = 0,
+                .memoryBarrierCount = 1,
+                .pMemoryBarriers = &uploaded,
+                .bufferMemoryBarrierCount = 0,
+                .pBufferMemoryBarriers = nullptr,
+                .imageMemoryBarrierCount = 0,
+                .pImageMemoryBarriers = nullptr,
+        };
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+    }
+
+    pending_resident_uploads_.clear();
+
+    for (auto &retired: retired_resident_buffers_) {
+        frame.retired_buffers.push_back(std::move(retired));
+    }
+    retired_resident_buffers_.clear();
+
+    // Sets nobody submitted for a while. In-flight frames last used them at least resident_set_idle_frames ago, and
+    // this slot's retired buffers outlive another full cycle.
+    for (auto set = resident_instance_sets_.begin(); set != resident_instance_sets_.end();) {
+        if (frame_counter_ > set->second.last_used_frame + resident_set_idle_frames) {
+            frame.retired_buffers.push_back(std::move(set->second.transforms));
+            set = resident_instance_sets_.erase(set);
+        } else {
+            ++set;
+        }
+    }
+}
+
+auto Renderer::record_instance_lods(render_pass::Context const &pass_context,
+                                    RendererFrame const &frame) -> std::expected<void, RendererError> {
+    auto const command_buffer = pass_context.command_buffer;
+
+    if (frame.lod_jobs.empty()) {
+        return {};
+    }
+
+    auto const layout = resolve_layout(pipeline_graph_, instance_lod_pipeline_);
+    if (layout == VK_NULL_HANDLE) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    bind_compute_node(pipeline_graph_, instance_lod_pipeline_, command_buffer);
+    gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+    InstanceLodPushConstants pc{
+            .jobs_address = frame.lod_jobs_buffer.device_address,
+            .chunks_address = frame.cull_chunks_buffer.device_address,
+            .draws_address = frame.draw_buffer.device_address,
+            .transforms_address = frame.transform_buffer.device_address,
+            .indirect_address = frame.indirect_buffer.device_address,
+            .camera_x = frame.lod_camera_position.x,
+            .camera_y = frame.lod_camera_position.y,
+            .camera_z = frame.lod_camera_position.z,
+            .job_count = static_cast<std::uint32_t>(frame.lod_jobs.size()),
+            .lod_distance_sq0 = lod_distances[0] * lod_distances[0],
+            .lod_distance_sq1 = lod_distances[1] * lod_distances[1],
+            .lod_distance_sq2 = lod_distances[2] * lod_distances[2],
+            .chunk_count = frame.lod_chunk_count,
+            .stage = 0,
+            ._padding = 0,
+    };
+
+    // test, scan, scatter; the last barrier hands the arrays and commands to main_cs's test.
+    constexpr std::array stages{0U, 1U, 2U};
+    for (auto const stage: stages) {
+        pc.stage = stage;
+        vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+        dispatch_linear(command_buffer, stage == 1U ? pc.job_count : pc.chunk_count);
+        record_compute_barrier(command_buffer);
+    }
+
+    return {};
+}
+
 auto Renderer::record_gpu_culling(render_pass::Context const &pass_context, RendererFrame const &frame)
         -> std::expected<void, RendererError> {
     auto const command_buffer = pass_context.command_buffer;
+
+    // Resident instanced models' LODs, into the source arrays everything below reads.
+    if (auto lods = record_instance_lods(pass_context, frame); !lods) {
+        return lods;
+    }
 
 
     if (frame.indirect_command_count != 0) {
@@ -4766,6 +5180,8 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         return {};
     }
 
+    // Draws, transforms and commands are also written by instance_lod.slang (resident models' slots), hence the
+    // write access.
     std::array<VkBufferMemoryBarrier2, 4> barriers{};
     std::uint32_t barrier_count = 0;
 
@@ -4778,7 +5194,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
                 .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
                                 VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .buffer = frame.draw_buffer.buffer,
@@ -4796,7 +5212,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
                 .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
                                 VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .buffer = frame.transform_buffer.buffer,
@@ -4814,7 +5230,8 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
                 .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .buffer = frame.indirect_buffer.buffer,
@@ -4863,6 +5280,8 @@ auto Renderer::clear_submissions() noexcept -> void {
     slot_override_submissions_.clear();
     instanced_submissions_.clear();
     instance_transforms_.clear();
+    resident_slots_this_frame_ = 0;
+    resident_jobs_this_frame_ = 0;
     point_light_submissions_.clear();
     spot_light_submissions_.clear();
 }

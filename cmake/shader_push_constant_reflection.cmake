@@ -242,6 +242,13 @@ add_shader_push_constant(
 )
 
 add_shader_push_constant(
+    instance_lod.slang
+    main_cs
+    compute
+    InstanceLodPushConstants
+)
+
+add_shader_push_constant(
     bloom_downsample.slang
     main_cs
     compute

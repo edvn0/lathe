@@ -278,10 +278,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     // late_cs appends to the visible draws and transforms, so they are written when occlusion culling is on.
     auto visible_draws = import_frame_buffer(frame.visible_draw_buffer, "visible_draws", false);
     auto visible_transforms = import_frame_buffer(frame.visible_transform_buffer, "visible_transforms", false);
-    // Every caster, un-culled: the shadow pass draws these, and late_cs culls from them.
-    auto const source_draws = import_frame_buffer(frame.draw_buffer, "draws", true);
-    auto const source_transforms = import_frame_buffer(frame.transform_buffer, "transforms", true);
-    auto const source_indirect = import_frame_buffer(frame.indirect_buffer, "indirect", true);
+    // Every caster, un-culled: the shadow pass draws these, and late_cs culls from them. gpu_culling first fills in
+    // the resident instanced models' slots (instance_lod.slang).
+    auto source_draws = import_frame_buffer(frame.draw_buffer, "draws", false);
+    auto source_transforms = import_frame_buffer(frame.transform_buffer, "transforms", false);
+    auto source_indirect = import_frame_buffer(frame.indirect_buffer, "indirect", false);
     auto culled_indirect = import_frame_buffer(frame.culled_indirect_buffer, "culled_indirect", false);
     auto const frustum_planes = import_frame_buffer(frame.frustum_planes_buffer, "frustum_planes", true);
 
@@ -433,12 +434,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               constexpr auto compute = stages_of(ShaderStage::compute);
                               using frame_graph::Use;
 
-                              [[maybe_unused]] auto const draws = pass.read(source_draws, Use::shader_read, compute);
-                              [[maybe_unused]] auto const transforms =
-                                      pass.read(source_transforms, Use::shader_read, compute);
+                              // Written only where resident instanced models' LODs go (instance_lod.slang).
+                              source_draws = pass.write(source_draws, Use::shader_read_write, compute);
+                              source_transforms = pass.write(source_transforms, Use::shader_read_write, compute);
+                              source_indirect = pass.write(source_indirect, Use::shader_read_write, compute);
                               [[maybe_unused]] auto const bounds = pass.read(batch_bounds, Use::shader_read, compute);
-                              [[maybe_unused]] auto const commands =
-                                      pass.read(source_indirect, Use::shader_read, compute);
                               [[maybe_unused]] auto const planes = pass.read(frustum_planes, Use::shader_read, compute);
                               [[maybe_unused]] auto const views = pass.read(occlusion_views, Use::shader_read, compute);
                               if (occlusion_active) {

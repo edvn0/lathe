@@ -1,5 +1,8 @@
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+
 #include <entt/entt.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -53,12 +56,25 @@ namespace Components {
         ModelHandle model{};
     };
 
+    // A fresh InstancedModel::revision.
+    [[nodiscard]] inline auto next_instanced_model_revision() noexcept -> std::uint64_t {
+        static std::atomic<std::uint64_t> counter{0};
+        return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+
     // Many instances of one model with one material_override, owned by a single entity. Transforms are world-space
     // and fixed at spawn; Parent doesn't apply to individual instances.
+    //
+    // The renderer keeps the transforms on the GPU under `revision` (Renderer::submit_model_instances()), so whoever
+    // changes `transforms` after spawning must call touch(). A copy shares the revision, which is fine: it holds the
+    // same transforms until one of the two is touched.
     struct InstancedModel {
         ModelHandle model{};
         MaterialHandle material_override{};
         std::vector<glm::mat4> transforms;
+        std::uint64_t revision = next_instanced_model_revision();
+
+        auto touch() noexcept -> void { revision = next_instanced_model_revision(); }
     };
 
     struct Script {

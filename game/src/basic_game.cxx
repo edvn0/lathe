@@ -981,7 +981,10 @@ auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
     }
 
     grass_field_blade_count_ = static_cast<std::uint32_t>(grass_transforms.size());
-    registry.get<Components::InstancedModel>(grass_field_entity_).transforms = std::move(grass_transforms);
+    auto &field = registry.get<Components::InstancedModel>(grass_field_entity_);
+    field.transforms = std::move(grass_transforms);
+    // The renderer keeps the old transforms on the GPU under the old revision.
+    field.touch();
 }
 
 auto BasicGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
