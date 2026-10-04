@@ -293,11 +293,23 @@ void set_shared_mask_bit(uint mask_index, uint lane)
 
 // ---- main_cs
 
+// Whether a chunk of `batch` lies wholly past its instances. A resident model's LOD groups reserve chunks for every
+// instance of the model but only fill as many as instance_lod.slang put at that LOD, so most of their chunks are
+// past the end. scan never reads those, so test and scatter skip them outright (uniformly per workgroup).
+bool chunk_past_end(uint chunk, uint first_chunk, uint count)
+{
+    return (chunk - first_chunk) * WG_SIZE >= count;
+}
+
 void main_test(CullPC pc, uint chunk, uint lane)
 {
     uint batch = chunk_batch(pc, chunk);
     DrawCommand source_command = pc.src_indirect[batch];
     GpuCullBounds bounds = pc.batch_bounds[batch];
+
+    if (chunk_past_end(chunk, bounds.first_chunk, source_command.instance_count)) {
+        return;
+    }
 
     uint local_index = (chunk - bounds.first_chunk) * WG_SIZE + lane;
     uint source_index = source_command.first_instance + local_index;
@@ -397,7 +409,14 @@ void main_scatter(CullPC pc, uint chunk, uint lane)
 {
     uint batch = chunk_batch(pc, chunk);
     uint first_instance = pc.src_indirect[batch].first_instance;
-    uint source_index = first_instance + (chunk - pc.batch_bounds[batch].first_chunk) * WG_SIZE + lane;
+    uint first_chunk = pc.batch_bounds[batch].first_chunk;
+
+    // test didn't run there, so its masks are stale.
+    if (chunk_past_end(chunk, first_chunk, pc.src_indirect[batch].instance_count)) {
+        return;
+    }
+
+    uint source_index = first_instance + (chunk - first_chunk) * WG_SIZE + lane;
 
     CullChunk state = pc.chunks[chunk];
 
@@ -449,6 +468,11 @@ void late_test(CullPC pc, uint chunk, uint lane)
     GpuCullBounds bounds = pc.batch_bounds[batch];
 
     uint candidate_count = pc.chunks[bounds.first_chunk].batch_candidates;
+
+    if (chunk_past_end(chunk, bounds.first_chunk, source_command.instance_count)) {
+        return;
+    }
+
     uint local_index = (chunk - bounds.first_chunk) * WG_SIZE + lane;
 
     bool visible = false;
@@ -538,7 +562,14 @@ void late_scatter(CullPC pc, uint chunk, uint lane)
 {
     uint batch = chunk_batch(pc, chunk);
     uint first_instance = pc.src_indirect[batch].first_instance;
-    uint local_index = (chunk - pc.batch_bounds[batch].first_chunk) * WG_SIZE + lane;
+    uint first_chunk = pc.batch_bounds[batch].first_chunk;
+
+    // late_test didn't run there, so its masks are stale.
+    if (chunk_past_end(chunk, first_chunk, pc.src_indirect[batch].instance_count)) {
+        return;
+    }
+
+    uint local_index = (chunk - first_chunk) * WG_SIZE + lane;
 
     CullChunk state = pc.chunks[chunk];
 
