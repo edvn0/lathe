@@ -2892,6 +2892,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     frame.cull_chunk_count = 0;
     frame.lod_chunk_count = 0;
     frame.lod_jobs.clear();
+    frame.cpu_instance_ranges.clear();
     frame.opaque_indirect_count = 0;
     frame.double_sided_indirect_count = 0;
     frame.mask_indirect_count = 0;
@@ -3232,6 +3233,16 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                         batch.transforms[instance], sizeof(glm::mat4));
         }
         frame.transform_count += instance_count;
+
+        if (!resident) {
+            auto &ranges = frame.cpu_instance_ranges;
+            auto const first = frame.transform_count - instance_count;
+            if (!ranges.empty() && ranges.back().first + ranges.back().second == first) {
+                ranges.back().second += instance_count;
+            } else {
+                ranges.emplace_back(first, instance_count);
+            }
+        }
 
         auto const first_instance = frame.draw_count;
         auto const vertex_address = geometry_arena_.vertex_address(geometry.vertices);
@@ -5070,17 +5081,39 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
     auto const indirect_size = static_cast<VkDeviceSize>(frame.indirect_commands.size()) * sizeof(GpuDrawCommand);
     auto const batch_bounds_size = static_cast<VkDeviceSize>(frame.batch_bounds.size()) * sizeof(GpuCullBounds);
 
-    // Draws and transforms were written in place by emit_batch(); only make them visible to the device.
-    if (draw_size != 0) {
-        if (auto const result = frame.upload_buffer.flush(frame.draw_upload_offset, draw_size); !result) {
-            return std::unexpected(make_error(RendererErrorType::device_error));
-        }
-    }
+    // Draws and transforms were written in place by emit_batch(); only make them visible to the device. Only the
+    // ranges it wrote: resident groups reserve slots the GPU fills, often most of them, and copying those over
+    // PCIe every frame would cost more than the CPU work the resident path saves.
+    std::vector<VkBufferCopy2> draw_regions;
+    std::vector<VkBufferCopy2> transform_regions;
+    draw_regions.reserve(frame.cpu_instance_ranges.size());
+    transform_regions.reserve(frame.cpu_instance_ranges.size());
 
-    if (transform_size != 0) {
-        if (auto const result = frame.upload_buffer.flush(frame.transform_upload_offset, transform_size); !result) {
+    for (auto const &[first, count]: frame.cpu_instance_ranges) {
+        auto const draw_offset = static_cast<VkDeviceSize>(first) * sizeof(GpuDraw);
+        auto const draw_bytes = static_cast<VkDeviceSize>(count) * sizeof(GpuDraw);
+        auto const transform_offset = static_cast<VkDeviceSize>(first) * sizeof(glm::mat4);
+        auto const transform_bytes = static_cast<VkDeviceSize>(count) * sizeof(glm::mat4);
+
+        if (!frame.upload_buffer.flush(frame.draw_upload_offset + draw_offset, draw_bytes) ||
+            !frame.upload_buffer.flush(frame.transform_upload_offset + transform_offset, transform_bytes)) {
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
+
+        draw_regions.push_back(VkBufferCopy2{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                .pNext = nullptr,
+                .srcOffset = frame.draw_upload_offset + draw_offset,
+                .dstOffset = draw_offset,
+                .size = draw_bytes,
+        });
+        transform_regions.push_back(VkBufferCopy2{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+                .pNext = nullptr,
+                .srcOffset = frame.transform_upload_offset + transform_offset,
+                .dstOffset = transform_offset,
+                .size = transform_bytes,
+        });
     }
 
     if (indirect_size != 0) {
@@ -5105,33 +5138,23 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
     std::array<CopyOperation, 4> copies{};
     std::uint32_t copy_count = 0;
 
-    if (draw_size != 0) {
-        copies[copy_count++] = CopyOperation{
-                .destination = frame.draw_buffer.buffer,
-                .region =
-                        VkBufferCopy2{
-                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
-                                .pNext = nullptr,
-                                .srcOffset = frame.draw_upload_offset,
-                                .dstOffset = 0,
-                                .size = draw_size,
-                        },
+    auto const copy_regions = [&](VkBuffer destination, std::vector<VkBufferCopy2> const &regions) {
+        if (regions.empty()) {
+            return;
+        }
+        VkCopyBufferInfo2 const copy_info{
+                .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+                .pNext = nullptr,
+                .srcBuffer = frame.upload_buffer.buffer,
+                .dstBuffer = destination,
+                .regionCount = static_cast<std::uint32_t>(regions.size()),
+                .pRegions = regions.data(),
         };
-    }
+        vkCmdCopyBuffer2(command_buffer, &copy_info);
+    };
 
-    if (transform_size != 0) {
-        copies[copy_count++] = CopyOperation{
-                .destination = frame.transform_buffer.buffer,
-                .region =
-                        VkBufferCopy2{
-                                .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
-                                .pNext = nullptr,
-                                .srcOffset = frame.transform_upload_offset,
-                                .dstOffset = 0,
-                                .size = transform_size,
-                        },
-        };
-    }
+    copy_regions(frame.draw_buffer.buffer, draw_regions);
+    copy_regions(frame.transform_buffer.buffer, transform_regions);
 
     if (indirect_size != 0) {
         copies[copy_count++] = CopyOperation{
@@ -5176,7 +5199,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         vkCmdCopyBuffer2(command_buffer, &copy_info);
     }
 
-    if (copy_count == 0) {
+    if (copy_count == 0 && draw_regions.empty()) {
         return {};
     }
 

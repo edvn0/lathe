@@ -1015,6 +1015,10 @@ private:
         // next prepared.
         std::vector<Buffer> retired_buffers;
 
+        // The instance ranges (first, count) emit_batch() wrote draws and transforms for, merged where adjacent.
+        // Only these are copied to the device; resident groups' slots are instance_lod.slang's to fill.
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> cpu_instance_ranges;
+
         // Batches are ordered opaque, double-sided (opaque, drawn without back-face culling), mask, blend; culling
         // preserves the order.
         std::uint32_t opaque_indirect_count = 0;

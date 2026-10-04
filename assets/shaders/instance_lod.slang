@@ -199,8 +199,14 @@ void lod_test(LodPC pc, uint chunk, uint lane)
 
     GroupMemoryBarrierWithGroupSync();
 
-    if (local_index < job.instance_count) {
-        InterlockedAdd(s_counts[instance_group(pc, job, local_index)], 1u);
+    const uint my_group = local_index < job.instance_count ? instance_group(pc, job, local_index) : max_lod_groups;
+
+    // One shared atomic per wave and group: a lane each would serialise the whole workgroup on one address.
+    for (uint group = 0; group < job.group_count; ++group) {
+        const uint count = WaveActiveCountBits(my_group == group);
+        if (WaveIsFirstLane() && count != 0) {
+            InterlockedAdd(s_counts[group], count);
+        }
     }
 
     GroupMemoryBarrierWithGroupSync();
