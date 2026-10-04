@@ -270,7 +270,8 @@ namespace render_pass {
             return false;
         };
 
-        auto const has_dirty_opaque = has_dirty_draws(info.opaque_cascade_counts);
+        auto const has_dirty_opaque =
+                has_dirty_draws(info.opaque_cascade_counts) || has_dirty_draws(info.double_sided_cascade_counts);
         auto const has_dirty_mask = has_dirty_draws(info.mask_cascade_counts);
 
         detail::SceneDraw const opaque_draw{
@@ -321,27 +322,31 @@ namespace render_pass {
                     .ubo_address = info.ubo_address,
                     .lights_address = info.lights_address,
                     .light_count = 0,
-                    ._padding = 0,
+                    .sample_count = 1,
                     .cull_planes_address = info.cascade_cull_planes_address,
                     .cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U,
                     .cascade_index = 0,
                     .padding = 0,
             };
 
+            // Shadows never cull back faces, so double-sided batches only differ in where their range starts.
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
                 if ((info.update_mask & (1U << cascade)) == 0) {
                     continue;
                 }
 
-                auto const cascade_draw_count = info.opaque_cascade_counts[cascade];
-                if (cascade_draw_count == 0) {
+                auto const opaque_count = info.opaque_cascade_counts[cascade];
+                auto const double_sided_count = info.double_sided_cascade_counts[cascade];
+                if (opaque_count == 0 && double_sided_count == 0) {
                     continue;
                 }
 
                 detail::set_shadow_dynamic_state(context.command_buffer, cascade, info.depth_bias_constant,
                                                  info.depth_bias_slope);
                 pc.cascade_index = cascade;
-                detail::draw_scene_commands(context, opaque_draw, info.draws, 0, cascade_draw_count, pc);
+                detail::draw_scene_commands(context, opaque_draw, info.draws, 0, opaque_count, pc);
+                detail::draw_scene_commands(context, opaque_draw, info.draws, info.counts.double_sided_first(),
+                                            double_sided_count, pc);
             }
         }
 
@@ -353,7 +358,7 @@ namespace render_pass {
                     .ubo_address = info.ubo_address,
                     .lights_address = info.lights_address,
                     .light_count = 0,
-                    ._padding = 0,
+                    .sample_count = 1,
                     .cull_planes_address = info.cascade_cull_planes_address,
                     .cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U,
                     .cascade_index = 0,
@@ -373,7 +378,8 @@ namespace render_pass {
                 detail::set_shadow_dynamic_state(context.command_buffer, cascade, info.depth_bias_constant,
                                                  info.depth_bias_slope);
                 pc.cascade_index = cascade;
-                detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.opaque, cascade_draw_count, pc);
+                detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.mask_first(),
+                                            cascade_draw_count, pc);
             }
         }
 
@@ -392,7 +398,9 @@ namespace render_pass {
                 .samples = info.samples,
         };
 
-        if ((info.counts.opaque != 0 && !detail::scene_layouts_valid(context.pipeline_graph, opaque_draw)) ||
+        auto const opaque_total = info.counts.opaque + info.counts.double_sided;
+
+        if ((opaque_total != 0 && !detail::scene_layouts_valid(context.pipeline_graph, opaque_draw)) ||
             (info.counts.mask != 0 && !detail::scene_layouts_valid(context.pipeline_graph, mask_draw))) {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
@@ -406,7 +414,7 @@ namespace render_pass {
                 .ubo_address = info.ubo_address,
                 .lights_address = info.lights_address,
                 .light_count = 0,
-                ._padding = 0,
+                .sample_count = static_cast<std::uint32_t>(info.samples),
                 .cull_planes_address = info.cull_planes_address,
                 .occlusion_address = info.occlusion_view_address,
         };
@@ -414,8 +422,9 @@ namespace render_pass {
         auto opaque_pc = pc;
         opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface | info.extra_cull_flags : 0U;
 
-        auto mask_pc = pc;
-        mask_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum | info.extra_cull_flags : 0U;
+        // Double-sided and mask draws keep their back faces, so meshlets skip the normal-cone test too.
+        auto unculled_backface_pc = pc;
+        unculled_backface_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum | info.extra_cull_flags : 0U;
 
         if (info.counts.opaque != 0) {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
@@ -423,11 +432,20 @@ namespace render_pass {
             detail::draw_scene_commands(context, opaque_draw, info.draws, 0, info.counts.opaque, opaque_pc);
         }
 
+        if (info.counts.double_sided != 0) {
+            detail::set_forward_dynamic_state(context.command_buffer, info.extent,
+                                              detail::ForwardDynamicStateMode::prepass);
+            vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
+            detail::draw_scene_commands(context, opaque_draw, info.draws, info.counts.double_sided_first(),
+                                        info.counts.double_sided, unculled_backface_pc);
+        }
+
         if (info.counts.mask != 0) {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::prepass);
             vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
-            detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.opaque, info.counts.mask, mask_pc);
+            detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.mask_first(), info.counts.mask,
+                                        unculled_backface_pc);
         }
 
         return {};
@@ -586,7 +604,7 @@ namespace render_pass {
                 .ubo_address = info.ubo_address,
                 .lights_address = info.lights_address,
                 .light_count = info.light_count,
-                ._padding = 0,
+                .sample_count = static_cast<std::uint32_t>(info.samples),
                 .ao_texture_index = info.ao_texture_index,
                 .ao_sampler_index = info.ao_sampler_index,
                 .screen_size_x = static_cast<float>(info.extent.width),
@@ -601,6 +619,7 @@ namespace render_pass {
         auto opaque_pc = pc;
         opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface | info.extra_cull_flags : 0U;
 
+        // Double-sided and mask draws, like the prepass's.
         auto mask_pc = pc;
         mask_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum | info.extra_cull_flags : 0U;
 
@@ -614,11 +633,19 @@ namespace render_pass {
             detail::draw_scene_commands(context, opaque_draw, info.draws, 0, info.counts.opaque, opaque_pc);
         }
 
+        if (info.counts.double_sided != 0) {
+            detail::set_forward_dynamic_state(context.command_buffer, info.extent,
+                                              detail::ForwardDynamicStateMode::main);
+            vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
+            detail::draw_scene_commands(context, opaque_draw, info.draws, info.counts.double_sided_first(),
+                                        info.counts.double_sided, mask_pc);
+        }
+
         if (info.counts.mask != 0) {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::main);
             vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
-            detail::draw_scene_commands(context, opaque_draw, info.draws, info.counts.opaque, info.counts.mask,
+            detail::draw_scene_commands(context, opaque_draw, info.draws, info.counts.mask_first(), info.counts.mask,
                                         mask_pc);
         }
 
@@ -650,8 +677,8 @@ namespace render_pass {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::blend);
             vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
-            detail::draw_scene_commands(context, blend_draw, info.draws, info.counts.opaque + info.counts.mask,
-                                        info.counts.blend, unculled_backface_pc);
+            detail::draw_scene_commands(context, blend_draw, info.draws, info.counts.blend_first(), info.counts.blend,
+                                        unculled_backface_pc);
         }
 
         vkCmdEndQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0);

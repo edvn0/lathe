@@ -2124,6 +2124,9 @@ auto Renderer::create_material(MaterialCreateInfo const &create_info, std::strin
         return std::unexpected(make_material_error(material.error()));
     }
 
+    // Held until this material drops it (update_material) or is freed (release_material).
+    retain_material(create_info.far_material);
+
     if (!debug_name.empty()) {
         // A name collision is fine; the material just isn't registered under that name.
         static_cast<void>(assets_.materials().register_asset(std::move(debug_name), *material));
@@ -2149,11 +2152,18 @@ auto Renderer::update_material(MaterialHandle handle, MaterialCreateInfo const &
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
+    auto const *previous_info = material_storage_.create_info(handle);
+    auto const previous_far_material = previous_info != nullptr ? previous_info->far_material : MaterialHandle{};
+
     auto result = material_storage_.update_material(handle, create_info);
 
     if (!result) {
         return std::unexpected(make_material_error(result.error()));
     }
+
+    // Retained before releasing, so keeping the same far material never frees it in between.
+    retain_material(create_info.far_material);
+    release_material(previous_far_material);
 
     mark_shadow_casters_dirty();
     return {};
@@ -2177,6 +2187,11 @@ auto Renderer::release_material(MaterialHandle handle) -> void {
 
     bool const last_reference = material_storage_.ref_count(handle) == 1;
 
+    auto far_material = MaterialHandle{};
+    if (auto const *info = material_storage_.create_info(handle); last_reference && info != nullptr) {
+        far_material = info->far_material;
+    }
+
     if (auto const result = material_storage_.destroy_material(handle); !result) {
         warn("Renderer::release_material: handle is not a live material");
         return;
@@ -2185,6 +2200,9 @@ auto Renderer::release_material(MaterialHandle handle) -> void {
     if (last_reference) {
         assets_.materials().unregister(handle);
         mark_shadow_casters_dirty();
+
+        // The reference create_material()/update_material() took for it.
+        release_material(far_material);
     }
 }
 
@@ -2620,6 +2638,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     frame.indirect_command_count = 0;
     frame.opaque_indirect_count = 0;
+    frame.double_sided_indirect_count = 0;
     frame.mask_indirect_count = 0;
     frame.blend_indirect_count = 0;
     frame.shadow_update_mask = 0;
@@ -2639,6 +2658,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     active_batches_.clear();
 
     opaque_batches_.clear();
+    double_sided_batches_.clear();
     mask_batches_.clear();
     blend_batches_.clear();
 
@@ -2723,7 +2743,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 for (std::uint32_t submesh_index = 0; submesh_index < submesh_count; ++submesh_index) {
                     auto *&batch = instanced_batch_cache[submesh_index * lod_slot_count + lod_index];
                     if (batch == nullptr) {
-                        auto const material = instanced_materials[submesh_index];
+                        auto const material =
+                                material_storage_.material_for_lod(instanced_materials[submesh_index], lod_index);
                         batch = &batch_for(
                                 BatchKey{
                                         .mesh_index = model_draw.mesh.index,
@@ -2797,6 +2818,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                         break;
                     }
                 }
+                material = material_storage_.material_for_lod(material, lod_index);
                 auto const key = BatchKey{
                         .mesh_index = model_draw.mesh.index,
                         .submesh_index = submesh_index,
@@ -2820,8 +2842,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
         for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
             auto const &submesh = mesh->submeshes[submesh_index];
-            auto const material =
-                    submission.material_override.valid() ? submission.material_override : submesh.material;
+            auto const material = material_storage_.material_for_lod(
+                    submission.material_override.valid() ? submission.material_override : submesh.material, lod_index);
             auto const key = BatchKey{
                     .mesh_index = submission.mesh.index,
                     .submesh_index = submesh_index,
@@ -2834,6 +2856,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     }
 
     opaque_batches_.reserve(active_batches_.size());
+    double_sided_batches_.reserve(active_batches_.size());
     mask_batches_.reserve(active_batches_.size());
     blend_batches_.reserve(active_batches_.size());
 
@@ -2956,7 +2979,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
         switch (alpha_mode) {
             case AlphaMode::opaque:
-                opaque_batches_.push_back(batch);
+                if (material != nullptr && (material->flags & GpuMaterial::flag_double_sided) != 0) {
+                    double_sided_batches_.push_back(batch);
+                } else {
+                    opaque_batches_.push_back(batch);
+                }
                 break;
 
             case AlphaMode::mask:
@@ -3058,6 +3085,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     };
 
     frame.shadow_opaque_indirect_count = order_shadow_batches(opaque_batches_);
+    frame.shadow_double_sided_indirect_count = order_shadow_batches(double_sided_batches_);
     frame.shadow_mask_indirect_count = order_shadow_batches(mask_batches_);
 
     for (auto const *batch: opaque_batches_) {
@@ -3068,14 +3096,23 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     frame.opaque_indirect_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
 
+    for (auto const *batch: double_sided_batches_) {
+        if (auto result = emit_batch(*batch, true); !result) {
+            return std::unexpected(result.error());
+        }
+    }
+
+    frame.double_sided_indirect_count =
+            static_cast<std::uint32_t>(frame.indirect_commands.size()) - frame.opaque_indirect_count;
+
     for (auto const *batch: mask_batches_) {
         if (auto result = emit_batch(*batch, true); !result) {
             return std::unexpected(result.error());
         }
     }
 
-    frame.mask_indirect_count =
-            static_cast<std::uint32_t>(frame.indirect_commands.size()) - frame.opaque_indirect_count;
+    frame.mask_indirect_count = static_cast<std::uint32_t>(frame.indirect_commands.size()) -
+                                frame.opaque_indirect_count - frame.double_sided_indirect_count;
 
     if (blend_sort_future.valid()) {
         blend_sort_future.wait();
@@ -3088,7 +3125,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     }
 
     frame.blend_indirect_count = static_cast<std::uint32_t>(frame.indirect_commands.size()) -
-                                 frame.opaque_indirect_count - frame.mask_indirect_count;
+                                 frame.opaque_indirect_count - frame.double_sided_indirect_count -
+                                 frame.mask_indirect_count;
 
     frame.indirect_command_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
 
@@ -3462,6 +3500,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .submitted_instance_count = frame.transform_count,
             .indirect_command_count = frame.indirect_command_count,
             .opaque_indirect_count = frame.opaque_indirect_count,
+            .double_sided_indirect_count = frame.double_sided_indirect_count,
             .mask_indirect_count = frame.mask_indirect_count,
             .blend_indirect_count = frame.blend_indirect_count,
             .model_submission_count = static_cast<std::uint32_t>(submitted_model_count()),
@@ -3572,7 +3611,7 @@ auto Renderer::record_gpu_culling(render_pass::Context const &pass_context, Rend
                 .late_indirect_address = frame.late_indirect_buffer.device_address,
                 .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
                 .batch_count = frame.indirect_command_count,
-                .occludable_batch_count = frame.opaque_indirect_count + frame.mask_indirect_count,
+                .occludable_batch_count = batch_counts(frame).blend_first(),
                 .late_union_meshlet_batches = 0,
                 ._padding = 0,
         };
@@ -3929,6 +3968,7 @@ auto Renderer::forward_view_draws(RendererFrame const &frame) const -> render_pa
 auto Renderer::batch_counts(RendererFrame const &frame) noexcept -> render_pass::DrawCounts {
     return render_pass::DrawCounts{
             .opaque = frame.opaque_indirect_count,
+            .double_sided = frame.double_sided_indirect_count,
             .mask = frame.mask_indirect_count,
             .blend = frame.blend_indirect_count,
     };
@@ -3951,6 +3991,7 @@ auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, Rend
                             },
                     .counts = batch_counts(frame),
                     .opaque_cascade_counts = frame.shadow_opaque_indirect_count,
+                    .double_sided_cascade_counts = frame.shadow_double_sided_indirect_count,
                     .mask_cascade_counts = frame.shadow_mask_indirect_count,
                     .update_mask = frame.shadow_update_mask,
                     .preserve_contents = shadow_atlas_initialized_,
@@ -4108,7 +4149,7 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
                 .late_indirect_address = frame.late_indirect_buffer.device_address,
                 .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
                 .batch_count = frame.indirect_command_count,
-                .occludable_batch_count = frame.opaque_indirect_count + frame.mask_indirect_count,
+                .occludable_batch_count = batch_counts(frame).blend_first(),
                 // Meshlet batches' late command covers the early survivors too, so their deferred meshlets get the late
                 // test; the late prepass skips the meshlets the early one already recorded.
                 .late_union_meshlet_batches = frame.meshlet_occlusion_active ? 1U : 0U,

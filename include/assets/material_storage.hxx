@@ -53,6 +53,20 @@ struct MaterialCreateInfo {
     // geometry. Lighting still applies so the surface stays readable. Instanced (non-meshlet) draws get one colour
     // per instance.
     bool debug_meshlet_colours = false;
+
+    // Drawn without back-face culling, back faces shading with the normal flipped (thin foliage, cloth, cards).
+    // Opaque double-sided materials get their own draw range, so the prepass still runs no fragment shader for them.
+    bool double_sided = false;
+
+    // Mask materials: under MSAA the prepass turns alpha into sample coverage (sharpened to about a pixel) instead
+    // of cutting at alpha_cutoff, which antialiases alpha-tested edges. Without MSAA it is the plain cutoff.
+    bool alpha_to_coverage = false;
+
+    // From LOD level `far_material_lod` on, instances draw with `far_material` instead of this material: foliage
+    // whose distant LODs are alpha-tested cards, say, while the near ones are opaque geometry. One hop only: the far
+    // material's own far_material is ignored. The renderer holds a reference to it while this material uses it.
+    MaterialHandle far_material{};
+    std::uint32_t far_material_lod = 2;
 };
 
 auto to_gpu_material(MaterialCreateInfo const &) noexcept -> GpuMaterial;
@@ -149,6 +163,11 @@ struct MaterialStorage {
 
     [[nodiscard]]
     auto gpu_index(MaterialHandle handle) const noexcept -> std::uint32_t;
+
+    // The material instances at `lod` draw with: `handle`'s far_material from its far_material_lod on, `handle`
+    // otherwise (and for an invalid handle).
+    [[nodiscard]]
+    auto material_for_lod(MaterialHandle handle, std::uint32_t lod) const noexcept -> MaterialHandle;
 
     [[nodiscard]]
     auto prepare_frame(VkCommandBuffer command_buffer, std::uint32_t frame_index)

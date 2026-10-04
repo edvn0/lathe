@@ -13,6 +13,7 @@
 #include "net/http.hxx"
 #include "player_camera.hxx"
 #include "player_controller.hxx"
+#include "rendering/engine_models.hxx"
 #include "rendering/script_storage.hxx"
 #include "terrain/terrain_mesh.hxx"
 
@@ -74,7 +75,10 @@ private:
     ScriptHolder enemy_ai_script_{};
     glm::vec3 cube_half_extents_{0.5F};
 
-    MaterialHandle grass_material_{};
+    GrassMaterials grass_materials_{};
+
+    // Handles only; kept from on_populate() so the grass UI can rebuild the grass materials.
+    EngineModels engine_models_{};
 
     MaterialCreateInfo grass_material_info_{};
 

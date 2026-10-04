@@ -142,9 +142,11 @@ public:
     auto register_view(ImageViewRegistration const &registration) -> std::expected<ImageHandle, ImageStorageError>;
     [[nodiscard]]
     auto create_image(ImageCreateInfo const &create_info) -> std::expected<ImageHandle, ImageStorageError>;
+    // `pixels` as for Image::create(): level 0, or every level with ImageMipSource::provided.
     [[nodiscard]]
-    auto create_image(ImageCreateInfo const &create_info, std::span<const std::byte>)
-            -> std::expected<ImageHandle, ImageStorageError>;
+    auto
+    create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
+                 ImageMipSource mip_source = ImageMipSource::generate) -> std::expected<ImageHandle, ImageStorageError>;
 
     [[nodiscard]] auto create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
                                     VkCommandBuffer command_buffer) -> std::expected<ImageHandle, ImageStorageError>;

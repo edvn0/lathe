@@ -12,6 +12,7 @@ set(
     model_storage.cxx
     model_streamer.cxx
     primitive_meshes.cxx
+    procedural_textures.cxx
     shader_hot_reload_watcher.cxx
     slang_compiler.cxx
     stb.cxx

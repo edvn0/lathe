@@ -1,5 +1,6 @@
 #include "gpu/image.hxx"
 
+#include <algorithm>
 #include <expected>
 #include <format>
 #include <source_location>
@@ -7,6 +8,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <exr.h>
 #include <glm/gtc/packing.hpp>
@@ -377,8 +379,19 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
     return image;
 }
 
-auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, std::span<const std::byte> pixels)
-        -> std::expected<Image, ImageError> {
+auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
+                   ImageMipSource mip_source) -> std::expected<Image, ImageError> {
+    // A provided chain must be exactly every level of a whole number of bytes per texel.
+    std::uint32_t chain_texel_bytes = 0;
+    if (mip_source == ImageMipSource::provided) {
+        auto const texels =
+                mip_chain_offset(create_info.extent.width, create_info.extent.height, 1, create_info.mip_levels);
+        if (texels == 0 || pixels.size_bytes() % texels != 0) {
+            return std::unexpected(ImageError{.type = ImageErrorType::image_creation_failed});
+        }
+        chain_texel_bytes = static_cast<std::uint32_t>(pixels.size_bytes() / texels);
+    }
+
     auto image = create(context, create_info);
     if (!image) {
         return std::unexpected(image.error());
@@ -430,6 +443,40 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
         dep_info.pImageMemoryBarriers = &barrier;
 
         vkCmdPipelineBarrier2(buf, &dep_info);
+
+        if (mip_source == ImageMipSource::provided) {
+            std::vector<VkBufferImageCopy> copies;
+            copies.reserve(create_info.mip_levels);
+            for (std::uint32_t level = 0; level < create_info.mip_levels; ++level) {
+                copies.push_back(VkBufferImageCopy{
+                        .bufferOffset = mip_chain_offset(create_info.extent.width, create_info.extent.height,
+                                                         chain_texel_bytes, level),
+                        .bufferRowLength = 0,
+                        .bufferImageHeight = 0,
+                        .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                             .mipLevel = level,
+                                             .baseArrayLayer = 0,
+                                             .layerCount = 1},
+                        .imageOffset = {},
+                        .imageExtent = {.width = std::max(create_info.extent.width >> level, 1U),
+                                        .height = std::max(create_info.extent.height >> level, 1U),
+                                        .depth = 1},
+                });
+            }
+            vkCmdCopyBufferToImage(buf, staging.buffer, image->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   static_cast<std::uint32_t>(copies.size()), copies.data());
+
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = create_info.mip_levels;
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            vkCmdPipelineBarrier2(buf, &dep_info);
+            return;
+        }
 
         VkBufferImageCopy copy{};
         copy.imageSubresource = {
