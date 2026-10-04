@@ -1146,6 +1146,22 @@ auto DecodedImage::decode_dds(std::string_view path, ImageColourSpace colour_spa
                         colour_space == ImageColourSpace::srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM};
 }
 
+namespace {
+    // `transparent` texels have alpha below half, `partial` ones are neither (nearly) clear nor (nearly) solid.
+    auto alpha_coverage(std::size_t transparent, std::size_t partial, std::size_t total) noexcept -> AlphaCoverage {
+        if (transparent == 0) {
+            return AlphaCoverage::opaque;
+        }
+
+        // Cut-outs (leaves, grilles) are almost all clear or solid with a thin soft edge; real translucency isn't.
+        constexpr double max_mask_partial_fraction = 0.12;
+
+        return static_cast<double>(partial) / static_cast<double>(total) <= max_mask_partial_fraction
+                       ? AlphaCoverage::mask
+                       : AlphaCoverage::blend;
+    }
+}
+
 auto classify_dds_alpha(std::string_view path) -> std::optional<AlphaCoverage> {
     auto const bytes = read_whole_file(path);
 
@@ -1182,16 +1198,54 @@ auto classify_dds_alpha(std::string_view path) -> std::optional<AlphaCoverage> {
         }
     }
 
-    if (transparent == 0) {
+    return alpha_coverage(transparent, partial, blocks * 16U);
+}
+
+auto classify_encoded_alpha(std::span<std::byte const> encoded) -> std::optional<AlphaCoverage> {
+    if (encoded.empty() || encoded.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return std::nullopt;
+    }
+
+    auto const *data = reinterpret_cast<stbi_uc const *>(encoded.data());
+    auto const size = static_cast<int>(encoded.size());
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+
+    if (stbi_info_from_memory(data, size, &width, &height, &channels) == 0) {
+        return std::nullopt;
+    }
+
+    // No alpha channel in the file, so nothing to decode.
+    if (channels == 1 || channels == 3) {
         return AlphaCoverage::opaque;
     }
 
-    // Cut-outs (leaves, grilles) are almost all clear or solid with a thin soft edge; real translucency isn't.
-    constexpr double max_mask_partial_fraction = 0.12;
+    auto *pixels = stbi_load_from_memory(data, size, &width, &height, &channels, STBI_rgb_alpha);
 
-    return static_cast<double>(partial) / static_cast<double>(blocks * 16U) <= max_mask_partial_fraction
-                   ? AlphaCoverage::mask
-                   : AlphaCoverage::blend;
+    if (pixels == nullptr) {
+        return std::nullopt;
+    }
+
+    auto const texels = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    std::size_t transparent = 0;
+    std::size_t partial = 0;
+
+    for (std::size_t texel = 0; texel < texels; ++texel) {
+        auto const value = pixels[(texel * 4U) + 3U];
+        transparent += value < 128 ? 1U : 0U;
+        partial += (value > 8 && value < 247) ? 1U : 0U;
+    }
+
+    stbi_image_free(pixels);
+
+    // Unlike a legacy DDS, any texel short of solid counts here: a few translucent decals keep their material blended.
+    if (transparent == 0 && partial != 0) {
+        return AlphaCoverage::blend;
+    }
+
+    return alpha_coverage(transparent, partial, texels);
 }
 
 DecodedImage::DecodedImage(std::vector<std::byte> pixels, std::uint32_t width, std::uint32_t height,
