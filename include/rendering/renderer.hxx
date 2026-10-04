@@ -398,9 +398,15 @@ struct Renderer final : public IMeshSink, public IModelSink {
     // Submits many instances of one model sharing a material_override, without an entity per instance. Batching is
     // the same as for individual submissions, but the transforms are copied in one block and prepare_frame() resolves
     // each (submesh, LOD) batch once per call rather than once per instance.
+    //
+    // A non-zero `resident_revision` names this exact set of transforms (Components::InstancedModel::revision): the
+    // first submission uploads them to a GPU buffer kept while the revision keeps being submitted, and the GPU picks
+    // each instance's LOD (instance_lod.slang), so a frame costs the CPU nothing per instance. A model with one draw
+    // at the origin of its node and no blended LOD qualifies; anything else takes the per-instance path.
     [[nodiscard]]
     auto submit_model_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
-                                MaterialHandle material_override = {}) -> std::expected<void, RendererError>;
+                                MaterialHandle material_override = {},
+                                std::uint64_t resident_revision = 0) -> std::expected<void, RendererError>;
 
     // Model-space AABB over every vertex.
     [[nodiscard]]
@@ -767,6 +773,32 @@ private:
     // sizeof(CullChunk) in frustum_cull.slang: 8 counters and three cull_chunk_size-bit masks.
     static constexpr VkDeviceSize cull_chunk_bytes = (8 + 3 * cull_chunk_size / 32) * sizeof(std::uint32_t);
 
+    // Mirrors LodGroup in instance_lod.slang: one output batch of a resident instanced model's submesh.
+    struct alignas(16) GpuLodGroup {
+        std::uint32_t batch = 0;
+        std::uint32_t first_instance = 0;
+        std::uint32_t meshlet_count = 0;
+        std::uint32_t first_meshlet_bit = 0;
+        GpuDraw draw{};
+    };
+
+    static_assert(sizeof(GpuLodGroup) == 48);
+
+    // Mirrors LodJob in instance_lod.slang: one submesh of one resident instanced model.
+    struct alignas(16) GpuLodJob {
+        VkDeviceAddress transforms_address = 0;
+        std::uint32_t instance_count = 0;
+        std::uint32_t first_chunk = 0;
+        std::uint32_t group_count = 0;
+        std::uint32_t lod_groups = 0; // byte `lod`: the group LOD `lod` draws with
+        std::uint32_t pad0 = 0;
+        std::uint32_t pad1 = 0;
+        std::array<GpuLodGroup, lod_count> groups{};
+    };
+
+    static_assert(std::is_trivially_copyable_v<GpuLodJob>);
+    static_assert(sizeof(GpuLodJob) == 32 + 48 * lod_count);
+
     static_assert(std::is_trivially_copyable_v<GpuCullBounds>);
 
     static_assert(sizeof(GpuCullBounds) == 32);
@@ -972,6 +1004,17 @@ private:
         // Culling chunks over all batches (GpuCullBounds::first_chunk).
         std::uint32_t cull_chunk_count = 0;
 
+        // Resident instanced models' LOD jobs (instance_lod.slang), their chunks over all jobs, and the camera
+        // position their LODs are picked from. lod_jobs_buffer is host-written, maximum_lod_job_count of them.
+        std::uint32_t lod_chunk_count = 0;
+        glm::vec3 lod_camera_position{0.0F};
+        std::vector<GpuLodJob> lod_jobs;
+        Buffer lod_jobs_buffer{};
+
+        // Buffers the GPU may still read until this slot's previous submission completes: freed when the slot is
+        // next prepared.
+        std::vector<Buffer> retired_buffers;
+
         // Batches are ordered opaque, double-sided (opaque, drawn without back-face culling), mask, blend; culling
         // preserves the order.
         std::uint32_t opaque_indirect_count = 0;
@@ -1048,13 +1091,75 @@ private:
         std::uint32_t first_transform = 0;
         std::uint32_t transform_count = 0;
         std::size_t model_submission_position = 0;
+
+        // Non-zero: the transforms live in resident_instance_sets_ under this revision (transform_count of them) and
+        // the GPU picks their LODs; nothing is in instance_transforms_.
+        std::uint64_t resident_revision = 0;
     };
+
+    // A resident instanced model's transforms (submit_model_instances()), kept on the GPU while its revision keeps
+    // being submitted.
+    struct ResidentInstanceSet {
+        Buffer transforms{};
+        std::uint32_t count = 0;
+        std::uint64_t last_used_frame = 0;
+    };
+
+    std::unordered_map<std::uint64_t, ResidentInstanceSet> resident_instance_sets_;
+
+    // Staging copies into newly created resident sets, recorded by the next prepare_frame().
+    struct PendingResidentUpload {
+        Buffer staging{};
+        VkBuffer destination = VK_NULL_HANDLE;
+        VkDeviceSize size = 0;
+    };
+
+    std::vector<PendingResidentUpload> pending_resident_uploads_;
+
+    // Sets replaced since the last prepare_frame(), handed to that frame's retired_buffers.
+    std::vector<Buffer> retired_resident_buffers_;
+
+    std::uint32_t resident_jobs_this_frame_ = 0;
+
+    // The distinct (geometry, material) pairs a submesh's LODs draw with, for a resident model.
+    struct ResidentLodGroups {
+        std::uint32_t count = 0;
+        std::uint32_t lod_groups = 0; // byte `lod`: the group LOD `lod` draws with
+        std::array<std::uint32_t, lod_count> representative_lod{};
+        std::array<MaterialHandle, lod_count> material{};
+    };
+
+    [[nodiscard]]
+    auto resident_lod_groups(Submesh const &submesh, MaterialHandle base_material) const noexcept -> ResidentLodGroups;
+
+    // submit_model_instances()'s resident path; false when the model doesn't qualify or the frame is full, and the
+    // instances take the per-instance path.
+    [[nodiscard]]
+    auto submit_resident_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
+                                   MaterialHandle material_override, std::uint64_t revision) -> bool;
+
+    // Resident instances submitted this frame, against maximum_resident_slots(): every LOD group reserves a slot per
+    // instance in the frame's draw arrays.
+    std::uint64_t resident_slots_this_frame_ = 0;
+
+    // Resident sets unused this long are freed; frames in flight may still read them for frames_in_flight frames.
+    static constexpr std::uint64_t resident_set_idle_frames = frames_in_flight + 2;
+
+    // At most this many LodJobs (resident models x submeshes) per frame; more take the per-instance path.
+    static constexpr std::uint32_t maximum_lod_job_count = 4096;
 
     struct BatchEntry {
         MeshHandle mesh{};
         std::uint32_t submesh_index = 0;
         MaterialHandle material{};
         std::uint32_t lod_index = 0;
+
+        // An LOD group of a resident instanced model (instance_lod.slang): no transforms here, but resident_capacity
+        // slots reserved for the GPU to fill, as group lod_group of the frame's LodJob lod_job.
+        static constexpr std::uint32_t no_lod_job = ~0U;
+        std::uint32_t lod_job = no_lod_job;
+        std::uint32_t lod_group = 0;
+        std::uint32_t resident_capacity = 0;
 
         // Where each instance's transform lives until emit_batch() writes it to the upload buffer: the submission
         // itself, instance_transforms_, or computed_transforms_. Pointers rather than copies, so each transform is
@@ -1075,6 +1180,9 @@ private:
         std::uint32_t material_index;
         std::uint32_t lod_index;
 
+        // 1 + the LodJob for a resident model's LOD group, which never shares a batch; 0 otherwise.
+        std::uint32_t lod_job_key = 0;
+
         auto operator==(BatchKey const &) const noexcept -> bool = default;
     };
 
@@ -1084,7 +1192,8 @@ private:
                     std::hash<std::uint64_t>{}((static_cast<std::uint64_t>(key.mesh_index) << 32) | key.submesh_index);
 
             return mesh_hash ^ (std::hash<std::uint32_t>{}(key.material_index) << 1) ^
-                   (std::hash<std::uint32_t>{}(key.lod_index) << 2);
+                   (std::hash<std::uint32_t>{}(key.lod_index) << 2) ^
+                   (std::hash<std::uint32_t>{}(key.lod_job_key) << 3);
         }
     };
 
@@ -1178,6 +1287,20 @@ private:
     // Opaque/mask/blend batch counts, shared by the culled and un-culled buffers.
     [[nodiscard]]
     static auto batch_counts(RendererFrame const &frame) noexcept -> render_pass::DrawCounts;
+
+    // Copies new resident instance sets into place and frees the ones nobody submits any more.
+    auto record_resident_instance_uploads(VkCommandBuffer command_buffer, RendererFrame &frame) -> void;
+
+    // instance_lod.slang over the frame's LodJobs, at the start of the gpu_culling pass.
+    [[nodiscard]]
+    auto record_instance_lods(render_pass::Context const &pass_context,
+                              RendererFrame const &frame) -> std::expected<void, RendererError>;
+
+    // cull_chunks_buffer's capacity in CullChunks; instance_lod.slang's LodChunks share it.
+    VkDeviceSize cull_chunk_capacity_ = 0;
+
+    // sizeof(LodChunk) in instance_lod.slang: a count and an offset per LOD group.
+    static constexpr VkDeviceSize lod_chunk_bytes = 2 * lod_count * sizeof(std::uint32_t);
 
     auto record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void;
 
@@ -1312,6 +1435,7 @@ private:
     PipelineNodeHandle forward_blend_instanced_pipeline_;
     PipelineNodeHandle composite_pipeline_;
     PipelineNodeHandle frustum_cull_pipeline_;
+    PipelineNodeHandle instance_lod_pipeline_;
     PipelineNodeHandle occlusion_cull_pipeline_;
     PipelineNodeHandle hiz_build_pipeline_;
     PipelineNodeHandle light_icon_pipeline_;
