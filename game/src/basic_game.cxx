@@ -200,6 +200,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     }
 
     scene.get_registry().clear();
+    engine_models_ = engine_models;
 
     // Repopulating wipes the registry; a helmet that already arrived is re-spawned, otherwise the download runs.
     if (helmet_model_.valid()) {
@@ -895,23 +896,21 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .wind_strength = 0.28F,
             .max_shadow_cascade = GpuMaterial::no_shadow_cascade,
     };
-    if (grass_material_.valid()) {
-        if (auto const updated = renderer.update_material(grass_material_, grass_material_info_); !updated) {
-            error("Could not reset grass material: {}", describe(updated.error()));
-        }
-    } else if (auto const created = renderer.create_material(grass_material_info_, "grass"); created) {
-        grass_material_ = *created;
+    // Blades up close, alpha-tested cards from grass_clump_card_lod on; see grass_materials().
+    if (auto const materials = grass_materials(renderer, engine_models, grass_material_info_, grass_materials_);
+        materials) {
+        grass_materials_ = *materials;
     } else {
-        error("Could not create grass material: {}", describe(created.error()));
+        error("Could not create the grass materials: {}", describe(materials.error()));
     }
 
-    if (grass_material_.valid()) {
+    if (grass_materials_.blades.valid()) {
         // One entity owns every blade's transform; per-blade entities made spawning, iteration and the play() clone
         // expensive.
         auto const grass_field_entity = GeneratedEntity{&scene, "grass_field"};
         grass_field_entity.emplace<Components::InstancedModel>(Components::InstancedModel{
                 .model = engine_models.grass_clump,
-                .material_override = grass_material_,
+                .material_override = grass_materials_.blades,
         });
         grass_field_entity_ = grass_field_entity;
 
@@ -993,7 +992,7 @@ auto BasicGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_sce
 auto BasicGame::on_ui(Scene &scene, Renderer &renderer) -> void {
     poll_helmet(scene, renderer);
 
-    if (!grass_material_.valid()) {
+    if (!grass_materials_.blades.valid()) {
         return;
     }
 
@@ -1002,11 +1001,12 @@ auto BasicGame::on_ui(Scene &scene, Renderer &renderer) -> void {
         material_changed |= ImGui::ColorEdit3("Colour", &grass_material_info_.base_colour_factor.x);
         material_changed |= ImGui::SliderFloat("Wind strength", &grass_material_info_.wind_strength, 0.0F, 2.0F);
 
+        // The cards are the same grass from further away, so both materials follow the look.
         if (material_changed) {
-            auto const result = renderer.update_material(grass_material_, grass_material_info_);
+            auto const result = grass_materials(renderer, engine_models_, grass_material_info_, grass_materials_);
 
             if (!result) {
-                error("Could not update grass material: {}", describe(result.error()));
+                error("Could not update the grass materials: {}", describe(result.error()));
             }
         }
 

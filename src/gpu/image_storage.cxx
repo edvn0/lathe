@@ -240,8 +240,8 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info) -> std::expe
     return handle;
 }
 
-auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels)
-        -> std::expected<ImageHandle, ImageStorageError> {
+auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
+                                ImageMipSource mip_source) -> std::expected<ImageHandle, ImageStorageError> {
     if (context_ == nullptr) {
         return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
     }
@@ -250,7 +250,7 @@ auto ImageStorage::create_image(ImageCreateInfo const &create_info, std::span<co
         return std::unexpected(make_error(ImageStorageErrorType::capacity_exceeded));
     }
 
-    auto image = Image::create(*context_, create_info, pixels);
+    auto image = Image::create(*context_, create_info, pixels, mip_source);
 
     if (!image) {
         return std::unexpected(make_image_error(image.error()));

@@ -55,6 +55,16 @@ namespace {
             EngineModelName{.name = "capsule", .member = &EngineModels::capsule},
     };
 
+    // Engine-made textures a material can use, saved by name like the engine models.
+    struct EngineTextureName {
+        std::string_view name;
+        ImageHandle EngineModels::*member;
+    };
+
+    constexpr std::array engine_texture_names{
+            EngineTextureName{.name = "grass_card", .member = &EngineModels::grass_card_texture},
+    };
+
     // Texture slots in SceneMaterial::textures order.
     constexpr std::array material_texture_roles{TextureRole::colour, TextureRole::normal_map, TextureRole::generic,
                                                 TextureRole::generic, TextureRole::colour};
@@ -140,6 +150,28 @@ namespace {
                 return scene_no_index;
             }
 
+            for (auto const &engine_texture: engine_texture_names) {
+                if (engine_models_.*engine_texture.member != handle) {
+                    continue;
+                }
+
+                auto key = engine_asset_key(engine_texture.name);
+                auto const id = asset_id_from_key(key);
+
+                for (std::size_t index = 0; index < description.textures.size(); ++index) {
+                    if (description.textures[index].id == id) {
+                        return static_cast<std::uint32_t>(index);
+                    }
+                }
+
+                description.textures.push_back(SceneTextureRef{
+                        .id = id,
+                        .source = std::move(key),
+                        .role = material_texture_roles[slot],
+                });
+                return static_cast<std::uint32_t>(description.textures.size() - 1);
+            }
+
             auto const *source = renderer_.texture_streamer().source_of(handle);
 
             if (source == nullptr || source->path.empty()) {
@@ -200,6 +232,9 @@ namespace {
                     .alpha_mode = info->alpha_mode,
                     .sampler = default_sampler_of(renderer_.sampler_storage(), info->sampler),
                     .debug_meshlet_colours = info->debug_meshlet_colours,
+                    .double_sided = info->double_sided,
+                    .alpha_to_coverage = info->alpha_to_coverage,
+                    .far_material_lod = info->far_material_lod,
             };
 
             std::array const textures{info->base_colour_texture, info->normal_texture, info->metallic_roughness_texture,
@@ -209,9 +244,17 @@ namespace {
                 material.textures[slot] = texture_index(textures[slot], slot);
             }
 
+            auto const far_material = info->far_material;
+
             auto const index = static_cast<std::uint32_t>(description.materials.size());
             description.materials.push_back(std::move(material));
             material_indices_.emplace(key, index);
+
+            // After this material has its index, so a far material that refers back finds it rather than recursing.
+            if (far_material.valid()) {
+                auto const far_index = material_index(far_material);
+                description.materials[index].far_material = far_index;
+            }
 
             return index;
         }
@@ -570,6 +613,27 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         }
 
         auto const &reference = description.textures[texture_index];
+
+        if (reference.source.starts_with(engine_asset_prefix)) {
+            auto const name = std::string_view{reference.source}.substr(engine_asset_prefix.size());
+            auto handle = fallback;
+            auto found = false;
+
+            for (auto const &engine_texture: engine_texture_names) {
+                if (engine_texture.name == name) {
+                    handle = engine_models.*engine_texture.member;
+                    found = true;
+                }
+            }
+
+            if (!found) {
+                report.warnings.push_back(std::format("unknown built-in texture '{}'", reference.source));
+            }
+
+            textures[texture_index] = handle;
+            return handle;
+        }
+
         auto const debug_name = FlyString{std::filesystem::path{reference.source}.filename().string()};
         ImageHandle handle{};
 
@@ -595,6 +659,7 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
     };
 
     std::vector<MaterialHandle> materials(description.materials.size());
+    std::vector<MaterialCreateInfo> material_infos(description.materials.size());
     std::vector<MaterialHandle> anonymous_materials;
 
     for (std::size_t index = 0; index < description.materials.size(); ++index) {
@@ -625,7 +690,13 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
                 .wind_strength = material.wind_strength,
                 .max_shadow_cascade = material.max_shadow_cascade,
                 .debug_meshlet_colours = material.debug_meshlet_colours,
+                .double_sided = material.double_sided,
+                .alpha_to_coverage = material.alpha_to_coverage,
+                .far_material_lod = material.far_material_lod,
         };
+
+        // Far materials may come later in the list, so they are linked once every material exists.
+        material_infos[index] = info;
 
         // A named material is an asset: reloading a scene updates it in place instead of piling up copies.
         if (!material.name.empty()) {
@@ -649,6 +720,22 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
 
         if (material.name.empty()) {
             anonymous_materials.push_back(*created);
+        }
+    }
+
+    for (std::size_t index = 0; index < description.materials.size(); ++index) {
+        auto const far_index = description.materials[index].far_material;
+
+        if (far_index == scene_no_index || !materials[index].valid() || !materials[far_index].valid()) {
+            continue;
+        }
+
+        auto info = material_infos[index];
+        info.far_material = materials[far_index];
+
+        if (auto linked = renderer.update_material(materials[index], info); !linked) {
+            report.warnings.push_back(std::format("could not link material '{}' to its far material: {}",
+                                                  description.materials[index].name, describe(linked.error())));
         }
     }
 

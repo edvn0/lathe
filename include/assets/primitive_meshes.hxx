@@ -1,7 +1,9 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -12,6 +14,10 @@
 struct PrimitiveMeshData {
     std::vector<ModelVertex> vertices;
     std::vector<std::uint32_t> indices;
+
+    // Hand-made index buffers for LOD1..LOD(lod_count-1) into the same `vertices`; nullopt reuses the level before.
+    // Primitives get no simplified LODs otherwise.
+    std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1> lod_indices{};
 };
 
 // Wraps a generated mesh as single-mesh ModelCpuData for Renderer::create_model_from_cpu_data.
@@ -24,9 +30,14 @@ struct PrimitiveMeshData {
 [[nodiscard]] auto make_sphere_mesh(std::uint32_t rings = 16, std::uint32_t segments = 32)
         -> std::expected<PrimitiveMeshData, ModelLoadError>;
 
-// A grass clump: three crossed blades around the vertical axis, base at y=0, tip at y=1. Meant for instancing
-// with a wind material. Both windings are emitted so blades show from either side with back-face culling on.
+// A grass clump about 0.6 m across and up to 0.9 m tall, base at y=0, for instancing with a wind material. Blades
+// are single-sided, so its materials must be double-sided. Hand-made LODs (lod_distances): LOD0 is 12 curved blades
+// (60 triangles), LOD1 6 wider, straighter ones (18), LOD2 and LOD3 three crossed cards (6) textured with
+// make_grass_card_texture(), which need an alpha-tested far material (MaterialCreateInfo::far_material).
 [[nodiscard]] auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>;
+
+// The LOD the grass clump switches from blades to cards at.
+inline constexpr std::uint32_t grass_clump_card_lod = 2;
 
 [[nodiscard]] auto make_capsule_mesh(std::uint32_t segments = 16, std::uint32_t rings = 8)
         -> std::expected<PrimitiveMeshData, ModelLoadError>;

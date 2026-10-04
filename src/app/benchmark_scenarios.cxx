@@ -225,6 +225,80 @@ namespace {
         return orbit_path(glm::vec3{0.0F}, extent * 0.55F + 8.0F, 5.0F, extent * 0.3F + 8.0F, 8);
     }
 
+    // ---- grass: the engine grass clump as a field like the game's (0.5 m apart, no shadows), viewed from head
+    // height so near clumps draw as blades and far ones as cards. The load is the clump count; the field grows with
+    // it at constant density, so a larger load adds mostly distant, cheap clumps, as a bigger meadow would.
+
+    constexpr float grass_spacing = 0.5F;
+
+    auto populate_grass(BenchmarkScenarioContext const &context) -> void {
+        MaterialSet materials{context.renderer};
+
+        auto const side = grid_side(context.load);
+        auto const extent = static_cast<float>(side) * grass_spacing;
+        spawn_ground(context, materials, extent + 20.0F);
+
+        auto &images = context.renderer.image_storage();
+        auto &samplers = context.renderer.sampler_storage();
+
+        auto const grass = grass_materials(context.renderer, context.engine_models,
+                                           MaterialCreateInfo{
+                                                   .base_colour_factor = glm::vec4{0.25F, 0.55F, 0.18F, 1.0F},
+                                                   .base_colour_texture = images.white(),
+                                                   .normal_texture = images.flat_normal(),
+                                                   .metallic_roughness_texture = images.metallic_roughness(),
+                                                   .occlusion_texture = images.occlusion(),
+                                                   .emissive_texture = images.emissive(),
+                                                   .sampler = samplers.linear_repeat(),
+                                                   .wind_strength = 0.28F,
+                                                   .max_shadow_cascade = GpuMaterial::no_shadow_cascade,
+                                           },
+                                           {}, {});
+
+        if (!grass) {
+            error("benchmark scenario: could not create the grass materials: {}", describe(grass.error()));
+            return;
+        }
+
+        // Unnamed (the {} above), so they don't take the game's names. InstancedModel holds no reference to its
+        // material, so the scenario keeps both.
+        context.owned_materials.push_back(grass->blades);
+        context.owned_materials.push_back(grass->cards);
+
+        auto engine = make_random_engine(random_stream_base + 5);
+        std::uniform_real_distribution<float> unit{0.0F, 1.0F};
+
+        std::vector<glm::mat4> transforms;
+        transforms.reserve(context.load);
+        for (std::uint32_t i = 0; i < context.load; ++i) {
+            auto const jitter_x = (unit(engine) - 0.5F) * grass_spacing * 0.8F;
+            auto const jitter_z = (unit(engine) - 0.5F) * grass_spacing * 0.8F;
+            auto const x = (static_cast<float>(i % side) + 0.5F) * grass_spacing - extent * 0.5F + jitter_x;
+            auto const z = (static_cast<float>(i / side) + 0.5F) * grass_spacing - extent * 0.5F + jitter_z;
+            auto const yaw = unit(engine) * 2.0F * std::numbers::pi_v<float>;
+
+            transforms.push_back(Components::Transform{
+                    .position = glm::vec3{x, 0.0F, z},
+                    .rotation = glm::angleAxis(yaw, glm::vec3{0.0F, 1.0F, 0.0F}),
+                    .scale = glm::vec3{0.85F + 0.3F * unit(engine)},
+            }
+                                         .matrix());
+        }
+
+        auto const field = GeneratedEntity{&context.scene, "bench_grass"};
+        field.emplace<Components::InstancedModel>(Components::InstancedModel{
+                .model = context.engine_models.grass_clump,
+                .material_override = grass->blades,
+                .transforms = std::move(transforms),
+        });
+    }
+
+    [[nodiscard]] auto grass_path(std::uint32_t load) -> std::vector<CameraKeyframe> {
+        auto const extent = static_cast<float>(grid_side(load)) * grass_spacing;
+        // Inside the field at head height and a little above, looking across it.
+        return orbit_path(glm::vec3{0.0F}, std::max(extent * 0.3F, 6.0F), 1.7F, 5.0F, 8);
+    }
+
     // ---- lights: a fixed field of boxes lit by a varying number of point lights, for clustered lighting.
 
     constexpr float light_field_size = 160.0F;
@@ -348,6 +422,13 @@ auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<Be
                            "passes' share.",
             .populate = populate_instancing_no_shadows,
             .camera_path = instancing_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "grass", .load_axis = "clumps", .default_loads = {20000, 60000, 180000}},
+            .description = "A field of engine grass clumps, as in the game: blade geometry near the camera, "
+                           "alpha-to-coverage cards far away, wind on, no shadows.",
+            .populate = populate_grass,
+            .camera_path = grass_path,
     });
     scenarios.push_back(BenchmarkScenario{
             .info = {.name = "lights", .load_axis = "point_lights", .default_loads = {64, 512, 4096}},

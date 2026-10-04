@@ -9,6 +9,7 @@
 #include <cmath>
 #include <numbers>
 #include <random>
+#include <span>
 
 namespace {
 
@@ -125,9 +126,130 @@ auto make_sphere_mesh(std::uint32_t rings, std::uint32_t segments) -> std::expec
     return PrimitiveMeshData{.vertices = std::move(vertices), .indices = std::move(indices)};
 }
 
+namespace {
+
+    // One grass blade's centreline and width profile, before it is cut into a particular LOD's rows.
+    struct GrassBlade {
+        glm::vec3 root{0.0F};
+        glm::vec3 across{1.0F, 0.0F, 0.0F};
+        glm::vec3 bend_direction{0.0F, 0.0F, 1.0F};
+        float height = 0.7F;
+        float half_width = 0.02F;
+        float lean = 0.05F;
+        float curve = 0.05F;
+    };
+
+    // Non-linear taper keeps the lower blade wide.
+    constexpr float grass_taper_exponent = 0.72F;
+
+    // Emits `blade` as a strip of quads through `row_heights` (fractions of its height, the first 0) closed by a
+    // single tip triangle at the top, one-sided: the material is double-sided. Wider by `width_scale`, and
+    // straighter by `curve_scale` for the coarse LOD, whose few blades can't show much bend.
+    auto emit_grass_blade(GrassBlade const &blade, std::span<float const> row_heights, float width_scale,
+                          float curve_scale, std::vector<ModelVertex> &vertices,
+                          std::vector<std::uint32_t> &indices) -> void {
+        auto const base_index = static_cast<std::uint32_t>(vertices.size());
+
+        auto const centre = [&](float t) {
+            auto const horizontal = blade.bend_direction * (blade.lean * t + blade.curve * curve_scale * t * t);
+            return blade.root + glm::vec3{0.0F, blade.height * t, 0.0F} + horizontal;
+        };
+
+        // Derivative of centre(t); width only varies along `across`, so the taper doesn't change the normal.
+        auto const normal = [&](float t) {
+            auto const tangent =
+                    glm::normalize(glm::vec3{0.0F, blade.height, 0.0F} +
+                                   blade.bend_direction * (blade.lean + 2.0F * blade.curve * curve_scale * t));
+            return glm::normalize(glm::cross(blade.across, tangent));
+        };
+
+        auto const tangent = glm::vec4{blade.across, 1.0F};
+
+        for (auto const t: row_heights) {
+            auto const half_width =
+                    blade.half_width * width_scale * std::pow(std::max(0.0F, 1.0F - t), grass_taper_exponent);
+            auto const row_centre = centre(t);
+            auto const row_normal = normal(t);
+
+            // UV.y runs from 0 at the root to 1 at the tip.
+            vertices.push_back(ModelVertex{
+                    .position = row_centre - blade.across * half_width,
+                    .normal = row_normal,
+                    .tangent = tangent,
+                    .texcoord = glm::vec2{0.0F, t},
+            });
+            vertices.push_back(ModelVertex{
+                    .position = row_centre + blade.across * half_width,
+                    .normal = row_normal,
+                    .tangent = tangent,
+                    .texcoord = glm::vec2{1.0F, t},
+            });
+        }
+
+        vertices.push_back(ModelVertex{
+                .position = centre(1.0F),
+                .normal = normal(1.0F),
+                .tangent = tangent,
+                .texcoord = glm::vec2{0.5F, 1.0F},
+        });
+
+        auto const row_count = static_cast<std::uint32_t>(row_heights.size());
+
+        // Wound so the face whose normal points at the camera is the front face.
+        for (std::uint32_t row = 0; row + 1U < row_count; ++row) {
+            auto const lower_left = base_index + row * 2U;
+            auto const lower_right = lower_left + 1U;
+            auto const upper_left = lower_left + 2U;
+            auto const upper_right = lower_left + 3U;
+
+            indices.insert(indices.end(), {lower_left, lower_right, upper_right, lower_left, upper_right, upper_left});
+        }
+
+        auto const top_left = base_index + (row_count - 1U) * 2U;
+        auto const tip = base_index + row_count * 2U;
+        indices.insert(indices.end(), {top_left, top_left + 1U, tip});
+    }
+
+    // Three vertical cards through the clump's centre, 60 degrees apart, `half_width` either side and `height` tall.
+    // UV.x runs across the card (mirrored on alternate cards, so neighbours don't repeat), UV.y from 0 at the top to
+    // 1 at the root, matching make_grass_card_texture()'s rows.
+    auto emit_grass_cards(float half_width, float height, std::vector<ModelVertex> &vertices,
+                          std::vector<std::uint32_t> &indices) -> void {
+        constexpr std::uint32_t card_count = 3;
+
+        for (std::uint32_t card = 0; card < card_count; ++card) {
+            auto const angle = static_cast<float>(card) * std::numbers::pi_v<float> / static_cast<float>(card_count);
+            auto const across = glm::vec3{std::cos(angle), 0.0F, std::sin(angle)};
+            auto const normal = glm::vec3{-across.z, 0.0F, across.x};
+            auto const tangent = glm::vec4{across, 1.0F};
+
+            auto const mirrored = card % 2U == 1U;
+            auto const left_u = mirrored ? 1.0F : 0.0F;
+            auto const right_u = 1.0F - left_u;
+
+            auto const base_index = static_cast<std::uint32_t>(vertices.size());
+            auto const left = -across * half_width;
+            auto const right = across * half_width;
+            auto const up = glm::vec3{0.0F, height, 0.0F};
+
+            vertices.push_back(
+                    ModelVertex{.position = left, .normal = normal, .tangent = tangent, .texcoord = {left_u, 1.0F}});
+            vertices.push_back(
+                    ModelVertex{.position = right, .normal = normal, .tangent = tangent, .texcoord = {right_u, 1.0F}});
+            vertices.push_back(ModelVertex{
+                    .position = right + up, .normal = normal, .tangent = tangent, .texcoord = {right_u, 0.0F}});
+            vertices.push_back(ModelVertex{
+                    .position = left + up, .normal = normal, .tangent = tangent, .texcoord = {left_u, 0.0F}});
+
+            indices.insert(indices.end(), {base_index, base_index + 1U, base_index + 2U, base_index, base_index + 2U,
+                                           base_index + 3U});
+        }
+    }
+
+} // namespace
+
 auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError> {
     constexpr auto blade_count = 12U;
-    constexpr auto row_count = 4U;
 
     // Outer blades reach ~0.30 m from the clump origin.
     constexpr auto clump_radius = 0.30F;
@@ -146,34 +268,23 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
     constexpr auto min_curve = 0.015F;
     constexpr auto max_curve = 0.075F;
 
-    // A small non-zero tip avoids degenerate triangles.
-    constexpr auto tip_width_factor = 0.035F;
-
     constexpr auto pi = std::numbers::pi_v<float>;
     constexpr auto two_pi = 2.0F * pi;
 
     // Golden angle spreads blades more evenly than uniform random sampling.
     constexpr auto golden_angle = pi * (3.0F - 2.2360679774997896964F);
 
-    constexpr std::array<float, row_count> row_heights{
-            0.0F,
-            0.32F,
-            0.68F,
-            1.0F,
-    };
+    // LOD0: two quads and a tip triangle per blade. LOD1: one quad and a tip, on every other blade, widened to keep
+    // roughly the same coverage.
+    constexpr std::array near_rows{0.0F, 0.32F, 0.68F};
+    constexpr std::array mid_rows{0.0F, 0.5F};
+    constexpr auto mid_blade_stride = 2U;
+    constexpr auto mid_width_scale = 2.0F;
+    constexpr auto mid_curve_scale = 0.5F;
 
-    std::vector<ModelVertex> vertices;
-    std::vector<std::uint32_t> indices;
-
-    constexpr auto vertices_per_side = row_count * 2U;
-    constexpr auto vertices_per_blade = vertices_per_side * 2U;
-
-    constexpr auto triangles_per_side = (row_count - 1U) * 2U;
-    constexpr auto triangles_per_blade = triangles_per_side * 2U;
-
-    vertices.reserve(static_cast<std::size_t>(blade_count) * vertices_per_blade);
-
-    indices.reserve(static_cast<std::size_t>(blade_count) * triangles_per_blade * 3U);
+    // LOD2+: crossed cards spanning the blades' reach (lean included) and most of their height.
+    constexpr auto card_half_width = 0.36F;
+    constexpr auto card_height = 0.85F;
 
     // Fixed seed so the mesh is deterministic; instances add the variation.
     std::mt19937 random_engine{0x47524153U};
@@ -185,56 +296,8 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
         return std::lerp(min_value, max_value, unit_distribution(random_engine));
     };
 
-    auto emit_blade_side =
-            [&](std::array<glm::vec3, row_count> const &centres, std::array<float, row_count> const &half_widths,
-                std::array<glm::vec3, row_count> const &normals, glm::vec3 const &across, bool front_face) {
-                auto const base_index = static_cast<std::uint32_t>(vertices.size());
-
-                for (std::uint32_t row = 0; row < row_count; ++row) {
-                    auto const t = row_heights[row];
-                    auto const normal = front_face ? normals[row] : -normals[row];
-
-                    // UV.y runs from 0 at the root to 1 at the tip.
-                    vertices.push_back(ModelVertex{
-                            .position = centres[row] - across * half_widths[row],
-                            .normal = normal,
-                            .tangent = glm::vec4{across, 1.0F},
-                            .texcoord = glm::vec2{0.0F, t},
-                    });
-
-                    vertices.push_back(ModelVertex{
-                            .position = centres[row] + across * half_widths[row],
-                            .normal = normal,
-                            .tangent = glm::vec4{across, 1.0F},
-                            .texcoord = glm::vec2{1.0F, t},
-                    });
-                }
-
-                for (std::uint32_t row = 0; row + 1U < row_count; ++row) {
-                    auto const lower_left = base_index + row * 2U + 0U;
-                    auto const lower_right = base_index + row * 2U + 1U;
-                    auto const upper_left = base_index + (row + 1U) * 2U + 0U;
-                    auto const upper_right = base_index + (row + 1U) * 2U + 1U;
-
-                    if (front_face) {
-                        indices.push_back(lower_left);
-                        indices.push_back(lower_right);
-                        indices.push_back(upper_right);
-
-                        indices.push_back(lower_left);
-                        indices.push_back(upper_right);
-                        indices.push_back(upper_left);
-                    } else {
-                        indices.push_back(upper_right);
-                        indices.push_back(lower_right);
-                        indices.push_back(lower_left);
-
-                        indices.push_back(upper_left);
-                        indices.push_back(upper_right);
-                        indices.push_back(lower_left);
-                    }
-                }
-            };
+    std::vector<GrassBlade> blades;
+    blades.reserve(blade_count);
 
     for (std::uint32_t blade = 0; blade < blade_count; ++blade) {
         // Sunflower distribution, avoiding empty patches and clusters.
@@ -245,32 +308,16 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
         auto const position_angle =
                 static_cast<float>(blade) * golden_angle + signed_distribution(random_engine) * 0.20F;
 
-        auto const root_position = glm::vec3{
-                std::cos(position_angle) * radius,
-                0.0F,
-                std::sin(position_angle) * radius,
-        };
-
         // Facing independent of radial position, or the clump looks like a star.
         auto const yaw = unit_distribution(random_engine) * two_pi;
 
-        auto const across = glm::normalize(glm::vec3{
-                std::cos(yaw),
-                0.0F,
-                std::sin(yaw),
-        });
-
-        auto const face_normal = glm::normalize(glm::vec3{
-                -across.z,
-                0.0F,
-                across.x,
-        });
+        auto const across = glm::normalize(glm::vec3{std::cos(yaw), 0.0F, std::sin(yaw)});
+        auto const face_normal = glm::normalize(glm::vec3{-across.z, 0.0F, across.x});
 
         // Shorter blades near the edge give a rounded silhouette.
         auto const edge_factor = radius / clump_radius;
 
         auto height = random_range(min_height, max_height);
-
         height *= std::lerp(1.0F, 0.82F, edge_factor * edge_factor);
 
         auto const half_width = random_range(min_half_width, max_half_width);
@@ -284,50 +331,36 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
             bend_direction = -bend_direction;
         }
 
-        bend_direction = glm::normalize(bend_direction);
+        auto const lean = random_range(min_lean, max_lean);
+        auto const curve = random_range(min_curve, max_curve);
 
-        auto const lean_amount = random_range(min_lean, max_lean);
-
-        auto const curve_amount = random_range(min_curve, max_curve);
-
-        std::array<glm::vec3, row_count> centres{};
-        std::array<float, row_count> half_widths{};
-        std::array<glm::vec3, row_count> normals{};
-
-        for (std::uint32_t row = 0; row < row_count; ++row) {
-            auto const t = row_heights[row];
-
-            // Centerline: linear lean plus quadratic curve towards the tip.
-            auto const horizontal_offset = bend_direction * (lean_amount * t + curve_amount * t * t);
-
-            centres[row] = root_position + glm::vec3{0.0F, height * t, 0.0F} + horizontal_offset;
-
-            // Non-linear taper keeps the lower blade wide.
-            auto const taper = std::pow(std::max(0.0F, 1.0F - t), 0.72F);
-
-            half_widths[row] = half_width * std::lerp(tip_width_factor, 1.0F, taper);
-
-            // Derivative of center(t) = up * height * t + dir * (lean * t + curve * t^2).
-            auto const centerline_tangent = glm::normalize(glm::vec3{0.0F, height, 0.0F} +
-                                                           bend_direction * (lean_amount + 2.0F * curve_amount * t));
-
-            // Width only varies along `across`, so the taper doesn't change the normal.
-            normals[row] = glm::normalize(glm::cross(across, centerline_tangent));
-        }
-
-        emit_blade_side(centres, half_widths, normals, across, true);
-
-        emit_blade_side(centres, half_widths, normals, across, false);
+        blades.push_back(GrassBlade{
+                .root = glm::vec3{std::cos(position_angle) * radius, 0.0F, std::sin(position_angle) * radius},
+                .across = across,
+                .bend_direction = glm::normalize(bend_direction),
+                .height = height,
+                .half_width = half_width,
+                .lean = lean,
+                .curve = curve,
+        });
     }
 
-    if (auto tangents = generate_tangents(vertices, indices); !tangents) {
-        return std::unexpected(tangents.error());
+    PrimitiveMeshData mesh;
+
+    for (auto const &blade: blades) {
+        emit_grass_blade(blade, near_rows, 1.0F, 1.0F, mesh.vertices, mesh.indices);
     }
 
-    return PrimitiveMeshData{
-            .vertices = std::move(vertices),
-            .indices = std::move(indices),
-    };
+    auto &mid_indices = mesh.lod_indices[0].emplace();
+    for (std::uint32_t blade = 0; blade < blade_count; blade += mid_blade_stride) {
+        emit_grass_blade(blades[blade], mid_rows, mid_width_scale, mid_curve_scale, mesh.vertices, mid_indices);
+    }
+
+    static_assert(grass_clump_card_lod == 2);
+    emit_grass_cards(card_half_width, card_height, mesh.vertices, mesh.lod_indices[1].emplace());
+
+    // LOD3 reuses the cards.
+    return mesh;
 }
 
 auto to_model_cpu_data(PrimitiveMeshData mesh) -> ModelCpuData {
@@ -336,6 +369,7 @@ auto to_model_cpu_data(PrimitiveMeshData mesh) -> ModelCpuData {
     ModelCpuPrimitive primitive{
             .vertices = std::move(mesh.vertices),
             .indices = std::move(mesh.indices),
+            .reduced_indices = std::move(mesh.lod_indices),
             .material_index = std::nullopt,
     };
 

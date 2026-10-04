@@ -40,9 +40,18 @@ struct alignas(16) GpuMaterial {
     // Non-zero replaces the base colour with a per-meshlet hash colour; see debug_meshlet_colour() in
     // forward_geom.slang.
     std::uint32_t debug_meshlet_colours = 0;
-    float _pad2 = 0.0F;
+
+    // material_flag_* bits. Mirrors Material::flags in scene_types.slang.
+    std::uint32_t flags = 0;
 
     static constexpr std::uint32_t no_shadow_cascade = ~0U;
+
+    // Drawn without back-face culling; back faces shade with the normal flipped.
+    static constexpr std::uint32_t flag_double_sided = 1U << 0U;
+
+    // Mask materials under MSAA: the depth prepass turns alpha into sample coverage instead of a hard cutoff, so
+    // alpha-tested edges are antialiased.
+    static constexpr std::uint32_t flag_alpha_to_coverage = 1U << 1U;
 };
 
 static_assert(std::is_trivially_copyable_v<GpuMaterial>);

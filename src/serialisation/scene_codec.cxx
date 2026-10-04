@@ -190,10 +190,15 @@ namespace {
             for (auto const texture: material.textures) {
                 writer.write(texture);
             }
+
+            write_bool(writer, material.double_sided);
+            write_bool(writer, material.alpha_to_coverage);
+            writer.write(material.far_material);
+            writer.write(material.far_material_lod);
         }
     }
 
-    auto read_materials(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_materials(ByteReader &reader, std::uint16_t version, SceneDescription &scene) -> void {
         scene.materials.resize(read_count(reader, 64));
 
         for (auto &material: scene.materials) {
@@ -223,6 +228,14 @@ namespace {
 
             for (auto &texture: material.textures) {
                 reader.read(texture);
+            }
+
+            // v1 has none of these: single-sided, hard cutoff, no far material.
+            if (version >= 2) {
+                material.double_sided = read_bool(reader);
+                material.alpha_to_coverage = read_bool(reader);
+                reader.read(material.far_material);
+                reader.read(material.far_material_lod);
             }
         }
     }
@@ -820,7 +833,7 @@ namespace {
                          .write = write_textures,
                          .read = read_textures},
             SectionCodec{.type = scene_section::materials,
-                         .version = scene_section_version,
+                         .version = materials_section_version,
                          .oldest_readable = 1,
                          .write = write_materials,
                          .read = read_materials},
@@ -1181,6 +1194,14 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
         if (material.max_shadow_cascade >= shadow_cascade_count &&
             material.max_shadow_cascade != GpuMaterial::no_shadow_cascade) {
             return fail("material shadow cascade out of range");
+        }
+    }
+
+    for (std::size_t index = 0; index < scene.materials.size(); ++index) {
+        auto const far_material = scene.materials[index].far_material;
+
+        if (far_material != scene_no_index && (far_material >= scene.materials.size() || far_material == index)) {
+            return fail("material's far material is out of range or itself");
         }
     }
 

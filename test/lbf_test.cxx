@@ -471,7 +471,12 @@ TEST_SUITE("unit") {
         SceneMaterial material{.name = "red", .base_colour_factor = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F}};
         material.textures[scene_material_texture::metallic_roughness] = 0;
         material.alpha_mode = AlphaMode::mask;
+        material.alpha_to_coverage = true;
+        material.double_sided = true;
+        material.far_material = 1;
+        material.far_material_lod = 3;
         scene.materials.push_back(material);
+        scene.materials.push_back(SceneMaterial{.name = "red_far"});
 
         scene.entities.push_back(SceneEntity{
                 .name = "root", .transform = Components::Transform{.position = glm::vec3{1.0F, 2.0F, 3.0F}}});
@@ -501,6 +506,12 @@ TEST_SUITE("unit") {
         CHECK(decoded->materials[0].alpha_mode == AlphaMode::mask);
         CHECK(decoded->materials[0].textures[scene_material_texture::metallic_roughness] == 0);
         CHECK(decoded->materials[0].textures[scene_material_texture::base_colour] == scene_no_index);
+        CHECK(decoded->materials[0].alpha_to_coverage);
+        CHECK(decoded->materials[0].double_sided);
+        CHECK(decoded->materials[0].far_material == 1);
+        CHECK(decoded->materials[0].far_material_lod == 3);
+        CHECK(decoded->materials[1].far_material == scene_no_index);
+        CHECK_FALSE(decoded->materials[1].double_sided);
         REQUIRE(decoded->entities.size() == 3);
         CHECK(decoded->entities[0].transform->position.z == doctest::Approx(3.0F));
         CHECK_FALSE(decoded->entities[1].transform.has_value());
@@ -610,6 +621,47 @@ TEST_SUITE("unit") {
         REQUIRE(decoded.has_value());
         REQUIRE(decoded->instanced_models.size() == 1);
         CHECK(decoded->instanced_models[0].transforms == transforms);
+    }
+
+    TEST_CASE("Version 1 material sections still decode, single-sided and without a far material") {
+        SceneDescription scene;
+        auto payload = encode_scene(scene);
+
+        // v1 layout: everything up to and including the texture indices.
+        ByteWriter section;
+        section.write(std::uint32_t{1});
+        section.write_string("old");
+        for (auto const value: {1.0F, 1.0F, 1.0F, 1.0F, 0.0F, 0.0F, 0.0F}) {
+            section.write(value); // base colour, emissive
+        }
+        for (auto const value: {1.0F, 0.0F, 0.5F, 1.0F, 1.0F, 0.5F, 0.3F}) {
+            section.write(value); // emissive strength .. alpha cutoff, wind
+        }
+        section.write(std::uint32_t{shadow_cascade_count - 1});
+        section.write(std::to_underlying(AlphaMode::mask));
+        section.write(std::uint8_t{0}); // sampler
+        section.write(std::uint8_t{0}); // debug meshlet colours
+        for (auto index = 0; index < 5; ++index) {
+            section.write(scene_no_index);
+        }
+
+        ByteWriter framed;
+        framed.write(scene_section::materials);
+        framed.write(std::uint16_t{1});
+        framed.write(std::uint16_t{0});
+        framed.write(static_cast<std::uint64_t>(section.size()));
+        framed.write_span(section.bytes());
+        payload.insert(payload.end(), framed.bytes().begin(), framed.bytes().end());
+
+        auto const decoded = decode_scene(payload);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->materials.size() == 1);
+        CHECK(decoded->materials[0].name == "old");
+        CHECK(decoded->materials[0].alpha_mode == AlphaMode::mask);
+        CHECK(decoded->materials[0].wind_strength == doctest::Approx(0.3F));
+        CHECK_FALSE(decoded->materials[0].double_sided);
+        CHECK_FALSE(decoded->materials[0].alpha_to_coverage);
+        CHECK(decoded->materials[0].far_material == scene_no_index);
     }
 
     TEST_CASE("Scene codec skips sections from a newer engine and rejects bad references") {
@@ -959,6 +1011,10 @@ TEST_SUITE("unit") {
             rejected([&](SceneDescription &scene) { scene.materials[0].roughness_factor = nan; });
             rejected([](SceneDescription &scene) { scene.materials[0].max_shadow_cascade = shadow_cascade_count; });
             rejected([](SceneDescription &scene) { scene.materials[0].max_shadow_cascade = 0xFFFFFFFEU; });
+            rejected([](SceneDescription &scene) { scene.materials[0].far_material = 0; });
+            rejected([](SceneDescription &scene) {
+                scene.materials[0].far_material = static_cast<std::uint32_t>(scene.materials.size());
+            });
         }
 
         SUBCASE("lifetimes and gravity") {

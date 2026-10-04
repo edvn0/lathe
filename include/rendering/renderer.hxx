@@ -140,6 +140,7 @@ struct FrameStats {
 
     std::uint32_t indirect_command_count = 0;
     std::uint32_t opaque_indirect_count = 0;
+    std::uint32_t double_sided_indirect_count = 0;
     std::uint32_t mask_indirect_count = 0;
     std::uint32_t blend_indirect_count = 0;
 
@@ -903,9 +904,9 @@ private:
         // unambiguous 16-byte stride.
         Buffer frustum_planes_buffer{};
 
-        // Punctual lights, maximum_light_count capacity. light_count slots are populated.
+        // Punctual lights, maximum_light_count capacity. light_count (with the counts below, which keeps the struct
+        // free of padding holes) slots are populated.
         Buffer lights_buffer{};
-        std::uint32_t light_count = 0;
 
         // light_cull.slang's output: maximum_light_count view-space spheres, then as many light indices, then the
         // visible count.
@@ -954,17 +955,23 @@ private:
         // Parallel to indirect_commands.
         std::vector<GpuCullBounds> batch_bounds;
 
+        // Populated slots of lights_buffer.
+        std::uint32_t light_count = 0;
+
         // Number of batches, not instances. This is the drawCount for vkCmdDrawMeshTasksIndirectEXT.
         std::uint32_t indirect_command_count = 0;
 
-        // Batches are ordered opaque, mask, blend; culling preserves the order.
+        // Batches are ordered opaque, double-sided (opaque, drawn without back-face culling), mask, blend; culling
+        // preserves the order.
         std::uint32_t opaque_indirect_count = 0;
+        std::uint32_t double_sided_indirect_count = 0;
         std::uint32_t mask_indirect_count = 0;
         std::uint32_t blend_indirect_count = 0;
 
-        // Per-cascade prefix of the opaque/mask ranges. Batches are sorted by descending max_shadow_cascade, so a
-        // material can skip the far cascades.
+        // Per-cascade prefix of the opaque/double-sided/mask ranges. Batches are sorted by descending
+        // max_shadow_cascade, so a material can skip the far cascades.
         std::array<std::uint32_t, shadow_cascade_count> shadow_opaque_indirect_count{};
+        std::array<std::uint32_t, shadow_cascade_count> shadow_double_sided_indirect_count{};
         std::array<std::uint32_t, shadow_cascade_count> shadow_mask_indirect_count{};
     };
 
@@ -1074,6 +1081,7 @@ private:
     std::vector<BatchEntry *> active_batches_;
 
     std::vector<BatchEntry const *> opaque_batches_;
+    std::vector<BatchEntry const *> double_sided_batches_;
     std::vector<BatchEntry const *> mask_batches_;
     std::vector<PendingBlendBatch> blend_batches_;
 

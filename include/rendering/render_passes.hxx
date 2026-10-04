@@ -45,8 +45,8 @@ namespace render_pass {
         bool compute_only = false;
     };
 
-    // `indirect` holds one GpuDrawCommand per batch, ordered opaque | mask | blend like DrawCounts. `index_buffer`
-    // is read by the instanced commands.
+    // `indirect` holds one GpuDrawCommand per batch, ordered opaque | double_sided | mask | blend like DrawCounts.
+    // `index_buffer` is read by the instanced commands.
     struct DrawBuffers {
         Buffer const &draws;
         Buffer const &transforms;
@@ -54,10 +54,19 @@ namespace render_pass {
         VkBuffer index_buffer = VK_NULL_HANDLE;
     };
 
+    // Consecutive ranges of the indirect commands. double_sided batches are opaque ones drawn without back-face
+    // culling; they share the opaque pipelines.
     struct DrawCounts {
         std::uint32_t opaque = 0;
+        std::uint32_t double_sided = 0;
         std::uint32_t mask = 0;
         std::uint32_t blend = 0;
+
+        [[nodiscard]] constexpr auto double_sided_first() const noexcept -> std::uint32_t { return opaque; }
+        [[nodiscard]] constexpr auto mask_first() const noexcept -> std::uint32_t { return opaque + double_sided; }
+        [[nodiscard]] constexpr auto blend_first() const noexcept -> std::uint32_t {
+            return opaque + double_sided + mask;
+        }
     };
 
     // The body of a frame graph raster pass: the executor has begun rendering into the atlas, loading it when
@@ -66,6 +75,7 @@ namespace render_pass {
         DrawBuffers draws;
         DrawCounts counts;
         std::array<std::uint32_t, shadow_cascade_count> const &opaque_cascade_counts;
+        std::array<std::uint32_t, shadow_cascade_count> const &double_sided_cascade_counts;
         std::array<std::uint32_t, shadow_cascade_count> const &mask_cascade_counts;
 
         // Only tiles in update_mask are cleared and redrawn; the rest persist across frames.

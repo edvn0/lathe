@@ -45,6 +45,7 @@ in one place:
 | `draw_calls` | `objects` (1000, 4000, 16000) | one entity per object, 16 materials: per-object CPU submission, culling, draw count |
 | `instancing` | `instances` (10000, 50000, 200000) | one instanced model of 12-triangle cubes: GPU culling and per-instance cost, shadows included, without per-object CPU cost |
 | `instancing_no_shadows` | `instances` (10000, 50000, 200000) | the same field casting no shadows: subtract it from `instancing` for the shadow passes' share |
+| `grass` | `clumps` (20000, 60000, 180000) | a field of engine grass clumps at the game's density, seen from head height: blade geometry near, alpha-to-coverage cards far, wind on, no shadows |
 | `lights` | `point_lights` (64, 512, 4096) | 400 boxes lit by many point lights: light culling, clustering, shading per light |
 | `overdraw` | `layers` (4, 16, 64) | full-screen alpha-blended layers: fill rate and blending |
 

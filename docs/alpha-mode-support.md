@@ -168,3 +168,27 @@ Three draws instead of one, all within the existing single `vkCmdBeginRendering`
 - Per-instance sorting for blend (only per-batch sorting specified above).
 - Alpha-to-coverage as an alternative to `discard` for mask under MSAA — worth considering later given `samples_` is already a first-class renderer setting, but not included here.
 - Two-sided-only-for-mask enforcement at material-authoring time (this spec always forces `VK_CULL_MODE_NONE` for mask draws at the pipeline level, which is a reasonable default but not configurable per-material).
+
+## 6. Later additions: double-sided opaque, alpha to coverage, far materials
+
+Two items from section 5 have since landed, plus a per-LOD material switch, all driven by the engine grass clump
+(`make_grass_clump_mesh()`).
+
+- **Double-sided opaque** (`MaterialCreateInfo::double_sided`, `GpuMaterial::flag_double_sided`). Opaque batches of
+  double-sided materials get a fourth range between opaque and mask, so the indirect commands are now
+  `opaque | double_sided | mask | blend` (`render_pass::DrawCounts`, with `mask_first()` and `blend_first()` for the
+  offsets). That range draws with the opaque pipelines (so the prepass still has no fragment shader and keeps early-Z)
+  but with `VK_CULL_MODE_NONE` and frustum-only meshlet culling, in the prepass and forward alike. Shadows have their
+  own per-cascade prefix for it (`shadow_double_sided_indirect_count`). Forward flips the normal on back faces
+  (`SV_IsFrontFace`) for any double-sided material, mask ones included.
+- **Alpha to coverage** (`MaterialCreateInfo::alpha_to_coverage`, mask only). Under MSAA the masked prepass writes
+  `SV_Coverage` instead of discarding at the cutoff: alpha is sharpened by its screen-space derivative so the edge is
+  about a pixel wide, and that share of the samples is kept (rotated per pixel). Forward tests depth `EQUAL`, so it
+  shades exactly those samples and skips its own cutoff for these materials. `PC::sample_count` carries the sample
+  count. Without MSAA it is the plain cutoff.
+- **Far material** (`MaterialCreateInfo::far_material` / `far_material_lod`). From that LOD on, the renderer draws an
+  instance with the far material instead (`MaterialStorage::material_for_lod()`, resolved once per batch). The grass
+  clump's LOD0/1 are opaque double-sided blades and LOD2/3 crossed cards, so `grass_materials()` pairs an opaque blade
+  material with an alpha-to-coverage card material. Only one hop is followed. The renderer holds a reference to the far
+  material for as long as a material names it. Scenes save these fields in v2 of the materials section, and the card
+  texture by its engine name (`engine://grass_card`).

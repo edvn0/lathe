@@ -60,6 +60,12 @@ struct SceneMaterial {
     AlphaMode alpha_mode = AlphaMode::opaque;
     DefaultSampler sampler = DefaultSampler::linear_repeat;
     bool debug_meshlet_colours = false;
+    bool double_sided = false;
+    bool alpha_to_coverage = false;
+
+    // Index into SceneDescription::materials, or scene_no_index; see MaterialCreateInfo::far_material.
+    std::uint32_t far_material = scene_no_index;
+    std::uint32_t far_material_lod = 2;
 
     // base colour, normal, metallic-roughness, occlusion, emissive; scene_no_index uses the default texture.
     std::array<std::uint32_t, 5> textures{scene_no_index, scene_no_index, scene_no_index, scene_no_index,
@@ -203,6 +209,9 @@ inline constexpr std::uint16_t scene_section_version = 1;
 
 // v2 stores instance transforms column-wise and byte-shuffled, as translation/rotation/scale where they decompose.
 inline constexpr std::uint16_t instanced_models_section_version = 2;
+
+// v2 adds double_sided, alpha_to_coverage and the far material (index and LOD).
+inline constexpr std::uint16_t materials_section_version = 2;
 
 // The environment section: source, lighting, sun and fog (see scene/environment.hxx). Older engines skip it, and scenes
 // without it load as flat ambient.

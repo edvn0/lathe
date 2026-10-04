@@ -4,6 +4,7 @@
 #include <volk.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -66,6 +67,25 @@ struct ImageAliasing {
     VkDeviceSize offset = 0;
 };
 
+// Where an uploaded image's mip levels come from.
+enum class ImageMipSource : std::uint8_t {
+    generate, // blitted from level 0 on the GPU
+    provided, // part of the uploaded pixels
+};
+
+// Bytes from the start of a tightly packed mip chain of a `width` x `height` image, `texel_bytes` per texel, to
+// `level`.
+[[nodiscard]] constexpr auto mip_chain_offset(std::uint32_t width, std::uint32_t height, std::uint32_t texel_bytes,
+                                              std::uint32_t level) noexcept -> std::size_t {
+    std::size_t offset = 0;
+    for (std::uint32_t current = 0; current < level; ++current) {
+        offset += static_cast<std::size_t>(width) * height * texel_bytes;
+        width = width > 1 ? width / 2 : 1;
+        height = height > 1 ? height / 2 : 1;
+    }
+    return offset;
+}
+
 struct ImageCreateInfo {
     VkExtent3D extent{
             .width = 1,
@@ -116,9 +136,11 @@ public:
     [[nodiscard]]
     static auto create(VulkanContext &context, ImageCreateInfo const &create_info) -> std::expected<Image, ImageError>;
 
+    // `pixels` is level 0, from which the other levels are blitted, or with ImageMipSource::provided every level
+    // from 0 down, tightly packed (for mips made on the CPU, e.g. coverage-preserving alpha).
     [[nodiscard]]
-    static auto create(VulkanContext &context, ImageCreateInfo const &create_info, std::span<const std::byte> pixels)
-            -> std::expected<Image, ImageError>;
+    static auto create(VulkanContext &context, ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
+                       ImageMipSource mip_source = ImageMipSource::generate) -> std::expected<Image, ImageError>;
 
     // What an image of `create_info` needs from memory (vkGetDeviceImageMemoryRequirements), without creating it.
     [[nodiscard]]

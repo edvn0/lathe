@@ -120,6 +120,10 @@ auto MaterialStorage::create(VulkanContext &context, MaterialStorageCreateInfo c
 
 auto MaterialStorage::create_material(MaterialCreateInfo const &create_info)
         -> std::expected<MaterialHandle, MaterialStorageError> {
+    if (create_info.far_material.valid() && slots_.get(create_info.far_material) == nullptr) {
+        return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
+    }
+
     auto allocation = slots_.allocate();
 
     if (!allocation) {
@@ -142,6 +146,11 @@ auto MaterialStorage::update_material(MaterialHandle handle, MaterialCreateInfo 
 
     if (slot == nullptr) {
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_handle));
+    }
+
+    if (create_info.far_material.valid() &&
+        (create_info.far_material == handle || slots_.get(create_info.far_material) == nullptr)) {
+        return std::unexpected(make_error(MaterialStorageErrorType::invalid_argument));
     }
 
     slot->source = create_info;
@@ -192,6 +201,22 @@ auto MaterialStorage::destroy_material(MaterialHandle handle) -> std::expected<v
     static_cast<void>(slots_.release(handle));
 
     return {};
+}
+
+auto MaterialStorage::material_for_lod(MaterialHandle handle, std::uint32_t lod) const noexcept -> MaterialHandle {
+    auto const *slot = slots_.get(handle);
+
+    if (slot == nullptr) {
+        return handle;
+    }
+
+    auto const &source = slot->source;
+
+    if (source.far_material.valid() && lod >= source.far_material_lod && slots_.get(source.far_material) != nullptr) {
+        return source.far_material;
+    }
+
+    return handle;
 }
 
 auto MaterialStorage::get(MaterialHandle handle) const noexcept -> GpuMaterial const * {
@@ -372,5 +397,7 @@ auto to_gpu_material(MaterialCreateInfo const &create_info) noexcept -> GpuMater
             .wind_strength = create_info.wind_strength,
             .max_shadow_cascade = create_info.max_shadow_cascade,
             .debug_meshlet_colours = create_info.debug_meshlet_colours ? 1U : 0U,
+            .flags = (create_info.double_sided ? GpuMaterial::flag_double_sided : 0U) |
+                     (create_info.alpha_to_coverage ? GpuMaterial::flag_alpha_to_coverage : 0U),
     };
 }

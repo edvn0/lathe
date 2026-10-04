@@ -66,19 +66,51 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
     }
 }
 
-// Only for the masked prepass pipelines; the opaque prepass has no fragment shader.
+// Only for the masked prepass pipelines; the opaque prepass has no fragment shader. Returns the samples the fragment
+// covers: all of them, or with alpha to coverage under MSAA the share its alpha asks for, so forward (which tests
+// depth EQUAL) shades exactly those.
 [shader("fragment")]
-void main_fs(VertexOutput input, uniform PC pc)
+uint main_fs(VertexOutput input, uniform PC pc) : SV_Coverage
 {
     const var material = pc.materials[input.material_index];
 
-    if (material.alpha_mode == AlphaMode.mask) {
-        const var texture = sampled_2d[NonUniformResourceIndex(material.base_colour_texture)];
-        const var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
-        float alpha = texture.Sample(sampler, input.texture_coordinate).a;
+    if (material.alpha_mode != AlphaMode.mask) {
+        return 0xFFFFFFFFu;
+    }
 
+    const var texture = sampled_2d[NonUniformResourceIndex(material.base_colour_texture)];
+    const var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
+    const float alpha = texture.Sample(sampler, input.texture_coordinate).a;
+
+    const uint sample_count = pc.sample_count;
+
+    if ((material.flags & material_flag_alpha_to_coverage) == 0 || sample_count <= 1) {
         if (alpha < material.alpha_cutoff) {
             discard;
         }
+        return 0xFFFFFFFFu;
     }
+
+    // Sharpened so the cutoff edge is about a pixel wide whatever the mip level, then turned into that share of
+    // the samples (Castano's alpha-to-coverage sharpening).
+    const float edge_width = max(fwidth(alpha), 1e-4);
+    const float coverage = saturate((alpha - material.alpha_cutoff) / edge_width + 0.5);
+    const uint covered = min(uint(coverage * float(sample_count) + 0.5), sample_count);
+
+    if (covered == 0) {
+        discard;
+    }
+
+    if (covered >= sample_count) {
+        return 0xFFFFFFFFu;
+    }
+
+    // Which samples a partial pixel keeps rotates with the pixel, so neighbouring edge pixels don't all drop the same
+    // samples (that reads as a pattern once resolved).
+    const uint2 pixel = uint2(input.position.xy);
+    const uint rotation = (pixel.x + pixel.y * 3u) % sample_count;
+    const uint all_samples = (1u << sample_count) - 1u;
+    const uint kept = (1u << covered) - 1u;
+
+    return ((kept << rotation) | (kept >> (sample_count - rotation))) & all_samples;
 }

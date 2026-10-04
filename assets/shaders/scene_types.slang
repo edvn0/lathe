@@ -112,8 +112,16 @@ public struct Material {
 
     // Non-zero shades with a per-meshlet colour instead of the base colour.
     public uint debug_meshlet_colours = 0;
-    public float _pad2 = 0.0F;
+
+    // material_flag_* bits. Mirrors GpuMaterial::flags.
+    public uint flags = 0;
 };
+
+// Drawn without back-face culling; back faces shade with the normal flipped.
+public static const uint material_flag_double_sided = 1u;
+
+// Mask materials under MSAA: the prepass writes alpha as sample coverage instead of cutting at alpha_cutoff.
+public static const uint material_flag_alpha_to_coverage = 2u;
 
 // Clustered lighting: the grid is set at runtime (UBO::cluster_grid_*, see ClusterGridSettings in cluster_grid.hxx).
 // light_cluster.slang sizes its shared per-slice arrays by this. Mirrors cluster_grid_maximum_depth_slices.
@@ -246,7 +254,9 @@ public struct PC
     // A pointer rather than a UBO array for an unambiguous 16-byte stride.
     public Ptr<GpuLight> lights;
     public uint light_count;
-    public uint _padding;
+
+    // Samples per pixel of the target being drawn; only read by the masked depth prepass, for alpha to coverage.
+    public uint sample_count;
 
     // GTAO texture and render resolution; only read by the forward fragment shader. Kept on the shared PC so every
     // pass's push constants stay layout-compatible.

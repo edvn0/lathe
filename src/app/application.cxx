@@ -612,6 +612,15 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
         if (info.alpha_mode == AlphaMode::mask) {
             changed |= ImGui::SliderFloat("Alpha cutoff", &info.alpha_cutoff, 0.0F, 1.0F);
+            changed |= ImGui::Checkbox("Alpha to coverage", &info.alpha_to_coverage);
+        }
+
+        changed |= ImGui::Checkbox("Double-sided", &info.double_sided);
+
+        if (info.far_material.valid()) {
+            auto const far_name = renderer->assets().materials().name_of(info.far_material);
+            ImGui::TextDisabled("From LOD %u: %s", info.far_material_lod,
+                                far_name.empty() ? "(unnamed material)" : std::string{far_name}.c_str());
         }
 
         bool casts_shadows = info.max_shadow_cascade != GpuMaterial::no_shadow_cascade;
@@ -2029,8 +2038,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         ImGui::Text("Triangles submitted (pre-cull): %s (%u)", fmt(stats.submitted_triangle_count),
                     stats.submitted_triangle_count);
-        ImGui::Text("Draw calls: %u  (opaque %u / mask %u / blend %u)", stats.indirect_command_count,
-                    stats.opaque_indirect_count, stats.mask_indirect_count, stats.blend_indirect_count);
+        ImGui::Text("Draw calls: %u  (opaque %u / double-sided %u / mask %u / blend %u)", stats.indirect_command_count,
+                    stats.opaque_indirect_count, stats.double_sided_indirect_count, stats.mask_indirect_count,
+                    stats.blend_indirect_count);
         ImGui::Text("Instances submitted: %s (%u)", fmt(stats.submitted_instance_count),
                     stats.submitted_instance_count);
 

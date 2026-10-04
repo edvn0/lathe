@@ -195,11 +195,18 @@ float3 cluster_heatmap_colour(uint light_count, uint capacity)
 }
 
 [shader("fragment")]
-OutputFS main_fs(VertexOutput input, uniform PC pc)
+OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform PC pc)
 {
     const var ubo = pc.ubo;
 
+    const var material = pc.materials[input.material_index];
+
     float3 normal = normalize(input.world_normal);
+
+    // Double-sided materials draw without culling; a back face is lit as the side the camera sees.
+    if ((material.flags & material_flag_double_sided) != 0 && !is_front_face) {
+        normal = -normal;
+    }
     float3 tangent = normalize(input.world_tangent.xyz);
 
     // Re-orthogonalize after interpolation.
@@ -210,7 +217,6 @@ OutputFS main_fs(VertexOutput input, uniform PC pc)
 
     float3 light_direction = normalize(ubo.light_direction);
 
-    const var material = pc.materials[input.material_index];
     const var texture = sampled_2d[NonUniformResourceIndex(material.base_colour_texture)];
     const var emissive_texture = sampled_2d[NonUniformResourceIndex(material.emissive_texture)];
     const var ambient_occlusion_texture = sampled_2d[NonUniformResourceIndex(material.occlusion_texture)];
@@ -275,7 +281,10 @@ OutputFS main_fs(VertexOutput input, uniform PC pc)
 
 const var base_sample = texture.Sample(sampler, uv);
 
-if (material.alpha_mode == AlphaMode.mask && base_sample.a < material.alpha_cutoff) {
+// With alpha to coverage the prepass already chose the samples (this pass tests depth EQUAL), so cutting here would
+// drop the partly covered edge pixels it kept.
+if (material.alpha_mode == AlphaMode.mask && (material.flags & material_flag_alpha_to_coverage) == 0 &&
+    base_sample.a < material.alpha_cutoff) {
     discard;
 }
 
