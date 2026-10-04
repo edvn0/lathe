@@ -28,7 +28,7 @@
 // (CompressedModelVertex, GpuMeshlet, meshlet limits), so changing any of those must bump the version; the
 // static_asserts in cooked_model.cxx trip when one changes. When a bump makes old payloads unusable (e.g. a new
 // vertex format), raise oldest_readable too, and re-saving re-cooks those assets from source.
-inline constexpr std::uint16_t cooked_model_version = 1;
+inline constexpr std::uint16_t cooked_model_version = 2; // v2: per-material double_sided flag
 inline constexpr std::uint16_t cooked_model_oldest_readable_version = 1;
 
 struct CookedImageRef {

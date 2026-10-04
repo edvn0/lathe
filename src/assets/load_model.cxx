@@ -15,13 +15,16 @@
 #include <vector>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <execution>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <ranges>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -57,7 +60,8 @@ namespace {
     }
 
     auto accumulate_node_lights(fastgltf::Asset const &asset, ModelCpuData const &cpu_data, std::uint32_t node_index,
-                                ImportConvention const &convention, glm::mat4 const &parent_transform, std::vector<ModelCpuLight> &out_lights) -> void {
+                                ImportConvention const &convention, glm::mat4 const &parent_transform,
+                                std::vector<ModelCpuLight> &out_lights) -> void {
         auto const &gltf_node = asset.nodes[node_index];
         auto const local_to_model = parent_transform * cpu_data.nodes[node_index].local_transform;
 
@@ -76,7 +80,8 @@ namespace {
 
                 light.position = glm::vec3{local_to_model[3]};
                 // glTF lights point down local -Z; local_to_model is already Z-mirrored, which maps that to +Z.
-                light.direction = glm::normalize(glm::mat3{local_to_model} * glm::vec3{0.0F, 0.0F, -convention.z_sign()});
+                light.direction =
+                        glm::normalize(glm::mat3{local_to_model} * glm::vec3{0.0F, 0.0F, -convention.z_sign()});
 
                 light.colour = glm::vec3{gltf_light.color[0], gltf_light.color[1], gltf_light.color[2]};
                 light.intensity = gltf_light.intensity;
@@ -401,7 +406,8 @@ auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *
 namespace {
 
     auto extract_primitive_cpu(fastgltf::Asset const &asset, fastgltf::Primitive const &primitive,
-                               ImportConvention const &convention, ModelLoadProfile *profile) -> std::expected<ModelCpuPrimitive, ModelLoadError> {
+                               ImportConvention const &convention, ModelLoadProfile *profile)
+            -> std::expected<ModelCpuPrimitive, ModelLoadError> {
         ScopedProfileSample extract_sample{profile != nullptr ? &profile->primitive_extract_ns : nullptr};
 
         if (primitive.type != fastgltf::PrimitiveType::Triangles) {
@@ -458,8 +464,8 @@ namespace {
 
             for (std::size_t index = 0; index < vertices.size(); ++index) {
                 // A reflection also flips the bitangent sign.
-                vertices[index].tangent =
-                        glm::vec4{tangents[index].x, tangents[index].y, z_sign * tangents[index].z, z_sign * tangents[index].w};
+                vertices[index].tangent = glm::vec4{tangents[index].x, tangents[index].y, z_sign * tangents[index].z,
+                                                    z_sign * tangents[index].w};
             }
 
             has_tangents = true;
@@ -475,9 +481,8 @@ namespace {
             }
 
             for (std::size_t index = 0; index < vertices.size(); ++index) {
-                vertices[index].texcoord = glm::vec2{texcoords[index].x, convention.flip_v
-                                                                                 ? 1.0F - texcoords[index].y
-                                                                                 : texcoords[index].y};
+                vertices[index].texcoord = glm::vec2{texcoords[index].x, convention.flip_v ? 1.0F - texcoords[index].y
+                                                                                           : texcoords[index].y};
             }
         }
 
@@ -706,6 +711,93 @@ namespace {
         return cpu_index;
     }
 
+    // Converters (Blender's FBX importer among them) mark materials BLEND because the base colour texture has an
+    // alpha channel, even when every texel is solid. Blended draws skip the depth prepass and shadows and sort per
+    // batch, so geometry that should occlude shows through itself. Such a material is drawn opaque instead, which
+    // renders identically apart from those artefacts.
+    auto demote_opaque_blend_materials(ModelCpuData &cpu_data) -> void {
+        std::vector<std::size_t> candidates;
+
+        for (auto const &material: cpu_data.materials) {
+            if (material.alpha_mode == AlphaMode::blend && material.base_colour_factor.w >= 0.999F &&
+                material.base_colour_image.has_value() &&
+                !std::ranges::contains(candidates, *material.base_colour_image)) {
+                candidates.push_back(*material.base_colour_image);
+            }
+        }
+
+        if (candidates.empty()) {
+            return;
+        }
+
+        auto const classify = [&cpu_data](std::size_t image) -> std::optional<AlphaCoverage> {
+            auto const &source = cpu_data.image_sources[image];
+
+            if (!source.encoded.empty()) {
+                return classify_encoded_alpha(source.encoded);
+            }
+
+            if (source.path.empty() || source.path.extension() == ".dds") {
+                return std::nullopt;
+            }
+
+            std::ifstream file{source.path, std::ios::binary | std::ios::ate};
+
+            if (!file) {
+                return std::nullopt;
+            }
+
+            std::vector<std::byte> bytes(static_cast<std::size_t>(file.tellg()));
+            file.seekg(0);
+            file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+
+            return file ? classify_encoded_alpha(bytes) : std::nullopt;
+        };
+
+        std::vector<std::optional<AlphaCoverage>> coverage(candidates.size());
+        std::atomic<std::size_t> next{0};
+
+        // Plain threads, not thread_pool(): this can itself run on a pool thread, which mustn't block on the pool.
+        auto const worker = [&] {
+            for (auto index = next.fetch_add(1); index < candidates.size(); index = next.fetch_add(1)) {
+                coverage[index] = classify(candidates[index]);
+            }
+        };
+
+        std::vector<std::jthread> workers;
+        auto const worker_count =
+                std::min<std::size_t>(candidates.size(), std::max(1U, std::thread::hardware_concurrency()));
+
+        for (std::size_t i = 1; i < worker_count; ++i) {
+            workers.emplace_back(worker);
+        }
+
+        worker();
+        workers.clear();
+
+        std::size_t demoted = 0;
+
+        for (auto &material: cpu_data.materials) {
+            if (material.alpha_mode != AlphaMode::blend || material.base_colour_factor.w < 0.999F ||
+                !material.base_colour_image.has_value()) {
+                continue;
+            }
+
+            auto const found = std::ranges::find(candidates, *material.base_colour_image);
+            auto const result = coverage[static_cast<std::size_t>(found - candidates.begin())];
+
+            if (result == AlphaCoverage::opaque) {
+                material.alpha_mode = AlphaMode::opaque;
+                ++demoted;
+            }
+        }
+
+        if (demoted != 0) {
+            debug("[load_model_cpu]: {} of {} BLEND materials have a solid base colour alpha; loading them opaque",
+                  demoted, cpu_data.materials.size());
+        }
+    }
+
     auto load_material_cpu(fastgltf::Asset const &asset, fastgltf::Material const &gltf_material,
                            SamplerStorage &sampler_storage, std::filesystem::path const &gltf_path,
                            std::filesystem::path const &base_directory,
@@ -725,6 +817,7 @@ namespace {
         material.metallic_factor = gltf_material.pbrData.metallicFactor;
         material.roughness_factor = gltf_material.pbrData.roughnessFactor;
         material.alpha_cutoff = gltf_material.alphaCutoff;
+        material.double_sided = gltf_material.doubleSided;
 
         switch (gltf_material.alphaMode) {
             case fastgltf::AlphaMode::Opaque:
@@ -753,7 +846,8 @@ namespace {
         material.base_colour_image = *base_colour_image;
 
         // assimp drops alphaMode, so recover it from the base colour's alpha (these textures store opacity there).
-        if (convention.left_handed && material.alpha_mode == AlphaMode::opaque && material.base_colour_image.has_value()) {
+        if (convention.left_handed && material.alpha_mode == AlphaMode::opaque &&
+            material.base_colour_image.has_value()) {
             auto const &source = image_sources[*material.base_colour_image];
 
             if (!source.path.empty() && source.path.extension() == ".dds") {
@@ -881,6 +975,8 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
 
         cpu_data.materials.push_back(*material);
     }
+
+    demote_opaque_blend_materials(cpu_data);
 
     for (auto const &gltf_mesh: asset.meshes) {
         ModelCpuMesh mesh;
@@ -1162,6 +1258,7 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                     .emissive_texture = resolve_image(cpu_material.emissive_image, image_storage.emissive()),
                     .sampler = cpu_material.sampler,
                     .alpha_mode = cpu_material.alpha_mode,
+                    .double_sided = cpu_material.double_sided,
             };
 
             ScopedProfileSample material_sample{profile != nullptr ? &profile->material_creation_ns : nullptr};

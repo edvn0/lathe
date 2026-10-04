@@ -403,6 +403,7 @@ auto encode_cooked_model(ModelCpuData const &cpu_data, std::span<CookedImageRef 
         writer.write(material.normal_scale);
         writer.write(material.occlusion_strength);
         writer.write(std::to_underlying(material.alpha_mode));
+        writer.write(static_cast<std::uint8_t>(material.double_sided ? 1U : 0U));
         writer.write(std::to_underlying(material_samplers[index]));
 
         write_image_index(writer, material.base_colour_image);
@@ -569,6 +570,7 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
         reader.read(material.occlusion_strength);
 
         auto const alpha_mode = reader.read<std::uint32_t>();
+        material.double_sided = version >= 2 && reader.read<std::uint8_t>() != 0;
         auto const sampler = reader.read<std::uint8_t>();
 
         if (alpha_mode > std::to_underlying(AlphaMode::blend) ||

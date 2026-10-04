@@ -89,7 +89,7 @@ file when none does.
 ### `MODL` (`cooked_model.hxx`)
 
 A finalized `ModelCpuData`: node hierarchy, lights, materials (factors,
-alpha mode, default sampler, image indices) and per primitive:
+alpha mode, double-sided flag (v2+), default sampler, image indices) and per primitive:
 
 - packed `CompressedModelVertex` array through `meshopt_encodeVertexBuffer`
 - every LOD's index buffer through `meshopt_encodeIndexBuffer` (a level
@@ -186,7 +186,7 @@ so files converge on the newest layout.
 | Payload | Current | Oldest readable |
 | ------- | ------- | --------------- |
 | container | 1.0 | 1.x |
-| `MODL` | 1 | 1 |
+| `MODL` | 2 | 1 |
 | `TEXR` | 1 | 1 |
 | `ENVM` | 1 | 1 |
 | `SCEN` framing | 1 | 1 |

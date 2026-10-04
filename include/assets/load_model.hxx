@@ -138,6 +138,7 @@ struct ModelCpuMaterial {
     float normal_scale = 1.0F;
     float occlusion_strength = 1.0F;
     AlphaMode alpha_mode = AlphaMode::opaque;
+    bool double_sided = false;
     SamplerHandle sampler;
 
     std::optional<std::size_t> base_colour_image;

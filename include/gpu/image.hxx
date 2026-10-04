@@ -323,6 +323,11 @@ enum class AlphaCoverage : std::uint8_t {
 [[nodiscard]]
 auto classify_dds_alpha(std::string_view path) -> std::optional<AlphaCoverage>;
 
+// Scans the alpha of an encoded (PNG, JPEG, ...) image. Files without an alpha channel report opaque without
+// decoding. nullopt if the data can't be decoded.
+[[nodiscard]]
+auto classify_encoded_alpha(std::span<std::byte const> encoded) -> std::optional<AlphaCoverage>;
+
 class DecodedImage {
 public:
     [[nodiscard]]
