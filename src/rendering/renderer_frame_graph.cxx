@@ -251,11 +251,12 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     };
 
     // main_cs always runs (it is plain frustum culling with occlusion off), so what it reads and writes is always
-    // imported: the batch bounds, the occlusion views (disabled with occlusion off) and the candidate lists.
+    // imported: the batch bounds, the occlusion views (disabled with occlusion off), the candidate lists and the
+    // per-chunk scratch.
     auto const batch_bounds = import_frame_buffer(frame.batch_bounds_buffer, "batch_bounds", true);
     auto const occlusion_views = import_frame_buffer(frame.occlusion_views_buffer, "occlusion_views", true);
     auto occlusion_candidates = import_frame_buffer(frame.occlusion_candidates_buffer, "occlusion_candidates", false);
-    auto candidate_counts = import_frame_buffer(frame.candidate_counts_buffer, "candidate_counts", false);
+    auto cull_chunks = import_frame_buffer(frame.cull_chunks_buffer, "cull_chunks", false);
 
     // Clustered lighting: light_cull writes the visible lights, light_cluster the per-cluster lists and statistics
     // (the first bytes of the one buffer), which the host reads back a frame later.
@@ -449,7 +450,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               visible_transforms = pass.write(visible_transforms, Use::shader_write, compute);
                               culled_indirect = pass.write(culled_indirect, Use::shader_write, compute);
                               occlusion_candidates = pass.write(occlusion_candidates, Use::shader_write, compute);
-                              candidate_counts = pass.write(candidate_counts, Use::shader_write, compute);
+                              cull_chunks = pass.write(cull_chunks, Use::shader_read_write, compute);
                               stats_buffer = pass.write(stats_buffer, Use::shader_read_write, compute);
 
                               return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
@@ -731,7 +732,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const planes = pass.read(frustum_planes, Use::shader_read, compute);
                     [[maybe_unused]] auto const views = pass.read(occlusion_views, Use::shader_read, compute);
                     [[maybe_unused]] auto const candidates = pass.read(occlusion_candidates, Use::shader_read, compute);
-                    [[maybe_unused]] auto const counts = pass.read(candidate_counts, Use::shader_read, compute);
+                    // Holds main_cs's candidate counts; late_cs adds its own per-chunk results.
+                    cull_chunks = pass.write(cull_chunks, Use::shader_read_write, compute);
 
                     // Appends past the ranges the early prepass reads, but device-address accesses are not tracked
                     // per range, so the early prepass's reads are ordered before these writes as a whole.
