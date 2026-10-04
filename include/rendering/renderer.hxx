@@ -752,13 +752,20 @@ private:
     static_assert(sizeof(GpuDraw) == 32);
 
     // Local-space AABB for one batch. Mirrors GpuCullBounds in frustum_cull.slang. wind_padding grows the X/Z
-    // extents to cover the maximum wind sway, so swaying foliage doesn't pop at the frustum edge.
+    // extents to cover the maximum wind sway, so swaying foliage doesn't pop at the frustum edge. first_chunk is the
+    // batch's first culling chunk (cull_chunk_size instances each); batches' chunks are consecutive.
     struct alignas(16) GpuCullBounds {
         glm::vec3 bounds_min{-0.5F};
         float wind_padding = 0.0F;
         glm::vec3 bounds_max{0.5F};
-        float pad1 = 0.0F;
+        std::uint32_t first_chunk = 0;
     };
+
+    // GPU culling splits each batch into chunks of this many instances, one workgroup each (frustum_cull.slang).
+    static constexpr std::uint32_t cull_chunk_size = 256;
+
+    // sizeof(CullChunk) in frustum_cull.slang: 8 counters and three cull_chunk_size-bit masks.
+    static constexpr VkDeviceSize cull_chunk_bytes = (8 + 3 * cull_chunk_size / 32) * sizeof(std::uint32_t);
 
     static_assert(std::is_trivially_copyable_v<GpuCullBounds>);
 
@@ -871,12 +878,13 @@ private:
 
         // Two-phase occlusion culling (docs/occlusion-culling.md). main_cs defers frustum-visible instances last
         // frame's Hi-Z hides: their source indices go to occlusion_candidates_buffer at the batch's first_instance and
-        // their count to candidate_counts_buffer. late_cs appends the candidates that pass to the visible buffers after
-        // main_cs's survivors and writes late_indirect_buffer (the late prepass's ranges) and merged_indirect_buffer
-        // (both phases, for the forward pass). Unused while occlusion_active is false.
+        // their count to the batch's first culling chunk. late_cs appends the candidates that pass to the visible
+        // buffers after main_cs's survivors and writes late_indirect_buffer (the late prepass's ranges) and
+        // merged_indirect_buffer (both phases, for the forward pass). Unused while occlusion_active is false.
+        // cull_chunks_buffer is both passes' per-chunk scratch (CullChunk in frustum_cull.slang), and is always used.
         Buffer occlusion_views_buffer{};
         Buffer occlusion_candidates_buffer{};
-        Buffer candidate_counts_buffer{};
+        Buffer cull_chunks_buffer{};
         Buffer late_indirect_buffer{};
         Buffer merged_indirect_buffer{};
 
@@ -960,6 +968,9 @@ private:
 
         // Number of batches, not instances. This is the drawCount for vkCmdDrawMeshTasksIndirectEXT.
         std::uint32_t indirect_command_count = 0;
+
+        // Culling chunks over all batches (GpuCullBounds::first_chunk).
+        std::uint32_t cull_chunk_count = 0;
 
         // Batches are ordered opaque, double-sided (opaque, drawn without back-face culling), mask, blend; culling
         // preserves the order.

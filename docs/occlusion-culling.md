@@ -102,7 +102,7 @@ All per frame (`RendererFrame`), created in `Renderer::initialize`:
 |---|---|---|---|
 | `occlusion_views_buffer` | 2 x `GpuOcclusionView` (112 B), upload | CPU, `prepare_frame` | `main_cs` ([0]), `late_cs` ([1]) |
 | `occlusion_candidates_buffer` | `maximum_draw_count` x u32 | `main_cs` at `[first_instance, + c)` | `late_cs` |
-| `candidate_counts_buffer` | batches x u32 | `main_cs` | `late_cs` |
+| `cull_chunks_buffer` | (batches + `maximum_draw_count` / 256) x `CullChunk` (128 B) | `main_cs`: per-chunk masks, counts and offsets, and `c` in each batch's first chunk; `late_cs`: its own masks, counts and offsets | `main_cs`, `late_cs` |
 | `culled_indirect_buffer` | existing | `main_cs`: `(first, n1)` | early prepass, `late_cs`, forward when inactive |
 | `late_indirect_buffer` | batches x `GpuDrawCommand` | `late_cs`: `(first + n1, n2)` | late prepass |
 | `merged_indirect_buffer` | batches x `GpuDrawCommand` | `late_cs`: `(first, n1 + n2)` | forward |
@@ -111,7 +111,12 @@ All per frame (`RendererFrame`), created in `Renderer::initialize`:
 | `occlusion_stats_buffer` | 8 x u32 | atomics in `main_cs`/`late_cs` and the task shaders | readback copy |
 | `occlusion_stats_readback_buffer` | 8 x u32, readback | copy | `consume_culled_readback` |
 
-"Batches" is `min(maximum_draw_count, 65535)`: one cull workgroup per batch, and `prepare_frame` refuses more.
+"Batches" is `min(maximum_draw_count, 65535)`: the scan stage runs one workgroup per batch, and `prepare_frame`
+refuses more. Both `main_cs` and `late_cs` run as three dispatches (`frustum_cull.slang`): **test** (one workgroup per
+256-instance chunk, writing a bit mask and a count per chunk), **scan** (one workgroup per batch, prefix-summing its
+chunks' counts into offsets and writing its commands) and **scatter** (one workgroup per chunk, copying each kept
+instance to its offset plus its rank in the mask). Big batches spread over the whole GPU, and the output stays in source
+order. Each batch's chunks are consecutive from `GpuCullBounds::first_chunk`.
 `n1 + c <= instance_count` and `n2 <= c`, so nothing overflows a batch's range. Statistics slots
 (`occlusion_stat_*`): 0 frustum-visible, 1 phase 1 drawn, 2 candidates, 3 phase 2 drawn, 4 meshlets deferred by
 phase 1, 5 meshlets occluded by phase 2, 6-7 unused. The Hi-Z pyramid itself is a Renderer member (`hiz_`), roughly 5.3 MB at 1080p.
@@ -150,7 +155,7 @@ Blend draws never take the bits. With no history (first frame, resize, toggle) `
 early phase records every frustum- and cone-visible meshlet and the late phase has nothing to add.
 
 **Late command.** `late_cs` gives a meshlet batch the union command `(first, n1 + n2)` instead of `(first + n1, n2)`
-(`CullPC::late_union_meshlet_batches = 1` while meshlet occlusion is active). The late prepass then runs the task
+(`cull_flag_late_union_meshlet_batches` in `CullPC::flags` while meshlet occlusion is active). The late prepass then runs the task
 shader for phase 1's instances too, which is how their meshlets the history test deferred get retested against this
 frame's pyramid, and `skip_recorded` keeps the ones phase 1 already drew from drawing twice. Instanced batches keep
 `(first + n1, n2)`.
@@ -196,7 +201,7 @@ dominates, only add phase-1 instances to the union when phase 1 deferred any of 
   forward's view address is view [1] (the same bitset both phases wrote). With the `always_defer` stub the early
   phase records nothing and the late phase records everything, which isolates the late phase.
 - **Doubled draws or counts with meshlet occlusion**: the late phase lacks `cull_skip_recorded_bit`, or a batch's late
-  command isn't the union `(first, n1 + n2)` (`CullPC::late_union_meshlet_batches`).
+  command isn't the union `(first, n1 + n2)` (`cull_flag_late_union_meshlet_batches`).
 - **SIGSEGV in `spvtools::opt::blockmergeutil::MergeWithSuccessor` at startup** (`spirv_opt::run` in
   `slang_compiler.cxx`): a SPIRV-Tools optimizer bug on some control flow, hit by the runtime pipeline (Slang
   `-O3`, then `RegisterPerformancePasses`). `hiz_build.slang` hit it with nested `[unroll]`ed conditional
@@ -233,7 +238,7 @@ None of this has been run on a GPU yet. Before flipping the default:
    - Event order: `main_cs` -> shadows -> prepass (CLEAR, MIN resolve) -> N Hi-Z dispatches -> `late_cs` -> late
      prepass (LOAD, SAMPLE_ZERO resolve) -> GTAO -> forward.
    - Hi-Z level 0 is the 2x2 MIN of the early resolved depth; odd-sized level edges are right; the last level is 1x1.
-   - Buffers: `culled_indirect` (n1), `candidate_counts` (c), `late_indirect` (first + n1, n2), `merged_indirect`
+   - Buffers: `culled_indirect` (n1), `cull_chunks` (c in each batch's first chunk), `late_indirect` (first + n1, n2), `merged_indirect`
      (n1 + n2), with `n1 + c <= instance_count` and `n2 <= c`.
    - Pixel history on a pixel drawn by the late prepass: forward's `EQUAL` test passes; no clear colour in forward.
    - With meshlet occlusion: `meshlet_visibility_buffer` after the early prepass has bits only for meshlets phase 1

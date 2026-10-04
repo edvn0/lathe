@@ -1173,7 +1173,11 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     // Per batch rather than per draw: prepare_frame refuses more than maximum_cull_batch_count batches.
     auto const cull_batch_capacity = std::min(maximum_draw_count_, maximum_cull_batch_count);
     auto const occlusion_indirect_size = static_cast<VkDeviceSize>(cull_batch_capacity) * sizeof(GpuDrawCommand);
-    auto const candidate_counts_size = static_cast<VkDeviceSize>(cull_batch_capacity) * sizeof(std::uint32_t);
+    // Every batch can end in a partial chunk.
+    auto const cull_chunk_capacity =
+            static_cast<VkDeviceSize>(cull_batch_capacity) +
+            (static_cast<VkDeviceSize>(maximum_draw_count_) + cull_chunk_size - 1) / cull_chunk_size;
+    auto const cull_chunks_size = cull_chunk_capacity * cull_chunk_bytes;
     auto const occlusion_candidates_size = static_cast<VkDeviceSize>(maximum_draw_count_) * sizeof(std::uint32_t);
     auto const batch_bounds_size = *batch_bounds_size_result;
     auto const transform_offset = align_up(draw_size, 16);
@@ -1370,11 +1374,11 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                     .usage = storage_usage,
                                     .memory = BufferMemory::device,
                                     .debug_name = "renderer.frame_occlusion_candidates"},
-                OcclusionBufferSpec{.buffer = &frame.candidate_counts_buffer,
-                                    .size = candidate_counts_size,
+                OcclusionBufferSpec{.buffer = &frame.cull_chunks_buffer,
+                                    .size = cull_chunks_size,
                                     .usage = storage_usage,
                                     .memory = BufferMemory::device,
-                                    .debug_name = "renderer.frame_candidate_counts"},
+                                    .debug_name = "renderer.frame_cull_chunks"},
                 OcclusionBufferSpec{.buffer = &frame.late_indirect_buffer,
                                     .size = occlusion_indirect_size,
                                     .usage = indirect_usage,
@@ -1646,7 +1650,7 @@ auto Renderer::destroy() noexcept -> void {
         frame.occlusion_stats_buffer.destroy();
         frame.merged_indirect_buffer.destroy();
         frame.late_indirect_buffer.destroy();
-        frame.candidate_counts_buffer.destroy();
+        frame.cull_chunks_buffer.destroy();
         frame.occlusion_candidates_buffer.destroy();
         frame.occlusion_views_buffer.destroy();
         frame.culled_indirect_buffer.destroy();
@@ -2249,6 +2253,61 @@ auto Renderer::request_texture(std::filesystem::path source_path, TextureRole ro
 
 namespace {
 
+    // CullPC::flags in frustum_cull.slang.
+    constexpr std::uint32_t cull_flag_late_union_meshlet_batches = 1U;
+    constexpr std::uint32_t cull_stage_shift = 8U;
+
+    // Mirrors cull_dispatch_width in frustum_cull.slang: wider dispatches wrap into Y.
+    constexpr std::uint32_t cull_dispatch_width = 65'535;
+
+    auto dispatch_linear(VkCommandBuffer command_buffer, std::uint32_t group_count) -> void {
+        if (group_count == 0) {
+            return;
+        }
+        auto const width = std::min(group_count, cull_dispatch_width);
+        auto const height = (group_count + width - 1) / width;
+        vkCmdDispatch(command_buffer, width, height, 1);
+    }
+
+    // The test, scan and scatter stages of main_cs or late_cs (frustum_cull.slang), each reading what the one before
+    // wrote. Compute-only barriers, so this also records on a compute-only queue.
+    auto record_cull_stages(VkCommandBuffer command_buffer, VkPipelineLayout layout, CullPushConstants pc) -> void {
+        VkMemoryBarrier2 const between_stages{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                .pNext = nullptr,
+                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        };
+        VkDependencyInfo const dependency{
+                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                .pNext = nullptr,
+                .dependencyFlags = 0,
+                .memoryBarrierCount = 1,
+                .pMemoryBarriers = &between_stages,
+                .bufferMemoryBarrierCount = 0,
+                .pBufferMemoryBarriers = nullptr,
+                .imageMemoryBarrierCount = 0,
+                .pImageMemoryBarriers = nullptr,
+        };
+
+        auto const base_flags = pc.flags;
+        constexpr std::array stages{0U, 1U, 2U}; // test, scan, scatter
+
+        for (auto const stage: stages) {
+            if (stage != 0U) {
+                vkCmdPipelineBarrier2(command_buffer, &dependency);
+            }
+
+            pc.flags = base_flags | (stage << cull_stage_shift);
+            vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+
+            // Scan runs one workgroup per batch, test and scatter one per chunk.
+            dispatch_linear(command_buffer, stage == 1U ? pc.batch_count : pc.chunk_count);
+        }
+    }
+
     [[nodiscard]] auto validate_submesh_lods(std::array<MeshGeometry, lod_count> const &lods)
             -> std::expected<void, RendererError> {
         auto const &lod0 = lods[0];
@@ -2637,6 +2696,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     frame.batch_bounds.clear();
 
     frame.indirect_command_count = 0;
+    frame.cull_chunk_count = 0;
     frame.opaque_indirect_count = 0;
     frame.double_sided_indirect_count = 0;
     frame.mask_indirect_count = 0;
@@ -2968,7 +3028,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 .bounds_min = submesh.bounds_min,
                 .wind_padding = wind_padding,
                 .bounds_max = submesh.bounds_max,
+                .first_chunk = frame.cull_chunk_count,
         });
+        frame.cull_chunk_count += (instance_count + cull_chunk_size - 1) / cull_chunk_size;
 
         return {};
     };
@@ -3606,18 +3668,17 @@ auto Renderer::record_gpu_culling(render_pass::Context const &pass_context, Rend
                 .frustum_planes_address = frame.frustum_planes_buffer.device_address,
                 .occlusion_address = frame.occlusion_views_buffer.device_address,
                 .occlusion_candidates_address = frame.occlusion_candidates_buffer.device_address,
-                .candidate_counts_address = frame.candidate_counts_buffer.device_address,
+                .chunks_address = frame.cull_chunks_buffer.device_address,
                 .merged_indirect_address = frame.merged_indirect_buffer.device_address,
                 .late_indirect_address = frame.late_indirect_buffer.device_address,
                 .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
                 .batch_count = frame.indirect_command_count,
                 .occludable_batch_count = batch_counts(frame).blend_first(),
-                .late_union_meshlet_batches = 0,
-                ._padding = 0,
+                .flags = 0,
+                .chunk_count = frame.cull_chunk_count,
         };
 
-        vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
-        vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
+        record_cull_stages(command_buffer, layout, cull_pc);
     }
 
     return {};
@@ -4144,7 +4205,7 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
                 .frustum_planes_address = frame.frustum_planes_buffer.device_address,
                 .occlusion_address = frame.occlusion_views_buffer.device_address + sizeof(GpuOcclusionView),
                 .occlusion_candidates_address = frame.occlusion_candidates_buffer.device_address,
-                .candidate_counts_address = frame.candidate_counts_buffer.device_address,
+                .chunks_address = frame.cull_chunks_buffer.device_address,
                 .merged_indirect_address = frame.merged_indirect_buffer.device_address,
                 .late_indirect_address = frame.late_indirect_buffer.device_address,
                 .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
@@ -4152,12 +4213,11 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
                 .occludable_batch_count = batch_counts(frame).blend_first(),
                 // Meshlet batches' late command covers the early survivors too, so their deferred meshlets get the late
                 // test; the late prepass skips the meshlets the early one already recorded.
-                .late_union_meshlet_batches = frame.meshlet_occlusion_active ? 1U : 0U,
-                ._padding = 0,
+                .flags = frame.meshlet_occlusion_active ? cull_flag_late_union_meshlet_batches : 0U,
+                .chunk_count = frame.cull_chunk_count,
         };
 
-        vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
-        vkCmdDispatch(command_buffer, frame.indirect_command_count, 1, 1);
+        record_cull_stages(command_buffer, layout, cull_pc);
     }
 
     return {};
