@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <expected>
+#include <format>
 #include <memory>
 #include <optional>
 #include <string>
@@ -26,64 +28,29 @@
 #include <stb_image_write.h>
 
 #include "assets/hdr_image.hxx"
+#include "core/command_line.hxx"
 #include "rendering/cube_map.hxx"
 
 namespace {
 
     struct Options {
-        std::string_view input;
-        std::string_view output;
+        std::string input;
+        std::string output;
         std::uint32_t size = 512;
         std::uint32_t samples = 4;
-        std::string_view preview;
+        std::string preview;
     };
 
+    // The error is what to tell the user.
     [[nodiscard]]
-    auto parse_unsigned(std::string_view text, std::uint32_t &out) -> bool {
-        auto const result = std::from_chars(text.data(), text.data() + text.size(), out);
-
-        return result.ec == std::errc{} && result.ptr == text.data() + text.size();
-    }
-
-    [[nodiscard]]
-    auto parse_options(int argc, char **argv) -> std::optional<Options> {
-        Options options;
-
-        std::vector<std::string_view> positional;
-
-        for (int index = 1; index < argc; ++index) {
-            std::string_view const argument{argv[index]};
-
-            if (argument == "--preview") {
-                if (index + 1 >= argc) {
-                    return std::nullopt;
-                }
-
-                options.preview = argv[++index];
-            } else if (argument == "--size" || argument == "--samples") {
-                if (index + 1 >= argc) {
-                    return std::nullopt;
-                }
-
-                auto &target = argument == "--size" ? options.size : options.samples;
-
-                if (!parse_unsigned(argv[++index], target)) {
-                    return std::nullopt;
-                }
-            } else {
-                positional.push_back(argument);
-            }
+    auto validate(Options const &options) -> std::expected<void, std::string> {
+        if (options.size == 0 || !std::has_single_bit(options.size) || options.size > hdr_cube_max_face_size) {
+            return std::unexpected(std::format("--size must be a power of two up to {}", hdr_cube_max_face_size));
         }
-
-        if (positional.size() != 2 || options.size == 0 || !std::has_single_bit(options.size) ||
-            options.size > hdr_cube_max_face_size || options.samples == 0 || options.samples > 16) {
-            return std::nullopt;
+        if (options.samples == 0 || options.samples > 16) {
+            return std::unexpected(std::string{"--samples must be between 1 and 16"});
         }
-
-        options.input = positional[0];
-        options.output = positional[1];
-
-        return options;
+        return {};
     }
 
     struct Bilinear {
@@ -194,12 +161,33 @@ namespace {
 } // namespace
 
 auto main(int argc, char **argv) -> int {
-    auto const options = parse_options(argc, argv);
+    Options parsed;
+    CommandLine cli{"lathe-env-bake", "Converts an equirect HDR panorama (.hdr / .exr) into a KTX2 cubemap environment."};
+    cli.positional("input", "Equirect panorama, .hdr or .exr", parsed.input);
+    cli.positional("output", "Cubemap to write, .ktx2", parsed.output);
 
-    if (!options) {
-        std::fputs("usage: lathe-env-bake <input.hdr|.exr> <output.ktx2> [--size N (power of two)] [--samples N] [--preview cross.png]\n", stderr);
+    auto bake = cli.group("Bake");
+    bake.value("--size", "N", "Cube face size, a power of two (512)", parsed.size);
+    bake.value("--samples", "N", "Per-axis supersampling of each cube texel, 1 to 16 (4)", parsed.samples);
+    bake.value("--preview", "cross.png", "Also write a tonemapped 4x3 cross of the six faces, to eyeball orientation",
+               parsed.preview);
+
+    auto const outcome = cli.parse(argc, argv);
+
+    if (!outcome) {
+        std::fprintf(stderr, "lathe-env-bake: %s\nTry --help.\n", outcome.error().c_str());
         return 2;
     }
+    if (*outcome == CommandLine::Outcome::help) {
+        std::fputs(cli.help_text().c_str(), stdout);
+        return 0;
+    }
+    if (auto const valid = validate(parsed); !valid) {
+        std::fprintf(stderr, "lathe-env-bake: %s\n", valid.error().c_str());
+        return 2;
+    }
+
+    auto const *const options = &parsed;
 
     auto const source = load_hdr_image(options->input);
 

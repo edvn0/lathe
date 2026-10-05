@@ -3,10 +3,14 @@
 #include <glm/glm.hpp>
 
 #include <array>
+#include <expected>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "app/benchmark.hxx"
+#include "core/command_line.hxx"
 #include "core/random.hxx"
 #include "rendering/renderer.hxx"
 #include "scene/camera_path.hxx"
@@ -78,6 +82,23 @@ TEST_CASE("timing summaries use nearest-rank percentiles") {
     auto const empty = summarise_timings({});
     CHECK(empty.median_ms == 0.0F);
 }
+
+namespace {
+
+    // Runs the benchmark options through a real CommandLine, as main() does.
+    [[nodiscard]] auto parse_benchmark_options(std::span<char const *const> args)
+            -> std::expected<std::optional<BenchmarkOptions>, std::string> {
+        CommandLine cli{"lathe", ""};
+        BenchmarkArguments arguments{cli};
+
+        auto const outcome = cli.parse(args);
+        if (!outcome) {
+            return std::unexpected(outcome.error());
+        }
+        return arguments.options();
+    }
+
+} // namespace
 
 TEST_CASE("benchmark options") {
     SUBCASE("absent without --benchmark=") {

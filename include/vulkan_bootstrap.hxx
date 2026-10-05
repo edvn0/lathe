@@ -17,8 +17,6 @@ enum class ScreenType : std::uint8_t {
     headless,
 };
 
-[[nodiscard]] auto parse_screen_type(int argc, char **argv) noexcept -> ScreenType;
-
 // Creates the window, Vulkan instance, surface, device, allocator and initial swapchain. Call context.destroy()
 // afterwards whether or not this succeeds.
 [[nodiscard]] auto initialize_vulkan(VulkanContext &context, ScreenType screen_type) noexcept -> bool;

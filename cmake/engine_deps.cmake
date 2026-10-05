@@ -49,6 +49,7 @@ target_link_libraries(
         tinyexr
         ktx
         BS_thread_pool
+        lyra
         TracyClient
 )
 

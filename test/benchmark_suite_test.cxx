@@ -5,11 +5,13 @@
 #include <expected>
 #include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "app/benchmark.hxx"
 #include "app/benchmark_compare.hxx"
+#include "core/command_line.hxx"
 #include "core/json.hxx"
 #include "rendering/renderer.hxx"
 
@@ -28,6 +30,19 @@ namespace {
         timings.passes.push_back(
                 frame_graph::PassTiming{.name_id = "forward_pass", .label = "Forward", .milliseconds = 1.0F});
         return timings;
+    }
+
+    // Runs the benchmark options through a real CommandLine, as main() does.
+    [[nodiscard]] auto parse_benchmark_options(std::span<char const *const> args)
+            -> std::expected<std::optional<BenchmarkOptions>, std::string> {
+        CommandLine cli{"lathe", ""};
+        BenchmarkArguments arguments{cli};
+
+        auto const outcome = cli.parse(args);
+        if (!outcome) {
+            return std::unexpected(outcome.error());
+        }
+        return arguments.options();
     }
 
     [[nodiscard]] auto
@@ -99,25 +114,29 @@ TEST_CASE("suite options: defaults, sweeps, scenarios and errors") {
     }
 
     SUBCASE("present mode and swapchain images") {
+        CommandLine cli{"lathe", ""};
+        PresentationArguments presentation{cli};
         std::array<char const *, 2> args{"--present-mode=immediate", "--swapchain-images=4"};
-        CHECK(parse_present_mode_option(args).value() == PresentModeChoice::immediate);
-        CHECK(parse_swapchain_images_option(args).value() == 4U);
+        REQUIRE(cli.parse(args).has_value());
+        CHECK(presentation.present_mode == PresentModeChoice::immediate);
+        CHECK(presentation.swapchain_images == 4U);
+        CHECK_FALSE(presentation.vsync.has_value());
 
-        std::array<char const *, 1> bad_mode{"--present-mode=tearing"};
-        std::array<char const *, 1> too_many{"--swapchain-images=9"};
-        std::array<char const *, 1> none{"--seed=1"};
-        CHECK_FALSE(parse_present_mode_option(bad_mode).has_value());
-        CHECK_FALSE(parse_swapchain_images_option(too_many).has_value());
-        CHECK_FALSE(parse_present_mode_option(none).value().has_value());
+        for (auto const *bad: {"--present-mode=tearing", "--swapchain-images=9", "--swapchain-images=1",
+                               "--vsync=maybe"}) {
+            CommandLine bad_cli{"lathe", ""};
+            PresentationArguments bad_presentation{bad_cli};
+            std::array<char const *, 1> bad_args{bad};
+            CHECK_FALSE(bad_cli.parse(bad_args).has_value());
+        }
     }
 
     SUBCASE("vsync") {
-        std::array<char const *, 1> on{"--vsync=on"};
-        std::array<char const *, 1> bad{"--vsync=maybe"};
-        std::array<char const *, 1> none{"--seed=1"};
-        CHECK(parse_vsync_option(on).value() == true);
-        CHECK_FALSE(parse_vsync_option(bad).has_value());
-        CHECK_FALSE(parse_vsync_option(none).value().has_value());
+        CommandLine cli{"lathe", ""};
+        PresentationArguments presentation{cli};
+        std::array<char const *, 1> args{"--vsync=on"};
+        REQUIRE(cli.parse(args).has_value());
+        CHECK(presentation.vsync == true);
     }
 }
 
@@ -389,11 +408,13 @@ TEST_CASE("compare reads schema 1 single runs") {
 
     std::array<char const *, 3> args{"--benchmark-compare=a.json,b.json", "--benchmark-threshold=5",
                                      "--benchmark-report=out.md"};
-    auto const options = parse_benchmark_compare_options(args);
+    CommandLine cli{"lathe", ""};
+    BenchmarkCompareArguments arguments{cli};
+    REQUIRE(cli.parse(args).has_value());
+    auto const options = arguments.options();
     REQUIRE(options.has_value());
-    REQUIRE(options->has_value());
-    CHECK((*options)->base == "a.json");
-    CHECK((*options)->head == "b.json");
-    CHECK((*options)->threshold_percent == 5.0);
-    CHECK((*options)->report == std::filesystem::path{"out.md"});
+    CHECK(options->base == "a.json");
+    CHECK(options->head == "b.json");
+    CHECK(options->threshold_percent == 5.0);
+    CHECK(options->report == std::filesystem::path{"out.md"});
 }

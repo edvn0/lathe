@@ -12,9 +12,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <future>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -38,12 +40,14 @@
 #include "assets/shader_hot_reload_watcher.hxx"
 #include "core/allocator.hxx"
 #include "core/config.hxx"
+#include "core/command_line.hxx"
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
 #include "core/random.hxx"
 #include "glm/gtc/type_ptr.hpp"
 #include "gpu/context.hxx"
 #include "gpu/device_wait.hxx"
+#include "gpu/queue_selection.hxx"
 #include "gpu/swapchain.hxx"
 #include "imgui.h"
 #include "implot.h"
@@ -680,6 +684,125 @@ namespace {
     }
 } // namespace
 
+namespace {
+
+    constexpr std::array<std::pair<std::string_view, ScreenType>, 4> screen_type_choices{{
+            {"windowed", ScreenType::windowed},
+            {"fullscreen", ScreenType::fullscreen},
+            {"borderless", ScreenType::borderless},
+            {"headless", ScreenType::headless},
+    }};
+
+    constexpr std::array<std::pair<std::string_view, OcclusionTestMode>, 3> occlusion_test_choices{{
+            {"hiz", OcclusionTestMode::hiz},
+            {"never_occluded", OcclusionTestMode::never_occluded},
+            {"always_defer", OcclusionTestMode::always_defer},
+    }};
+
+    // The engine-wide options that aren't the benchmark's or the presentation's. Registers on construction; read the
+    // members after the CommandLine has parsed. Not movable: the CommandLine holds references to the members.
+    struct EngineArguments {
+        explicit EngineArguments(CommandLine &cli) {
+            auto display = cli.group("Display");
+            display.choice<ScreenType>("--screen-type", "Window mode (default fullscreen)", screen_type_choices,
+                                       screen_type);
+
+            auto rendering = cli.group("Rendering");
+            rendering.option("--cluster-grid", "XxYxZ[:CAP]", "Clustered-lighting grid, for comparing grids in benchmarks",
+                             [this](std::string_view text) -> std::expected<void, std::string> {
+                                 auto parsed = parse_cluster_grid(text);
+                                 if (!parsed) {
+                                     return std::unexpected(std::move(parsed.error()));
+                                 }
+                                 cluster_grid = *parsed;
+                                 return {};
+                             });
+            rendering.toggle("--occlusion-culling", "Override occlusion culling (default off)", occlusion_culling);
+            rendering.toggle("--meshlet-occlusion",
+                             "Override meshlet occlusion culling (default off); acts only while occlusion culling and "
+                             "meshlet culling are on",
+                             meshlet_occlusion);
+            rendering.choice<OcclusionTestMode>("--occlusion-test",
+                                                "Occlusion test; the stubs must render exactly like occlusion culling "
+                                                "off, which makes them baselines for the two-phase draw lists",
+                                                occlusion_test_choices, occlusion_test);
+            rendering.toggle("--frame-graph-alias",
+                             "Let the frame graph's transient images share memory (default on); off is for A/B runs",
+                             transient_aliasing);
+            rendering.value("--stress-resize", "N",
+                            "Flip the render size between two values every N frames, to exercise the resize path "
+                            "unattended",
+                            stress_resize_interval);
+            rendering.option("--async-passes", "light,occlusion,gtao",
+                             "Compute passes given compute-queue affinity (only matters on a device with a second queue)",
+                             [this](std::string_view list) -> std::expected<void, std::string> {
+                                 async_passes = 0;
+                                 for (auto const name: CommandLine::split(list, ',')) {
+                                     if (name == "light") {
+                                         async_passes |= Renderer::async_light_clustering;
+                                     } else if (name == "occlusion") {
+                                         async_passes |= Renderer::async_occlusion;
+                                     } else if (name == "gtao") {
+                                         async_passes |= Renderer::async_gtao;
+                                     } else {
+                                         return std::unexpected(std::format(
+                                                 "'{}' (expected light, occlusion or gtao)", name));
+                                     }
+                                 }
+                                 return {};
+                             });
+
+            auto queues = cli.group("Queues and synchronisation");
+            queues.option("--async-compute", "auto|off|same-family",
+                          "Compute queue topology (off keeps one queue but still creates the compute queue)",
+                          [this](std::string_view text) -> std::expected<void, std::string> {
+                              auto const mode = parse_async_compute_mode(text);
+                              if (!mode) {
+                                  return std::unexpected(std::format("'{}' (expected auto, off or same-family)", text));
+                              }
+                              async_compute_mode = *mode;
+                              return {};
+                          });
+            queues.flag("--async-compute-smoke", "Submit empty compute and graphics batches each frame to exercise the "
+                                                 "timelines",
+                        async_compute_smoke);
+            queues.flag("--sync-validation", "Turn on the validation layer's synchronisation checks (Debug builds)",
+                        sync_validation);
+            queues.flag("--frame-graph-serialize",
+                        "Put ALL_COMMANDS barriers between all passes, to tell a missing barrier from a bad one",
+                        frame_graph_serialize);
+
+            auto diagnostics = cli.group("Diagnostics");
+            diagnostics.flag("--frame-graph-dump",
+                             "Log the compiled frame graph whenever it changes", dump_frame_graph);
+
+            auto scene = cli.group("Scene");
+            scene.value("--scene", "FILE.lbf", "Open a saved scene in place of the game's", open_scene);
+            scene.value("--save-scene", "FILE.lbf", "Cook the (opened) scene into a self-contained .lbf", save_scene);
+        }
+
+        EngineArguments(EngineArguments const &) = delete;
+        auto operator=(EngineArguments const &) -> EngineArguments & = delete;
+
+        std::optional<ScreenType> screen_type;
+        std::optional<ClusterGridSettings> cluster_grid;
+        std::optional<bool> occlusion_culling;
+        std::optional<bool> meshlet_occlusion;
+        std::optional<OcclusionTestMode> occlusion_test;
+        std::optional<bool> transient_aliasing;
+        std::uint32_t stress_resize_interval = 0;
+        std::uint32_t async_passes = 0;
+        std::optional<AsyncComputeMode> async_compute_mode;
+        bool async_compute_smoke = false;
+        bool sync_validation = false;
+        bool frame_graph_serialize = false;
+        bool dump_frame_graph = false;
+        std::optional<std::filesystem::path> open_scene;
+        std::optional<std::filesystem::path> save_scene;
+    };
+
+} // namespace
+
 static std::atomic<bool> g_running{true};
 static auto ctrl_c_handler(int) -> void {
     g_running.store(false, std::memory_order_relaxed);
@@ -689,169 +812,49 @@ static auto ctrl_c_handler(int) -> void {
 auto create_game() -> std::unique_ptr<IGame>;
 
 auto main(int argc, char **argv) -> int {
-    // --benchmark-compare=<base>,<head> reads two results and exits, without a window or a device. Before any logging,
-    // so the report on stdout can be redirected as it is.
-    auto compare_options = parse_benchmark_compare_options(std::span<char const *const>{argv + 1, argv + argc});
-    if (!compare_options) {
-        error("Invalid benchmark compare arguments: {}", compare_options.error());
+    CommandLine cli{"lathe", "Lathe engine"};
+    EngineArguments engine{cli};
+    PresentationArguments presentation{cli};
+    BenchmarkArguments benchmark_arguments{cli};
+    BenchmarkCompareArguments compare_arguments{cli};
+
+    auto const parsed = cli.parse(argc, argv);
+    if (!parsed) {
+        // Before any logging, like the compare report below, so stdout stays clean.
+        std::fprintf(stderr, "lathe: %s\nTry --help.\n", parsed.error().c_str());
         return EXIT_FAILURE;
     }
-    if (*compare_options) {
-        return run_benchmark_compare(**compare_options);
+    if (*parsed == CommandLine::Outcome::help) {
+        std::fputs(cli.help_text().c_str(), stdout);
+        return EXIT_SUCCESS;
+    }
+
+    // --benchmark-compare reads two results and exits, without a window or a device. Before any logging, so the report
+    // on stdout can be redirected as it is.
+    if (auto const compare_options = compare_arguments.options()) {
+        return run_benchmark_compare(*compare_options);
     }
 
     info("Starting GLFW Vulkan test at {}", std::filesystem::current_path().string());
 
     std::signal(SIGINT, ctrl_c_handler);
 
-    auto const screen_type = parse_screen_type(argc, argv);
+    auto const screen_type = engine.screen_type.value_or(ScreenType::fullscreen);
 
-    auto benchmark_options = parse_benchmark_options(std::span<char const *const>{argv + 1, argv + argc});
+    auto benchmark_options = benchmark_arguments.options();
     if (!benchmark_options) {
         error("Invalid benchmark arguments: {}", benchmark_options.error());
         return EXIT_FAILURE;
     }
 
-    // Vsync caps the displayed frame rate at the refresh rate, so benchmarks turn it off unless asked otherwise.
-    auto const vsync = parse_vsync_option(std::span<char const *const>{argv + 1, argv + argc});
-    if (!vsync) {
-        error("Invalid arguments: {}", vsync.error());
-        return EXIT_FAILURE;
-    }
-
-    // --present-mode= picks the mode outright; --swapchain-images= how many images to ask for.
-    auto const present_mode = parse_present_mode_option(std::span<char const *const>{argv + 1, argv + argc});
-    auto const swapchain_images = parse_swapchain_images_option(std::span<char const *const>{argv + 1, argv + argc});
-    if (!present_mode || !swapchain_images) {
-        error("Invalid arguments: {}", !present_mode ? present_mode.error() : swapchain_images.error());
-        return EXIT_FAILURE;
-    }
-
-    // --cluster-grid=XxYxZ[:capacity] picks the clustered-lighting grid, for comparing grids in benchmarks.
-    std::optional<ClusterGridSettings> cluster_grid;
-    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
-        if (constexpr std::string_view prefix = "--cluster-grid="; arg.starts_with(prefix)) {
-            auto parsed = parse_cluster_grid(arg.substr(prefix.size()));
-            if (!parsed) {
-                error("Invalid --cluster-grid: {}", parsed.error());
-                return EXIT_FAILURE;
-            }
-            cluster_grid = *parsed;
-        }
-    }
-
-    // --occlusion-culling=on|off overrides Renderer::occlusion_culling()'s default (off), e.g. for on/off benchmarks.
-    std::optional<bool> occlusion_culling;
-    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
-        if (constexpr std::string_view prefix = "--occlusion-culling="; arg.starts_with(prefix)) {
-            auto const value = arg.substr(prefix.size());
-
-            if (value == "on") {
-                occlusion_culling = true;
-            } else if (value == "off") {
-                occlusion_culling = false;
-            } else {
-                error("Invalid --occlusion-culling: '{}' (expected on or off)", value);
-                return EXIT_FAILURE;
-            }
-        }
-    }
-
-    // --meshlet-occlusion=on|off overrides Renderer::meshlet_occlusion_culling()'s default (off). It only acts while
-    // occlusion culling and meshlet culling are on.
-    std::optional<bool> meshlet_occlusion;
-    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
-        if (constexpr std::string_view prefix = "--meshlet-occlusion="; arg.starts_with(prefix)) {
-            auto const value = arg.substr(prefix.size());
-
-            if (value == "on") {
-                meshlet_occlusion = true;
-            } else if (value == "off") {
-                meshlet_occlusion = false;
-            } else {
-                error("Invalid --meshlet-occlusion: '{}' (expected on or off)", value);
-                return EXIT_FAILURE;
-            }
-        }
-    }
-
-    // --occlusion-test=hiz|never_occluded|always_defer picks Renderer::occlusion_test_mode(). The stubs must render
-    // exactly like occlusion culling off, which makes them baselines for the two-phase draw lists.
-    std::optional<OcclusionTestMode> occlusion_test;
-    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
-        if (constexpr std::string_view prefix = "--occlusion-test="; arg.starts_with(prefix)) {
-            auto const value = arg.substr(prefix.size());
-
-            if (value == "hiz") {
-                occlusion_test = OcclusionTestMode::hiz;
-            } else if (value == "never_occluded") {
-                occlusion_test = OcclusionTestMode::never_occluded;
-            } else if (value == "always_defer") {
-                occlusion_test = OcclusionTestMode::always_defer;
-            } else {
-                error("Invalid --occlusion-test: '{}' (expected hiz, never_occluded or always_defer)", value);
-                return EXIT_FAILURE;
-            }
-        }
-    }
-
-    // --frame-graph-alias=on|off lets the frame graph's transient images share memory (default on); off is for A/B
-    // runs of the same frames.
-    std::optional<bool> transient_aliasing;
-    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
-        if (constexpr std::string_view prefix = "--frame-graph-alias="; arg.starts_with(prefix)) {
-            auto const value = arg.substr(prefix.size());
-
-            if (value == "on") {
-                transient_aliasing = true;
-            } else if (value == "off") {
-                transient_aliasing = false;
-            } else {
-                error("Invalid --frame-graph-alias: '{}' (expected on or off)", value);
-                return EXIT_FAILURE;
-            }
-        }
-    }
-
-    // --stress-resize=<n> flips the render size between two values every n frames, to exercise the renderer's resize
-    // path unattended (frame graph transients are recreated, the Hi-Z pyramid is rebuilt) under validation.
-    std::uint32_t stress_resize_interval = 0;
-    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
-        if (constexpr std::string_view prefix = "--stress-resize="; arg.starts_with(prefix)) {
-            stress_resize_interval = static_cast<std::uint32_t>(
-                    std::strtoul(std::string{arg.substr(prefix.size())}.c_str(), nullptr, 10));
-        }
-    }
-
-    // --frame-graph-dump logs the compiled frame graph (passes, batches, waits, barriers, transfers, transient
-    // placement) whenever it changes, instead of reading it off the code.
-    auto const dump_frame_graph =
-            std::ranges::any_of(std::span<char const *const>{argv + 1, argv + argc},
-                                [](char const *arg) { return std::string_view{arg} == "--frame-graph-dump"; });
-
-    // --async-passes=light,occlusion,gtao declares those groups of compute passes with compute-queue affinity, which
-    // only matters on a device with a second queue (see --async-compute). Each is enabled by measurement (phase 6).
-    std::uint32_t async_passes = 0;
-    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
-        if (constexpr std::string_view prefix = "--async-passes="; arg.starts_with(prefix)) {
-            auto list = arg.substr(prefix.size());
-            while (!list.empty()) {
-                auto const comma = list.find(',');
-                auto const name = list.substr(0, comma);
-                if (name == "light") {
-                    async_passes |= Renderer::async_light_clustering;
-                } else if (name == "occlusion") {
-                    async_passes |= Renderer::async_occlusion;
-                } else if (name == "gtao") {
-                    async_passes |= Renderer::async_gtao;
-                } else {
-                    error("Invalid --async-passes entry: '{}' (expected light, occlusion or gtao)", name);
-                    return EXIT_FAILURE;
-                }
-                list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
-            }
-        }
-    }
+    auto const &cluster_grid = engine.cluster_grid;
+    auto const &occlusion_culling = engine.occlusion_culling;
+    auto const &meshlet_occlusion = engine.meshlet_occlusion;
+    auto const &occlusion_test = engine.occlusion_test;
+    auto const &transient_aliasing = engine.transient_aliasing;
+    auto const stress_resize_interval = engine.stress_resize_interval;
+    auto const dump_frame_graph = engine.dump_frame_graph;
+    auto const async_passes = engine.async_passes;
 
     // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
@@ -859,12 +862,13 @@ auto main(int argc, char **argv) -> int {
     }
 
     VulkanContext context{};
-    context.vsync = vsync->value_or(!benchmark_options->has_value());
-    context.swapchain_image_count = swapchain_images->value_or(0U);
+    // Vsync caps the displayed frame rate at the refresh rate, so benchmarks turn it off unless asked otherwise.
+    context.vsync = presentation.vsync.value_or(!benchmark_options->has_value());
+    context.swapchain_image_count = presentation.swapchain_images.value_or(0U);
 
     // Benchmarks without vsync prefer IMMEDIATE: under MAILBOX some compositors still hand images back only once per
     // refresh, which caps the frame rate just like vsync.
-    auto const chosen_present_mode = present_mode->has_value() ? *present_mode
+    auto const chosen_present_mode = presentation.present_mode.has_value() ? presentation.present_mode
                                      : (benchmark_options->has_value() && !context.vsync)
                                              ? std::optional{PresentModeChoice::immediate}
                                              : std::nullopt;
@@ -885,24 +889,12 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
-    // --async-compute=auto|off|same-family picks the compute queue topology (off keeps one queue but still creates
-    // the compute queue); --sync-validation turns on the validation layer's synchronization checks in Debug builds.
-    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
-        if (constexpr std::string_view prefix = "--async-compute="; arg.starts_with(prefix)) {
-            auto const mode = parse_async_compute_mode(arg.substr(prefix.size()));
-            if (!mode) {
-                error("Invalid --async-compute: '{}' (expected auto, off or same-family)", arg.substr(prefix.size()));
-                return EXIT_FAILURE;
-            }
-            context.async_compute_mode = *mode;
-        } else if (arg == "--sync-validation") {
-            context.sync_validation = true;
-        } else if (arg == "--async-compute-smoke") {
-            context.async_compute_smoke = true;
-        } else if (arg == "--frame-graph-serialize") {
-            context.frame_graph_serialize = true;
-        }
+    if (engine.async_compute_mode) {
+        context.async_compute_mode = *engine.async_compute_mode;
     }
+    context.sync_validation = engine.sync_validation;
+    context.async_compute_smoke = engine.async_compute_smoke;
+    context.frame_graph_serialize = engine.frame_graph_serialize;
 
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
@@ -958,20 +950,16 @@ auto main(int argc, char **argv) -> int {
 
     application.on_startup();
 
-    // Queued behind on_startup()'s populate, so they act on the game's scene once it exists. --save-scene cooks that
-    // scene into a self-contained .lbf (handy from scripts); --scene opens a saved one in its place.
-    for (std::string_view const arg: std::span<char const *const>{argv + 1, argv + argc}) {
-        if (constexpr std::string_view prefix = "--save-scene="; arg.starts_with(prefix)) {
-            application.renderer->queue_render_thread_event(
-                    [&application, path = gui::utf8_to_path(arg.substr(prefix.size()))] {
-                        application.start_save_scene(path);
-                    });
-        } else if (constexpr std::string_view open_prefix = "--scene="; arg.starts_with(open_prefix)) {
-            application.renderer->queue_render_thread_event(
-                    [&application, path = gui::utf8_to_path(arg.substr(open_prefix.size()))] {
-                        application.request_open_scene(path);
-                    });
-        }
+    // Queued behind on_startup()'s populate, so they act on the game's scene once it exists. --scene opens a saved
+    // one in place of the game's; --save-scene then cooks whichever scene is open into a self-contained .lbf (handy
+    // from scripts).
+    if (engine.open_scene) {
+        application.renderer->queue_render_thread_event(
+                [&application, path = *engine.open_scene] { application.request_open_scene(path); });
+    }
+    if (engine.save_scene) {
+        application.renderer->queue_render_thread_event(
+                [&application, path = *engine.save_scene] { application.start_save_scene(path); });
     }
 
     std::uint64_t stress_resize_frames = 0;

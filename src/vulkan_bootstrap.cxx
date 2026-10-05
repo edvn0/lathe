@@ -1025,37 +1025,6 @@ auto report_vk_error(std::string_view operation, VkResult result) noexcept -> vo
     error("{} failed: {} ({})", operation, vk_result_name(result), static_cast<int>(result));
 }
 
-auto parse_screen_type(int argc, char **argv) noexcept -> ScreenType {
-    constexpr std::string_view prefix = "--screen-type=";
-
-    for (auto i = 1; i < argc; ++i) {
-        std::string_view const arg = argv[i];
-
-        if (!arg.starts_with(prefix)) {
-            continue;
-        }
-
-        auto const value = arg.substr(prefix.size());
-
-        if (value == "windowed") {
-            return ScreenType::windowed;
-        }
-        if (value == "fullscreen") {
-            return ScreenType::fullscreen;
-        }
-        if (value == "borderless") {
-            return ScreenType::borderless;
-        }
-        if (value == "headless") {
-            return ScreenType::headless;
-        }
-
-        warn("Unknown --screen-type value '{}'; falling back to fullscreen", value);
-    }
-
-    return ScreenType::fullscreen;
-}
-
 auto initialize_vulkan(VulkanContext &context, ScreenType screen_type) noexcept -> bool {
     return initialize_glfw(context, screen_type) && create_instance(context, screen_type) &&
            create_surface(context, screen_type) && select_physical_device(context) && create_device(context) &&

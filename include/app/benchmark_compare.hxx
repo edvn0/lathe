@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+class CommandLine;
 class JsonValue;
 
 // --benchmark-compare=<base.json>,<head.json>: compares two benchmark results (single runs, schema 1 or 2, or suites)
@@ -31,10 +32,24 @@ struct BenchmarkCompareOptions {
     double minimum_flagged_ms = 0.5;
 };
 
-// nullopt without --benchmark-compare=.
-[[nodiscard]]
-auto parse_benchmark_compare_options(std::span<char const *const> args)
-        -> std::expected<std::optional<BenchmarkCompareOptions>, std::string>;
+// The --benchmark-compare options. Registers on construction; call options() after the CommandLine has parsed. Not
+// movable: the CommandLine holds references to the members.
+class BenchmarkCompareArguments {
+public:
+    explicit BenchmarkCompareArguments(CommandLine &cli);
+
+    BenchmarkCompareArguments(BenchmarkCompareArguments const &) = delete;
+    auto operator=(BenchmarkCompareArguments const &) -> BenchmarkCompareArguments & = delete;
+
+    // nullopt without --benchmark-compare.
+    [[nodiscard]]
+    auto options() const -> std::optional<BenchmarkCompareOptions>;
+
+private:
+    BenchmarkCompareOptions options_;
+    std::optional<std::filesystem::path> report_;
+    bool enabled_ = false;
+};
 
 enum class CompareVerdict : std::uint8_t {
     unchanged,

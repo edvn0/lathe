@@ -12,16 +12,16 @@
 #include <string_view>
 
 #include "app/benchmark.hxx"
+#include "core/command_line.hxx"
 #include "core/json.hxx"
 
 namespace {
 
-    [[nodiscard]] auto parse_percent(std::string_view flag,
-                                     std::string_view value) -> std::expected<double, std::string> {
+    [[nodiscard]] auto parse_percent(std::string_view value) -> std::expected<double, std::string> {
         auto result = 0.0;
         auto const [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
         if (error != std::errc{} || end != value.data() + value.size() || !(result >= 0.0)) {
-            return std::unexpected(std::format("{}: '{}' is not a non-negative number", flag, value));
+            return std::unexpected(std::format("'{}' is not a non-negative number", value));
         }
         return result;
     }
@@ -285,45 +285,49 @@ namespace {
 
 } // namespace
 
-auto parse_benchmark_compare_options(std::span<char const *const> args)
-        -> std::expected<std::optional<BenchmarkCompareOptions>, std::string> {
-    BenchmarkCompareOptions options;
-    bool enabled = false;
+BenchmarkCompareArguments::BenchmarkCompareArguments(CommandLine &cli) {
+    auto group = cli.group("Benchmark comparison");
+    group.option("--benchmark-compare", "BASE.json,HEAD.json",
+               "Compare two benchmark results and print a Markdown report, without starting the renderer",
+               [this](std::string_view value) -> std::expected<void, std::string> {
+                   auto const comma = value.find(',');
+                   if (comma == std::string_view::npos || comma == 0 || comma + 1 == value.size()) {
+                       return std::unexpected(std::string{"needs <base.json>,<head.json>"});
+                   }
+                   options_.base = std::filesystem::path{value.substr(0, comma)};
+                   options_.head = std::filesystem::path{value.substr(comma + 1)};
+                   enabled_ = true;
+                   return {};
+               });
+    group.value("--benchmark-report", "OUT.md", "Also write the comparison report to a file", report_);
+    group.option("--benchmark-threshold", "PERCENT", "Flag a metric whose median moved more than this (10)",
+               [this](std::string_view value) -> std::expected<void, std::string> {
+                   auto const percent = parse_percent(value);
+                   if (!percent) {
+                       return std::unexpected(percent.error());
+                   }
+                   options_.threshold_percent = *percent;
+                   return {};
+               });
+    group.option("--benchmark-fail-threshold", "PERCENT",
+               "Exit 1 when a headline metric regresses more than this (20)",
+               [this](std::string_view value) -> std::expected<void, std::string> {
+                   auto const percent = parse_percent(value);
+                   if (!percent) {
+                       return std::unexpected(percent.error());
+                   }
+                   options_.fail_threshold_percent = *percent;
+                   return {};
+               });
+}
 
-    for (auto const *raw: args) {
-        std::string_view const arg = raw;
-
-        if (constexpr std::string_view prefix = "--benchmark-compare="; arg.starts_with(prefix)) {
-            auto const value = arg.substr(prefix.size());
-            auto const comma = value.find(',');
-            if (comma == std::string_view::npos || comma == 0 || comma + 1 == value.size()) {
-                return std::unexpected(std::string{"--benchmark-compare= needs <base.json>,<head.json>"});
-            }
-            options.base = std::filesystem::path{value.substr(0, comma)};
-            options.head = std::filesystem::path{value.substr(comma + 1)};
-            enabled = true;
-        } else if (constexpr std::string_view report_prefix = "--benchmark-report="; arg.starts_with(report_prefix)) {
-            options.report = std::filesystem::path{arg.substr(report_prefix.size())};
-        } else if (constexpr std::string_view threshold_prefix = "--benchmark-threshold=";
-                   arg.starts_with(threshold_prefix)) {
-            auto const value = parse_percent("--benchmark-threshold", arg.substr(threshold_prefix.size()));
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.threshold_percent = *value;
-        } else if (constexpr std::string_view fail_prefix = "--benchmark-fail-threshold=";
-                   arg.starts_with(fail_prefix)) {
-            auto const value = parse_percent("--benchmark-fail-threshold", arg.substr(fail_prefix.size()));
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.fail_threshold_percent = *value;
-        }
-    }
-
-    if (!enabled) {
+auto BenchmarkCompareArguments::options() const -> std::optional<BenchmarkCompareOptions> {
+    if (!enabled_) {
         return std::nullopt;
     }
+
+    auto options = options_;
+    options.report = report_;
     return options;
 }
 
