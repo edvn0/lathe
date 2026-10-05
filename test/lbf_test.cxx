@@ -492,6 +492,8 @@ TEST_SUITE("unit") {
         scene.spot_lights.push_back(SceneSpotLightComponent{.entity = 2, .light = {.outer_cone_degrees = 45.0F}});
         scene.rigid_bodies.push_back(SceneRigidBodyComponent{
                 .entity = 2, .body = Components::RigidBody::from_submesh_boxes({{glm::vec3{0.0F}, glm::vec3{1.0F}}})});
+        scene.rigid_bodies.push_back(SceneRigidBodyComponent{
+                .entity = 1, .body = Components::RigidBody::make_sphere(/*radius=*/0.35F, /*mass=*/0.45F)});
         scene.scripts.push_back(SceneScriptComponent{.entity = 2, .script = "player_controller"});
         scene.lifetimes.push_back(SceneLifetimeComponent{.entity = 1, .remaining_seconds = 2.5F});
 
@@ -524,6 +526,9 @@ TEST_SUITE("unit") {
         CHECK(decoded->rigid_bodies[0].body.shape == Components::BodyShape::compound);
         REQUIRE(decoded->rigid_bodies[0].body.compound_boxes != nullptr);
         CHECK(decoded->rigid_bodies[0].body.compound_boxes->size() == 1);
+        CHECK(decoded->rigid_bodies[1].body.shape == Components::BodyShape::sphere);
+        CHECK(decoded->rigid_bodies[1].body.sphere_radius == doctest::Approx(0.35F));
+        CHECK(decoded->rigid_bodies[1].body.mass == doctest::Approx(0.45F));
         CHECK(decoded->scripts[0].script == "player_controller");
         CHECK(decoded->lifetimes[0].remaining_seconds == doctest::Approx(2.5F));
 
@@ -662,6 +667,81 @@ TEST_SUITE("unit") {
         CHECK_FALSE(decoded->materials[0].double_sided);
         CHECK_FALSE(decoded->materials[0].alpha_to_coverage);
         CHECK(decoded->materials[0].far_material == scene_no_index);
+    }
+
+    TEST_CASE("Version 1 rigid body sections still decode, without a sphere radius") {
+        SceneDescription scene;
+        scene.entities.push_back(SceneEntity{.name = "old"});
+
+        auto payload = encode_scene(scene);
+
+        // v1 layout: everything except the sphere radius, which sat between the capsule height and the restitution.
+        ByteWriter section;
+        section.write(std::uint32_t{1});
+        section.write(std::uint32_t{0}); // entity
+        for (auto const value: {0.0F, 0.0F, 0.0F, 0.5F, 0.5F, 0.5F}) {
+            section.write(value); // velocity, half extents
+        }
+        section.write(0.4F); // capsule radius
+        section.write(1.0F); // capsule height
+        section.write(0.25F); // restitution
+        section.write(12.0F); // mass
+        section.write(std::uint8_t{0}); // is static
+        section.write(std::uint8_t{1}); // lock rotation
+        section.write(std::to_underlying(Components::BodyShape::capsule));
+        section.write(std::uint32_t{0}); // compound box count
+
+        ByteWriter framed;
+        framed.write(scene_section::rigid_bodies);
+        framed.write(std::uint16_t{1});
+        framed.write(std::uint16_t{0});
+        framed.write(static_cast<std::uint64_t>(section.size()));
+        framed.write_span(section.bytes());
+        payload.insert(payload.end(), framed.bytes().begin(), framed.bytes().end());
+
+        auto const decoded = decode_scene(payload);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->rigid_bodies.size() == 1);
+
+        auto const &body = decoded->rigid_bodies[0].body;
+        CHECK(body.shape == Components::BodyShape::capsule);
+        CHECK(body.capsule_radius == doctest::Approx(0.4F));
+        CHECK(body.restitution == doctest::Approx(0.25F));
+        CHECK(body.mass == doctest::Approx(12.0F));
+        CHECK(body.lock_rotation);
+        CHECK(body.sphere_radius == doctest::Approx(Components::RigidBody{}.sphere_radius));
+    }
+
+    TEST_CASE("Version 1 rigid body sections reject a sphere, which they could not have held") {
+        SceneDescription scene;
+        scene.entities.push_back(SceneEntity{.name = "old"});
+
+        auto payload = encode_scene(scene);
+
+        ByteWriter section;
+        section.write(std::uint32_t{1});
+        section.write(std::uint32_t{0});
+        for (auto const value: {0.0F, 0.0F, 0.0F, 0.5F, 0.5F, 0.5F}) {
+            section.write(value);
+        }
+        section.write(0.4F);
+        section.write(1.0F);
+        section.write(0.25F);
+        section.write(12.0F);
+        section.write(std::uint8_t{0});
+        section.write(std::uint8_t{0});
+        section.write(std::to_underlying(Components::BodyShape::sphere));
+        section.write(std::uint32_t{0});
+
+        ByteWriter framed;
+        framed.write(scene_section::rigid_bodies);
+        framed.write(std::uint16_t{1});
+        framed.write(std::uint16_t{0});
+        framed.write(static_cast<std::uint64_t>(section.size()));
+        framed.write_span(section.bytes());
+        payload.insert(payload.end(), framed.bytes().begin(), framed.bytes().end());
+
+        CHECK_FALSE(decode_scene(payload).has_value());
     }
 
     TEST_CASE("Scene codec skips sections from a newer engine and rejects bad references") {

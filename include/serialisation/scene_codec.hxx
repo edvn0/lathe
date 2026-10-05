@@ -213,6 +213,9 @@ inline constexpr std::uint16_t instanced_models_section_version = 2;
 // v2 adds double_sided, alpha_to_coverage and the far material (index and LOD).
 inline constexpr std::uint16_t materials_section_version = 2;
 
+// v2 adds the sphere radius, and so BodyShape::sphere; v1 bodies read back with the default radius.
+inline constexpr std::uint16_t rigid_bodies_section_version = 2;
+
 // The environment section: source, lighting, sun and fog (see scene/environment.hxx). Older engines skip it, and scenes
 // without it load as flat ambient.
 inline constexpr std::uint16_t environment_section_version = 1;

@@ -129,18 +129,31 @@ namespace {
             ImGui::TextDisabled("Shape: %s (generated, not editable)",
                                 body.shape == Components::BodyShape::heightfield ? "Heightfield" : "Compound");
         } else {
-            int shape_index = body.shape == Components::BodyShape::capsule ? 1 : 0;
-            constexpr std::array<char const *, 2> shape_names{"Box", "Capsule"};
+            // Parallel to shape_names below.
+            constexpr std::array selectable_shapes{Components::BodyShape::box, Components::BodyShape::capsule,
+                                                   Components::BodyShape::sphere};
+            constexpr std::array<char const *, 3> shape_names{"Box", "Capsule", "Sphere"};
+
+            auto const selected = std::ranges::find(selectable_shapes, body.shape);
+            int shape_index =
+                    selected == selectable_shapes.end() ? 0 : static_cast<int>(selected - selectable_shapes.begin());
+
             if (ImGui::Combo("Shape", &shape_index, shape_names.data(), static_cast<int>(shape_names.size()))) {
-                body.shape = shape_index == 1 ? Components::BodyShape::capsule : Components::BodyShape::box;
+                body.shape = selectable_shapes[static_cast<std::size_t>(shape_index)];
                 changed = true;
             }
 
-            if (body.shape == Components::BodyShape::box) {
-                changed |= ImGui::DragFloat3("Half extents", &body.half_extents.x, 0.05F, 0.01F, 1000.0F);
-            } else {
-                changed |= ImGui::DragFloat("Capsule radius", &body.capsule_radius, 0.05F, 0.01F, 1000.0F);
-                changed |= ImGui::DragFloat("Capsule height", &body.capsule_height, 0.05F, 0.01F, 1000.0F);
+            switch (body.shape) {
+                case Components::BodyShape::capsule:
+                    changed |= ImGui::DragFloat("Capsule radius", &body.capsule_radius, 0.05F, 0.01F, 1000.0F);
+                    changed |= ImGui::DragFloat("Capsule height", &body.capsule_height, 0.05F, 0.01F, 1000.0F);
+                    break;
+                case Components::BodyShape::sphere:
+                    changed |= ImGui::DragFloat("Sphere radius", &body.sphere_radius, 0.05F, 0.01F, 1000.0F);
+                    break;
+                default:
+                    changed |= ImGui::DragFloat3("Half extents", &body.half_extents.x, 0.05F, 0.01F, 1000.0F);
+                    break;
             }
         }
 

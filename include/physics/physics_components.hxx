@@ -18,6 +18,7 @@ namespace Components {
         capsule,
         heightfield,
         compound,
+        sphere,
     };
 
     // One box of a compound collider, axis-aligned in the RigidBody's local space.
@@ -43,6 +44,7 @@ namespace Components {
         glm::vec3 half_extents{0.5F}; // shape == box
         float capsule_radius = 0.4F; // shape == capsule
         float capsule_height = 1.0F; // shape == capsule, excluding the caps
+        float sphere_radius = 0.5F; // shape == sphere
         float restitution = 0.4F;
         float mass = 1.0F; // ignored when is_static
         bool is_static = false;
@@ -87,6 +89,16 @@ namespace Components {
         }
 
         // Always static; Bullet heightfields can't be dynamic.
+        // Rolls: PhysicsWorld gives spheres a little rolling friction, or one never comes to rest on a flat floor.
+        static auto make_sphere(float radius, float mass = 1.0F, float restitution = 0.5F) -> RigidBody {
+            return RigidBody{
+                    .sphere_radius = radius,
+                    .restitution = restitution,
+                    .mass = mass,
+                    .shape = BodyShape::sphere,
+            };
+        }
+
         static auto make_heightfield(std::shared_ptr<HeightfieldShape const> shape) -> RigidBody {
             return RigidBody{
                     .is_static = true,

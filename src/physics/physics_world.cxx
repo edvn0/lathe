@@ -7,6 +7,7 @@
 #include <BulletCollision/CollisionDispatch/btCollisionDispatcherMt.h>
 #include <BulletCollision/CollisionShapes/btCompoundShape.h>
 #include <BulletCollision/CollisionShapes/btHeightfieldTerrainShape.h>
+#include <BulletCollision/CollisionShapes/btSphereShape.h>
 #include <BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolverMt.h>
 #include <BulletDynamics/Dynamics/btDiscreteDynamicsWorldMt.h>
 #include <LinearMath/btThreads.h>
@@ -208,6 +209,9 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
             shape = impl_->arena.construct_with_base<btCapsuleShape, btCollisionShape>(body.capsule_radius,
                                                                                        body.capsule_height);
             break;
+        case Components::BodyShape::sphere:
+            shape = impl_->arena.construct_with_base<btSphereShape, btCollisionShape>(body.sphere_radius);
+            break;
         case Components::BodyShape::heightfield: {
             auto const &heightfield = *body.heightfield;
 
@@ -273,6 +277,13 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
         rigid_body->setActivationState(DISABLE_DEACTIVATION);
     }
 
+    if (body.shape == Components::BodyShape::sphere) {
+        // Bullet defaults both to zero, which leaves a sphere rolling across a flat floor until something stops it.
+        // Tuned so a ball kicked at a few metres per second runs out in a few seconds, as a ball on grass does.
+        rigid_body->setRollingFriction(0.12F);
+        rigid_body->setSpinningFriction(0.12F);
+    }
+
     rigid_body->setSleepingThresholds(/*linear=*/0.8F, /*angular=*/1.0F);
     rigid_body->setDeactivationTime(0.8F);
 
@@ -294,6 +305,37 @@ auto PhysicsWorld::set_velocity(entt::registry const &registry, entt::entity ent
     auto current = physics_body->rigid_body->getLinearVelocity();
     physics_body->rigid_body->setLinearVelocity(btVector3{linear_velocity.x, current.y(), linear_velocity.z});
     physics_body->rigid_body->activate(true);
+}
+
+auto PhysicsWorld::apply_impulse(entt::registry const &registry, entt::entity entity, glm::vec3 const &impulse)
+        -> void {
+    auto const *physics_body = registry.try_get<Components::PhysicsBody const>(entity);
+    if (physics_body == nullptr) {
+        return;
+    }
+
+    physics_body->rigid_body->activate(true);
+    physics_body->rigid_body->applyCentralImpulse(to_bt(impulse));
+}
+
+auto PhysicsWorld::set_transform(entt::registry const &registry, entt::entity entity,
+                                 Components::Transform const &transform) -> void {
+    auto const *physics_body = registry.try_get<Components::PhysicsBody const>(entity);
+    if (physics_body == nullptr) {
+        return;
+    }
+
+    btTransform world_transform;
+    world_transform.setIdentity();
+    world_transform.setOrigin(to_bt(transform.position));
+    world_transform.setRotation(to_bt(transform.rotation));
+
+    auto *body = physics_body->rigid_body;
+    body->setWorldTransform(world_transform);
+    body->setLinearVelocity(btVector3{0.0F, 0.0F, 0.0F});
+    body->setAngularVelocity(btVector3{0.0F, 0.0F, 0.0F});
+    body->clearForces();
+    body->activate(true);
 }
 
 auto PhysicsWorld::jump(entt::registry const &registry, entt::entity entity, float jump_velocity) -> void {

@@ -79,6 +79,15 @@ public:
     auto detach_debug_drawer() -> void;
 
     auto set_velocity(entt::registry const &registry, entt::entity entity, glm::vec3 const &linear_velocity) -> void;
+
+    // Adds `impulse` (kg m/s) at the body's centre of mass, waking it. Unlike set_velocity() this touches all three
+    // axes, so it can launch a body upwards.
+    auto apply_impulse(entt::registry const &registry, entt::entity entity, glm::vec3 const &impulse) -> void;
+
+    // Teleports the body: it reappears at `transform` with no velocity, spin or accumulated force. For respawning,
+    // not for moving a body through the world.
+    auto set_transform(entt::registry const &registry, entt::entity entity, Components::Transform const &transform)
+            -> void;
     auto jump(entt::registry const &registry, entt::entity entity, float jump_velocity) -> void;
     [[nodiscard]] auto is_grounded(entt::registry const &registry, entt::entity entity, float capsule_half_height,
                                    float capsule_radius) const -> bool;

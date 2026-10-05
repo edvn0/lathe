@@ -6,6 +6,7 @@
 #include <BS_thread_pool.hpp>
 #include <entt/entt.hpp>
 
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -66,6 +67,112 @@ TEST_SUITE("unit") {
         }
 
     } // namespace
+
+    // What a ball game needs of the sphere shape: it rests on a floor, a sideways impulse rolls it, and rolling
+    // friction brings it back to a stop rather than leaving it travelling forever.
+    TEST_CASE("A sphere body rolls from a lateral impulse and comes back to rest") {
+        BS::priority_thread_pool pool{2};
+        entt::registry registry;
+
+        PhysicsWorldSettings const settings{};
+        PhysicsWorld world{settings, pool, registry};
+
+        auto const floor = registry.create();
+        auto const floor_transform =
+                registry.emplace<Components::Transform>(floor, Components::Transform{.position = {0.0F, -0.5F, 0.0F}});
+        auto const floor_body = registry.emplace<Components::RigidBody>(
+                floor, Components::RigidBody{.half_extents = {100.0F, 0.5F, 100.0F}, .is_static = true});
+        world.add_body(registry, floor, floor_transform, floor_body);
+
+        constexpr float radius = 0.35F;
+        constexpr float mass = 0.45F;
+
+        auto const ball = registry.create();
+        auto const ball_transform =
+                registry.emplace<Components::Transform>(ball, Components::Transform{.position = {0.0F, 1.0F, 0.0F}});
+        auto const ball_body =
+                registry.emplace<Components::RigidBody>(ball, Components::RigidBody::make_sphere(radius, mass));
+        world.add_body(registry, ball, ball_transform, ball_body);
+
+        settle(world, registry);
+
+        auto const &position = registry.get<Components::Transform>(ball).position;
+        CHECK(position.y == doctest::Approx(radius).epsilon(0.1));
+
+        // 3 m/s along +X.
+        world.apply_impulse(registry, ball, glm::vec3{3.0F * mass, 0.0F, 0.0F});
+
+        for (int step = 0; step < 30; ++step) {
+            world.step(registry, 1.0F / 60.0F);
+        }
+
+        CHECK(position.x > 0.5F);
+
+        settle(world, registry);
+        settle(world, registry);
+
+        auto const resting_x = position.x;
+
+        for (int step = 0; step < 60; ++step) {
+            world.step(registry, 1.0F / 60.0F);
+        }
+
+        CHECK(std::abs(position.x - resting_x) < 0.05F);
+    }
+
+    TEST_CASE("apply_impulse moves a body on every axis, where set_velocity keeps its own fall") {
+        BS::priority_thread_pool pool{2};
+        entt::registry registry;
+
+        PhysicsWorldSettings const settings{};
+        PhysicsWorld world{settings, pool, registry};
+
+        auto const entity = registry.create();
+        auto const transform =
+                registry.emplace<Components::Transform>(entity, Components::Transform{.position = {0.0F, 10.0F, 0.0F}});
+        auto const body = registry.emplace<Components::RigidBody>(entity, Components::RigidBody{.mass = 1.0F});
+        world.add_body(registry, entity, transform, body);
+
+        world.step(registry, 1.0F / 60.0F);
+
+        // Straight up, far faster than one step of gravity can undo.
+        world.apply_impulse(registry, entity, glm::vec3{0.0F, 20.0F, 0.0F});
+        world.step(registry, 1.0F / 60.0F);
+
+        CHECK(registry.get<Components::Transform>(entity).position.y > 10.0F);
+    }
+
+    TEST_CASE("set_transform teleports a body and drops the velocity it had") {
+        BS::priority_thread_pool pool{2};
+        entt::registry registry;
+
+        PhysicsWorldSettings const settings{};
+        PhysicsWorld world{settings, pool, registry};
+
+        auto const entity = registry.create();
+        auto const transform =
+                registry.emplace<Components::Transform>(entity, Components::Transform{.position = {0.0F, 20.0F, 0.0F}});
+        auto const body = registry.emplace<Components::RigidBody>(entity, Components::RigidBody{.mass = 1.0F});
+        world.add_body(registry, entity, transform, body);
+
+        // Long enough to be falling fast.
+        for (int step = 0; step < 60; ++step) {
+            world.step(registry, 1.0F / 60.0F);
+        }
+
+        REQUIRE(registry.get<Components::Transform>(entity).position.y < 19.0F);
+
+        constexpr Components::Transform spawn{.position = {5.0F, 20.0F, -3.0F}};
+        world.set_transform(registry, entity, spawn);
+        world.step(registry, 1.0F / 60.0F);
+
+        auto const &position = registry.get<Components::Transform>(entity).position;
+        CHECK(position.x == doctest::Approx(spawn.position.x));
+        CHECK(position.z == doctest::Approx(spawn.position.z));
+
+        // Only this one step of gravity, not the speed built up before the teleport.
+        CHECK(position.y == doctest::Approx(spawn.position.y).epsilon(0.001));
+    }
 
     TEST_CASE("Terrain collider: bind places a dropped body at the expected height") {
         BS::priority_thread_pool pool{2};
