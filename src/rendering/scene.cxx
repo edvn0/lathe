@@ -206,6 +206,28 @@ auto Scene::connect_light_signals() -> void {
     registry.on_destroy<Components::StreamedModelTag>().connect<&Scene::on_streamed_model_tag_destroyed>(*this);
 }
 
+auto Scene::find_entity(std::string_view name) const noexcept -> entt::entity {
+    constexpr auto compare_names = [](auto const &meta, std::string_view name) { return meta.name == name; };
+
+    auto view = registry.view<Components::Meta>();
+    for (auto entity: view) {
+        auto const &entity_name = view.get<Components::Meta>(entity);
+        if (compare_names(entity_name, name)) {
+            return entity;
+        }
+    }
+
+    auto generated_view = registry.view<Components::GeneratedMeta>();
+    for (auto entity: generated_view) {
+        auto const &entity_name = generated_view.get<Components::GeneratedMeta>(entity);
+        if (compare_names(entity_name, name)) {
+            return entity;
+        }
+    }
+
+    return entt::null;
+}
+
 void systems::lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) {
     auto view = registry.view<Components::Lifetime>();
 

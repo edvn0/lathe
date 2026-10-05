@@ -63,9 +63,15 @@ public:
         bytes_.resize(padded, std::byte{0});
     }
 
+    auto write(ByteWriter &&subsection) -> void {
+        write_span(subsection.bytes());
+        subsection.clear();
+    }
+
     [[nodiscard]] auto size() const noexcept -> std::size_t { return bytes_.size(); }
     [[nodiscard]] auto bytes() const noexcept -> std::span<std::byte const> { return bytes_; }
     [[nodiscard]] auto take() noexcept -> std::vector<std::byte> { return std::move(bytes_); }
+    auto clear() -> void { bytes_.clear(); }
 
 private:
     std::vector<std::byte> bytes_;

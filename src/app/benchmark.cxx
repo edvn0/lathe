@@ -16,8 +16,8 @@
 
 namespace {
 
-    [[nodiscard]] auto parse_count(std::string_view flag,
-                                   std::string_view value) -> std::expected<std::uint32_t, std::string> {
+    [[nodiscard]] auto parse_count(std::string_view flag, std::string_view value)
+            -> std::expected<std::uint32_t, std::string> {
         std::uint32_t result = 0;
         auto const [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
 
@@ -91,59 +91,59 @@ PresentationArguments::PresentationArguments(CommandLine &cli) {
     auto group = cli.group("Presentation");
     group.toggle("--vsync", "Cap the frame rate at the refresh rate (off by default while benchmarking)", vsync);
     group.choice<PresentModeChoice>("--present-mode",
-                                  "Present mode outright (benchmarks prefer immediate: MAILBOX can still pace "
-                                  "acquisition to the refresh rate)",
-                                  present_mode_choices, present_mode);
+                                    "Present mode outright (benchmarks prefer immediate: MAILBOX can still pace "
+                                    "acquisition to the refresh rate)",
+                                    present_mode_choices, present_mode);
     group.value("--swapchain-images", "N", "Swapchain images to ask for, 2 to 8", swapchain_images,
-              CommandLineGroup::Range<std::uint32_t>{.min = 2, .max = 8});
+                CommandLineGroup::Range<std::uint32_t>{.min = 2, .max = 8});
 }
 
 BenchmarkArguments::BenchmarkArguments(CommandLine &cli) {
     auto group = cli.group("Benchmark");
     group.value("--benchmark", "OUT.json", "Run the game's scene along its benchmark camera path and write the JSON",
-              single_);
-    group.value("--benchmark-suite", "DIR", "Run every scenario at each of its load levels, writing suite.json and report.md",
-              suite_);
+                single_);
+    group.value("--benchmark-suite", "DIR",
+                "Run every scenario at each of its load levels, writing suite.json and report.md", suite_);
     group.value("--benchmark-frames", "N", "Measured frames per run, one lap of the camera path (600)",
-              options_.frame_count, CommandLineGroup::Range<std::uint32_t>{.min = 1});
+                options_.frame_count, CommandLineGroup::Range<std::uint32_t>{.min = 1});
     group.value("--benchmark-warmup", "N", "Minimum frames at the first keyframe before measuring (60)",
-              options_.warmup_frame_count);
+                options_.warmup_frame_count);
     group.value("--benchmark-max-warmup", "N",
-              "Measure anyway after this many frames, even if streaming hasn't settled (1200)",
-              options_.max_warmup_frame_count);
+                "Measure anyway after this many frames, even if streaming hasn't settled (1200)",
+                options_.max_warmup_frame_count);
     group.value("--seed", "N", "Scene seed (1337)", options_.seed);
     group.option("--benchmark-target-hz", "HZ", "Refresh rate frames are judged against (144)",
-               [this](std::string_view text) -> std::expected<void, std::string> {
-                   auto const hz = parse_positive_float(text);
-                   if (!hz) {
-                       return std::unexpected(hz.error());
-                   }
-                   options_.target_hz = *hz;
-                   return {};
-               });
+                 [this](std::string_view text) -> std::expected<void, std::string> {
+                     auto const hz = parse_positive_float(text);
+                     if (!hz) {
+                         return std::unexpected(hz.error());
+                     }
+                     options_.target_hz = *hz;
+                     return {};
+                 });
     group.option("--benchmark-render-size", "WxH",
-               "Fixed render resolution (suite default 1920x1080; single run: the Viewport panel)",
-               [this](std::string_view text) -> std::expected<void, std::string> {
-                   auto const size = parse_render_size(text);
-                   if (!size) {
-                       return std::unexpected(size.error());
-                   }
-                   options_.render_size = *size;
-                   return {};
-               });
+                 "Fixed render resolution (suite default 1920x1080; single run: the Viewport panel)",
+                 [this](std::string_view text) -> std::expected<void, std::string> {
+                     auto const size = parse_render_size(text);
+                     if (!size) {
+                         return std::unexpected(size.error());
+                     }
+                     options_.render_size = *size;
+                     return {};
+                 });
     group.flag("--benchmark-screenshots", "Screenshot the first frame at or past each keyframe (single run only)",
-             options_.keyframe_screenshots);
+               options_.keyframe_screenshots);
     group.option("--benchmark-scenarios", "a,b", "Suite: which scenarios to run (default: all)",
-               [this](std::string_view text) -> std::expected<void, std::string> {
-                   options_.scenarios.clear();
-                   for (auto const name: CommandLine::split(text, ',')) {
-                       if (name.empty()) {
-                           return std::unexpected(std::string{"empty scenario name"});
-                       }
-                       options_.scenarios.emplace_back(name);
-                   }
-                   return {};
-               });
+                 [this](std::string_view text) -> std::expected<void, std::string> {
+                     options_.scenarios.clear();
+                     for (auto const name: CommandLine::split(text, ',')) {
+                         if (name.empty()) {
+                             return std::unexpected(std::string{"empty scenario name"});
+                         }
+                         options_.scenarios.emplace_back(name);
+                     }
+                     return {};
+                 });
     group.option(
             "--benchmark-sweep", "name:1,2,4", "Suite: load levels for a scenario, replacing its defaults (repeatable)",
             [this](std::string_view spec) -> std::expected<void, std::string> {
@@ -172,7 +172,7 @@ BenchmarkArguments::BenchmarkArguments(CommandLine &cli) {
             },
             true);
     group.value("--benchmark-repeats", "N", "Suite: runs of each case (3)", repeats_,
-              CommandLineGroup::Range<std::uint32_t>{.min = 1});
+                CommandLineGroup::Range<std::uint32_t>{.min = 1});
 }
 
 auto BenchmarkArguments::options() const -> std::expected<std::optional<BenchmarkOptions>, std::string> {
@@ -247,8 +247,8 @@ auto BenchmarkRun::at_keyframe() const noexcept -> bool {
     return measured_frames_ == 0 || segment(measured_frames_) != segment(measured_frames_ - 1);
 }
 
-auto BenchmarkRun::on_frame_drawn(FrameTimings const &timings, bool streaming_idle,
-                                  BenchmarkCounters const &counters) -> void {
+auto BenchmarkRun::on_frame_drawn(FrameTimings const &timings, bool streaming_idle, BenchmarkCounters const &counters)
+        -> void {
     on_frame_drawn(BenchmarkFrameInput{.gpu = &timings, .streaming_idle = streaming_idle, .counters = counters});
 }
 
@@ -810,8 +810,8 @@ auto BenchmarkRun::write(BenchmarkEnvironment const &environment) const -> std::
 
 // ---- Suite
 
-auto plan_benchmark_cases(std::span<BenchmarkScenarioInfo const> scenarios,
-                          BenchmarkOptions const &options) -> std::expected<std::vector<BenchmarkCase>, std::string> {
+auto plan_benchmark_cases(std::span<BenchmarkScenarioInfo const> scenarios, BenchmarkOptions const &options)
+        -> std::expected<std::vector<BenchmarkCase>, std::string> {
     auto const known = [&](std::string_view name) {
         return std::ranges::find(scenarios, name, &BenchmarkScenarioInfo::name) != scenarios.end();
     };
@@ -861,7 +861,7 @@ auto plan_benchmark_cases(std::span<BenchmarkScenarioInfo const> scenarios,
             loads = sweep->loads;
         }
         if (scenario.load_axis.empty() || loads.empty()) {
-            loads = {0};
+            loads = std::vector<std::uint32_t>{0};
         }
 
         for (auto const load: loads) {

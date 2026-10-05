@@ -31,23 +31,6 @@ namespace {
 
     constexpr glm::vec3 world_up{0.0F, 1.0F, 0.0F};
 
-    [[nodiscard]] auto find_entity(entt::registry const &registry, std::string_view name) -> entt::entity {
-        for (auto const &&[entity, meta]: registry.view<Components::Meta const>().each()) {
-            if (meta.name == name) {
-                return entity;
-            }
-        }
-
-        // A course saved with runtime-generated names comes back this way; see SceneEntityFlags::generated_name.
-        for (auto const &&[entity, meta]: registry.view<Components::GeneratedMeta const>().each()) {
-            if (meta.name == name) {
-                return entity;
-            }
-        }
-
-        return entt::null;
-    }
-
     [[nodiscard]] auto inside_box(glm::vec3 const &point, glm::vec3 const &centre, glm::vec3 const &half_extents)
             -> bool {
         auto const offset = glm::abs(point - centre);
@@ -62,8 +45,6 @@ namespace {
 } // namespace
 
 auto PuntGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void {
-    // A later run (or a Ctrl+R) picks up whatever the editor last saved to the course file, so the level is data
-    // rather than code as soon as it exists.
     if (std::filesystem::exists(scene_file_)) {
         auto const loaded = load_scene(scene, renderer, engine_models, scene_file_);
 
@@ -102,9 +83,9 @@ auto PuntGame::bind_to(Scene &scene) -> void {
 
     auto const &registry = scene.get_registry();
 
-    player_entity_ = find_entity(registry, punt::player_entity_name);
-    ball_entity_ = find_entity(registry, punt::ball_entity_name);
-    auto const hole_entity = find_entity(registry, punt::hole_entity_name);
+    player_entity_ = scene.find_entity(punt::player_entity_name);
+    ball_entity_ = scene.find_entity(punt::ball_entity_name);
+    auto const hole_entity = scene.find_entity(punt::hole_entity_name);
 
     if (player_entity_ == entt::null || ball_entity_ == entt::null) {
         error("[PuntGame] The course has no '{}' or no '{}' entity; there is no round to play",

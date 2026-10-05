@@ -59,6 +59,8 @@ public:
     // scenes never share one.
     [[nodiscard]] auto hierarchy_revision() const noexcept -> std::uint64_t { return hierarchy_revision_; }
 
+    [[nodiscard]] auto find_entity(std::string_view) const noexcept -> entt::entity;
+
 private:
     entt::registry registry;
     entt::sigh<void()> lights_changed_signal_;

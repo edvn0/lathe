@@ -7,19 +7,20 @@
 
 auto sha256_hex(std::span<std::byte const> data) -> std::string {
     std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
-    unsigned int digest_size = 0;
+    std::size_t digest_size = digest.size();
 
-    if (EVP_Digest(data.data(), data.size(), digest.data(), &digest_size, EVP_sha256(), nullptr) != 1) {
+    if (EVP_Q_digest(nullptr, "SHA256", nullptr, data.data(), data.size(), digest.data(), &digest_size) != 1) {
         return {};
     }
 
     constexpr std::string_view digits = "0123456789abcdef";
-    std::string hex;
-    hex.reserve(static_cast<std::size_t>(digest_size) * 2U);
 
-    for (unsigned int i = 0; i < digest_size; ++i) {
-        hex.push_back(digits[digest[i] >> 4U]);
-        hex.push_back(digits[digest[i] & 0xFU]);
+    std::string hex;
+    hex.reserve(digest_size * 2);
+
+    for (std::size_t i = 0; i < digest_size; ++i) {
+        hex.push_back(digits[digest[i] >> 4]);
+        hex.push_back(digits[digest[i] & 0x0f]);
     }
 
     return hex;

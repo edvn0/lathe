@@ -138,7 +138,8 @@ auto HttpHeaders::add(std::string name, std::string value) -> void {
 }
 
 auto HttpHeaders::find(std::string_view name) const noexcept -> std::optional<std::string_view> {
-    auto const it = std::ranges::find_if(entries_, [&](HttpHeader const &h) { return equals_ignore_case(h.name, name); });
+    auto const it =
+            std::ranges::find_if(entries_, [&](HttpHeader const &h) { return equals_ignore_case(h.name, name); });
 
     if (it == entries_.end()) {
         return std::nullopt;
@@ -150,8 +151,7 @@ auto HttpHeaders::find(std::string_view name) const noexcept -> std::optional<st
 class HttpClient::Impl {
 public:
     Impl(HttpClientOptions options_in, std::unique_ptr<IHttpMessageHandler> handler_in) :
-        options(std::move(options_in)),
-        handler(handler_in ? std::move(handler_in) : make_curl_http_handler()) {
+        options(std::move(options_in)), handler(handler_in ? std::move(handler_in) : make_curl_http_handler()) {
         auto const count = std::max(1U, options.worker_count);
 
         workers.reserve(count);
@@ -201,7 +201,8 @@ public:
             // One token for the handler that fires on either the caller's or the client's stop.
             std::stop_source request_stop;
             std::stop_callback const on_user_stop{user_stop, [&request_stop] { request_stop.request_stop(); }};
-            std::stop_callback const on_shutdown{shutdown.get_token(), [&request_stop] { request_stop.request_stop(); }};
+            std::stop_callback const on_shutdown{shutdown.get_token(),
+                                                 [&request_stop] { request_stop.request_stop(); }};
 
             promise->set_value(work(request_stop.get_token()));
         };
@@ -267,9 +268,7 @@ HttpClient::HttpClient(HttpClientOptions options, std::unique_ptr<IHttpMessageHa
 
 HttpClient::~HttpClient() = default;
 
-auto HttpClient::options() const noexcept -> HttpClientOptions const & {
-    return impl_->options;
-}
+auto HttpClient::options() const noexcept -> HttpClientOptions const & { return impl_->options; }
 
 auto HttpClient::send_async(HttpRequestMessage request, std::stop_token stop) -> std::future<HttpResult> {
     return impl_->enqueue<HttpResult>(std::move(stop), [this, request = std::move(request)](std::stop_token token) {
@@ -293,21 +292,20 @@ auto HttpClient::get_byte_array_async(std::string uri, std::stop_token stop)
         -> std::future<std::expected<std::vector<std::byte>, HttpError>> {
     using Result = std::expected<std::vector<std::byte>, HttpError>;
 
-    return impl_->enqueue<Result>(
-            std::move(stop), [this, uri = std::move(uri)](std::stop_token token) -> Result {
-                auto response = impl_->send(HttpRequestMessage{.method = HttpMethod::get, .uri = uri}, std::move(token));
+    return impl_->enqueue<Result>(std::move(stop), [this, uri = std::move(uri)](std::stop_token token) -> Result {
+        auto response = impl_->send(HttpRequestMessage{.method = HttpMethod::get, .uri = uri}, std::move(token));
 
-                if (!response) {
-                    return std::unexpected{response.error()};
-                }
+        if (!response) {
+            return std::unexpected{response.error()};
+        }
 
-                if (!response->is_success_status_code()) {
-                    return std::unexpected{http_error(HttpErrorType::unsuccessful_status_code,
-                                                      "server answered with a non-2xx status", response->status_code)};
-                }
+        if (!response->is_success_status_code()) {
+            return std::unexpected{http_error(HttpErrorType::unsuccessful_status_code,
+                                              "server answered with a non-2xx status", response->status_code)};
+        }
 
-                return std::move(response->content);
-            });
+        return std::move(response->content);
+    });
 }
 
 auto HttpClient::get_file_async(HttpFileDownload download, std::stop_token stop)
@@ -319,7 +317,8 @@ auto HttpClient::get_file_async(HttpFileDownload download, std::stop_token stop)
                 auto const expected_hash = lowercase(download.sha256);
 
                 if (expected_hash.size() != 64U) {
-                    return std::unexpected{http_error(HttpErrorType::hash_mismatch, "sha256 must be 64 hex characters")};
+                    return std::unexpected{
+                            http_error(HttpErrorType::hash_mismatch, "sha256 must be 64 hex characters")};
                 }
 
                 if (auto const existing = read_file(download.destination);

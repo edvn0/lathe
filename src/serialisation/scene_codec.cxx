@@ -361,8 +361,7 @@ namespace {
             return std::nullopt;
         }
 
-        glm::mat3 basis{glm::vec3{matrix[0]} / scale.x, glm::vec3{matrix[1]} / scale.y,
-                        glm::vec3{matrix[2]} / scale.z};
+        glm::mat3 basis{glm::vec3{matrix[0]} / scale.x, glm::vec3{matrix[1]} / scale.y, glm::vec3{matrix[2]} / scale.z};
 
         // A mirroring matrix becomes a proper rotation and a negative X scale.
         if (glm::determinant(basis) < 0.0F) {
@@ -414,8 +413,10 @@ namespace {
 
     [[nodiscard]] auto read_shuffled_columns(ByteReader &reader, std::size_t column_count, std::size_t count)
             -> std::vector<float> {
-        std::vector<std::byte> shuffled(column_count * count * sizeof(float));
-        std::vector<float> columns(column_count * count);
+        std::vector<std::byte> shuffled;
+        std::vector<float> columns;
+        shuffled.resize(column_count * count * sizeof(float));
+        columns.resize(column_count * count);
 
         if (!reader.read_span(std::span<std::byte>{shuffled})) {
             return columns;
@@ -454,10 +455,10 @@ namespace {
 
             for (std::size_t i = 0; i < count; ++i) {
                 auto const &trs = decomposed[i];
-                std::array const values{trs.translation.x, trs.translation.y, trs.translation.z,
-                                        trs.rotation.w,    trs.rotation.x,    trs.rotation.y,
-                                        trs.rotation.z,    trs.scale.x,       trs.scale.y,
-                                        trs.scale.z};
+                std::array const values{
+                        trs.translation.x, trs.translation.y, trs.translation.z, trs.rotation.w, trs.rotation.x,
+                        trs.rotation.y,    trs.rotation.z,    trs.scale.x,       trs.scale.y,    trs.scale.z,
+                };
                 for (std::size_t field = 0; field < trs_column_count; ++field) {
                     columns[(field * count) + i] = values[field];
                 }
@@ -500,7 +501,7 @@ namespace {
             auto const columns = read_shuffled_columns(reader, matrix_column_count, count);
 
             for (std::size_t i = 0; i < count; ++i) {
-                auto *values = &transforms[i][0][0];
+                auto values = std::span<float>{&transforms[i][0][0], 16};
                 for (std::size_t field = 0; field < matrix_column_count; ++field) {
                     values[field] = columns[(field * count) + i];
                 }
@@ -720,18 +721,18 @@ namespace {
 
         auto const &environment = scene.environment;
 
-        std::uint8_t flags = 0;
-        flags |= environment.draw_skybox ? bits::draw_skybox : 0U;
-        flags |= environment.fog_sky ? bits::fog_sky : 0U;
-        flags |= environment.sun_drives_directional_light ? bits::sun_drives_light : 0U;
-        flags |= environment.sun.derive_colour_from_sky ? bits::derive_sun_colour : 0U;
-        flags |= environment.multi_scatter ? bits::multi_scatter : 0U;
-        flags |= environment.fog.enabled ? bits::fog_enabled : 0U;
-        flags |= environment.fog.from_environment ? bits::fog_from_environment : 0U;
+        std::byte flags = {};
+        flags |= environment.draw_skybox ? std::byte{bits::draw_skybox} : std::byte{0};
+        flags |= environment.fog_sky ? std::byte{bits::fog_sky} : std::byte{0};
+        flags |= environment.sun_drives_directional_light ? std::byte{bits::sun_drives_light} : std::byte{0};
+        flags |= environment.sun.derive_colour_from_sky ? std::byte{bits::derive_sun_colour} : std::byte{0};
+        flags |= environment.multi_scatter ? std::byte{bits::multi_scatter} : std::byte{0};
+        flags |= environment.fog.enabled ? std::byte{bits::fog_enabled} : std::byte{0};
+        flags |= environment.fog.from_environment ? std::byte{bits::fog_from_environment} : std::byte{0};
 
         writer.write(std::to_underlying(environment.source));
         writer.write(flags);
-        writer.write(std::uint16_t{0});
+        writer.write<std::uint16_t>(0);
 
         writer.write(environment.ambient_intensity);
         writer.write(environment.rotation_degrees);
@@ -773,16 +774,16 @@ namespace {
 
         environment.source = static_cast<EnvironmentSource>(source);
 
-        auto const flags = reader.read<std::uint8_t>();
+        auto const flags = reader.read<std::byte>();
         static_cast<void>(reader.read<std::uint16_t>());
 
-        environment.draw_skybox = (flags & bits::draw_skybox) != 0;
-        environment.fog_sky = (flags & bits::fog_sky) != 0;
-        environment.sun_drives_directional_light = (flags & bits::sun_drives_light) != 0;
-        environment.sun.derive_colour_from_sky = (flags & bits::derive_sun_colour) != 0;
-        environment.multi_scatter = (flags & bits::multi_scatter) != 0;
-        environment.fog.enabled = (flags & bits::fog_enabled) != 0;
-        environment.fog.from_environment = (flags & bits::fog_from_environment) != 0;
+        environment.draw_skybox = (flags & std::byte{bits::draw_skybox}) != std::byte{0};
+        environment.fog_sky = (flags & std::byte{bits::fog_sky}) != std::byte{0};
+        environment.sun_drives_directional_light = (flags & std::byte{bits::sun_drives_light}) != std::byte{0};
+        environment.sun.derive_colour_from_sky = (flags & std::byte{bits::derive_sun_colour}) != std::byte{0};
+        environment.multi_scatter = (flags & std::byte{bits::multi_scatter}) != std::byte{0};
+        environment.fog.enabled = (flags & std::byte{bits::fog_enabled}) != std::byte{0};
+        environment.fog.from_environment = (flags & std::byte{bits::fog_from_environment}) != std::byte{0};
 
         reader.read(environment.ambient_intensity);
         reader.read(environment.rotation_degrees);
@@ -826,76 +827,104 @@ namespace {
 
     // Order matters only for writing; readers accept sections in any order.
     constexpr std::array section_codecs{
-            SectionCodec{.type = scene_section::settings,
-                         .version = scene_section_version,
-                         .oldest_readable = 1,
-                         .write = write_settings,
-                         .read = read_settings},
-            SectionCodec{.type = scene_section::models,
-                         .version = scene_section_version,
-                         .oldest_readable = 1,
-                         .write = write_models,
-                         .read = read_models},
-            SectionCodec{.type = scene_section::textures,
-                         .version = scene_section_version,
-                         .oldest_readable = 1,
-                         .write = write_textures,
-                         .read = read_textures},
-            SectionCodec{.type = scene_section::materials,
-                         .version = materials_section_version,
-                         .oldest_readable = 1,
-                         .write = write_materials,
-                         .read = read_materials},
-            SectionCodec{.type = scene_section::entities,
-                         .version = scene_section_version,
-                         .oldest_readable = 1,
-                         .write = write_entities,
-                         .read = read_entities},
-            SectionCodec{.type = scene_section::model_components,
-                         .version = scene_section_version,
-                         .oldest_readable = 1,
-                         .write = write_model_components,
-                         .read = read_model_components},
-            SectionCodec{.type = scene_section::material_overrides,
-                         .version = scene_section_version,
-                         .oldest_readable = 1,
-                         .write = write_material_overrides,
-                         .read = read_material_overrides},
-            SectionCodec{.type = scene_section::instanced_models,
-                         .version = instanced_models_section_version,
-                         .oldest_readable = 1,
-                         .write = write_instanced_models,
-                         .read = read_instanced_models},
-            SectionCodec{.type = scene_section::point_lights,
-                         .version = scene_section_version,
-                         .oldest_readable = 1,
-                         .write = write_point_lights,
-                         .read = read_point_lights},
-            SectionCodec{.type = scene_section::spot_lights,
-                         .version = scene_section_version,
-                         .oldest_readable = 1,
-                         .write = write_spot_lights,
-                         .read = read_spot_lights},
-            SectionCodec{.type = scene_section::rigid_bodies,
-                         .version = rigid_bodies_section_version,
-                         .oldest_readable = 1,
-                         .write = write_rigid_bodies,
-                         .read = read_rigid_bodies},
-            SectionCodec{.type = scene_section::scripts,
-                         .version = scene_section_version,
-                         .oldest_readable = 1,
-                         .write = write_scripts,
-                         .read = read_scripts},
-            SectionCodec{.type = scene_section::lifetimes,
-                         .version = scene_section_version,
-                         .oldest_readable = 1,
-                         .write = write_lifetimes,
-                         .read = read_lifetimes},
-            SectionCodec{.type = scene_section::environment,
-                         .version = environment_section_version,
-                         .oldest_readable = 1,
-                         .write = write_environment,
-                         .read = read_environment},
+            SectionCodec{
+                    .type = scene_section::settings,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_settings,
+                    .read = read_settings,
+            },
+            SectionCodec{
+                    .type = scene_section::models,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_models,
+                    .read = read_models,
+            },
+            SectionCodec{
+                    .type = scene_section::textures,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_textures,
+                    .read = read_textures,
+            },
+            SectionCodec{
+                    .type = scene_section::materials,
+                    .version = materials_section_version,
+                    .oldest_readable = 1,
+                    .write = write_materials,
+                    .read = read_materials,
+            },
+            SectionCodec{
+                    .type = scene_section::entities,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_entities,
+                    .read = read_entities,
+            },
+            SectionCodec{
+                    .type = scene_section::model_components,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_model_components,
+                    .read = read_model_components,
+            },
+            SectionCodec{
+                    .type = scene_section::material_overrides,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_material_overrides,
+                    .read = read_material_overrides,
+            },
+            SectionCodec{
+                    .type = scene_section::instanced_models,
+                    .version = instanced_models_section_version,
+                    .oldest_readable = 1,
+                    .write = write_instanced_models,
+                    .read = read_instanced_models,
+            },
+            SectionCodec{
+                    .type = scene_section::point_lights,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_point_lights,
+                    .read = read_point_lights,
+            },
+            SectionCodec{
+                    .type = scene_section::spot_lights,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_spot_lights,
+                    .read = read_spot_lights,
+            },
+            SectionCodec{
+                    .type = scene_section::rigid_bodies,
+                    .version = rigid_bodies_section_version,
+                    .oldest_readable = 1,
+                    .write = write_rigid_bodies,
+                    .read = read_rigid_bodies,
+            },
+            SectionCodec{
+                    .type = scene_section::scripts,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_scripts,
+                    .read = read_scripts,
+            },
+            SectionCodec{
+                    .type = scene_section::lifetimes,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_lifetimes,
+                    .read = read_lifetimes,
+            },
+            SectionCodec{
+                    .type = scene_section::environment,
+                    .version = environment_section_version,
+                    .oldest_readable = 1,
+                    .write = write_environment,
+                    .read = read_environment,
+            },
     };
 
     [[nodiscard]] auto find_codec(std::uint32_t type) noexcept -> SectionCodec const * {
@@ -1039,7 +1068,8 @@ auto encode_scene(SceneDescription const &scene) -> std::vector<std::byte> {
         writer.write(codec.version);
         writer.write(std::uint16_t{0});
         writer.write(static_cast<std::uint64_t>(section.size()));
-        writer.write_span(section.bytes());
+
+        writer.write(std::move(section));
     }
 
     return writer.take();
