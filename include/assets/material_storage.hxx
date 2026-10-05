@@ -62,6 +62,10 @@ struct MaterialCreateInfo {
     // of cutting at alpha_cutoff, which antialiases alpha-tested edges. Without MSAA it is the plain cutoff.
     bool alpha_to_coverage = false;
 
+    // The renderer's selected-object outline traces the silhouette of what this material draws. The renderer sets it
+    // on private copies of a material for submissions asked to be outlined; leave it false on your own.
+    bool outlined = false;
+
     // From LOD level `far_material_lod` on, instances draw with `far_material` instead of this material: foliage
     // whose distant LODs are alpha-tested cards, say, while the near ones are opaque geometry. One hop only: the far
     // material's own far_material is ignored. The renderer holds a reference to it while this material uses it.

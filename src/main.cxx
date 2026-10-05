@@ -118,8 +118,8 @@ namespace {
                                                 : std::span<MaterialSlotOverride const>{};
 
             auto const world_transform = systems::get_world_transform(registry, entity, transform);
-            auto result =
-                    application.renderer->submit_model(model.model, world_transform, material_override, slot_overrides);
+            auto result = application.renderer->submit_model(model.model, world_transform, material_override,
+                                                             slot_overrides, registry.all_of<Components::Outlined>(entity));
 
             if (!result) {
                 error("Could not submit scene object (model index {}): {}", model.model.index,
@@ -546,8 +546,10 @@ namespace {
             if (button == GLFW_MOUSE_BUTTON_RIGHT) {
                 app->capture_mouse();
             }
-        } else if (!app->play_fullscreen && app->viewport_hovered && !app->game_mouse_captured) {
-            // Embedded play captures the cursor on the first Viewport click; Escape releases it.
+        } else if (!app->play_fullscreen && app->viewport_hovered && !app->game_mouse_captured &&
+                   !app->game->wants_cursor()) {
+            // Embedded play captures the cursor on the first Viewport click; Escape releases it. Games that want the
+            // cursor never capture it.
             app->game_mouse_captured = true;
             app->capture_mouse();
         }

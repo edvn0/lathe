@@ -83,6 +83,11 @@ namespace Components {
 
     struct PlayerTag {};
 
+    // Draws the renderer's selected-object outline (Renderer::outline_settings) around this entity's Model. Add and
+    // remove it at runtime; it isn't serialised or cloned into the runtime scene, so it only exists where a game
+    // put it. Not applied to InstancedModel.
+    struct Outlined {};
+
     // Bullets spawned by BasicGame::shoot_bullet(). Their names aren't unique, so they need a tag.
     struct BulletTag {};
 

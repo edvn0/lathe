@@ -398,6 +398,7 @@ auto to_gpu_material(MaterialCreateInfo const &create_info) noexcept -> GpuMater
             .max_shadow_cascade = create_info.max_shadow_cascade,
             .debug_meshlet_colours = create_info.debug_meshlet_colours ? 1U : 0U,
             .flags = (create_info.double_sided ? GpuMaterial::flag_double_sided : 0U) |
-                     (create_info.alpha_to_coverage ? GpuMaterial::flag_alpha_to_coverage : 0U),
+                     (create_info.alpha_to_coverage ? GpuMaterial::flag_alpha_to_coverage : 0U) |
+                     (create_info.outlined ? GpuMaterial::flag_outlined : 0U),
     };
 }

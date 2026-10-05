@@ -21,3 +21,9 @@ the upstream repository, pinned to a commit and verified against a SHA-256 befor
 
 The helmet is for **non-commercial use only** (the CC BY-NC term follows the file, not the engine's MIT code). Credit
 both authors if you show it. To change the pinned commit or hash, edit `game/src/basic_game.cxx`.
+
+## Chess pack (local only)
+
+`chess/*.glb` is the "3D voxel Chess pack" (glb folder), used by `--game=chess`. It is gitignored and not committed; the
+pack shipped without a license file, so check its terms before adding it with `git add -f`. Copy the `glb/` files into
+`assets/models/chess/`.

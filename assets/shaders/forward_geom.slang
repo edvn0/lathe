@@ -99,7 +99,13 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
 
 struct OutputFS
 {
-    float4 colour : SV_Target;
+    float4 colour : SV_Target0;
+
+#ifdef OUTLINE_MASK
+    // The outline mask: 1 where a material with material_flag_outlined drew. Only in the variant the renderer builds
+    // for frames with outlined objects, which is the only one with a second target to write it to.
+    float outline : SV_Target1;
+#endif
 };
 
 // PCG hash: meshoptimizer emits spatially coherent meshlets in order, so consecutive ids must map to unrelated
@@ -443,6 +449,9 @@ var base_colour = base_sample.xyz *
 
     OutputFS output;
     output.colour = float4(fogged_colour, base_sample.a);
+#ifdef OUTLINE_MASK
+    output.outline = (material.flags & material_flag_outlined) != 0 ? 1.0 : 0.0;
+#endif
 
     return output;
 }

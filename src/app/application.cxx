@@ -2558,7 +2558,9 @@ auto Application::play() -> void {
 
     // Embedded play captures the cursor on the first Viewport click instead (see main.cxx).
     if (play_fullscreen) {
-        capture_mouse();
+        if (!game->wants_cursor()) {
+            capture_mouse();
+        }
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoKeyboard;
     }
 }
@@ -2608,6 +2610,34 @@ auto Application::release_mouse() -> void {
     io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
 }
 
+auto Application::cursor_over_game() const -> CursorPositionEvent {
+    glm::dvec2 uv{-1.0};
+
+    if (play_fullscreen) {
+        double x = 0.0;
+        double y = 0.0;
+        int width = 0;
+        int height = 0;
+        glfwGetCursorPos(context.window, &x, &y);
+        glfwGetWindowSize(context.window, &width, &height);
+
+        if (width > 0 && height > 0) {
+            uv = glm::dvec2{x / width, y / height};
+        }
+    } else if (viewport_content_size.x > 0.0F && viewport_content_size.y > 0.0F) {
+        // ImGui's mouse position and the Viewport's screen position share window coordinates.
+        auto const mouse = ImGui::GetIO().MousePos;
+        uv = glm::dvec2{(mouse.x - viewport_screen_pos.x) / viewport_content_size.x,
+                        (mouse.y - viewport_screen_pos.y) / viewport_content_size.y};
+    }
+
+    return CursorPositionEvent{
+            .ndc_x = (uv.x * 2.0) - 1.0,
+            .ndc_y = 1.0 - (uv.y * 2.0),
+            .inside = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0,
+    };
+}
+
 auto Application::update(float delta_time) -> void {
     ZoneScopedNC("ApplicationUpdate", tracy::Color::Firebrick);
 
@@ -2646,6 +2676,10 @@ auto Application::update(float delta_time) -> void {
     }
 
     active_scene()->step(delta_time);
+
+    if (game->wants_cursor()) {
+        game->on_cursor_position(*active_scene(), cursor_over_game());
+    }
 
     game->on_update(*active_scene(), delta_time);
     systems::lifetime(active_scene()->get_registry(), *active_scene()->physics_world, delta_time);

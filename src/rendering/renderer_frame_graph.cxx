@@ -52,6 +52,7 @@ namespace {
             .access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     };
 
+    constexpr auto outline_clear_colour = VkClearValue{.color = {.float32 = {0.0F, 0.0F, 0.0F, 0.0F}}};
     constexpr auto forward_clear_colour = VkClearValue{.color = {.float32 = {0.015F, 0.025F, 0.050F, 1.0F}}};
 
     // Buffers enter and leave the graph with nothing outstanding: whatever wrote them before it (prepare_frame's
@@ -182,6 +183,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     // forward for colour) and given memory after the graph is compiled. Under MSAA each has a multisampled image that
     // is never sampled and a single-sample resolve target that is; without MSAA one image is both.
     auto hdr_image = frame_graph::ImageId{};
+
+    // The selected-object outline mask: a second colour target of the forward pass, only there on frames with an
+    // outlined submission. Single-sample (the resolve target under MSAA) is what the composition pass samples.
+    auto const outline_enabled = outline_active_;
+    auto outline_image = frame_graph::ImageId{};
     auto depth_image = frame_graph::ImageId{};
     auto resolved_depth_image = frame_graph::ImageId{};
     auto const target_description = [&](VkFormat format, VkSampleCountFlagBits samples, bool bindless,
@@ -943,6 +949,23 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     hdr_image = pass.color(hdr_image, frame_graph::LoadOp::clear, frame_graph::StoreOp::store,
                                            forward_clear_colour);
                 }
+
+                // After the HDR target, so it is colour attachment 1.
+                if (outline_enabled) {
+                    if (multisampled) {
+                        auto const outline_msaa = pass.color(
+                                pass.create(target_description(VK_FORMAT_R8_UNORM, samples_, false, "outline_msaa")),
+                                frame_graph::LoadOp::clear, frame_graph::StoreOp::dont_care, outline_clear_colour);
+                        outline_image = pass.create(
+                                target_description(VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, true, "resolved_outline"));
+                        outline_image = pass.resolve(outline_msaa, outline_image, VK_RESOLVE_MODE_AVERAGE_BIT);
+                    } else {
+                        outline_image = pass.create(
+                                target_description(VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, true, "outline"));
+                        outline_image = pass.color(outline_image, frame_graph::LoadOp::clear,
+                                                   frame_graph::StoreOp::store, outline_clear_colour);
+                    }
+                }
                 depth_image = pass.write_depth(depth_image, frame_graph::LoadOp::load, frame_graph::StoreOp::store);
                 pass.render_area({.offset = {0, 0}, .extent = targets->extent});
 
@@ -958,6 +981,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             .colour_format = hdr_format_,
                             .depth_format = depth_format_,
                             .samples = samples_,
+                            .colour_attachment_count = outline_enabled ? 2U : 1U,
                     };
                     auto scene_overlays = [&] {
                         record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
@@ -1044,6 +1068,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const bloom =
                             pass.read(bloom_image, frame_graph::Use::sampled, fragment_stage);
                 }
+                if (outline_enabled) {
+                    [[maybe_unused]] auto const outline =
+                            pass.read(outline_image, frame_graph::Use::sampled, fragment_stage);
+                }
                 if (fullscreen) {
                     swapchain = pass.color(swapchain, frame_graph::LoadOp::dont_care, frame_graph::StoreOp::store);
                     pass.render_area({.offset = {0, 0}, .extent = swapchain_image.extent});
@@ -1081,6 +1109,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                     .pipeline = composite_pipeline_,
                                     .exposure = 1.0F,
                                     .bloom_intensity = bloom_settings_.intensity,
+                                    .outline_texture_index = outline_enabled ? transient_index(outline_image) : 0U,
+                                    .outline_thickness_pixels = outline_settings_.thickness_pixels,
+                                    .outline_colour = outline_settings_.colour,
                             },
                             fullscreen ? ui_callback : render_pass::Callback{});
                     if (!composited) {
