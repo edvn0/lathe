@@ -123,6 +123,9 @@ public static const uint material_flag_double_sided = 1u;
 // Mask materials under MSAA: the prepass writes alpha as sample coverage instead of cutting at alpha_cutoff.
 public static const uint material_flag_alpha_to_coverage = 2u;
 
+// The forward pass writes 1 to the outline mask (its second colour target) where this material draws.
+public static const uint material_flag_outlined = 4u;
+
 // Clustered lighting: the grid is set at runtime (UBO::cluster_grid_*, see ClusterGridSettings in cluster_grid.hxx).
 // light_cluster.slang sizes its shared per-slice arrays by this. Mirrors cluster_grid_maximum_depth_slices.
 public static const uint cluster_grid_maximum_depth_slices = 64;

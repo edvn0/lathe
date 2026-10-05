@@ -295,6 +295,9 @@ struct Application {
 
     auto update(float delta_time) -> void;
 
+    // Where the cursor is over the image the game is drawn into; see IGame::on_cursor_position().
+    [[nodiscard]] auto cursor_over_game() const -> CursorPositionEvent;
+
     auto on_startup() -> void;
 
     // Registers the debug-line and ImGui overlays. Called once both renderers exist.

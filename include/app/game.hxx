@@ -69,6 +69,18 @@ public:
         (void) event;
     }
 
+    // Opt in to a free, visible cursor. Without it, play captures the cursor for mouse-look (immediately in fullscreen
+    // play, on the first Viewport click when embedded) and on_cursor_position() is never called. With it the cursor
+    // stays free, and on_mouse_moved() deltas still arrive in fullscreen play. Read once per frame.
+    [[nodiscard]] virtual auto wants_cursor() const -> bool { return false; }
+
+    // Called every frame before on_update() while playing, if wants_cursor() is true. Build a picking ray from the
+    // position and camera().
+    virtual auto on_cursor_position(Scene &scene, CursorPositionEvent const &event) -> void {
+        (void) scene;
+        (void) event;
+    }
+
     // Optional game UI, drawn inside the engine's ImGui frame. `scene` is the active scene.
     virtual auto on_ui(Scene &scene, Renderer &renderer) -> void {
         (void) scene;

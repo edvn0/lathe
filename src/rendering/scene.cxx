@@ -207,7 +207,7 @@ auto Scene::connect_light_signals() -> void {
 }
 
 auto Scene::find_entity(std::string_view name) const noexcept -> entt::entity {
-    constexpr auto compare_names = [](auto const &meta, std::string_view name) { return meta.name == name; };
+    constexpr auto compare_names = [](auto const &meta, std::string_view n) { return meta.name == n; };
 
     auto view = registry.view<Components::Meta>();
     for (auto entity: view) {

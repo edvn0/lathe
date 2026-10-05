@@ -132,8 +132,12 @@ namespace render_pass {
             vkCmdSetLogicOpEnableEXT(command_buffer, VK_FALSE);
         }
 
+        // Attachments past the first are never blended. They are written (as the outline mask) only when
+        // `write_extra_attachments`, and write-masked otherwise, because a fragment shader that doesn't write one
+        // leaves undefined values behind.
         auto set_shader_object_color_blend_state(VkCommandBuffer command_buffer, std::uint32_t attachment_count,
-                                                 bool blending) noexcept -> void {
+                                                 bool blending, bool write_extra_attachments = false) noexcept
+                -> void {
             constexpr std::uint32_t max_supported_attachments = 8;
 
             if (attachment_count == 0) {
@@ -159,6 +163,11 @@ namespace render_pass {
             write_mask.fill(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
                             VK_COLOR_COMPONENT_A_BIT);
 
+            for (std::uint32_t attachment = 1; attachment < attachment_count; ++attachment) {
+                blend_enable[attachment] = VK_FALSE;
+                write_mask[attachment] = write_extra_attachments ? VkColorComponentFlags{VK_COLOR_COMPONENT_R_BIT} : VkColorComponentFlags{0};
+            }
+
             vkCmdSetColorBlendEnableEXT(command_buffer, 0, attachment_count, blend_enable.data());
             vkCmdSetColorBlendEquationEXT(command_buffer, 0, attachment_count, blend_equation.data());
             vkCmdSetColorWriteMaskEXT(command_buffer, 0, attachment_count, write_mask.data());
@@ -176,7 +185,8 @@ namespace render_pass {
         auto bind_graphics_node(PipelineGraphRepository const &graph, PipelineNodeHandle handle,
                                 VkCommandBuffer command_buffer, VkSampleCountFlagBits samples,
                                 std::uint32_t colour_attachment_count, bool blending,
-                                bool has_vertex_input_stage = true) noexcept -> void {
+                                bool has_vertex_input_stage = true, bool write_extra_attachments = false) noexcept
+                -> void {
             if (auto const *shader_objects = graph.resolve_shader_objects(handle); shader_objects != nullptr) {
                 shader_objects->bind(command_buffer);
 
@@ -185,7 +195,8 @@ namespace render_pass {
                 }
 
                 set_shader_object_raster_state(command_buffer, VK_POLYGON_MODE_FILL, samples, false);
-                set_shader_object_color_blend_state(command_buffer, colour_attachment_count, blending);
+                set_shader_object_color_blend_state(command_buffer, colour_attachment_count, blending,
+                                                    write_extra_attachments);
                 return;
             }
         }
@@ -205,6 +216,9 @@ namespace render_pass {
             VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
             std::uint32_t colour_attachment_count = 0;
             bool blending = false;
+
+            // Whether the draw writes the outline mask, the attachment after the first.
+            bool write_outline_mask = false;
         };
 
         [[nodiscard]] auto scene_layouts_valid(PipelineGraphRepository const &graph, SceneDraw const &draw) noexcept
@@ -232,7 +246,8 @@ namespace render_pass {
                 auto const layout = resolve_layout(context.pipeline_graph, pipeline);
 
                 bind_graphics_node(context.pipeline_graph, pipeline, context.command_buffer, draw.samples,
-                                   draw.colour_attachment_count, draw.blending, has_vertex_input_stage);
+                                   draw.colour_attachment_count, draw.blending, has_vertex_input_stage,
+                                   draw.write_outline_mask);
                 context.resource_table.bind(context.command_buffer, context.frame_index,
                                             VK_PIPELINE_BIND_POINT_GRAPHICS, layout);
                 vkCmdPushConstants(context.command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
@@ -573,19 +588,25 @@ namespace render_pass {
 
     auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback scene_overlays)
             -> std::expected<HdrTextureIndex, RendererError> {
+        auto const colour_attachment_count = info.outline_mask ? 2U : 1U;
+
         detail::SceneDraw const opaque_draw{
                 .meshlet_pipeline = info.opaque_pipeline,
                 .instanced_pipeline = info.opaque_instanced_pipeline,
                 .samples = info.samples,
-                .colour_attachment_count = 1,
+                .colour_attachment_count = colour_attachment_count,
                 .blending = false,
+                .write_outline_mask = info.outline_mask,
         };
+
+        // Blended surfaces don't mark the outline mask: an outline around something see-through would draw through it.
         detail::SceneDraw const blend_draw{
                 .meshlet_pipeline = info.blend_pipeline,
                 .instanced_pipeline = info.blend_instanced_pipeline,
                 .samples = info.samples,
-                .colour_attachment_count = 1,
+                .colour_attachment_count = colour_attachment_count,
                 .blending = true,
+                .write_outline_mask = false,
         };
 
         if (!detail::scene_layouts_valid(context.pipeline_graph, opaque_draw) ||
@@ -662,7 +683,7 @@ namespace render_pass {
                 vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
 
                 detail::bind_graphics_node(context.pipeline_graph, info.skybox_pipeline, context.command_buffer,
-                                           info.samples, 1, false, true);
+                                           info.samples, colour_attachment_count, false, true);
                 context.resource_table.bind(context.command_buffer, context.frame_index,
                                             VK_PIPELINE_BIND_POINT_GRAPHICS, sky_layout);
 
@@ -715,7 +736,7 @@ namespace render_pass {
 
         detail::set_shader_object_vertex_input(command_buffer, {}, {});
         detail::set_shader_object_raster_state(command_buffer, VK_POLYGON_MODE_FILL, scope.samples, false);
-        detail::set_shader_object_color_blend_state(command_buffer, 1, false);
+        detail::set_shader_object_color_blend_state(command_buffer, scope.colour_attachment_count, false);
 
         vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
         vkCmdSetPrimitiveRestartEnable(command_buffer, VK_FALSE);
@@ -890,6 +911,13 @@ namespace render_pass {
                 .sampler_index = info.linear_sampler_index,
                 .exposure = info.exposure,
                 .bloom_intensity = bloom_intensity,
+                .outline_texture_index = info.outline_texture_index,
+                .outline_thickness = info.outline_thickness_pixels,
+                .outline_texel_x = 1.0F / static_cast<float>(info.extent.width),
+                .outline_texel_y = 1.0F / static_cast<float>(info.extent.height),
+                .outline_r = info.outline_colour.r,
+                .outline_g = info.outline_colour.g,
+                .outline_b = info.outline_colour.b,
         };
 
         vkCmdPushConstants(context.command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);

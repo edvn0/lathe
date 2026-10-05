@@ -52,6 +52,9 @@ struct alignas(16) GpuMaterial {
     // Mask materials under MSAA: the depth prepass turns alpha into sample coverage instead of a hard cutoff, so
     // alpha-tested edges are antialiased.
     static constexpr std::uint32_t flag_alpha_to_coverage = 1U << 1U;
+
+    // The forward pass marks the pixels this material covers in the outline mask (see Renderer::outline_settings).
+    static constexpr std::uint32_t flag_outlined = 1U << 2U;
 };
 
 static_assert(std::is_trivially_copyable_v<GpuMaterial>);

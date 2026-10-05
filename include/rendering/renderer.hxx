@@ -79,6 +79,15 @@ struct BloomSettings {
     float intensity = 0.1F;
 };
 
+// The selected-object outline: submit_model(..., outlined = true) marks what it draws in a mask the composite pass
+// traces. Drawn outside the silhouette, over the tone-mapped image, so the colour is what you see.
+struct OutlineSettings {
+    glm::vec3 colour{1.0F, 0.78F, 0.15F};
+
+    // Width in pixels of the target the scene is drawn into.
+    float thickness_pixels = 3.0F;
+};
+
 // GTAO (Jimenez et al. 2016): screen-space horizon-based AO from depth alone, denoised with a depth-aware blur
 // and multiplied into the ambient term alongside the material's baked occlusion.
 struct AoSettings {
@@ -388,12 +397,21 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto create_model(Model const &model) -> std::expected<ModelHandle, RendererError>;
 
     // A valid material_override replaces every submesh material for this submission. Slot overrides win over it.
+    //
+    // `outlined` draws the selected-object outline (outline_settings()) around the model. It draws with private
+    // copies of its materials that carry the outline flag, so it costs a batch of its own per material. The model's
+    // own materials, not InstancedModel ones, are what it supports.
     [[nodiscard]]
     auto submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override = {},
-                      std::span<MaterialSlotOverride const> slot_overrides = {}) -> std::expected<void, RendererError>;
+                      std::span<MaterialSlotOverride const> slot_overrides = {}, bool outlined = false)
+            -> std::expected<void, RendererError>;
     [[nodiscard]]
     auto submit_model(ModelHandle model, glm::mat4 &&, MaterialHandle material_override = {},
-                      std::span<MaterialSlotOverride const> slot_overrides = {}) -> std::expected<void, RendererError>;
+                      std::span<MaterialSlotOverride const> slot_overrides = {}, bool outlined = false)
+            -> std::expected<void, RendererError>;
+
+    [[nodiscard]] auto outline_settings() noexcept -> OutlineSettings & { return outline_settings_; }
+    [[nodiscard]] auto outline_settings() const noexcept -> OutlineSettings const & { return outline_settings_; }
 
     // Submits many instances of one model sharing a material_override, without an entity per instance. Batching is
     // the same as for individual submissions, but the transforms are copied in one block and prepare_frame() resolves
@@ -1084,6 +1102,8 @@ private:
         // A range of slot_override_submissions_.
         std::uint32_t slot_override_first = 0;
         std::uint32_t slot_override_count = 0;
+
+        bool outlined = false;
     };
 
     // One submit_model_instances() call: a range of instance_transforms_, batched in prepare_frame() just before
@@ -1428,6 +1448,10 @@ private:
     PipelineNodeHandle depth_prepass_pipeline_;
     PipelineNodeHandle depth_prepass_mask_pipeline_;
     PipelineNodeHandle forward_pipeline_;
+
+    // forward_pipeline_ and forward_instanced_pipeline_ with the outline mask output; see Renderer::initialize.
+    PipelineNodeHandle forward_outline_pipeline_;
+    PipelineNodeHandle forward_outline_instanced_pipeline_;
     PipelineNodeHandle forward_blend_pipeline_;
 
     // Vertex-shader variants of the scene pipelines for plain-instanced batches.
@@ -1457,6 +1481,23 @@ private:
     std::uint64_t frame_counter_ = 0;
 
     BloomSettings bloom_settings_;
+    OutlineSettings outline_settings_;
+
+    // A material with MaterialCreateInfo::outlined set for each one an outlined submission has used, so those
+    // submissions batch and draw with the flag. Made on first use, refreshed once a frame while in use, freed when the
+    // source material is.
+    struct OutlineVariant {
+        MaterialHandle source{};
+        MaterialHandle variant{};
+        std::uint64_t refreshed_frame = 0;
+    };
+    std::vector<OutlineVariant> outline_variants_;
+
+    // Whether any submission this frame was outlined, which is when the forward pass gets its second target.
+    bool outline_active_ = false;
+
+    [[nodiscard]] auto outline_variant(MaterialHandle source) -> MaterialHandle;
+    auto prune_outline_variants() -> void;
     AoSettings ao_settings_;
 
     ImageHandle light_icon_texture_{};

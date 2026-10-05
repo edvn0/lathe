@@ -9,6 +9,8 @@
 
 #include <volk.h>
 
+#include <glm/vec3.hpp>
+
 #include "core/config.hxx"
 #include "core/renderer_error.hxx"
 #include "gpu/buffer.hxx"
@@ -217,6 +219,9 @@ namespace render_pass {
         // Denoised GTAO, or white when AO is disabled.
         std::uint32_t ao_texture_index = 0;
         std::uint32_t ao_sampler_index = 0;
+
+        // The scope has a second colour attachment, the outline mask, which opaque, double-sided and mask draws write.
+        bool outline_mask = false;
     };
 
     inline constexpr std::uint32_t bloom_mip_count = 4;
@@ -256,6 +261,11 @@ namespace render_pass {
 
         float exposure = 1.0F;
         float bloom_intensity = 0.0F;
+
+        // The outline mask's bindless index, or 0 when nothing is outlined this frame.
+        std::uint32_t outline_texture_index = 0;
+        float outline_thickness_pixels = 0.0F;
+        glm::vec3 outline_colour{0.0F};
     };
 
     // Non-owning, allocation-free callback. The callable must outlive the render-pass call.

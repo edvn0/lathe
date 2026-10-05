@@ -55,6 +55,11 @@ struct OverlayScope {
     VkFormat depth_format = VK_FORMAT_UNDEFINED; // UNDEFINED: no depth attachment
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 
+    // Colour attachments in the scope. Overlays draw into the first; the scene scope has a second (the outline
+    // mask) on frames with outlined objects, which the host keeps write-masked so overlays leave it alone. Fragment
+    // shaders must not write a second target.
+    std::uint32_t colour_attachment_count = 1;
+
     [[nodiscard]] auto has_depth() const noexcept -> bool { return depth_format != VK_FORMAT_UNDEFINED; }
 };
 

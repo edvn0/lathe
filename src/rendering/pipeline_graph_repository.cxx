@@ -16,9 +16,16 @@ namespace {
         return (error_code ? path : canonical).generic_string();
     }
 
+    // Requests that differ only in their defines are different stages (and different shader binary cache entries).
     auto to_stage_key(renderer::ShaderCompileRequest const &request) -> std::string {
-        return std::format("{}|{}|{}", to_lookup_key(request.source_path), request.entry_point,
-                           static_cast<int>(std::to_underlying(request.stage)));
+        auto key = std::format("{}|{}|{}", to_lookup_key(request.source_path), request.entry_point,
+                               static_cast<int>(std::to_underlying(request.stage)));
+
+        for (auto const &define: request.defines) {
+            key += std::format("|{}={}", define.name, define.value);
+        }
+
+        return key;
     }
 } // namespace
 

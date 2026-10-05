@@ -1,4 +1,5 @@
 #include "rendering/renderer.hxx"
+#include "core/error_describe.hxx"
 #include "core/perf_events.hxx"
 
 #include "gpu/device_wait.hxx"
@@ -1016,6 +1017,23 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.instance_lod_pipeline",
     }); // index 30: instance_lod
 
+    // The opaque forward pipelines again, with the outline mask in their fragment shaders: what frames with an
+    // outlined submission draw with (they have a second colour target for it). Frames without one use the originals,
+    // so no draw writes to a missing attachment. Blended draws use the originals either way; they write-mask the
+    // second target.
+    for (auto const source_index: {std::size_t{0}, std::size_t{13}}) {
+        auto outline_info = pipeline_infos[source_index];
+
+        for (auto &stage: outline_info.stages) {
+            if (stage.stage == renderer::ShaderStage::fragment) {
+                stage.defines.push_back(renderer::ShaderDefine{.name = "OUTLINE_MASK", .value = "1"});
+            }
+        }
+
+        outline_info.debug_name += ".outline";
+        pipeline_infos.push_back(std::move(outline_info));
+    } // indices 31 (forward) and 32 (forward_instanced)
+
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
@@ -1056,6 +1074,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     hiz_build_pipeline_ = *registered_pipelines[22];
     skybox_pipeline_ = *registered_pipelines[29];
     instance_lod_pipeline_ = *registered_pipelines[30];
+    forward_outline_pipeline_ = *registered_pipelines[31];
+    forward_outline_instanced_pipeline_ = *registered_pipelines[32];
 
     {
         auto initialised = environment_.initialize(EnvironmentSystem::CreateInfo{
@@ -1745,6 +1765,7 @@ auto Renderer::destroy() noexcept -> void {
 
     model_streamer_.wait_all();
 
+    outline_variants_.clear();
     material_storage_.destroy();
     texture_streamer_.wait_all();
     image_storage_.destroy();
@@ -2085,7 +2106,7 @@ auto Renderer::model_materials(ModelHandle model) const -> std::vector<MaterialH
 }
 
 auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override,
-                            std::span<MaterialSlotOverride const> slot_overrides)
+                            std::span<MaterialSlotOverride const> slot_overrides, bool outlined)
         -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
@@ -2104,13 +2125,14 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, Mater
             .material_override = material_override,
             .slot_override_first = slot_override_first,
             .slot_override_count = static_cast<std::uint32_t>(slot_overrides.size()),
+            .outlined = outlined,
     });
 
     return {};
 }
 
 auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHandle material_override,
-                            std::span<MaterialSlotOverride const> slot_overrides)
+                            std::span<MaterialSlotOverride const> slot_overrides, bool outlined)
         -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
@@ -2129,6 +2151,7 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
             .material_override = material_override,
             .slot_override_first = slot_override_first,
             .slot_override_count = static_cast<std::uint32_t>(slot_overrides.size()),
+            .outlined = outlined,
     });
 
     return {};
@@ -2355,6 +2378,56 @@ auto Renderer::update_material(MaterialHandle handle, MaterialCreateInfo const &
 
     mark_shadow_casters_dirty();
     return {};
+}
+
+auto Renderer::outline_variant(MaterialHandle source) -> MaterialHandle {
+    auto const *source_info = material_storage_.create_info(source);
+
+    if (source_info == nullptr) {
+        return source;
+    }
+
+    // Distant LODs of a material draw with its far material; the copy draws with the source at every LOD, which is
+    // what an outlined (nearby, selected) object wants.
+    auto info = *source_info;
+    info.far_material = MaterialHandle{};
+    info.outlined = true;
+
+    outline_active_ = true;
+
+    auto const found = std::ranges::find(outline_variants_, source, &OutlineVariant::source);
+
+    if (found != outline_variants_.end()) {
+        if (found->refreshed_frame != frame_counter_) {
+            // Straight to the storage: Renderer::update_material would dirty the shadow casters every frame.
+            static_cast<void>(material_storage_.update_material(found->variant, info));
+            found->refreshed_frame = frame_counter_;
+        }
+
+        return found->variant;
+    }
+
+    auto created = create_material(info, {});
+
+    if (!created) {
+        warn("Renderer: could not make an outline variant of a material: {}", describe(created.error()));
+        return source;
+    }
+
+    outline_variants_.push_back(OutlineVariant{.source = source, .variant = *created, .refreshed_frame = frame_counter_});
+
+    return *created;
+}
+
+auto Renderer::prune_outline_variants() -> void {
+    std::erase_if(outline_variants_, [this](OutlineVariant const &entry) {
+        if (material_storage_.create_info(entry.source) != nullptr) {
+            return false;
+        }
+
+        release_material(entry.variant);
+        return true;
+    });
 }
 
 auto Renderer::retain_material(MaterialHandle handle) -> void {
@@ -2839,6 +2912,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     pipeline_graph_.tick_retirement();
     geometry_arena_.tick_retirement();
 
+    // Set again by the first outlined submission batched below.
+    outline_active_ = false;
+    prune_outline_variants();
+
     if (auto changed = shader_change_queue_.drain(); !changed.empty()) {
         pipeline_graph_.on_files_changed(changed);
     }
@@ -3141,6 +3218,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                     }
                 }
                 material = material_storage_.material_for_lod(material, lod_index);
+
+                if (model_submission.outlined) {
+                    material = outline_variant(material);
+                }
+
                 auto const key = BatchKey{
                         .mesh_index = model_draw.mesh.index,
                         .submesh_index = submesh_index,
@@ -4721,14 +4803,16 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .extra_cull_flags = frame.meshlet_occlusion_active ? render_pass::cull_replay : 0U,
                     .pipeline_statistics_query_pool = pipeline_stat_queries_[frame_index].query_pool,
                     .meshlet_culling = meshlet_culling_,
-                    .opaque_pipeline = forward_pipeline_,
+                    .opaque_pipeline = outline_active_ ? forward_outline_pipeline_ : forward_pipeline_,
                     .blend_pipeline = forward_blend_pipeline_,
-                    .opaque_instanced_pipeline = forward_instanced_pipeline_,
+                    .opaque_instanced_pipeline =
+                            outline_active_ ? forward_outline_instanced_pipeline_ : forward_instanced_pipeline_,
                     .blend_instanced_pipeline = forward_blend_instanced_pipeline_,
                     .skybox_pipeline = skybox_pipeline_,
                     .draw_skybox = (environment_.ubo_block().flags & environment_flag::skybox) != 0U,
                     .ao_texture_index = ao_texture_index,
                     .ao_sampler_index = sampler_storage_.linear_clamp().index,
+                    .outline_mask = outline_active_,
             },
             scene_overlays);
 }
