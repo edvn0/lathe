@@ -1,5 +1,6 @@
 #include <csignal>
 #include <memory>
+#include <print>
 #include <random>
 #include <ranges>
 #include <volk.h>
@@ -684,6 +685,10 @@ namespace {
     }
 } // namespace
 
+// Defined by the game linked into the executable (game/src/main_entry.cxx). The first name is the default.
+auto game_names() -> std::span<std::string_view const>;
+auto create_game(std::string_view name) -> std::unique_ptr<IGame>;
+
 namespace {
 
     constexpr std::array<std::pair<std::string_view, ScreenType>, 4> screen_type_choices{{
@@ -701,6 +706,15 @@ namespace {
 
     // The engine-wide options that aren't the benchmark's or the presentation's. Registers on construction; read the
     // members after the CommandLine has parsed. Not movable: the CommandLine holds references to the members.
+    [[nodiscard]] auto game_help() -> std::string {
+        std::string names;
+        for (auto const name: game_names()) {
+            names += names.empty() ? "" : ", ";
+            names += name;
+        }
+        return std::format("Which game to run: {} (default {})", names, game_names().front());
+    }
+
     struct EngineArguments {
         explicit EngineArguments(CommandLine &cli) {
             auto display = cli.group("Display");
@@ -776,6 +790,24 @@ namespace {
             diagnostics.flag("--frame-graph-dump",
                              "Log the compiled frame graph whenever it changes", dump_frame_graph);
 
+            auto game_group = cli.group("Game");
+            game_group.option("--game", "NAME", game_help(),
+                              [this](std::string_view text) -> std::expected<void, std::string> {
+                                  auto const names = game_names();
+
+                                  if (std::ranges::find(names, text) == names.end()) {
+                                      std::string expected;
+                                      for (auto const name: names) {
+                                          expected += expected.empty() ? "" : "|";
+                                          expected += name;
+                                      }
+                                      return std::unexpected(std::format("'{}' (expected {})", text, expected));
+                                  }
+
+                                  game = std::string{text};
+                                  return {};
+                              });
+
             auto scene = cli.group("Scene");
             scene.value("--scene", "FILE.lbf", "Open a saved scene in place of the game's", open_scene);
             scene.value("--save-scene", "FILE.lbf", "Cook the (opened) scene into a self-contained .lbf", save_scene);
@@ -797,6 +829,7 @@ namespace {
         bool sync_validation = false;
         bool frame_graph_serialize = false;
         bool dump_frame_graph = false;
+        std::string game;
         std::optional<std::filesystem::path> open_scene;
         std::optional<std::filesystem::path> save_scene;
     };
@@ -809,8 +842,6 @@ static auto ctrl_c_handler(int) -> void {
     glfwPostEmptyEvent();
 }
 
-auto create_game() -> std::unique_ptr<IGame>;
-
 auto main(int argc, char **argv) -> int {
     CommandLine cli{"lathe", "Lathe engine"};
     EngineArguments engine{cli};
@@ -821,7 +852,7 @@ auto main(int argc, char **argv) -> int {
     auto const parsed = cli.parse(argc, argv);
     if (!parsed) {
         // Before any logging, like the compare report below, so stdout stays clean.
-        std::fprintf(stderr, "lathe: %s\nTry --help.\n", parsed.error().c_str());
+        std::println(stderr, "lathe: {}\nTry --help.", parsed.error());
         return EXIT_FAILURE;
     }
     if (*parsed == CommandLine::Outcome::help) {
@@ -905,7 +936,7 @@ auto main(int argc, char **argv) -> int {
     }
 
     Application application{context};
-    application.game = create_game();
+    application.game = create_game(engine.game.empty() ? game_names().front() : std::string_view{engine.game});
     install_window_callbacks(context, application);
 
     if (!initialize_application(context, application)) {

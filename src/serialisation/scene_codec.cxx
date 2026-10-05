@@ -603,6 +603,7 @@ namespace {
             write_vec3(writer, body.half_extents);
             writer.write(body.capsule_radius);
             writer.write(body.capsule_height);
+            writer.write(body.sphere_radius);
             writer.write(body.restitution);
             writer.write(body.mass);
             write_bool(writer, body.is_static);
@@ -619,7 +620,7 @@ namespace {
         }
     }
 
-    auto read_rigid_bodies(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_rigid_bodies(ByteReader &reader, std::uint16_t version, SceneDescription &scene) -> void {
         scene.rigid_bodies.resize(read_count(reader, 48));
 
         for (auto &component: scene.rigid_bodies) {
@@ -630,6 +631,11 @@ namespace {
             body.half_extents = read_vec3(reader);
             reader.read(body.capsule_radius);
             reader.read(body.capsule_height);
+
+            if (version >= 2) {
+                reader.read(body.sphere_radius);
+            }
+
             reader.read(body.restitution);
             reader.read(body.mass);
             body.is_static = read_bool(reader);
@@ -637,8 +643,11 @@ namespace {
 
             auto const shape = reader.read<std::uint8_t>();
 
-            // Heightfields are never written; see SceneRigidBodyComponent.
-            if (shape > std::to_underlying(Components::BodyShape::compound) ||
+            // Heightfields are never written; see SceneRigidBodyComponent. Spheres only exist from v2 on, so a v1
+            // file holding one is corrupt rather than merely old.
+            auto const highest_shape = version >= 2 ? Components::BodyShape::sphere : Components::BodyShape::compound;
+
+            if (shape > std::to_underlying(highest_shape) ||
                 shape == std::to_underlying(Components::BodyShape::heightfield)) {
                 reader.fail();
             }
@@ -868,7 +877,7 @@ namespace {
                          .write = write_spot_lights,
                          .read = read_spot_lights},
             SectionCodec{.type = scene_section::rigid_bodies,
-                         .version = scene_section_version,
+                         .version = rigid_bodies_section_version,
                          .oldest_readable = 1,
                          .write = write_rigid_bodies,
                          .read = read_rigid_bodies},
@@ -1239,8 +1248,9 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
 
         if (!finite(body.velocity) || !finite(body.half_extents) ||
             !glm::all(glm::greaterThanEqual(body.half_extents, glm::vec3{0.0F})) ||
-            !non_negative(body.capsule_radius) || !non_negative(body.capsule_height) || !finite(body.restitution) ||
-            !non_negative(body.mass) || !boxes_valid) {
+            !non_negative(body.capsule_radius) || !non_negative(body.capsule_height) ||
+            !non_negative(body.sphere_radius) || !finite(body.restitution) || !non_negative(body.mass) ||
+            !boxes_valid) {
             return fail("rigid body has a non-finite or negative value");
         }
     }
