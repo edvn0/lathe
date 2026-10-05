@@ -18,6 +18,7 @@
 #include "scene/camera_path.hxx"
 
 struct FrameTimings;
+class CommandLine;
 class JsonWriter;
 
 // Repeatable performance measurement, built into the engine (docs/perf-benchmark.md).
@@ -90,12 +91,6 @@ struct BenchmarkOptions {
 inline constexpr BenchmarkRenderSize benchmark_default_suite_render_size{.width = 1920, .height = 1080};
 inline constexpr std::uint32_t benchmark_default_suite_repeats = 3;
 
-// nullopt without --benchmark= or --benchmark-suite= (the other flags are then ignored); an error for a malformed
-// or zero value, or for both modes at once.
-[[nodiscard]]
-auto parse_benchmark_options(std::span<char const *const> args)
-        -> std::expected<std::optional<BenchmarkOptions>, std::string>;
-
 // --present-mode=immediate|mailbox|fifo|fifo_relaxed. Benchmarks prefer immediate when none is given: MAILBOX still
 // lets some compositors pace acquisition to the refresh rate.
 enum class PresentModeChoice : std::uint8_t {
@@ -105,18 +100,39 @@ enum class PresentModeChoice : std::uint8_t {
     fifo_relaxed,
 };
 
-[[nodiscard]]
-auto parse_present_mode_option(std::span<char const *const> args)
-        -> std::expected<std::optional<PresentModeChoice>, std::string>;
+// --vsync, --present-mode and --swapchain-images, each empty when absent. Registers on construction; read the
+// members after the CommandLine has parsed. Not movable: the CommandLine holds references to the members.
+struct PresentationArguments {
+    explicit PresentationArguments(CommandLine &cli);
 
-// --swapchain-images=<n> (2..8), nullopt when absent.
-[[nodiscard]]
-auto parse_swapchain_images_option(std::span<char const *const> args)
-        -> std::expected<std::optional<std::uint32_t>, std::string>;
+    PresentationArguments(PresentationArguments const &) = delete;
+    auto operator=(PresentationArguments const &) -> PresentationArguments & = delete;
 
-// --vsync=on|off, nullopt when absent.
-[[nodiscard]]
-auto parse_vsync_option(std::span<char const *const> args) -> std::expected<std::optional<bool>, std::string>;
+    std::optional<bool> vsync;
+    std::optional<PresentModeChoice> present_mode;
+    std::optional<std::uint32_t> swapchain_images;
+};
+
+// The --benchmark* options. Registers on construction; call options() after the CommandLine has parsed. Not movable:
+// the CommandLine holds references to the members.
+class BenchmarkArguments {
+public:
+    explicit BenchmarkArguments(CommandLine &cli);
+
+    BenchmarkArguments(BenchmarkArguments const &) = delete;
+    auto operator=(BenchmarkArguments const &) -> BenchmarkArguments & = delete;
+
+    // nullopt without --benchmark or --benchmark-suite (the other flags are then ignored); an error for both modes
+    // at once.
+    [[nodiscard]]
+    auto options() const -> std::expected<std::optional<BenchmarkOptions>, std::string>;
+
+private:
+    BenchmarkOptions options_;
+    std::optional<std::filesystem::path> single_;
+    std::optional<std::filesystem::path> suite_;
+    std::optional<std::uint32_t> repeats_;
+};
 
 // "1920x1080".
 [[nodiscard]]

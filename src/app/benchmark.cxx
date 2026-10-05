@@ -10,6 +10,7 @@
 #include <span>
 #include <utility>
 
+#include "core/command_line.hxx"
 #include "core/json.hxx"
 #include "rendering/renderer.hxx"
 
@@ -27,29 +28,15 @@ namespace {
         return result;
     }
 
-    [[nodiscard]] auto parse_positive_float(std::string_view flag,
-                                            std::string_view value) -> std::expected<float, std::string> {
+    [[nodiscard]] auto parse_positive_float(std::string_view value) -> std::expected<float, std::string> {
         auto result = 0.0F;
         auto const [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
 
         if (error != std::errc{} || end != value.data() + value.size() || !(result > 0.0F) || !std::isfinite(result)) {
-            return std::unexpected(std::format("{}: '{}' is not a positive number", flag, value));
+            return std::unexpected(std::format("'{}' is not a positive number", value));
         }
 
         return result;
-    }
-
-    [[nodiscard]] auto split(std::string_view text, char separator) -> std::vector<std::string_view> {
-        std::vector<std::string_view> parts;
-        while (!text.empty()) {
-            auto const at = text.find(separator);
-            parts.push_back(text.substr(0, at));
-            if (at == std::string_view::npos) {
-                break;
-            }
-            text = text.substr(at + 1);
-        }
-        return parts;
     }
 
     [[nodiscard]] auto sanitise_file_name(std::string_view text) -> std::string {
@@ -89,221 +76,127 @@ auto parse_render_size(std::string_view text) -> std::expected<BenchmarkRenderSi
     return BenchmarkRenderSize{.width = *width, .height = *height};
 }
 
-auto parse_vsync_option(std::span<char const *const> args) -> std::expected<std::optional<bool>, std::string> {
-    std::optional<bool> vsync;
+namespace {
 
-    for (auto const *raw: args) {
-        std::string_view const arg = raw;
-        if (constexpr std::string_view prefix = "--vsync="; arg.starts_with(prefix)) {
-            auto const value = arg.substr(prefix.size());
-            if (value == "on") {
-                vsync = true;
-            } else if (value == "off") {
-                vsync = false;
-            } else {
-                return std::unexpected(std::format("--vsync: '{}' (expected on or off)", value));
-            }
-        }
-    }
+    constexpr std::array<std::pair<std::string_view, PresentModeChoice>, 4> present_mode_choices{{
+            {"immediate", PresentModeChoice::immediate},
+            {"mailbox", PresentModeChoice::mailbox},
+            {"fifo", PresentModeChoice::fifo},
+            {"fifo_relaxed", PresentModeChoice::fifo_relaxed},
+    }};
 
-    return vsync;
+} // namespace
+
+PresentationArguments::PresentationArguments(CommandLine &cli) {
+    auto group = cli.group("Presentation");
+    group.toggle("--vsync", "Cap the frame rate at the refresh rate (off by default while benchmarking)", vsync);
+    group.choice<PresentModeChoice>("--present-mode",
+                                  "Present mode outright (benchmarks prefer immediate: MAILBOX can still pace "
+                                  "acquisition to the refresh rate)",
+                                  present_mode_choices, present_mode);
+    group.value("--swapchain-images", "N", "Swapchain images to ask for, 2 to 8", swapchain_images,
+              CommandLineGroup::Range<std::uint32_t>{.min = 2, .max = 8});
 }
 
-auto parse_present_mode_option(std::span<char const *const> args)
-        -> std::expected<std::optional<PresentModeChoice>, std::string> {
-    std::optional<PresentModeChoice> mode;
+BenchmarkArguments::BenchmarkArguments(CommandLine &cli) {
+    auto group = cli.group("Benchmark");
+    group.value("--benchmark", "OUT.json", "Run the game's scene along its benchmark camera path and write the JSON",
+              single_);
+    group.value("--benchmark-suite", "DIR", "Run every scenario at each of its load levels, writing suite.json and report.md",
+              suite_);
+    group.value("--benchmark-frames", "N", "Measured frames per run, one lap of the camera path (600)",
+              options_.frame_count, CommandLineGroup::Range<std::uint32_t>{.min = 1});
+    group.value("--benchmark-warmup", "N", "Minimum frames at the first keyframe before measuring (60)",
+              options_.warmup_frame_count);
+    group.value("--benchmark-max-warmup", "N",
+              "Measure anyway after this many frames, even if streaming hasn't settled (1200)",
+              options_.max_warmup_frame_count);
+    group.value("--seed", "N", "Scene seed (1337)", options_.seed);
+    group.option("--benchmark-target-hz", "HZ", "Refresh rate frames are judged against (144)",
+               [this](std::string_view text) -> std::expected<void, std::string> {
+                   auto const hz = parse_positive_float(text);
+                   if (!hz) {
+                       return std::unexpected(hz.error());
+                   }
+                   options_.target_hz = *hz;
+                   return {};
+               });
+    group.option("--benchmark-render-size", "WxH",
+               "Fixed render resolution (suite default 1920x1080; single run: the Viewport panel)",
+               [this](std::string_view text) -> std::expected<void, std::string> {
+                   auto const size = parse_render_size(text);
+                   if (!size) {
+                       return std::unexpected(size.error());
+                   }
+                   options_.render_size = *size;
+                   return {};
+               });
+    group.flag("--benchmark-screenshots", "Screenshot the first frame at or past each keyframe (single run only)",
+             options_.keyframe_screenshots);
+    group.option("--benchmark-scenarios", "a,b", "Suite: which scenarios to run (default: all)",
+               [this](std::string_view text) -> std::expected<void, std::string> {
+                   options_.scenarios.clear();
+                   for (auto const name: CommandLine::split(text, ',')) {
+                       if (name.empty()) {
+                           return std::unexpected(std::string{"empty scenario name"});
+                       }
+                       options_.scenarios.emplace_back(name);
+                   }
+                   return {};
+               });
+    group.option(
+            "--benchmark-sweep", "name:1,2,4", "Suite: load levels for a scenario, replacing its defaults (repeatable)",
+            [this](std::string_view spec) -> std::expected<void, std::string> {
+                auto const colon = spec.find(':');
+                if (colon == std::string_view::npos || colon == 0 || colon + 1 == spec.size()) {
+                    return std::unexpected(std::format("'{}' is not scenario:load,load,...", spec));
+                }
 
-    for (auto const *raw: args) {
-        std::string_view const arg = raw;
-        if (constexpr std::string_view prefix = "--present-mode="; arg.starts_with(prefix)) {
-            auto const value = arg.substr(prefix.size());
-            if (value == "immediate") {
-                mode = PresentModeChoice::immediate;
-            } else if (value == "mailbox") {
-                mode = PresentModeChoice::mailbox;
-            } else if (value == "fifo") {
-                mode = PresentModeChoice::fifo;
-            } else if (value == "fifo_relaxed") {
-                mode = PresentModeChoice::fifo_relaxed;
-            } else {
-                return std::unexpected(
-                        std::format("--present-mode: '{}' (expected immediate, mailbox, fifo or fifo_relaxed)", value));
-            }
-        }
-    }
+                BenchmarkSweep sweep{.scenario = std::string{spec.substr(0, colon)}};
+                for (auto const value: CommandLine::split(spec.substr(colon + 1), ',')) {
+                    auto const load = parse_count("load", value);
+                    if (!load) {
+                        return std::unexpected(load.error());
+                    }
+                    if (*load == 0) {
+                        return std::unexpected(std::string{"loads must be at least 1"});
+                    }
+                    sweep.loads.push_back(*load);
+                }
 
-    return mode;
+                // A repeated scenario replaces its earlier sweep.
+                std::erase_if(options_.sweeps,
+                              [&](BenchmarkSweep const &other) { return other.scenario == sweep.scenario; });
+                options_.sweeps.push_back(std::move(sweep));
+                return {};
+            },
+            true);
+    group.value("--benchmark-repeats", "N", "Suite: runs of each case (3)", repeats_,
+              CommandLineGroup::Range<std::uint32_t>{.min = 1});
 }
 
-auto parse_swapchain_images_option(std::span<char const *const> args)
-        -> std::expected<std::optional<std::uint32_t>, std::string> {
-    std::optional<std::uint32_t> count;
-
-    for (auto const *raw: args) {
-        std::string_view const arg = raw;
-        if (constexpr std::string_view prefix = "--swapchain-images="; arg.starts_with(prefix)) {
-            auto const value = parse_count("--swapchain-images", arg.substr(prefix.size()));
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            if (*value < 2 || *value > 8) {
-                return std::unexpected(std::string{"--swapchain-images must be between 2 and 8"});
-            }
-            count = *value;
-        }
+auto BenchmarkArguments::options() const -> std::expected<std::optional<BenchmarkOptions>, std::string> {
+    if (single_ && suite_) {
+        return std::unexpected(std::string{"--benchmark and --benchmark-suite are exclusive"});
     }
 
-    return count;
-}
-
-auto parse_benchmark_options(std::span<char const *const> args)
-        -> std::expected<std::optional<BenchmarkOptions>, std::string> {
-    BenchmarkOptions options;
-    bool single = false;
-    bool suite = false;
-    bool repeats_given = false;
-
-    struct CountFlag {
-        std::string_view prefix;
-        std::uint32_t *value;
-        bool allow_zero;
-        bool *given;
-    };
-
-    std::array const count_flags{
-            CountFlag{.prefix = "--benchmark-frames=", .value = &options.frame_count, .allow_zero = false},
-            CountFlag{.prefix = "--benchmark-warmup=", .value = &options.warmup_frame_count, .allow_zero = true},
-            CountFlag{
-                    .prefix = "--benchmark-max-warmup=", .value = &options.max_warmup_frame_count, .allow_zero = true},
-            CountFlag{.prefix = "--seed=", .value = &options.seed, .allow_zero = true},
-            CountFlag{.prefix = "--benchmark-repeats=",
-                      .value = &options.repeats,
-                      .allow_zero = false,
-                      .given = &repeats_given},
-    };
-
-    for (auto const *raw: args) {
-        std::string_view const arg = raw;
-
-        if (arg == "--benchmark-screenshots") {
-            options.keyframe_screenshots = true;
-            continue;
-        }
-
-        if (constexpr std::string_view prefix = "--benchmark="; arg.starts_with(prefix)) {
-            auto const path = arg.substr(prefix.size());
-            if (path.empty()) {
-                return std::unexpected(std::string{"--benchmark= needs an output path"});
-            }
-            options.output_path = std::filesystem::path{path};
-            single = true;
-            continue;
-        }
-
-        if (constexpr std::string_view prefix = "--benchmark-suite="; arg.starts_with(prefix)) {
-            auto const path = arg.substr(prefix.size());
-            if (path.empty()) {
-                return std::unexpected(std::string{"--benchmark-suite= needs an output directory"});
-            }
-            options.output_path = std::filesystem::path{path};
-            suite = true;
-            continue;
-        }
-
-        if (constexpr std::string_view prefix = "--benchmark-target-hz="; arg.starts_with(prefix)) {
-            auto const hz = parse_positive_float("--benchmark-target-hz", arg.substr(prefix.size()));
-            if (!hz) {
-                return std::unexpected(hz.error());
-            }
-            options.target_hz = *hz;
-            continue;
-        }
-
-        if (constexpr std::string_view prefix = "--benchmark-render-size="; arg.starts_with(prefix)) {
-            auto const size = parse_render_size(arg.substr(prefix.size()));
-            if (!size) {
-                return std::unexpected(std::format("--benchmark-render-size: {}", size.error()));
-            }
-            options.render_size = *size;
-            continue;
-        }
-
-        if (constexpr std::string_view prefix = "--benchmark-scenarios="; arg.starts_with(prefix)) {
-            options.scenarios.clear();
-            for (auto const name: split(arg.substr(prefix.size()), ',')) {
-                if (name.empty()) {
-                    return std::unexpected(std::string{"--benchmark-scenarios: empty scenario name"});
-                }
-                options.scenarios.emplace_back(name);
-            }
-            continue;
-        }
-
-        if (constexpr std::string_view prefix = "--benchmark-sweep="; arg.starts_with(prefix)) {
-            auto const spec = arg.substr(prefix.size());
-            auto const colon = spec.find(':');
-            if (colon == std::string_view::npos || colon == 0 || colon + 1 == spec.size()) {
-                return std::unexpected(std::format("--benchmark-sweep: '{}' is not scenario:load,load,...", spec));
-            }
-
-            BenchmarkSweep sweep{.scenario = std::string{spec.substr(0, colon)}};
-            for (auto const value: split(spec.substr(colon + 1), ',')) {
-                auto const load = parse_count("--benchmark-sweep", value);
-                if (!load) {
-                    return std::unexpected(load.error());
-                }
-                if (*load == 0) {
-                    return std::unexpected(std::string{"--benchmark-sweep: loads must be at least 1"});
-                }
-                sweep.loads.push_back(*load);
-            }
-
-            std::erase_if(options.sweeps,
-                          [&](BenchmarkSweep const &other) { return other.scenario == sweep.scenario; });
-            options.sweeps.push_back(std::move(sweep));
-            continue;
-        }
-
-        for (auto const &flag: count_flags) {
-            if (!arg.starts_with(flag.prefix)) {
-                continue;
-            }
-
-            auto const name = flag.prefix.substr(0, flag.prefix.size() - 1);
-            auto const value = parse_count(name, arg.substr(flag.prefix.size()));
-
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            if (*value == 0 && !flag.allow_zero) {
-                return std::unexpected(std::format("{} must be at least 1", name));
-            }
-
-            *flag.value = *value;
-            if (flag.given != nullptr) {
-                *flag.given = true;
-            }
-        }
-    }
-
-    if (single && suite) {
-        return std::unexpected(std::string{"--benchmark= and --benchmark-suite= are exclusive"});
-    }
-
-    if (!single && !suite) {
+    if (!single_ && !suite_) {
         return std::nullopt;
     }
 
-    options.mode = suite ? BenchmarkMode::suite : BenchmarkMode::single;
+    auto options = options_;
+    options.mode = suite_ ? BenchmarkMode::suite : BenchmarkMode::single;
+    options.output_path = suite_ ? *suite_ : *single_;
     options.max_warmup_frame_count = std::max(options.max_warmup_frame_count, options.warmup_frame_count);
 
-    if (suite) {
-        if (!repeats_given) {
-            options.repeats = benchmark_default_suite_repeats;
-        }
-        if (!options.render_size) {
-            options.render_size = benchmark_default_suite_render_size;
-        }
+    if (repeats_) {
+        options.repeats = *repeats_;
+    } else if (suite_) {
+        options.repeats = benchmark_default_suite_repeats;
+    }
+
+    if (suite_ && !options.render_size) {
+        options.render_size = benchmark_default_suite_render_size;
     }
 
     return options;

@@ -5,6 +5,7 @@
 add_library(
     engine_core
     STATIC
+        command_line.cxx
         error_describe.cxx
         fly_string.cxx
         human_readable_bytes.cxx

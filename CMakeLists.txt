@@ -307,6 +307,24 @@ target_include_directories(
         "${BS_thread_pool_SOURCE_DIR}/include"
 )
 
+# Command-line parsing. Lyra is header-only and reports errors through result objects, so it builds with
+# -fno-exceptions (CLI11 and argparse throw).
+CPMAddPackage(
+    NAME lyra
+    GITHUB_REPOSITORY bfgroup/Lyra
+    GIT_TAG 1.8.0
+    DOWNLOAD_ONLY YES
+)
+
+add_library(lyra INTERFACE)
+
+target_include_directories(
+    lyra
+    SYSTEM
+    INTERFACE
+        "${lyra_SOURCE_DIR}/include"
+)
+
 CPMAddPackage(
     NAME bullet3
     GITHUB_REPOSITORY bulletphysics/bullet3
