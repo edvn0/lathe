@@ -688,6 +688,8 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     // Log the full compiled plan (batches, waits, barriers, transfers, transient placement) when it changes.
     auto set_frame_graph_dump(bool enabled) noexcept -> void { dump_frame_graph_ = enabled; }
+    // Write the compiled plan as a Graphviz file (frame_graph::to_dot) whenever it changes; empty turns it off.
+    auto set_frame_graph_dot(std::string path) -> void { frame_graph_dot_path_ = std::move(path); }
     [[nodiscard]] auto last_frame_pipeline_stats() const noexcept -> PipelineStats const & {
         return last_frame_pipeline_stats_;
     }
@@ -1612,6 +1614,7 @@ private:
     std::uint32_t async_candidates_ = 0;
     std::uint64_t logged_plan_misses_ = 0;
     bool dump_frame_graph_ = false;
+    std::string frame_graph_dot_path_;
 
     struct FramePipelineQuery {
         VkQueryPool query_pool{VK_NULL_HANDLE};

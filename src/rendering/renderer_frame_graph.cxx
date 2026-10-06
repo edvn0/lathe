@@ -9,6 +9,8 @@
 #include "core/perf_events.hxx"
 #include "gpu/context.hxx"
 #include "rendering/frame_graph/compiler.hxx"
+#include <fstream>
+
 #include "rendering/frame_graph/describe.hxx"
 #include "rendering/frame_graph/executor.hxx"
 #include "rendering/frame_graph/pass_context.hxx"
@@ -1281,6 +1283,18 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         ::info("Frame graph (slot {}):\n{}", info.frame_index,
                frame_graph::describe(frame_graph_.description(), *frame_plan_,
                                      &transient_allocator_.plan(info.frame_index)));
+    }
+
+    if (plan_changed && !frame_graph_dot_path_.empty()) {
+        auto const dot = frame_graph::to_dot(frame_graph_.description(), *frame_plan_,
+                                             &transient_allocator_.plan(info.frame_index));
+        if (auto file = std::ofstream{frame_graph_dot_path_, std::ios::binary | std::ios::trunc};
+            file && file << dot) {
+            ::info("Frame graph written to {} (render with: dot -Tsvg {} -o frame_graph.svg)", frame_graph_dot_path_,
+                   frame_graph_dot_path_);
+        } else {
+            error("Could not write the frame graph to {}", frame_graph_dot_path_);
+        }
     }
 
     auto resources = frame_graph::physical_resources_of(frame_graph_.description());
