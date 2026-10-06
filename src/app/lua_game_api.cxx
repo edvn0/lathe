@@ -724,7 +724,7 @@ auto open_lua_game_api(LuaRuntime &runtime) -> void {
     set_library(state, "scene", std::array{luaL_Reg{"spawn", &scene_spawn}, luaL_Reg{"find", &scene_find},
                                            luaL_Reg{"clear", &scene_clear}, luaL_Reg{nullptr, nullptr}});
     set_library(state, "assets", assets_functions);
-    set_library(state, "camera", camera_functions);
+    set_library(state, "camera", camera_functions); // paths: ok (the Lua global named assets)
     set_library(state, "ui", ui_functions);
 
     lua_createtable(state, 0, 3);

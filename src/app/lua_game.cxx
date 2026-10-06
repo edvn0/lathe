@@ -18,7 +18,7 @@
 #include "scripting/lua_runtime.hxx"
 
 namespace {
-    constexpr char const *default_entry = "assets/scripts/main.lua";
+    constexpr char const *default_entry = "assets/scripts/main.lua"; // paths: ok
 
     auto read_data_file(std::string_view relative) -> std::optional<std::string> {
         auto const path = Paths::current().data(relative);
@@ -107,7 +107,7 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
     self.runtime = std::make_unique<LuaRuntime>(std::move(*created));
     self.runtime->set_host(&self.bindings);
     self.runtime->set_source_loader([](std::string const &module_path) -> std::optional<std::string> {
-        return read_data_file("assets/scripts/" + module_path + ".lua");
+        return read_data_file("assets/scripts/" + module_path + ".lua"); // paths: ok
     });
 
     for (auto const &[name, opener]: self.native_modules) {

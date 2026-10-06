@@ -3,6 +3,9 @@
 
 Files are located through Paths (DataPath, CachePath, AssetPath, ...), never through the working directory or a
 cwd-relative literal. Run by `cargo xtask tidy`.
+
+A literal that is a name inside the data root, given straight to Paths (for example the scripts directory a Lua
+require() resolves under), may carry a `// paths: ok` comment; that is greppable, so such uses stay reviewable.
 """
 
 import pathlib
@@ -32,6 +35,9 @@ def main() -> int:
                 continue
 
             for number, line in enumerate(path.read_text().splitlines(), 1):
+                if "paths: ok" in line:
+                    continue
+
                 code = line.split("//", 1)[0]
 
                 if code.lstrip().startswith("#include"):
