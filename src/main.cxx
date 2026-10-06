@@ -1012,6 +1012,11 @@ auto main(int argc, char **argv) -> int {
                                    : manifest           ? std::string_view{manifest->game}
                                                         : game_names().front());
 
+    application.game->attach_host(GameHost{
+            .player_mode = player_mode,
+            .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
+    });
+
     if (manifest && !manifest->title.empty()) {
         glfwSetWindowTitle(context.window, manifest->title.c_str());
     }

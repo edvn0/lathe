@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <ranges>
 #include <utility>
@@ -206,6 +207,88 @@ namespace chess {
         rebuild_bitboards();
 
         game_state_ = GameState::playing;
+
+        history_.clear();
+        history_.push_back(position_key());
+    }
+
+    auto ChessEngine::position_key() const noexcept -> std::uint64_t {
+        auto const mix = [](std::uint64_t value) noexcept -> std::uint64_t {
+            value += 0x9E3779B97F4A7C15ULL;
+            value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            value = (value ^ (value >> 27)) * 0x94D049BB133111EBULL;
+
+            return value ^ (value >> 31);
+        };
+
+        std::uint64_t key = 0;
+
+        for (std::size_t index = 0; index < position_.board.size(); ++index) {
+            if (position_.board[index] != Piece::none) {
+                key ^= mix((static_cast<std::uint64_t>(position_.board[index]) << 8) | index);
+            }
+        }
+
+        key ^= mix(0x100 + static_cast<std::uint64_t>(position_.side_to_move));
+        key ^= mix(0x200 + static_cast<std::uint64_t>(position_.castling_rights));
+
+        // En passant only distinguishes positions when a pawn of the side to move can actually take.
+        if (position_.en_passant != Square::none) {
+            auto const target = square_index(position_.en_passant);
+            auto const file = target & 7;
+            auto const pawn = make_piece(position_.side_to_move, PieceType::pawn);
+            auto const white = position_.side_to_move == Side::white;
+
+            auto const has_pawn = [&](int square) {
+                return square >= 0 && square < 64 && position_.board[static_cast<std::size_t>(square)] == pawn;
+            };
+
+            auto const capturable = white ? (file > 0 && has_pawn(target - 9)) || (file < 7 && has_pawn(target - 7))
+                                          : (file < 7 && has_pawn(target + 9)) || (file > 0 && has_pawn(target + 7));
+
+            if (capturable) {
+                key ^= mix(0x300 + static_cast<std::uint64_t>(target));
+            }
+        }
+
+        return key;
+    }
+
+    auto ChessEngine::insufficient_material() const noexcept -> bool {
+        auto const count = [&](Side side, PieceType type) {
+            return std::popcount(position_.pieces[static_cast<std::size_t>(side)][static_cast<std::size_t>(type)]);
+        };
+
+        for (auto const side: {Side::white, Side::black}) {
+            if (count(side, PieceType::pawn) != 0 || count(side, PieceType::rook) != 0 ||
+                count(side, PieceType::queen) != 0) {
+                return false;
+            }
+        }
+
+        auto const minors = [&](Side side) { return count(side, PieceType::knight) + count(side, PieceType::bishop); };
+        auto const white_minors = minors(Side::white);
+        auto const black_minors = minors(Side::black);
+
+        // King against king, or a king and one minor piece against a bare king.
+        if (white_minors + black_minors <= 1) {
+            return true;
+        }
+
+        // One bishop each, on squares of the same colour.
+        if (white_minors == 1 && black_minors == 1 && count(Side::white, PieceType::bishop) == 1 &&
+            count(Side::black, PieceType::bishop) == 1) {
+            auto const colour = [&](Side side) {
+                auto const square = std::countr_zero(
+                        position_.pieces[static_cast<std::size_t>(side)][static_cast<std::size_t>(PieceType::bishop)]);
+
+                return ((square & 7) + (square >> 3)) & 1;
+            };
+
+            return colour(Side::white) == colour(Side::black);
+        }
+
+        return false;
     }
 
     auto ChessEngine::piece_at(Square square) const noexcept -> Piece {
@@ -959,8 +1042,16 @@ namespace chess {
         apply_move(move);
         auto const check = in_check(position_.side_to_move);
 
+        history_.push_back(position_key());
+
         if (auto const replies = legal_moves(); replies.empty()) {
             game_state_ = check ? GameState::checkmate : GameState::stalemate;
+        } else if (position_.halfmove_clock >= 100) {
+            game_state_ = GameState::draw_fifty_move;
+        } else if (insufficient_material()) {
+            game_state_ = GameState::draw_insufficient_material;
+        } else if (std::ranges::count(history_, history_.back()) >= 3) {
+            game_state_ = GameState::draw_repetition;
         } else {
             game_state_ = GameState::playing;
         }

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <entt/entt.hpp>
@@ -17,6 +18,8 @@
 
 class ChessGame final : public IGame {
 public:
+    auto attach_host(GameHost host) -> void override { host_ = std::move(host); }
+
     auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void override;
     auto on_update(Scene &scene, float delta_time) -> void override;
 
@@ -33,6 +36,27 @@ public:
     [[nodiscard]] auto benchmark_camera_path() const -> std::vector<CameraKeyframe> override;
 
 private:
+    // The flow of an installed game: it starts on `loading` while the models stream in, shows the main menu, plays
+    // (Escape pauses) and ends on `game_over`. Outside player mode (the editor) the game is always `playing`.
+    enum class Screen : std::uint8_t {
+        playing,
+        loading,
+        menu,
+        paused,
+        game_over,
+    };
+
+    auto draw_player_ui(Renderer &renderer) -> void;
+    auto draw_loading(Renderer &renderer) -> void;
+    auto draw_menu() -> void;
+    auto draw_pause() -> void;
+    auto draw_game_over() -> void;
+    auto draw_hud() -> void;
+    auto draw_promotion_choice() -> void;
+
+    // Begins a new game from the menu, the pause menu or the game-over screen.
+    auto start_new_game() -> void;
+
     // Files a..h are x 0..7 and ranks 1..8 are y 0..7.
     using Square = glm::ivec2;
 
@@ -128,6 +152,18 @@ private:
     std::optional<chess::PieceType> promotion_requested_;
 
     std::string status_;
+
+    GameHost host_;
+
+    Screen screen_ = Screen::playing;
+
+    // Counts down after the final move, so the board and the capture settle before the result covers them.
+    float game_over_timer_ = 0.0F;
+
+    // Loading: the most models and textures seen pending at once (the progress denominator) and frames drawn since,
+    // which gives pipelines and drivers a few frames to warm up behind the loading screen.
+    std::size_t loading_peak_ = 0;
+    std::uint32_t loading_frames_ = 0;
 
     // Input callbacks set these; on_update() consumes them because it owns the
     // active Scene reference.

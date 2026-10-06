@@ -75,6 +75,9 @@ public:
     // Renderer's teardown. Call before destroying the Renderer.
     auto wait_all() -> void;
 
+    // Models still loading or uploading.
+    [[nodiscard]] auto pending_count() const noexcept -> std::size_t { return pending_.size(); }
+
 private:
     struct PendingRequest {
         ModelHandle handle;

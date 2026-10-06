@@ -2814,11 +2814,11 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
                 return true;
             }
 
+            // An installed game owns Escape (its pause menu); the engine has no editor to return to.
             if (!player_mode) {
                 stop();
+                return true;
             }
-
-            return true;
         }
 
         game->on_key_pressed(*active_scene(), ev);

@@ -129,7 +129,12 @@ namespace chess {
         playing,
         checkmate,
         stalemate,
+        draw_fifty_move,
+        draw_insufficient_material,
+        draw_repetition,
     };
+
+    [[nodiscard]] constexpr auto is_game_over(GameState state) noexcept -> bool { return state != GameState::playing; }
 
     struct Move {
         Square from = Square::none;
@@ -276,6 +281,11 @@ namespace chess {
 
         [[nodiscard]] auto perft_impl(int depth) -> std::uint64_t;
 
+        // Identifies the position for repetition: pieces, side to move, castling rights and a capturable en passant.
+        [[nodiscard]] auto position_key() const noexcept -> std::uint64_t;
+
+        [[nodiscard]] auto insufficient_material() const noexcept -> bool;
+
         auto rebuild_bitboards() -> void;
 
         [[nodiscard]] auto has_castling_right(CastlingRights right) const noexcept -> bool;
@@ -291,6 +301,9 @@ namespace chess {
         std::array<PieceInstance, 32> instances_{};
 
         GameState game_state_ = GameState::playing;
+
+        // Keys of every position since reset(), including the current one. Only update() appends.
+        std::vector<std::uint64_t> history_;
     };
 
 } // namespace chess

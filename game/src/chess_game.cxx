@@ -30,6 +30,97 @@
 
 namespace {
 
+    constexpr float loading_warmup_frames = 30.0F;
+    constexpr float game_over_delay_seconds = 1.6F;
+    constexpr float menu_orbit_radians_per_second = 0.12F;
+
+    constexpr ImGuiWindowFlags overlay_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                                               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
+                                               ImGuiWindowFlags_AlwaysAutoResize;
+
+    auto begin_centred(char const *id, float background_alpha) -> bool {
+        auto const *viewport = ImGui::GetMainViewport();
+
+        ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, ImVec2{0.5F, 0.5F});
+        ImGui::SetNextWindowBgAlpha(background_alpha);
+
+        return ImGui::Begin(id, nullptr, overlay_flags);
+    }
+
+    auto centred_text(std::string const &text, float scale) -> void {
+        ImGui::SetWindowFontScale(scale);
+
+        auto const width = ImGui::CalcTextSize(text.c_str()).x;
+
+        ImGui::SetCursorPosX(std::max(0.0F, (ImGui::GetWindowSize().x - width) * 0.5F));
+        ImGui::TextUnformatted(text.c_str());
+        ImGui::SetWindowFontScale(1.0F);
+    }
+
+    auto menu_button(char const *label) -> bool {
+        ImGui::SetWindowFontScale(1.6F);
+
+        auto const size = ImVec2{300.0F, 52.0F};
+
+        ImGui::SetCursorPosX(std::max(0.0F, (ImGui::GetWindowSize().x - size.x) * 0.5F));
+
+        auto const pressed = ImGui::Button(label, size);
+
+        ImGui::SetWindowFontScale(1.0F);
+
+        return pressed;
+    }
+
+    // An arc that chases its own tail, drawn into the current window.
+    auto spinner(ImVec2 centre, float radius, float thickness) -> void {
+        constexpr int segments = 32;
+        constexpr float sweep = 4.8F;
+
+        auto *draw_list = ImGui::GetWindowDrawList();
+        auto const start = std::fmod(static_cast<float>(ImGui::GetTime()) * 4.0F, 6.2831853F);
+
+        draw_list->PathClear();
+
+        for (int index = 0; index <= segments; ++index) {
+            auto const angle = start + (static_cast<float>(index) / segments) * sweep;
+
+            draw_list->PathLineTo(ImVec2{centre.x + std::cos(angle) * radius, centre.y + std::sin(angle) * radius});
+        }
+
+        draw_list->PathStroke(ImGui::GetColorU32(ImGuiCol_PlotHistogram), ImDrawFlags_None, thickness);
+    }
+
+    struct ResultText {
+        std::string title;
+        std::string reason;
+    };
+
+    auto describe_result(chess::GameState state, chess::Side side_to_move) -> ResultText {
+        switch (state) {
+            case chess::GameState::checkmate:
+                // The side to move is the one that has been mated.
+                return {"Checkmate", side_to_move == chess::Side::white ? "Black wins" : "White wins"};
+
+            case chess::GameState::stalemate:
+                return {"Draw", "Stalemate"};
+
+            case chess::GameState::draw_fifty_move:
+                return {"Draw", "Fifty-move rule"};
+
+            case chess::GameState::draw_insufficient_material:
+                return {"Draw", "Insufficient material"};
+
+            case chess::GameState::draw_repetition:
+                return {"Draw", "Threefold repetition"};
+
+            case chess::GameState::playing:
+                break;
+        }
+
+        return {};
+    }
+
     constexpr float square_size = 1.08F;
     constexpr float board_top_y = 0.3F;
 
@@ -217,8 +308,17 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     scene.environment = new_scene_environment();
     scene.environment.sun.elevation_degrees = 55.0F;
     scene.environment.sun.azimuth_degrees = 200.0F;
-    auto badge = Badge<ChessGame>{};
-    thread_pool().detach_task([badge = badge] { run_chess_self_test(badge); });
+
+    // The perft self-test takes seconds; it belongs to development, not to an installed game.
+    if (!host_.player_mode) {
+        auto badge = Badge<ChessGame>{};
+        thread_pool().detach_task([badge = badge] { run_chess_self_test(badge); });
+    }
+
+    screen_ = host_.player_mode ? Screen::loading : Screen::playing;
+    loading_peak_ = 0;
+    loading_frames_ = 0;
+    game_over_timer_ = 0.0F;
 
     bound_scene_ = nullptr;
 
@@ -226,22 +326,37 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
     piece_models_.fill(ModelHandle{});
 
+    auto const acquire_model = [&](std::string_view relative) -> ModelHandle {
+        if (host_.player_mode) {
+            return renderer.model_streamer().request(renderer, model_asset(relative), engine_models.cube,
+                                                     FlyString{std::string{relative}});
+        }
+
+        auto loaded = renderer.load_model(model_asset(relative));
+
+        if (!loaded) {
+            error("[ChessGame] Could not load '{}': {}; run the game with the chess pack in assets/models/chess/",
+                  relative, describe(loaded.error()));
+
+            return ModelHandle{};
+        }
+
+        return *loaded;
+    };
+
     // Board.
     {
         auto const board = Entity{&scene, "board"};
 
         board.emplace<Components::Transform>(Components::Transform{});
 
-        auto model = renderer.load_model(model_asset(board_model_path));
+        // An installed game streams its models so the loading screen can show progress; the editor loads them up front.
+        auto const model = acquire_model(board_model_path);
 
-        if (model) {
+        if (model.valid()) {
             board.emplace<Components::Model>(Components::Model{
-                    .model = *model,
+                    .model = model,
             });
-        } else {
-            error("[ChessGame] Could not load '{}': {}; "
-                  "run the game with the chess pack in assets/models/chess/",
-                  board_model_path, describe(model.error()));
         }
     }
 
@@ -250,13 +365,9 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         auto &slot = piece_models_[index];
 
         if (!slot.valid()) {
-            auto loaded = renderer.load_model(model_asset(model_path(piece)));
+            slot = acquire_model(model_path(piece));
 
-            if (loaded) {
-                slot = *loaded;
-            } else {
-                error("[ChessGame] Could not load '{}': {}; using a cube", model_path(piece), describe(loaded.error()));
-
+            if (!slot.valid()) {
                 slot = engine_models.cube;
             }
         }
@@ -536,6 +647,18 @@ auto ChessGame::execute_move(Scene &scene, chess::Move move) -> void {
             status_ += " stalemate.";
             break;
 
+        case draw_fifty_move:
+            status_ += " draw (fifty-move rule).";
+            break;
+
+        case draw_insufficient_material:
+            status_ += " draw (insufficient material).";
+            break;
+
+        case draw_repetition:
+            status_ += " draw (threefold repetition).";
+            break;
+
         case playing:
             if (result.check) {
                 status_ += " check.";
@@ -547,6 +670,10 @@ auto ChessGame::execute_move(Scene &scene, chess::Move move) -> void {
     clear_selection();
 
     sync_pieces(scene);
+
+    if (host_.player_mode && chess::is_game_over(result.game_state)) {
+        game_over_timer_ = game_over_delay_seconds;
+    }
 }
 
 auto ChessGame::activate_cursor(Scene &scene) -> void {
@@ -678,6 +805,10 @@ auto ChessGame::on_cursor_position(Scene & /*scene*/, CursorPositionEvent const 
 }
 
 auto ChessGame::on_mouse_button_pressed(Scene & /*scene*/, MouseButtonPressedEvent const &event) -> void {
+    if (host_.player_mode && screen_ != Screen::playing) {
+        return;
+    }
+
     if (event.button == GLFW_MOUSE_BUTTON_LEFT && hovered_) {
         click_requested_ = true;
     } else if (event.button == GLFW_MOUSE_BUTTON_RIGHT) {
@@ -765,8 +896,28 @@ auto ChessGame::on_update(Scene &scene, float delta_time) -> void {
         bind_to(scene);
     }
 
+    if (host_.player_mode && screen_ != Screen::playing) {
+        // Behind the menus the board idles: it turns slowly on the menu and holds still elsewhere.
+        if (screen_ == Screen::loading || screen_ == Screen::menu) {
+            camera_angle_ += menu_orbit_radians_per_second * std::min(delta_time, 0.1F);
+            camera_target_angle_ = camera_angle_;
+        }
+
+        return;
+    }
+
     if (std::exchange(restart_requested_, false)) {
         restart(scene);
+    }
+
+    if (game_over_timer_ > 0.0F) {
+        game_over_timer_ -= delta_time;
+
+        if (game_over_timer_ <= 0.0F) {
+            game_over_timer_ = 0.0F;
+            screen_ = Screen::game_over;
+            clear_selection();
+        }
     }
 
     update_camera(delta_time);
@@ -817,6 +968,36 @@ auto ChessGame::on_update(Scene &scene, float delta_time) -> void {
 }
 
 auto ChessGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) -> void {
+    if (host_.player_mode) {
+        switch (screen_) {
+            case Screen::loading:
+                return;
+
+            case Screen::menu:
+            case Screen::game_over:
+                if (event.key == GLFW_KEY_ENTER || event.key == GLFW_KEY_SPACE) {
+                    start_new_game();
+                }
+
+                return;
+
+            case Screen::paused:
+                if (event.key == GLFW_KEY_ESCAPE) {
+                    screen_ = Screen::playing;
+                }
+
+                return;
+
+            case Screen::playing:
+                if (event.key == GLFW_KEY_ESCAPE) {
+                    screen_ = Screen::paused;
+                    return;
+                }
+
+                break;
+        }
+    }
+
     switch (event.key) {
         case GLFW_KEY_UP:
         case GLFW_KEY_W:
@@ -881,12 +1062,17 @@ auto ChessGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) 
     }
 }
 
-auto ChessGame::on_ui(Scene & /*scene*/, Renderer & /*renderer*/) -> void {
+auto ChessGame::on_ui(Scene & /*scene*/, Renderer &renderer) -> void {
     if (frames_since_update_ > 2) {
         return;
     }
 
     ++frames_since_update_;
+
+    if (host_.player_mode) {
+        draw_player_ui(renderer);
+        return;
+    }
 
     gui::widget("Chess", [&] -> void {
         auto const side = chess_engine_.side_to_move();
@@ -899,33 +1085,7 @@ auto ChessGame::on_ui(Scene & /*scene*/, Renderer & /*renderer*/) -> void {
             ImGui::TextUnformatted(status_.c_str());
         }
 
-        if (pending_promotion_target_) {
-            ImGui::Separator();
-
-            ImGui::TextUnformatted("Promote pawn to:");
-
-            if (ImGui::Button("Queen")) {
-                promotion_requested_ = chess::PieceType::queen;
-            }
-
-            ImGui::SameLine();
-
-            if (ImGui::Button("Rook")) {
-                promotion_requested_ = chess::PieceType::rook;
-            }
-
-            ImGui::SameLine();
-
-            if (ImGui::Button("Bishop")) {
-                promotion_requested_ = chess::PieceType::bishop;
-            }
-
-            ImGui::SameLine();
-
-            if (ImGui::Button("Knight")) {
-                promotion_requested_ = chess::PieceType::knight;
-            }
-        }
+        draw_promotion_choice();
 
         ImGui::Separator();
 
@@ -936,6 +1096,13 @@ auto ChessGame::on_ui(Scene & /*scene*/, Renderer & /*renderer*/) -> void {
 
             case chess::GameState::stalemate:
                 ImGui::TextUnformatted("Game over: stalemate.");
+                break;
+
+            case chess::GameState::draw_fifty_move:
+            case chess::GameState::draw_insufficient_material:
+            case chess::GameState::draw_repetition:
+                ImGui::Text("Game over: draw (%s).",
+                            describe_result(chess_engine_.game_state(), side).reason.c_str());
                 break;
 
             case chess::GameState::playing:
@@ -983,4 +1150,223 @@ auto ChessGame::benchmark_camera_path() const -> std::vector<CameraKeyframe> {
                     .target = {0.0F, 0.0F, 0.0F},
             },
     };
+}
+
+auto ChessGame::start_new_game() -> void {
+    restart_requested_ = true;
+    game_over_timer_ = 0.0F;
+    screen_ = Screen::playing;
+}
+
+auto ChessGame::draw_promotion_choice() -> void {
+    if (!pending_promotion_target_) {
+        return;
+    }
+
+    ImGui::Separator();
+
+    ImGui::TextUnformatted("Promote pawn to:");
+
+    if (ImGui::Button("Queen")) {
+        promotion_requested_ = chess::PieceType::queen;
+    }
+
+    ImGui::SameLine();
+
+    if (ImGui::Button("Rook")) {
+        promotion_requested_ = chess::PieceType::rook;
+    }
+
+    ImGui::SameLine();
+
+    if (ImGui::Button("Bishop")) {
+        promotion_requested_ = chess::PieceType::bishop;
+    }
+
+    ImGui::SameLine();
+
+    if (ImGui::Button("Knight")) {
+        promotion_requested_ = chess::PieceType::knight;
+    }
+}
+
+auto ChessGame::draw_player_ui(Renderer &renderer) -> void {
+    switch (screen_) {
+        case Screen::loading:
+            draw_loading(renderer);
+            break;
+
+        case Screen::menu:
+            draw_menu();
+            break;
+
+        case Screen::paused:
+            draw_pause();
+            break;
+
+        case Screen::game_over:
+            draw_game_over();
+            break;
+
+        case Screen::playing:
+            draw_hud();
+            break;
+    }
+}
+
+auto ChessGame::draw_loading(Renderer &renderer) -> void {
+    auto const pending = renderer.model_streamer().pending_count() + renderer.texture_streamer().pending_count();
+
+    loading_peak_ = std::max(loading_peak_, pending);
+    ++loading_frames_;
+
+    auto const streaming_progress =
+            loading_peak_ == 0 ? 0.0F : 1.0F - static_cast<float>(pending) / static_cast<float>(loading_peak_);
+    auto const warmup_progress = std::min(1.0F, static_cast<float>(loading_frames_) / loading_warmup_frames);
+
+    // Models first; the last frames are the pipelines and the driver settling on the finished board.
+    auto const progress = pending == 0 ? 0.5F + 0.5F * warmup_progress : 0.5F * streaming_progress;
+
+    if (pending == 0 && warmup_progress >= 1.0F) {
+        screen_ = Screen::menu;
+        return;
+    }
+
+    auto const *viewport = ImGui::GetMainViewport();
+
+    ImGui::SetNextWindowPos(viewport->Pos);
+    ImGui::SetNextWindowSize(viewport->Size);
+    ImGui::SetNextWindowBgAlpha(1.0F);
+
+    ImGui::Begin("##loading", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs);
+
+    auto const centre = viewport->GetCenter();
+
+    spinner(ImVec2{centre.x, centre.y - 24.0F}, 28.0F, 5.0F);
+
+    ImGui::SetCursorScreenPos(ImVec2{centre.x - 150.0F, centre.y + 44.0F});
+    ImGui::ProgressBar(progress, ImVec2{300.0F, 6.0F}, "");
+
+    ImGui::SetCursorScreenPos(ImVec2{centre.x - 40.0F, centre.y + 62.0F});
+    ImGui::SetWindowFontScale(1.4F);
+    ImGui::TextUnformatted("Loading...");
+    ImGui::SetWindowFontScale(1.0F);
+
+    ImGui::End();
+}
+
+auto ChessGame::draw_menu() -> void {
+    begin_centred("##chess_menu", 0.8F);
+
+    ImGui::Dummy(ImVec2{340.0F, 8.0F});
+    centred_text("Chess", 4.0F);
+    ImGui::Dummy(ImVec2{0.0F, 18.0F});
+
+    if (menu_button("Play")) {
+        start_new_game();
+    }
+
+    ImGui::Dummy(ImVec2{0.0F, 4.0F});
+
+    if (menu_button("Quit") && host_.request_exit) {
+        host_.request_exit();
+    }
+
+    ImGui::Dummy(ImVec2{0.0F, 8.0F});
+
+    ImGui::End();
+}
+
+auto ChessGame::draw_pause() -> void {
+    begin_centred("##chess_pause", 0.85F);
+
+    ImGui::Dummy(ImVec2{340.0F, 8.0F});
+    centred_text("Paused", 3.0F);
+    ImGui::Dummy(ImVec2{0.0F, 18.0F});
+
+    if (menu_button("Resume")) {
+        screen_ = Screen::playing;
+    }
+
+    ImGui::Dummy(ImVec2{0.0F, 4.0F});
+
+    if (menu_button("Restart")) {
+        start_new_game();
+    }
+
+    ImGui::Dummy(ImVec2{0.0F, 4.0F});
+
+    if (menu_button("Main menu")) {
+        screen_ = Screen::menu;
+    }
+
+    ImGui::Dummy(ImVec2{0.0F, 4.0F});
+
+    if (menu_button("Quit") && host_.request_exit) {
+        host_.request_exit();
+    }
+
+    ImGui::Dummy(ImVec2{0.0F, 8.0F});
+
+    ImGui::End();
+}
+
+auto ChessGame::draw_game_over() -> void {
+    auto const result = describe_result(chess_engine_.game_state(), chess_engine_.side_to_move());
+
+    begin_centred("##chess_game_over", 0.88F);
+
+    ImGui::Dummy(ImVec2{340.0F, 8.0F});
+    centred_text(result.title, 3.5F);
+    centred_text(result.reason, 2.0F);
+    ImGui::Dummy(ImVec2{0.0F, 18.0F});
+
+    if (menu_button("Play again")) {
+        start_new_game();
+    }
+
+    ImGui::Dummy(ImVec2{0.0F, 4.0F});
+
+    if (menu_button("Main menu")) {
+        screen_ = Screen::menu;
+    }
+
+    ImGui::Dummy(ImVec2{0.0F, 4.0F});
+
+    if (menu_button("Quit") && host_.request_exit) {
+        host_.request_exit();
+    }
+
+    ImGui::Dummy(ImVec2{0.0F, 8.0F});
+
+    ImGui::End();
+}
+
+auto ChessGame::draw_hud() -> void {
+    auto const *viewport = ImGui::GetMainViewport();
+
+    ImGui::SetNextWindowPos(ImVec2{viewport->WorkPos.x + 16.0F, viewport->WorkPos.y + 16.0F});
+    ImGui::SetNextWindowBgAlpha(0.45F);
+
+    ImGui::Begin("##chess_hud", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoFocusOnAppearing);
+
+    ImGui::SetWindowFontScale(1.6F);
+    ImGui::TextUnformatted(chess_engine_.side_to_move() == chess::Side::white ? "White to move" : "Black to move");
+
+    if (!status_.empty()) {
+        ImGui::TextUnformatted(status_.c_str());
+    }
+
+    ImGui::SetWindowFontScale(1.0F);
+
+    draw_promotion_choice();
+
+    ImGui::TextDisabled("Esc: menu");
+
+    ImGui::End();
 }
