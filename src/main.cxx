@@ -1,4 +1,5 @@
 #include <fstream>
+#include <charconv>
 #include <csignal>
 #include <memory>
 #include <print>
@@ -728,6 +729,8 @@ namespace {
             packaging.value("--shader-pack", "FILE.lsp", "Precompiled shaders to use (default: shaders.lsp in the data directory)", shader_pack);
             packaging.value("--record-shaders", "FILE.lsp", "Write every shader this run compiles to a shader pack, then exit", record_shaders);
             packaging.value("--record-assets", "FILE.txt", "Write the data files this run opened to a list, then exit", record_assets);
+            packaging.value("--screenshot-frame", "N", "Save a screenshot on frame N (see the screenshots directory)", screenshot_frame);
+            packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120", inject_keys);
             packaging.value("--exit-after-frames", "N", "Exit after N frames (0: run until closed)", exit_after_frames);
             cli.group("Paths").value("--data-dir", "DIR", "Game data directory (default: an installed game's data/, else the working directory)", data_dir);
             auto display = cli.group("Display");
@@ -810,6 +813,7 @@ namespace {
                               frame_graph_dot);
 
             auto game_group = cli.group("Game");
+            game_group.value("--script", "FILE.lua", "Entry script of a Lua game (--game lua), relative to the data directory", script);
             game_group.flag("--player", "Run as an installed game would: fullscreen play, no editor", player);
             game_group.option("--game", "NAME", game_help(),
                               [this](std::string_view text) -> std::expected<void, std::string> {
@@ -853,11 +857,14 @@ namespace {
         std::string frame_graph_dot;
         std::string game;
         std::string data_dir;
+        std::string script;
         bool player = false;
         std::string shader_pack;
         std::string record_shaders;
         std::string record_assets;
         std::uint32_t exit_after_frames = 0;
+        std::uint32_t screenshot_frame = 0;
+        std::string inject_keys;
         std::optional<std::filesystem::path> open_scene;
         std::optional<std::filesystem::path> save_scene;
     };
@@ -1015,6 +1022,7 @@ auto main(int argc, char **argv) -> int {
     application.game->attach_host(GameHost{
             .player_mode = player_mode,
             .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
+            .script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{},
     });
 
     if (manifest && !manifest->title.empty()) {
@@ -1122,12 +1130,43 @@ auto main(int argc, char **argv) -> int {
 
     std::uint32_t frames_run = 0;
 
+    // --inject-keys: "frame:key" pairs, for scripted runs and screenshots.
+    std::vector<std::pair<std::uint32_t, int>> injected_keys;
+
+    for (auto const item: CommandLine::split(engine.inject_keys, ',')) {
+        auto const colon = item.find(':');
+
+        if (colon == std::string_view::npos) {
+            continue;
+        }
+
+        std::uint32_t frame = 0;
+        int key = 0;
+
+        std::from_chars(item.data(), item.data() + colon, frame);
+        std::from_chars(item.data() + colon + 1, item.data() + item.size(), key);
+
+        injected_keys.emplace_back(frame, key);
+    }
+
     while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire) &&
            glfwWindowShouldClose(context.window) != GLFW_TRUE) {
         ZoneScopedNC("MainLoop", tracy::Color::Gray);
 
-        if (engine.exit_after_frames != 0 && frames_run++ >= engine.exit_after_frames) {
+        auto const frame_number = frames_run++;
+
+        if (engine.exit_after_frames != 0 && frame_number >= engine.exit_after_frames) {
             break;
+        }
+
+        if (engine.screenshot_frame != 0 && frame_number == engine.screenshot_frame) {
+            application.request_screenshot();
+        }
+
+        for (auto const &[frame, key]: injected_keys) {
+            if (frame == frame_number) {
+                application.on_event(KeyPressedEvent{.key = key, .modifiers = 0});
+            }
         }
 
         frame_clock.begin_frame();

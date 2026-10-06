@@ -61,6 +61,8 @@ auto GameManifest::load(std::filesystem::path const &path) -> std::expected<Game
             manifest.game = value;
         } else if (key == "version") {
             manifest.version = value;
+        } else if (key == "entry") {
+            manifest.entry = value;
         }
     }
 
@@ -72,5 +74,11 @@ auto GameManifest::load(std::filesystem::path const &path) -> std::expected<Game
 }
 
 auto GameManifest::to_text() const -> std::string {
-    return std::format("name = \"{}\"\ntitle = \"{}\"\ngame = \"{}\"\nversion = \"{}\"\n", name, title, game, version);
+    auto text = std::format("name = \"{}\"\ntitle = \"{}\"\ngame = \"{}\"\nversion = \"{}\"\n", name, title, game, version);
+
+    if (!entry.empty()) {
+        text += std::format("entry = \"{}\"\n", entry);
+    }
+
+    return text;
 }

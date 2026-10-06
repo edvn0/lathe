@@ -135,6 +135,20 @@ enum Task {
         #[arg(long)]
         out: Option<PathBuf>,
 
+        /// The engine game to run, when it differs from the package name (default: the package name). A Lua game is
+        /// `--engine-game lua --script assets/scripts/<game>/main.lua`.
+        #[arg(long)]
+        engine_game: Option<String>,
+
+        /// The entry script of a Lua game, relative to the data directory.
+        #[arg(long)]
+        script: Option<String>,
+
+        /// GLFW key presses to make while recording, as FRAME:KEY,... (e.g. 100:257 presses Enter on frame 100), so
+        /// the run reaches the game's play state and its shaders are recorded.
+        #[arg(long)]
+        inject_keys: Option<String>,
+
         /// Window title (default: the game name).
         #[arg(long)]
         title: Option<String>,
@@ -626,9 +640,13 @@ impl Config {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn package(
         &self,
         game: &str,
+        engine_game: Option<&str>,
+        script: Option<&str>,
+        inject_keys: Option<&str>,
         out: Option<PathBuf>,
         title: Option<String>,
         version: &str,
@@ -661,12 +679,27 @@ impl Config {
 
         println!("Recording shaders and data files over {frames} frames...");
 
-        // The build directory is a development data root: assets/ sits next to the executable.
+        let engine_game = engine_game.unwrap_or(game);
+
+        // The build directory is a development data root: assets/ sits next to the executable. --player records the
+        // path an installed game takes (fullscreen play, no editor).
+        let mut recording = Command::new(&executable);
+
+        recording
+            .current_dir(&bin_dir)
+            .args(["--game", engine_game, "--player", "--exit-after-frames"])
+            .arg(frames.to_string());
+
+        if let Some(script) = script {
+            recording.args(["--script", script]);
+        }
+
+        if let Some(keys) = inject_keys {
+            recording.args(["--inject-keys", keys]);
+        }
+
         run_checked(
-            Command::new(&executable)
-                .current_dir(&bin_dir)
-                .args(["--game", game, "--exit-after-frames"])
-                .arg(frames.to_string())
+            recording
                 .arg("--record-shaders")
                 .arg(&shaders)
                 .arg("--record-assets")
@@ -713,10 +746,14 @@ impl Config {
 
         fs::copy(&shaders, data.join("shaders.lsp")).context("failed to stage the shader pack")?;
 
-        let manifest = format!(
-            "name = \"{game}\"\ntitle = \"{}\"\ngame = \"{game}\"\nversion = \"{version}\"\n",
+        let mut manifest = format!(
+            "name = \"{game}\"\ntitle = \"{}\"\ngame = \"{engine_game}\"\nversion = \"{version}\"\n",
             title.as_deref().unwrap_or(game)
         );
+
+        if let Some(script) = script {
+            manifest.push_str(&format!("entry = \"{script}\"\n"));
+        }
 
         fs::write(data.join("game.toml"), manifest)?;
         fs::copy(&executable, stage.join(game)).context("failed to stage the executable")?;
@@ -893,13 +930,27 @@ fn main() -> Result<()> {
         Task::Tidy { args } => config.tidy(&args),
         Task::Package {
             game,
+            engine_game,
+            script,
+            inject_keys,
             out,
             title,
             version,
             frames,
             no_verify,
             no_tarball,
-        } => config.package(&game, out, title, &version, frames, !no_verify, !no_tarball),
+        } => config.package(
+            &game,
+            engine_game.as_deref(),
+            script.as_deref(),
+            inject_keys.as_deref(),
+            out,
+            title,
+            &version,
+            frames,
+            !no_verify,
+            !no_tarball,
+        ),
         Task::Profile { args } => config.profile(&args),
     }
 }

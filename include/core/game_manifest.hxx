@@ -11,6 +11,7 @@ struct GameManifest {
     std::string title;   // Window title.
     std::string game;    // The engine game to run (--game).
     std::string version;
+    std::string entry;   // The entry script of a Lua game, relative to data/ (default assets/scripts/main.lua).
 
     [[nodiscard]] static auto load(std::filesystem::path const &path) -> std::expected<GameManifest, std::string>;
 

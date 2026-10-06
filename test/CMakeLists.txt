@@ -9,6 +9,7 @@ add_executable(
     EXCLUDE_FROM_ALL
     ${test_sources}
     "${PROJECT_SOURCE_DIR}/game/src/chess_engine.cxx"
+    "${PROJECT_SOURCE_DIR}/game/src/chess_lua.cxx"
 )
 
 target_include_directories(

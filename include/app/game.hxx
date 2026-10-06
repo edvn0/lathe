@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "rendering/engine_models.hxx"
@@ -43,6 +44,9 @@ struct GameHost {
 
     // Asks the engine to close the window and exit.
     std::function<void()> request_exit;
+
+    // The entry script of a Lua game, relative to the data directory; empty means assets/scripts/main.lua.
+    std::string script_entry;
 };
 
 // The interface the engine drives. Application hands in the active Scene on each call; games change levels by
