@@ -1,4 +1,5 @@
 #include "basic_game.hxx"
+#include "core/paths.hxx"
 
 #include <algorithm>
 #include <chrono>
@@ -141,7 +142,7 @@ namespace {
             "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/"
             "5bad5aaa0bbb5d0f9cdc934e626f27d0df1e79b8/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb";
     constexpr std::string_view helmet_sha256 = "a1e3b04de97b11de564ce6e53b95f02954a297f0008183ac63a4f5974f6b32d8";
-    constexpr auto helmet_path = "assets/models/damaged_helmet.glb";
+    auto helmet_path() -> CachePath { return cache_path("downloads/damaged_helmet.glb"); }
 
 } // namespace
 
@@ -150,16 +151,19 @@ auto BasicGame::request_helmet() -> void {
         return;
     }
 
+    std::error_code directory_error;
+    std::filesystem::create_directories(helmet_path().absolute().parent_path(), directory_error);
+
     helmet_download_ = http_client_.get_file_async({
             .uri = std::string{helmet_url},
-            .destination = helmet_path,
+            .destination = helmet_path().absolute(),
             .sha256 = std::string{helmet_sha256},
     });
 }
 
 auto BasicGame::spawn_helmet(Scene &scene, Renderer &renderer) -> void {
     if (!helmet_model_.valid()) {
-        auto model = renderer.load_model(data_path(helmet_path));
+        auto model = renderer.load_model(AssetPath::external(helmet_path().absolute()).value_or(AssetPath::missing()));
 
         if (!model) {
             error("Could not load the DamagedHelmet: {}", describe(model.error()));

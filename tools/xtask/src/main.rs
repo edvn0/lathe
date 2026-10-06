@@ -484,6 +484,16 @@ impl Config {
     }
 
     fn tidy(&self, extra_args: &[OsString]) -> Result<()> {
+        // Source must locate files through Paths, not the working directory.
+        let status = std::process::Command::new("python3")
+            .arg(self.project_dir.join("tools/check_paths.py"))
+            .status()
+            .context("running tools/check_paths.py")?;
+
+        if !status.success() {
+            bail!("tools/check_paths.py found cwd-relative paths");
+        }
+
         // Some sources include headers generated during the build.
         self.build()?;
 

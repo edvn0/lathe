@@ -376,8 +376,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                               .pipeline_capacity = create_info.pipeline_capacity,
                               .frames_in_flight = frames_in_flight,
                               .global_descriptor_set_layout = gpu_resource_table_.layout(),
-                              .cache_file_path = "cache/pipeline_cache.bin",
-                              .shader_binary_cache_directory = "cache/shader_binaries",
+                              .cache_file_path = cache_path("pipeline_cache.bin").absolute(),
+                              .shader_binary_cache_directory = cache_path("shader_binaries").absolute(),
                               .debug_name = "renderer.pipelines",
                       });
 
@@ -1102,7 +1102,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     }
 
     {
-        auto light_icon_image = DecodedImage::load_from_file("assets/textures/light_bulb.png");
+        auto light_icon_image = DecodedImage::load_from_file(data_path("assets/textures/light_bulb.png").absolute().string());
         if (!light_icon_image) {
             return std::unexpected(make_error(RendererErrorType::device_error));
         }

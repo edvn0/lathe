@@ -44,7 +44,11 @@ namespace {
     constexpr float camera_near_clip = 0.1F;
     constexpr float camera_far_clip = 200.0F;
 
-    constexpr std::string_view board_model_path = "assets/models/chess/chess_board.glb";
+    constexpr std::string_view board_model_path = "chess/chess_board.glb";
+
+    auto model_asset(std::string_view relative) -> DataPath {
+        return data_path(std::format("assets/models/{}", relative));
+    }
 
     // The camera orbits the board centre by `angle` radians around the up axis
     // (0 looks from white's side, pi from black's) and rises while it swings.
@@ -204,7 +208,7 @@ auto ChessGame::model_path(chess::Piece piece) -> std::string {
     auto const side = index >= 6 ? "black" : "white";
     auto const kind = names[index % 6];
 
-    return std::format("assets/models/chess/{}_{}.glb", side, kind);
+    return std::format("chess/{}_{}.glb", side, kind);
 }
 
 auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void {
@@ -228,7 +232,7 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
         board.emplace<Components::Transform>(Components::Transform{});
 
-        auto model = renderer.load_model(data_path(board_model_path));
+        auto model = renderer.load_model(model_asset(board_model_path));
 
         if (model) {
             board.emplace<Components::Model>(Components::Model{
@@ -246,7 +250,7 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         auto &slot = piece_models_[index];
 
         if (!slot.valid()) {
-            auto loaded = renderer.load_model(data_path(model_path(piece)));
+            auto loaded = renderer.load_model(model_asset(model_path(piece)));
 
             if (loaded) {
                 slot = *loaded;

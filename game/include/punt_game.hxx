@@ -7,6 +7,7 @@
 #include <glm/vec3.hpp>
 
 #include "app/game.hxx"
+#include "core/paths.hxx"
 #include "core/transform.hxx"
 #include "player_camera.hxx"
 #include "player_controller.hxx"
@@ -69,7 +70,7 @@ private:
     static constexpr float ball_resting_speed = 0.35F;
     static constexpr float settle_seconds = 1.0F;
 
-    std::filesystem::path scene_file_{"assets/scenes/punt.lbf"};
+    std::filesystem::path scene_file_{data_path("assets/scenes/punt.lbf").absolute()};
 
     // The scene bind_to() last ran against, so play() is noticed without the engine telling us.
     Scene const *bound_scene_ = nullptr;

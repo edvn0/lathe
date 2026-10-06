@@ -32,6 +32,7 @@
 #include <entt/entt.hpp>
 
 #include "app/application.hxx"
+#include "core/paths.hxx"
 #include "app/benchmark.hxx"
 #include "app/benchmark_compare.hxx"
 #include "app/benchmark_driver.hxx"
@@ -719,6 +720,7 @@ namespace {
 
     struct EngineArguments {
         explicit EngineArguments(CommandLine &cli) {
+            cli.group("Paths").value("--data-dir", "DIR", "Game data directory (default: an installed game's data/, else the working directory)", data_dir);
             auto display = cli.group("Display");
             display.choice<ScreenType>("--screen-type", "Window mode (default fullscreen)", screen_type_choices,
                                        screen_type);
@@ -840,6 +842,7 @@ namespace {
         bool dump_frame_graph = false;
         std::string frame_graph_dot;
         std::string game;
+        std::string data_dir;
         std::optional<std::filesystem::path> open_scene;
         std::optional<std::filesystem::path> save_scene;
     };
@@ -876,7 +879,8 @@ auto main(int argc, char **argv) -> int {
         return run_benchmark_compare(*compare_options);
     }
 
-    info("Starting GLFW Vulkan test at {}", std::filesystem::current_path().string());
+    Paths::set_current(Paths::resolve({.data_dir = engine.data_dir.empty() ? std::nullopt : std::optional{std::filesystem::path{engine.data_dir}}}));
+    info("Starting GLFW Vulkan test, data directory {}", Paths::current().data_root().string());
 
     std::signal(SIGINT, ctrl_c_handler);
 

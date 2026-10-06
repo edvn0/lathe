@@ -1,4 +1,5 @@
 #include "app/application.hxx"
+#include "core/paths.hxx"
 
 #include <csignal>
 #include <memory>
@@ -748,7 +749,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         static constexpr std::array<std::string_view, 2> model_extensions{".gltf", ".glb"};
         draw_file_backed_section(
-                "Models", "assets/models", model_extensions, assets.models(),
+                "Models", data_path("assets/models").absolute(), model_extensions, assets.models(),
                 [&](std::filesystem::path const &path, std::string const &name) {
                     static_cast<void>(
                             renderer->model_streamer().request(*renderer, AssetPath::from_user(path).value_or(AssetPath::missing()),
@@ -773,7 +774,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         static constexpr std::array<std::string_view, 3> texture_extensions{".png", ".jpg", ".jpeg"};
         draw_file_backed_section(
-                "Textures", "assets/textures", texture_extensions, assets.textures(),
+                "Textures", data_path("assets/textures").absolute(), texture_extensions, assets.textures(),
                 [&](std::filesystem::path const &path, std::string const &name) {
                     static_cast<void>(renderer->request_texture(AssetPath::from_user(path).value_or(AssetPath::missing()), TextureRole::colour,
                                                                 renderer->image_storage().white(), name));
@@ -2720,14 +2721,14 @@ auto Application::register_overlays() -> void {
 auto Application::on_startup() -> void {
 
     std::array const shader_directories{
-            std::filesystem::path{"assets/shaders"},
+            data_path("assets/shaders").absolute(),
     };
     if (!shader_watcher_.start(renderer->shader_change_queue(), shader_directories)) {
         error("Shader hot-reload watcher failed to start -- shaders will not live-reload this run");
     }
     imgui_renderer = std::make_unique<gui::ImGuiRenderer>(
             *renderer, gui::FontChoice{
-                               .font_path = "assets/fonts/GoogleSansCode-Regular.ttf",
+                               .font_path = data_path("assets/fonts/GoogleSansCode-Regular.ttf").absolute().string(),
                                .size = 12,
                        });
     editor_icons = std::make_unique<gui::EditorIcons>(*renderer);

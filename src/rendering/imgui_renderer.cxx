@@ -175,6 +175,8 @@ namespace gui {
         apply_dark_theme();
 
         ImGuiIO &io = ImGui::GetIO();
+        config_name = state_path("imgui.ini").absolute().string();
+        io.IniFilename = config_name.c_str();
         io.BackendRendererName = "imgui-custom-vulkan";
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 
@@ -451,7 +453,7 @@ namespace gui {
     }
 
     auto ImGuiRenderer::set_app_name(const std::string_view name) -> void {
-        config_name = std::format("{}.ini", name);
+        config_name = state_path(std::format("{}.ini", name)).absolute().string();
         config_path = std::make_unique<std::filesystem::path>(config_name);
     }
 
