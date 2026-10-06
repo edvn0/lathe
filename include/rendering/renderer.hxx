@@ -1495,9 +1495,6 @@ private:
     };
     std::vector<OutlineVariant> outline_variants_;
 
-    // Whether any submission this frame was outlined, which is when the forward pass gets its second target.
-    bool outline_active_ = false;
-
     [[nodiscard]] auto outline_variant(MaterialHandle source) -> MaterialHandle;
     auto prune_outline_variants() -> void;
     AoSettings ao_settings_;
@@ -1613,6 +1610,7 @@ private:
     bool transient_aliasing_ = true;
     std::uint32_t async_candidates_ = 0;
     std::uint64_t logged_plan_misses_ = 0;
+    std::uint64_t logged_transient_bytes_ = 0;
     bool dump_frame_graph_ = false;
     std::string frame_graph_dot_path_;
 

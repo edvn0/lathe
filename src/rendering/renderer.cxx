@@ -1017,9 +1017,9 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .debug_name = "renderer.instance_lod_pipeline",
     }); // index 30: instance_lod
 
-    // The opaque forward pipelines again, with the outline mask in their fragment shaders: what frames with an
-    // outlined submission draw with (they have a second colour target for it). Frames without one use the originals,
-    // so no draw writes to a missing attachment. Blended draws use the originals either way; they write-mask the
+    // The opaque forward pipelines again, with the outline mask in their fragment shaders: what the forward pass
+    // draws with, as it always has the mask as a second colour target (a stable graph shape, so selecting something
+    // doesn't recompile the plan or reallocate transients). Blended draws use the originals; they write-mask the
     // second target.
     for (auto const source_index: {std::size_t{0}, std::size_t{13}}) {
         auto outline_info = pipeline_infos[source_index];
@@ -2393,8 +2393,6 @@ auto Renderer::outline_variant(MaterialHandle source) -> MaterialHandle {
     info.far_material = MaterialHandle{};
     info.outlined = true;
 
-    outline_active_ = true;
-
     auto const found = std::ranges::find(outline_variants_, source, &OutlineVariant::source);
 
     if (found != outline_variants_.end()) {
@@ -2912,8 +2910,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     pipeline_graph_.tick_retirement();
     geometry_arena_.tick_retirement();
 
-    // Set again by the first outlined submission batched below.
-    outline_active_ = false;
     prune_outline_variants();
 
     if (auto changed = shader_change_queue_.drain(); !changed.empty()) {
@@ -4803,17 +4799,17 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .extra_cull_flags = frame.meshlet_occlusion_active ? render_pass::cull_replay : 0U,
                     .pipeline_statistics_query_pool = pipeline_stat_queries_[frame_index].query_pool,
                     .meshlet_culling = meshlet_culling_,
-                    .opaque_pipeline = outline_active_ ? forward_outline_pipeline_ : forward_pipeline_,
+                    .opaque_pipeline = forward_outline_pipeline_,
                     .blend_pipeline = forward_blend_pipeline_,
                     .opaque_instanced_pipeline =
-                            outline_active_ ? forward_outline_instanced_pipeline_ : forward_instanced_pipeline_,
+                            forward_outline_instanced_pipeline_,
                     .blend_instanced_pipeline = forward_blend_instanced_pipeline_,
                     .skybox_pipeline = skybox_pipeline_,
                     .draw_skybox = (environment_.ubo_block().flags & environment_flag::skybox) != 0U,
                     .ao_texture_index = ao_texture_index,
                     .ao_sampler_index = sampler_storage_.linear_clamp().index,
-                    .outline_mask = outline_active_,
-            },
+                    .outline_mask = true,
+                                },
             scene_overlays);
 }
 
