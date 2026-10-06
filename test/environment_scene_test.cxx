@@ -9,6 +9,7 @@
 #include <filesystem>
 
 #include "gpu/sampler_storage.hxx"
+#include "core/paths.hxx"
 #include "serialisation/asset_id.hxx"
 #include "serialisation/asset_pack.hxx"
 #include "serialisation/byte_stream.hxx"
@@ -85,7 +86,7 @@ namespace {
 TEST_CASE("Environment section round-trips every field") {
     SceneDescription scene;
     scene.environment = custom_environment();
-    scene.environment_id = asset_id_from_key(environment_asset_key(scene.environment.hdr_source));
+    scene.environment_id = asset_id_from_key(environment_asset_key(AssetPath::from_serialised(scene.environment.hdr_source).value()));
 
     auto const payload = encode_scene(scene);
     auto const decoded = decode_scene(payload);
@@ -263,7 +264,7 @@ TEST_CASE("cook_assets cooks an environment into a pack that loads back, and cop
     SamplerStorage sampler_storage;
     LbfWriter writer{LbfFileKind::asset_pack};
 
-    auto const report = cook_assets(AssetCookRequest{.environments = {source}}, sampler_storage, writer);
+    auto const report = cook_assets(AssetCookRequest{.environments = {AssetPath::external(source).value()}}, sampler_storage, writer);
 
     CHECK(report.failures.empty());
     CHECK(report.environments_cooked == 1);
@@ -272,7 +273,7 @@ TEST_CASE("cook_assets cooks an environment into a pack that loads back, and cop
     REQUIRE(reader.has_value());
 
     auto const pack = AssetPack::from_reader(std::move(*reader));
-    auto const id = asset_id_from_key(environment_asset_key(source));
+    auto const id = asset_id_from_key(environment_asset_key(AssetPath::external(source).value()));
 
     REQUIRE(pack->has_environment(id));
 
@@ -287,13 +288,13 @@ TEST_CASE("cook_assets cooks an environment into a pack that loads back, and cop
 
     LbfWriter second{LbfFileKind::asset_pack};
     auto const copied =
-            cook_assets(AssetCookRequest{.environments = {source}}, sampler_storage, second, AssetCookOptions{.source_packs = {pack}});
+            cook_assets(AssetCookRequest{.environments = {AssetPath::external(source).value()}}, sampler_storage, second, AssetCookOptions{.source_packs = {pack}});
 
     CHECK(copied.environments_copied == 1);
     CHECK(copied.environments_cooked == 0);
 
     // A missing file is a reported failure, not a crash, and the scene keeps its source path.
     LbfWriter missing{LbfFileKind::asset_pack};
-    auto const failed = cook_assets(AssetCookRequest{.environments = {"no/such/environment.hdr"}}, sampler_storage, missing);
+    auto const failed = cook_assets(AssetCookRequest{.environments = {data_path("no/such/environment.hdr")}}, sampler_storage, missing);
     CHECK(failed.failures.size() == 1);
 }

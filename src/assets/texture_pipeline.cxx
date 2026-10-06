@@ -390,13 +390,14 @@ auto default_texture_cache_directory() -> std::filesystem::path {
         return std::filesystem::path{home} / ".cache" / "ktx2";
     }
 
-    return "cache/ktx2";
+    return cache_path("ktx2").absolute();
 }
 
-auto load_compressed_texture(std::filesystem::path const &source_path, TextureRole role,
+auto load_compressed_texture(AssetPath const &asset_path, TextureRole role,
                              std::filesystem::path const &cache_directory,
                              std::shared_ptr<ModelLoadProfile> const &profile)
         -> std::expected<CompressedTexture, TexturePipelineError> {
+    auto const &source_path = asset_path.absolute();
     auto *const profile_ptr = profile.get();
 
     if (profile_ptr != nullptr) {

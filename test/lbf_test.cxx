@@ -6,6 +6,7 @@
 #include <numeric>
 
 #include "assets/load_model.hxx"
+#include "core/paths.hxx"
 #include "assets/meshlet.hxx"
 #include "assets/primitive_meshes.hxx"
 #include "gpu/sampler_storage.hxx"
@@ -311,12 +312,12 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("Asset ids are stable and distinguish texture roles") {
-        auto const colour = asset_id_from_key(texture_asset_key("assets/textures/a.png", TextureRole::colour));
-        auto const normal = asset_id_from_key(texture_asset_key("assets/textures/a.png", TextureRole::normal_map));
+        auto const colour = asset_id_from_key(texture_asset_key(data_path("assets/textures/a.png"), TextureRole::colour));
+        auto const normal = asset_id_from_key(texture_asset_key(data_path("assets/textures/a.png"), TextureRole::normal_map));
 
         CHECK(colour.valid());
         CHECK(colour != normal);
-        CHECK(colour == asset_id_from_key(texture_asset_key("assets/textures/./a.png", TextureRole::colour)));
+        CHECK(colour == asset_id_from_key(texture_asset_key(data_path("assets/textures/./a.png"), TextureRole::colour)));
         CHECK(asset_id_from_key("model:x") == asset_id_from_key("model:x"));
     }
 
@@ -826,7 +827,7 @@ TEST_SUITE("unit") {
         SamplerStorage sampler_storage;
         LbfWriter writer{LbfFileKind::asset_pack};
 
-        auto const report = cook_assets(AssetCookRequest{.models = {source}}, sampler_storage, writer,
+        auto const report = cook_assets(AssetCookRequest{.models = {AssetPath::external(source).value()}}, sampler_storage, writer,
                                         AssetCookOptions{.texture_cache_directory = cache_dir});
 
         CHECK(report.failures.empty());
@@ -836,14 +837,14 @@ TEST_SUITE("unit") {
         REQUIRE(reader.has_value());
 
         auto const pack = AssetPack::from_reader(std::move(*reader));
-        auto const id = asset_id_from_key(model_asset_key(source));
+        auto const id = asset_id_from_key(model_asset_key(AssetPath::external(source).value()));
         REQUIRE(pack->has_model(id));
 
         auto model = pack->load_model(id, sampler_storage);
         REQUIRE(model.has_value());
         REQUIRE_FALSE(model->meshes.empty());
 
-        auto reference = load_model_cpu(source, sampler_storage);
+        auto reference = load_model_cpu(AssetPath::external(source).value(), sampler_storage);
         REQUIRE(reference.has_value());
         REQUIRE(model->meshes.size() == reference->meshes.size());
 
@@ -865,7 +866,7 @@ TEST_SUITE("unit") {
 
         // A second cook reuses every chunk from the first pack instead of cooking again.
         LbfWriter second{LbfFileKind::asset_pack};
-        auto const copied = cook_assets(AssetCookRequest{.models = {source}}, sampler_storage, second,
+        auto const copied = cook_assets(AssetCookRequest{.models = {AssetPath::external(source).value()}}, sampler_storage, second,
                                         AssetCookOptions{.source_packs = {pack}, .texture_cache_directory = cache_dir});
 
         CHECK(copied.models_copied == 1);

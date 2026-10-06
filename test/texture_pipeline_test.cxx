@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "assets/texture_pipeline.hxx"
+#include "core/paths.hxx"
 
 #include <algorithm>
 #include <bit>
@@ -60,7 +61,7 @@ TEST_SUITE("unit") {
         auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.png";
         auto const cache_dir = make_temp_cache_dir("colour");
 
-        auto first = load_compressed_texture(source, TextureRole::colour, cache_dir);
+        auto first = load_compressed_texture(AssetPath::external(source).value(), TextureRole::colour, cache_dir);
         REQUIRE(first.has_value());
 
         CHECK(first->format == VK_FORMAT_BC7_SRGB_BLOCK);
@@ -76,7 +77,7 @@ TEST_SUITE("unit") {
         verify_cache_file_round_trips(cache_dir, VK_FORMAT_BC7_SRGB_BLOCK);
 
         // Second call is a cache hit with identical output.
-        auto second = load_compressed_texture(source, TextureRole::colour, cache_dir);
+        auto second = load_compressed_texture(AssetPath::external(source).value(), TextureRole::colour, cache_dir);
         REQUIRE(second.has_value());
 
         CHECK(second->format == first->format);
@@ -90,7 +91,7 @@ TEST_SUITE("unit") {
         auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_normal.exr";
         auto const cache_dir = make_temp_cache_dir("normal");
 
-        auto result = load_compressed_texture(source, TextureRole::normal_map, cache_dir);
+        auto result = load_compressed_texture(AssetPath::external(source).value(), TextureRole::normal_map, cache_dir);
         REQUIRE(result.has_value());
 
         CHECK(result->format == VK_FORMAT_BC5_UNORM_BLOCK);
@@ -106,7 +107,7 @@ TEST_SUITE("unit") {
         auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_normal.exr";
         auto const cache_dir = make_temp_cache_dir("generic");
 
-        auto result = load_compressed_texture(source, TextureRole::generic, cache_dir);
+        auto result = load_compressed_texture(AssetPath::external(source).value(), TextureRole::generic, cache_dir);
         REQUIRE(result.has_value());
 
         CHECK(result->format == VK_FORMAT_BC7_UNORM_BLOCK);
@@ -119,7 +120,7 @@ TEST_SUITE("unit") {
     TEST_CASE("load_compressed_texture: missing source file fails cleanly") {
         auto const cache_dir = make_temp_cache_dir("missing");
 
-        auto result = load_compressed_texture("assets/textures/does_not_exist.png", TextureRole::colour, cache_dir);
+        auto result = load_compressed_texture(data_path("assets/textures/does_not_exist.png"), TextureRole::colour, cache_dir);
 
         CHECK_FALSE(result.has_value());
         CHECK(result.error().type == TexturePipelineErrorType::source_not_found);

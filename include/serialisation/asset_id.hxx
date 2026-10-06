@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "assets/texture_pipeline.hxx"
+#include "core/paths.hxx"
 
 // Stable identity of a cooked asset: xxh64 of a canonical key string. Scenes reference assets by AssetId and
 // asset packs index their chunks by it, so a scene can find a model in any pack that has it.
@@ -35,18 +36,14 @@ struct AssetIdHash {
 
 inline constexpr std::string_view engine_asset_prefix = "engine://";
 
-// Normalised, generic-format, working-directory-relative where possible.
-[[nodiscard]]
-auto normalise_asset_path(std::filesystem::path const &path) -> std::string;
-
 [[nodiscard]]
 auto asset_id_from_key(std::string_view key) noexcept -> AssetId;
 
 [[nodiscard]]
-auto model_asset_key(std::filesystem::path const &path) -> std::string;
+auto model_asset_key(AssetPath const &path) -> std::string;
 
 [[nodiscard]]
-auto texture_asset_key(std::filesystem::path const &path, TextureRole role) -> std::string;
+auto texture_asset_key(AssetPath const &path, TextureRole role) -> std::string;
 
 [[nodiscard]]
 auto embedded_texture_asset_key(std::string_view cache_key, TextureRole role) -> std::string;
@@ -55,7 +52,7 @@ auto embedded_texture_asset_key(std::string_view cache_key, TextureRole role) ->
 auto engine_asset_key(std::string_view name) -> std::string;
 
 [[nodiscard]]
-auto environment_asset_key(std::filesystem::path const &path) -> std::string;
+auto environment_asset_key(AssetPath const &path) -> std::string;
 
 template<>
 struct std::formatter<AssetId> : std::formatter<std::string_view> {

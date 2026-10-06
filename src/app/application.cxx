@@ -751,7 +751,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 "Models", "assets/models", model_extensions, assets.models(),
                 [&](std::filesystem::path const &path, std::string const &name) {
                     static_cast<void>(
-                            renderer->model_streamer().request(*renderer, path, engine_models.cube, FlyString{name}));
+                            renderer->model_streamer().request(*renderer, AssetPath::from_user(path).value_or(AssetPath::missing()),
+                                                      engine_models.cube, FlyString{name}));
                 },
                 draw_bullet_entry);
 
@@ -774,7 +775,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         draw_file_backed_section(
                 "Textures", "assets/textures", texture_extensions, assets.textures(),
                 [&](std::filesystem::path const &path, std::string const &name) {
-                    static_cast<void>(renderer->request_texture(path, TextureRole::colour,
+                    static_cast<void>(renderer->request_texture(AssetPath::from_user(path).value_or(AssetPath::missing()), TextureRole::colour,
                                                                 renderer->image_storage().white(), name));
                 },
                 draw_texture_entry);
@@ -2428,7 +2429,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 if (registry.valid(model_browse_entity) && registry.all_of<Components::Model>(model_browse_entity)) {
                     // request() returns a reference for us, which set_entity_model() hands to the entity.
                     auto const model = renderer->model_streamer().request(
-                            *renderer, *picked, engine_models.cube, FlyString{gui::path_to_utf8(picked->filename())});
+                            *renderer, AssetPath::from_user(*picked).value_or(AssetPath::missing()), engine_models.cube, FlyString{gui::path_to_utf8(picked->filename())});
                     set_entity_model(registry, model_browse_entity, model);
                 }
                 break;
@@ -2443,7 +2444,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
 auto Application::spawn_streamed_model(std::filesystem::path const &path) -> void {
     auto file_name = gui::path_to_utf8(path.filename());
-    auto const model = renderer->model_streamer().request(*renderer, path, engine_models.cube, FlyString{file_name});
+    auto const model = renderer->model_streamer().request(*renderer, AssetPath::from_user(path).value_or(AssetPath::missing()),
+                                                       engine_models.cube, FlyString{file_name});
 
     auto entity = Entity{active_scene(), gui::path_to_utf8(path.stem())};
     entity.emplace<Components::Transform>();

@@ -1795,15 +1795,12 @@ auto Renderer::destroy() noexcept -> void {
     initialized_ = false;
 }
 
-auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<ModelHandle, RendererError> {
+auto Renderer::load_model(AssetPath const &path) -> std::expected<ModelHandle, RendererError> {
     if (!initialized_) {
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    std::error_code canonicalize_error;
-    auto const canonical_path = std::filesystem::weakly_canonical(path, canonicalize_error);
-    auto const &cache_key_path = canonicalize_error ? path : canonical_path;
-    std::size_t const file_hash = std::filesystem::hash_value(cache_key_path);
+    std::size_t const file_hash = std::hash<std::string>{}(path.key());
 
     if (auto it = model_cache_.find(file_hash); it != model_cache_.end()) {
         retain_model(it->second);
@@ -1822,8 +1819,8 @@ auto Renderer::load_model(std::filesystem::path const &path) -> std::expected<Mo
     }
 
     model_cache_[file_hash] = *model_result;
-    model_sources_.insert_or_assign(model_source_key(*model_result), cache_key_path);
-    register_model_name(*model_result, path.filename().string());
+    model_sources_.insert_or_assign(model_source_key(*model_result), path);
+    register_model_name(*model_result, path.absolute().filename().string());
 
     return model_result;
 }
@@ -2496,7 +2493,7 @@ auto Renderer::register_material_name(MaterialHandle handle, std::string name) -
     return true;
 }
 
-auto Renderer::request_texture(std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
+auto Renderer::request_texture(AssetPath source_path, TextureRole role, ImageHandle fallback,
                                std::string debug_name) -> ImageHandle {
     // The handle is stable across the pending-to-loaded upgrade, so it can be named right away.
     auto const handle =
@@ -2736,29 +2733,21 @@ auto Renderer::register_model_name(ModelHandle handle, std::string_view name) ->
     static_cast<void>(assets_.models().register_asset(std::string{name}, handle));
 }
 
-auto Renderer::register_model_source(ModelHandle handle, std::filesystem::path const &source) -> void {
+auto Renderer::register_model_source(ModelHandle handle, AssetPath const &source) -> void {
     if (model_storage_.get(handle) == nullptr) {
         return;
     }
 
-    std::error_code canonicalize_error;
-    auto const canonical_path = std::filesystem::weakly_canonical(source, canonicalize_error);
-    auto const &cache_key_path = canonicalize_error ? source : canonical_path;
-
-    model_cache_.try_emplace(std::filesystem::hash_value(cache_key_path), handle);
-    model_sources_.insert_or_assign(model_source_key(handle), cache_key_path);
+    model_cache_.try_emplace(std::hash<std::string>{}(source.key()), handle);
+    model_sources_.insert_or_assign(model_source_key(handle), source);
 }
 
-auto Renderer::cached_model(std::filesystem::path const &source) const -> ModelHandle {
-    std::error_code canonicalize_error;
-    auto const canonical_path = std::filesystem::weakly_canonical(source, canonicalize_error);
-    auto const &cache_key_path = canonicalize_error ? source : canonical_path;
-
-    auto const it = model_cache_.find(std::filesystem::hash_value(cache_key_path));
+auto Renderer::cached_model(AssetPath const &source) const -> ModelHandle {
+    auto const it = model_cache_.find(std::hash<std::string>{}(source.key()));
     return it != model_cache_.end() && model_storage_.get(it->second) != nullptr ? it->second : ModelHandle{};
 }
 
-auto Renderer::model_source(ModelHandle handle) const noexcept -> std::filesystem::path const * {
+auto Renderer::model_source(ModelHandle handle) const noexcept -> AssetPath const * {
     auto const it = model_sources_.find(model_source_key(handle));
     return it != model_sources_.end() ? &it->second : nullptr;
 }

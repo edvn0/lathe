@@ -228,7 +228,7 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
         board.emplace<Components::Transform>(Components::Transform{});
 
-        auto model = renderer.load_model(std::string{board_model_path});
+        auto model = renderer.load_model(data_path(board_model_path));
 
         if (model) {
             board.emplace<Components::Model>(Components::Model{
@@ -246,7 +246,7 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         auto &slot = piece_models_[index];
 
         if (!slot.valid()) {
-            auto loaded = renderer.load_model(model_path(piece));
+            auto loaded = renderer.load_model(data_path(model_path(piece)));
 
             if (loaded) {
                 slot = *loaded;

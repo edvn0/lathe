@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "assets/load_model.hxx"
+#include "core/paths.hxx"
 #include "assets/model.hxx"
 #include "assets/model_load_profile.hxx"
 #include "assets/model_sink.hxx"
@@ -44,7 +45,7 @@ public:
     // without reloading. Failed requests aren't cached, so they can be retried. The returned handle always carries
     // one reference for the caller, released with IModelSink::release_model().
     [[nodiscard]]
-    auto request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback,
+    auto request(IModelSink &sink, AssetPath source_path, ModelHandle fallback,
                  FlyString debug_name) -> ModelHandle;
 
     // request() for CPU data produced elsewhere, e.g. a cooked model decoded from an asset pack. `cpu_data` must
@@ -53,7 +54,7 @@ public:
     // so a later request() for the same file reuses the handle.
     [[nodiscard]]
     auto request_prepared(IModelSink &sink, std::future<std::expected<ModelCpuData, ModelLoadError>> cpu_data,
-                          std::filesystem::path source_path, ModelHandle fallback, FlyString debug_name) -> ModelHandle;
+                          AssetPath source_path, ModelHandle fallback, FlyString debug_name) -> ModelHandle;
 
     // Drops path_cache_ and failure entries for `handle`. Call when the model is destroyed.
     auto forget(ModelHandle handle) -> void;
@@ -93,7 +94,7 @@ private:
         std::chrono::steady_clock::time_point requested_at;
 
         std::size_t path_hash = 0;
-        std::filesystem::path source_path;
+        AssetPath source_path;
 
         // `future` yields finalized primitives; skip straight to the GPU upload.
         bool prepared = false;
@@ -108,7 +109,7 @@ private:
     };
 
     [[nodiscard]]
-    auto reserve(IModelSink &sink, std::filesystem::path const &source_path, ModelHandle fallback,
+    auto reserve(IModelSink &sink, AssetPath const &source_path, ModelHandle fallback,
                  std::string_view debug_name) -> Reservation;
 
     struct FailedRequest {

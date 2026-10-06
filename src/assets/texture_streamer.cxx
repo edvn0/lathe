@@ -9,13 +9,10 @@
 #include "core/logger.hxx"
 #include "core/thread_pool.hxx"
 
-auto TextureStreamer::request(ImageStorage &images, std::filesystem::path source_path, TextureRole role,
+auto TextureStreamer::request(ImageStorage &images, AssetPath source_path, TextureRole role,
                               ImageHandle fallback, FlyString debug_name,
                               std::shared_ptr<ModelLoadProfile> profile) -> ImageHandle {
-    std::error_code canonicalize_error;
-    auto const canonical_path = std::filesystem::weakly_canonical(source_path, canonicalize_error);
-    auto const path_key = std::format("{}|{}", (canonicalize_error ? source_path : canonical_path).generic_string(),
-                                      std::to_underlying(role));
+    auto const path_key = std::format("{}|{}", source_path.key(), std::to_underlying(role));
 
     if (auto const it = path_requests_.find(path_key); it != path_requests_.end() && images.contains(it->second)) {
         return it->second;
@@ -34,7 +31,7 @@ auto TextureStreamer::request(ImageStorage &images, std::filesystem::path source
 
     auto &pool = thread_pool();
 
-    auto recorded_path = canonicalize_error ? source_path : canonical_path;
+    auto recorded_path = source_path;
 
     auto future = pool.submit_task([path = std::move(source_path), role, profile = std::move(profile)]() {
         return load_compressed_texture(path, role, default_texture_cache_directory(), profile);

@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "assets/geometry.hxx"
+#include "core/paths.hxx"
 #include "assets/geometry_arena.hxx"
 #include "assets/material.hxx"
 #include "assets/meshlet.hxx"
@@ -119,7 +120,7 @@ using CookedTextureLoader = std::function<std::expected<CompressedTexture, Textu
 // An image not yet decoded or uploaded. Exactly one of `path` (external file, streamed from disk), `encoded`
 // (embedded in the glTF) and `cooked` (pre-compressed, skips the texture pipeline) is set.
 struct ModelCpuImageSource {
-    std::filesystem::path path;
+    std::optional<AssetPath> path;
     std::vector<std::byte> encoded;
     CookedTextureLoader cooked;
     // Identifies the image for de-duplication: required with `encoded` and `cooked`, ignored with `path`.
@@ -205,7 +206,7 @@ auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *
 
 // `profile` gets the CPU-parse timings and is carried into the returned ModelCpuData.
 [[nodiscard]]
-auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage,
+auto load_model_cpu(AssetPath const &path, SamplerStorage &sampler_storage,
                     std::shared_ptr<ModelLoadProfile> profile = nullptr) -> std::expected<ModelCpuData, ModelLoadError>;
 
 // load_model_cpu() on thread_pool(). Doesn't create a handle, since GPU uploads must happen on the render
@@ -213,14 +214,14 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
 //
 // `sampler_storage` must outlive the returned future.
 [[nodiscard]]
-auto load_model_cpu_async(std::filesystem::path path, SamplerStorage &sampler_storage,
+auto load_model_cpu_async(AssetPath path, SamplerStorage &sampler_storage,
                           std::shared_ptr<ModelLoadProfile> profile = nullptr)
         -> std::future<std::expected<ModelCpuData, ModelLoadError>>;
 
 // load_model_cpu() without per-primitive finalization (tangents, LOD simplification), so the caller can
 // finalize primitives in parallel (see ModelPrimitiveFinalization).
 [[nodiscard]]
-auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorage &sampler_storage,
+auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_storage,
                                 std::shared_ptr<ModelLoadProfile> profile = nullptr)
         -> std::expected<ModelCpuData, ModelLoadError>;
 
@@ -278,7 +279,7 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
                              TextureStreamer &texture_streamer, MaterialStorage &material_storage)
         -> std::expected<Model, ModelLoadError>;
 
-auto load_model(std::filesystem::path const &path, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
+auto load_model(AssetPath const &path, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
                 ImageStorage &image_storage, TextureStreamer &texture_streamer, SamplerStorage &sampler_storage,
                 MaterialStorage &material_storage) -> std::expected<Model, ModelLoadError>;
 

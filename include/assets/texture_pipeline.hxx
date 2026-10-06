@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "assets/model_load_profile.hxx"
+#include "core/paths.hxx"
 #include "core/error_context.hxx"
 #include "gpu/compressed_texture.hxx"
 
@@ -39,7 +40,7 @@ auto default_texture_cache_directory() -> std::filesystem::path;
 // UASTC encode, transcode. CPU and filesystem only, so it's thread-safe. `profile` gets this texture's share of
 // the timings.
 [[nodiscard]]
-auto load_compressed_texture(std::filesystem::path const &source_path, TextureRole role,
+auto load_compressed_texture(AssetPath const &source_path, TextureRole role,
                              std::filesystem::path const &cache_directory = default_texture_cache_directory(),
                              std::shared_ptr<ModelLoadProfile> const &profile = nullptr)
         -> std::expected<CompressedTexture, TexturePipelineError>;

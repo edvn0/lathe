@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "assets/texture_pipeline.hxx"
+#include "core/paths.hxx"
 #include "core/fly_string.hxx"
 #include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
@@ -23,7 +24,7 @@ public:
     // `profile` gets this texture's share of the texture timings. Requesting a path again with the same role returns
     // the image already made for it, even one that failed to load and stays on its fallback.
     [[nodiscard]]
-    auto request(ImageStorage &images, std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
+    auto request(ImageStorage &images, AssetPath source_path, TextureRole role, ImageHandle fallback,
                  FlyString debug_name, std::shared_ptr<ModelLoadProfile> profile = nullptr) -> ImageHandle;
 
     // request() for an image with no file, e.g. one embedded in a glTF. `encoded_bytes` is decoded on the
@@ -44,7 +45,7 @@ public:
 
     // Where a texture came from, for turning handles back into asset references when saving a scene.
     struct Source {
-        std::filesystem::path path; // empty for cooked or embedded images
+        std::optional<AssetPath> path; // empty for cooked or embedded images
         std::string cache_key; // set for cooked and embedded images
         TextureRole role = TextureRole::colour;
     };

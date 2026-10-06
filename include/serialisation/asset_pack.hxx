@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/paths.hxx"
+
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -72,15 +74,15 @@ private:
 // What to put in a pack.
 struct AssetCookRequest {
     struct Texture {
-        std::filesystem::path path;
+        AssetPath path;
         TextureRole role = TextureRole::colour;
     };
 
-    std::vector<std::filesystem::path> models;
+    std::vector<AssetPath> models;
     std::vector<Texture> textures;
 
     // HDR environment images (.hdr, .exr, .ktx2), cooked to ENVM chunks.
-    std::vector<std::filesystem::path> environments;
+    std::vector<AssetPath> environments;
 };
 
 struct AssetCookReport {

@@ -48,6 +48,51 @@ using CachePath = RootedPath<PathRoot::cache>;
 using StatePath = RootedPath<PathRoot::state>;
 using ScreenshotPath = RootedPath<PathRoot::screenshots>;
 
+// A file the engine loads as an asset: either shipped content under the data root, or a file the user picked from
+// elsewhere on disk (the editor's file browser, a scene referencing one, a CLI argument). It converts implicitly from
+// DataPath only; external files go through the named AssetPath::external, so every escape from the data root is
+// explicit and greppable.
+class AssetPath {
+public:
+    AssetPath(DataPath path) : absolute_(path.absolute()), key_(path.logical()), external_(false) {} // NOLINT
+
+    // `path` made absolute. Empty if it is empty.
+    [[nodiscard]] static auto external(std::filesystem::path const &path) -> std::optional<AssetPath>;
+
+    // Reads a path stored in a scene file or typed by the user: relative resolves under the data root of
+    // Paths::current(), absolute is external. Empty if it is empty or escapes the data root.
+    [[nodiscard]] static auto from_serialised(std::string_view text) -> std::optional<AssetPath>;
+
+    // A file the user picked (file browser, drag and drop, CLI). Under the data root it is shipped content, keyed
+    // relative to it; anywhere else it is external. A relative `path` is taken relative to the data root.
+    [[nodiscard]] static auto from_user(std::filesystem::path const &path) -> std::optional<AssetPath>;
+
+    // Stand-in for a path that could not be resolved. It doesn't exist, so loading it fails like any missing file.
+    [[nodiscard]] static auto missing() -> AssetPath;
+
+    // A file next to this one, as a glTF references its textures. Stays under the data root when this does and the
+    // result doesn't climb out of it; otherwise it is external. Empty if `relative` is empty.
+    [[nodiscard]] auto sibling(std::filesystem::path const &relative) const -> std::optional<AssetPath>;
+
+    [[nodiscard]] auto absolute() const noexcept -> std::filesystem::path const & { return absolute_; }
+
+    // What asset IDs hash: root-relative for data assets, so it is stable across installs; absolute for external ones.
+    [[nodiscard]] auto key() const noexcept -> std::string const & { return key_; }
+    [[nodiscard]] auto is_external() const noexcept -> bool { return external_; }
+
+    auto operator==(AssetPath const &other) const noexcept -> bool {
+        return external_ == other.external_ && key_ == other.key_;
+    }
+
+private:
+    AssetPath(std::filesystem::path absolute, std::string key) : absolute_(std::move(absolute)), key_(std::move(key)),
+                                                                 external_(true) {}
+
+    std::filesystem::path absolute_;
+    std::string key_;
+    bool external_;
+};
+
 struct PathsOptions {
     std::optional<std::filesystem::path> data_dir; // --data-dir
 };

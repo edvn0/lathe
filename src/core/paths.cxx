@@ -143,3 +143,73 @@ auto state_path(std::string_view relative) -> StatePath { return Paths::current(
 auto screenshot_path(std::string_view relative) -> ScreenshotPath {
     return Paths::current().screenshot(relative).value();
 }
+
+auto AssetPath::external(std::filesystem::path const &path) -> std::optional<AssetPath> {
+    if (path.empty()) {
+        return std::nullopt;
+    }
+
+    std::error_code error;
+    auto absolute = std::filesystem::weakly_canonical(path, error);
+
+    if (error) {
+        absolute = std::filesystem::absolute(path, error).lexically_normal();
+    }
+
+    auto key = absolute.generic_string();
+
+    return AssetPath{std::move(absolute), std::move(key)};
+}
+
+auto AssetPath::from_serialised(std::string_view text) -> std::optional<AssetPath> {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+
+    if (std::filesystem::path{text}.is_absolute()) {
+        return external(std::filesystem::path{text});
+    }
+
+    auto data = Paths::current().data(text);
+
+    return data ? std::optional{AssetPath{*data}} : std::nullopt;
+}
+
+auto AssetPath::sibling(std::filesystem::path const &relative) const -> std::optional<AssetPath> {
+    if (relative.empty()) {
+        return std::nullopt;
+    }
+
+    if (!external_ && !relative.is_absolute()) {
+        auto const logical = (std::filesystem::path{key_}.parent_path() / relative).generic_string();
+
+        if (auto data = Paths::current().data(logical)) {
+            return AssetPath{*data};
+        }
+    }
+
+    return external(relative.is_absolute() ? relative : absolute_.parent_path() / relative);
+}
+
+auto AssetPath::from_user(std::filesystem::path const &path) -> std::optional<AssetPath> {
+    if (path.empty()) {
+        return std::nullopt;
+    }
+
+    if (!path.is_absolute()) {
+        return from_serialised(path.generic_string());
+    }
+
+    auto const &root = Paths::current().data_root();
+    auto const relative = path.lexically_normal().lexically_relative(root);
+
+    if (!relative.empty() && *relative.begin() != "..") {
+        if (auto data = Paths::current().data(relative.generic_string())) {
+            return AssetPath{*data};
+        }
+    }
+
+    return external(path);
+}
+
+auto AssetPath::missing() -> AssetPath { return AssetPath{data_path("assets/missing")}; }
