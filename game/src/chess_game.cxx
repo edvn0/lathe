@@ -12,8 +12,8 @@
 #include <GLFW/glfw3.h>
 #include <glm/common.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/matrix.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/matrix.hpp>
 #include <glm/trigonometric.hpp>
 #include <glm/vec4.hpp>
 #include <imgui.h>
@@ -30,34 +30,103 @@
 
 namespace {
 
-    // The board model: 8 squares of 3.6 voxels at the pack's 0.3 import scale, centred on the origin, 0.3 m thick.
     constexpr float square_size = 1.08F;
     constexpr float board_top_y = 0.3F;
 
     constexpr glm::vec3 world_up{0.0F, 1.0F, 0.0F};
 
-    // Where a marker or captured piece goes when it isn't wanted.
     constexpr glm::vec3 stowed{0.0F, -50.0F, 0.0F};
 
-    // From white's side, high enough to read the ranks.
     constexpr glm::vec3 camera_eye{0.0F, 10.5F, -6.5F};
     constexpr glm::vec3 camera_target{0.0F, 0.0F, 0.4F};
+
     constexpr float camera_fov_degrees = 40.0F;
     constexpr float camera_near_clip = 0.1F;
     constexpr float camera_far_clip = 200.0F;
 
-    [[nodiscard]] auto view_matrix() -> glm::mat4 { return glm::lookAtLH(camera_eye, camera_target, world_up); }
-
-    [[nodiscard]] auto projection_matrix(float aspect_ratio) -> glm::mat4 {
-        return glm::perspectiveLH_ZO(glm::radians(camera_fov_degrees), aspect_ratio, camera_near_clip,
-                                     camera_far_clip);
-    }
-
     constexpr std::string_view board_model_path = "assets/models/chess/chess_board.glb";
 
+    // The camera orbits the board centre by `angle` radians around the up axis
+    // (0 looks from white's side, pi from black's) and rises while it swings.
+    constexpr float camera_flip_lift = 3.0F;
+    constexpr float camera_flip_rate = 4.0F;
+    constexpr float camera_flip_epsilon = 1e-3F;
+
+    [[nodiscard]] auto view_matrix(float angle) -> glm::mat4 {
+        auto const spin = glm::angleAxis(angle, world_up);
+
+        auto const lift = glm::vec3{0.0F, camera_flip_lift * std::abs(std::sin(angle)), 0.0F};
+
+        return glm::lookAtLH((spin * camera_eye) + lift, spin * camera_target, world_up);
+    }
+
+    [[nodiscard]] auto projection_matrix(float aspect_ratio) -> glm::mat4 {
+        return glm::perspectiveLH_ZO(glm::radians(camera_fov_degrees), aspect_ratio, camera_near_clip, camera_far_clip);
+    }
+
     [[nodiscard]] auto piece_rotation(bool black) -> glm::quat {
-        // Black faces white across the board.
         return black ? glm::angleAxis(glm::radians(180.0F), world_up) : glm::quat{1.0F, 0.0F, 0.0F, 0.0F};
+    }
+
+    [[nodiscard]] auto is_promotion(chess::Move const &move) noexcept -> bool {
+        return move.flag == chess::MoveFlag::promotion || move.flag == chess::MoveFlag::promotion_capture;
+    }
+
+    auto run_chess_self_test(Badge<ChessGame> b) -> bool {
+        chess::ChessEngine engine;
+
+        struct PerftCase {
+            int depth;
+            std::uint64_t expected;
+        };
+
+        constexpr std::array cases{
+                PerftCase{
+                        .depth = 1,
+                        .expected = 20,
+                },
+                PerftCase{
+                        .depth = 2,
+                        .expected = 400,
+                },
+                PerftCase{
+                        .depth = 3,
+                        .expected = 8'902,
+                },
+                PerftCase{
+                        .depth = 4,
+                        .expected = 197'281,
+                },
+                PerftCase{
+                        .depth = 5,
+                        .expected = 4'865'609,
+                },
+        };
+
+        auto string_stream = std::ostringstream{};
+        // Time taken
+        auto const start_time = std::chrono::high_resolution_clock::now();
+
+        for (auto const &[depth, expected]: cases) {
+            auto const actual = engine.perft(b, depth);
+            auto const end_time = std::chrono::high_resolution_clock::now();
+            auto const duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+
+            if (actual != expected) {
+                string_stream << std::format("FAIL: perft({}) expected {}, got {}\n", depth, expected, actual);
+                return false;
+            }
+
+            string_stream << std::format("PASS: perft({}) expected {}, got {} ({} ms)\n", depth, expected, actual,
+                                         duration);
+        }
+
+        auto total = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() -
+                                                                           start_time)
+                             .count();
+
+        info("[Chess] Self-test passed in {} ms\n{}", total, string_stream.str());
+        return true;
     }
 
 } // namespace
@@ -66,47 +135,76 @@ auto ChessGame::on_board(Square square) noexcept -> bool {
     return square.x >= 0 && square.x < board_size && square.y >= 0 && square.y < board_size;
 }
 
-auto ChessGame::index_of(Square square) noexcept -> std::size_t {
-    return static_cast<std::size_t>((square.y * board_size) + square.x);
+auto ChessGame::to_chess_square(Square square) noexcept -> chess::Square {
+    return static_cast<chess::Square>((square.y * board_size) + square.x);
 }
 
-auto ChessGame::square_name(Square square) -> std::string {
-    return std::format("{}{}", static_cast<char>('a' + square.x), square.y + 1);
+auto ChessGame::from_chess_square(chess::Square square) noexcept -> Square {
+    auto const index = static_cast<int>(square);
+
+    return Square{
+            index & 7,
+            index >> 3,
+    };
+}
+
+auto ChessGame::square_name(chess::Square square) -> std::string {
+    auto const board_square = from_chess_square(square);
+
+    return std::format("{}{}", static_cast<char>('a' + board_square.x), board_square.y + 1);
 }
 
 auto ChessGame::world_position(Square square) noexcept -> glm::vec3 {
-    return glm::vec3{(static_cast<float>(square.x) - 3.5F) * square_size, board_top_y,
-                     (static_cast<float>(square.y) - 3.5F) * square_size};
+    return glm::vec3{
+            (static_cast<float>(square.x) - 3.5F) * square_size,
+            board_top_y,
+            (static_cast<float>(square.y) - 3.5F) * square_size,
+    };
 }
 
-auto ChessGame::model_path(Side side, Kind kind) -> std::string {
-    constexpr std::array<std::string_view, 6> kinds{"pawn", "rook", "knight", "bishop", "queen", "king"};
-
-    return std::format("assets/models/chess/{}_{}.glb", side == Side::white ? "white" : "black",
-                       kinds[static_cast<std::size_t>(kind)]);
-}
-
-auto ChessGame::starting_layout() -> std::vector<std::pair<Piece, Square>> {
-    constexpr std::array<Kind, board_size> back_rank{Kind::rook, Kind::knight, Kind::bishop, Kind::queen,
-                                                     Kind::king, Kind::bishop, Kind::knight, Kind::rook};
-
-    std::vector<std::pair<Piece, Square>> layout;
-    layout.reserve(32);
-
-    for (auto const side: {Side::white, Side::black}) {
-        auto const back_y = side == Side::white ? 0 : 7;
-        auto const pawn_y = side == Side::white ? 1 : 6;
-
-        for (int file = 0; file < board_size; ++file) {
-            layout.emplace_back(Piece{.side = side, .kind = back_rank[static_cast<std::size_t>(file)]},
-                                Square{file, back_y});
-        }
-        for (int file = 0; file < board_size; ++file) {
-            layout.emplace_back(Piece{.side = side, .kind = Kind::pawn}, Square{file, pawn_y});
-        }
+auto ChessGame::model_index(chess::Piece piece) noexcept -> std::size_t {
+    if (piece == chess::Piece::none) {
+        return 0;
     }
 
-    return layout;
+    // Piece is ordered:
+    //
+    // none,
+    // white pawn, knight, bishop, rook, queen, king,
+    // black pawn, knight, bishop, rook, queen, king.
+    return static_cast<std::size_t>(piece) - 1;
+}
+
+auto ChessGame::piece_side(chess::Piece piece) noexcept -> chess::Side {
+    switch (piece) {
+        case chess::Piece::white_pawn:
+        case chess::Piece::white_knight:
+        case chess::Piece::white_bishop:
+        case chess::Piece::white_rook:
+        case chess::Piece::white_queen:
+        case chess::Piece::white_king:
+            return chess::Side::white;
+
+        default:
+            return chess::Side::black;
+    }
+}
+
+auto ChessGame::piece_is_black(chess::Piece piece) noexcept -> bool {
+    return piece != chess::Piece::none && piece_side(piece) == chess::Side::black;
+}
+
+auto ChessGame::model_path(chess::Piece piece) -> std::string {
+    constexpr std::array<std::string_view, 6> names{
+            "pawn", "knight", "bishop", "rook", "queen", "king",
+    };
+
+    auto const index = model_index(piece);
+
+    auto const side = index >= 6 ? "black" : "white";
+    auto const kind = names[index % 6];
+
+    return std::format("assets/models/chess/{}_{}.glb", side, kind);
 }
 
 auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void {
@@ -115,38 +213,46 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     scene.environment = new_scene_environment();
     scene.environment.sun.elevation_degrees = 55.0F;
     scene.environment.sun.azimuth_degrees = 200.0F;
+    auto badge = Badge<ChessGame>{};
+    thread_pool().detach_task([badge = badge] { run_chess_self_test(badge); });
 
-    bound_scene_ = nullptr; // rebind on the next on_update()
+    bound_scene_ = nullptr;
 
-    // The board.
+    chess_engine_.reset();
+
+    piece_models_.fill(ModelHandle{});
+
+    // Board.
     {
         auto const board = Entity{&scene, "board"};
+
         board.emplace<Components::Transform>(Components::Transform{});
 
         auto model = renderer.load_model(std::string{board_model_path});
 
         if (model) {
-            board.emplace<Components::Model>(Components::Model{.model = *model});
+            board.emplace<Components::Model>(Components::Model{
+                    .model = *model,
+            });
         } else {
-            error("[ChessGame] Could not load '{}': {}; run the game with the chess pack in assets/models/chess/",
+            error("[ChessGame] Could not load '{}': {}; "
+                  "run the game with the chess pack in assets/models/chess/",
                   board_model_path, describe(model.error()));
         }
     }
 
-    // The pieces, each model loaded once however many pawns share it.
-    std::array<ModelHandle, 12> models{};
-
-    auto const model_for = [&](Piece const &piece) -> ModelHandle {
-        auto &slot = models[(static_cast<std::size_t>(piece.side) * 6) + static_cast<std::size_t>(piece.kind)];
+    auto const model_for = [&](chess::Piece piece) -> ModelHandle {
+        auto const index = model_index(piece);
+        auto &slot = piece_models_[index];
 
         if (!slot.valid()) {
-            auto loaded = renderer.load_model(model_path(piece.side, piece.kind));
+            auto loaded = renderer.load_model(model_path(piece));
 
             if (loaded) {
                 slot = *loaded;
             } else {
-                error("[ChessGame] Could not load '{}': {}; using a cube", model_path(piece.side, piece.kind),
-                      describe(loaded.error()));
+                error("[ChessGame] Could not load '{}': {}; using a cube", model_path(piece), describe(loaded.error()));
+
                 slot = engine_models.cube;
             }
         }
@@ -154,18 +260,42 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         return slot;
     };
 
-    for (auto &&[index, placement]: starting_layout() | std::views::enumerate) {
-        auto const &[piece, square] = placement;
+    // ChessEngine owns piece placement and gives every physical piece a stable
+    // ID. Build one scene entity for each of those IDs.
+    auto const state = chess_engine_.render_state();
 
-        auto const entity = GeneratedEntity{&scene, "piece_{}", static_cast<std::uint32_t>(index)};
+    for (std::size_t index = 0; index < state.piece_count; ++index) {
+        auto const &piece = state.pieces[index];
+
+        auto const entity = GeneratedEntity{
+                &scene,
+                "piece_{}",
+                static_cast<std::uint32_t>(piece.id),
+        };
+
         entity.emplace<Components::Transform>(Components::Transform{
-                .position = world_position(square),
-                .rotation = piece_rotation(piece.side == Side::black),
+                .position = world_position(from_chess_square(piece.square)),
+                .rotation = piece_rotation(piece_is_black(piece.piece)),
         });
-        entity.emplace<Components::Model>(Components::Model{.model = model_for(piece)});
+
+        entity.emplace<Components::Model>(Components::Model{
+                .model = model_for(piece.piece),
+        });
     }
 
-    // Markers: flat slabs on the board, moved around (or stowed under it) rather than created and destroyed.
+    // Ensure every promotion model has been loaded even if the exact model
+    // wasn't needed by the loop above for some future custom starting state.
+    constexpr std::array all_piece_models{
+            chess::Piece::white_pawn, chess::Piece::white_knight, chess::Piece::white_bishop,
+            chess::Piece::white_rook, chess::Piece::white_queen,  chess::Piece::white_king,
+            chess::Piece::black_pawn, chess::Piece::black_knight, chess::Piece::black_bishop,
+            chess::Piece::black_rook, chess::Piece::black_queen,  chess::Piece::black_king,
+    };
+
+    for (auto const piece: all_piece_models) {
+        (void) model_for(piece);
+    }
+
     auto &images = renderer.image_storage();
     auto &samplers = renderer.sampler_storage();
 
@@ -188,44 +318,74 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
         if (!material) {
             error("[ChessGame] Could not create a material: {}", describe(material.error()));
+
             return MaterialHandle{};
         }
 
         created_materials.push_back(*material);
+
         return *material;
     };
 
     auto const cursor_look = flat_material("chess.cursor", glm::vec3{0.95F, 0.8F, 0.1F});
+
     auto const selection_look = flat_material("chess.selection", glm::vec3{0.15F, 0.45F, 0.9F});
+
     auto const target_look = flat_material("chess.target", glm::vec3{0.2F, 0.75F, 0.3F});
 
     auto const add_marker = [&](std::string_view name, MaterialHandle material, float footprint) {
         auto const entity = Entity{&scene, name};
+
         entity.emplace<Components::Transform>(Components::Transform{
                 .position = stowed,
-                .scale = glm::vec3{square_size * footprint, 0.01F, square_size * footprint},
+                .scale =
+                        glm::vec3{
+                                square_size * footprint,
+                                0.01F,
+                                square_size * footprint,
+                        },
         });
-        entity.emplace<Components::Model>(Components::Model{.model = engine_models.cube});
+
+        entity.emplace<Components::Model>(Components::Model{
+                .model = engine_models.cube,
+        });
 
         if (material.valid()) {
-            entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{.material = material});
+            entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{
+                    .material = material,
+            });
         }
     };
 
     add_marker("cursor", cursor_look, 0.9F);
+
     add_marker("selection", selection_look, 0.96F);
 
-    // A pawn has at most four places to go.
-    for (int index = 0; index < 4; ++index) {
-        auto const entity = GeneratedEntity{&scene, "target_{}", static_cast<std::uint32_t>(index)};
+    for (std::size_t index = 0; index < target_marker_count; ++index) {
+        auto const entity = GeneratedEntity{
+                &scene,
+                "target_{}",
+                static_cast<std::uint32_t>(index),
+        };
+
         entity.emplace<Components::Transform>(Components::Transform{
                 .position = stowed,
-                .scale = glm::vec3{square_size * 0.7F, 0.01F, square_size * 0.7F},
+                .scale =
+                        glm::vec3{
+                                square_size * 0.7F,
+                                0.01F,
+                                square_size * 0.7F,
+                        },
         });
-        entity.emplace<Components::Model>(Components::Model{.model = engine_models.cube});
+
+        entity.emplace<Components::Model>(Components::Model{
+                .model = engine_models.cube,
+        });
 
         if (target_look.valid()) {
-            entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{.material = target_look});
+            entity.emplace<Components::MaterialOverride>(Components::MaterialOverride{
+                    .material = target_look,
+            });
         }
     }
 
@@ -239,165 +399,250 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 auto ChessGame::bind_to(Scene &scene) -> void {
     bound_scene_ = &scene;
 
-    pieces_.clear();
+    piece_entities_.fill(entt::null);
+    target_entities_.fill(entt::null);
+
     outlined_entity_ = entt::null;
 
-    for (auto &&[index, placement]: starting_layout() | std::views::enumerate) {
-        auto piece = placement.first;
-        piece.entity = scene.find_entity(std::format("piece_{}", index));
-        pieces_.push_back(piece);
+    for (std::size_t id = 0; id < piece_entities_.size(); ++id) {
+        piece_entities_[id] = scene.find_entity(std::format("piece_{}", id));
     }
 
     cursor_entity_ = scene.find_entity("cursor");
+
     selection_entity_ = scene.find_entity("selection");
 
-    target_entities_.clear();
-
-    for (int index = 0; index < 4; ++index) {
-        target_entities_.push_back(scene.find_entity(std::format("target_{}", index)));
+    for (std::size_t index = 0; index < target_entities_.size(); ++index) {
+        target_entities_[index] = scene.find_entity(std::format("target_{}", index));
     }
 
     restart_requested_ = true;
 }
 
+auto ChessGame::clear_selection() -> void {
+    selected_.reset();
+    selected_moves_.clear();
+    target_squares_.clear();
+
+    pending_promotion_target_.reset();
+    promotion_requested_.reset();
+}
+
 auto ChessGame::restart(Scene &scene) -> void {
-    auto &registry = scene.get_registry();
+    chess_engine_.reset();
 
-    board_.fill(-1);
-
-    for (auto &&[index, placement]: starting_layout() | std::views::enumerate) {
-        auto const &square = placement.second;
-        board_[index_of(square)] = static_cast<int>(index);
-
-        if (auto const entity = pieces_[static_cast<std::size_t>(index)].entity;
-            registry.valid(entity) && registry.all_of<Components::Transform>(entity)) {
-            registry.get<Components::Transform>(entity).position = world_position(square);
-        }
-    }
+    camera_side_ = chess_engine_.side_to_move();
+    camera_angle_ = 0.0F;
+    camera_target_angle_ = 0.0F;
 
     cursor_ = Square{4, 1};
     hovered_.reset();
-    selected_.reset();
-    targets_.clear();
-    to_move_ = Side::white;
+
+    clear_selection();
+
     status_.clear();
+
+    sync_pieces(scene);
 }
 
-auto ChessGame::piece_at(Square square) const noexcept -> Piece const * {
-    if (!on_board(square)) {
-        return nullptr;
-    }
-
-    auto const index = board_[index_of(square)];
-    return index < 0 ? nullptr : &pieces_[static_cast<std::size_t>(index)];
-}
-
-auto ChessGame::pawn_targets(Square from) const -> std::vector<Square> {
-    std::vector<Square> targets;
-
-    auto const *pawn = piece_at(from);
-
-    if (pawn == nullptr || pawn->kind != Kind::pawn) {
-        return targets;
-    }
-
-    auto const forward = pawn->side == Side::white ? 1 : -1;
-    auto const start_y = pawn->side == Side::white ? 1 : 6;
-
-    auto const one = Square{from.x, from.y + forward};
-
-    if (on_board(one) && piece_at(one) == nullptr) {
-        targets.push_back(one);
-
-        auto const two = Square{from.x, from.y + (2 * forward)};
-
-        if (from.y == start_y && piece_at(two) == nullptr) {
-            targets.push_back(two);
-        }
-    }
-
-    for (auto const dx: {-1, 1}) {
-        auto const diagonal = Square{from.x + dx, from.y + forward};
-        auto const *other = piece_at(diagonal);
-
-        if (other != nullptr && other->side != pawn->side) {
-            targets.push_back(diagonal);
-        }
-    }
-
-    return targets;
-}
-
-auto ChessGame::move_piece(Scene &scene, Square from, Square to) -> void {
+auto ChessGame::sync_pieces(Scene &scene) -> void {
     auto &registry = scene.get_registry();
 
-    auto const moving = board_[index_of(from)];
-    auto const captured = board_[index_of(to)];
+    auto const state = chess_engine_.render_state();
 
-    // A captured piece is stowed under the board rather than destroyed, so restart() can bring it back.
-    if (captured >= 0) {
-        if (auto const entity = pieces_[static_cast<std::size_t>(captured)].entity;
-            registry.valid(entity) && registry.all_of<Components::Transform>(entity)) {
-            registry.get<Components::Transform>(entity).position = stowed;
+    std::array<bool, piece_count> visible{};
+
+    for (std::size_t index = 0; index < state.piece_count; ++index) {
+        auto const &piece = state.pieces[index];
+
+        if (piece.id >= piece_entities_.size()) {
+            continue;
+        }
+
+        visible[piece.id] = true;
+
+        auto const entity = piece_entities_[piece.id];
+
+        if (!registry.valid(entity)) {
+            continue;
+        }
+
+        if (registry.all_of<Components::Transform>(entity)) {
+            auto &transform = registry.get<Components::Transform>(entity);
+
+            transform.position = world_position(from_chess_square(piece.square));
+
+            transform.rotation = piece_rotation(piece_is_black(piece.piece));
+        }
+
+        if (registry.all_of<Components::Model>(entity)) {
+            registry.get<Components::Model>(entity).model = piece_models_[model_index(piece.piece)];
         }
     }
 
-    board_[index_of(from)] = -1;
-    board_[index_of(to)] = moving;
+    // Anything omitted by RenderState has been captured.
+    for (std::size_t id = 0; id < piece_entities_.size(); ++id) {
+        if (visible[id]) {
+            continue;
+        }
 
-    if (auto const entity = pieces_[static_cast<std::size_t>(moving)].entity;
-        registry.valid(entity) && registry.all_of<Components::Transform>(entity)) {
-        registry.get<Components::Transform>(entity).position = world_position(to);
+        auto const entity = piece_entities_[id];
+
+        if (!registry.valid(entity) || !registry.all_of<Components::Transform>(entity)) {
+            continue;
+        }
+
+        registry.get<Components::Transform>(entity).position = stowed;
     }
-
-    status_ = std::format("{}{}{}", square_name(from), captured >= 0 ? 'x' : '-', square_name(to));
-    to_move_ = to_move_ == Side::white ? Side::black : Side::white;
 }
 
-auto ChessGame::activate_cursor(Scene &scene) -> void {
-    if (selected_) {
-        if (std::ranges::find(targets_, cursor_) != targets_.end()) {
-            move_piece(scene, *selected_, cursor_);
-        } else if (cursor_ != *selected_) {
-            status_ = "A pawn can't go there.";
-            return;
+auto ChessGame::rebuild_target_squares() -> void {
+    target_squares_.clear();
+
+    for (auto const &move: selected_moves_) {
+        if (std::ranges::find(target_squares_, move.to) != target_squares_.end()) {
+            continue;
         }
 
-        selected_.reset();
-        targets_.clear();
+        target_squares_.push_back(move.to);
+    }
+}
+
+auto ChessGame::execute_move(Scene &scene, chess::Move move) -> void {
+    auto const from_name = square_name(move.from);
+
+    auto const to_name = square_name(move.to);
+
+    auto const result = chess_engine_.update(move);
+
+    if (!result.moved) {
+        status_ = "That move is not legal.";
         return;
     }
 
-    auto const *piece = piece_at(cursor_);
+    status_ = std::format("{}{}{}", from_name, result.capture ? "x" : "-", to_name);
 
-    if (piece == nullptr) {
-        status_ = "Nothing to pick up there.";
-    } else if (piece->side != to_move_) {
-        status_ = std::format("It is {}'s move.", to_move_ == Side::white ? "white" : "black");
-    } else if (piece->kind != Kind::pawn) {
-        status_ = "Only pawns can move so far.";
-    } else if (auto targets = pawn_targets(cursor_); targets.empty()) {
-        status_ = "That pawn is blocked.";
-    } else {
-        selected_ = cursor_;
-        targets_ = std::move(targets);
-        status_.clear();
+    switch (result.game_state) {
+        using enum chess::GameState;
+        case checkmate:
+            status_ += " checkmate.";
+            break;
+
+        case stalemate:
+            status_ += " stalemate.";
+            break;
+
+        case playing:
+            if (result.check) {
+                status_ += " check.";
+            }
+
+            break;
     }
+
+    clear_selection();
+
+    sync_pieces(scene);
 }
 
-auto ChessGame::pick_square(CursorPositionEvent const &event, float aspect_ratio) -> std::optional<Square> {
+auto ChessGame::activate_cursor(Scene &scene) -> void {
+    // Promotion must be resolved before another board action is accepted.
+    if (pending_promotion_target_) {
+        status_ = "Choose a promotion piece.";
+        return;
+    }
+
+    auto const square = to_chess_square(cursor_);
+
+    if (selected_) {
+        // Clicking the selected piece again puts it back.
+        if (square == *selected_) {
+            clear_selection();
+            status_.clear();
+
+            return;
+        }
+
+        std::array<chess::Move, 4> matches{};
+        std::size_t match_count = 0;
+
+        for (auto const &move: selected_moves_) {
+            if (move.to != square) {
+                continue;
+            }
+
+            if (match_count < matches.size()) {
+                matches[match_count++] = move;
+            }
+        }
+
+        if (match_count == 0) {
+            status_ = "That piece cannot go there.";
+            return;
+        }
+
+        if (match_count == 1 && !is_promotion(matches[0])) {
+            execute_move(scene, matches[0]);
+
+            return;
+        }
+
+        // Promotions have four legal moves with identical from/to.
+        pending_promotion_target_ = square;
+        status_ = "Choose promotion: queen, rook, bishop or knight.";
+
+        return;
+    }
+
+    auto const piece = chess_engine_.piece_at(square);
+
+    if (piece == chess::Piece::none) {
+        status_ = "Nothing to pick up there.";
+        return;
+    }
+
+    if (piece_side(piece) != chess_engine_.side_to_move()) {
+        status_ =
+                std::format("It is {}'s move.", chess_engine_.side_to_move() == chess::Side::white ? "white" : "black");
+
+        return;
+    }
+
+    auto moves = chess_engine_.legal_moves(square);
+
+    if (moves.empty()) {
+        status_ = "That piece has no legal moves.";
+        return;
+    }
+
+    selected_ = square;
+    selected_moves_ = std::move(moves);
+
+    rebuild_target_squares();
+
+    status_.clear();
+}
+
+auto ChessGame::pick_square(CursorPositionEvent const &event, float aspect_ratio) const -> std::optional<Square> {
     if (!event.inside) {
         return std::nullopt;
     }
 
-    // The cursor's ray: the near and far plane points under it, unprojected. Depth runs 0 to 1 (perspectiveLH_ZO).
-    auto const inverse = glm::inverse(projection_matrix(aspect_ratio) * view_matrix());
+    auto const inverse = glm::inverse(projection_matrix(aspect_ratio) * view_matrix(camera_angle_));
+
     auto const unproject = [&](float depth) {
-        auto const point = inverse * glm::vec4{static_cast<float>(event.ndc_x), static_cast<float>(event.ndc_y), depth, 1.0F};
+        auto const point = inverse * glm::vec4{
+                                             static_cast<float>(event.ndc_x),
+                                             static_cast<float>(event.ndc_y),
+                                             depth,
+                                             1.0F,
+                                     };
+
         return glm::vec3{point} / point.w;
     };
 
     auto const near_point = unproject(0.0F);
+
     auto const direction = unproject(1.0F) - near_point;
 
     if (std::abs(direction.y) < 1e-6F) {
@@ -411,8 +656,11 @@ auto ChessGame::pick_square(CursorPositionEvent const &event, float aspect_ratio
     }
 
     auto const hit = near_point + (direction * distance);
-    auto const square = Square{static_cast<int>(std::floor((hit.x / square_size) + 4.0F)),
-                               static_cast<int>(std::floor((hit.z / square_size) + 4.0F))};
+
+    auto const square = Square{
+            static_cast<int>(std::floor((hit.x / square_size) + 4.0F)),
+            static_cast<int>(std::floor((hit.z / square_size) + 4.0F)),
+    };
 
     return on_board(square) ? std::optional{square} : std::nullopt;
 }
@@ -420,7 +668,6 @@ auto ChessGame::pick_square(CursorPositionEvent const &event, float aspect_ratio
 auto ChessGame::on_cursor_position(Scene & /*scene*/, CursorPositionEvent const &event) -> void {
     hovered_ = pick_square(event, aspect_ratio_);
 
-    // The keyboard cursor follows the mouse while it is over the board.
     if (hovered_) {
         cursor_ = *hovered_;
     }
@@ -437,14 +684,24 @@ auto ChessGame::on_mouse_button_pressed(Scene & /*scene*/, MouseButtonPressedEve
 auto ChessGame::place_markers(Scene &scene) -> void {
     auto &registry = scene.get_registry();
 
-    // The picked-up pawn is outlined.
-    auto const *selected_piece = selected_ ? piece_at(*selected_) : nullptr;
-    auto const wanted_outline = selected_piece != nullptr ? selected_piece->entity : entt::entity{entt::null};
+    entt::entity wanted_outline = entt::null;
+
+    auto const state = chess_engine_.render_state();
+
+    for (std::size_t index = 0; index < state.piece_count; ++index) {
+        auto const &piece = state.pieces[index];
+
+        if (selected_ && piece.square == *selected_) {
+            wanted_outline = piece_entities_[piece.id];
+            break;
+        }
+    }
 
     if (wanted_outline != outlined_entity_) {
         if (registry.valid(outlined_entity_)) {
             registry.remove<Components::Outlined>(outlined_entity_);
         }
+
         if (registry.valid(wanted_outline)) {
             registry.emplace_or_replace<Components::Outlined>(wanted_outline);
         }
@@ -453,22 +710,51 @@ auto ChessGame::place_markers(Scene &scene) -> void {
     }
 
     auto const put = [&registry](entt::entity entity, std::optional<Square> square, float lift) {
-        if (registry.valid(entity) && registry.all_of<Components::Transform>(entity)) {
-            registry.get<Components::Transform>(entity).position =
-                    square ? world_position(*square) + glm::vec3{0.0F, lift, 0.0F} : stowed;
+        if (!registry.valid(entity) || !registry.all_of<Components::Transform>(entity)) {
+            return;
         }
+
+        registry.get<Components::Transform>(entity).position = square ? world_position(*square) +
+                                                                                glm::vec3{
+                                                                                        0.0F,
+                                                                                        lift,
+                                                                                        0.0F,
+                                                                                }
+                                                                      : stowed;
     };
 
     put(cursor_entity_, cursor_, 0.015F);
-    put(selection_entity_, selected_, 0.005F);
 
-    for (auto &&[index, entity]: target_entities_ | std::views::enumerate) {
-        auto const slot = static_cast<std::size_t>(index);
-        put(entity, slot < targets_.size() ? std::optional{targets_[slot]} : std::nullopt, 0.01F);
+    put(selection_entity_, selected_ ? std::optional{from_chess_square(*selected_)} : std::nullopt, 0.005F);
+
+    for (std::size_t index = 0; index < target_entities_.size(); ++index) {
+        auto const square = index < target_squares_.size() ? std::optional{from_chess_square(target_squares_[index])}
+                                                           : std::nullopt;
+
+        put(target_entities_[index], square, 0.01F);
     }
 }
 
-auto ChessGame::on_update(Scene &scene, float /*delta_time*/) -> void {
+auto ChessGame::update_camera(float delta_time) -> void {
+    auto const side = chess_engine_.side_to_move();
+
+    if (side != camera_side_) {
+        camera_side_ = side;
+        camera_target_angle_ += glm::radians(180.0F);
+    }
+
+    // Exponential approach: fast at first, settling smoothly.
+    auto const remaining = camera_target_angle_ - camera_angle_;
+
+    if (std::abs(remaining) < camera_flip_epsilon) {
+        camera_angle_ = camera_target_angle_;
+        return;
+    }
+
+    camera_angle_ += remaining * (1.0F - std::exp(-camera_flip_rate * std::min(delta_time, 0.1F)));
+}
+
+auto ChessGame::on_update(Scene &scene, float delta_time) -> void {
     frames_since_update_ = 0;
 
     if (bound_scene_ != &scene) {
@@ -479,15 +765,22 @@ auto ChessGame::on_update(Scene &scene, float /*delta_time*/) -> void {
         restart(scene);
     }
 
-    auto const step = std::exchange(cursor_step_, glm::ivec2{0});
+    update_camera(delta_time);
+
+    auto step = std::exchange(cursor_step_, glm::ivec2{0});
+
+    // Keys move the cursor as seen on screen, so mirror them from black's side.
+    if (std::cos(camera_target_angle_) < 0.0F) {
+        step = -step;
+    }
+
     cursor_ = glm::clamp(cursor_ + step, Square{0}, Square{board_size - 1});
 
     if (std::exchange(cancel_requested_, false)) {
-        selected_.reset();
-        targets_.clear();
+        clear_selection();
+        status_.clear();
     }
 
-    // A click acts on the square under the mouse, as of the latest cursor position.
     if (std::exchange(click_requested_, false) && hovered_) {
         cursor_ = *hovered_;
         activate_requested_ = true;
@@ -495,6 +788,25 @@ auto ChessGame::on_update(Scene &scene, float /*delta_time*/) -> void {
 
     if (std::exchange(activate_requested_, false)) {
         activate_cursor(scene);
+    }
+
+    if (promotion_requested_ && pending_promotion_target_ && selected_) {
+        auto const promotion = std::exchange(promotion_requested_, std::nullopt);
+
+        auto const target = *pending_promotion_target_;
+
+        auto const it = std::ranges::find_if(selected_moves_, [&](chess::Move const &move) {
+            return move.to == target && is_promotion(move) && move.promotion == *promotion;
+        });
+
+        if (it != selected_moves_.end()) {
+            auto const move = *it;
+
+            execute_move(scene, move);
+        } else {
+            pending_promotion_target_.reset();
+            status_ = "Could not promote to that piece.";
+        }
     }
 
     place_markers(scene);
@@ -506,54 +818,129 @@ auto ChessGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) 
         case GLFW_KEY_W:
             ++cursor_step_.y;
             break;
+
         case GLFW_KEY_DOWN:
         case GLFW_KEY_S:
             --cursor_step_.y;
             break;
+
         case GLFW_KEY_LEFT:
         case GLFW_KEY_A:
             --cursor_step_.x;
             break;
+
         case GLFW_KEY_RIGHT:
         case GLFW_KEY_D:
             ++cursor_step_.x;
             break;
+
         case GLFW_KEY_ENTER:
         case GLFW_KEY_SPACE:
             activate_requested_ = true;
             break;
+
         case GLFW_KEY_BACKSPACE:
             cancel_requested_ = true;
             break;
+
+        case GLFW_KEY_Q:
+            if (pending_promotion_target_) {
+                promotion_requested_ = chess::PieceType::queen;
+            }
+            break;
+
+        case GLFW_KEY_T:
+            if (pending_promotion_target_) {
+                promotion_requested_ = chess::PieceType::rook;
+            }
+            break;
+
+        case GLFW_KEY_B:
+            if (pending_promotion_target_) {
+                promotion_requested_ = chess::PieceType::bishop;
+            }
+            break;
+
+        case GLFW_KEY_N:
+            if (pending_promotion_target_) {
+                promotion_requested_ = chess::PieceType::knight;
+            }
+            break;
+
         case GLFW_KEY_R:
             // Plain R only: Ctrl+R is the editor's repopulate.
             restart_requested_ = restart_requested_ || event.modifiers == 0;
             break;
+
         default:
             break;
     }
 }
 
 auto ChessGame::on_ui(Scene & /*scene*/, Renderer & /*renderer*/) -> void {
-    // See frames_since_update_: on_ui() runs in the editor too, where there is no game.
     if (frames_since_update_ > 2) {
         return;
     }
 
     ++frames_since_update_;
 
-    gui::widget("Chess", [&] {
-        ImGui::Text("%s to move", to_move_ == Side::white ? "White" : "Black");
-        ImGui::Text("Cursor  %s", square_name(cursor_).c_str());
+    gui::widget("Chess", [&] -> void {
+        auto const side = chess_engine_.side_to_move();
+
+        ImGui::Text("%s to move", side == chess::Side::white ? "White" : "Black");
+
+        ImGui::Text("Cursor  %s", square_name(to_chess_square(cursor_)).c_str());
 
         if (!status_.empty()) {
             ImGui::TextUnformatted(status_.c_str());
         }
 
+        if (pending_promotion_target_) {
+            ImGui::Separator();
+
+            ImGui::TextUnformatted("Promote pawn to:");
+
+            if (ImGui::Button("Queen")) {
+                promotion_requested_ = chess::PieceType::queen;
+            }
+
+            ImGui::SameLine();
+
+            if (ImGui::Button("Rook")) {
+                promotion_requested_ = chess::PieceType::rook;
+            }
+
+            ImGui::SameLine();
+
+            if (ImGui::Button("Bishop")) {
+                promotion_requested_ = chess::PieceType::bishop;
+            }
+
+            ImGui::SameLine();
+
+            if (ImGui::Button("Knight")) {
+                promotion_requested_ = chess::PieceType::knight;
+            }
+        }
+
         ImGui::Separator();
-        ImGui::TextWrapped("Click a pawn to pick it up and a green square to put it down; right click or Backspace "
-                           "puts it back. The arrows or WASD and Enter or Space work too. R starts over. Only pawns "
-                           "move so far.");
+
+        switch (chess_engine_.game_state()) {
+            case chess::GameState::checkmate:
+                ImGui::TextUnformatted("Game over: checkmate.");
+                break;
+
+            case chess::GameState::stalemate:
+                ImGui::TextUnformatted("Game over: stalemate.");
+                break;
+
+            case chess::GameState::playing:
+                ImGui::TextWrapped("Click a piece to select it and a green square "
+                                   "to move. Right click or Backspace cancels the "
+                                   "selection. Arrows or WASD move the cursor; "
+                                   "Enter or Space selects or moves. R starts over.");
+                break;
+        }
 
         if (ImGui::Button("Reset")) {
             restart_requested_ = true;
@@ -565,7 +952,7 @@ auto ChessGame::camera(Scene const & /*scene*/, float aspect_ratio) const -> Cam
     aspect_ratio_ = aspect_ratio;
 
     return CameraParams{
-            .view = view_matrix(),
+            .view = view_matrix(camera_angle_),
             .projection = projection_matrix(aspect_ratio),
             .near_clip = camera_near_clip,
             .far_clip = camera_far_clip,
@@ -575,9 +962,21 @@ auto ChessGame::camera(Scene const & /*scene*/, float aspect_ratio) const -> Cam
 
 auto ChessGame::benchmark_camera_path() const -> std::vector<CameraKeyframe> {
     return {
-            {.position = {0.0F, 8.5F, -8.5F}, .target = {0.0F, 0.0F, 0.4F}},
-            {.position = {8.5F, 6.0F, 0.0F}, .target = {0.0F, 0.0F, 0.0F}},
-            {.position = {0.0F, 8.5F, 8.5F}, .target = {0.0F, 0.0F, -0.4F}},
-            {.position = {-8.5F, 6.0F, 0.0F}, .target = {0.0F, 0.0F, 0.0F}},
+            {
+                    .position = {0.0F, 8.5F, -8.5F},
+                    .target = {0.0F, 0.0F, 0.4F},
+            },
+            {
+                    .position = {8.5F, 6.0F, 0.0F},
+                    .target = {0.0F, 0.0F, 0.0F},
+            },
+            {
+                    .position = {0.0F, 8.5F, 8.5F},
+                    .target = {0.0F, 0.0F, -0.4F},
+            },
+            {
+                    .position = {-8.5F, 6.0F, 0.0F},
+                    .target = {0.0F, 0.0F, 0.0F},
+            },
     };
 }
