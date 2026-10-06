@@ -14,6 +14,7 @@ set(
     primitive_meshes.cxx
     procedural_textures.cxx
     shader_hot_reload_watcher.cxx
+    shader_pack.cxx
     slang_compiler.cxx
     stb.cxx
     texture_pipeline.cxx

@@ -17,6 +17,7 @@
 #include <thread>
 #include <utility>
 
+#include "assets/shader_pack.hxx"
 #include "assets/slang_library.hxx"
 #include "core/logger.hxx"
 
@@ -283,6 +284,23 @@ namespace renderer {
     }
 
     auto SlangCompiler::compile(ShaderCompileRequest const &request) const
+            -> std::expected<CompiledShader, ShaderCompileError> {
+        if (auto const pack = installed_shader_pack()) {
+            if (auto precompiled = pack->find(shader_request_key(request))) {
+                return std::move(*precompiled);
+            }
+        }
+
+        auto compiled = compile_with_slang(request);
+
+        if (compiled && shader_recording()) {
+            record_compiled_shader(request, *compiled);
+        }
+
+        return compiled;
+    }
+
+    auto SlangCompiler::compile_with_slang(ShaderCompileRequest const &request) const
             -> std::expected<CompiledShader, ShaderCompileError> {
         perf_events::record(PerfEvent::shader_compile);
 

@@ -99,6 +99,10 @@ namespace renderer {
     private:
         struct Impl;
 
+        [[nodiscard]]
+        auto compile_with_slang(ShaderCompileRequest const &request) const
+                -> std::expected<CompiledShader, ShaderCompileError>;
+
         explicit SlangCompiler(std::unique_ptr<Impl> impl) noexcept;
 
         std::unique_ptr<Impl> impl_;

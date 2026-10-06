@@ -1,6 +1,9 @@
 #include "core/paths.hxx"
 
+#include <algorithm>
 #include <cstdlib>
+#include <mutex>
+#include <set>
 #include <system_error>
 #include <utility>
 
@@ -50,6 +53,19 @@ namespace {
 } // namespace
 
 namespace paths_detail {
+    std::atomic<bool> access_recording{false};
+
+    namespace {
+        std::mutex accessed_mutex;
+        std::set<std::string> accessed;
+    } // namespace
+
+    auto note_data_access(std::string const &logical) -> void {
+        std::scoped_lock const lock{accessed_mutex};
+
+        accessed.insert(logical);
+    }
+
     auto sanitise(std::string_view relative) -> std::optional<std::filesystem::path> {
         auto path = std::filesystem::path{relative}.lexically_normal();
 
@@ -213,3 +229,29 @@ auto AssetPath::from_user(std::filesystem::path const &path) -> std::optional<As
 }
 
 auto AssetPath::missing() -> AssetPath { return AssetPath{data_path("assets/missing")}; }
+
+auto Paths::start_access_recording() -> void {
+    {
+        std::scoped_lock const lock{paths_detail::accessed_mutex};
+
+        paths_detail::accessed.clear();
+    }
+
+    paths_detail::access_recording.store(true, std::memory_order_relaxed);
+}
+
+auto Paths::finish_access_recording() -> std::vector<std::string> {
+    paths_detail::access_recording.store(false, std::memory_order_relaxed);
+
+    std::scoped_lock const lock{paths_detail::accessed_mutex};
+    std::vector<std::string> files;
+    std::error_code error;
+
+    for (auto const &logical: paths_detail::accessed) {
+        if (std::filesystem::is_regular_file(current().data_root() / logical, error)) {
+            files.push_back(logical);
+        }
+    }
+
+    return files;
+}

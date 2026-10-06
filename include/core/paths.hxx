@@ -1,13 +1,22 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 class Paths;
+
+namespace paths_detail {
+    // Set while a run records which data files it opens (Paths::start_access_recording).
+    extern std::atomic<bool> access_recording;
+
+    auto note_data_access(std::string const &logical) -> void;
+} // namespace paths_detail
 
 enum class PathRoot : std::uint8_t {
     data,        // Read-only game/engine data: shaders, models, textures, scenes, fonts.
@@ -22,7 +31,15 @@ template<PathRoot Root>
 class RootedPath {
 public:
     // The absolute location on disk. Use this to open the file.
-    [[nodiscard]] auto absolute() const noexcept -> std::filesystem::path const & { return absolute_; }
+    [[nodiscard]] auto absolute() const -> std::filesystem::path const & {
+        if constexpr (Root == PathRoot::data) {
+            if (paths_detail::access_recording.load(std::memory_order_relaxed)) {
+                paths_detail::note_data_access(logical_.generic_string());
+            }
+        }
+
+        return absolute_;
+    }
 
     // The root-relative, forward-slash form. Stable across installs, so it is what asset IDs are derived from.
     [[nodiscard]] auto logical() const -> std::string { return logical_.generic_string(); }
@@ -74,7 +91,13 @@ public:
     // result doesn't climb out of it; otherwise it is external. Empty if `relative` is empty.
     [[nodiscard]] auto sibling(std::filesystem::path const &relative) const -> std::optional<AssetPath>;
 
-    [[nodiscard]] auto absolute() const noexcept -> std::filesystem::path const & { return absolute_; }
+    [[nodiscard]] auto absolute() const -> std::filesystem::path const & {
+        if (!external_ && paths_detail::access_recording.load(std::memory_order_relaxed)) {
+            paths_detail::note_data_access(key_);
+        }
+
+        return absolute_;
+    }
 
     // What asset IDs hash: root-relative for data assets, so it is stable across installs; absolute for external ones.
     [[nodiscard]] auto key() const noexcept -> std::string const & { return key_; }
@@ -107,6 +130,11 @@ public:
     // The process-wide instance. Set once from main before anything touches the disk; defaults to resolve({}).
     static auto set_current(Paths paths) -> void;
     [[nodiscard]] static auto current() -> Paths const &;
+
+    // While recording, every data file reached through absolute() is noted. finish returns the sorted, de-duplicated
+    // root-relative paths of those that are regular files, which is what a packaged game has to ship.
+    static auto start_access_recording() -> void;
+    [[nodiscard]] static auto finish_access_recording() -> std::vector<std::string>;
 
     [[nodiscard]] auto installed() const noexcept -> bool { return installed_; }
     [[nodiscard]] auto data_root() const noexcept -> std::filesystem::path const & { return data_; }

@@ -453,6 +453,10 @@ Application::~Application() {
 auto Application::on_ui(std::uint32_t frame_index) -> void {
     // Must match the CompositeTarget main.cxx passes to Renderer::record_frame.
     if (is_playing && play_fullscreen) {
+        if (player_mode && game && game_hooks_enabled) {
+            game->on_ui(*active_scene(), *renderer);
+        }
+
         gui::render_toasts();
         return;
     }
@@ -2723,7 +2727,8 @@ auto Application::on_startup() -> void {
     std::array const shader_directories{
             data_path("assets/shaders").absolute(),
     };
-    if (!shader_watcher_.start(renderer->shader_change_queue(), shader_directories)) {
+    // An installed game has no shader sources to watch.
+    if (!player_mode && !shader_watcher_.start(renderer->shader_change_queue(), shader_directories)) {
         error("Shader hot-reload watcher failed to start -- shaders will not live-reload this run");
     }
     imgui_renderer = std::make_unique<gui::ImGuiRenderer>(
@@ -2809,7 +2814,10 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
                 return true;
             }
 
-            stop();
+            if (!player_mode) {
+                stop();
+            }
+
             return true;
         }
 

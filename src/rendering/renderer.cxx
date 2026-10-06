@@ -296,8 +296,19 @@ Renderer::Renderer(VulkanContext &context) noexcept :
 Renderer::~Renderer() noexcept = default;
 
 auto Renderer::compiler() noexcept -> renderer::SlangCompiler & {
-    static auto compiler_ =
-            std::make_unique<renderer::SlangCompiler>(std::move(renderer::SlangCompiler::create().value()));
+    // Without the Slang libraries (a shipped game) the compiler stays invalid: compile() then serves requests from the
+    // installed ShaderPack and fails any it lacks.
+    static auto compiler_ = [] {
+        auto created = renderer::SlangCompiler::create();
+
+        if (!created) {
+            warn("Slang is unavailable ({}); shaders come from the shader pack only", created.error().diagnostics);
+            return std::make_unique<renderer::SlangCompiler>();
+        }
+
+        return std::make_unique<renderer::SlangCompiler>(std::move(*created));
+    }();
+
     return *compiler_;
 }
 
