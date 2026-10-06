@@ -544,12 +544,12 @@ namespace {
     }
 
     struct ImageSource {
-        std::filesystem::path path; // external file; empty if embedded
+        std::optional<AssetPath> path; // external file; empty if embedded
         std::vector<std::byte> encoded; // embedded bytes; empty if `path` is set
     };
 
     auto resolve_image_source(fastgltf::Asset const &asset, fastgltf::Image const &image,
-                              std::filesystem::path const &base_directory)
+                              AssetPath const &gltf_path)
             -> std::expected<ImageSource, ModelLoadError> {
         if (auto const *uri_source = std::get_if<fastgltf::sources::URI>(&image.data)) {
             if (uri_source->uri.isLocalPath() && uri_source->fileByteOffset == 0) {
@@ -557,7 +557,7 @@ namespace {
                 auto relative = uri_source->uri.fspath().string();
                 std::ranges::replace(relative, '\\', '/');
 
-                return ImageSource{.path = base_directory / relative};
+                return ImageSource{.path = gltf_path.sibling(relative)};
             }
 
             return std::unexpected(ModelLoadError{
@@ -660,7 +660,7 @@ namespace {
     template<IndexableTexture TextureInfoT>
     auto resolve_texture_cpu(fastgltf::Asset const &asset, std::optional<TextureInfoT> const &info,
                              ModelTextureSlot slot, std::string_view slot_name, std::string_view material_name,
-                             std::filesystem::path const &gltf_path, std::filesystem::path const &base_directory,
+                             AssetPath const &gltf_path,
                              ImageCache &image_cache, ImageSources &image_sources)
             -> std::expected<std::optional<std::size_t>, ModelLoadError> {
         if (!info.has_value()) {
@@ -679,7 +679,7 @@ namespace {
             return cached->second;
         }
 
-        auto source = resolve_image_source(asset, asset.images[image_index], base_directory);
+        auto source = resolve_image_source(asset, asset.images[image_index], gltf_path);
 
         if (!source) {
             return std::unexpected(source.error());
@@ -699,8 +699,8 @@ namespace {
         image_sources.push_back(ModelCpuImageSource{
                 .path = std::move(source->path),
                 .encoded = std::move(source->encoded),
-                .cache_key = source->path.empty()
-                                     ? std::format("{}#{}#{}", gltf_path.string(), image_index, embedded_size)
+                .cache_key = !source->path.has_value()
+                                     ? std::format("{}#{}#{}", gltf_path.key(), image_index, embedded_size)
                                      : std::string{},
                 .slot = slot,
                 .debug_name = FlyString{image_name},
@@ -737,11 +737,11 @@ namespace {
                 return classify_encoded_alpha(source.encoded);
             }
 
-            if (source.path.empty() || source.path.extension() == ".dds") {
+            if (!source.path || source.path->absolute().extension() == ".dds") {
                 return std::nullopt;
             }
 
-            std::ifstream file{source.path, std::ios::binary | std::ios::ate};
+            std::ifstream file{source.path->absolute(), std::ios::binary | std::ios::ate};
 
             if (!file) {
                 return std::nullopt;
@@ -799,8 +799,7 @@ namespace {
     }
 
     auto load_material_cpu(fastgltf::Asset const &asset, fastgltf::Material const &gltf_material,
-                           SamplerStorage &sampler_storage, std::filesystem::path const &gltf_path,
-                           std::filesystem::path const &base_directory,
+                           SamplerStorage &sampler_storage, AssetPath const &gltf_path,
                            std::unordered_map<std::size_t, std::size_t> &image_cache,
                            std::vector<ModelCpuImageSource> &image_sources, ImportConvention const &convention)
             -> std::expected<ModelCpuMaterial, ModelLoadError> {
@@ -837,7 +836,7 @@ namespace {
 
         auto base_colour_image =
                 resolve_texture_cpu(asset, gltf_material.pbrData.baseColorTexture, ModelTextureSlot::base_colour,
-                                    "basecolor", material_name, gltf_path, base_directory, image_cache, image_sources);
+                                    "basecolor", material_name, gltf_path, image_cache, image_sources);
 
         if (!base_colour_image) {
             return std::unexpected(base_colour_image.error());
@@ -850,8 +849,8 @@ namespace {
             material.base_colour_image.has_value()) {
             auto const &source = image_sources[*material.base_colour_image];
 
-            if (!source.path.empty() && source.path.extension() == ".dds") {
-                if (auto const coverage = classify_dds_alpha(source.path.string())) {
+            if (source.path && source.path->absolute().extension() == ".dds") {
+                if (auto const coverage = classify_dds_alpha(source.path->absolute().string())) {
                     if (*coverage == AlphaCoverage::mask) {
                         material.alpha_mode = AlphaMode::mask;
                     } else if (*coverage == AlphaCoverage::blend) {
@@ -863,7 +862,7 @@ namespace {
 
         auto metallic_roughness_image = resolve_texture_cpu(
                 asset, gltf_material.pbrData.metallicRoughnessTexture, ModelTextureSlot::metallic_roughness,
-                "metallic_roughness", material_name, gltf_path, base_directory, image_cache, image_sources);
+                "metallic_roughness", material_name, gltf_path, image_cache, image_sources);
 
         if (!metallic_roughness_image) {
             return std::unexpected(metallic_roughness_image.error());
@@ -876,7 +875,7 @@ namespace {
         }
 
         auto normal_image = resolve_texture_cpu(asset, gltf_material.normalTexture, ModelTextureSlot::normal, "normal",
-                                                material_name, gltf_path, base_directory, image_cache, image_sources);
+                                                material_name, gltf_path, image_cache, image_sources);
 
         if (!normal_image) {
             return std::unexpected(normal_image.error());
@@ -890,7 +889,7 @@ namespace {
 
         auto occlusion_image =
                 resolve_texture_cpu(asset, gltf_material.occlusionTexture, ModelTextureSlot::occlusion, "occlusion",
-                                    material_name, gltf_path, base_directory, image_cache, image_sources);
+                                    material_name, gltf_path, image_cache, image_sources);
 
         if (!occlusion_image) {
             return std::unexpected(occlusion_image.error());
@@ -900,7 +899,7 @@ namespace {
 
         auto emissive_image =
                 resolve_texture_cpu(asset, gltf_material.emissiveTexture, ModelTextureSlot::emissive, "emissive",
-                                    material_name, gltf_path, base_directory, image_cache, image_sources);
+                                    material_name, gltf_path, image_cache, image_sources);
 
         if (!emissive_image) {
             return std::unexpected(emissive_image.error());
@@ -913,7 +912,7 @@ namespace {
 
 } // namespace
 
-auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorage &sampler_storage,
+auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_storage,
                                 std::shared_ptr<ModelLoadProfile> profile)
         -> std::expected<ModelCpuData, ModelLoadError> {
     ZoneScopedNC("LoadModelCpuUnfinalized", tracy::Color::Goldenrod);
@@ -922,7 +921,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
 
     ScopedProfileSample gltf_sample{profile_ptr != nullptr ? &profile_ptr->gltf_parse_ns : nullptr};
 
-    auto file_data = fastgltf::GltfDataBuffer::FromPath(path);
+    auto file_data = fastgltf::GltfDataBuffer::FromPath(path.absolute());
     if (!file_data) {
         return std::unexpected(ModelLoadError{
                 .type = ModelLoadErrorType::file_not_found,
@@ -935,7 +934,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
     // External images stay URIs: they are streamed from disk later, and eager loading fails the whole parse on
     // exporter paths that don't resolve here (e.g. the Bistro's backslash-separated "Textures\\x.dds").
     constexpr auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
-    auto const base_directory = path.parent_path();
+    auto const base_directory = path.absolute().parent_path();
     auto asset_result = parser.loadGltf(file_data.get(), base_directory, options);
     gltf_sample.stop();
 
@@ -966,7 +965,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
     for (auto const &gltf_material: asset.materials) {
         ScopedProfileSample const material_sample{profile_ptr != nullptr ? &profile_ptr->material_resolve_ns : nullptr};
 
-        auto material = load_material_cpu(asset, gltf_material, sampler_storage, path, base_directory, image_cache,
+        auto material = load_material_cpu(asset, gltf_material, sampler_storage, path, image_cache,
                                           cpu_data.image_sources, convention);
 
         if (!material) {
@@ -1040,7 +1039,7 @@ auto load_model_cpu_unfinalized(std::filesystem::path const &path, SamplerStorag
     return cpu_data;
 }
 
-auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_storage,
+auto load_model_cpu(AssetPath const &path, SamplerStorage &sampler_storage,
                     std::shared_ptr<ModelLoadProfile> profile) -> std::expected<ModelCpuData, ModelLoadError> {
     ZoneScopedNC("LoadModelCpu", tracy::Color::Goldenrod);
 
@@ -1067,7 +1066,7 @@ auto load_model_cpu(std::filesystem::path const &path, SamplerStorage &sampler_s
     return cpu_data;
 }
 
-auto load_model_cpu_async(std::filesystem::path path, SamplerStorage &sampler_storage,
+auto load_model_cpu_async(AssetPath path, SamplerStorage &sampler_storage,
                           std::shared_ptr<ModelLoadProfile> profile)
         -> std::future<std::expected<ModelCpuData, ModelLoadError>> {
     return thread_pool().submit_task([path = std::move(path), &sampler_storage, profile = std::move(profile)] {
@@ -1197,12 +1196,12 @@ auto start_model_gpu_upload(ModelCpuData cpu_data, ImageStorage &image_storage, 
                                                        source.debug_name, upload.cpu_data.profile);
             }
 
-            if (source.path.empty()) {
+            if (!source.path) {
                 return texture_streamer.request_from_memory(image_storage, source.encoded, role, source.cache_key,
                                                             fallback, source.debug_name, upload.cpu_data.profile);
             }
 
-            return texture_streamer.request(image_storage, source.path, role, fallback, source.debug_name,
+            return texture_streamer.request(image_storage, *source.path, role, fallback, source.debug_name,
                                             upload.cpu_data.profile);
         }();
 
@@ -1443,7 +1442,7 @@ auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer comma
     }
 }
 
-auto load_model(std::filesystem::path const &path, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
+auto load_model(AssetPath const &path, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
                 ImageStorage &image_storage, TextureStreamer &texture_streamer, SamplerStorage &sampler_storage,
                 MaterialStorage &material_storage) -> std::expected<Model, ModelLoadError> {
     ZoneScopedNC("LoadModel", tracy::Color::Goldenrod);

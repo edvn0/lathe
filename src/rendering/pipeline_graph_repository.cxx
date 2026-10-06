@@ -18,7 +18,7 @@ namespace {
 
     // Requests that differ only in their defines are different stages (and different shader binary cache entries).
     auto to_stage_key(renderer::ShaderCompileRequest const &request) -> std::string {
-        auto key = std::format("{}|{}|{}", to_lookup_key(request.source_path), request.entry_point,
+        auto key = std::format("{}|{}|{}", to_lookup_key(request.source_path.absolute()), request.entry_point,
                                static_cast<int>(std::to_underlying(request.stage)));
 
         for (auto const &define: request.defines) {
@@ -133,7 +133,7 @@ auto PipelineGraphRepository::find_or_create_source_file(std::filesystem::path c
 auto PipelineGraphRepository::link_stage_source_files(std::uint32_t stage_index) -> void {
     auto &stage = stage_nodes_[stage_index];
 
-    auto const file_index = find_or_create_source_file(stage.request.source_path);
+    auto const file_index = find_or_create_source_file(stage.request.source_path.absolute());
 
     stage.source_file_indices.push_back(file_index);
 
@@ -591,7 +591,7 @@ auto PipelineGraphRepository::process_dirty() -> void {
             auto compiled = Renderer::compiler().compile(stage.request);
 
             if (!compiled) {
-                error("Shader reload failed for {} ({}): {}", stage.request.source_path.string(),
+                error("Shader reload failed for {} ({}): {}", stage.request.source_path.logical(),
                       stage.request.entry_point, describe(compiled.error()));
 
                 all_stages_clean = false;

@@ -8,10 +8,12 @@ add_library(
         command_line.cxx
         error_describe.cxx
         fly_string.cxx
+        game_manifest.cxx
         human_readable_bytes.cxx
         json.cxx
         logger.cxx
         memory_tracker.cxx
+        paths.cxx
         random.cxx
         sha256.cxx
         thread_pool.cxx

@@ -186,9 +186,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     // is never sampled and a single-sample resolve target that is; without MSAA one image is both.
     auto hdr_image = frame_graph::ImageId{};
 
-    // The selected-object outline mask: a second colour target of the forward pass, only there on frames with an
-    // outlined submission. Single-sample (the resolve target under MSAA) is what the composition pass samples.
-    auto const outline_enabled = outline_active_;
+    // The selected-object outline mask: a second colour target of the forward pass, always there so selecting
+    // something doesn't change the graph. Single-sample (the resolve target under MSAA) is what the composition pass
+    // samples.
     auto outline_image = frame_graph::ImageId{};
     auto depth_image = frame_graph::ImageId{};
     auto resolved_depth_image = frame_graph::ImageId{};
@@ -953,7 +953,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 }
 
                 // After the HDR target, so it is colour attachment 1.
-                if (outline_enabled) {
+                {
                     if (multisampled) {
                         auto const outline_msaa = pass.color(
                                 pass.create(target_description(VK_FORMAT_R8_UNORM, samples_, false, "outline_msaa")),
@@ -983,7 +983,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             .colour_format = hdr_format_,
                             .depth_format = depth_format_,
                             .samples = samples_,
-                            .colour_attachment_count = outline_enabled ? 2U : 1U,
+                            .colour_attachment_count = 2U,
                     };
                     auto scene_overlays = [&] {
                         record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
@@ -1070,10 +1070,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const bloom =
                             pass.read(bloom_image, frame_graph::Use::sampled, fragment_stage);
                 }
-                if (outline_enabled) {
-                    [[maybe_unused]] auto const outline =
-                            pass.read(outline_image, frame_graph::Use::sampled, fragment_stage);
-                }
+                [[maybe_unused]] auto const outline = pass.read(outline_image, frame_graph::Use::sampled, fragment_stage);
                 if (fullscreen) {
                     swapchain = pass.color(swapchain, frame_graph::LoadOp::dont_care, frame_graph::StoreOp::store);
                     pass.render_area({.offset = {0, 0}, .extent = swapchain_image.extent});
@@ -1111,7 +1108,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                     .pipeline = composite_pipeline_,
                                     .exposure = 1.0F,
                                     .bloom_intensity = bloom_settings_.intensity,
-                                    .outline_texture_index = outline_enabled ? transient_index(outline_image) : 0U,
+                                    .outline_texture_index = transient_index(outline_image),
                                     .outline_thickness_pixels = outline_settings_.thickness_pixels,
                                     .outline_colour = outline_settings_.colour,
                             },
@@ -1268,9 +1265,12 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     }
     if (*allocated) {
         perf_events::record(PerfEvent::transient_allocation);
-        ::info("Frame graph transients: {:.1f} MiB for all frame slots, {:.1f} MiB without aliasing",
-               static_cast<double>(transient_allocator_.total_bytes()) / (1024.0 * 1024.0),
+        auto const total_bytes = transient_allocator_.total_bytes();
+        ::info("Frame graph transients: {:.1f} MiB for all frame slots ({:+.1f} MiB), {:.1f} MiB without aliasing",
+               static_cast<double>(total_bytes) / (1024.0 * 1024.0),
+               (static_cast<double>(total_bytes) - static_cast<double>(logged_transient_bytes_)) / (1024.0 * 1024.0),
                static_cast<double>(transient_allocator_.unaliased_bytes()) / (1024.0 * 1024.0));
+        logged_transient_bytes_ = total_bytes;
         if (auto const refreshed =
                     gpu_resource_table_.prepare_frame(info.frame_index, image_storage_, sampler_storage_);
             !refreshed) {

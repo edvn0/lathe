@@ -27,6 +27,12 @@
 #include "serialisation/cooked_texture.hxx"
 
 namespace {
+    // A source string from a scene file as an AssetPath. One that is empty or climbs out of the data root becomes a
+    // path that doesn't exist, so it fails to load with the usual "could not load" warning.
+    [[nodiscard]] auto asset_path_of(std::string const &source) -> AssetPath {
+        return AssetPath::from_serialised(source).value_or(AssetPath::missing());
+    }
+
 
     auto make_error(LbfErrorType type, std::string_view message,
                     std::source_location location = std::source_location::current()) -> LbfError {
@@ -122,7 +128,7 @@ namespace {
                 if (auto const *source = renderer_.model_source(handle); source != nullptr) {
                     reference = SceneAssetRef{
                             .id = asset_id_from_key(model_asset_key(*source)),
-                            .source = normalise_asset_path(*source),
+                            .source = source->key(),
                     };
                 }
             }
@@ -174,13 +180,13 @@ namespace {
 
             auto const *source = renderer_.texture_streamer().source_of(handle);
 
-            if (source == nullptr || source->path.empty()) {
+            if (source == nullptr || !source->path.has_value()) {
                 warn_once("a material uses a texture with no source file (embedded or generated); it's saved with "
                           "the default texture in that slot");
                 return scene_no_index;
             }
 
-            auto key = texture_asset_key(source->path, source->role);
+            auto key = texture_asset_key(*source->path, source->role);
             auto const id = asset_id_from_key(key);
 
             for (std::size_t index = 0; index < description.textures.size(); ++index) {
@@ -191,7 +197,7 @@ namespace {
 
             description.textures.push_back(SceneTextureRef{
                     .id = id,
-                    .source = normalise_asset_path(source->path),
+                    .source = source->path->key(),
                     .role = source->role,
             });
 
@@ -303,9 +309,9 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
 
     description.environment = scene.environment;
 
-    if (!description.environment.hdr_source.empty()) {
-        description.environment.hdr_source = normalise_asset_path(description.environment.hdr_source);
-        description.environment_id = asset_id_from_key(environment_asset_key(description.environment.hdr_source));
+    if (auto const hdr = AssetPath::from_serialised(description.environment.hdr_source)) {
+        description.environment.hdr_source = hdr->key();
+        description.environment_id = asset_id_from_key(environment_asset_key(*hdr));
     }
 
     // Ascending entity id, so captures of an unchanged registry produce identical bytes.
@@ -498,7 +504,7 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         }
 
         // Already loaded (e.g. reloading the scene): reuse it rather than uploading a second copy.
-        if (auto const cached = renderer.cached_model(reference.source); cached.valid()) {
+        if (auto const cached = renderer.cached_model(asset_path_of(reference.source)); cached.valid()) {
             renderer.retain_model(cached);
             models[index] = ResolvedModel{.handle = cached, .owned = true};
             ++report.models_reused;
@@ -528,11 +534,11 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
                             return std::move(*cpu_data);
                         });
 
-                handle = renderer.model_streamer().request_prepared(renderer, std::move(future), reference.source,
+                handle = renderer.model_streamer().request_prepared(renderer, std::move(future), asset_path_of(reference.source),
                                                                     engine_models.cube, debug_name);
                 ++report.models_from_packs;
             } else {
-                handle = renderer.model_streamer().request(renderer, reference.source, engine_models.cube, debug_name);
+                handle = renderer.model_streamer().request(renderer, asset_path_of(reference.source), engine_models.cube, debug_name);
                 ++report.models_from_source;
             }
 
@@ -569,7 +575,7 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
             continue;
         }
 
-        renderer.register_model_source(*handle, reference.source);
+        renderer.register_model_source(*handle, asset_path_of(reference.source));
         renderer.register_model_name(*handle, std::filesystem::path{reference.source}.filename().string());
 
         models[decode.index] = ResolvedModel{.handle = *handle, .owned = true};
@@ -584,7 +590,7 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         }
 
         auto const &source = description.models[index].source;
-        auto handle = renderer.load_model(source);
+        auto handle = renderer.load_model(asset_path_of(source));
 
         if (!handle) {
             report.warnings.push_back(std::format("could not load model '{}' ({}); using the engine cube", source,
@@ -643,13 +649,13 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
                                                                 debug_name);
             // So saving again references the source file rather than an anonymous cooked image.
             renderer.texture_streamer().set_source(handle, TextureStreamer::Source{
-                                                                   .path = reference.source,
+                                                                   .path = asset_path_of(reference.source),
                                                                    .role = reference.role,
                                                            });
             static_cast<void>(renderer.assets().textures().register_asset(std::string{debug_name.view()}, handle));
             ++report.textures_from_packs;
         } else {
-            handle = renderer.request_texture(reference.source, reference.role, fallback,
+            handle = renderer.request_texture(asset_path_of(reference.source), reference.role, fallback,
                                               std::string{debug_name.view()});
             ++report.textures_from_source;
         }
@@ -1048,17 +1054,19 @@ namespace {
 
             for (auto const &model: description.models) {
                 if (!model.source.starts_with(engine_asset_prefix)) {
-                    request.models.emplace_back(model.source);
+                    request.models.push_back(asset_path_of(model.source));
                 }
             }
 
             for (auto const &texture: description.textures) {
-                request.textures.push_back(AssetCookRequest::Texture{.path = texture.source, .role = texture.role});
+                request.textures.push_back(AssetCookRequest::Texture{.path = asset_path_of(texture.source), .role = texture.role});
             }
 
             if (description.environment.source == EnvironmentSource::hdr_image &&
                 !description.environment.hdr_source.empty()) {
-                request.environments.emplace_back(description.environment.hdr_source);
+                if (auto hdr = AssetPath::from_serialised(description.environment.hdr_source)) {
+                    request.environments.push_back(std::move(*hdr));
+                }
             }
 
             result.cook = cook_assets(request, sampler_storage, writer,

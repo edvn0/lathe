@@ -8,12 +8,15 @@ add_executable(
     lathe-tests
     EXCLUDE_FROM_ALL
     ${test_sources}
+    "${PROJECT_SOURCE_DIR}/game/src/chess_engine.cxx"
+    "${PROJECT_SOURCE_DIR}/game/src/chess_lua.cxx"
 )
 
 target_include_directories(
     lathe-tests
     PRIVATE
         "${PROJECT_SOURCE_DIR}/include"
+        "${PROJECT_SOURCE_DIR}/game/include"
 )
 
 target_compile_definitions(

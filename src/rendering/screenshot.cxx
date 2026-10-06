@@ -1,4 +1,5 @@
 #include "rendering/screenshot.hxx"
+#include "core/paths.hxx"
 
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
@@ -62,7 +63,13 @@ namespace {
         }
 
         std::error_code ec;
-        std::filesystem::create_directories("screenshots", ec);
+        auto const directory = Paths::current().screenshot("");
+
+        if (!directory) {
+            return;
+        }
+
+        std::filesystem::create_directories(directory->absolute(), ec);
 
         if (ec) {
             error("Screenshot: failed to create screenshot directory: {}", ec.message());
@@ -71,8 +78,10 @@ namespace {
 
         // Keeps several screenshots within one second from overwriting each other.
         static std::atomic<std::uint32_t> sequence{0};
-        auto const path = std::format("screenshots/screenshot_{}_{:03}.png", make_timestamp(),
-                                      sequence.fetch_add(1, std::memory_order_relaxed));
+        auto const path = screenshot_path(std::format("screenshot_{}_{:03}.png", make_timestamp(),
+                                                      sequence.fetch_add(1, std::memory_order_relaxed)))
+                                  .absolute()
+                                  .string();
 
         auto const row_pitch = static_cast<int>(extent.width) * 4;
 

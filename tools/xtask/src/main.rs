@@ -122,6 +122,54 @@ enum Task {
         args: Vec<OsString>,
     },
 
+    /// Build a self-contained, installable game directory (and tarball) from an engine game.
+    ///
+    /// Runs the game once on the host to record the shaders it compiles and the data files it opens, then stages
+    /// only those next to a renamed executable with a game.toml manifest, and smoke-tests the result. Use a
+    /// Release build: CMAKE_BUILD_TYPE=Release LATHE_ENABLE_VALIDATION=OFF cargo xtask package chess
+    Package {
+        /// The engine game to package (the --game name).
+        game: String,
+
+        /// Directory the package is written under (default: <build dir>/package).
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// The engine game to run, when it differs from the package name (default: the package name). A Lua game is
+        /// `--engine-game lua --script assets/scripts/<game>/main.lua`.
+        #[arg(long)]
+        engine_game: Option<String>,
+
+        /// The entry script of a Lua game, relative to the data directory.
+        #[arg(long)]
+        script: Option<String>,
+
+        /// GLFW key presses to make while recording, as FRAME:KEY,... (e.g. 100:257 presses Enter on frame 100), so
+        /// the run reaches the game's play state and its shaders are recorded.
+        #[arg(long)]
+        inject_keys: Option<String>,
+
+        /// Window title (default: the game name).
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Package version recorded in game.toml and the tarball name.
+        #[arg(long, default_value = "0.1.0")]
+        version: String,
+
+        /// Frames to run while recording shaders and assets. More frames reach more code paths.
+        #[arg(long, default_value_t = 240)]
+        frames: u32,
+
+        /// Skip the smoke test of the staged package.
+        #[arg(long)]
+        no_verify: bool,
+
+        /// Skip creating the .tar.gz.
+        #[arg(long)]
+        no_tarball: bool,
+    },
+
     /// Run the executable under the selected profiler on the host.
     Profile {
         /// Arguments passed to the executable.
@@ -484,6 +532,16 @@ impl Config {
     }
 
     fn tidy(&self, extra_args: &[OsString]) -> Result<()> {
+        // Source must locate files through Paths, not the working directory.
+        let status = std::process::Command::new("python3")
+            .arg(self.project_dir.join("tools/check_paths.py"))
+            .status()
+            .context("running tools/check_paths.py")?;
+
+        if !status.success() {
+            bail!("tools/check_paths.py found cwd-relative paths");
+        }
+
         // Some sources include headers generated during the build.
         self.build()?;
 
@@ -582,6 +640,162 @@ impl Config {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn package(
+        &self,
+        game: &str,
+        engine_game: Option<&str>,
+        script: Option<&str>,
+        inject_keys: Option<&str>,
+        out: Option<PathBuf>,
+        title: Option<String>,
+        version: &str,
+        frames: u32,
+        verify: bool,
+        tarball: bool,
+    ) -> Result<()> {
+        self.build()?;
+
+        let bin_dir = self.project_dir.join(&self.build_dir).join("bin");
+        let executable = bin_dir.join(&self.executable_name);
+
+        let out_root = out.unwrap_or_else(|| self.project_dir.join(&self.build_dir).join("package"));
+        let stage = out_root.join(game);
+        let data = stage.join("data");
+        let scratch = out_root.join(format!(".{game}-record"));
+
+        for directory in [&stage, &scratch] {
+            if directory.exists() {
+                fs::remove_dir_all(directory)
+                    .with_context(|| format!("failed to clear {}", directory.display()))?;
+            }
+        }
+
+        fs::create_dir_all(&data)?;
+        fs::create_dir_all(&scratch)?;
+
+        let shaders = scratch.join("shaders.lsp");
+        let assets = scratch.join("assets.txt");
+
+        println!("Recording shaders and data files over {frames} frames...");
+
+        let engine_game = engine_game.unwrap_or(game);
+
+        // The build directory is a development data root: assets/ sits next to the executable. --player records the
+        // path an installed game takes (fullscreen play, no editor).
+        let mut recording = Command::new(&executable);
+
+        recording
+            .current_dir(&bin_dir)
+            .args(["--game", engine_game, "--player", "--exit-after-frames"])
+            .arg(frames.to_string());
+
+        if let Some(script) = script {
+            recording.args(["--script", script]);
+        }
+
+        if let Some(keys) = inject_keys {
+            recording.args(["--inject-keys", keys]);
+        }
+
+        run_checked(
+            recording
+                .arg("--record-shaders")
+                .arg(&shaders)
+                .arg("--record-assets")
+                .arg(&assets),
+        )
+        .context("the recording run failed (it needs a GPU and a display)")?;
+
+        let list = fs::read_to_string(&assets)
+            .with_context(|| format!("failed to read {}", assets.display()))?;
+
+        let mut copied = 0_usize;
+
+        for relative in list.lines().filter(|line| !line.is_empty()) {
+            // Shaders ship precompiled in shaders.lsp, so their sources stay behind.
+            if relative.starts_with("assets/shaders/") {
+                continue;
+            }
+
+            let source = bin_dir.join(relative);
+
+            copy_into(&source, &data.join(relative))?;
+            copied += 1;
+
+            // A .gltf references sidecar buffers and textures that no AssetPath names.
+            if source.extension() == Some(OsStr::new("gltf"))
+                && let Some(directory) = source.parent()
+            {
+                for entry in fs::read_dir(directory)? {
+                    let path = entry?.path();
+
+                    if path.is_file()
+                        && let Some(name) = path.file_name()
+                    {
+                        let target = data.join(relative).with_file_name(name);
+
+                        if !target.exists() {
+                            copy_into(&path, &target)?;
+                            copied += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        fs::copy(&shaders, data.join("shaders.lsp")).context("failed to stage the shader pack")?;
+
+        let mut manifest = format!(
+            "name = \"{game}\"\ntitle = \"{}\"\ngame = \"{engine_game}\"\nversion = \"{version}\"\n",
+            title.as_deref().unwrap_or(game)
+        );
+
+        if let Some(script) = script {
+            manifest.push_str(&format!("entry = \"{script}\"\n"));
+        }
+
+        fs::write(data.join("game.toml"), manifest)?;
+        fs::copy(&executable, stage.join(game)).context("failed to stage the executable")?;
+        fs::remove_dir_all(&scratch)?;
+
+        println!(
+            "Staged {} ({copied} data files + shader pack) in {}",
+            game,
+            stage.display()
+        );
+
+        if verify {
+            println!("Smoke-testing the package from an unrelated directory...");
+
+            run_checked(
+                Command::new(stage.join(game))
+                    .current_dir(env::temp_dir())
+                    .args(["--exit-after-frames", "60"]),
+            )
+            .context("the staged package failed to run")?;
+        }
+
+        if tarball {
+            let archive = out_root.join(format!("{game}-{version}.tar.gz"));
+
+            run_checked(
+                Command::new("tar")
+                    .arg("-C")
+                    .arg(&out_root)
+                    .arg("-czf")
+                    .arg(&archive)
+                    .arg(game),
+            )?;
+
+            println!("Wrote {}", archive.display());
+        }
+
+        println!("Run it with: {}", stage.join(game).display());
+
+        Ok(())
+    }
+
     fn update_compile_commands_link(&self) -> Result<()> {
         let source = self
             .project_dir
@@ -677,6 +891,17 @@ fn is_executable(path: &Path) -> bool {
     metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
 }
 
+fn copy_into(source: &Path, target: &Path) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::copy(source, target)
+        .with_context(|| format!("failed to copy {} to {}", source.display(), target.display()))?;
+
+    Ok(())
+}
+
 fn run_checked(command: &mut Command) -> Result<()> {
     let description = format!("{command:?}");
 
@@ -703,6 +928,29 @@ fn main() -> Result<()> {
         Task::Shell => config.shell(),
         Task::Test { args } => config.test(&args),
         Task::Tidy { args } => config.tidy(&args),
+        Task::Package {
+            game,
+            engine_game,
+            script,
+            inject_keys,
+            out,
+            title,
+            version,
+            frames,
+            no_verify,
+            no_tarball,
+        } => config.package(
+            &game,
+            engine_game.as_deref(),
+            script.as_deref(),
+            inject_keys.as_deref(),
+            out,
+            title,
+            &version,
+            frames,
+            !no_verify,
+            !no_tarball,
+        ),
         Task::Profile { args } => config.profile(&args),
     }
 }

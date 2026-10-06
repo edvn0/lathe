@@ -1,6 +1,7 @@
 #include <volk.h>
 
 #include "rendering/imgui_renderer.hxx"
+#include "core/paths.hxx"
 
 #include <backends/imgui_impl_glfw.h>
 #include <misc/freetype/imgui_freetype.h>
@@ -141,12 +142,12 @@ namespace gui {
                     .stages =
                             {
                                     renderer::ShaderCompileRequest{
-                                            .source_path = "assets/shaders/gui.slang",
+                                            .source_path = data_path("assets/shaders/gui.slang"),
                                             .entry_point = FlyString{"main_vs"},
                                             .stage = renderer::ShaderStage::vertex,
                                     },
                                     renderer::ShaderCompileRequest{
-                                            .source_path = "assets/shaders/gui.slang",
+                                            .source_path = data_path("assets/shaders/gui.slang"),
                                             .entry_point = FlyString{"main_fs"},
                                             .stage = renderer::ShaderStage::fragment,
                                     },
@@ -174,6 +175,8 @@ namespace gui {
         apply_dark_theme();
 
         ImGuiIO &io = ImGui::GetIO();
+        config_name = state_path("imgui.ini").absolute().string();
+        io.IniFilename = config_name.c_str();
         io.BackendRendererName = "imgui-custom-vulkan";
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 
@@ -450,7 +453,7 @@ namespace gui {
     }
 
     auto ImGuiRenderer::set_app_name(const std::string_view name) -> void {
-        config_name = std::format("{}.ini", name);
+        config_name = state_path(std::format("{}.ini", name)).absolute().string();
         config_path = std::make_unique<std::filesystem::path>(config_name);
     }
 

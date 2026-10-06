@@ -8,12 +8,9 @@
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
 
-auto ModelStreamer::reserve(IModelSink &sink, std::filesystem::path const &source_path, ModelHandle fallback,
+auto ModelStreamer::reserve(IModelSink &sink, AssetPath const &source_path, ModelHandle fallback,
                             std::string_view debug_name) -> Reservation {
-    std::error_code canonicalize_error;
-    auto const canonical_path = std::filesystem::weakly_canonical(source_path, canonicalize_error);
-    auto const &cache_key_path = canonicalize_error ? source_path : canonical_path;
-    std::size_t const path_hash = std::filesystem::hash_value(cache_key_path);
+    std::size_t const path_hash = std::hash<std::string>{}(source_path.key());
 
     if (auto it = path_cache_.find(path_hash); it != path_cache_.end()) {
         debug("model_streamer: '{}' already loaded, reusing its model handle", debug_name);
@@ -36,7 +33,7 @@ auto ModelStreamer::reserve(IModelSink &sink, std::filesystem::path const &sourc
     return Reservation{.handle = *pending_handle, .path_hash = path_hash};
 }
 
-auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path, ModelHandle fallback,
+auto ModelStreamer::request(IModelSink &sink, AssetPath source_path, ModelHandle fallback,
                             FlyString debug_name) -> ModelHandle {
     auto const reservation = reserve(sink, source_path, fallback, debug_name.view());
 
@@ -62,7 +59,7 @@ auto ModelStreamer::request(IModelSink &sink, std::filesystem::path source_path,
 
 auto ModelStreamer::request_prepared(IModelSink &sink,
                                      std::future<std::expected<ModelCpuData, ModelLoadError>> cpu_data,
-                                     std::filesystem::path source_path, ModelHandle fallback,
+                                     AssetPath source_path, ModelHandle fallback,
                                      FlyString debug_name) -> ModelHandle {
     auto const reservation = reserve(sink, source_path, fallback, debug_name.view());
 

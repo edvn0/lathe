@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "assets/asset_registry.hxx"
+#include "core/paths.hxx"
 #include "assets/geometry_arena.hxx"
 #include "assets/load_model.hxx"
 #include "assets/material_storage.hxx"
@@ -350,7 +351,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto destroy() noexcept -> void;
 
     [[nodiscard]]
-    auto load_model(std::filesystem::path const &path) -> std::expected<ModelHandle, RendererError>;
+    auto load_model(AssetPath const &path) -> std::expected<ModelHandle, RendererError>;
 
     // Reserves a handle that renders as `fallback` until install_model() installs the real model.
     [[nodiscard]]
@@ -370,15 +371,15 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto register_model_name(ModelHandle handle, std::string_view name) -> void override;
 
     // Also seeds load_model()'s cache, so loading `source` again returns `handle` (with a new reference).
-    auto register_model_source(ModelHandle handle, std::filesystem::path const &source) -> void override;
+    auto register_model_source(ModelHandle handle, AssetPath const &source) -> void override;
 
     // The model load_model(`source`) would return from its cache, without taking a reference; invalid if none.
     [[nodiscard]]
-    auto cached_model(std::filesystem::path const &source) const -> ModelHandle;
+    auto cached_model(AssetPath const &source) const -> ModelHandle;
 
     // The file a model was loaded from; nullptr for procedural models and handles that aren't live.
     [[nodiscard]]
-    auto model_source(ModelHandle handle) const noexcept -> std::filesystem::path const *;
+    auto model_source(ModelHandle handle) const noexcept -> AssetPath const *;
 
     // Drops a reference; the last one destroys the model's meshes, evicts it from the model caches and frees its
     // slot.
@@ -639,7 +640,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     // texture_streamer().request() plus registering `debug_name` in assets().textures().
     [[nodiscard]]
-    auto request_texture(std::filesystem::path source_path, TextureRole role, ImageHandle fallback,
+    auto request_texture(AssetPath source_path, TextureRole role, ImageHandle fallback,
                          std::string debug_name) -> ImageHandle;
 
     [[nodiscard]] auto resolve_pipeline(PipelineNodeHandle handle) const noexcept -> ShaderObjectSet const * {
@@ -1495,9 +1496,6 @@ private:
     };
     std::vector<OutlineVariant> outline_variants_;
 
-    // Whether any submission this frame was outlined, which is when the forward pass gets its second target.
-    bool outline_active_ = false;
-
     [[nodiscard]] auto outline_variant(MaterialHandle source) -> MaterialHandle;
     auto prune_outline_variants() -> void;
     AoSettings ao_settings_;
@@ -1560,7 +1558,7 @@ private:
     std::unordered_map<std::size_t, ModelHandle> model_cache_;
 
     // Keyed by (generation << 32 | index).
-    std::unordered_map<std::uint64_t, std::filesystem::path> model_sources_;
+    std::unordered_map<std::uint64_t, AssetPath> model_sources_;
 
     std::vector<Submission> submissions_;
     std::vector<ModelSubmission> model_submissions_;
@@ -1613,6 +1611,7 @@ private:
     bool transient_aliasing_ = true;
     std::uint32_t async_candidates_ = 0;
     std::uint64_t logged_plan_misses_ = 0;
+    std::uint64_t logged_transient_bytes_ = 0;
     bool dump_frame_graph_ = false;
     std::string frame_graph_dot_path_;
 

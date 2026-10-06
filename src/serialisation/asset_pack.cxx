@@ -45,8 +45,8 @@ namespace {
 
     [[nodiscard]] auto image_asset_id(ModelCpuImageSource const &source) -> AssetId {
         auto const role = texture_role_for(source.slot);
-        auto const key = source.path.empty() ? embedded_texture_asset_key(source.cache_key, role)
-                                             : texture_asset_key(source.path, role);
+        auto const key = !source.path ? embedded_texture_asset_key(source.cache_key, role)
+                                              : texture_asset_key(*source.path, role);
         return asset_id_from_key(key);
     }
 
@@ -79,7 +79,7 @@ namespace {
 
     struct TextureJob {
         AssetId id;
-        std::filesystem::path path; // or
+        std::optional<AssetPath> path; // or
         std::vector<std::byte> encoded;
         std::string cache_key;
         TextureRole role = TextureRole::colour;
@@ -88,7 +88,7 @@ namespace {
 
     struct ParsedModel {
         AssetId id;
-        std::filesystem::path source;
+        AssetPath source;
         ModelCpuData cpu_data;
     };
 
@@ -333,7 +333,7 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
 
         if (!result) {
             report.failures.push_back(
-                    std::format("model '{}': {}", parsed[index].source.string(), describe(result.error())));
+                    std::format("model '{}': {}", parsed[index].source.key(), describe(result.error())));
             continue;
         }
 
@@ -359,7 +359,7 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
                 .id = asset_id_from_key(texture_asset_key(texture.path, texture.role)),
                 .path = texture.path,
                 .role = texture.role,
-                .debug_name = FlyString{texture.path.filename().string()},
+                .debug_name = FlyString{texture.path.absolute().filename().string()},
         });
     }
 
@@ -373,15 +373,15 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
     std::vector<std::future<TextureResult>> texture_tasks;
 
     for (auto &[id, job]: texture_jobs) {
-        if (job.path.empty() && job.encoded.empty()) {
+        if (!job.path && job.encoded.empty()) {
             report.failures.push_back(std::format("texture {}: not in any source pack and no source to cook from", id));
             continue;
         }
 
         texture_tasks.push_back(pool.submit_task([job = std::move(job), directory = options.texture_cache_directory] {
-            auto texture = job.path.empty() ? load_compressed_texture_from_encoded_memory(job.encoded, job.role,
+            auto texture = !job.path ? load_compressed_texture_from_encoded_memory(job.encoded, job.role,
                                                                                           job.cache_key, directory)
-                                            : load_compressed_texture(job.path, job.role, directory);
+                                            : load_compressed_texture(*job.path, job.role, directory);
 
             if (!texture) {
                 return TextureResult{.id = job.id,
@@ -437,13 +437,13 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
             }
 
             environment_tasks.push_back(pool.submit_task([id, path] {
-                auto image = load_hdr_image(path.string());
+                auto image = load_hdr_image(path.absolute().string());
 
                 if (!image) {
-                    return EnvironmentResult{.id = id, .path = path.string(), .payload = std::unexpected(image.error().message)};
+                    return EnvironmentResult{.id = id, .path = path.key(), .payload = std::unexpected(image.error().message)};
                 }
 
-                return EnvironmentResult{.id = id, .path = path.string(), .payload = encode_cooked_environment(*image)};
+                return EnvironmentResult{.id = id, .path = path.key(), .payload = encode_cooked_environment(*image)};
             }));
         }
 
@@ -498,7 +498,7 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
 
         if (!payload) {
             report.failures.push_back(
-                    std::format("model '{}': {}", ready_models[index].source.string(), describe(payload.error())));
+                    std::format("model '{}': {}", ready_models[index].source.key(), describe(payload.error())));
             continue;
         }
 

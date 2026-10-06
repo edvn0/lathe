@@ -1,3 +1,5 @@
+#include <fstream>
+#include <charconv>
 #include <csignal>
 #include <memory>
 #include <print>
@@ -17,6 +19,7 @@
 #include <cstdlib>
 #include <expected>
 #include <filesystem>
+#include <fstream>
 #include <format>
 #include <future>
 #include <glm/ext/matrix_transform.hpp>
@@ -32,6 +35,8 @@
 #include <entt/entt.hpp>
 
 #include "app/application.hxx"
+#include "core/game_manifest.hxx"
+#include "core/paths.hxx"
 #include "app/benchmark.hxx"
 #include "app/benchmark_compare.hxx"
 #include "app/benchmark_driver.hxx"
@@ -39,6 +44,7 @@
 #include "app/frame_clock.hxx"
 #include "app/game.hxx"
 #include "assets/shader_hot_reload_watcher.hxx"
+#include "assets/shader_pack.hxx"
 #include "core/allocator.hxx"
 #include "core/config.hxx"
 #include "core/command_line.hxx"
@@ -719,6 +725,14 @@ namespace {
 
     struct EngineArguments {
         explicit EngineArguments(CommandLine &cli) {
+            auto packaging = cli.group("Packaging");
+            packaging.value("--shader-pack", "FILE.lsp", "Precompiled shaders to use (default: shaders.lsp in the data directory)", shader_pack);
+            packaging.value("--record-shaders", "FILE.lsp", "Write every shader this run compiles to a shader pack, then exit", record_shaders);
+            packaging.value("--record-assets", "FILE.txt", "Write the data files this run opened to a list, then exit", record_assets);
+            packaging.value("--screenshot-frame", "N", "Save a screenshot on frame N (see the screenshots directory)", screenshot_frame);
+            packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120", inject_keys);
+            packaging.value("--exit-after-frames", "N", "Exit after N frames (0: run until closed)", exit_after_frames);
+            cli.group("Paths").value("--data-dir", "DIR", "Game data directory (default: an installed game's data/, else the working directory)", data_dir);
             auto display = cli.group("Display");
             display.choice<ScreenType>("--screen-type", "Window mode (default fullscreen)", screen_type_choices,
                                        screen_type);
@@ -799,6 +813,8 @@ namespace {
                               frame_graph_dot);
 
             auto game_group = cli.group("Game");
+            game_group.value("--script", "FILE.lua", "Entry script of a Lua game (--game lua), relative to the data directory", script);
+            game_group.flag("--player", "Run as an installed game would: fullscreen play, no editor", player);
             game_group.option("--game", "NAME", game_help(),
                               [this](std::string_view text) -> std::expected<void, std::string> {
                                   auto const names = game_names();
@@ -840,6 +856,15 @@ namespace {
         bool dump_frame_graph = false;
         std::string frame_graph_dot;
         std::string game;
+        std::string data_dir;
+        std::string script;
+        bool player = false;
+        std::string shader_pack;
+        std::string record_shaders;
+        std::string record_assets;
+        std::uint32_t exit_after_frames = 0;
+        std::uint32_t screenshot_frame = 0;
+        std::string inject_keys;
         std::optional<std::filesystem::path> open_scene;
         std::optional<std::filesystem::path> save_scene;
     };
@@ -876,7 +901,41 @@ auto main(int argc, char **argv) -> int {
         return run_benchmark_compare(*compare_options);
     }
 
-    info("Starting GLFW Vulkan test at {}", std::filesystem::current_path().string());
+    Paths::set_current(Paths::resolve({.data_dir = engine.data_dir.empty() ? std::nullopt : std::optional{std::filesystem::path{engine.data_dir}}}));
+    // An installed game carries data/game.toml, which makes the engine a player of that game.
+    std::optional<GameManifest> manifest;
+
+    if (auto const manifest_path = Paths::current().data_root() / "game.toml"; std::filesystem::exists(manifest_path)) {
+        if (auto loaded = GameManifest::load(manifest_path)) {
+            manifest = std::move(*loaded);
+        } else {
+            error("Ignoring game manifest: {}", loaded.error());
+        }
+    }
+
+    auto const player_mode = manifest.has_value() || engine.player;
+
+    if (!engine.record_assets.empty()) {
+        Paths::start_access_recording();
+    }
+
+    if (!engine.record_shaders.empty()) {
+        renderer::start_shader_recording();
+    } else {
+        auto const pack_path = engine.shader_pack.empty() ? Paths::current().data_root() / "shaders.lsp"
+                                                          : std::filesystem::path{engine.shader_pack};
+
+        if (std::filesystem::exists(pack_path)) {
+            if (auto pack = renderer::ShaderPack::load(pack_path)) {
+                info("Using {} precompiled shaders from '{}'", pack->size(), pack_path.string());
+                renderer::install_shader_pack(std::make_shared<renderer::ShaderPack const>(std::move(*pack)));
+            } else {
+                error("Ignoring shader pack: {}", pack.error());
+            }
+        }
+    }
+
+    info("Starting GLFW Vulkan test, data directory {}", Paths::current().data_root().string());
 
     std::signal(SIGINT, ctrl_c_handler);
 
@@ -955,7 +1014,20 @@ auto main(int argc, char **argv) -> int {
     }
 
     Application application{context};
-    application.game = create_game(engine.game.empty() ? game_names().front() : std::string_view{engine.game});
+    application.player_mode = player_mode;
+    application.game = create_game(!engine.game.empty() ? std::string_view{engine.game}
+                                   : manifest           ? std::string_view{manifest->game}
+                                                        : game_names().front());
+
+    application.game->attach_host(GameHost{
+            .player_mode = player_mode,
+            .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
+            .script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{},
+    });
+
+    if (manifest && !manifest->title.empty()) {
+        glfwSetWindowTitle(context.window, manifest->title.c_str());
+    }
     install_window_callbacks(context, application);
 
     if (!initialize_application(context, application)) {
@@ -1000,6 +1072,14 @@ auto main(int argc, char **argv) -> int {
     }
 
     application.on_startup();
+
+    // Queued behind on_startup()'s populate, so the runtime scene is cloned from the game's populated one.
+    if (player_mode) {
+        application.renderer->queue_render_thread_event([&application] {
+            application.play_fullscreen = true;
+            application.play();
+        });
+    }
 
     // Queued behind on_startup()'s populate, so they act on the game's scene once it exists. --scene opens a saved
     // one in place of the game's; --save-scene then cooks whichever scene is open into a self-contained .lbf (handy
@@ -1048,9 +1128,46 @@ auto main(int argc, char **argv) -> int {
     auto last_frame_time = std::chrono::steady_clock::now();
     auto exit_code = EXIT_SUCCESS;
 
+    std::uint32_t frames_run = 0;
+
+    // --inject-keys: "frame:key" pairs, for scripted runs and screenshots.
+    std::vector<std::pair<std::uint32_t, int>> injected_keys;
+
+    for (auto const item: CommandLine::split(engine.inject_keys, ',')) {
+        auto const colon = item.find(':');
+
+        if (colon == std::string_view::npos) {
+            continue;
+        }
+
+        std::uint32_t frame = 0;
+        int key = 0;
+
+        std::from_chars(item.data(), item.data() + colon, frame);
+        std::from_chars(item.data() + colon + 1, item.data() + item.size(), key);
+
+        injected_keys.emplace_back(frame, key);
+    }
+
     while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire) &&
            glfwWindowShouldClose(context.window) != GLFW_TRUE) {
         ZoneScopedNC("MainLoop", tracy::Color::Gray);
+
+        auto const frame_number = frames_run++;
+
+        if (engine.exit_after_frames != 0 && frame_number >= engine.exit_after_frames) {
+            break;
+        }
+
+        if (engine.screenshot_frame != 0 && frame_number == engine.screenshot_frame) {
+            application.request_screenshot();
+        }
+
+        for (auto const &[frame, key]: injected_keys) {
+            if (frame == frame_number) {
+                application.on_event(KeyPressedEvent{.key = key, .modifiers = 0});
+            }
+        }
 
         frame_clock.begin_frame();
 
@@ -1195,6 +1312,31 @@ auto main(int argc, char **argv) -> int {
     }
 
     context.running.store(false, std::memory_order_release);
+
+    if (!engine.record_shaders.empty()) {
+        if (auto const saved = renderer::finish_shader_recording(engine.record_shaders)) {
+            info("Recorded {} shaders to '{}'", *saved, engine.record_shaders);
+        } else {
+            error("Could not write the shader pack: {}", saved.error());
+            exit_code = EXIT_FAILURE;
+        }
+    }
+
+    if (!engine.record_assets.empty()) {
+        std::ofstream list{engine.record_assets, std::ios::trunc};
+        auto const files = Paths::finish_access_recording();
+
+        for (auto const &file: files) {
+            list << file << '\n';
+        }
+
+        if (list) {
+            info("Recorded {} data files to '{}'", files.size(), engine.record_assets);
+        } else {
+            error("Could not write '{}'", engine.record_assets);
+            exit_code = EXIT_FAILURE;
+        }
+    }
 
     if (context.device_lost.load(std::memory_order_acquire)) {
         exit_code = EXIT_FAILURE;

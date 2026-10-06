@@ -1,4 +1,5 @@
 #include "rendering/debug_renderer.hxx"
+#include "core/paths.hxx"
 
 #include <btBulletDynamicsCommon.h>
 
@@ -77,12 +78,12 @@ namespace debug_draw {
                     .stages =
                             {
                                     renderer::ShaderCompileRequest{
-                                            .source_path = "assets/shaders/debug_draw.slang",
+                                            .source_path = data_path("assets/shaders/debug_draw.slang"),
                                             .entry_point = FlyString{"main_vs"},
                                             .stage = renderer::ShaderStage::vertex,
                                     },
                                     renderer::ShaderCompileRequest{
-                                            .source_path = "assets/shaders/debug_draw.slang",
+                                            .source_path = data_path("assets/shaders/debug_draw.slang"),
                                             .entry_point = FlyString{"main_fs"},
                                             .stage = renderer::ShaderStage::fragment,
                                     },

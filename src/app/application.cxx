@@ -1,4 +1,5 @@
 #include "app/application.hxx"
+#include "core/paths.hxx"
 
 #include <csignal>
 #include <memory>
@@ -452,6 +453,10 @@ Application::~Application() {
 auto Application::on_ui(std::uint32_t frame_index) -> void {
     // Must match the CompositeTarget main.cxx passes to Renderer::record_frame.
     if (is_playing && play_fullscreen) {
+        if (player_mode && game && game_hooks_enabled) {
+            game->on_ui(*active_scene(), *renderer);
+        }
+
         gui::render_toasts();
         return;
     }
@@ -748,10 +753,11 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         static constexpr std::array<std::string_view, 2> model_extensions{".gltf", ".glb"};
         draw_file_backed_section(
-                "Models", "assets/models", model_extensions, assets.models(),
+                "Models", data_path("assets/models").absolute(), model_extensions, assets.models(),
                 [&](std::filesystem::path const &path, std::string const &name) {
                     static_cast<void>(
-                            renderer->model_streamer().request(*renderer, path, engine_models.cube, FlyString{name}));
+                            renderer->model_streamer().request(*renderer, AssetPath::from_user(path).value_or(AssetPath::missing()),
+                                                      engine_models.cube, FlyString{name}));
                 },
                 draw_bullet_entry);
 
@@ -772,9 +778,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         static constexpr std::array<std::string_view, 3> texture_extensions{".png", ".jpg", ".jpeg"};
         draw_file_backed_section(
-                "Textures", "assets/textures", texture_extensions, assets.textures(),
+                "Textures", data_path("assets/textures").absolute(), texture_extensions, assets.textures(),
                 [&](std::filesystem::path const &path, std::string const &name) {
-                    static_cast<void>(renderer->request_texture(path, TextureRole::colour,
+                    static_cast<void>(renderer->request_texture(AssetPath::from_user(path).value_or(AssetPath::missing()), TextureRole::colour,
                                                                 renderer->image_storage().white(), name));
                 },
                 draw_texture_entry);
@@ -2428,7 +2434,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 if (registry.valid(model_browse_entity) && registry.all_of<Components::Model>(model_browse_entity)) {
                     // request() returns a reference for us, which set_entity_model() hands to the entity.
                     auto const model = renderer->model_streamer().request(
-                            *renderer, *picked, engine_models.cube, FlyString{gui::path_to_utf8(picked->filename())});
+                            *renderer, AssetPath::from_user(*picked).value_or(AssetPath::missing()), engine_models.cube, FlyString{gui::path_to_utf8(picked->filename())});
                     set_entity_model(registry, model_browse_entity, model);
                 }
                 break;
@@ -2443,7 +2449,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
 auto Application::spawn_streamed_model(std::filesystem::path const &path) -> void {
     auto file_name = gui::path_to_utf8(path.filename());
-    auto const model = renderer->model_streamer().request(*renderer, path, engine_models.cube, FlyString{file_name});
+    auto const model = renderer->model_streamer().request(*renderer, AssetPath::from_user(path).value_or(AssetPath::missing()),
+                                                       engine_models.cube, FlyString{file_name});
 
     auto entity = Entity{active_scene(), gui::path_to_utf8(path.stem())};
     entity.emplace<Components::Transform>();
@@ -2718,14 +2725,15 @@ auto Application::register_overlays() -> void {
 auto Application::on_startup() -> void {
 
     std::array const shader_directories{
-            std::filesystem::path{"assets/shaders"},
+            data_path("assets/shaders").absolute(),
     };
-    if (!shader_watcher_.start(renderer->shader_change_queue(), shader_directories)) {
+    // An installed game has no shader sources to watch.
+    if (!player_mode && !shader_watcher_.start(renderer->shader_change_queue(), shader_directories)) {
         error("Shader hot-reload watcher failed to start -- shaders will not live-reload this run");
     }
     imgui_renderer = std::make_unique<gui::ImGuiRenderer>(
             *renderer, gui::FontChoice{
-                               .font_path = "assets/fonts/GoogleSansCode-Regular.ttf",
+                               .font_path = data_path("assets/fonts/GoogleSansCode-Regular.ttf").absolute().string(),
                                .size = 12,
                        });
     editor_icons = std::make_unique<gui::EditorIcons>(*renderer);
@@ -2806,8 +2814,11 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
                 return true;
             }
 
-            stop();
-            return true;
+            // An installed game owns Escape (its pause menu); the engine has no editor to return to.
+            if (!player_mode) {
+                stop();
+                return true;
+            }
         }
 
         game->on_key_pressed(*active_scene(), ev);

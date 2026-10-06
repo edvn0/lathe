@@ -407,13 +407,14 @@ CPMAddPackage(
     DOWNLOAD_ONLY YES
 )
 
-# The core plus only the libraries the sandbox opens. io/os/package(loadlib)/debug/coroutine/utf8 and linit.c
-# (which references all of them) are not in the binary at all. lua.c, onelua.c and ltests.c are front ends/tests.
+# The core plus only the libraries the sandboxes open (ScriptEngine: base, string, table, math; LuaRuntime for game
+# scripts adds coroutine and utf8). io/os/package(loadlib)/debug and linit.c (which references all of them) are not in
+# the binary at all. lua.c, onelua.c and ltests.c are front ends/tests.
 set(
     lathe_lua_sources
     lapi.c lcode.c lctype.c ldebug.c ldo.c ldump.c lfunc.c lgc.c llex.c lmem.c lobject.c lopcodes.c
     lparser.c lstate.c lstring.c ltable.c ltm.c lundump.c lvm.c lzio.c
-    lauxlib.c lbaselib.c lstrlib.c ltablib.c lmathlib.c
+    lauxlib.c lbaselib.c lstrlib.c ltablib.c lmathlib.c lcorolib.c lutf8lib.c
 )
 list(TRANSFORM lathe_lua_sources PREPEND "${lua_SOURCE_DIR}/")
 
@@ -986,10 +987,14 @@ set(
     assets
 )
 
+# A target of its own rather than a POST_BUILD step on lathe, so editing a script or a shader reaches the build
+# directory without relinking the executable. copy_directory_if_different keeps an up-to-date tree cheap.
+add_custom_target(lathe_assets ALL)
+
 foreach(asset_directory IN LISTS project_asset_directories)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${asset_directory}")
     add_custom_command(
-        TARGET lathe
+        TARGET lathe_assets
         POST_BUILD
         COMMAND
             "${CMAKE_COMMAND}" -E copy_directory_if_different
@@ -999,6 +1004,8 @@ foreach(asset_directory IN LISTS project_asset_directories)
     )
   endif()
 endforeach()
+
+add_dependencies(lathe_assets lathe)
 
 # ------------------------------------------------------------------------------
 # Tests

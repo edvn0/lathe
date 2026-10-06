@@ -2,7 +2,9 @@
 
 #include <glm/mat4x4.hpp>
 
+#include <functional>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "rendering/engine_models.hxx"
@@ -35,11 +37,26 @@ struct CameraParams {
     float vertical_fov_radians = 1.0F;
 };
 
+// What the engine offers a game that runs as an installed player.
+struct GameHost {
+    // True when the engine is an installed player: the game owns its menus, and nothing else can leave play.
+    bool player_mode = false;
+
+    // Asks the engine to close the window and exit.
+    std::function<void()> request_exit;
+
+    // The entry script of a Lua game, relative to the data directory; empty means assets/scripts/main.lua.
+    std::string script_entry;
+};
+
 // The interface the engine drives. Application hands in the active Scene on each call; games change levels by
 // clearing and repopulating it.
 class IGame {
 public:
     virtual ~IGame() = default;
+
+    // Called once, before on_populate().
+    virtual auto attach_host(GameHost host) -> void { (void) host; }
 
     // Called at startup and on Ctrl+R to rebuild the editor scene. Ctrl+R stops play first, so it never runs while a
     // runtime scene is alive.

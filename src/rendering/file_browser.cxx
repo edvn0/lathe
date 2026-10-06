@@ -1,4 +1,5 @@
 #include "rendering/file_browser.hxx"
+#include "core/paths.hxx"
 
 #include <imgui.h>
 
@@ -80,7 +81,7 @@ namespace gui {
 
         std::error_code ec;
         if (directory_.empty() || !std::filesystem::is_directory(directory_, ec)) {
-            directory_ = std::filesystem::current_path(ec);
+            directory_ = Paths::current().data_root();
         }
 
         navigate(directory_);
@@ -173,10 +174,9 @@ namespace gui {
             ImGui::PopID();
         };
 
-        std::error_code ec;
-        auto const working_directory = std::filesystem::current_path(ec);
-        place("Project", working_directory);
-        place("Models", working_directory / "assets" / "models");
+        auto const &data_root = Paths::current().data_root();
+        place("Project", data_root);
+        place("Models", data_path("assets/models").absolute());
 
         char const *home = std::getenv("HOME");
         if (home != nullptr && home[0] != '\0') {

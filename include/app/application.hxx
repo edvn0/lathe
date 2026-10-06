@@ -87,6 +87,9 @@ struct Application {
     // the Viewport panel and keeps the editor usable.
     bool play_fullscreen = false;
 
+    // An installed game: always plays fullscreen with no editor, and Escape never leaves play.
+    bool player_mode = false;
+
     // Embedded play only: set by a click in the Viewport, cleared by Escape or stop().
     bool game_mouse_captured = false;
 

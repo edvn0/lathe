@@ -1,4 +1,5 @@
 #include "basic_game.hxx"
+#include "core/paths.hxx"
 
 #include <algorithm>
 #include <chrono>
@@ -141,7 +142,7 @@ namespace {
             "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/"
             "5bad5aaa0bbb5d0f9cdc934e626f27d0df1e79b8/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb";
     constexpr std::string_view helmet_sha256 = "a1e3b04de97b11de564ce6e53b95f02954a297f0008183ac63a4f5974f6b32d8";
-    constexpr auto helmet_path = "assets/models/damaged_helmet.glb";
+    auto helmet_path() -> CachePath { return cache_path("downloads/damaged_helmet.glb"); }
 
 } // namespace
 
@@ -150,16 +151,19 @@ auto BasicGame::request_helmet() -> void {
         return;
     }
 
+    std::error_code directory_error;
+    std::filesystem::create_directories(helmet_path().absolute().parent_path(), directory_error);
+
     helmet_download_ = http_client_.get_file_async({
             .uri = std::string{helmet_url},
-            .destination = helmet_path,
+            .destination = helmet_path().absolute(),
             .sha256 = std::string{helmet_sha256},
     });
 }
 
 auto BasicGame::spawn_helmet(Scene &scene, Renderer &renderer) -> void {
     if (!helmet_model_.valid()) {
-        auto model = renderer.load_model(helmet_path);
+        auto model = renderer.load_model(AssetPath::external(helmet_path().absolute()).value_or(AssetPath::missing()));
 
         if (!model) {
             error("Could not load the DamagedHelmet: {}", describe(model.error()));
@@ -210,7 +214,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     }
 
     auto const load_or_fallback = [&renderer, &default_model = engine_models.cube, s = &scene](
-                                          std::filesystem::path const &path, entt::entity parent_entity = entt::null,
+                                          AssetPath const &path, entt::entity parent_entity = entt::null,
                                           glm::mat4 const &instance_transform = glm::mat4{1.0F}) -> ModelHandle {
         auto model = renderer.load_model(path);
 
@@ -253,13 +257,13 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                 }
             }
 
-            info("Loaded model '{}', with {} lights", path.string(), renderer.model_lights(model.value()).size());
+            info("Loaded model '{}', with {} lights", path.key(), renderer.model_lights(model.value()).size());
             return model.value();
         }
 
-        error("[BasicGame::on_populate::load_or_fallback] Could not load model '{}': {}", path.string(),
+        error("[BasicGame::on_populate::load_or_fallback] Could not load model '{}': {}", path.key(),
               describe(model.error()));
-        warn("[BasicGame::on_populate::load_or_fallback] Falling back to engine cube for '{}'", path.string());
+        warn("[BasicGame::on_populate::load_or_fallback] Falling back to engine cube for '{}'", path.key());
         return default_model;
     };
 
@@ -329,7 +333,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         }
     };
 
-    auto const previous_cube_model = std::exchange(cube_model_, load_or_fallback("assets/models/test_cube.glb"));
+    auto const previous_cube_model = std::exchange(cube_model_, load_or_fallback(data_path("assets/models/test_cube.glb")));
     release_previous(previous_cube_model);
 
     auto const cube_bounds = renderer.model_bounds(cube_model_);
@@ -379,14 +383,14 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
     // Handles render their fallback until the compressed texture streams in.
     auto const terrain_normal_index =
-            streamer.request(images, "assets/textures/terrain/terrain_normal.exr", TextureRole::normal_map,
+            streamer.request(images, data_path("assets/textures/terrain/terrain_normal.exr"), TextureRole::normal_map,
                              images.flat_normal(), FlyString{"terrain.normal"});
 
-    auto const terrain_albedo_index = streamer.request(images, "assets/textures/terrain/terrain_albedo.png",
+    auto const terrain_albedo_index = streamer.request(images, data_path("assets/textures/terrain/terrain_albedo.png"),
                                                     TextureRole::colour, images.white(), FlyString{"terrain.albedo"});
 
     auto const terrain_roughness_index =
-            streamer.request(images, "assets/textures/terrain/terrain_roughness.png", TextureRole::generic,
+            streamer.request(images, data_path("assets/textures/terrain/terrain_roughness.png"), TextureRole::generic,
                              images.metallic_roughness(), FlyString{"terrain.roughness"});
 
     // The terrain keeps the material it was created with, so it's made once.
@@ -601,7 +605,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         constexpr float skull_scale = 8.0F;
 
         auto const previous_skull_model =
-                std::exchange(skull_model_, load_or_fallback("assets/models/scattering_skull.glb"));
+                std::exchange(skull_model_, load_or_fallback(data_path("assets/models/scattering_skull.glb")));
         release_previous(previous_skull_model);
         auto const skull_model = skull_model_;
 

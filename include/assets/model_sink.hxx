@@ -7,6 +7,7 @@
 #include <volk.h>
 
 #include "assets/load_model.hxx"
+#include "core/paths.hxx"
 #include "assets/model.hxx"
 #include "core/renderer_error.hxx"
 
@@ -33,7 +34,7 @@ struct IModelSink {
     virtual auto register_model_name(ModelHandle handle, std::string_view name) -> void = 0;
 
     // Records the file `handle` was loaded from, so saving a scene can reference it by path.
-    virtual auto register_model_source(ModelHandle handle, std::filesystem::path const &source) -> void = 0;
+    virtual auto register_model_source(ModelHandle handle, AssetPath const &source) -> void = 0;
 
     [[nodiscard]]
     virtual auto sampler_storage() noexcept -> SamplerStorage & = 0;

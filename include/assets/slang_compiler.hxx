@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/paths.hxx"
+
 #include <slang.h>
 
 #include <cstdint>
@@ -29,7 +31,7 @@ namespace renderer {
     };
 
     struct ShaderCompileRequest {
-        std::filesystem::path source_path;
+        DataPath source_path;
         FlyString entry_point;
         ShaderStage stage = ShaderStage::vertex;
 
@@ -96,6 +98,10 @@ namespace renderer {
 
     private:
         struct Impl;
+
+        [[nodiscard]]
+        auto compile_with_slang(ShaderCompileRequest const &request) const
+                -> std::expected<CompiledShader, ShaderCompileError>;
 
         explicit SlangCompiler(std::unique_ptr<Impl> impl) noexcept;
 
