@@ -1,6 +1,7 @@
 #include <volk.h>
 
 #include "rendering/imgui_renderer.hxx"
+#include "core/paths.hxx"
 
 #include <backends/imgui_impl_glfw.h>
 #include <misc/freetype/imgui_freetype.h>
@@ -141,12 +142,12 @@ namespace gui {
                     .stages =
                             {
                                     renderer::ShaderCompileRequest{
-                                            .source_path = "assets/shaders/gui.slang",
+                                            .source_path = data_path("assets/shaders/gui.slang"),
                                             .entry_point = FlyString{"main_vs"},
                                             .stage = renderer::ShaderStage::vertex,
                                     },
                                     renderer::ShaderCompileRequest{
-                                            .source_path = "assets/shaders/gui.slang",
+                                            .source_path = data_path("assets/shaders/gui.slang"),
                                             .entry_point = FlyString{"main_fs"},
                                             .stage = renderer::ShaderStage::fragment,
                                     },

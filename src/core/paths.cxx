@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <system_error>
+#include <utility>
 
 namespace {
     auto executable_directory() -> std::filesystem::path {
@@ -37,6 +38,14 @@ namespace {
         std::error_code error;
 
         return std::filesystem::exists(directory / "game.toml", error);
+    }
+} // namespace
+
+namespace {
+    auto current_storage() -> std::optional<Paths> & {
+        static std::optional<Paths> storage;
+
+        return storage;
     }
 } // namespace
 
@@ -111,4 +120,26 @@ auto Paths::screenshot(std::string_view relative) const -> std::optional<Screens
     auto const path = paths_detail::sanitise(relative);
 
     return path ? std::optional{ScreenshotPath{screenshots_, *path}} : std::nullopt;
+}
+
+auto Paths::set_current(Paths paths) -> void { current_storage() = std::move(paths); }
+
+auto Paths::current() -> Paths const & {
+    auto &storage = current_storage();
+
+    if (!storage) {
+        storage = resolve({});
+    }
+
+    return *storage;
+}
+
+auto data_path(std::string_view relative) -> DataPath { return Paths::current().data(relative).value(); }
+
+auto cache_path(std::string_view relative) -> CachePath { return Paths::current().cache(relative).value(); }
+
+auto state_path(std::string_view relative) -> StatePath { return Paths::current().state(relative).value(); }
+
+auto screenshot_path(std::string_view relative) -> ScreenshotPath {
+    return Paths::current().screenshot(relative).value();
 }

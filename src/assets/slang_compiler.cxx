@@ -166,7 +166,7 @@ namespace renderer {
 
         [[nodiscard]]
         auto validate_request(ShaderCompileRequest const &request) -> std::expected<void, ShaderCompileError> {
-            if (request.source_path.empty()) {
+            if (request.source_path.logical().empty()) {
                 return std::unexpected{
                         make_error(ShaderCompileErrorType::invalid_argument, SLANG_OK, "Shader source path is empty.")};
             }
@@ -297,7 +297,7 @@ namespace renderer {
             return std::unexpected{std::move(validation.error())};
         }
 
-        auto source_result = read_source_file(request.source_path);
+        auto source_result = read_source_file(request.source_path.absolute());
 
         if (!source_result) {
             return std::unexpected{std::move(source_result.error())};
@@ -310,7 +310,7 @@ namespace renderer {
 
         search_path_storage.reserve(request.include_directories.size() + 1);
 
-        auto const parent_path = request.source_path.parent_path();
+        auto const parent_path = request.source_path.absolute().parent_path();
 
         if (!parent_path.empty()) {
             search_path_storage.push_back(parent_path.string());
@@ -409,7 +409,7 @@ namespace renderer {
         // Concurrent loads with the same module name returned null modules, so every call gets a unique name.
         static std::atomic<std::uint64_t> module_name_counter{0};
 
-        auto module_name = request.source_path.stem().string();
+        auto module_name = request.source_path.absolute().stem().string();
 
         if (module_name.empty()) {
             module_name = "shader";
@@ -417,7 +417,7 @@ namespace renderer {
 
         module_name += "_" + std::to_string(module_name_counter.fetch_add(1, std::memory_order_relaxed));
 
-        auto source_path = request.source_path.string();
+        auto source_path = request.source_path.absolute().string();
 
         auto module_diagnostics = Slang::ComPtr<slang::IBlob>{};
 
@@ -532,7 +532,7 @@ namespace renderer {
         }
 
         if (!diagnostics.empty()) {
-            warn("Slang diagnostics for '{}' [{}]:\n{}", request.source_path.string(), request.entry_point,
+            warn("Slang diagnostics for '{}' [{}]:\n{}", request.source_path.logical(), request.entry_point,
                  diagnostics);
         }
 

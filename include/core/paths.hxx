@@ -59,6 +59,10 @@ public:
     // working directory, as before; when installed they follow the XDG base directories.
     [[nodiscard]] static auto resolve(PathsOptions const &options) -> Paths;
 
+    // The process-wide instance. Set once from main before anything touches the disk; defaults to resolve({}).
+    static auto set_current(Paths paths) -> void;
+    [[nodiscard]] static auto current() -> Paths const &;
+
     [[nodiscard]] auto installed() const noexcept -> bool { return installed_; }
     [[nodiscard]] auto data_root() const noexcept -> std::filesystem::path const & { return data_; }
 
@@ -92,3 +96,9 @@ auto RootedPath<Root>::join(std::string_view child) const -> std::optional<Roote
 
     return RootedPath{root_, *combined};
 }
+
+// For literal, known-good relative paths ("assets/shaders/x.slang"); aborts if `relative` is absolute or escapes.
+[[nodiscard]] auto data_path(std::string_view relative) -> DataPath;
+[[nodiscard]] auto cache_path(std::string_view relative) -> CachePath;
+[[nodiscard]] auto state_path(std::string_view relative) -> StatePath;
+[[nodiscard]] auto screenshot_path(std::string_view relative) -> ScreenshotPath;
