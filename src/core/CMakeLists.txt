@@ -12,6 +12,7 @@ add_library(
         json.cxx
         logger.cxx
         memory_tracker.cxx
+        paths.cxx
         random.cxx
         sha256.cxx
         thread_pool.cxx
