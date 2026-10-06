@@ -15,4 +15,10 @@ namespace frame_graph {
     [[nodiscard]] auto describe(GraphDesc const &graph, CompiledGraph const &compiled,
                                 TransientPlan const *transients = nullptr) -> std::string;
 
+    // The same plan as a Graphviz digraph (--frame-graph-dot): one cluster per submission batch, coloured by queue,
+    // passes as nodes, and an edge from the producer of every version a pass consumes, labelled with the resources it
+    // carries. Dashed edges cross queues; dotted ones are timeline semaphore waits. Render with `dot -Tsvg`.
+    [[nodiscard]] auto to_dot(GraphDesc const &graph, CompiledGraph const &compiled,
+                              TransientPlan const *transients = nullptr) -> std::string;
+
 } // namespace frame_graph

@@ -753,6 +753,7 @@ namespace {
                              "Compute passes given compute-queue affinity (only matters on a device with a second queue)",
                              [this](std::string_view list) -> std::expected<void, std::string> {
                                  async_passes = 0;
+                                 async_passes_given = true;
                                  for (auto const name: CommandLine::split(list, ',')) {
                                      if (name == "light") {
                                          async_passes |= Renderer::async_light_clustering;
@@ -791,6 +792,11 @@ namespace {
             auto diagnostics = cli.group("Diagnostics");
             diagnostics.flag("--frame-graph-dump",
                              "Log the compiled frame graph whenever it changes", dump_frame_graph);
+            diagnostics.value("--frame-graph-dot", "FILE.dot",
+                              "Write the compiled frame graph as Graphviz whenever it changes (render with `dot "
+                              "-Tsvg`). Occlusion culling, meshlet occlusion and every async pass default to on "
+                              "so the graph shows everything; the individual flags still override",
+                              frame_graph_dot);
 
             auto game_group = cli.group("Game");
             game_group.option("--game", "NAME", game_help(),
@@ -826,11 +832,13 @@ namespace {
         std::optional<bool> transient_aliasing;
         std::uint32_t stress_resize_interval = 0;
         std::uint32_t async_passes = 0;
+        bool async_passes_given = false;
         std::optional<AsyncComputeMode> async_compute_mode;
         bool async_compute_smoke = false;
         bool sync_validation = false;
         bool frame_graph_serialize = false;
         bool dump_frame_graph = false;
+        std::string frame_graph_dot;
         std::string game;
         std::optional<std::filesystem::path> open_scene;
         std::optional<std::filesystem::path> save_scene;
@@ -881,13 +889,22 @@ auto main(int argc, char **argv) -> int {
     }
 
     auto const &cluster_grid = engine.cluster_grid;
-    auto const &occlusion_culling = engine.occlusion_culling;
-    auto const &meshlet_occlusion = engine.meshlet_occlusion;
+    // A frame graph export is meant to show every feature, so those default on; explicit flags still win.
+    auto const everything = !engine.frame_graph_dot.empty();
+    auto const occlusion_culling = engine.occlusion_culling.has_value() ? engine.occlusion_culling
+                                   : everything                         ? std::optional{true}
+                                                                        : std::nullopt;
+    auto const meshlet_occlusion = engine.meshlet_occlusion.has_value() ? engine.meshlet_occlusion
+                                   : everything                         ? std::optional{true}
+                                                                        : std::nullopt;
     auto const &occlusion_test = engine.occlusion_test;
     auto const &transient_aliasing = engine.transient_aliasing;
     auto const stress_resize_interval = engine.stress_resize_interval;
     auto const dump_frame_graph = engine.dump_frame_graph;
-    auto const async_passes = engine.async_passes;
+    auto const async_passes = (everything && !engine.async_passes_given)
+                                      ? (Renderer::async_light_clustering | Renderer::async_occlusion |
+                                         Renderer::async_gtao)
+                                      : engine.async_passes;
 
     // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
@@ -970,6 +987,7 @@ auto main(int argc, char **argv) -> int {
 
     application.renderer->set_async_candidates(async_passes);
     application.renderer->set_frame_graph_dump(dump_frame_graph);
+    application.renderer->set_frame_graph_dot(engine.frame_graph_dot);
 
     if (meshlet_occlusion) {
         application.renderer->set_meshlet_occlusion_culling(*meshlet_occlusion);
