@@ -676,6 +676,7 @@ impl Config {
 
         let shaders = scratch.join("shaders.lsp");
         let assets = scratch.join("assets.txt");
+        let resources = scratch.join("resources.lbf");
 
         println!("Recording shaders and data files over {frames} frames...");
 
@@ -702,6 +703,8 @@ impl Config {
             recording
                 .arg("--record-shaders")
                 .arg(&shaders)
+                .arg("--record-resources")
+                .arg(&resources)
                 .arg("--record-assets")
                 .arg(&assets),
         )
@@ -745,6 +748,8 @@ impl Config {
         }
 
         fs::copy(&shaders, data.join("shaders.lsp")).context("failed to stage the shader pack")?;
+        fs::copy(&resources, data.join("resources.lbf"))
+            .context("failed to stage the resource pack")?;
 
         let mut manifest = format!(
             "name = \"{game}\"\ntitle = \"{}\"\ngame = \"{engine_game}\"\nversion = \"{version}\"\n",
@@ -760,7 +765,7 @@ impl Config {
         fs::remove_dir_all(&scratch)?;
 
         println!(
-            "Staged {} ({copied} data files + shader pack) in {}",
+            "Staged {} ({copied} data files + shader and resource packs) in {}",
             game,
             stage.display()
         );

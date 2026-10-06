@@ -1369,4 +1369,47 @@ auto ChessGame::draw_hud() -> void {
     ImGui::TextDisabled("Esc: menu");
 
     ImGui::End();
+
+    draw_state_banner();
+}
+
+auto ChessGame::draw_state_banner() -> void {
+    auto const state = chess_engine_.game_state();
+    auto const in_check = chess_engine_.render_state().in_check;
+
+    if (state == chess::GameState::playing && !in_check) {
+        return;
+    }
+
+    auto const result = describe_result(state, chess_engine_.side_to_move());
+    auto const is_mate = state == chess::GameState::checkmate;
+
+    std::string text;
+    ImVec4 colour{1.0F, 0.75F, 0.2F, 1.0F};
+
+    if (is_mate) {
+        text = std::format("CHECKMATE - {}", result.reason);
+        colour = ImVec4{1.0F, 0.3F, 0.3F, 1.0F};
+    } else if (state != chess::GameState::playing) {
+        text = std::format("DRAW - {}", result.reason);
+    } else {
+        text = std::format("{} IN CHECK", chess_engine_.side_to_move() == chess::Side::white ? "WHITE" : "BLACK");
+    }
+
+    auto const *viewport = ImGui::GetMainViewport();
+
+    ImGui::SetNextWindowPos(ImVec2{viewport->WorkPos.x + viewport->WorkSize.x * 0.5F, viewport->WorkPos.y + 16.0F},
+                            ImGuiCond_Always, ImVec2{0.5F, 0.0F});
+    ImGui::SetNextWindowBgAlpha(0.7F);
+
+    ImGui::Begin("##chess_state_banner", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs);
+
+    ImGui::SetWindowFontScale(2.4F);
+    ImGui::TextColored(colour, "%s", text.c_str());
+    ImGui::SetWindowFontScale(1.0F);
+
+    ImGui::End();
 }

@@ -15,6 +15,7 @@ add_library(
         memory_tracker.cxx
         paths.cxx
         random.cxx
+        resources.cxx
         sha256.cxx
         thread_pool.cxx
 )

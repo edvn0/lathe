@@ -2,6 +2,7 @@
 
 #include "rendering/imgui_renderer.hxx"
 #include "core/paths.hxx"
+#include "core/resources.hxx"
 
 #include <backends/imgui_impl_glfw.h>
 #include <misc/freetype/imgui_freetype.h>
@@ -469,11 +470,12 @@ namespace gui {
         cfg.FontLoaderFlags = ImGuiFreeTypeLoaderFlags_ForceAutoHint | ImGuiFreeTypeLoaderFlags_LightHinting;
 
         ImFont *font = nullptr;
-        std::filesystem::path const font_path{f.font_path};
+        auto loaded_font = read_resource(data_path(f.font_path));
 
-        if (std::filesystem::exists(font_path)) {
-            auto const path_str = font_path.string();
-            font = io.Fonts->AddFontFromFileTTF(path_str.c_str(), cfg.SizePixels, &cfg);
+        if (loaded_font) {
+            font_data = std::move(*loaded_font);
+            font = io.Fonts->AddFontFromMemoryTTF(font_data.data(), static_cast<int>(font_data.size()), cfg.SizePixels,
+                                                  &cfg);
 
             // Font Awesome glyphs for the toast icons, merged into the UI font. This backend builds a fixed atlas (no
             // ImGuiBackendFlags_RendererHasTextures), so the glyph ranges must be given up front or they render as '?'.

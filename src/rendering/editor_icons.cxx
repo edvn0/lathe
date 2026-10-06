@@ -1,5 +1,6 @@
 #include "rendering/editor_icons.hxx"
 #include "core/paths.hxx"
+#include "core/resources.hxx"
 
 #include <array>
 #include <format>
@@ -36,8 +37,9 @@ namespace gui {
 
     EditorIcons::EditorIcons(Renderer &renderer) {
         for (auto const &file: icon_files) {
-            auto const path = data_path(std::format("assets/editor/icons/{}.png", file.name)).absolute().string();
-            auto decoded = DecodedImage::load_from_file(path);
+            auto const path = std::format("assets/editor/icons/{}.png", file.name);
+            auto const encoded = read_resource(data_path(path));
+            auto decoded = encoded ? DecodedImage::load_from_memory(*encoded) : std::nullopt;
 
             if (!decoded) {
                 error("[EditorIcons] Failed to load '{}' -- falling back to a blank icon", path);

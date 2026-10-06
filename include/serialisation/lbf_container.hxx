@@ -48,11 +48,12 @@ namespace lbf_chunk {
     inline constexpr std::uint32_t texture = make_fourcc('T', 'E', 'X', 'R');
     inline constexpr std::uint32_t metadata = make_fourcc('M', 'E', 'T', 'A');
     inline constexpr std::uint32_t environment = make_fourcc('E', 'N', 'V', 'M');
+    inline constexpr std::uint32_t file = make_fourcc('F', 'I', 'L', 'E');
 } // namespace lbf_chunk
 
 enum class LbfFileKind : std::uint32_t {
     scene = 1, // one SCEN chunk, plus whatever assets were embedded
-    asset_pack = 2, // MODL/TEXR/ENVM chunks only
+    asset_pack = 2, // MODL/TEXR/ENVM chunks only, or FILE chunks for a resource pack
 };
 
 enum class LbfCompression : std::uint8_t {

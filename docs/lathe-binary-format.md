@@ -46,7 +46,9 @@ plugs straight into the existing upload path.
   (an `AssetId`, or 0 for singletons), offset, stored size, raw size, xxh64
   of the stored bytes. Sorted by (type, id), so lookups are binary searches.
 - **Chunk types**: `SCEN` (the scene), `MODL` (cooked model), `TEXR`
-  (cooked texture), `ENVM` (cooked HDR environment), `META` (which
+  (cooked texture), `ENVM` (cooked HDR environment), `FILE` (a data file
+  stored verbatim, id = `AssetId` of `file:<path>`; the packaged game's
+  `resources.lbf` holds the editor font and icons this way), `META` (which
   engine/format versions wrote the file; informational).
 - **Compression**: per chunk, zstd (default level 6), or stored raw when it
   saves less than 3% (BC7 blocks barely compress, and skipping

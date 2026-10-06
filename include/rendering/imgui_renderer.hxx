@@ -25,7 +25,7 @@ class Pipeline;
 namespace gui {
 
     struct FontChoice {
-        std::string font_path;
+        std::string font_path; // root-relative, read through read_resource()
         float size{20.0F};
     };
 
@@ -68,6 +68,9 @@ namespace gui {
             std::uint32_t index_count{0};
             std::uint32_t vertex_count{0};
         };
+
+        // ImGui keeps pointing at the TTF (FontDataOwnedByAtlas is off), so it lives as long as the renderer.
+        std::vector<std::byte> font_data;
 
         PipelineNodeHandle main_pipeline{};
         SamplerHandle sampler{};

@@ -1,5 +1,6 @@
 #include "rendering/renderer.hxx"
 #include "core/paths.hxx"
+#include "core/resources.hxx"
 #include "core/error_describe.hxx"
 #include "core/perf_events.hxx"
 
@@ -1113,7 +1114,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     }
 
     {
-        auto light_icon_image = DecodedImage::load_from_file(data_path("assets/textures/light_bulb.png").absolute().string());
+        auto const light_icon_encoded = read_resource(data_path("assets/textures/light_bulb.png"));
+        auto light_icon_image = light_icon_encoded ? DecodedImage::load_from_memory(*light_icon_encoded) : std::nullopt;
         if (!light_icon_image) {
             return std::unexpected(make_error(RendererErrorType::device_error));
         }

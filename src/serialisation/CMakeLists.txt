@@ -15,6 +15,7 @@ add_library(
         cooked_environment.cxx
         cooked_texture.cxx
         lbf_container.cxx
+        resource_pack.cxx
         scene_codec.cxx
         scene_serialisation.cxx
         serialisation_error_describe.cxx

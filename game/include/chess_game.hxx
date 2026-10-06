@@ -52,6 +52,7 @@ private:
     auto draw_pause() -> void;
     auto draw_game_over() -> void;
     auto draw_hud() -> void;
+    auto draw_state_banner() -> void;
     auto draw_promotion_choice() -> void;
 
     // Begins a new game from the menu, the pause menu or the game-over screen.

@@ -37,6 +37,8 @@
 #include "app/application.hxx"
 #include "core/game_manifest.hxx"
 #include "core/paths.hxx"
+#include "core/resources.hxx"
+#include "serialisation/resource_pack.hxx"
 #include "app/benchmark.hxx"
 #include "app/benchmark_compare.hxx"
 #include "app/benchmark_driver.hxx"
@@ -728,6 +730,7 @@ namespace {
             auto packaging = cli.group("Packaging");
             packaging.value("--shader-pack", "FILE.lsp", "Precompiled shaders to use (default: shaders.lsp in the data directory)", shader_pack);
             packaging.value("--record-shaders", "FILE.lsp", "Write every shader this run compiles to a shader pack, then exit", record_shaders);
+            packaging.value("--record-resources", "FILE.lbf", "Write the editor font and icons this run loaded to a resource pack, then exit", record_resources);
             packaging.value("--record-assets", "FILE.txt", "Write the data files this run opened to a list, then exit", record_assets);
             packaging.value("--screenshot-frame", "N", "Save a screenshot on frame N (see the screenshots directory)", screenshot_frame);
             packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120", inject_keys);
@@ -862,6 +865,7 @@ namespace {
         std::string shader_pack;
         std::string record_shaders;
         std::string record_assets;
+        std::string record_resources;
         std::uint32_t exit_after_frames = 0;
         std::uint32_t screenshot_frame = 0;
         std::string inject_keys;
@@ -917,6 +921,18 @@ auto main(int argc, char **argv) -> int {
 
     if (!engine.record_assets.empty()) {
         Paths::start_access_recording();
+    }
+
+    if (!engine.record_resources.empty()) {
+        start_resource_recording();
+    } else if (auto const resource_pack_path = Paths::current().data_root() / "resources.lbf";
+               std::filesystem::exists(resource_pack_path)) {
+        if (auto pack = ResourcePack::open(resource_pack_path)) {
+            info("Using {} bundled resources from '{}'", (*pack)->size(), resource_pack_path.string());
+            install_resource_provider(*std::move(pack));
+        } else {
+            error("Ignoring resource pack: {}", describe(pack.error()));
+        }
     }
 
     if (!engine.record_shaders.empty()) {
@@ -1318,6 +1334,18 @@ auto main(int argc, char **argv) -> int {
             info("Recorded {} shaders to '{}'", *saved, engine.record_shaders);
         } else {
             error("Could not write the shader pack: {}", saved.error());
+            exit_code = EXIT_FAILURE;
+        }
+    }
+
+    if (!engine.record_resources.empty()) {
+        auto resources = finish_resource_recording();
+        auto const count = resources.size();
+
+        if (auto const written = ResourcePack::write(std::move(resources), engine.record_resources)) {
+            info("Recorded {} resources to '{}'", count, engine.record_resources);
+        } else {
+            error("Could not write the resource pack: {}", describe(written.error()));
             exit_code = EXIT_FAILURE;
         }
     }

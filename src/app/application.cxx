@@ -2733,7 +2733,7 @@ auto Application::on_startup() -> void {
     }
     imgui_renderer = std::make_unique<gui::ImGuiRenderer>(
             *renderer, gui::FontChoice{
-                               .font_path = data_path("assets/fonts/GoogleSansCode-Regular.ttf").absolute().string(),
+                               .font_path = "assets/fonts/GoogleSansCode-Regular.ttf",
                                .size = 12,
                        });
     editor_icons = std::make_unique<gui::EditorIcons>(*renderer);
