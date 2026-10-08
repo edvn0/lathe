@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -25,6 +26,10 @@ struct ModelSlotData {
     glm::vec3 bounds_max{0.5F};
 
     std::vector<ModelCpuLight> lights;
+
+    // Skeleton and clips of a skinned model (null otherwise), plus the bound already folded into its bounds.
+    std::shared_ptr<ModelAnimationData const> animation;
+    float skin_inflate = 0.0F;
 
     // Callers holding this handle. The model caches retain it when handing it out again; destroy_model() only
     // frees the slot once it reaches zero. create_model()/upgrade_pending_model() handle it explicitly rather than

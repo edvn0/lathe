@@ -242,6 +242,13 @@ add_shader_push_constant(
 )
 
 add_shader_push_constant(
+    skin.slang
+    main_cs
+    compute
+    SkinPushConstants
+)
+
+add_shader_push_constant(
     instance_lod.slang
     main_cs
     compute

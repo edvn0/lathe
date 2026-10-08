@@ -51,6 +51,7 @@
 #include "gpu/gpu_resource_table.hxx"
 #include "gpu/image_storage.hxx"
 #include "gpu/sampler_storage.hxx"
+#include "gpu/skinning.hxx"
 #include "gpu/submission_plan.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "rendering/environment.hxx"
@@ -147,6 +148,13 @@ struct FrameTimings {
 struct FrameStats {
     std::uint32_t submitted_triangle_count = 0;
     std::uint32_t submitted_instance_count = 0;
+
+    // GPU skinning this frame: instance x submesh jobs run, vertices skinned, scratch bytes used, and instances that
+    // fell back to the rest pose (no valid palette offset, or scratch/job budget exhausted).
+    std::uint32_t skin_job_count = 0;
+    std::uint32_t skinned_vertex_count = 0;
+    std::uint64_t skin_scratch_bytes_used = 0;
+    std::uint32_t skin_fallback_instance_count = 0;
 
     std::uint32_t indirect_command_count = 0;
     std::uint32_t opaque_indirect_count = 0;
@@ -333,6 +341,13 @@ struct RendererCreateInfo {
 
     std::uint32_t maximum_draw_count = 1'000'000;
     std::uint32_t maximum_submission_count = 1'000'000;
+
+    // GPU skinning (docs/gpu-skinning-design.md), per frame in flight. Palette matrices (joint_world * inverse_bind)
+    // set with set_skin_palette()/append_skin_palette(); skin jobs (one per skinned instance x submesh); and the
+    // device-local scratch the skinned vertices are written to (20 B each).
+    std::uint32_t maximum_skin_palette_matrices = 1U << 16;
+    std::uint32_t maximum_skin_jobs = 1U << 14;
+    VkDeviceSize skin_scratch_bytes = VkDeviceSize{32} << 20;
 };
 
 struct Renderer final : public IMeshSink, public IModelSink {
@@ -425,10 +440,31 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     auto submit_model_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
                                 MaterialHandle material_override = {},
-                                std::uint64_t resident_revision = 0) -> std::expected<void, RendererError>;
+                                std::uint64_t resident_revision = 0,
+                                std::span<std::uint32_t const> palette_offsets = {})
+            -> std::expected<void, RendererError>;
+
+    // GPU skinning. The palette is this frame's joint matrices (joint_world * inverse_bind, column-major, as
+    // Animation::compute_skinning_palette writes them), concatenated for all characters; it is uploaded by
+    // prepare_frame() and cleared after it, so call it every frame before submitting. `palette_offsets[i]` of
+    // submit_model_instances() is the index of instance i's first matrix; an instance needs the skeleton's
+    // joint_count matrices there. Models without a skin ignore the offsets. A skinned instance without a valid
+    // offset, or beyond the per-frame scratch/job budget, draws in its rest pose and is counted in
+    // FrameStats::skin_fallback_instance_count.
+    //
+    // set_skin_palette() replaces the palette (offset 0); append_skin_palette() returns the offset of what it added.
+    // Both fail with capacity_exceeded, adding nothing, past RendererCreateInfo::maximum_skin_palette_matrices.
+    [[nodiscard]]
+    auto set_skin_palette(std::span<glm::mat4 const> palette) -> std::expected<void, RendererError>;
+    [[nodiscard]]
+    auto append_skin_palette(std::span<glm::mat4 const> palette) -> std::expected<std::uint32_t, RendererError>;
+
 
     // Model-space AABB over every vertex.
     [[nodiscard]]
+    // Skeleton + clips of a skinned model; null for unskinned models and invalid handles.
+    [[nodiscard]] auto model_animation(ModelHandle model) const -> std::shared_ptr<ModelAnimationData const>;
+
     auto model_bounds(ModelHandle model) const -> std::optional<std::pair<glm::vec3, glm::vec3>>;
 
     // One model-space AABB per (draw, submesh), in draw order, each folded through its draw's local transform.
@@ -1032,6 +1068,20 @@ private:
         std::vector<GpuLodJob> lod_jobs;
         Buffer lod_jobs_buffer{};
 
+        // GPU skinning. skin_upload_buffer (host-written) mirrors skin_input_buffer (device): the palette (capacity +
+        // skin_palette_padding matrices, so a stray joint index stays inside the buffer), then the GpuSkinJobs, then the
+        // chunk table (jobs + 1 u32). skin.slang writes the deformed vertices to skin_scratch_buffer, which every scene
+        // pass reads through GpuDraw::vertex_address.
+        Buffer skin_upload_buffer{};
+        Buffer skin_input_buffer{};
+        Buffer skin_scratch_buffer{};
+        std::vector<GpuSkinJob> skin_jobs;
+        VkDeviceSize skin_scratch_used = 0;
+        std::uint32_t skin_palette_count = 0;
+        std::uint32_t skin_chunk_total = 0;
+        std::uint32_t skin_fallback_instances = 0;
+        std::uint32_t skinned_vertices = 0;
+
         // Buffers the GPU may still read until this slot's previous submission completes: freed when the slot is
         // next prepared.
         std::vector<Buffer> retired_buffers;
@@ -1119,6 +1169,10 @@ private:
         std::uint32_t transform_count = 0;
         std::size_t model_submission_position = 0;
 
+        // A range of instance_palette_offsets_ (transform_count entries) when palette_count != 0.
+        std::uint32_t first_palette_offset = 0;
+        std::uint32_t palette_count = 0;
+
         // Non-zero: the transforms live in resident_instance_sets_ under this revision (transform_count of them) and
         // the GPU picks their LODs; nothing is in instance_transforms_.
         std::uint64_t resident_revision = 0;
@@ -1192,6 +1246,11 @@ private:
         // itself, instance_transforms_, or computed_transforms_. Pointers rather than copies, so each transform is
         // copied once per frame.
         std::vector<glm::mat4 const *> transforms;
+
+        // Parallel to `transforms` when the batch's geometry is skinned (no_palette: draw at rest), else empty.
+        static constexpr std::uint32_t no_palette = ~0U;
+        std::vector<std::uint32_t> palette_offsets;
+        bool skinned = false;
 
         std::uint64_t frame_stamp = 0;
     };
@@ -1317,6 +1376,30 @@ private:
 
     // Copies new resident instance sets into place and frees the ones nobody submits any more.
     auto record_resident_instance_uploads(VkCommandBuffer command_buffer, RendererFrame &frame) -> void;
+
+    // Layout of RendererFrame::skin_input_buffer / skin_upload_buffer.
+    static constexpr std::uint32_t skin_palette_padding = 256;
+    [[nodiscard]] auto skin_jobs_offset() const noexcept -> VkDeviceSize {
+        return VkDeviceSize{maximum_skin_palette_matrices_ + skin_palette_padding} * sizeof(glm::mat4);
+    }
+    [[nodiscard]] auto skin_chunks_offset() const noexcept -> VkDeviceSize {
+        return skin_jobs_offset() + VkDeviceSize{maximum_skin_jobs_} * sizeof(GpuSkinJob);
+    }
+    [[nodiscard]] auto skin_input_size() const noexcept -> VkDeviceSize {
+        return skin_chunks_offset() + VkDeviceSize{maximum_skin_jobs_ + 1} * sizeof(std::uint32_t);
+    }
+
+    // Writes the palette, jobs and chunk table into the frame's skin_upload_buffer.
+    [[nodiscard]]
+    auto prepare_skin_upload(RendererFrame &frame) -> std::expected<void, RendererError>;
+
+    // The skin_upload graph pass: copies the used ranges of skin_upload_buffer to skin_input_buffer.
+    auto record_skin_upload(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void;
+
+    // The skin graph pass: skin.slang over the frame's jobs.
+    [[nodiscard]]
+    auto record_skin(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
 
     // instance_lod.slang over the frame's LodJobs, at the start of the gpu_culling pass.
     [[nodiscard]]
@@ -1565,6 +1648,14 @@ private:
     std::vector<MaterialSlotOverride> slot_override_submissions_;
     std::vector<InstancedSubmission> instanced_submissions_;
     std::vector<glm::mat4> instance_transforms_;
+    std::vector<std::uint32_t> instance_palette_offsets_;
+
+    // This frame's skin palette (set_skin_palette()), copied into the frame slot by prepare_frame().
+    std::vector<glm::mat4> skin_palette_;
+    std::uint32_t maximum_skin_palette_matrices_ = 0;
+    std::uint32_t maximum_skin_jobs_ = 0;
+    VkDeviceSize skin_scratch_capacity_ = 0;
+    PipelineNodeHandle skin_pipeline_;
 
     // Transforms prepare_frame() has to compute (a submission's transform times a model draw's local transform), kept
     // until the batches are emitted. A deque, so BatchEntry::transforms can point into it while it grows.

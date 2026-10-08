@@ -27,3 +27,13 @@ both authors if you show it. To change the pinned commit or hash, edit `game/src
 `chess/*.glb` is the "3D voxel Chess pack" (glb folder), used by `--game=chess`. It is gitignored and not committed; the
 pack shipped without a license file, so check its terms before adding it with `git add -f`. Copy the `glb/` files into
 `assets/models/chess/`.
+
+## Animated human (local only)
+
+| File | Source | License |
+| --- | --- | --- |
+| `animated_human.glb` | [Animated Human - Low Poly](https://opengameart.org/content/animated-human-low-poly) by Quaternius | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+
+A rigged low-poly character (48 joints; Idle, Walk, Run, Jump, Death, Punch, Working and more). `--game=moving` uses it
+in "Skinned model" mode (or start with `LATHE_MOVING_SKINNED=1`). A copy is in `test/data/animated_human.glb` for the
+skin importer tests; this one is the gitignored runtime copy.

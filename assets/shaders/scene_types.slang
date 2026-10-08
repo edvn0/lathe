@@ -293,11 +293,11 @@ public struct ShadowPC
 
 public struct CompressedVertex
 {
-    uint normal_oct;
-    uint tangent_oct;
-    uint16_t position_x, position_y, position_z;
-    uint16_t texcoord_u, texcoord_v;
-    uint16_t pad_;
+    public uint normal_oct;
+    public uint tangent_oct;
+    public uint16_t position_x, position_y, position_z;
+    public uint16_t texcoord_u, texcoord_v;
+    public uint16_t pad_;
 };
 
 public float3 decode_octahedral(float2 encoded)

@@ -151,7 +151,8 @@ namespace {
         for (auto [entity, instanced]: instanced_model_view.each()) {
             // The revision lets the renderer keep the transforms on the GPU and pick their LODs there.
             auto result = application.renderer->submit_model_instances(
-                    instanced.model, instanced.transforms, instanced.material_override, instanced.revision);
+                    instanced.model, instanced.transforms, instanced.material_override, instanced.revision,
+                    instanced.palette_offsets);
 
             if (!result) {
                 error("Could not submit instanced model (model index {}, {} instances): {}", instanced.model.index,

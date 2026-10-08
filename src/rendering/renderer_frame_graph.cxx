@@ -294,6 +294,25 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     auto culled_indirect = import_frame_buffer(frame.culled_indirect_buffer, "culled_indirect", false);
     auto const frustum_planes = import_frame_buffer(frame.frustum_planes_buffer, "frustum_planes", true);
 
+    // GPU skinning (skin.slang): the host-written palette/jobs/chunk table copied to skin_input by skin_upload, and the
+    // deformed vertices skin writes to skin_scratch, which every scene pass reaches through GpuDraw::vertex_address.
+    // Imported only when something is skinned this frame, so an unskinned scene's graph is unchanged.
+    auto const skinning_active = !frame.skin_jobs.empty();
+    auto skin_upload_source = frame_graph::BufferId{};
+    auto skin_input = frame_graph::BufferId{};
+    auto skin_scratch = frame_graph::BufferId{};
+    if (skinning_active) {
+        skin_upload_source = import_frame_buffer(frame.skin_upload_buffer, "skin_upload", true);
+        skin_input = import_frame_buffer(frame.skin_input_buffer, "skin_input", false);
+        skin_scratch = import_frame_buffer(frame.skin_scratch_buffer, "skin_scratch", false);
+    }
+    // Declared by every pass that draws (or culls from) the scene's vertices.
+    auto const read_skinned_vertices = [&](frame_graph::PassBuilder &pass, frame_graph::ShaderStages stages) {
+        if (skinning_active) {
+            [[maybe_unused]] auto const skinned = pass.read(skin_scratch, frame_graph::Use::shader_read, stages);
+        }
+    };
+
     auto const occlusion_active = frame.occlusion_active;
     auto const meshlet_occlusion_active = frame.meshlet_occlusion_active;
 
@@ -426,6 +445,46 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
                                   return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
                                       record_meshlet_visibility_clear(context.command_buffer, frame);
+                                  }};
+                              });
+    }
+
+    if (skinning_active) {
+        frame_graph_.add_pass("skin_upload", frame_graph::PassType::transfer,
+                              {
+                                      .name_id = "skin_upload",
+                                      .label = "Skin palette upload",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::Gray),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  [[maybe_unused]] auto const source =
+                                          pass.read(skin_upload_source, frame_graph::Use::transfer_read);
+                                  skin_input = pass.write_discard(skin_input, frame_graph::Use::transfer_write);
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      record_skin_upload(context.command_buffer, frame);
+                                  }};
+                              });
+
+        frame_graph_.add_pass("skin", frame_graph::PassType::compute,
+                              {
+                                      .name_id = "skin",
+                                      .label = "Skinning",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::Orange),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  constexpr auto compute = stages_of(ShaderStage::compute);
+                                  // The rest vertices and skin streams live in the geometry arena, which nothing in
+                                  // the graph writes; only the palette/jobs and the scratch are tracked.
+                                  [[maybe_unused]] auto const input =
+                                          pass.read(skin_input, frame_graph::Use::shader_read, compute);
+                                  skin_scratch = pass.write_discard(skin_scratch, frame_graph::Use::shader_write, compute);
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      auto const pass_context = pass_context_of(context);
+                                      if (auto const done = record_skin(pass_context, frame); !done) {
+                                          state.result = std::unexpected(done.error());
+                                      }
                                   }};
                               });
     }
@@ -586,6 +645,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const commands = pass.read(source_indirect, frame_graph::Use::indirect_read);
                     [[maybe_unused]] auto const planes =
                             pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                    read_skinned_vertices(pass, draw_stages);
 
                     shadow_image = pass.write_depth(shadow_image,
                                                     shadow_atlas_initialized_ ? frame_graph::LoadOp::load
@@ -632,6 +692,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 [[maybe_unused]] auto const commands = pass.read(culled_indirect, frame_graph::Use::indirect_read);
                 [[maybe_unused]] auto const planes =
                         pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                read_skinned_vertices(pass, geometry_stages);
                 if (meshlet_occlusion_active) {
                     // View [0], the history Hi-Z's (sampled by the task shaders' meshlet test), and the bits and
                     // counters this phase's task shaders record.
@@ -782,6 +843,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const commands = pass.read(late_indirect, frame_graph::Use::indirect_read);
                     [[maybe_unused]] auto const planes =
                             pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                    read_skinned_vertices(pass, geometry_stages);
                     if (meshlet_occlusion_active) {
                         // View [1], this frame's pyramid, sampled by the task shaders' meshlet test.
                         [[maybe_unused]] auto const views =
@@ -923,6 +985,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                                                  frame_graph::Use::indirect_read);
                 [[maybe_unused]] auto const planes =
                         pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+                read_skinned_vertices(pass, draw_stages);
                 if (meshlet_occlusion_active) {
                     [[maybe_unused]] auto const views =
                             pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));

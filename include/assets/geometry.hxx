@@ -2,7 +2,6 @@
 
 #include <volk.h>
 
-#include <cstddef>
 #include <cstdint>
 
 struct GeometrySlice {
@@ -46,4 +45,13 @@ struct MeshGeometry {
     VertexSlice vertices{};
     IndexSlice indices{};
     MeshletSlice meshlets{};
+
+    // GpuSkinVertex (gpu/skinning.hxx) per vertex, parallel to `vertices`; shared by every LOD like `vertices`.
+    // Invalid for unskinned geometry.
+    GeometrySlice skin{};
+
+    [[nodiscard]]
+    auto skinned() const noexcept -> bool {
+        return skin.valid();
+    }
 };

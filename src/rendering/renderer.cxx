@@ -1,8 +1,9 @@
 #include "rendering/renderer.hxx"
-#include "core/paths.hxx"
-#include "core/resources.hxx"
+#include "gpu/skinning.hxx"
 #include "core/error_describe.hxx"
+#include "core/paths.hxx"
 #include "core/perf_events.hxx"
+#include "core/resources.hxx"
 
 #include "gpu/device_wait.hxx"
 #include "rendering/frame_graph/compiler.hxx"
@@ -1047,6 +1048,26 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         pipeline_infos.push_back(std::move(outline_info));
     } // indices 31 (forward) and 32 (forward_instanced)
 
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = data_path("assets/shaders/skin.slang"),
+                                    .entry_point = FlyString{"main_cs"},
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.skin_pipeline",
+    }); // index 33: skin
+
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
     debug("[Renderer::initialize] register_pipelines_parallel returned {} results", registered_pipelines.size());
@@ -1089,6 +1110,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     instance_lod_pipeline_ = *registered_pipelines[30];
     forward_outline_pipeline_ = *registered_pipelines[31];
     forward_outline_instanced_pipeline_ = *registered_pipelines[32];
+    skin_pipeline_ = *registered_pipelines[33];
 
     {
         auto initialised = environment_.initialize(EnvironmentSystem::CreateInfo{
@@ -1209,6 +1231,9 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     maximum_draw_count_ = create_info.maximum_draw_count;
     maximum_submission_count_ = create_info.maximum_submission_count;
+    maximum_skin_palette_matrices_ = create_info.maximum_skin_palette_matrices;
+    maximum_skin_jobs_ = create_info.maximum_skin_jobs;
+    skin_scratch_capacity_ = create_info.skin_scratch_bytes;
     submissions_.reserve(maximum_submission_count_);
     model_submissions_.reserve(maximum_submission_count_);
     auto draw_size_result = checked_multiply(sizeof(GpuDraw), maximum_draw_count_);
@@ -1507,6 +1532,47 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.lod_jobs_buffer = std::move(*lod_jobs_buffer);
         frame.lod_jobs.reserve(maximum_lod_job_count);
 
+        // GPU skinning: host-written palette/jobs/chunk table, their device copy, and the skinned vertices.
+        {
+            auto skin_upload = Buffer::create(context_, BufferCreateInfo{
+                                                                .size = skin_input_size(),
+                                                                .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                                .memory = BufferMemory::upload,
+                                                                .debug_name = "renderer.frame_skin_upload",
+                                                        });
+            if (!skin_upload) {
+                return std::unexpected(make_device_error(skin_upload.error()));
+            }
+            frame.skin_upload_buffer = std::move(*skin_upload);
+
+            auto skin_input = create_shared_buffer(context_, BufferCreateInfo{
+                                                                     .size = skin_input_size(),
+                                                                     .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                     .memory = BufferMemory::device,
+                                                                     .debug_name = "renderer.frame_skin_input",
+                                                             });
+            if (!skin_input) {
+                return std::unexpected(make_device_error(skin_input.error()));
+            }
+            frame.skin_input_buffer = std::move(*skin_input);
+
+            auto skin_scratch = create_shared_buffer(context_, BufferCreateInfo{
+                                                                       .size = std::max<VkDeviceSize>(
+                                                                               skin_scratch_capacity_, 256),
+                                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                       .memory = BufferMemory::device,
+                                                                       .debug_name = "renderer.frame_skin_scratch",
+                                                               });
+            if (!skin_scratch) {
+                return std::unexpected(make_device_error(skin_scratch.error()));
+            }
+            frame.skin_scratch_buffer = std::move(*skin_scratch);
+            frame.skin_jobs.reserve(maximum_skin_jobs_);
+        }
+
         auto lights_buffer = create_shared_buffer(context_, BufferCreateInfo{
                                                                     .size = sizeof(GpuLight) * maximum_light_count,
                                                                     .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -1728,6 +1794,9 @@ auto Renderer::destroy() noexcept -> void {
         frame.late_indirect_buffer.destroy();
         frame.cull_chunks_buffer.destroy();
         frame.lod_jobs_buffer.destroy();
+        frame.skin_scratch_buffer.destroy();
+        frame.skin_input_buffer.destroy();
+        frame.skin_upload_buffer.destroy();
         frame.retired_buffers.clear();
         frame.occlusion_candidates_buffer.destroy();
         frame.occlusion_views_buffer.destroy();
@@ -1798,6 +1867,9 @@ auto Renderer::destroy() noexcept -> void {
 
     maximum_draw_count_ = 0;
     maximum_submission_count_ = 0;
+    maximum_skin_palette_matrices_ = 0;
+    maximum_skin_jobs_ = 0;
+    skin_scratch_capacity_ = 0;
 
     hdr_format_ = VK_FORMAT_UNDEFINED;
     depth_format_ = VK_FORMAT_UNDEFINED;
@@ -2031,6 +2103,8 @@ auto Renderer::create_model_common(
             .bounds_min = model.bounds_min,
             .bounds_max = model.bounds_max,
             .lights = model.lights,
+            .animation = model.animation,
+            .skin_inflate = model.skin_inflate,
     });
 
     if (!handle) {
@@ -2053,6 +2127,11 @@ auto Renderer::model_bounds(ModelHandle model) const -> std::optional<std::pair<
     }
 
     return std::make_pair(slot->bounds_min, slot->bounds_max);
+}
+
+auto Renderer::model_animation(ModelHandle model) const -> std::shared_ptr<ModelAnimationData const> {
+    auto const *slot = model_slot(model);
+    return slot != nullptr ? slot->animation : nullptr;
 }
 
 auto Renderer::model_submesh_bounds(ModelHandle model) const
@@ -2168,8 +2247,8 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
     return {};
 }
 
-auto Renderer::resident_lod_groups(Submesh const &submesh,
-                                   MaterialHandle base_material) const noexcept -> ResidentLodGroups {
+auto Renderer::resident_lod_groups(Submesh const &submesh, MaterialHandle base_material) const noexcept
+        -> ResidentLodGroups {
     ResidentLodGroups result;
 
     for (std::uint32_t lod = 0; lod < lod_count; ++lod) {
@@ -2302,11 +2381,43 @@ auto Renderer::submit_resident_instances(ModelHandle model, std::span<glm::mat4 
     return true;
 }
 
+auto Renderer::set_skin_palette(std::span<glm::mat4 const> palette) -> std::expected<void, RendererError> {
+    if (palette.size() > maximum_skin_palette_matrices_) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    skin_palette_.assign(palette.begin(), palette.end());
+    return {};
+}
+
+auto Renderer::append_skin_palette(std::span<glm::mat4 const> palette) -> std::expected<std::uint32_t, RendererError> {
+    if (palette.size() > maximum_skin_palette_matrices_ - std::min<std::size_t>(skin_palette_.size(),
+                                                                                  maximum_skin_palette_matrices_)) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    auto const offset = static_cast<std::uint32_t>(skin_palette_.size());
+    skin_palette_.insert(skin_palette_.end(), palette.begin(), palette.end());
+    return offset;
+}
+
 auto Renderer::submit_model_instances(ModelHandle model, std::span<glm::mat4 const> transforms,
-                                      MaterialHandle material_override,
-                                      std::uint64_t resident_revision) -> std::expected<void, RendererError> {
-    if (model_slot(model) == nullptr) {
+                                      MaterialHandle material_override, std::uint64_t resident_revision,
+                                      std::span<std::uint32_t const> palette_offsets)
+        -> std::expected<void, RendererError> {
+    auto const *model_data = model_slot(model);
+
+    if (model_data == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
+    }
+
+    if (!palette_offsets.empty() && palette_offsets.size() != transforms.size()) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    // Skinned models need their per-instance vertex streams, which the GPU-picked resident path doesn't have.
+    if (model_data->animation != nullptr) {
+        resident_revision = 0;
     }
 
     if (resident_revision != 0 && !transforms.empty() &&
@@ -2328,8 +2439,11 @@ auto Renderer::submit_model_instances(ModelHandle model, std::span<glm::mat4 con
             .first_transform = static_cast<std::uint32_t>(instance_transforms_.size()),
             .transform_count = static_cast<std::uint32_t>(transforms.size()),
             .model_submission_position = model_submissions_.size(),
+            .first_palette_offset = static_cast<std::uint32_t>(instance_palette_offsets_.size()),
+            .palette_count = static_cast<std::uint32_t>(palette_offsets.size()),
     });
     instance_transforms_.insert(instance_transforms_.end(), transforms.begin(), transforms.end());
+    instance_palette_offsets_.insert(instance_palette_offsets_.end(), palette_offsets.begin(), palette_offsets.end());
 
     return {};
 }
@@ -2423,7 +2537,8 @@ auto Renderer::outline_variant(MaterialHandle source) -> MaterialHandle {
         return source;
     }
 
-    outline_variants_.push_back(OutlineVariant{.source = source, .variant = *created, .refreshed_frame = frame_counter_});
+    outline_variants_.push_back(
+            OutlineVariant{.source = source, .variant = *created, .refreshed_frame = frame_counter_});
 
     return *created;
 }
@@ -2506,8 +2621,8 @@ auto Renderer::register_material_name(MaterialHandle handle, std::string name) -
     return true;
 }
 
-auto Renderer::request_texture(AssetPath source_path, TextureRole role, ImageHandle fallback,
-                               std::string debug_name) -> ImageHandle {
+auto Renderer::request_texture(AssetPath source_path, TextureRole role, ImageHandle fallback, std::string debug_name)
+        -> ImageHandle {
     // The handle is stable across the pending-to-loaded upgrade, so it can be named right away.
     auto const handle =
             texture_streamer_.request(image_storage_, std::move(source_path), role, fallback, FlyString{debug_name});
@@ -2593,6 +2708,12 @@ namespace {
             return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
 
+        for (auto const &lod: lods) {
+            if (lod.skin.valid() && lod.skin.size != VkDeviceSize{lod.vertices.vertex_count} * sizeof(GpuSkinVertex)) {
+                return std::unexpected(make_error(RendererErrorType::invalid_argument));
+            }
+        }
+
         auto stride = index_stride(lod0.indices.index_type);
 
         if (!stride) {
@@ -2672,6 +2793,7 @@ namespace {
 
         for (auto const &lod: submesh.lods) {
             retire_once(lod.vertices.bytes);
+            retire_once(lod.skin);
             retire_once(lod.indices.bytes);
             retire_once(lod.meshlets.descriptors);
             retire_once(lod.meshlets.data);
@@ -2967,6 +3089,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     frame.indirect_command_count = 0;
     frame.cull_chunk_count = 0;
     frame.lod_chunk_count = 0;
+    frame.skin_jobs.clear();
+    frame.skin_scratch_used = 0;
+    frame.skin_palette_count = 0;
+    frame.skin_chunk_total = 0;
+    frame.skin_fallback_instances = 0;
+    frame.skinned_vertices = 0;
     frame.lod_jobs.clear();
     frame.cpu_instance_ranges.clear();
     frame.opaque_indirect_count = 0;
@@ -2981,8 +3109,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     ++batch_frame_;
 
     if (batch_frame_ == 0) {
-        for (auto &[key, batch]: batches_) {
-            static_cast<void>(key);
+        for (auto &batch: batches_ | std::views::values) {
             batch.frame_stamp = 0;
         }
         batch_frame_ = 1;
@@ -3024,6 +3151,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             batch.lod_group = 0;
             batch.resident_capacity = 0;
             batch.transforms.clear();
+            batch.palette_offsets.clear();
+            auto const *batch_mesh = mesh_slot(mesh);
+            batch.skinned = batch_mesh != nullptr && submesh_index < batch_mesh->submeshes.size() &&
+                            batch_mesh->submeshes[submesh_index].lods[lod_index].skinned();
             batch.frame_stamp = batch_frame_;
             active_batches_.push_back(&batch);
         }
@@ -3033,7 +3164,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     auto const append_batch_transform = [&batch_for](BatchKey const &key, MeshHandle mesh, std::uint32_t submesh_index,
                                                      MaterialHandle material, std::uint32_t lod_index,
                                                      glm::mat4 const *transform) {
-        batch_for(key, mesh, submesh_index, material, lod_index).transforms.push_back(transform);
+        auto &batch = batch_for(key, mesh, submesh_index, material, lod_index);
+        batch.transforms.push_back(transform);
+        if (batch.skinned) {
+            batch.palette_offsets.push_back(BatchEntry::no_palette);
+        }
     };
 
     // Instanced submissions share model, material and slot overrides across their instances, so materials resolve once
@@ -3113,6 +3248,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
         auto const transforms =
                 std::span{instance_transforms_}.subspan(instanced.first_transform, instanced.transform_count);
+        auto const palette_offsets =
+                std::span{instance_palette_offsets_}.subspan(instanced.first_palette_offset, instanced.palette_count);
+
+        // The palette an instance names must hold the whole skeleton; otherwise it draws at rest.
+        auto const joint_count =
+                model->animation != nullptr ? static_cast<std::uint64_t>(model->animation->skeleton.joint_count()) : 0U;
 
         for (auto const &model_draw: model->draws) {
             auto const *mesh = mesh_slot(model_draw.mesh);
@@ -3130,7 +3271,16 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
             auto const identity_local = model_draw.local_transform == glm::mat4{1.0F};
 
-            for (auto const &transform: transforms) {
+            for (std::size_t instance_index = 0; instance_index < transforms.size(); ++instance_index) {
+                auto const &transform = transforms[instance_index];
+                auto palette_offset = BatchEntry::no_palette;
+                if (instance_index < palette_offsets.size()) {
+                    palette_offset = palette_offsets[instance_index];
+                    if (palette_offset == BatchEntry::no_palette ||
+                        std::uint64_t{palette_offset} + joint_count > skin_palette_.size() || joint_count == 0) {
+                        palette_offset = BatchEntry::no_palette;
+                    }
+                }
                 // The block of transforms outlives the batches; only a non-identity local transform needs a copy.
                 auto const *instance_transform = &transform;
                 if (!identity_local) {
@@ -3153,6 +3303,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                 model_draw.mesh, submesh_index, material, lod_index);
                     }
                     batch->transforms.push_back(instance_transform);
+                    if (batch->skinned) {
+                        batch->palette_offsets.push_back(palette_offset);
+                    }
                 }
             }
         }
@@ -3336,11 +3489,43 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                                ? meshlet_layout.reserve(instance_count, geometry.meshlets.meshlet_count)
                                                : std::uint64_t{0};
 
+        // Skinned instances read their own deformed copy of the vertices, written by skin.slang to the frame's scratch
+        // buffer. LODs share one vertex stream, so a job covers every LOD of its submesh.
+        auto const skin_stream = !resident && batch.skinned && batch.palette_offsets.size() == instance_count;
+        auto const skin_vertex_count = geometry.vertices.vertex_count;
+        auto const skin_bytes = (VkDeviceSize{skin_vertex_count} * sizeof(CompressedModelVertex) + 15U) & ~VkDeviceSize{15U};
+
         auto *const draw_out = frame.upload_buffer.mapped_data() + frame.draw_upload_offset +
                                static_cast<std::size_t>(first_instance) * sizeof(GpuDraw);
         for (std::uint32_t instance = 0; !resident && instance < instance_count; ++instance) {
+            auto instance_vertex_address = vertex_address;
+
+            if (skin_stream) {
+                auto const palette_offset = batch.palette_offsets[instance];
+
+                if (palette_offset != BatchEntry::no_palette) {
+                    if (frame.skin_jobs.size() < maximum_skin_jobs_ &&
+                        frame.skin_scratch_used + skin_bytes <= skin_scratch_capacity_) {
+                        instance_vertex_address = frame.skin_scratch_buffer.device_address + frame.skin_scratch_used;
+                        frame.skin_jobs.push_back(GpuSkinJob{
+                                .rest_vertex_addr = vertex_address,
+                                .skin_addr = geometry_arena_.device_address(geometry.skin),
+                                .out_addr = instance_vertex_address,
+                                .vertex_count = skin_vertex_count,
+                                .palette_offset = palette_offset,
+                        });
+                        frame.skin_scratch_used += skin_bytes;
+                        frame.skinned_vertices += skin_vertex_count;
+                    } else {
+                        ++frame.skin_fallback_instances;
+                    }
+                } else {
+                    ++frame.skin_fallback_instances;
+                }
+            }
+
             auto const draw = GpuDraw{
-                    .vertex_address = vertex_address,
+                    .vertex_address = instance_vertex_address,
                     .meshlet_address = meshlet_address,
                     .meshlet_data_address = meshlet_data_address,
                     .material_index = material_index,
@@ -3513,7 +3698,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         // A resident group's instances change LOD on the GPU as the camera moves, which this signature can't see.
         has_animated_shadow_casters = has_animated_shadow_casters ||
                                       (material != nullptr && std::abs(material->wind_strength) > 1e-6F) ||
-                                      batch->lod_job != BatchEntry::no_lod_job;
+                                      batch->lod_job != BatchEntry::no_lod_job ||
+                                      // Skinned vertices change every frame.
+                                      batch->skinned;
     }
     current_shadow_scene_signature =
             shadow_signature_combine(current_shadow_scene_signature, shadow_caster_batch_count);
@@ -3593,6 +3780,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     if (!material_result) {
         clear_submissions();
         return std::unexpected(make_material_error(material_result.error()));
+    }
+
+    if (auto skin_result = prepare_skin_upload(frame); !skin_result) {
+        clear_submissions();
+        return std::unexpected(skin_result.error());
     }
 
     if (auto upload_result = upload_frame_data(command_buffer, frame); !upload_result) {
@@ -3965,6 +4157,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             // Resident groups reserve a slot per instance of their model; count the instances once.
             .submitted_instance_count = static_cast<std::uint32_t>(frame.transform_count - resident_reserved_slots +
                                                                    resident_instance_count),
+            .skin_job_count = static_cast<std::uint32_t>(frame.skin_jobs.size()),
+            .skinned_vertex_count = frame.skinned_vertices,
+            .skin_scratch_bytes_used = frame.skin_scratch_used,
+            .skin_fallback_instance_count = frame.skin_fallback_instances,
             .indirect_command_count = frame.indirect_command_count,
             .opaque_indirect_count = frame.opaque_indirect_count,
             .double_sided_indirect_count = frame.double_sided_indirect_count,
@@ -4097,8 +4293,84 @@ auto Renderer::record_resident_instance_uploads(VkCommandBuffer command_buffer, 
     }
 }
 
-auto Renderer::record_instance_lods(render_pass::Context const &pass_context,
-                                    RendererFrame const &frame) -> std::expected<void, RendererError> {
+auto Renderer::prepare_skin_upload(RendererFrame &frame) -> std::expected<void, RendererError> {
+    if (frame.skin_jobs.empty()) {
+        return {};
+    }
+
+    if (!frame.skin_upload_buffer.mapped()) {
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
+    frame.skin_palette_count = static_cast<std::uint32_t>(skin_palette_.size());
+    auto const table = skin_chunk_table(frame.skin_jobs);
+    frame.skin_chunk_total = table.back();
+
+    auto const palette_bytes = std::as_bytes(std::span{skin_palette_});
+    auto const jobs_bytes = std::as_bytes(std::span{frame.skin_jobs});
+    auto const table_bytes = std::as_bytes(std::span{table});
+
+    if (!palette_bytes.empty() && !frame.skin_upload_buffer.write(0, palette_bytes)) {
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+    if (!frame.skin_upload_buffer.write(skin_jobs_offset(), jobs_bytes) ||
+        !frame.skin_upload_buffer.write(skin_chunks_offset(), table_bytes)) {
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
+    return {};
+}
+
+auto Renderer::record_skin_upload(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void {
+    std::array<VkBufferCopy, 3> regions{};
+    std::uint32_t count = 0;
+
+    auto const add = [&](VkDeviceSize offset, VkDeviceSize size) {
+        if (size != 0) {
+            regions[count++] = VkBufferCopy{.srcOffset = offset, .dstOffset = offset, .size = size};
+        }
+    };
+
+    add(0, VkDeviceSize{frame.skin_palette_count} * sizeof(glm::mat4));
+    add(skin_jobs_offset(), frame.skin_jobs.size() * sizeof(GpuSkinJob));
+    add(skin_chunks_offset(), (frame.skin_jobs.size() + 1) * sizeof(std::uint32_t));
+
+    vkCmdCopyBuffer(command_buffer, frame.skin_upload_buffer.buffer, frame.skin_input_buffer.buffer, count,
+                    regions.data());
+}
+
+auto Renderer::record_skin(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    auto const command_buffer = pass_context.command_buffer;
+
+    if (frame.skin_jobs.empty()) {
+        return {};
+    }
+
+    auto const layout = resolve_layout(pipeline_graph_, skin_pipeline_);
+    if (layout == VK_NULL_HANDLE) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    bind_compute_node(pipeline_graph_, skin_pipeline_, command_buffer);
+    gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+    auto const base = frame.skin_input_buffer.device_address;
+    SkinPushConstants const pc{
+            .jobs_address = base + skin_jobs_offset(),
+            .job_first_chunk_address = base + skin_chunks_offset(),
+            .palette_address = base,
+            .job_count = static_cast<std::uint32_t>(frame.skin_jobs.size()),
+            .chunk_count = frame.skin_chunk_total,
+    };
+
+    vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+    dispatch_linear(command_buffer, pc.chunk_count);
+    return {};
+}
+
+auto Renderer::record_instance_lods(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
     auto const command_buffer = pass_context.command_buffer;
 
     if (frame.lod_jobs.empty()) {
@@ -4804,15 +5076,14 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .meshlet_culling = meshlet_culling_,
                     .opaque_pipeline = forward_outline_pipeline_,
                     .blend_pipeline = forward_blend_pipeline_,
-                    .opaque_instanced_pipeline =
-                            forward_outline_instanced_pipeline_,
+                    .opaque_instanced_pipeline = forward_outline_instanced_pipeline_,
                     .blend_instanced_pipeline = forward_blend_instanced_pipeline_,
                     .skybox_pipeline = skybox_pipeline_,
                     .draw_skybox = (environment_.ubo_block().flags & environment_flag::skybox) != 0U,
                     .ao_texture_index = ao_texture_index,
                     .ao_sampler_index = sampler_storage_.linear_clamp().index,
                     .outline_mask = true,
-                                },
+            },
             scene_overlays);
 }
 
@@ -5386,6 +5657,8 @@ auto Renderer::clear_submissions() noexcept -> void {
     slot_override_submissions_.clear();
     instanced_submissions_.clear();
     instance_transforms_.clear();
+    instance_palette_offsets_.clear();
+    skin_palette_.clear();
     resident_slots_this_frame_ = 0;
     resident_jobs_this_frame_ = 0;
     point_light_submissions_.clear();

@@ -17,6 +17,7 @@ static_assert(sizeof(CompressedModelVertex) == 20, "CompressedModelVertex change
 static_assert(sizeof(GpuMeshlet) == 48, "GpuMeshlet changed: bump cooked_model_version");
 static_assert(meshlet_max_vertices == 64 && meshlet_max_triangles == 124,
               "meshlet limits changed: bump cooked_model_version");
+static_assert(sizeof(SkinVertex) == 16, "SkinVertex changed: bump cooked_model_version");
 static_assert(lod_count <= 8, "the LOD mask is 8 bits");
 
 namespace {
@@ -124,6 +125,325 @@ namespace {
         }
 
         return true;
+    }
+
+    // ---- v3 trailing skin section: per-primitive SkinVertex streams, then skeleton + clips. ----
+    inline constexpr std::uint32_t max_skin_joints = 4096;
+    inline constexpr std::uint32_t max_skin_clips = 4096;
+    inline constexpr std::uint32_t max_track_keys = 1U << 22U;
+
+    auto write_pose(ByteWriter &writer, Animation::Pose const &pose) -> void {
+        for (std::size_t i = 0; i < pose.size(); ++i) {
+            auto const joint = pose.joint(i);
+            write_vec3(writer, joint.translation);
+            write_vec4(writer, glm::vec4{joint.rotation.x, joint.rotation.y, joint.rotation.z, joint.rotation.w});
+            write_vec3(writer, joint.scale);
+        }
+    }
+
+    auto read_pose(ByteReader &reader, std::size_t count) -> Animation::Pose {
+        Animation::Pose pose{count};
+        for (std::size_t i = 0; i < count && reader.ok(); ++i) {
+            auto const t = read_vec3(reader);
+            auto const q = read_vec4(reader);
+            auto const s = read_vec3(reader);
+            pose.set_joint(i, {t, glm::quat{q.w, q.x, q.y, q.z}, s});
+        }
+        return pose;
+    }
+
+    auto write_vec3_tracks(ByteWriter &writer, std::vector<Animation::Vec3Track> const &tracks) -> void {
+        writer.write(static_cast<std::uint32_t>(tracks.size()));
+        for (auto const &track: tracks) {
+            writer.write(track.joint);
+            writer.write_array(track.times);
+            for (auto const &value: track.values) {
+                write_vec3(writer, value);
+            }
+        }
+    }
+
+    auto write_quat_tracks(ByteWriter &writer, std::vector<Animation::QuatTrack> const &tracks) -> void {
+        writer.write(static_cast<std::uint32_t>(tracks.size()));
+        for (auto const &track: tracks) {
+            writer.write(track.joint);
+            writer.write_array(track.times);
+            for (auto const &value: track.values) {
+                write_vec4(writer, glm::vec4{value.x, value.y, value.z, value.w});
+            }
+        }
+    }
+
+    auto read_track_header(ByteReader &reader, std::size_t joint_count, std::uint32_t &joint,
+                           std::vector<float> &times) -> bool {
+        joint = reader.read<std::uint32_t>();
+        reader.read_array(times);
+        if (reader.failed() || joint >= joint_count || times.size() > max_track_keys || times.empty()) {
+            reader.fail();
+            return false;
+        }
+        for (std::size_t i = 0; i < times.size(); ++i) {
+            if (!std::isfinite(times[i]) || (i > 0 && !(times[i] > times[i - 1]))) {
+                reader.fail();
+                return false;
+            }
+        }
+        if (reader.remaining() < times.size() * 12) {
+            reader.fail();
+            return false;
+        }
+        return true;
+    }
+
+    auto read_vec3_tracks(ByteReader &reader, std::size_t joint_count, std::vector<Animation::Vec3Track> &tracks)
+            -> void {
+        auto const count = reader.read<std::uint32_t>();
+        if (reader.failed() || count > joint_count) {
+            reader.fail();
+            return;
+        }
+        tracks.resize(count);
+        for (auto &track: tracks) {
+            if (!read_track_header(reader, joint_count, track.joint, track.times)) {
+                return;
+            }
+            track.values.resize(track.times.size());
+            for (auto &value: track.values) {
+                value = read_vec3(reader);
+                if (!all_finite(value)) {
+                    reader.fail();
+                }
+            }
+        }
+    }
+
+    auto read_quat_tracks(ByteReader &reader, std::size_t joint_count, std::vector<Animation::QuatTrack> &tracks)
+            -> void {
+        auto const count = reader.read<std::uint32_t>();
+        if (reader.failed() || count > joint_count) {
+            reader.fail();
+            return;
+        }
+        tracks.resize(count);
+        for (auto &track: tracks) {
+            if (!read_track_header(reader, joint_count, track.joint, track.times)) {
+                return;
+            }
+            track.values.resize(track.times.size());
+            for (auto &value: track.values) {
+                auto const v = read_vec4(reader);
+                if (!all_finite(v)) {
+                    reader.fail();
+                }
+                value = glm::quat{v.w, v.x, v.y, v.z};
+            }
+        }
+    }
+
+    auto write_skin_section(ByteWriter &writer, ModelCpuData const &cpu_data) -> std::optional<LbfError> {
+        for (auto const &mesh: cpu_data.meshes) {
+            for (auto const &primitive: mesh.primitives) {
+                auto const &skin = primitive.skin;
+
+                if (skin.empty()) {
+                    writer.write(static_cast<std::uint8_t>(0));
+                    continue;
+                }
+
+                if (skin.size() != primitive.compressed_vertices.size()) {
+                    return make_error(LbfErrorType::cook_failed, "skin stream doesn't match the vertex count");
+                }
+
+                std::vector<std::byte> encoded(meshopt_encodeVertexBufferBound(skin.size(), sizeof(SkinVertex)));
+                auto const encoded_size = meshopt_encodeVertexBuffer(
+                        reinterpret_cast<unsigned char *>(encoded.data()), encoded.size(), skin.data(), skin.size(),
+                        sizeof(SkinVertex));
+
+                if (encoded_size == 0) {
+                    return make_error(LbfErrorType::cook_failed, "meshopt_encodeVertexBuffer failed for skin");
+                }
+
+                writer.write(static_cast<std::uint8_t>(1));
+                writer.write(static_cast<std::uint32_t>(encoded_size));
+                writer.write_span(std::span<std::byte const>{encoded}.first(encoded_size));
+            }
+        }
+
+        auto const *animation = cpu_data.animation.get();
+        writer.write(static_cast<std::uint8_t>(animation != nullptr ? 1 : 0));
+
+        if (animation == nullptr) {
+            return std::nullopt;
+        }
+
+        auto const &skeleton = animation->skeleton;
+        writer.write(static_cast<std::uint32_t>(skeleton.joint_count()));
+        for (std::size_t i = 0; i < skeleton.joint_count(); ++i) {
+            writer.write_string(skeleton.names()[i]);
+            writer.write(skeleton.parents()[i]);
+        }
+        write_pose(writer, skeleton.bind_pose());
+        for (auto const &matrix: skeleton.inverse_bind()) {
+            writer.write_span(std::span<float const>{&matrix[0][0], 16});
+        }
+
+        writer.write(static_cast<std::uint32_t>(animation->clips.size()));
+        for (auto const &clip: animation->clips) {
+            writer.write_string(clip.name);
+            writer.write(clip.duration);
+            write_pose(writer, clip.base);
+            write_vec3_tracks(writer, clip.translations);
+            write_quat_tracks(writer, clip.rotations);
+            write_vec3_tracks(writer, clip.scales);
+        }
+
+        return std::nullopt;
+    }
+
+    // Returns false (reader failed) on a malformed section.
+    auto read_skin_section(ByteReader &reader, ModelCpuData &cpu_data) -> void {
+        for (auto &mesh: cpu_data.meshes) {
+            for (auto &primitive: mesh.primitives) {
+                auto const present = reader.read<std::uint8_t>();
+
+                if (reader.failed() || present > 1) {
+                    reader.fail();
+                    return;
+                }
+
+                if (present == 0) {
+                    continue;
+                }
+
+                auto const encoded_size = reader.read<std::uint32_t>();
+                auto const encoded = reader.read_bytes(encoded_size);
+                auto const vertex_count = primitive.compressed_vertices.size();
+
+                if (reader.failed() || vertex_count / 16 > encoded_size) {
+                    reader.fail();
+                    return;
+                }
+
+                primitive.skin.resize(vertex_count);
+
+                if (meshopt_decodeVertexBuffer(primitive.skin.data(), vertex_count, sizeof(SkinVertex),
+                                               reinterpret_cast<unsigned char const *>(encoded.data()),
+                                               encoded.size()) != 0) {
+                    reader.fail();
+                    return;
+                }
+            }
+        }
+
+        auto const has_animation = reader.read<std::uint8_t>();
+
+        if (reader.failed() || has_animation > 1) {
+            reader.fail();
+            return;
+        }
+
+        std::uint32_t joint_count = 0;
+
+        if (has_animation == 1) {
+            joint_count = reader.read<std::uint32_t>();
+
+            if (reader.failed() || joint_count == 0 || joint_count > max_skin_joints) {
+                reader.fail();
+                return;
+            }
+
+            std::vector<std::string> names(joint_count);
+            std::vector<std::int32_t> parents(joint_count);
+
+            for (std::uint32_t i = 0; i < joint_count; ++i) {
+                reader.read_string(names[i]);
+                parents[i] = reader.read<std::int32_t>();
+
+                if (reader.failed() || names[i].size() > max_debug_name_length ||
+                    parents[i] >= static_cast<std::int32_t>(i) || parents[i] < Animation::no_parent) {
+                    reader.fail();
+                    return;
+                }
+            }
+
+            auto bind = read_pose(reader, joint_count);
+            std::vector<glm::mat4> inverse_bind(joint_count);
+
+            for (auto &matrix: inverse_bind) {
+                reader.read_span(std::span<float>{&matrix[0][0], 16});
+            }
+
+            if (reader.failed()) {
+                return;
+            }
+
+            auto const finite = [](glm::mat4 const &m) {
+                return all_finite(m[0]) && all_finite(m[1]) && all_finite(m[2]) && all_finite(m[3]);
+            };
+
+            for (std::uint32_t i = 0; i < joint_count; ++i) {
+                auto const joint = bind.joint(i);
+
+                if (!all_finite(joint.translation) || !all_finite(joint.scale) ||
+                    !std::isfinite(joint.rotation.x + joint.rotation.y + joint.rotation.z + joint.rotation.w) ||
+                    !finite(inverse_bind[i])) {
+                    reader.fail();
+                    return;
+                }
+            }
+
+            auto animation = std::make_shared<ModelAnimationData>(ModelAnimationData{
+                    Animation::Skeleton{std::move(names), std::move(parents), std::move(bind), std::move(inverse_bind)},
+                    {},
+            });
+
+            auto const clip_count = reader.read<std::uint32_t>();
+
+            if (reader.failed() || clip_count > max_skin_clips) {
+                reader.fail();
+                return;
+            }
+
+            animation->clips.resize(clip_count);
+
+            for (auto &clip: animation->clips) {
+                reader.read_string(clip.name);
+                reader.read(clip.duration);
+                clip.base = read_pose(reader, joint_count);
+                read_vec3_tracks(reader, joint_count, clip.translations);
+                read_quat_tracks(reader, joint_count, clip.rotations);
+                read_vec3_tracks(reader, joint_count, clip.scales);
+
+                if (reader.failed() || clip.name.size() > max_debug_name_length || !std::isfinite(clip.duration)) {
+                    reader.fail();
+                    return;
+                }
+            }
+
+            cpu_data.animation = std::move(animation);
+        }
+
+        for (auto const &mesh: cpu_data.meshes) {
+            for (auto const &primitive: mesh.primitives) {
+                for (auto const &vertex: primitive.skin) {
+                    std::uint32_t weight_sum = 0;
+
+                    for (std::size_t k = 0; k < 4; ++k) {
+                        weight_sum += vertex.weights[k];
+
+                        if (vertex.weights[k] != 0 && vertex.joints[k] >= joint_count) {
+                            reader.fail();
+                            return;
+                        }
+                    }
+
+                    if (weight_sum != 65535) {
+                        reader.fail();
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     auto accumulate_bounds(ModelCpuData const &cpu_data, std::uint32_t node_index, glm::mat4 const &parent,
@@ -494,6 +814,10 @@ auto encode_cooked_model(ModelCpuData const &cpu_data, std::span<CookedImageRef 
         }
     }
 
+    if (auto const error = write_skin_section(writer, cpu_data)) {
+        return std::unexpected(*error);
+    }
+
     return writer.take();
 }
 
@@ -689,6 +1013,11 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
                 read_meshlets(reader, primitive.meshlets[level].emplace(), vertex_count);
             }
         }
+    }
+
+    // v3 appends the skin section; v1/v2 payloads simply end after the meshes.
+    if (version >= 3 && !reader.failed()) {
+        read_skin_section(reader, cpu_data);
     }
 
     if (reader.failed()) {

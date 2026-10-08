@@ -8,6 +8,7 @@
 
 #include "core/forward.hxx"
 #include "core/transform.hxx"
+#include "physics/capsule_sweep.hxx"
 #include "physics/debug_lines.hxx"
 #include "physics/physics.hxx"
 #include "physics/physics_components.hxx"
@@ -43,11 +44,11 @@ struct TerrainColliderDesc {
     float max_height = 2.0F;
 };
 
-class PhysicsWorld {
+class PhysicsWorld final : public CapsuleSweep {
 public:
     // `registry` must outlive this PhysicsWorld; the destructor removes remaining PhysicsBody components.
     PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool, entt::registry &registry);
-    ~PhysicsWorld();
+    ~PhysicsWorld() override;
 
     PhysicsWorld(PhysicsWorld const &) = delete;
     auto operator=(PhysicsWorld const &) -> PhysicsWorld & = delete;
@@ -95,6 +96,10 @@ public:
     [[nodiscard]] auto raycast(glm::vec3 const &from, glm::vec3 const &to) const -> std::optional<RaycastHit>;
     [[nodiscard]] auto raycast(glm::vec3 const &origin, glm::vec3 const &direction, float max_distance) const
             -> std::optional<RaycastHit>;
+
+    // Convex capsule sweep (see CapsuleSweep). Ignores `ignore`'s body so a character with a collider can't hit itself.
+    [[nodiscard]] auto sweep_capsule(glm::vec3 const &from, glm::vec3 const &to, float radius, float height,
+                                     entt::entity ignore) const -> std::optional<SweepHit> override;
 
 private:
     struct Impl;

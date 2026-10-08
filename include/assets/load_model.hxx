@@ -23,6 +23,7 @@
 #include "core/paths.hxx"
 #include "assets/geometry_arena.hxx"
 #include "assets/material.hxx"
+#include "assets/model_skin.hxx"
 #include "assets/meshlet.hxx"
 #include "assets/model_load_profile.hxx"
 #include "assets/texture_streamer.hxx"
@@ -80,6 +81,13 @@ struct Model {
     glm::vec3 bounds_max{0.5F};
 
     std::vector<ModelCpuLight> lights{};
+
+    // Skeleton + clips when any primitive is skinned, else null. Reachable via Renderer::model_animation().
+    std::shared_ptr<ModelAnimationData const> animation;
+
+    // Model-space distance by which skinned vertices may leave their rest pose (already folded into the
+    // bounds above and every skinned submesh's bounds/meshlet radii). 0 for unskinned models.
+    float skin_inflate = 0.0F;
 };
 
 enum class ModelLoadErrorType : std::uint8_t {
@@ -171,6 +179,10 @@ struct ModelCpuPrimitive {
     // Whether the glTF primitive had a TANGENT accessor. Only used between extract_primitive_cpu() and
     // finalize_primitive_cpu().
     bool has_tangents = false;
+
+    // Skinning stream parallel to `vertices`/`compressed_vertices` (same count and order); empty when the
+    // primitive isn't skinned. Deliberately not part of ModelVertex so the render vertex layout is untouched.
+    std::vector<SkinVertex> skin;
 };
 
 struct ModelCpuMesh {
@@ -185,6 +197,9 @@ struct ModelCpuData {
     std::vector<std::uint32_t> scene_roots;
     std::vector<ModelCpuLight> lights;
 
+    // Skeleton + clips of the glTF's first skin; null for models without one.
+    std::shared_ptr<ModelAnimationData const> animation;
+
     // Model-space AABB over every vertex, for producers without `vertices`; computed when unset.
     std::optional<std::pair<glm::vec3, glm::vec3>> bounds;
 
@@ -192,8 +207,9 @@ struct ModelCpuData {
     std::shared_ptr<ModelLoadProfile> profile;
 };
 
-auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices)
-        -> std::expected<void, ModelLoadError>;
+// `skin`, when non-null and parallel to `vertices`, is re-ordered/welded together with them.
+auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices,
+                       std::vector<SkinVertex> *skin = nullptr) -> std::expected<void, ModelLoadError>;
 
 // Simplified index buffers for LOD1..LOD(lod_count-1) from the final LOD0 buffers. Levels meshopt_simplify
 // can't reduce stay nullopt.
@@ -256,7 +272,18 @@ struct ModelGpuUpload {
     std::size_t material_cursor = 0;
     std::size_t mesh_cursor = 0;
     std::size_t primitive_cursor = 0;
+
+    // Computed lazily on the first skinned primitive; see compute_skin_inflate().
+    std::optional<float> skin_inflate;
+    bool any_skinned = false;
 };
+
+// Conservative model-space displacement bound of skinned vertices: the largest |skinned - rest| over sampled clip
+// poses (bind pose plus 16 phases per clip) and up to 1024 vertices per skinned primitive, times 1.25. Models
+// without clips fall back to the model bounding radius. Palettes outside the model's clips (IK, procedural) may
+// exceed this; such callers must keep their poses within it or accept popping at the culling edges.
+[[nodiscard]]
+auto compute_skin_inflate(ModelCpuData const &cpu_data) -> float;
 
 // Requests every texture `cpu_data` references from the streamer and returns the initial upload state. Render
 // thread only.

@@ -31,9 +31,11 @@
 #include <vector>
 
 #include "assets/material_storage.hxx"
+#include "assets/model_skin_import.hxx"
 #include "core/logger.hxx"
 #include "core/thread_pool.hxx"
 #include "gpu/image.hxx"
+#include "gpu/skinning.hxx"
 #include "gpu/image_storage.hxx"
 #include "gpu/sampler_storage.hxx"
 
@@ -291,12 +293,18 @@ namespace {
 
 } // namespace
 
-auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices)
-        -> std::expected<void, ModelLoadError> {
+auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices,
+                       std::vector<SkinVertex> *skin) -> std::expected<void, ModelLoadError> {
+    bool const has_skin = skin != nullptr && skin->size() == vertices.size();
+
     std::vector<ModelVertex> expanded(indices.size());
+    std::vector<SkinVertex> expanded_skin(has_skin ? indices.size() : 0);
 
     for (std::size_t index = 0; index < indices.size(); ++index) {
         expanded[index] = vertices[indices[index]];
+        if (has_skin) {
+            expanded_skin[index] = (*skin)[indices[index]];
+        }
     }
 
     MikktspaceUserData user_data{.vertices = &expanded};
@@ -322,12 +330,22 @@ auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint
 
     std::vector<unsigned int> remap(expanded.size());
 
-    auto const unique_vertex_count = meshopt_generateVertexRemap(remap.data(), nullptr, expanded.size(),
-                                                                 expanded.data(), expanded.size(), sizeof(ModelVertex));
+    std::array<meshopt_Stream, 2> const streams{{
+            {expanded.data(), sizeof(ModelVertex), sizeof(ModelVertex)},
+            {expanded_skin.data(), sizeof(SkinVertex), sizeof(SkinVertex)},
+    }};
+    auto const unique_vertex_count = meshopt_generateVertexRemapMulti(remap.data(), nullptr, expanded.size(),
+                                                                      expanded.size(), streams.data(),
+                                                                      has_skin ? 2 : 1);
 
     std::vector<ModelVertex> welded_vertices(unique_vertex_count);
     meshopt_remapVertexBuffer(welded_vertices.data(), expanded.data(), expanded.size(), sizeof(ModelVertex),
                               remap.data());
+    std::vector<SkinVertex> welded_skin(has_skin ? unique_vertex_count : 0);
+    if (has_skin) {
+        meshopt_remapVertexBuffer(welded_skin.data(), expanded_skin.data(), expanded.size(), sizeof(SkinVertex),
+                                  remap.data());
+    }
 
     std::vector<std::uint32_t> welded_indices(expanded.size());
     meshopt_remapIndexBuffer(welded_indices.data(), nullptr, expanded.size(), remap.data());
@@ -338,11 +356,20 @@ auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint
     meshopt_optimizeOverdraw(welded_indices.data(), welded_indices.data(), welded_indices.size(),
                              &welded_vertices[0].position.x, unique_vertex_count, sizeof(ModelVertex), 1.05F);
 
-    std::vector<ModelVertex> fetch_optimized_vertices(unique_vertex_count);
-    auto const fetch_remap_count =
-            meshopt_optimizeVertexFetch(fetch_optimized_vertices.data(), welded_indices.data(), welded_indices.size(),
-                                        welded_vertices.data(), unique_vertex_count, sizeof(ModelVertex));
-    fetch_optimized_vertices.resize(fetch_remap_count);
+    std::vector<unsigned int> fetch_remap(unique_vertex_count);
+    auto const fetch_remap_count = meshopt_optimizeVertexFetchRemap(fetch_remap.data(), welded_indices.data(),
+                                                                    welded_indices.size(), unique_vertex_count);
+    meshopt_remapIndexBuffer(welded_indices.data(), welded_indices.data(), welded_indices.size(), fetch_remap.data());
+
+    std::vector<ModelVertex> fetch_optimized_vertices(fetch_remap_count);
+    meshopt_remapVertexBuffer(fetch_optimized_vertices.data(), welded_vertices.data(), unique_vertex_count,
+                              sizeof(ModelVertex), fetch_remap.data());
+
+    if (has_skin) {
+        skin->assign(fetch_remap_count, SkinVertex{});
+        meshopt_remapVertexBuffer(skin->data(), welded_skin.data(), unique_vertex_count, sizeof(SkinVertex),
+                                  fetch_remap.data());
+    }
 
     vertices = std::move(fetch_optimized_vertices);
     indices = std::move(welded_indices);
@@ -406,7 +433,8 @@ auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *
 namespace {
 
     auto extract_primitive_cpu(fastgltf::Asset const &asset, fastgltf::Primitive const &primitive,
-                               ImportConvention const &convention, ModelLoadProfile *profile)
+                               ImportConvention const &convention, ModelLoadProfile *profile,
+                               std::span<std::uint32_t const> joint_remap = {})
             -> std::expected<ModelCpuPrimitive, ModelLoadError> {
         ScopedProfileSample extract_sample{profile != nullptr ? &profile->primitive_extract_ns : nullptr};
 
@@ -498,6 +526,18 @@ namespace {
             std::swap(indices[triangle + 1], indices[triangle + 2]);
         }
 
+        std::vector<SkinVertex> skin;
+
+        if (!joint_remap.empty()) {
+            auto skin_result = read_skin_vertices(asset, primitive, joint_remap, vertices.size());
+
+            if (!skin_result) {
+                return std::unexpected(skin_result.error());
+            }
+
+            skin = std::move(*skin_result);
+        }
+
         return ModelCpuPrimitive{
                 .vertices = std::move(vertices),
                 .indices = std::move(indices),
@@ -505,6 +545,7 @@ namespace {
                                           ? std::optional(static_cast<std::uint32_t>(*primitive.materialIndex))
                                           : std::nullopt,
                 .has_tangents = has_tangents,
+                .skin = std::move(skin),
         };
     }
 
@@ -512,11 +553,12 @@ namespace {
             -> std::expected<ModelCpuPrimitive, ModelLoadError> {
         auto vertices = std::move(raw.vertices);
         auto indices = std::move(raw.indices);
+        auto skin = std::move(raw.skin);
 
         if (!raw.has_tangents) {
             ScopedProfileSample const tangent_sample{profile != nullptr ? &profile->tangent_generation_ns : nullptr};
 
-            auto tangent_result = generate_tangents(vertices, indices);
+            auto tangent_result = generate_tangents(vertices, indices, &skin);
 
             if (!tangent_result) {
                 return std::unexpected(tangent_result.error());
@@ -536,6 +578,7 @@ namespace {
                 .indices = std::move(indices),
                 .reduced_indices = std::move(reduced_indices),
                 .material_index = raw.material_index,
+                .skin = std::move(skin),
         };
 
         prepare_primitive_gpu_data(finalized, profile);
@@ -977,12 +1020,27 @@ auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_s
 
     demote_opaque_blend_materials(cpu_data);
 
-    for (auto const &gltf_mesh: asset.meshes) {
+    auto skin_import = import_gltf_skin(asset, !convention.left_handed);
+
+    if (!skin_import) {
+        return std::unexpected(skin_import.error());
+    }
+
+    if (skin_import->has_value()) {
+        cpu_data.animation = (*skin_import)->data;
+    }
+
+    for (std::size_t mesh_index = 0; mesh_index < asset.meshes.size(); ++mesh_index) {
+        auto const &gltf_mesh = asset.meshes[mesh_index];
+        std::span<std::uint32_t const> const joint_remap =
+                skin_import->has_value() && (*skin_import)->mesh_is_skinned[mesh_index]
+                        ? std::span<std::uint32_t const>{(*skin_import)->joint_remap}
+                        : std::span<std::uint32_t const>{};
         ModelCpuMesh mesh;
         mesh.primitives.reserve(gltf_mesh.primitives.size());
 
         for (auto const &gltf_primitive: gltf_mesh.primitives) {
-            auto primitive = extract_primitive_cpu(asset, gltf_primitive, convention, profile_ptr);
+            auto primitive = extract_primitive_cpu(asset, gltf_primitive, convention, profile_ptr, joint_remap);
 
             if (!primitive) {
                 return std::unexpected(primitive.error());
@@ -1214,6 +1272,84 @@ auto start_model_gpu_upload(ModelCpuData cpu_data, ImageStorage &image_storage, 
     return upload;
 }
 
+auto compute_skin_inflate(ModelCpuData const &cpu_data) -> float {
+    auto const [model_min, model_max] = compute_model_bounds(cpu_data);
+    auto const fallback = glm::length(model_max - model_min) * 0.5F;
+
+    if (cpu_data.animation == nullptr || cpu_data.animation->clips.empty()) {
+        return fallback;
+    }
+
+    auto const &skeleton = cpu_data.animation->skeleton;
+    auto const joint_count = skeleton.joint_count();
+
+    // Gather the vertex samples once.
+    struct Sample {
+        glm::vec3 position;
+        GpuSkinVertex skin;
+    };
+
+    std::vector<Sample> samples;
+
+    for (auto const &mesh: cpu_data.meshes) {
+        for (auto const &primitive: mesh.primitives) {
+            auto const count = primitive.skin.size();
+
+            if (count == 0 || count != primitive.compressed_vertices.size()) {
+                continue;
+            }
+
+            auto const step = std::max<std::size_t>(1, count / 1024);
+
+            for (std::size_t i = 0; i < count; i += step) {
+                auto const packed = pack_gpu_skin_vertex(primitive.skin[i]);
+
+                if (!packed.has_value()) {
+                    break;
+                }
+
+                auto const &v = primitive.compressed_vertices[i];
+                samples.push_back({glm::vec3{glm::unpackHalf1x16(v.position_x), glm::unpackHalf1x16(v.position_y),
+                                             glm::unpackHalf1x16(v.position_z)},
+                                   *packed});
+            }
+        }
+    }
+
+    if (samples.empty()) {
+        return 0.0F;
+    }
+
+    std::vector<glm::mat4> palette(joint_count);
+    Animation::Pose pose{joint_count};
+    float max_displacement = 0.0F;
+
+    auto const measure = [&] {
+        Animation::compute_skinning_palette(skeleton, pose.view(), palette);
+
+        for (auto const &sample: samples) {
+            auto const skinned = skin_vertex(ModelVertex{.position = sample.position, .normal = {0.0F, 0.0F, 1.0F}, .tangent = {1.0F, 0.0F, 0.0F, 1.0F}}, sample.skin, palette);
+            max_displacement = std::max(max_displacement, glm::length(skinned.position - sample.position));
+        }
+    };
+
+    pose = skeleton.bind_pose();
+    measure();
+
+    constexpr std::uint32_t phases = 16;
+
+    for (auto const &imported: cpu_data.animation->clips) {
+        auto const clip = imported.make_clip();
+
+        for (std::uint32_t phase = 0; phase <= phases; ++phase) {
+            clip->sample(static_cast<float>(phase) / static_cast<float>(phases), pose.view());
+            measure();
+        }
+    }
+
+    return max_displacement * 1.25F;
+}
+
 auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
                            ImageStorage &image_storage, MaterialStorage &material_storage, std::uint32_t item_budget)
         -> std::expected<std::optional<Model>, ModelLoadError> {
@@ -1317,8 +1453,58 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
 
                 std::array<MeshGeometry, lod_count> lods{};
 
+                // Skin stream; any failure to pack leaves the primitive unskinned.
+                GeometrySlice skin_slice{};
+                std::vector<GpuSkinVertex> gpu_skin;
+
+                if (!cpu_primitive.skin.empty()) {
+                    gpu_skin.reserve(cpu_primitive.skin.size());
+
+                    for (auto const &skin_vertex_data: cpu_primitive.skin) {
+                        auto packed = pack_gpu_skin_vertex(skin_vertex_data);
+
+                        if (!packed.has_value()) {
+                            gpu_skin.clear();
+                            break;
+                        }
+
+                        gpu_skin.push_back(*packed);
+                    }
+
+                    if (gpu_skin.size() != cpu_primitive.compressed_vertices.size()) {
+                        warn("step_model_gpu_upload: skin stream does not match the vertices or needs more than 256 "
+                             "joints; primitive stays unskinned");
+                        gpu_skin.clear();
+                    }
+                }
+
+                bool const primitive_skinned = !gpu_skin.empty();
+
+                if (primitive_skinned) {
+                    if (!upload.skin_inflate.has_value()) {
+                        upload.skin_inflate = compute_skin_inflate(cpu_data);
+                    }
+
+                    auto skin_alloc = geometry_arena.allocate_vertices(
+                            command_buffer, std::span<GpuSkinVertex const>{gpu_skin});
+
+                    if (!skin_alloc) {
+                        geometry_arena.retire(vertex_slice->bytes);
+                        return std::unexpected(ModelLoadError{
+                                .type = ModelLoadErrorType::geometry_upload_failed,
+                                .cause = ErrorCause{Boxed<GeometryArenaError>{skin_alloc.error()}},
+                        });
+                    }
+
+                    skin_slice = skin_alloc->bytes;
+                    upload.any_skinned = true;
+                }
+
+                float const inflate = primitive_skinned ? *upload.skin_inflate : 0.0F;
+
                 for (std::uint32_t level = 0; level < lod_count; ++level) {
                     lods[level].vertices = *vertex_slice;
+                    lods[level].skin = skin_slice;
 
                     auto const *source_indices = [&]() {
                         if (level == 0) {
@@ -1356,7 +1542,20 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                         });
                     }
 
-                    auto meshlets = upload_meshlets(geometry_arena, command_buffer, *meshlet_build);
+                    // Skinned vertices move, so rest-pose bounds and normal cones are not conservative.
+                    MeshletBuild inflated;
+
+                    if (primitive_skinned) {
+                        inflated = *meshlet_build;
+
+                        for (auto &meshlet: inflated.meshlets) {
+                            meshlet.radius += inflate;
+                            meshlet.cone_cutoff = 1.0F;
+                        }
+                    }
+
+                    auto meshlets = upload_meshlets(geometry_arena, command_buffer,
+                                                    primitive_skinned ? inflated : *meshlet_build);
 
                     if (!meshlets) {
                         return std::unexpected(ModelLoadError{
@@ -1385,8 +1584,8 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                 upload.meshes[upload.mesh_cursor].primitives.push_back(ModelPrimitive{
                         .lods = lods,
                         .material_index = cpu_primitive.material_index,
-                        .bounds_min = primitive_bounds_min,
-                        .bounds_max = primitive_bounds_max,
+                        .bounds_min = primitive_bounds_min - glm::vec3{inflate},
+                        .bounds_max = primitive_bounds_max + glm::vec3{inflate},
                 });
 
                 ++upload.primitive_cursor;
@@ -1413,6 +1612,13 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
         model.scene_roots = cpu_data.scene_roots;
         std::tie(model.bounds_min, model.bounds_max) = compute_model_bounds(cpu_data);
         model.lights = cpu_data.lights;
+
+        if (upload.any_skinned) {
+            model.animation = cpu_data.animation;
+            model.skin_inflate = upload.skin_inflate.value_or(0.0F);
+            model.bounds_min -= glm::vec3{model.skin_inflate};
+            model.bounds_max += glm::vec3{model.skin_inflate};
+        }
 
         return std::optional<Model>{std::move(model)};
     }

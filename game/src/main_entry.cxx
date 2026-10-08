@@ -9,10 +9,11 @@
 #include "chess_game.hxx"
 #include "chess_lua.hxx"
 #include "core/logger.hxx"
+#include "moving_game.hxx"
 #include "punt_game.hxx"
 
 namespace {
-    constexpr std::array<std::string_view, 4> names{"basic", "punt", "chess", "lua"};
+    constexpr std::array<std::string_view, 5> names{"basic", "punt", "chess", "lua", "moving"};
 } // namespace
 
 // The first name is the default; main.cxx rejects any other name at parse time.
@@ -23,6 +24,11 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
     if (name == "punt") {
         info("Starting the 'punt' game");
         return std::make_unique<PuntGame>();
+    }
+
+    if (name == "moving") {
+        info("Starting the 'moving' game");
+        return std::make_unique<MovingGame>();
     }
 
     if (name == "lua") {

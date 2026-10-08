@@ -520,6 +520,55 @@ auto PhysicsWorld::step(entt::registry &registry, float delta_time) -> void {
     }
 }
 
+auto PhysicsWorld::sweep_capsule(glm::vec3 const &from, glm::vec3 const &to, float radius, float height,
+                                 entt::entity ignore) const -> std::optional<SweepHit> {
+    struct IgnoringCallback : btCollisionWorld::ClosestConvexResultCallback {
+        IgnoringCallback(btVector3 const &from_world, btVector3 const &to_world, btCollisionObject const *ignored) :
+            ClosestConvexResultCallback{from_world, to_world}, ignored_object{ignored} {}
+
+        auto needsCollision(btBroadphaseProxy *proxy) const -> bool override {
+            return static_cast<btCollisionObject const *>(proxy->m_clientObject) != ignored_object &&
+                   ClosestConvexResultCallback::needsCollision(proxy);
+        }
+
+        btCollisionObject const *ignored_object;
+    };
+
+    // Shape origin is its centre, the caller's position is the feet.
+    glm::vec3 const centre_offset{0.0F, height * 0.5F, 0.0F};
+    btCapsuleShape const shape{radius, std::max(height - 2.0F * radius, 0.0F)};
+
+    btTransform bt_from;
+    bt_from.setIdentity();
+    bt_from.setOrigin(to_bt(from + centre_offset));
+    btTransform bt_to;
+    bt_to.setIdentity();
+    bt_to.setOrigin(to_bt(to + centre_offset));
+
+    auto const *ignored =
+            impl_->registry.valid(ignore) ? impl_->registry.try_get<Components::PhysicsBody const>(ignore) : nullptr;
+    IgnoringCallback callback{bt_from.getOrigin(), bt_to.getOrigin(),
+                              ignored != nullptr ? ignored->rigid_body : nullptr};
+    impl_->world->convexSweepTest(&shape, bt_from, bt_to, callback);
+
+    if (!callback.hasHit()) {
+        return std::nullopt;
+    }
+
+    entt::entity hit_entity = entt::null;
+    auto const *hit_body = btRigidBody::upcast(callback.m_hitCollisionObject);
+    if (hit_body != nullptr && hit_body->getUserPointer() != nullptr) {
+        hit_entity = static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(hit_body->getUserPointer()));
+    }
+
+    return SweepHit{
+            .entity = hit_entity,
+            .fraction = callback.m_closestHitFraction,
+            .point = to_glm(callback.m_hitPointWorld),
+            .normal = to_glm(callback.m_hitNormalWorld),
+    };
+}
+
 auto PhysicsWorld::raycast(glm::vec3 const &from, glm::vec3 const &to) const -> std::optional<RaycastHit> {
     btVector3 const bt_from = to_bt(from);
     btVector3 const bt_to = to_bt(to);

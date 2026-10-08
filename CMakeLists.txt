@@ -846,6 +846,7 @@ add_subdirectory(src/core)
 add_subdirectory(src/gpu)
 add_subdirectory(src/assets)
 add_subdirectory(src/net)
+add_subdirectory(src/animation)
 add_subdirectory(src/physics)
 add_subdirectory(src/scene)
 add_subdirectory(src/terrain)
@@ -873,7 +874,7 @@ add_library(
 target_link_libraries(
     lathe-core
     INTERFACE
-        "$<LINK_GROUP:RESCAN,engine_app,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_net,engine_assets,engine_gpu,engine_core>"
+        "$<LINK_GROUP:RESCAN,engine_app,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_assets,engine_gpu,engine_core>"
 )
 
 add_library(

@@ -72,6 +72,11 @@ namespace Components {
         ModelHandle model{};
         MaterialHandle material_override{};
         std::vector<glm::mat4> transforms;
+
+        // GPU skinning: per instance, the index of its first matrix in the palette given to
+        // Renderer::set_skin_palette() this frame (empty for unskinned models). Not part of `revision`: models
+        // with a skin never use the resident path, and the offsets are resubmitted every frame.
+        std::vector<std::uint32_t> palette_offsets;
         std::uint64_t revision = next_instanced_model_revision();
 
         auto touch() noexcept -> void { revision = next_instanced_model_revision(); }

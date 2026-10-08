@@ -9,6 +9,7 @@ set(
     material_storage.cxx
     mesh_storage.cxx
     model_load_profile.cxx
+    model_skin.cxx
     model_storage.cxx
     model_streamer.cxx
     primitive_meshes.cxx
@@ -41,6 +42,7 @@ target_link_libraries(
     engine_assets
     PUBLIC
         engine_deps
+        engine_animation
         engine_gpu
         engine_core
     PRIVATE
