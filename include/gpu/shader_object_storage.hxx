@@ -127,8 +127,6 @@ private:
 
     auto binary_cache() -> ShaderBinaryCache const * { return binary_cache_ ? &*binary_cache_ : nullptr; }
 
-    // Guards slots_.allocate()/release(). Shader object creation shares no other state, so nothing else needs
-    // locking.
     std::mutex slot_mutex_;
 
     VkDescriptorSetLayout global_descriptor_set_layout_ = VK_NULL_HANDLE;

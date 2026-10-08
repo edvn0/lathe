@@ -30,7 +30,6 @@ namespace {
         return {view.begin(), view.end()};
     }
 
-    // Highly compressible, so zstd kicks in.
     auto repetitive_payload(std::size_t size) -> std::vector<std::byte> {
         std::vector<std::byte> payload(size);
 
@@ -41,7 +40,6 @@ namespace {
         return payload;
     }
 
-    // A finalized single-primitive model, built the way load_model_cpu() would.
     auto finalized_cube() -> ModelCpuData {
         auto cpu_data = to_model_cpu_data(*make_sphere_mesh());
 
@@ -55,7 +53,6 @@ namespace {
         return cpu_data;
     }
 
-    // The payload of one SCEN section, and the version it was written with.
     struct EncodedSection {
         std::uint16_t version = 0;
         std::span<std::byte const> payload;
@@ -85,7 +82,6 @@ namespace {
         return {};
     }
 
-    // A grass-like field: yaw-only rotation, uniform scale, translation on a jittered grid.
     auto grass_like_transforms(std::size_t count) -> std::vector<glm::mat4> {
         std::vector<glm::mat4> transforms;
         transforms.reserve(count);
@@ -112,8 +108,6 @@ namespace {
         }
     }
 
-    // Rewrites the first table-of-contents entry and re-seals the table's checksum, so the file is internally
-    // consistent and only the entry's own values are hostile.
     template<typename Patch>
     auto with_patched_entry(std::vector<std::byte> file, Patch &&patch) -> std::vector<std::byte> {
         LbfFileHeader header{};
@@ -151,7 +145,6 @@ namespace {
         };
     }
 
-    // A scene with one entity carrying one of every component, which each test then spoils in one way.
     auto populated_scene() -> SceneDescription {
         SceneDescription scene;
         scene.models.push_back(SceneAssetRef{.source = "engine://cube"});
@@ -165,7 +158,7 @@ namespace {
         return scene;
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("xxh64 matches the reference implementation") {
@@ -185,7 +178,7 @@ TEST_SUITE("unit") {
         ByteWriter writer;
         writer.write(std::uint32_t{42});
         writer.write_string("hello");
-        writer.write(std::uint32_t{1'000'000}); // a bogus array count
+        writer.write(std::uint32_t{1'000'000});
 
         auto const bytes = writer.take();
         ByteReader reader{bytes};
@@ -228,7 +221,6 @@ TEST_SUITE("unit") {
         REQUIRE(payload.has_value());
         CHECK(*payload == repetitive_payload(4096));
 
-        // Too small to be worth compressing.
         auto const *model = reader->find(lbf_chunk::model, 2);
         REQUIRE(model != nullptr);
         CHECK(model->compression == LbfCompression::none);
@@ -494,7 +486,7 @@ TEST_SUITE("unit") {
         scene.rigid_bodies.push_back(SceneRigidBodyComponent{
                 .entity = 2, .body = Components::RigidBody::from_submesh_boxes({{glm::vec3{0.0F}, glm::vec3{1.0F}}})});
         scene.rigid_bodies.push_back(SceneRigidBodyComponent{
-                .entity = 1, .body = Components::RigidBody::make_sphere(/*radius=*/0.35F, /*mass=*/0.45F)});
+                .entity = 1, .body = Components::RigidBody::make_sphere(0.35F, 0.45F)});
         scene.scripts.push_back(SceneScriptComponent{.entity = 2, .script = "player_controller"});
         scene.lifetimes.push_back(SceneLifetimeComponent{.entity = 1, .remaining_seconds = 2.5F});
 
@@ -533,7 +525,6 @@ TEST_SUITE("unit") {
         CHECK(decoded->scripts[0].script == "player_controller");
         CHECK(decoded->lifetimes[0].remaining_seconds == doctest::Approx(2.5F));
 
-        // Same input, same bytes: the dirty check compares encodings.
         CHECK(encode_scene(*decoded) == payload);
     }
 
@@ -557,7 +548,6 @@ TEST_SUITE("unit") {
 
         auto const section = find_section(payload, scene_section::instanced_models);
         CHECK(section.version == instanced_models_section_version);
-        // Component count, then per component: entity, model, material, count, encoding and 10 floats per instance.
         CHECK(section.payload.size() == 4 + (17 + (40 * transforms.size())) + (17 + (40 * mirrored.size())));
 
         auto const decoded = decode_scene(payload);
@@ -602,19 +592,17 @@ TEST_SUITE("unit") {
 
         auto payload = encode_scene(scene);
 
-        // v1 layout: interleaved column-major matrices.
         auto const transforms = grass_like_transforms(3);
         ByteWriter section;
         section.write(std::uint32_t{1});
-        section.write(std::uint32_t{0}); // entity
-        section.write(std::uint32_t{0}); // model
-        section.write(scene_no_index); // material
+        section.write(std::uint32_t{0});
+        section.write(std::uint32_t{0});
+        section.write(scene_no_index);
         section.write(static_cast<std::uint32_t>(transforms.size()));
         for (auto const &transform: transforms) {
             section.write_span(std::span<float const>{&transform[0][0], 16});
         }
 
-        // A second instanced_models section replaces the empty current-version one when decoded.
         ByteWriter framed;
         framed.write(scene_section::instanced_models);
         framed.write(std::uint16_t{1});
@@ -633,20 +621,19 @@ TEST_SUITE("unit") {
         SceneDescription scene;
         auto payload = encode_scene(scene);
 
-        // v1 layout: everything up to and including the texture indices.
         ByteWriter section;
         section.write(std::uint32_t{1});
         section.write_string("old");
         for (auto const value: {1.0F, 1.0F, 1.0F, 1.0F, 0.0F, 0.0F, 0.0F}) {
-            section.write(value); // base colour, emissive
+            section.write(value);
         }
         for (auto const value: {1.0F, 0.0F, 0.5F, 1.0F, 1.0F, 0.5F, 0.3F}) {
-            section.write(value); // emissive strength .. alpha cutoff, wind
+            section.write(value);
         }
         section.write(std::uint32_t{shadow_cascade_count - 1});
         section.write(std::to_underlying(AlphaMode::mask));
-        section.write(std::uint8_t{0}); // sampler
-        section.write(std::uint8_t{0}); // debug meshlet colours
+        section.write(std::uint8_t{0});
+        section.write(std::uint8_t{0});
         for (auto index = 0; index < 5; ++index) {
             section.write(scene_no_index);
         }
@@ -676,21 +663,20 @@ TEST_SUITE("unit") {
 
         auto payload = encode_scene(scene);
 
-        // v1 layout: everything except the sphere radius, which sat between the capsule height and the restitution.
         ByteWriter section;
         section.write(std::uint32_t{1});
-        section.write(std::uint32_t{0}); // entity
+        section.write(std::uint32_t{0});
         for (auto const value: {0.0F, 0.0F, 0.0F, 0.5F, 0.5F, 0.5F}) {
-            section.write(value); // velocity, half extents
+            section.write(value);
         }
-        section.write(0.4F); // capsule radius
-        section.write(1.0F); // capsule height
-        section.write(0.25F); // restitution
-        section.write(12.0F); // mass
-        section.write(std::uint8_t{0}); // is static
-        section.write(std::uint8_t{1}); // lock rotation
+        section.write(0.4F);
+        section.write(1.0F);
+        section.write(0.25F);
+        section.write(12.0F);
+        section.write(std::uint8_t{0});
+        section.write(std::uint8_t{1});
         section.write(std::to_underlying(Components::BodyShape::capsule));
-        section.write(std::uint32_t{0}); // compound box count
+        section.write(std::uint32_t{0});
 
         ByteWriter framed;
         framed.write(scene_section::rigid_bodies);
@@ -751,7 +737,6 @@ TEST_SUITE("unit") {
 
         auto payload = encode_scene(scene);
 
-        // Append a section type this build has never heard of.
         ByteWriter extra;
         extra.write(std::uint32_t{999});
         extra.write(std::uint16_t{1});
@@ -799,7 +784,6 @@ TEST_SUITE("unit") {
             }
 
             scene.entities = std::move(entities);
-            // "first" always gets a.gltf, wherever both sit in their tables.
             scene.model_components.push_back(SceneModelComponent{.entity = first, .model = reversed ? 1U : 0U});
             scene.point_lights.push_back(ScenePointLightComponent{.entity = second});
             return scene;
@@ -854,7 +838,6 @@ TEST_SUITE("unit") {
         CHECK(cooked.indices.size() == original.indices.size());
         CHECK(cooked.meshlets[0]->meshlets.size() == original.meshlets[0]->meshlets.size());
 
-        // Every texture the model references was cooked into the pack and decodes.
         CHECK(report.textures_cooked == model->image_sources.size());
 
         for (auto const &image: model->image_sources) {
@@ -864,7 +847,6 @@ TEST_SUITE("unit") {
             CHECK_FALSE(texture->mips.empty());
         }
 
-        // A second cook reuses every chunk from the first pack instead of cooking again.
         LbfWriter second{LbfFileKind::asset_pack};
         auto const copied = cook_assets(AssetCookRequest{.models = {AssetPath::external(source).value()}}, sampler_storage, second,
                                         AssetCookOptions{.source_packs = {pack}, .texture_cache_directory = cache_dir});
@@ -893,7 +875,6 @@ TEST_SUITE("unit") {
     TEST_CASE("LBF files stream multi-megabyte chunks from disk") {
         auto const path = std::filesystem::temp_directory_path() / "lathe_lbf_stream_test.lbf";
 
-        // Several 1 MiB read blocks each; one compressible, one not.
         auto const compressible = repetitive_payload(3 * 1024 * 1024 + 17);
         std::vector<std::byte> incompressible(2 * 1024 * 1024 + 5);
         std::uint64_t state = 0x12345678;
@@ -925,7 +906,6 @@ TEST_SUITE("unit") {
         CHECK(*reader->read_chunk(*first) == compressible);
         CHECK(*reader->read_chunk(*second) == incompressible);
 
-        // Corrupt one byte deep inside the compressed chunk: the streamed checksum catches it.
         {
             std::fstream file{path, std::ios::binary | std::ios::in | std::ios::out};
             file.seekp(static_cast<std::streamoff>(first->offset + first->stored_size / 2));
@@ -944,7 +924,6 @@ TEST_SUITE("unit") {
         constexpr auto terabyte = std::uint64_t{1} << 40U;
 
         SUBCASE("a chunk claiming a terabyte decompressed size") {
-            // Valid checksums throughout: only raw_size lies. Before the cap this aborted the process on allocation.
             auto file = with_patched_entry(single_chunk_file(true),
                                            [&](LbfChunkEntry &entry) { entry.raw_size = terabyte; });
 
@@ -990,7 +969,6 @@ TEST_SUITE("unit") {
         }
 
         SUBCASE("a header that promises a huge table in a tiny file") {
-            // Used to make open() allocate toc_size bytes before comparing file_size with the real size.
             auto const path = std::filesystem::temp_directory_path() / "lathe_lbf_huge_toc.lbf";
             LbfFileHeader header{};
             header.chunk_count = 1U << 30U;
@@ -1025,7 +1003,6 @@ TEST_SUITE("unit") {
             rejected([](CompressedTexture &texture) { texture.format = VK_FORMAT_R8G8B8A8_UNORM; });
             rejected([](CompressedTexture &texture) { texture.format = VK_FORMAT_ASTC_4x4_UNORM_BLOCK; });
 
-            // An arbitrary u32 in the file isn't a VkFormat at all; it is refused before it is cast.
             auto payload = encode_cooked_texture(valid_texture(), TextureRole::colour);
             auto const bogus = std::uint32_t{0xFFFFFF91U};
             std::memcpy(payload.data(), &bogus, sizeof(bogus));
@@ -1063,7 +1040,6 @@ TEST_SUITE("unit") {
             spoil(scene);
 
             CHECK_FALSE(validate_scene(scene).has_value());
-            // Through the codec too, which is the path a file takes.
             CHECK_FALSE(decode_scene(encode_scene(scene)).has_value());
         };
 
@@ -1104,7 +1080,6 @@ TEST_SUITE("unit") {
         }
 
         SUBCASE("a component listed twice for one entity") {
-            // instantiate_scene() emplaces each component, and EnTT asserts on a second emplace.
             rejected([](SceneDescription &scene) { scene.model_components.push_back(scene.model_components[0]); });
             rejected([](SceneDescription &scene) { scene.point_lights.push_back(scene.point_lights[0]); });
             rejected([](SceneDescription &scene) { scene.rigid_bodies.push_back(scene.rigid_bodies[0]); });
@@ -1119,7 +1094,6 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("Cooked model: geometry the GPU would read out of bounds is refused") {
-        // The encoder doesn't validate, so a valid model corrupted before encoding stands in for a hostile file.
         auto const decode_after = [](auto &&spoil) {
             auto cpu_data = finalized_cube();
             spoil(cpu_data);
@@ -1185,14 +1159,13 @@ TEST_SUITE("unit") {
     TEST_CASE("Cooked model: counts that outrun the payload are refused before allocating") {
         ByteWriter writer;
 
-        // Bounds, then zero images and materials, then a node count no payload this small could hold.
         for (int component = 0; component < 6; ++component) {
             writer.write(0.0F);
         }
 
-        writer.write(std::uint32_t{0}); // images
-        writer.write(std::uint32_t{0}); // materials
-        writer.write(std::uint32_t{0x7FFFFFFFU}); // nodes: 2^31 * sizeof(ModelNode) if believed
+        writer.write(std::uint32_t{0});
+        writer.write(std::uint32_t{0});
+        writer.write(std::uint32_t{0x7FFFFFFFU});
 
         CHECK_FALSE(decode_cooked_model(writer.bytes()).has_value());
     }

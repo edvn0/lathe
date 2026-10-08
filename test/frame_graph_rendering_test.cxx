@@ -30,7 +30,6 @@ namespace {
         return clear;
     }
 
-    // One pass that draws into a transient and a second that presents it, so everything is live.
     auto declare_frame(FrameGraph &graph, VkClearValue clear, LoadOp present_load = LoadOp::dont_care) -> void {
         auto const swapchain = swapchain_import(graph);
         auto image = ImageId{};
@@ -46,7 +45,7 @@ namespace {
         });
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("colour and depth attachments are recorded with their ops and clear values") {
@@ -191,7 +190,6 @@ TEST_SUITE("unit") {
         REQUIRE(cache.compile(other_clear, topology).has_value());
         CHECK(cache.hits() == 1);
 
-        // Loading the swapchain instead of discarding it changes whether its contents are needed: a different plan.
         auto loaded = FrameGraph{};
         declare_frame(loaded, clear_color(0.0F), LoadOp::load);
         REQUIRE(cache.compile(loaded, topology).has_value());
@@ -240,10 +238,9 @@ TEST_SUITE("unit") {
 
         auto bad = FrameGraph{};
         declare_frame(bad, clear_color(0.0F));
-        bad.add_pass("draw", PassType::raster, {}, [&](PassBuilder &) { return noop(); }); // duplicate name
+        bad.add_pass("draw", PassType::raster, {}, [&](PassBuilder &) { return noop(); });
         CHECK_FALSE(cache.compile(bad, topology).has_value());
 
-        // The failure dropped the cached plan, so the good graph compiles afresh.
         REQUIRE(cache.compile(good, topology).has_value());
         CHECK(cache.misses() == 2);
     }

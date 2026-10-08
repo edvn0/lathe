@@ -9,16 +9,14 @@ namespace frame_graph {
     namespace {
 
         struct PassLocation {
-            std::int64_t batch = -1; // -1: not part of the compiled plan (culled)
+            std::int64_t batch = -1;
             std::uint32_t position = 0;
         };
 
-        // The compiled plan's order, as everything the aliasing rules need: where each live pass sits, and which
-        // batches are ordered before which.
         struct Order {
             std::vector<PassLocation> pass_location;
             std::vector<std::vector<bool>>
-                    batch_before; // batch_before[a][b]: every command of a precedes every one of b
+                    batch_before;
 
             [[nodiscard]] auto before(std::uint32_t first, std::uint32_t second) const -> bool {
                 auto const a = pass_location[first];
@@ -51,7 +49,6 @@ namespace frame_graph {
             order.batch_before.assign(batch_count, std::vector<bool>(batch_count, false));
             for (auto later = std::size_t{0}; later < batch_count; ++later) {
                 for (auto earlier = std::size_t{0}; earlier < later; ++earlier) {
-                    // Batches on one queue run in submission order.
                     if (compiled.batches[earlier].queue == compiled.batches[later].queue) {
                         order.batch_before[earlier][later] = true;
                     }
@@ -66,7 +63,6 @@ namespace frame_graph {
                 }
             }
 
-            // Transitive closure; every edge points forward in submission order, so one sweep per intermediate batch.
             for (auto through = std::size_t{0}; through < batch_count; ++through) {
                 for (auto from = std::size_t{0}; from < through; ++from) {
                     if (!order.batch_before[from][through]) {
@@ -82,7 +78,6 @@ namespace frame_graph {
             return order;
         }
 
-        // The live passes that touch `resource`, as declaration indices.
         auto touching_passes(GraphDesc const &graph, CompiledGraph const &compiled, std::uint32_t resource)
                 -> std::vector<std::uint32_t> {
             auto passes = std::vector<std::uint32_t>{};
@@ -121,7 +116,6 @@ namespace frame_graph {
             std::uint64_t size = 0;
         };
 
-        // The scope a pass's accesses to `resource` cover, for the barrier that hands memory on.
         auto access_scope(GraphDesc const &graph, std::vector<std::uint32_t> const &passes, std::uint32_t resource,
                           VkPipelineStageFlags2 &stages, VkAccessFlags2 &access) -> void {
             for (auto const pass: passes) {
@@ -136,7 +130,7 @@ namespace frame_graph {
             }
         }
 
-    } // namespace
+    }
 
     auto transient_usage(GraphDesc const &graph, CompiledGraph const &compiled, std::uint32_t resource)
             -> VkImageUsageFlags {
@@ -200,13 +194,12 @@ namespace frame_graph {
             }
             auto passes = touching_passes(graph, compiled, resource);
             if (passes.empty()) {
-                continue; // culled away: nothing to allocate
+                continue;
             }
             candidates.push_back(Candidate{.resource = resource, .passes = std::move(passes)});
             plan.unaliased_bytes += requirements[resource].size;
         }
 
-        // Largest first, so the big ones set the layout and the small ones fill the gaps. Ties keep slot order.
         auto by_size = std::vector<std::size_t>(candidates.size());
         for (auto index = std::size_t{0}; index < by_size.size(); ++index) {
             by_size[index] = index;
@@ -234,7 +227,6 @@ namespace frame_graph {
                         continue;
                     }
 
-                    // Intervals of what this one conflicts with, by offset.
                     auto taken = std::vector<std::pair<std::uint64_t, std::uint64_t>>{};
                     for (auto const &other: placed) {
                         if (other.block == block && conflicts(index, other.candidate)) {
@@ -275,7 +267,6 @@ namespace frame_graph {
             });
         }
 
-        // Back to slot order for the caller.
         std::ranges::sort(placed, [&](Placed const &a, Placed const &b) {
             return candidates[a.candidate].resource < candidates[b.candidate].resource;
         });
@@ -291,7 +282,6 @@ namespace frame_graph {
             plan.total_bytes += block.size;
         }
 
-        // Memory handed from one transient to the next needs a dependency before the newcomer's first use.
         if (alias) {
             for (auto const &newcomer: placed) {
                 auto stages = VkPipelineStageFlags2{VK_PIPELINE_STAGE_2_NONE};
@@ -311,7 +301,6 @@ namespace frame_graph {
                     continue;
                 }
 
-                // The newcomer's first pass in execution order.
                 auto first_pass = std::uint32_t{0};
                 auto first_position = std::size_t{compiled.schedule.size()};
                 for (auto const pass: candidates[newcomer.candidate].passes) {
@@ -336,7 +325,6 @@ namespace frame_graph {
                 });
             }
 
-            // One barrier per pass: several newcomers can start at the same pass.
             std::ranges::sort(plan.barriers,
                               [](AliasingBarrier const &a, AliasingBarrier const &b) { return a.pass < b.pass; });
             auto merged = std::vector<AliasingBarrier>{};
@@ -356,4 +344,4 @@ namespace frame_graph {
         return plan;
     }
 
-} // namespace frame_graph
+}

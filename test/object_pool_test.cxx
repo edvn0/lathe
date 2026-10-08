@@ -16,7 +16,7 @@ namespace {
 
     using Pool = ObjectPool<Payload>;
     using PoolHandle = Pool::HandleT;
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("ObjectPool: create reports capacity and starts empty") {
@@ -78,7 +78,6 @@ TEST_SUITE("unit") {
         CHECK_FALSE(overflow.has_value());
         CHECK(pool.size() == 2);
 
-        // Recovers once a slot is freed.
         auto released = pool.release(a->first);
         REQUIRE(released.has_value());
 
@@ -145,7 +144,6 @@ TEST_SUITE("unit") {
 
         std::vector<PoolHandle> previous_handles{handle};
 
-        // Cycle a slot many times; the generation never returns to 0 and stale handles stay rejected.
         for (int i = 0; i < 1000; ++i) {
             auto released = pool.release(handle);
             REQUIRE(released.has_value());
@@ -260,7 +258,6 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("ObjectPool: release leaves the slot's payload untouched rather than resetting it") {
-        // Wrapper storages keep a revision counter in the payload that must survive release()/allocate().
         struct RevisionedPayload {
             int resource = 0;
             int revision = 1;
@@ -282,13 +279,10 @@ TEST_SUITE("unit") {
         auto second = pool.allocate();
         REQUIRE(second.has_value());
 
-        // The pool must not reset the payload.
         CHECK(second->second.revision == 5);
     }
 
     TEST_CASE("ObjectPool: a pool sharing Material's reserved-slot-0 policy still resolves index 0 by handle") {
-        // Like MaterialStorage: Sentinel = 0 makes the reserved slot's handle report invalid, but the pool's own
-        // get()/release() must still reach it.
         using ReservedZeroPool = ObjectPool<Payload, 0>;
 
         auto pool = ReservedZeroPool::create(2);

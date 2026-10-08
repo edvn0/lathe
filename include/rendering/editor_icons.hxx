@@ -11,7 +11,6 @@ struct Renderer;
 
 namespace gui {
 
-    // Each entry needs a same-named PNG in assets/editor/icons/.
     enum class EditorIcon : std::uint8_t {
         mesh,
         point_light,
@@ -30,7 +29,6 @@ namespace gui {
         count,
     };
 
-    // White editor icons with alpha, loaded once. Callers tint them per use.
     class EditorIcons {
     public:
         explicit EditorIcons(Renderer &renderer);
@@ -41,4 +39,4 @@ namespace gui {
         std::array<ImageHandle, static_cast<std::size_t>(EditorIcon::count)> textures_{};
     };
 
-} // namespace gui
+}

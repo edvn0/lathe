@@ -22,17 +22,6 @@
 #include "player_camera.hxx"
 #include "player_controller.hxx"
 
-// A character-movement and crowd-animation test bed: a kinematic player (WASD, Shift to run, Space to jump, C to lie
-// down) and a slider-controlled crowd of wandering NPCs, all posed by the CPU animation batch.
-//
-// Two ways to draw the characters, switched in the panel (or started with LATHE_MOVING_SKINNED=1):
-//  - Rigid rig: each body part of the procedural humanoid is a primitive mesh.
-//  - Skinned model: assets/models/animated_human.glb (Quaternius, CC0), GPU-skinned. Its Idle/Walk/Run/Jump/Death
-//    clips feed the same locomotion state machine; the palettes of the characters near the camera go to the
-//    renderer every frame.
-//
-// Rigid rig: each body part of the humanoid rig is one InstancedModel entity holding one transform per character, so the whole
-// crowd costs 14 draws however many characters there are. Character 0 is the player, 1.. are NPCs.
 class MovingGame final : public IGame {
 public:
     auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void override;
@@ -49,28 +38,24 @@ public:
 private:
     struct Npc {
         glm::vec2 position{0.0F};
-        float heading{0.0F}; // radians about +Y; 0 faces +Z
+        float heading{0.0F};
         float speed{0.0F};
-        float time_left{0.0F}; // until the next heading/gait change
+        float time_left{0.0F};
     };
 
-    // Finds the part entities by name and (re)builds the player and animation state for a newly seen scene.
     auto bind_to(Scene &scene) -> void;
     auto set_crowd_size(std::size_t count) -> void;
     auto update_crowd(float delta_time, glm::vec3 const &camera_position) -> void;
-    // (Re)creates the animation batch for the active mode and the current crowd size.
     auto rebuild_batch() -> void;
     auto load_skinned_model(Scene &scene, Renderer &renderer) -> void;
     [[nodiscard]] auto active_machine() const -> Animation::AnimStateMachine const &;
-    // Fills the skinned entity with the characters that are close to and in front of the camera.
     auto compose_skinned(Scene &scene, glm::vec3 const &player_position) -> void;
 
     Scene const *bound_scene_ = nullptr;
     Renderer *renderer_ = nullptr;
 
-    // Skinned model mode. The clips/table/machine reference each other and `skin_data_`, so they live as long as it.
-    bool skinned_mode_ = false;
-    bool batch_skinned_ = false; // which mode batch_ was built for
+    bool skinned_mode_ = true;
+    bool batch_skinned_ = false;
     ModelHandle skinned_model_{};
     std::shared_ptr<ModelAnimationData const> skin_data_;
     std::vector<std::unique_ptr<Animation::KeyframeClip>> skin_clips_;
@@ -87,8 +72,6 @@ private:
     std::unique_ptr<Animation::Humanoid::Rig> rig_;
     std::unique_ptr<Animation::AnimStateMachine> machine_;
     std::unique_ptr<Animation::AnimationBatch> batch_;
-    // Per part: the bind-space joint matrix times the part's local offset/scale, so a part's world transform is
-    // root * palette[joint] * rest.
     std::vector<glm::mat4> part_rest_;
     std::array<entt::entity, Animation::Humanoid::JointCount> part_entities_{};
 
@@ -97,14 +80,14 @@ private:
     PlayerController controller_;
     PlayerCamera camera_;
 
-    float facing_yaw_ = 0.0F; // radians; the player's body, which turns towards the movement direction
+    float facing_yaw_ = 0.0F;
     float step_alpha_ = 0.0F;
     bool prone_ = false;
     bool sprint_ = false;
     bool jump_held_ = false;
 
     std::vector<Npc> npcs_;
-    std::vector<Animation::AnimInputs> inputs_; // index 0 is the player
+    std::vector<Animation::AnimInputs> inputs_;
     std::uint32_t crowd_target_ = 200;
     std::uint32_t crowd_size_ = 0;
 
@@ -113,7 +96,6 @@ private:
     std::array<std::size_t, 3> lod_counts_{};
     std::uint32_t frames_since_update_ = 0;
 
-    // Optional CPU timing report (LATHE_MOVING_BENCH=<frames>): averages after a 30-frame warm-up, printed once.
     struct Bench {
         std::uint32_t frames = 0;
         std::uint32_t target = 0;

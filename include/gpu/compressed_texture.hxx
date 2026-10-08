@@ -12,11 +12,10 @@
 
 #include "core/fly_string.hxx"
 
-// How source pixels are interpreted; decides the encode parameters and the final block format.
 enum class TextureRole : std::uint8_t {
-    colour, // sRGB albedo/emissive -> BC7 sRGB.
-    generic, // Linear LDR data (metallic-roughness, occlusion) -> BC7 UNORM.
-    normal_map, // Tangent-space XY normal -> BC5; shaders reconstruct Z.
+    colour,
+    generic,
+    normal_map,
 };
 
 struct CompressedMipLevel {
@@ -26,19 +25,15 @@ struct CompressedMipLevel {
     std::uint32_t byte_length = 0;
 };
 
-// CPU-side, block-compressed, mipped texture ready for ImageStorage. No Vulkan handles, so it can be built on
-// any thread.
 struct CompressedTexture {
     VkFormat format = VK_FORMAT_UNDEFINED;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<CompressedMipLevel> mips;
-    std::vector<std::byte> data; // all mips concatenated; see CompressedMipLevel
+    std::vector<std::byte> data;
     FlyString debug_name;
 };
 
-// Bytes per 4x4 block for the formats a cooked or cached texture may use (BC1-BC7); 0 for anything else. The format
-// comes from a file, so it is checked against this list before it can reach vkCreateImage.
 [[nodiscard]] constexpr auto compressed_block_bytes(std::uint32_t format) noexcept -> std::uint32_t {
     switch (format) {
         case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
@@ -66,9 +61,6 @@ struct CompressedTexture {
 
 inline constexpr std::uint32_t max_compressed_texture_extent = 16384;
 
-// Checks that every mip is the size its level implies, is exactly the bytes its format needs, and lies inside `data`.
-// Without this a corrupt file can describe a copy that reads past the staging buffer, which the GPU may answer with a
-// device loss rather than an error. Returns the reason on failure.
 [[nodiscard]]
 inline auto validate_compressed_texture(CompressedTexture const &texture) noexcept -> std::optional<std::string_view> {
     auto const block_bytes = compressed_block_bytes(static_cast<std::uint32_t>(texture.format));
@@ -103,7 +95,6 @@ inline auto validate_compressed_texture(CompressedTexture const &texture) noexce
             return "texture mip size does not match its format";
         }
 
-        // Buffer offsets for block-compressed copies must be a multiple of the block size.
         if (mip.byte_offset % block_bytes != 0 ||
             static_cast<std::uint64_t>(mip.byte_offset) + mip.byte_length > texture.data.size()) {
             return "texture mip lies outside its data";

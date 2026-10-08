@@ -2,20 +2,12 @@ module bloom_downsample;
 
 import bindless;
 
-// One level of the bloom mip chain: reads the level above through a sampled view and writes this one through a
-// storage view. render_pass::bloom() places a barrier between levels.
-//
-// The 13-tap downsample from Jimenez, "Next Generation Post Processing in Call of Duty: Advanced Warfare"
-// (SIGGRAPH 2014): five overlapping 2x2 boxes weighted 0.5 (inner) and 4 x 0.125 (corners). The first level
-// also applies the soft-knee threshold and a Karis average (each box weighted 1 / (1 + luma)) so sub-pixel
-// highlights don't flicker.
 struct DownsamplePushConstants
 {
     uint src_texture_index;
     uint dst_storage_index;
     uint linear_sampler_index;
 
-    // Non-zero for the HDR -> mip 0 dispatch only.
     uint is_first_level;
 
     float2 src_texel_size;
@@ -34,7 +26,6 @@ float luma(float3 colour)
     return dot(colour, float3(0.2126, 0.7152, 0.0722));
 }
 
-// The HDR target can contain NaN/inf; one bad texel would otherwise spread across every level.
 float3 sanitize(float3 colour)
 {
     if (any(isnan(colour)) || any(isinf(colour)))
@@ -64,11 +55,6 @@ float3 soft_threshold(float3 colour)
 
 float3 downsample_13_tap(float2 uv, float2 texel)
 {
-    // a . b . c
-    // . j . k .
-    // d . e . f
-    // . l . m .
-    // g . h . i
     float3 a = fetch(uv + texel * float2(-2.0,  2.0));
     float3 b = fetch(uv + texel * float2( 0.0,  2.0));
     float3 c = fetch(uv + texel * float2( 2.0,  2.0));
@@ -83,8 +69,6 @@ float3 downsample_13_tap(float2 uv, float2 texel)
     float3 l = fetch(uv + texel * float2(-1.0, -1.0));
     float3 m = fetch(uv + texel * float2( 1.0, -1.0));
 
-    // Written out: an [unroll]ed loop over a local array crashes SPIRV-Tools' merge-blocks pass
-    // (vulkan-sdk-1.4.357.0).
     float3 box_inner = (j + k + l + m) * 0.25;
     float3 box_top_left = (a + b + d + e) * 0.25;
     float3 box_top_right = (b + c + e + f) * 0.25;

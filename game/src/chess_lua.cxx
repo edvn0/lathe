@@ -7,10 +7,6 @@
 
 #include "chess_engine.hxx"
 
-// Raising a Lua error longjmps over C++ frames, so errors are raised before any non-trivial local exists. The
-// vectors the move functions build are the exception: they are created after all argument checks, and only a memory
-// error while pushing results (the allocator refuses past its cap) could skip their destructors.
-
 namespace {
     constexpr char const *engine_meta = "lathe.ChessEngine";
 
@@ -233,7 +229,7 @@ namespace {
             luaL_Reg{"move", &engine_move},
             luaL_Reg{nullptr, nullptr},
     };
-} // namespace
+}
 
 auto luaopen_lathe_chess(lua_State *state) -> int {
     luaL_newmetatable(state, engine_meta);

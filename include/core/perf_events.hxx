@@ -6,10 +6,6 @@
 #include <cstdint>
 #include <string_view>
 
-// Process-wide counters of the things that tend to cause frame-time spikes: uploads, shader builds, frame graph
-// recompiles, resizes and device-wide waits. Engine code calls perf_events::record() where one happens; the benchmark
-// snapshots the counters once per frame and stores the difference, so a slow frame can be matched to what happened in
-// it (docs/perf-benchmark.md, "Hitches"). Recording is one relaxed atomic add, cheap enough to leave on everywhere.
 enum class PerfEvent : std::uint8_t {
     texture_upload,
     model_install,
@@ -26,7 +22,6 @@ enum class PerfEvent : std::uint8_t {
 
 inline constexpr std::size_t perf_event_count = static_cast<std::size_t>(PerfEvent::count);
 
-// Stable ids, used as CSV column and JSON key names.
 [[nodiscard]] constexpr auto perf_event_name(PerfEvent event) noexcept -> std::string_view {
     switch (event) {
         case PerfEvent::texture_upload:
@@ -71,7 +66,6 @@ struct PerfEventCounts {
         return false;
     }
 
-    // Events since `earlier`. Counters only grow, so this never wraps for snapshots taken in order.
     [[nodiscard]] constexpr auto since(PerfEventCounts const &earlier) const noexcept -> PerfEventCounts {
         PerfEventCounts delta;
         for (std::size_t i = 0; i < perf_event_count; ++i) {
@@ -86,7 +80,7 @@ namespace perf_events {
     namespace detail {
         // NOLINTNEXTLINE: process-wide by design, like MemoryTracker's counters.
         inline std::array<std::atomic<std::uint64_t>, perf_event_count> counters{};
-    } // namespace detail
+    }
 
     inline auto record(PerfEvent event, std::uint64_t amount = 1) noexcept -> void {
         detail::counters[static_cast<std::size_t>(event)].fetch_add(amount, std::memory_order_relaxed);
@@ -100,4 +94,4 @@ namespace perf_events {
         return counts;
     }
 
-} // namespace perf_events
+}

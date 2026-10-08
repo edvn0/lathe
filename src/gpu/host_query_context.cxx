@@ -20,8 +20,6 @@ auto HostQueryContext::initialize([[maybe_unused]] VulkanContext &vulkan_context
         warn("Host-calibrated Tracy Vulkan context creation failed for the {} queue; falling back", name);
     }
 
-    // The calibrated fallbacks record and submit one command buffer on `queue` while the context is created. The
-    // graphics queue has one ready; any other family gets a short-lived pool.
     auto one_time_buffer = vulkan_context.one_time_command_buffers[0];
     VkCommandPool temporary_pool = VK_NULL_HANDLE;
 

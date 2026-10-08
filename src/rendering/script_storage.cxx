@@ -2,7 +2,6 @@
 
 auto ScriptStorage::create(ScriptStorageCreateInfo const &create_info)
         -> std::expected<ScriptStorage, ScriptStorageError> {
-    // Slot zero is never used, so at least one more slot is needed.
     if (create_info.capacity < 2) {
         return std::unexpected(ScriptStorageError{.type = ScriptStorageErrorType::invalid_argument});
     }

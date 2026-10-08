@@ -1,4 +1,3 @@
-// describe() overloads for the assets module's error types.
 #include "core/error_describe.hxx"
 
 #include <format>

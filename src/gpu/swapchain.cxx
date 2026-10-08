@@ -48,7 +48,6 @@ namespace {
         };
     }
 
-    // Shutdown paths can't do anything useful with a hung device; further Vulkan calls against it aren't safe.
     auto wait_idle_or_exit(VkDevice device, std::string_view label) noexcept -> VkResult {
         auto const result = wait_idle_bounded(device, label);
 
@@ -59,7 +58,7 @@ namespace {
         return result;
     }
 
-} // namespace
+}
 
 Swapchain::~Swapchain() { destroy(); }
 
@@ -130,7 +129,6 @@ auto Swapchain::acquire(std::uint32_t slot) noexcept -> std::expected<SwapchainF
 
     auto &frame = frames_[current_frame_];
 
-    // A bounded wait so a stuck presentation engine surfaces as an error instead of hanging shutdown.
     constexpr std::uint64_t acquire_timeout_ns = 2'000'000'000ULL;
 
     std::uint32_t image_index = 0;
@@ -152,8 +150,6 @@ auto Swapchain::acquire(std::uint32_t slot) noexcept -> std::expected<SwapchainF
         return std::unexpected(make_error(Kind::device_lost, "vkAcquireNextImageKHR"));
     }
 
-    // VK_NOT_READY / VK_TIMEOUT: nothing became available within the bound. That isn't a normal state with a healthy
-    // presentation engine, so don't fall through to the generic error.
     if (result == VK_TIMEOUT || result == VK_NOT_READY) {
         return std::unexpected(make_error(Kind::device_lost, "vkAcquireNextImageKHR timed out"));
     }

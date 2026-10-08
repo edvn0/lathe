@@ -1,5 +1,3 @@
-// Deliberately includes only the compiler header: the frame graph compiler must build against Vulkan enum types and
-// the STL alone, with no gpu/, renderer or context includes (docs/frame-graph.md, Phase 1).
 #include <doctest/doctest.h>
 
 #include "rendering/frame_graph/compiler.hxx"

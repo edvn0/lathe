@@ -30,7 +30,6 @@ namespace renderer {
         auto read_string(std::ifstream &in, std::string &text) -> bool {
             std::uint32_t size = 0;
 
-            // Bounded so a corrupt pack can't ask for gigabytes.
             if (!read_value(in, size) || size > (1U << 20)) {
                 return false;
             }
@@ -52,7 +51,7 @@ namespace renderer {
 
             return instance;
         }
-    } // namespace
+    }
 
     auto ShaderPack::add(std::string key, CompiledShader const &shader) -> void {
         entries_.insert_or_assign(std::move(key), Entry{
@@ -209,4 +208,4 @@ namespace renderer {
         return count;
     }
 
-} // namespace renderer
+}

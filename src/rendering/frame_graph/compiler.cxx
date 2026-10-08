@@ -11,8 +11,6 @@
 namespace frame_graph {
     namespace {
 
-        // Nodes order the work of one frame: the virtual prologue (-1), the passes by declaration index, and the
-        // virtual epilogue (pass_count). Every cross-queue edge runs from a lower node to a higher one.
         constexpr std::int64_t prologue_node = -1;
         constexpr std::int64_t no_node = std::numeric_limits<std::int64_t>::min();
         constexpr auto no_resource = std::numeric_limits<std::uint32_t>::max();
@@ -33,17 +31,15 @@ namespace frame_graph {
             LogicalQueue write_queue = LogicalQueue::graphics;
             VkPipelineStageFlags2 write_stages = VK_PIPELINE_STAGE_2_NONE;
             VkAccessFlags2 write_access = VK_ACCESS_2_NONE;
-            std::array<VkPipelineStageFlags2, logical_queue_count> read_stages{}; // since the last write
+            std::array<VkPipelineStageFlags2, logical_queue_count> read_stages{};
             std::array<VkPipelineStageFlags2, logical_queue_count> visible_stages{};
             std::array<VkAccessFlags2, logical_queue_count> visible_access{};
             std::array<std::int64_t, logical_queue_count> last_access{no_node, no_node};
             std::int64_t last_write_node = no_node;
-            // Per queue: accesses there are ordered after the last cross-queue modification only by a semaphore wait,
-            // which covers just the waiting batch. Later accesses chain from `chain_src` with an execution barrier.
             std::array<bool, logical_queue_count> cross_ordered{};
             std::array<VkPipelineStageFlags2, logical_queue_count> chain_src{};
             std::array<VkPipelineStageFlags2, logical_queue_count> chained{};
-            bool entry_has_work = false; // the import's entry state holds work a later queue must wait for
+            bool entry_has_work = false;
         };
 
         struct AccessSpec {
@@ -54,7 +50,6 @@ namespace frame_graph {
             bool writes = false;
             bool discard = false;
 
-            // What the pass leaves the resource as, when that differs from what it entered as.
             struct Exit {
                 VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_NONE;
                 VkAccessFlags2 access = VK_ACCESS_2_NONE;
@@ -143,7 +138,6 @@ namespace frame_graph {
                 auto root = pass.side_effect || pass.legacy || pass.pinned;
                 for (auto const &access: pass.accesses) {
                     auto const &resource = graph.resources[access.resource];
-                    // A pass that writes an imported resource's final version leaves the frame with it.
                     root = root || resource.swapchain || (resource.imported && access.produces);
                 }
                 if (root) {
@@ -164,13 +158,11 @@ namespace frame_graph {
             return live;
         }
 
-        // reach[i] has bit j set when j is reachable from i (descendant).
         auto reachability(std::vector<std::vector<std::size_t>> const &successors)
                 -> std::vector<std::vector<std::uint64_t>> {
             auto const count = successors.size();
             auto const words = (count + 63) / 64;
             auto reach = std::vector<std::vector<std::uint64_t>>(count, std::vector<std::uint64_t>(words, 0));
-            // Successors always have higher indices, so a reverse sweep sees completed rows.
             for (auto index = count; index-- > 0;) {
                 for (auto const next: successors[index]) {
                     reach[index][next / 64] |= std::uint64_t{1} << (next % 64);
@@ -186,8 +178,6 @@ namespace frame_graph {
             return ((bits[index / 64] >> (index % 64)) & 1U) != 0;
         }
 
-        // compute_required goes to compute. compute_preferred goes to compute unless every live graphics pass is an
-        // ancestor or descendant of it: that would cost two semaphores and overlap nothing.
         auto resolve_queues(GraphDesc const &graph, std::vector<bool> const &live, bool async)
                 -> std::vector<LogicalQueue> {
             auto queues = std::vector<LogicalQueue>(graph.passes.size(), LogicalQueue::graphics);
@@ -231,7 +221,6 @@ namespace frame_graph {
             return AccessSpec::Exit{.stages = exit.stages, .access = exit.access, .layout = exit.layout};
         }
 
-        // Applies accesses to the tracked state and derives barriers, ownership transfers and cross-queue edges.
         class Tracker {
         public:
             Tracker(GraphDesc const &graph, QueueTopology const &topology, CompileOptions const &options,
@@ -254,8 +243,6 @@ namespace frame_graph {
                     state.last_access[queue_index(LogicalQueue::graphics)] = prologue_node;
                     state.last_write_node = prologue_node;
                     state.entry_has_work = resource.entry.stages != 0 || resource.entry.access != 0;
-                    // A read-only entry state was made visible by the previous frame's exit barrier, so a first read
-                    // within it needs no barrier.
                     if ((resource.entry.access & write_access_mask) == 0) {
                         state.visible_stages[queue_index(LogicalQueue::graphics)] = resource.entry.stages;
                         state.visible_access[queue_index(LogicalQueue::graphics)] = resource.entry.access;
@@ -284,15 +271,12 @@ namespace frame_graph {
                         graph_.resources[resource].sharing == Sharing::exclusive &&
                         !topology_.same_family(LogicalQueue::graphics, LogicalQueue::compute) && !spec.discard;
 
-                // A layout transition is a write: it must follow the other queue's accesses in the old layout.
                 auto const modifies = spec.writes || layout_change;
                 auto ordered_by_edge = false;
                 if (multi_queue_ && state.accessed) {
                     ordered_by_edge = add_edges(state, spec, modifies, other, node, needs_transfer);
                 }
 
-                // A reader that is not itself waiting must still be ordered after the cross-queue write the previous
-                // reader waited on: chain from that reader's stages with an execution-only barrier.
                 auto chain_stages = VkPipelineStageFlags2{VK_PIPELINE_STAGE_2_NONE};
                 if (!needs_transfer && !modifies && !ordered_by_edge && state.cross_ordered[qi] &&
                     (spec.stages & ~state.chained[qi]) != 0) {
@@ -315,7 +299,6 @@ namespace frame_graph {
                     state.cross_ordered[qi] = false;
                 }
 
-                // State update.
                 if (modifies || needs_transfer) {
                     state.has_write = true;
                     state.write_queue = queue;
@@ -339,7 +322,6 @@ namespace frame_graph {
                 }
                 state.accessed = true;
 
-                // A pass that manages the resource itself leaves it as its exit use says, as if that were its write.
                 if (spec.exit) {
                     state.has_write = true;
                     state.write_queue = queue;
@@ -348,8 +330,6 @@ namespace frame_graph {
                     state.read_stages = {};
                     state.visible_stages = {};
                     state.visible_access = {};
-                    // The pass made its writes visible to a read-only exit state itself, so readers in that scope need
-                    // no further barrier.
                     if ((spec.exit->access & write_access_mask) == 0) {
                         state.visible_stages[qi] = spec.exit->stages;
                         state.visible_access[qi] = spec.exit->access;
@@ -385,10 +365,8 @@ namespace frame_graph {
                            std::int64_t node, bool needs_transfer) -> bool {
                 auto const oi = queue_index(other);
                 if (needs_transfer) {
-                    // The release must follow the owner's last access, even the prologue's.
                     return add_edge(state.last_access[oi], node, spec.stages);
                 }
-                // Without a transfer, the prologue only matters if its entry state left work behind.
                 auto const src = modifies                                          ? state.last_access[oi]
                                  : (state.has_write && state.write_queue == other) ? state.last_write_node
                                                                                    : no_node;
@@ -470,10 +448,7 @@ namespace frame_graph {
                 auto need_barrier = false;
 
                 if (spec.writes) {
-                    // WAW, WAR, RAW-then-write: wait for everything before and make the last write available.
                     src_stages = (own_write ? state.write_stages : VK_PIPELINE_STAGE_2_NONE) | state.read_stages[qi];
-                    // A discarding write still follows the earlier write in memory order, so that write must be made
-                    // available. Only real write bits count: a layout transition recorded as a write carries read bits.
                     src_access = own_write ? (state.write_access & write_access_mask) : VK_ACCESS_2_NONE;
                     need_barrier = src_stages != 0 || layout_change;
                 } else {
@@ -552,10 +527,8 @@ namespace frame_graph {
             std::vector<std::int64_t> nodes;
         };
 
-    } // namespace
+    }
 
-    // Builds the plan for one schedule. A node is a position in `order`; the prologue is -1 and the epilogue is
-    // order.size(). Every cross-queue edge runs from a lower node to a higher one.
     static auto build_plan(GraphDesc const &graph, QueueTopology const &topology, CompileOptions const &options,
                            bool multi_queue, std::vector<bool> const &live, std::vector<LogicalQueue> const &queues,
                            std::vector<std::uint32_t> const &order) -> CompiledGraph {
@@ -600,7 +573,6 @@ namespace frame_graph {
             }
         }
 
-        // Epilogue: leave every import in its declared exit state, on the graphics queue.
         auto epilogue_barriers = BarrierSet{};
         for (auto index = std::size_t{0}; index < graph.resources.size(); ++index) {
             auto const &resource = graph.resources[index];
@@ -608,7 +580,6 @@ namespace frame_graph {
                 continue;
             }
             auto const is_image = resource.kind == ResourceKind::image;
-            // An UNDEFINED exit layout means "leave it as it is".
             auto const layout = (is_image && resource.exit.layout != VK_IMAGE_LAYOUT_UNDEFINED)
                                         ? resource.exit.layout
                                         : tracker.layout_of(static_cast<std::uint32_t>(index));
@@ -622,8 +593,6 @@ namespace frame_graph {
                           epilogue_barriers);
         }
 
-        // A legacy pass records its own barriers against everything outside the graph, so it is fenced by global
-        // barriers: one before it, and one at the start of the next pass on its queue (or the epilogue).
         constexpr auto legacy_fence = MemoryBarrier{
                 .src_stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                 .src_access = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
@@ -646,8 +615,6 @@ namespace frame_graph {
             after->memory.push_back(legacy_fence);
         }
 
-        // Split each queue's nodes into batches. A node with an incoming cross-queue edge starts a batch and a node
-        // with an outgoing one ends it.
         auto has_incoming = std::vector<bool>(node_count + 2, false);
         auto has_outgoing = std::vector<bool>(node_count + 2, false);
         for (auto const &edge: tracker.edges()) {
@@ -688,7 +655,6 @@ namespace frame_graph {
             }
         }
 
-        // Submission order: by first node, so every wait refers to an already-submitted batch.
         std::ranges::stable_sort(plans, [](BatchPlan const &lhs, BatchPlan const &rhs) {
             return lhs.nodes.front() < rhs.nodes.front();
         });
@@ -721,7 +687,6 @@ namespace frame_graph {
         }
         result.signal_count = next_signal;
 
-        // The epilogue transitions go in the last graphics batch.
         for (auto batch_index = result.batches.size(); batch_index-- > 0;) {
             auto &batch = result.batches[batch_index];
             if (batch.queue == LogicalQueue::graphics) {
@@ -731,7 +696,6 @@ namespace frame_graph {
             }
         }
 
-        // Waits: one per other queue, at the max signal index, with the union of the covered first-use stages.
         for (auto const &edge: tracker.edges()) {
             auto const src_batch = node_batch[static_cast<std::size_t>(edge.src + 1)];
             auto const dst_batch = node_batch[static_cast<std::size_t>(edge.dst + 1)];
@@ -757,9 +721,6 @@ namespace frame_graph {
             }
         }
 
-        // A batch is the work between cross-queue dependencies, so what it waits for it waits for entirely. The layout
-        // transitions in its leading barriers have no source stage and could otherwise run ahead of a wait that names
-        // only the stage of the first pass using the resource.
         for (auto &batch: result.batches) {
             for (auto &wait: batch.waits) {
                 wait.stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -779,7 +740,6 @@ namespace frame_graph {
             });
         }
 
-        // The first batch touching the swapchain waits on image acquisition.
         auto node_of_pass = std::vector<std::size_t>(pass_count, 0);
         for (auto position = std::size_t{0}; position < node_count; ++position) {
             node_of_pass[order[position]] = position;
@@ -871,7 +831,6 @@ namespace frame_graph {
         if (options.scheduler == SchedulerMode::overlap) {
             auto const overlapped = schedule(graph, live, queues, SchedulerMode::overlap);
             if (overlapped != declared) {
-                // Reordering must not cost more cross-queue waits than the declared order.
                 auto candidate = build_plan(graph, topology, options, multi_queue, live, queues, overlapped);
                 if (count_waits(candidate) <= count_waits(plan)) {
                     plan = std::move(candidate);
@@ -891,7 +850,6 @@ namespace frame_graph {
 
     auto PlanCache::compile(FrameGraph const &graph, QueueTopology const &topology, CompileOptions const &options)
             -> std::expected<CompiledGraph const *, FrameGraphError> {
-        // Declaration errors are not part of the hash, so a graph with any is never served from the cache.
         if (graph.declaration_errors().empty() && plan_) {
             if (declaration_hash(graph.description(), topology, options) == plan_->hash) {
                 ++hits_;
@@ -910,4 +868,4 @@ namespace frame_graph {
         return &*plan_;
     }
 
-} // namespace frame_graph
+}

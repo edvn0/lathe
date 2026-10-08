@@ -106,7 +106,6 @@ TEST_SUITE("unit") {
 
         CHECK(default_value.view() == interned_empty.view());
 
-        // Documents the current implementation; update if an empty FlyString becomes nullptr.
         CHECK_FALSE(default_value == interned_empty);
     }
 }
@@ -227,7 +226,6 @@ TEST_SUITE("smoke") {
     TEST_CASE("FlyString: pool stats count each distinct string once") {
         auto const before = FlyString::pool_stats();
 
-        // Unique to this test, so earlier tests can't have interned them.
         static_cast<void>(FlyString{"pool_stats_probe_alpha"});
         static_cast<void>(FlyString{"pool_stats_probe_alpha"});
         static_cast<void>(FlyString{"pool_stats_probe_beta"});

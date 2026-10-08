@@ -38,12 +38,10 @@ namespace {
         auto operator()(lua_State *state) const noexcept -> void { lua_close(state); }
     };
 
-    // LRU of compiled chunks, keyed by the hash of their source.
     class ChunkCache {
     public:
         explicit ChunkCache(std::size_t capacity) : capacity_(std::max<std::size_t>(capacity, 1)) {}
 
-        // Moves a hit to the front. A hash collision (same hash, different source) is a miss.
         [[nodiscard]] auto find(std::uint64_t hash, std::string_view source) -> sol::protected_function const * {
             auto const found = by_hash_.find(hash);
             if (found == by_hash_.end() || found->second->source != source) {
@@ -53,7 +51,6 @@ namespace {
             return &entries_.front().chunk;
         }
 
-        // Replaces an entry with the same hash; evicts the least recently used one past capacity.
         auto insert(std::uint64_t hash, std::string source, sol::protected_function chunk) -> void {
             if (auto const found = by_hash_.find(hash); found != by_hash_.end()) {
                 entries_.erase(found->second);
@@ -82,7 +79,6 @@ namespace {
         };
 
         std::size_t capacity_;
-        // Front is the most recently used.
         std::list<Entry> entries_;
         std::unordered_map<std::uint64_t, std::list<Entry>::iterator> by_hash_;
     };
@@ -99,15 +95,12 @@ namespace {
         bool &flag_;
     };
 
-    // Only reachable on a real out-of-memory (or a bug): everything outside run()'s protected call is far below
-    // the memory cap.
     auto lua_panic(lua_State *state) -> int {
         char const *const message = lua_tostring(state, -1);
         logger::fatal("Lua panic: {}", message != nullptr ? std::string_view{message} : std::string_view{"?"});
         std::abort();
     }
 
-    // Only used with LATHE_ENABLE_EXCEPTIONS=ON: turns a C++ exception escaping a binding into a runtime error.
     auto script_exception_handler(lua_State *state, sol::optional<std::exception const &> maybe_exception,
                                   sol::string_view description) -> int {
         std::array<char, 512> text{};
@@ -128,7 +121,6 @@ namespace {
         return std::string{text, length};
     }
 
-    // Priority: timeout > memory > syntax > tagged invalid_entity > runtime.
     [[nodiscard]] auto classify(int status, std::string_view raw_message, RunContext const &context,
                                 LuaMemoryBudget const &budget, ScriptEngineSettings const &settings,
                                 std::span<std::string const> api_names) -> ScriptError {
@@ -142,7 +134,6 @@ namespace {
 
         auto const location = split_lua_error_location(raw_message, scripting::detail::chunk_name);
 
-        // luaL_Buffer's resizebox raises an allocation failure as a plain runtime error with this text.
         bool const buffer_out_of_memory = budget.limit_hit && location.text == "not enough memory";
         if (status == LUA_ERRMEM || (status == LUA_ERRERR && budget.limit_hit) || buffer_out_of_memory) {
             return ScriptError{
@@ -176,7 +167,6 @@ namespace {
         };
     }
 
-    // Appends the string keys of the table at `index`.
     auto append_string_keys(lua_State *state, int index, std::vector<std::string> &names) -> void {
         index = lua_absindex(state, index);
         lua_pushnil(state);
@@ -189,7 +179,7 @@ namespace {
             }
         }
     }
-} // namespace
+}
 
 struct ScriptEngine::Impl {
     explicit Impl(ScriptEngineSettings const &engine_settings) :
@@ -206,25 +196,19 @@ struct ScriptEngine::Impl {
         if (!state) {
             return;
         }
-        // __gc finalizers run during lua_close: make every VM instruction hit an expired deadline.
         context.deadline = std::chrono::steady_clock::time_point::min();
         lua_sethook(state.get(), &scripting::detail::deadline_hook, LUA_MASKCOUNT, 1);
-        // References into the state are released while it is still open.
         chunks.clear();
         run_chunk = sol::protected_function{};
     }
 
-    // Member order matters: destruction runs in reverse, so the budget and context outlive the state.
     ScriptEngineSettings settings;
     LuaMemoryBudget budget;
     std::mt19937 random;
     scripting::detail::EntityIndex entity_index;
-    // *lua_getextraspace(state) == &context
     RunContext context;
     std::vector<std::string> api_names;
-    // Closed after everything below is released.
     std::unique_ptr<lua_State, LuaCloser> state;
-    // Wraps run_chunk_entry; calls through it use message_handler.
     sol::protected_function run_chunk;
     ChunkCache chunks;
     ScriptEngineStats stats;
@@ -250,14 +234,11 @@ auto ScriptEngine::create(ScriptEngineSettings const &settings) -> std::expected
     context.random = &impl->random;
     *static_cast<RunContext **>(lua_getextraspace(state)) = &context;
 
-    // What sol::state's constructor does: atpanic, sol2's per-state default handler global, exception handler.
     sol::set_default_state(state, &lua_panic);
     sol::set_default_exception_handler(state, &script_exception_handler);
-    // Stored as a global inside this state, not a C++ static, so several engines can coexist.
     sol::protected_function::set_default_handler(sol::make_object(state, &scripting::detail::message_handler));
 
     scripting::detail::build_sandbox(state, context);
-    // Also inspected below for api_names before it is moved into the registry.
     lua_pushvalue(state, -1);
     context.sandbox_ref = luaL_ref(state, LUA_REGISTRYINDEX);
 
@@ -308,13 +289,11 @@ auto ScriptEngine::run(std::string_view source, ScriptWorld world) -> ScriptRunR
         return {.error = ScriptError{.kind = ScriptErrorKind::runtime, .message = "no scene"}};
     }
 
-    // run() is the outermost C++ frame around the protected call, so RAII is safe here.
     RunningGuard const guard{self.running};
     auto const start = steady_clock::now();
     lua_State *const state = self.state.get();
 
     auto &context = self.context;
-    // Entity refs from another registry go stale.
     if (context.world.registry != world.registry) {
         ++context.world_generation;
     }
@@ -330,7 +309,6 @@ auto ScriptEngine::run(std::string_view source, ScriptWorld world) -> ScriptRunR
     self.budget.error_handler_headroom_bytes = self.settings.error_handler_headroom_bytes;
     self.budget.reset_run_flags();
 
-    // Armed before compiling: GC steps during parsing can run __gc finalizers, which are Lua code.
     lua_sethook(state, &scripting::detail::deadline_hook, LUA_MASKCOUNT,
                 static_cast<int>(self.settings.hook_instruction_interval));
 
@@ -343,11 +321,8 @@ auto ScriptEngine::run(std::string_view source, ScriptWorld world) -> ScriptRunR
     ++(chunk != nullptr ? self.stats.chunk_cache_hits : self.stats.chunk_cache_misses);
 
     if (chunk == nullptr) {
-        // "t": text chunks only; binary chunks can crash the VM.
         status = luaL_loadbufferx(state, source.data(), source.size(), "=script", "t");
         if (status == LUA_OK) {
-            // The cache's registry reference is taken outside any protected call, so allow it the error-handler
-            // headroom: a raise here would be a panic.
             self.budget.in_error_handler = true;
             self.chunks.insert(hash, std::string{source}, sol::protected_function(state, -1));
             self.budget.in_error_handler = false;
@@ -360,17 +335,14 @@ auto ScriptEngine::run(std::string_view source, ScriptWorld world) -> ScriptRunR
     }
 
     if (status == LUA_OK) {
-        // lua_pcall with message_handler; the result is popped at the end of this scope.
         auto const result = self.run_chunk(*chunk);
         status = static_cast<int>(result.status());
         if (status != LUA_OK) {
             raw_message = copy_error_string(state, result.stack_index());
         }
     }
-    // In case the handler was interrupted.
     self.budget.in_error_handler = false;
 
-    // Still under the deadline hook, which bounds finalizers.
     lua_gc(state, LUA_GCCOLLECT);
     lua_sethook(state, nullptr, 0, 0);
     lua_settop(state, 0);

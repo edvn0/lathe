@@ -8,8 +8,8 @@ namespace Animation {
         constexpr float idle_enter_walk = 0.25F;
         constexpr float walk_exit_to_idle = 0.1F;
         constexpr float walk_to_run = 3.5F;
-        constexpr float run_to_walk = 3.0F; // lower than walk_to_run: hysteresis against flicker
-        constexpr float apex_band = 1.0F;   // |vy| below this counts as the top of the jump
+        constexpr float run_to_walk = 3.0F;
+        constexpr float apex_band = 1.0F;
 
         auto ground_state_for(State const current, float const speed) -> State {
             switch (current) {
@@ -34,7 +34,7 @@ namespace Animation {
             }
             return vertical_velocity < -apex_band ? State::JumpFall : State::JumpApex;
         }
-    } // namespace
+    }
 
     namespace Transitions {
         auto from_ground(TransitionContext const &context) -> State {
@@ -76,7 +76,7 @@ namespace Animation {
             }
             return from_ground({context.inputs, State::Idle, context.state_time, true});
         }
-    } // namespace Transitions
+    }
 
     void AnimStateMachine::advance_phase(State const which, float &phase, float const speed,
                                          float const dt) const {
@@ -113,9 +113,8 @@ namespace Animation {
         definition(state.current).clip->sample(state.phase, out);
         if (state.fade < 1.0F) {
             definition(state.previous).clip->sample(state.previous_phase, scratch);
-            // Smoothstep so the fade has no velocity pop at either end.
             auto const t = state.fade * state.fade * (3.0F - 2.0F * state.fade);
             blend_poses(scratch, out, t, out);
         }
     }
-} // namespace Animation
+}

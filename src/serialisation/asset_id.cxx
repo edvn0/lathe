@@ -7,7 +7,6 @@
 
 auto asset_id_from_key(std::string_view key) noexcept -> AssetId {
     auto const hash = xxh64(key);
-    // 0 is "no asset"; remap the one key that could hash to it.
     return AssetId{.value = hash != 0 ? hash : 1};
 }
 

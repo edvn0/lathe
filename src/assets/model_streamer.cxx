@@ -22,12 +22,10 @@ auto ModelStreamer::reserve(IModelSink &sink, AssetPath const &source_path, Mode
 
     if (!pending_handle) {
         warn("model_streamer: could not reserve a slot for '{}', staying on its fallback model", debug_name);
-        // Every returned handle carries a reference for the caller.
         sink.retain_model(fallback);
         return Reservation{.handle = fallback, .path_hash = path_hash, .final = true};
     }
 
-    // The streamer's own reference, dropped once the request installs or fails.
     sink.retain_model(*pending_handle);
 
     return Reservation{.handle = *pending_handle, .path_hash = path_hash};
@@ -82,10 +80,9 @@ auto ModelStreamer::request_prepared(IModelSink &sink,
 
 namespace {
 
-    // Materials/primitives uploaded per request per frame, bounding one model's per-frame cost.
     constexpr std::uint32_t gpu_upload_items_per_frame = 8;
 
-} // namespace
+}
 
 auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buffer) -> void {
     ZoneScopedNC("ProcessReadyModels", tracy::Color::Goldenrod);
@@ -123,7 +120,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
                 }
 
                 if (!finalized->has_value()) {
-                    return false; // more tangent/LOD work for a later frame
+                    return false;
                 }
 
                 request.upload =
@@ -140,7 +137,7 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             }
 
             if (!stepped->has_value()) {
-                return false; // more GPU-upload work for a later frame
+                return false;
             }
 
             auto installed = sink.install_model(request.handle, **stepped);
@@ -158,12 +155,9 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             sink.register_model_name(request.handle, request.debug_name.view());
             sink.register_model_source(request.handle, request.source_path);
 
-            // Last, since this destroys the model if every caller already dropped it.
             sink.release_model(request.handle);
         }
 
-        // Textures stream independently and can finish long after install. Keep the request until they're all done
-        // so the logged profile covers them.
         if (request.profile != nullptr &&
             request.profile->texture_count.load(std::memory_order_relaxed) <
                     request.profile->expected_texture_count.load(std::memory_order_relaxed)) {

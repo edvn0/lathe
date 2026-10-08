@@ -19,7 +19,6 @@ namespace frame_graph {
                                failure.kind == TranslateFailureKind::missing_image ? "image" : "buffer", name);
         }
 
-        // The stages and accesses a command buffer of a compute-only queue family may name in a barrier.
         constexpr auto compute_family_stages =
                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                 VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_RESOLVE_BIT |
@@ -33,9 +32,6 @@ namespace frame_graph {
                 VK_ACCESS_2_UNIFORM_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
                 VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
 
-        // A barrier recorded on a compute-only family cannot name graphics stages: a resource a graphics pass reads
-        // is acquired on the compute queue by a barrier that carries the compute part of its scope only, and the
-        // graphics reader's own barrier covers the rest.
         auto restrict_to_compute_family(BarrierSet barriers) -> BarrierSet {
             for (auto &image: barriers.images) {
                 image.src_stages &= compute_family_stages;
@@ -58,15 +54,12 @@ namespace frame_graph {
             return barriers;
         }
 
-        // Whether batches of `queue` are recorded on a family that cannot run graphics work: the compute queue of a
-        // topology where it has a family of its own.
         auto is_compute_only(LogicalQueue queue, ExecuteInfo const &info) -> bool {
             auto const topology = info.queue_set.topology();
             return queue == LogicalQueue::compute &&
                    !topology.same_family(LogicalQueue::graphics, LogicalQueue::compute);
         }
 
-        // Records `barriers` as one vkCmdPipelineBarrier2, if there is anything to record.
         auto record_barriers(VkCommandBuffer command_buffer, BarrierSet const &barriers, ExecuteInfo const &info,
                              bool compute_only) -> std::expected<void, ExecuteError> {
             if (barriers.empty()) {
@@ -94,7 +87,6 @@ namespace frame_graph {
             auto const &pass = info.graph.passes[compiled_pass.pass];
             auto const compute_only = is_compute_only(batch.queue, info);
 
-            // Memory another transient used until now: wait for its accesses before this pass's own barriers.
             if (info.transients != nullptr) {
                 for (auto const &aliasing: info.transients->barriers) {
                     if (aliasing.pass != compiled_pass.pass) {
@@ -119,7 +111,6 @@ namespace frame_graph {
             auto const *location = info.profiler.source_location(label, pass.profile.color);
             tracy::ScopedZone const cpu_zone{location};
             auto *const tracy_context = info.tracy_contexts[queue_index(batch.queue)];
-            // Scoped so the zone closes with the pass; without a context there is nothing to time on the GPU.
             std::optional<tracy::VkCtxScope> gpu_zone;
             if (tracy_context != nullptr) {
                 gpu_zone.emplace(tracy_context, location, command_buffer, true);
@@ -129,8 +120,6 @@ namespace frame_graph {
             info.profiler.write_begin(command_buffer, batch.queue, info.frame_index, compiled_pass.timestamp_slot,
                                       name_id, label);
 
-            // A raster pass that declared attachments is wrapped in dynamic rendering; the barrier above has put them
-            // in their attachment layouts.
             auto rendering = std::optional<RenderingStorage>{};
             if (pass.rendering) {
                 auto desc = *pass.rendering;
@@ -170,7 +159,7 @@ namespace frame_graph {
             return {};
         }
 
-    } // namespace
+    }
 
     auto record(ExecuteInfo const &info) -> std::expected<std::vector<SubmitBatch>, ExecuteError> {
         auto submits = std::vector<SubmitBatch>{};
@@ -181,7 +170,6 @@ namespace frame_graph {
 
             auto command_buffer = VkCommandBuffer{VK_NULL_HANDLE};
             if (index == 0) {
-                // The prologue batch: the frame's own graphics command buffer.
                 command_buffer = info.prologue;
             } else if (has_content(batch)) {
                 auto fresh = info.queue_set.command_buffer(batch.queue);
@@ -210,7 +198,6 @@ namespace frame_graph {
                     return std::unexpected(recorded.error());
                 }
 
-                // The prologue buffer stays open for the frame's owner to end.
                 if (index != 0) {
                     auto const ended = vkEndCommandBuffer(command_buffer);
                     if (ended != VK_SUCCESS) {
@@ -235,4 +222,4 @@ namespace frame_graph {
         return submits;
     }
 
-} // namespace frame_graph
+}

@@ -31,7 +31,6 @@ namespace {
                               ModelVertex{.position = {1.0F, 0.0F, 0.0F}, .normal = {0.0F, 0.0F, 1.0F},
                                           .tangent = {1.0F, 0.0F, 0.0F, 1.0F}}};
         primitive.compressed_vertices = compress_vertices(primitive.vertices);
-        // Every vertex fully weighted to the moving joint.
         primitive.skin = {SkinVertex{.joints = {1, 0, 0, 0}, .weights = {65535, 0, 0, 0}},
                           SkinVertex{.joints = {1, 0, 0, 0}, .weights = {65535, 0, 0, 0}}};
 
@@ -42,7 +41,7 @@ namespace {
         return data;
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("compute_skin_inflate bounds the sampled clip displacement with a margin") {

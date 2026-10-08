@@ -7,23 +7,16 @@
 
 #include "core/handle.hxx"
 
-// Frame graph vocabulary (docs/frame-graph.md). Nothing here touches a device: the compiler and its tests build
-// against Vulkan enum and flag types only.
 namespace frame_graph {
 
     enum class LogicalQueue : std::uint8_t { graphics, compute };
     inline constexpr std::size_t logical_queue_count = 2;
 
-    // graphics: always graphics.
-    // compute_preferred: async compute when available and enabled, unless the compiler finds nothing to overlap it
-    // with. compute_required: async compute whenever available and enabled; never demoted. Both compute affinities fall
-    // back to graphics on a single-queue topology.
     enum class QueueAffinity : std::uint8_t { graphics, compute_preferred, compute_required };
 
     enum class PassType : std::uint8_t { raster, compute, transfer };
 
     enum class Use : std::uint8_t {
-        // images
         color_attachment,
         color_resolve,
         depth_attachment,
@@ -35,7 +28,6 @@ namespace frame_graph {
         transfer_src,
         transfer_dst,
         present,
-        // buffers (always whole-buffer)
         indirect_read,
         index_read,
         shader_read,
@@ -44,7 +36,6 @@ namespace frame_graph {
         transfer_read,
         transfer_write,
         host_read,
-        // token resources: no image or buffer behind them, they only produce memory barriers
         token_write,
         token_read,
     };
@@ -52,7 +43,6 @@ namespace frame_graph {
     enum class LoadOp : std::uint8_t { load, clear, dont_care };
     enum class StoreOp : std::uint8_t { store, dont_care };
 
-    // The shader stages a sampled, storage or shader_* use touches.
     enum class ShaderStage : std::uint8_t {
         vertex = 1U << 0U,
         task = 1U << 1U,
@@ -78,14 +68,12 @@ namespace frame_graph {
     struct BufferTag;
     struct PassTag;
 
-    // index is the resource slot; generation is the resource version (1-based). Every write returns the next version.
     using ImageId = Handle<ImageTag, 0>;
     using BufferId = Handle<BufferTag, 0>;
     using PassId = Handle<PassTag, 0>;
 
-    // Import entry and exit state, and the compiler's tracked state.
     struct ResourceState {
-        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; // ignored for buffers
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_NONE;
         VkAccessFlags2 access = VK_ACCESS_2_NONE;
         LogicalQueue queue = LogicalQueue::graphics;
@@ -95,4 +83,4 @@ namespace frame_graph {
 
     enum class Sharing : std::uint8_t { exclusive, concurrent };
 
-} // namespace frame_graph
+}

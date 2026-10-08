@@ -11,7 +11,6 @@ struct VertexOutput
     float2 texture_coordinate;
 };
 
-// Culls against the cascade's frustum, so casters outside the camera view are still drawn.
 [shader("amplification")]
 [numthreads(meshlets_per_task, 1, 1)]
 void main_task(uint3 group_id: SV_GroupID, uint lane: SV_GroupIndex, uint draw_index: SV_DrawIndex,
@@ -35,7 +34,6 @@ VertexOutput shadow_vertex(ShadowPC pc, GpuDraw draw, float4x4 model, float wind
     return output;
 }
 
-// Instanced path for batches too small for meshlets. Same vertex function as main_mesh.
 [shader("vertex")]
 VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform ShadowPC pc)
 {
@@ -68,7 +66,6 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
     }
 }
 
-// Only for the masked shadow pipelines; opaque shadows have no fragment shader.
 [shader("fragment")]
 void main_fs(VertexOutput input, uniform ShadowPC pc)
 {

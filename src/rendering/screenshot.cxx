@@ -53,7 +53,6 @@ namespace {
         return {buffer.data(), std::strlen(buffer.data())};
     }
 
-    // Runs off the render thread on CPU-owned pixels; no Vulkan from here on.
     auto write_screenshot_png(std::vector<std::byte> pixels, VkExtent2D extent, VkFormat format) -> void {
 
         if (is_bgra(format)) {
@@ -76,7 +75,6 @@ namespace {
             return;
         }
 
-        // Keeps several screenshots within one second from overwriting each other.
         static std::atomic<std::uint32_t> sequence{0};
         auto const path = screenshot_path(std::format("screenshot_{}_{:03}.png", make_timestamp(),
                                                       sequence.fetch_add(1, std::memory_order_relaxed)))
@@ -95,7 +93,7 @@ namespace {
         info("Screenshot saved to '{}'", path);
     }
 
-} // namespace
+}
 
 ScreenshotCapture::~ScreenshotCapture() { close(); }
 
@@ -107,7 +105,6 @@ auto ScreenshotCapture::close() noexcept -> void {
                 slots_, [](auto const &slot) { return !slot || !slot->cpu_busy.load(std::memory_order_seq_cst); });
     });
 
-    // Free the readback buffers while the VMA allocator is still alive.
     slots_.clear();
 }
 
@@ -132,7 +129,6 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
 
     auto &slot = get_or_create_slot(frame_index);
 
-    // Leave the request pending while this slot is busy, so another frame picks it up.
     if (slot.gpu_pending || slot.cpu_busy.load(std::memory_order_seq_cst)) {
         return false;
     }
@@ -164,7 +160,6 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
         if (!created) {
             error("Screenshot: failed to create readback buffer: {}", describe(created.error()));
 
-            // No capture was recorded; keep the request for a later frame.
             requested_.store(true, std::memory_order_relaxed);
 
             return false;
@@ -173,7 +168,6 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
         slot.buffer = std::move(*created);
     }
 
-    // Current layout -> transfer source.
     VkImageMemoryBarrier2 const to_transfer_src{
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .pNext = nullptr,
@@ -212,7 +206,6 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
         vkCmdPipelineBarrier2(command_buffer, &to_transfer_src_info);
     }
 
-    // Source image -> readback buffer.
     VkBufferImageCopy2 const region{
             .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
             .pNext = nullptr,
@@ -247,7 +240,6 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
 
     vkCmdCopyImageToBuffer2(command_buffer, &copy_info);
 
-    // Transfer source -> the layout the rest of the frame expects.
     VkImageMemoryBarrier2 const to_present{
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .pNext = nullptr,
@@ -270,7 +262,6 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
                     },
     };
 
-    // Transfer write -> host read. The frame fence provides the execution dependency.
     VkBufferMemoryBarrier2 const to_host{
             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
             .pNext = nullptr,
@@ -336,7 +327,6 @@ auto ScreenshotCapture::try_resolve(std::uint32_t frame_index) -> void {
 
     auto &pool = thread_pool();
     pool.detach_task([slot_ptr, finish]() {
-        // Needed for non-coherent readback memory.
         if (auto invalidated = slot_ptr->buffer.invalidate(0, slot_ptr->byte_size); !invalidated) {
 
             error("Screenshot: failed to invalidate "
@@ -368,7 +358,6 @@ auto ScreenshotCapture::try_resolve(std::uint32_t frame_index) -> void {
 
         std::memcpy(pixels.data(), mapped, byte_size);
 
-        // Release the slot before the slow conversion, PNG encoding and disk I/O.
         finish();
 
         write_screenshot_png(std::move(pixels), extent, format);

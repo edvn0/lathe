@@ -32,7 +32,7 @@ namespace {
 
         return sh;
     }
-} // namespace
+}
 
 TEST_CASE("SH basis is orthonormal over the sphere") {
     constexpr std::uint32_t size = 128;
@@ -81,14 +81,12 @@ TEST_CASE("constant radiance gives irradiance over pi equal to the radiance ever
 }
 
 TEST_CASE("a directional radiance lobe follows the clamped cosine response within L2 ringing") {
-    // A small bright patch around +Y (5 degree half angle) behaves as a delta for an L2 projection.
-    constexpr float cap = 0.996194F; // cos(5 degrees)
+    constexpr float cap = 0.996194F;
 
     auto const sh = project_cube(256, [](glm::vec3 d) { return d.y > cap ? glm::vec3{1.0F} : glm::vec3{0.0F}; });
 
     auto const irradiance = sh9_cosine_convolve_over_pi(sh);
 
-    // Straight toward the patch the exact response is solid_angle * cos(0) / pi; the L2 truncation overshoots slightly.
     auto const patch_solid_angle = 2.0 * std::numbers::pi * (1.0 - cap);
     auto const exact_up = static_cast<float>(patch_solid_angle / std::numbers::pi);
 
@@ -96,7 +94,6 @@ TEST_CASE("a directional radiance lobe follows the clamped cosine response withi
     CHECK(up > 0.9F * exact_up);
     CHECK(up < 1.6F * exact_up);
 
-    // Opposite side: the exact response is zero, and L2 ringing can leave only a small residual.
     auto const down = sh9_eval(irradiance, glm::vec3{0, -1, 0}).x;
     CHECK(std::abs(down) < 0.25F * exact_up);
 }
@@ -111,7 +108,6 @@ TEST_CASE("yaw rotation of the lookup equals projecting a rotated cube") {
 
     auto const original = sh9_cosine_convolve_over_pi(project_cube(64, radiance));
 
-    // The environment rotated by +angle about Y: L'(d) = L(R(-angle) d).
     auto const rotated = sh9_cosine_convolve_over_pi(
             project_cube(64, [&](glm::vec3 d) { return radiance(rotate_y(d, glm::vec2{cos_sin.x, -cos_sin.y})); }));
 
@@ -121,7 +117,6 @@ TEST_CASE("yaw rotation of the lookup equals projecting a rotated cube") {
     for (int index = 0; index < 64; ++index) {
         auto const n = glm::normalize(glm::vec3{normal(engine), normal(engine), normal(engine)});
 
-        // Lookups rotate the normal by -angle, as the shaders do for a scene rotation of +angle.
         auto const via_lookup = sh9_eval(original, rotate_y(n, glm::vec2{cos_sin.x, -cos_sin.y}));
         auto const via_cube = sh9_eval(rotated, n);
 

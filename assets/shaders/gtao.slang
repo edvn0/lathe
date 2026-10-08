@@ -3,11 +3,6 @@ module gtao;
 import bindless;
 import scene_types;
 
-// GTAO (Jimenez et al. 2016): multi-slice horizon search over depth, integrated with the closed-form
-// cosine-weighted visibility of each slice's horizon-limited arc. Normals are reconstructed from depth.
-//
-// Writes visibility in [0, 1] (1 = unoccluded). One dithered slice per pixel makes it noisy;
-// gtao_denoise.slang cleans it up.
 struct GtaoPushConstants
 {
     Ptr<UBO> ubo;
@@ -22,7 +17,6 @@ struct GtaoPushConstants
     uint slice_count;
     uint step_count;
 
-    // The leading VkDeviceAddress gives the generated C++ struct 8-byte alignment; pad to match.
     uint _padding;
 };
 
@@ -32,8 +26,6 @@ public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 static const float pi = 3.14159265358979323846;
 
-// Inverts the real projection, so no handedness or Z-range assumptions. `depth` is reverse-Z, so
-// ndc_z = 1 - depth.
 float3 view_pos_from_depth(float4x4 inv_proj, float2 uv, float depth)
 {
     float2 ndc_xy = uv * 2.0 - 1.0;
@@ -42,13 +34,10 @@ float3 view_pos_from_depth(float4x4 inv_proj, float2 uv, float depth)
     return clip.xyz / clip.w;
 }
 
-// Marches from `uv` along `dir_uv`, tracking the cosine of the highest occluder relative to `view_dir`.
-// Samples past `falloff_start` fade out rather than cut off, avoiding a ring at the radius.
 float horizon_cos(Texture2D<float> depth_tex, SamplerState point_sampler, float4x4 inv_proj, float2 uv,
                    float2 dir_uv, float2 texel, float3 p, float3 view_dir, float step_pixels, uint step_count,
                    float radius_view, float falloff_start)
 {
-    // No occluder leaves the horizon at the tangent plane.
     float max_cos = 0.0;
 
     for (uint i = 1; i <= step_count; ++i)
@@ -117,7 +106,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     float3 p = view_pos_from_depth(inv_proj, uv, center_depth);
 
-    // For each axis use the neighbour closest in depth, so the tangent doesn't cross a silhouette edge.
     float2 dx = float2(texel.x, 0.0);
     float2 dy = float2(0.0, texel.y);
 
@@ -138,13 +126,11 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     float3 view_dir = normalize(-p);
 
-    // Only facing the camera matters.
     if (dot(n, view_dir) < 0.0)
     {
         n = -n;
     }
 
-    // Project a point `radius_view` away to find the radius in pixels at this depth.
     float3 radius_probe = p + float3(pc.radius_view, 0.0, 0.0);
     float4 radius_clip = mul(proj, float4(radius_probe, 1.0));
     float2 radius_ndc = radius_clip.xy / max(radius_clip.w, 1e-5);
@@ -155,7 +141,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
     float step_pixels = radius_pixels / float(pc.step_count);
     float falloff_start = pc.radius_view * pc.falloff_range;
 
-    // Interleaved gradient noise. Spatial only: without TAA a per-frame pattern would flicker.
     float ign = frac(52.9829189 * frac(dot(float2(pixel), float2(0.06711056, 0.00583715))));
 
     float visibility = 0.0;
@@ -165,8 +150,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         float slice_angle = (float(slice) + ign) * (pi / float(pc.slice_count));
         float2 slice_dir_uv = float2(cos(slice_angle), sin(slice_angle));
 
-        // Treating the lifted direction as (dir.x, dir.y, 0) approximates the slice plane, as XeGTAO does; the
-        // horizon search itself uses exact positions.
         float3 slice_dir_view = normalize(float3(slice_dir_uv, 0.0));
         float3 plane_normal = normalize(cross(slice_dir_view, view_dir));
 
@@ -174,8 +157,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         float n_proj_len = max(length(n_proj), 1e-5);
         float3 n_proj_dir = n_proj / n_proj_len;
 
-        // theta_n in [0, pi]: from -slice_dir_view (0) through view_dir (pi/2) to +slice_dir_view (pi). n faces the
-        // camera, so sin_theta_n >= 0.
         float sin_theta_n = clamp(dot(n_proj_dir, view_dir), 0.0, 1.0);
         float cos_theta_n_neg = -dot(n_proj_dir, slice_dir_view);
         float theta_n = atan2(sin_theta_n, cos_theta_n_neg);
@@ -185,15 +166,12 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         float max_cos_2 = horizon_cos(depth_tex, point_sampler, inv_proj, uv, -slice_dir_uv, texel, p, view_dir,
                                       step_pixels, pc.step_count, pc.radius_view, falloff_start);
 
-        // theta_h1 is the horizon near pi, theta_h2 the one near 0.
         float theta_h1 = pi - asin(clamp(max_cos_1, -1.0, 1.0));
         float theta_h2 = asin(clamp(max_cos_2, -1.0, 1.0));
 
-        // Clamp each horizon to the hemisphere around the normal (theta_n +/- pi/2) within [0, pi].
         theta_h1 = clamp(theta_h1, theta_n, min(theta_n + pi * 0.5, pi));
         theta_h2 = clamp(theta_h2, max(theta_n - pi * 0.5, 0.0), theta_n);
 
-        // Cosine-weighted visibility over [theta_h2, theta_h1], normalized by the unoccluded 1 + sin(theta_n).
         float slice_visibility = (sin(theta_h1 - theta_n) - sin(theta_h2 - theta_n)) / (1.0 + sin_theta_n);
         visibility += saturate(slice_visibility);
     }

@@ -12,8 +12,6 @@
 #include "gpu/image.hxx"
 #include "scene/script_handle.hxx"
 
-// Human-readable names for asset handles, for the editor's pickers. Separate from the *Storage classes, which
-// don't know about names.
 template<typename HandleT>
 class NamedAssetTable {
 public:
@@ -22,7 +20,6 @@ public:
         HandleT handle;
     };
 
-    // Returns false and logs a warning if the name is taken; never overwrites.
     auto register_asset(std::string name, HandleT handle) -> bool {
         if (find(name).valid()) {
             warn("AssetRegistry: name '{}' is already registered, ignoring", name);
@@ -44,14 +41,12 @@ public:
         return it != entries_.end() ? it->handle : HandleT{};
     }
 
-    // Empty if `handle` has no name.
     [[nodiscard]]
     auto name_of(HandleT handle) const noexcept -> std::string_view {
         auto const it = std::ranges::find(entries_, handle, &Entry::handle);
         return it != entries_.end() ? std::string_view{it->name} : std::string_view{};
     }
 
-    // Sorted by name.
     [[nodiscard]]
     auto entries() const noexcept -> std::span<Entry const> {
         return entries_;
@@ -61,7 +56,6 @@ private:
     std::vector<Entry> entries_;
 };
 
-// One NamedAssetTable per asset kind. Lookups are linear, which is fine at editor scale.
 class AssetRegistry {
 public:
     [[nodiscard]] auto models() noexcept -> NamedAssetTable<ModelHandle> & { return models_; }

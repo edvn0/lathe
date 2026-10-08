@@ -27,8 +27,6 @@ namespace {
         }
     };
 
-    // Models an RAII resource. A default-constructed slot owns nothing, and moving leaves the source inert, which
-    // matters because release() moves the payload out before it is destroyed.
     struct TrackedResource {
         std::shared_ptr<LifetimeState> state;
 
@@ -110,7 +108,7 @@ namespace {
         return holder;
     }
 
-} // namespace
+}
 
 TEST_SUITE("ObjectPool::Holder") {
 
@@ -249,7 +247,6 @@ TEST_SUITE("ObjectPool::Holder") {
 
         CHECK(state->destruction_count(7) == 1);
 
-        // Pool destruction must not destroy the moved-from slot payload again.
     }
 
     TEST_CASE("reset releases pool slot") {
@@ -684,7 +681,6 @@ TEST_SUITE("ObjectPool::Holder") {
 
         std::vector<TestHolder> holders;
 
-        // Force several reallocations.
         for (std::uint32_t id = 1; id <= 20; ++id) {
             holders.push_back(acquire_resource(pool, state, id));
 
@@ -1044,7 +1040,6 @@ TEST_SUITE("ObjectPool::Holder") {
 
         CHECK(released->id == 100);
 
-        // Removed from the pool, but the returned value still owns the resource.
         CHECK(state->destruction_count(100) == 0);
         CHECK(pool.size() == 0);
 
@@ -1066,7 +1061,6 @@ TEST_SUITE("ObjectPool::Holder") {
             CHECK(state->destruction_count(101) == 1);
         }
 
-        // Destroying the pool destroys the moved-from value, which owns nothing.
         CHECK(state->destruction_count(101) == 1);
     }
 
@@ -1103,7 +1097,6 @@ TEST_SUITE("ObjectPool::Holder") {
 
 namespace {
 
-    // A storage that wraps a pool and does extra teardown on destroy, like ImageStorage::destroy_image.
     class RecordingStorage {
     public:
         using HandleT = Handle<std::uint32_t>;
@@ -1153,7 +1146,6 @@ namespace {
 
     using RecordingHolder = Holder<RecordingStorage, RecordingStorage::HandleT, &RecordingStorage::destroy>;
 
-    // Release only; no get() or contains().
     struct ReleaseOnlyOwner {
         auto release(Handle<int> handle) -> void { released.push_back(handle); }
 
@@ -1165,7 +1157,7 @@ namespace {
     static_assert(!std::is_copy_constructible_v<RecordingHolder>);
     static_assert(std::is_nothrow_move_constructible_v<RecordingHolder>);
 
-} // namespace
+}
 
 TEST_SUITE("Holder with a custom owner") {
     TEST_CASE("destroying the holder releases through the owner") {

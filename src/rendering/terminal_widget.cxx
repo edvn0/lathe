@@ -9,7 +9,6 @@
 namespace gui {
 
     TerminalWidget::MessageRing::MessageRing(std::size_t capacity) : capacity_{capacity} {
-        // One allocation up front; messages are constructed as they arrive.
         storage_.reserve(capacity_);
     }
 
@@ -24,7 +23,6 @@ namespace gui {
             return;
         }
 
-        // Full: replace the oldest message.
         storage_[write_index_] = std::move(message);
 
         ++write_index_;
@@ -35,7 +33,6 @@ namespace gui {
     }
 
     auto TerminalWidget::MessageRing::clear() -> void {
-        // Frees the strings but keeps the vector's allocation.
         storage_.clear();
         write_index_ = 0;
     }
@@ -45,12 +42,10 @@ namespace gui {
     auto TerminalWidget::MessageRing::empty() const noexcept -> bool { return storage_.empty(); }
 
     auto TerminalWidget::MessageRing::operator[](std::size_t index) const noexcept -> logger::ConsoleMessage const & {
-        // Not full yet, so storage is already chronological.
         if (storage_.size() < capacity_) {
             return storage_[index];
         }
 
-        // Once full, write_index_ points at the oldest element.
         auto physical_index = write_index_ + index;
 
         if (physical_index >= capacity_) {
@@ -169,7 +164,6 @@ namespace gui {
             history_.push(std::move(message));
         }
 
-        // Kept for reuse; swapped back into the sink on the next drain.
         pending_.clear();
 
         return true;
@@ -358,4 +352,4 @@ namespace gui {
         ImGui::EndChild();
     }
 
-} // namespace gui
+}

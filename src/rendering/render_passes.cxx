@@ -132,9 +132,6 @@ namespace render_pass {
             vkCmdSetLogicOpEnableEXT(command_buffer, VK_FALSE);
         }
 
-        // Attachments past the first are never blended. They are written (as the outline mask) only when
-        // `write_extra_attachments`, and write-masked otherwise, because a fragment shader that doesn't write one
-        // leaves undefined values behind.
         auto set_shader_object_color_blend_state(VkCommandBuffer command_buffer, std::uint32_t attachment_count,
                                                  bool blending, bool write_extra_attachments = false) noexcept
                 -> void {
@@ -209,7 +206,6 @@ namespace render_pass {
             }
         }
 
-        // One scene draw: the pipeline pair and the attachment state to bind it with.
         struct SceneDraw {
             PipelineNodeHandle meshlet_pipeline{};
             PipelineNodeHandle instanced_pipeline{};
@@ -217,7 +213,6 @@ namespace render_pass {
             std::uint32_t colour_attachment_count = 0;
             bool blending = false;
 
-            // Whether the draw writes the outline mask, the attachment after the first.
             bool write_outline_mask = false;
         };
 
@@ -227,10 +222,6 @@ namespace render_pass {
                    resolve_layout(graph, draw.instanced_pipeline) != VK_NULL_HANDLE;
         }
 
-        // Draws `command_count` commands from `first_command` down both paths: vkCmdDrawMeshTasksIndirectEXT with the
-        // task/mesh pipeline, then vkCmdDrawIndexedIndirect with the instanced one. Each command has one live half.
-        //
-        // SV_DrawIndex restarts at 0 per indirect call, so PC::task_commands points at this call's first command.
         template<typename PushConstants>
         auto draw_scene_commands(Context const &context, SceneDraw const &draw, DrawBuffers const &buffers,
                                  std::uint32_t first_command, std::uint32_t command_count, PushConstants pc) noexcept
@@ -263,12 +254,10 @@ namespace render_pass {
                                      command_count, sizeof(GpuDrawCommand));
         }
 
-        // Frustum-only without back-face culling (mask, blend, shadows); opaque main-view draws also cone-cull.
-        // Mirrors cull_*_bit in scene_types.slang.
         constexpr std::uint32_t cull_frustum = 1U;
         constexpr std::uint32_t cull_frustum_and_backface = 1U | 2U;
 
-    } // namespace detail
+    }
 
     auto shadow(Context const &context, ShadowPassInfo const &info) -> std::expected<void, RendererError> {
 
@@ -303,9 +292,6 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        // The frame graph has begun rendering into the atlas, loading it when `preserve_contents`.
-
-        // LOAD keeps cached tiles; clear only the ones being redrawn. Reverse-Z clears to zero.
         VkClearAttachment const clear_attachment{
                 .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
                 .colorAttachment = 0,
@@ -344,7 +330,6 @@ namespace render_pass {
                     .padding = 0,
             };
 
-            // Shadows never cull back faces, so double-sided batches only differ in where their range starts.
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
                 if ((info.update_mask & (1U << cascade)) == 0) {
                     continue;
@@ -420,8 +405,6 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        // The frame graph has begun rendering.
-
         ForwardPushConstants const pc{
                 .draws_address = info.draws.draws.device_address,
                 .transforms_address = info.draws.transforms.device_address,
@@ -437,7 +420,6 @@ namespace render_pass {
         auto opaque_pc = pc;
         opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface | info.extra_cull_flags : 0U;
 
-        // Double-sided and mask draws keep their back faces, so meshlets skip the normal-cone test too.
         auto unculled_backface_pc = pc;
         unculled_backface_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum | info.extra_cull_flags : 0U;
 
@@ -482,17 +464,12 @@ namespace render_pass {
 
         auto const command_buffer = context.command_buffer;
 
-
-        // The occlusion tests (main_cs, late_cs, and task shaders for meshlet occlusion) and the debug view.
-        // (On a compute-only family only the compute reader can be named; the graph covers the others.)
         VkPipelineStageFlags2 const hiz_reader_stages = context.compute_only
                                                                 ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
                                                                 : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                                                                           VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
                                                                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 
-        // The frame graph has put the source depth in SHADER_READ_ONLY_OPTIMAL and every level of the pyramid in
-        // GENERAL (it is rebuilt from scratch), and takes the depth back for the late prepass afterwards.
         detail::bind_compute_node(context.pipeline_graph, info.pipeline, command_buffer);
         context.resource_table.bind(command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
 
@@ -513,13 +490,11 @@ namespace render_pass {
             vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(build_pc), &build_pc);
             vkCmdDispatch(command_buffer, (level_extent.width + 7U) / 8U, (level_extent.height + 7U) / 8U, 1);
 
-            // Read by the next level's dispatch and, once the chain is done, by the occlusion tests.
             transition_image_layout(command_buffer, info.hiz.image(), VK_IMAGE_LAYOUT_GENERAL,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                                     hiz_reader_stages, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, level, 1);
         }
-
 
         return {};
     }
@@ -599,7 +574,6 @@ namespace render_pass {
                 .write_outline_mask = info.outline_mask,
         };
 
-        // Blended surfaces don't mark the outline mask: an outline around something see-through would draw through it.
         detail::SceneDraw const blend_draw{
                 .meshlet_pipeline = info.blend_pipeline,
                 .instanced_pipeline = info.blend_instanced_pipeline,
@@ -614,8 +588,6 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-
-        // The frame graph has begun rendering.
         vkCmdBeginQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0, 0);
 
         ForwardPushConstants const pc{
@@ -635,16 +607,12 @@ namespace render_pass {
                 .occlusion_address = info.occlusion_view_address,
         };
 
-        // Must cull exactly like the prepass's opaque draw, since this pass depth-tests EQUAL. With meshlet occlusion
-        // the extra flags make it replay the meshlets the prepass phases recorded instead of testing them again.
         auto opaque_pc = pc;
         opaque_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum_and_backface | info.extra_cull_flags : 0U;
 
-        // Double-sided and mask draws, like the prepass's.
         auto mask_pc = pc;
         mask_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum | info.extra_cull_flags : 0U;
 
-        // Blend draws never enter the prepass, so they take no occlusion bits.
         auto unculled_backface_pc = pc;
         unculled_backface_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U;
 
@@ -670,10 +638,6 @@ namespace render_pass {
                                         mask_pc);
         }
 
-        // The background goes in before blending so blended surfaces composite over it, and inside this rendering
-        // scope because under MSAA the colour attachment is not stored, only resolved when the scope ends. Reversed Z
-        // stores the sky's ndc.z = 1 as depth 0, so with GREATER_OR_EQUAL and no depth write it only touches pixels no
-        // geometry reached.
         if (info.draw_skybox) {
             auto const sky_layout = detail::resolve_layout(context.pipeline_graph, info.skybox_pipeline);
 
@@ -705,8 +669,6 @@ namespace render_pass {
         vkCmdEndQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0);
 
         scene_overlays();
-
-        // Inside the rendering scope, so it no longer covers the end-of-scope resolve.
 
         return info.output_hdr;
     }
@@ -800,8 +762,6 @@ namespace render_pass {
         auto const command_buffer = context.command_buffer;
         auto const bloom_image = info.target->image();
 
-        // A level is GENERAL while written and SHADER_READ_ONLY_OPTIMAL while sampled. Each barrier moves one level,
-        // so no dispatch samples and stores the same level.
         auto const to_storage = [&](std::uint32_t mip) {
             transition_image_layout(command_buffer, bloom_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                     VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -820,10 +780,6 @@ namespace render_pass {
                                     VK_IMAGE_ASPECT_COLOR_BIT, mip, 1);
         };
 
-        // The frame graph has put every level in GENERAL, discarding last frame's contents: the chain is rebuilt each
-        // frame. It takes the finished chain, every level SHADER_READ_ONLY_OPTIMAL, from here.
-
-        // Downsample: HDR -> mip 0 -> mip 1 -> ..., each sampling the level above.
         detail::bind_compute_node(context.pipeline_graph, info.downsample_pipeline, command_buffer);
         context.resource_table.bind(command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     downsample_layout);
@@ -853,7 +809,6 @@ namespace render_pass {
             to_sampled(mip);
         }
 
-        // Upsample: add the tent-filtered level below onto each level. mip 0 ends up with the full bloom.
         detail::bind_compute_node(context.pipeline_graph, info.upsample_pipeline, command_buffer);
         context.resource_table.bind(command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     upsample_layout);
@@ -883,7 +838,6 @@ namespace render_pass {
             to_sampled(target_mip);
         }
 
-
         return std::optional<BloomTextureIndex>{BloomTextureIndex{.index = info.mip_texture_indices[0]}};
     }
 
@@ -894,8 +848,6 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-
-        // The frame graph has begun rendering into the swapchain or the viewport target.
         detail::bind_graphics_node(context.pipeline_graph, info.pipeline, context.command_buffer, VK_SAMPLE_COUNT_1_BIT,
                                    1, false);
         context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -928,4 +880,4 @@ namespace render_pass {
         return {};
     }
 
-} // namespace render_pass
+}

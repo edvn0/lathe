@@ -15,9 +15,6 @@
 struct Application;
 struct VulkanContext;
 
-// Runs --benchmark / --benchmark-suite from the main loop: sets up each case's scene, flies its camera, collects each
-// frame's samples and writes the results. main.cxx calls begin_frame() before updating and drawing, and end_frame()
-// after presenting.
 class BenchmarkDriver {
 public:
     enum class Status : std::uint8_t {
@@ -26,19 +23,14 @@ public:
         failed,
     };
 
-    // Fails for an unknown scenario or a game without a benchmark path when one is needed.
     [[nodiscard]]
     static auto create(BenchmarkOptions options,
                        Application const &application) -> std::expected<BenchmarkDriver, std::string>;
 
-    // Before Application::update(): starts the next case if none is running (repopulating the scene), then poses the
-    // camera and sets the shader clock for the frame about to be drawn.
     auto begin_frame(Application &application) -> void;
 
-    // The render size for this frame, given the Viewport panel's.
     [[nodiscard]] auto render_size(BenchmarkRenderSize panel) const noexcept -> BenchmarkRenderSize;
 
-    // After the frame was presented. `cpu` is FrameClock::finish_frame(); `render_extent` the size it rendered at.
     [[nodiscard]]
     auto end_frame(Application &application, VulkanContext const &context, CpuFrameTimes const &cpu,
                    BenchmarkRenderSize render_extent) -> Status;
@@ -61,8 +53,6 @@ private:
     std::vector<BenchmarkCase> cases_;
     std::size_t case_index_ = 0;
 
-    // Materials synthetic scenes keep alive (BenchmarkScenarioContext::owned_materials), released when the scene is
-    // next replaced. Ones still held at exit go with the renderer.
     std::vector<MaterialHandle> scenario_materials_;
     auto release_scenario_materials(Application &application) -> void;
 

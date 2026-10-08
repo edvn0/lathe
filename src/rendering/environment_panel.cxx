@@ -55,7 +55,7 @@ namespace gui {
                 }
             }
         }
-    } // namespace
+    }
 
     auto environment_file_filters() -> std::vector<FileBrowser::Filter> {
         return {
@@ -117,7 +117,6 @@ namespace gui {
         ImGui::SeparatorText("Sun");
 
         changed |= ImGui::SliderFloat("Azimuth", &environment.sun.azimuth_degrees, -180.0F, 180.0F, "%.1f deg");
-        // Procedural skies follow the sun below the horizon; the light itself is held above 5 degrees for the cascades.
         changed |= ImGui::SliderFloat("Elevation", &environment.sun.elevation_degrees, procedural ? -10.0F : 5.0F, 89.0F,
                                       "%.1f deg");
 
@@ -219,4 +218,4 @@ namespace gui {
         return changed;
     }
 
-} // namespace gui
+}

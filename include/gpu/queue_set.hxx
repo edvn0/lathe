@@ -14,10 +14,6 @@
 #include "gpu/submission_plan.hxx"
 #include "rendering/frame_graph/compiler.hxx"
 
-// The queues a frame is submitted to, one timeline semaphore per physical queue, and the per-frame-slot command pools
-// (docs/frame-graph.md, phase 2). A timeline wait replaces the old per-frame fence: a slot is free again once every
-// timeline has reached the last value that slot signalled.
-
 struct QueueSetError {
     enum class Kind : std::uint8_t {
         device_lost,
@@ -33,7 +29,7 @@ struct QueueSetCreateInfo {
     VkDevice device = VK_NULL_HANDLE;
 
     VkQueue graphics_queue = VK_NULL_HANDLE;
-    VkQueue compute_queue = VK_NULL_HANDLE; // equals graphics_queue on the single topology
+    VkQueue compute_queue = VK_NULL_HANDLE;
 
     std::uint32_t graphics_family = 0;
     std::uint32_t compute_family = 0;
@@ -56,18 +52,12 @@ public:
 
     auto destroy() noexcept -> void;
 
-    // Waits until every timeline has reached the last value this slot signalled (bounded: a timeout reports
-    // device_lost, like a hung fence did), then resets the slot's command pools.
     [[nodiscard]]
     auto begin_slot(std::uint32_t slot) noexcept -> std::expected<void, QueueSetError>;
 
-    // A primary command buffer from the current slot's pool for `queue`, already begun with ONE_TIME_SUBMIT. Grows the
-    // pool on demand; everything is reclaimed by the next begin_slot of the same slot.
     [[nodiscard]]
     auto command_buffer(frame_graph::LogicalQueue queue) noexcept -> std::expected<VkCommandBuffer, QueueSetError>;
 
-    // One vkQueueSubmit2 per batch, in order. `acquire` is the binary semaphore the swapchain acquire signals and
-    // `render_finished` the binary semaphore presentation waits on.
     [[nodiscard]]
     auto submit(std::span<SubmitBatch const> batches, VkSemaphore acquire,
                 VkSemaphore render_finished) noexcept -> std::expected<void, QueueSetError>;
@@ -75,7 +65,6 @@ public:
     [[nodiscard]]
     auto topology() const noexcept -> frame_graph::QueueTopology;
 
-    // True when both logical queues are the same physical queue: one pool and one timeline serve both.
     [[nodiscard]]
     auto aliased() const noexcept -> bool {
         return physical_count_ == 1;
@@ -86,7 +75,7 @@ private:
         VkQueue queue = VK_NULL_HANDLE;
         std::uint32_t family = 0;
         VkSemaphore timeline = VK_NULL_HANDLE;
-        std::uint64_t value = 0; // the last value signalled
+        std::uint64_t value = 0;
     };
 
     struct FrameSlot {

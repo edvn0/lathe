@@ -31,7 +31,7 @@ namespace {
 
         return name;
     }
-} // namespace
+}
 
 auto ShaderBinaryCache::create(std::filesystem::path const &directory,
                                std::array<std::uint8_t, VK_UUID_SIZE> binary_uuid, std::uint32_t binary_version)

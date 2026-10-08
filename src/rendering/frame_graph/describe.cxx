@@ -39,7 +39,7 @@ namespace frame_graph {
             }
         }
 
-    } // namespace
+    }
 
     auto describe(GraphDesc const &graph, CompiledGraph const &compiled, TransientPlan const *transients)
             -> std::string {
@@ -164,7 +164,7 @@ namespace frame_graph {
             return set.images.size() + set.buffers.size() + set.memory.size();
         }
 
-    } // namespace
+    }
 
     auto to_dot(GraphDesc const &graph, CompiledGraph const &compiled, TransientPlan const *transients)
             -> std::string {
@@ -176,8 +176,6 @@ namespace frame_graph {
                 "          color=\"#5F6368\", penwidth=1.2, margin=\"0.16,0.08\"];\n"
                 "    edge [fontname=\"Helvetica\", fontsize=9, color=\"#5F6368\", fontcolor=\"#3C4043\", arrowsize=0.7];\n\n";
 
-        // Persistent imports (everything but the swapchain) are listed on the pass that reads them instead of drawn as
-        // nodes, which would bury the pass-to-pass dependencies under fan-out edges.
         auto import_inputs = std::map<std::uint32_t, std::set<std::string>>{};
         for (auto const &batch: compiled.batches) {
             for (auto const &pass: batch.passes) {
@@ -240,7 +238,6 @@ namespace frame_graph {
             text += "    }\n\n";
         }
 
-        // One edge per (producer, consumer): every resource version the consumer reads or writes over, merged.
         using Endpoint = std::pair<std::string, std::string>;
         auto carried = std::map<Endpoint, std::set<std::uint32_t>>{};
         auto imports = std::set<std::uint32_t>{};
@@ -333,7 +330,6 @@ namespace frame_graph {
             text += std::format("    p{} -> present [color=\"#1A73E8\", penwidth=1.6];\n", writer);
         }
 
-        // Timeline waits between batches, drawn between the clusters.
         for (auto index = std::size_t{0}; index < compiled.batches.size(); ++index) {
             for (auto const &wait: compiled.batches[index].waits) {
                 for (auto source = std::size_t{0}; source < index; ++source) {
@@ -370,4 +366,4 @@ namespace frame_graph {
         return text;
     }
 
-} // namespace frame_graph
+}

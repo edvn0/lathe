@@ -19,11 +19,8 @@
 
 namespace {
 
-    // Random streams for the scenarios, clear of the ones games use.
     constexpr std::uint32_t random_stream_base = 0xBE7C'0000U;
 
-    // A closed loop around `centre`: `count` keyframes on a circle, alternating between two heights so the visible
-    // set changes along the way, always looking at the centre.
     [[nodiscard]] auto orbit_path(glm::vec3 const &centre, float radius, float low, float high,
                                   std::uint32_t count) -> std::vector<CameraKeyframe> {
         std::vector<CameraKeyframe> keyframes;
@@ -39,7 +36,6 @@ namespace {
         return keyframes;
     }
 
-    // Materials made for one populate; their creation references are released at the end, leaving the scene's.
     class MaterialSet {
     public:
         explicit MaterialSet(Renderer &renderer) : renderer_(&renderer) {}
@@ -49,7 +45,6 @@ namespace {
             }
         }
 
-        // Hands `material`'s creation reference to `owned` instead of releasing it at the end of populate().
         auto keep(MaterialHandle material, std::vector<MaterialHandle> &owned) -> MaterialHandle {
             if (auto const found = std::ranges::find(created_, material); found != created_.end()) {
                 created_.erase(found);
@@ -106,7 +101,6 @@ namespace {
         }
     }
 
-    // A thin slab under everything, so shadows and lights have something to land on.
     auto spawn_ground(BenchmarkScenarioContext const &context, MaterialSet &materials, float size) -> void {
         spawn(context.scene, "bench_ground", context.engine_models.cube,
               Components::Transform{.position = glm::vec3{0.0F, -0.1F, 0.0F}, .scale = glm::vec3{size, 0.2F, size}},
@@ -129,8 +123,6 @@ namespace {
     [[nodiscard]] auto grid_side(std::uint32_t count) -> std::uint32_t {
         return std::max(1U, static_cast<std::uint32_t>(std::ceil(std::sqrt(static_cast<double>(count)))));
     }
-
-    // ---- draw_calls: one entity per object, so per-object CPU submission cost scales with the load.
 
     constexpr float draw_call_spacing = 2.5F;
 
@@ -168,10 +160,6 @@ namespace {
         return orbit_path(glm::vec3{0.0F}, extent * 0.55F + 8.0F, 4.0F, extent * 0.35F + 6.0F, 8);
     }
 
-    // ---- instancing: one entity holding every instance, so the cost is GPU culling and per-instance work, not
-    // submission. Cubes (12 triangles) keep it from turning into a triangle-throughput test; instancing_no_shadows
-    // is the same field casting no shadows, so the difference between the two is the shadow passes' share.
-
     constexpr float instance_spacing = 1.6F;
 
     auto populate_instances(BenchmarkScenarioContext const &context, bool cast_shadows) -> void {
@@ -208,7 +196,6 @@ namespace {
         auto const field = GeneratedEntity{&context.scene, "bench_instances"};
         field.emplace<Components::InstancedModel>(Components::InstancedModel{
                 .model = context.engine_models.cube,
-                // InstancedModel holds no reference to its material, so the scenario keeps one.
                 .material_override = materials.keep(material, context.owned_materials),
                 .transforms = std::move(transforms),
         });
@@ -224,10 +211,6 @@ namespace {
         auto const extent = static_cast<float>(grid_side(load)) * instance_spacing;
         return orbit_path(glm::vec3{0.0F}, extent * 0.55F + 8.0F, 5.0F, extent * 0.3F + 8.0F, 8);
     }
-
-    // ---- grass: the engine grass clump as a field like the game's (0.5 m apart, no shadows), viewed from head
-    // height so near clumps draw as blades and far ones as cards. The load is the clump count; the field grows with
-    // it at constant density, so a larger load adds mostly distant, cheap clumps, as a bigger meadow would.
 
     constexpr float grass_spacing = 0.5F;
 
@@ -260,8 +243,6 @@ namespace {
             return;
         }
 
-        // Unnamed (the {} above), so they don't take the game's names. InstancedModel holds no reference to its
-        // material, so the scenario keeps both.
         context.owned_materials.push_back(grass->blades);
         context.owned_materials.push_back(grass->cards);
 
@@ -295,11 +276,8 @@ namespace {
 
     [[nodiscard]] auto grass_path(std::uint32_t load) -> std::vector<CameraKeyframe> {
         auto const extent = static_cast<float>(grid_side(load)) * grass_spacing;
-        // Inside the field at head height and a little above, looking across it.
         return orbit_path(glm::vec3{0.0F}, std::max(extent * 0.3F, 6.0F), 1.7F, 5.0F, 8);
     }
-
-    // ---- lights: a fixed field of boxes lit by a varying number of point lights, for clustered lighting.
 
     constexpr float light_field_size = 160.0F;
 
@@ -340,11 +318,9 @@ namespace {
         }
     }
 
-    [[nodiscard]] auto lights_path(std::uint32_t /*load*/) -> std::vector<CameraKeyframe> {
+    [[nodiscard]] auto lights_path(std::uint32_t ) -> std::vector<CameraKeyframe> {
         return orbit_path(glm::vec3{0.0F}, light_field_size * 0.35F, 3.0F, 30.0F, 8);
     }
-
-    // ---- overdraw: full-screen blended layers between the camera and the scene, for fill rate and blending.
 
     auto populate_overdraw(BenchmarkScenarioContext const &context) -> void {
         MaterialSet materials{context.renderer};
@@ -357,7 +333,6 @@ namespace {
 
         auto const layer_material = materials.make(glm::vec4{0.9F, 0.6F, 0.4F, 0.08F}, AlphaMode::blend, 0.4F);
 
-        // Layers from 3 m to 27 m in front of the camera, each wide enough to cover the view from the path.
         for (std::uint32_t i = 0; i < context.load; ++i) {
             auto const depth = 3.0F + 24.0F * static_cast<float>(i) / static_cast<float>(std::max(context.load, 1U));
             auto const size = 4.0F + depth * 2.0F;
@@ -368,8 +343,7 @@ namespace {
         }
     }
 
-    [[nodiscard]] auto overdraw_path(std::uint32_t /*load*/) -> std::vector<CameraKeyframe> {
-        // A small sway, so the path moves but the layers always cover the view.
+    [[nodiscard]] auto overdraw_path(std::uint32_t ) -> std::vector<CameraKeyframe> {
         return {
                 {.position = {0.0F, 2.0F, 0.5F}, .target = {0.0F, 2.0F, -30.0F}},
                 {.position = {0.6F, 2.3F, 0.5F}, .target = {0.4F, 2.1F, -30.0F}},
@@ -378,7 +352,7 @@ namespace {
         };
     }
 
-} // namespace
+}
 
 auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<BenchmarkScenario> {
     std::vector<BenchmarkScenario> scenarios;

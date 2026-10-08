@@ -144,7 +144,6 @@ auto TextureStreamer::process_ready(ImageStorage &images, VkCommandBuffer comman
         retiring_staging_.resize(frame_index + 1);
     }
 
-    // This slot's fence was waited on before the frame began, so last use's staging buffers are free.
     for (auto &buffer: retiring_staging_[frame_index]) {
         buffer.destroy();
     }
@@ -231,7 +230,6 @@ auto TextureStreamer::flush(ImageStorage &images, VulkanContext &context) -> std
         }
     });
 
-    // one_time_submit() waited for the copies.
     for (auto &buffer: staging) {
         buffer.destroy();
     }

@@ -17,15 +17,12 @@
 #include "scripting/script_engine.hxx"
 
 namespace {
-    // A bare registry plus a revision counter the test controls: the seam that keeps these tests free of Scene,
-    // Renderer and Vulkan.
     struct TestWorld {
         entt::registry registry;
         std::uint64_t revision = 1;
 
         [[nodiscard]] auto world() -> ScriptWorld { return {.registry = &registry, .hierarchy_revision = revision}; }
 
-        // Meta + Transform (+ Parent), and a revision bump, as Scene's hierarchy signals would do.
         auto spawn(std::string_view name, entt::entity parent = entt::null) -> entt::entity {
             auto const entity = registry.create();
             registry.emplace<Components::Meta>(entity, Components::Meta{.name = FlyString{name}});
@@ -42,7 +39,6 @@ namespace {
         }
     };
 
-    // Generous enough for Debug and sanitizer builds; the timeout tests set their own.
     [[nodiscard]] auto relaxed_settings() -> ScriptEngineSettings {
         return ScriptEngineSettings{.timeout = std::chrono::milliseconds{5000}};
     }
@@ -79,12 +75,12 @@ namespace {
 
     struct UpdateCounter {
         int count = 0;
-        auto on_update(entt::registry & /*registry*/, entt::entity /*entity*/) -> void { ++count; }
+        auto on_update(entt::registry & , entt::entity ) -> void { ++count; }
     };
 
     struct DestroyOnUpdate {
         entt::entity target = entt::null;
-        auto on_update(entt::registry &registry, entt::entity /*entity*/) -> void {
+        auto on_update(entt::registry &registry, entt::entity ) -> void {
             if (registry.valid(target)) {
                 registry.destroy(target);
             }
@@ -97,7 +93,7 @@ namespace {
         bool called = false;
         std::optional<ScriptErrorKind> kind;
 
-        auto on_update(entt::registry & /*registry*/, entt::entity /*entity*/) -> void {
+        auto on_update(entt::registry & , entt::entity ) -> void {
             called = true;
             kind = error_kind(engine->run("return 1", world));
         }
@@ -106,7 +102,7 @@ namespace {
     constexpr std::string_view user_example = "e = scene.get_entity(\"Helmets\"); for _, c in "
                                               "ipairs(e.get_children_or_empty()) do c.get_transform().translation = "
                                               "Vec3.random(-30, 30) end";
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("ScriptEngine: the example script moves every child of Helmets") {
@@ -331,7 +327,6 @@ TEST_SUITE("unit") {
         count_is(2);
         CHECK(engine.stats().entity_index_rebuilds == 1);
 
-        // Without a revision bump the cached index is used, so the new child isn't seen yet.
         auto const unbumped = test.revision;
         static_cast<void>(test.spawn("Child 3", root));
         test.revision = unbumped;

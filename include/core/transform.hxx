@@ -6,7 +6,6 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
-// Dependency-free components usable from the lowest layers, e.g. physics.
 namespace Components {
     struct Lifetime {
         float remaining_seconds{0.0F};
@@ -26,4 +25,4 @@ namespace Components {
     struct Parent {
         entt::entity entity{entt::null};
     };
-} // namespace Components
+}

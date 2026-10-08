@@ -11,9 +11,6 @@
 #include "chess_lua.hxx"
 #include "scripting/lua_runtime.hxx"
 
-// Runs the real assets/scripts/chess/main.lua against stub engine APIs (scene, assets, ui, ...) and the real native
-// chess module, and plays it through its callbacks: no renderer, no window.
-
 namespace chess_lua_test {
     inline auto read_asset(std::string const &relative) -> std::string {
         std::ifstream file{std::string{TEST_ASSETS_DIR} + "/" + relative, std::ios::binary};
@@ -27,7 +24,6 @@ namespace chess_lua_test {
         return std::move(contents).str();
     }
 
-    // What the engine's bindings would provide, recording what the script asks of them.
     constexpr char const *stub_api = R"(
         key = { ENTER = 257, SPACE = 32, ESCAPE = 256, BACKSPACE = 259, UP = 265, DOWN = 264, LEFT = 263, RIGHT = 262 }
         for code = 65, 90 do key[string.char(code)] = code end
@@ -103,7 +99,6 @@ namespace chess_lua_test {
                 return read_asset("assets/scripts/" + path + ".lua");
             });
 
-            // The stub chunk is not a game: it returns an empty callback table, then the real script replaces it.
             REQUIRE(runtime.run_main("stub.lua", std::string{stub_api} + "return {}").has_value());
             REQUIRE(runtime.run_main("assets/scripts/chess/main.lua", read_asset("assets/scripts/chess/main.lua"))
                             .has_value());
@@ -146,7 +141,6 @@ namespace chess_lua_test {
             call("on_ui");
         }
 
-        // Leaves the loading screen and presses Play.
         auto start_playing() -> void {
             call("on_populate");
             call("on_bind");
@@ -165,7 +159,6 @@ namespace chess_lua_test {
             REQUIRE(string_global("LAST_WINDOW") == "##hud");
         }
 
-        // A click on a square, through the cursor and mouse-button callbacks.
         auto click(int file, int rank) -> void {
             auto const x = (static_cast<double>(file) - 3.5) * 1.08;
             auto const z = (static_cast<double>(rank) - 3.5) * 1.08;
@@ -180,10 +173,9 @@ namespace chess_lua_test {
             click(from_file, from_rank);
             click(to_file, to_rank);
 
-            // Let the camera swing finish settling between moves.
             for (int index = 0; index < 5; ++index) {
                 frame(0.1F);
             }
         }
     };
-} // namespace chess_lua_test
+}

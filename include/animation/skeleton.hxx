@@ -12,19 +12,15 @@
 #include <string_view>
 #include <vector>
 
-// Pure-CPU animation core: no Vulkan, no ECS. The skinning palette written by compute_skinning_palette() is
-// exactly what a GPU skinning pass will consume (see docs/gpu-skinning-design.md).
 namespace Animation {
     inline constexpr std::int32_t no_parent = -1;
 
-    // Local transform of a single joint relative to its parent.
     struct JointTransform {
         glm::vec3 translation{0.0F};
         glm::quat rotation{1.0F, 0.0F, 0.0F, 0.0F};
         glm::vec3 scale{1.0F};
     };
 
-    // Non-owning structure-of-arrays pose, so many characters can live in one big contiguous buffer.
     struct PoseView {
         std::span<glm::vec3> translation;
         std::span<glm::quat> rotation;
@@ -47,7 +43,6 @@ namespace Animation {
         [[nodiscard]] auto size() const -> std::size_t { return translation.size(); }
     };
 
-    // Owning pose: three flat arrays, one allocation each regardless of joint count.
     class Pose {
     public:
         Pose() = default;
@@ -75,11 +70,8 @@ namespace Animation {
         std::vector<glm::vec3> scale_;
     };
 
-    // Immutable rig asset. Joints are stored parent-before-child so one forward pass evaluates the hierarchy.
     class Skeleton {
     public:
-        // `inverse_bind` may be empty, in which case it is derived from `bind_pose` (the glTF loader will
-        // pass the skin's own matrices instead). Requires parents[i] < i; asserts otherwise.
         Skeleton(std::vector<std::string> names, std::vector<std::int32_t> parents, Pose bind_pose,
                  std::vector<glm::mat4> inverse_bind = {});
 
@@ -99,15 +91,11 @@ namespace Animation {
 
     [[nodiscard]] auto local_matrix(glm::vec3 translation, glm::quat rotation, glm::vec3 scale) -> glm::mat4;
 
-    // Forward pass: local TRS -> model-space joint matrices. `out.size()` must equal the joint count.
     void compute_model_matrices(Skeleton const &skeleton, ConstPoseView pose, std::span<glm::mat4> out);
 
-    // Model matrices multiplied by the inverse bind: the skinning palette. Works in place in `out`, so
-    // no scratch is needed and `out` can be a slice of a shared (later GPU-visible) buffer.
     void compute_skinning_palette(Skeleton const &skeleton, ConstPoseView pose, std::span<glm::mat4> out);
 
     void copy_pose(ConstPoseView source, PoseView destination);
 
-    // Per-joint blend: lerp for translation/scale, slerp for rotation. `out` may alias `a` or `b`.
     void blend_poses(ConstPoseView a, ConstPoseView b, float t, PoseView out);
-} // namespace Animation
+}

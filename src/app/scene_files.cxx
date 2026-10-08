@@ -1,5 +1,3 @@
-// Application's scene file handling: opening and saving .lbf scenes in the background, the unsaved-changes prompt,
-// and OS drag-and-drop.
 
 #include "app/application.hxx"
 
@@ -48,7 +46,7 @@ namespace {
         buffer[length] = '\0';
     }
 
-} // namespace
+}
 
 auto Application::editor_scene_fingerprint() -> std::uint64_t {
     return scene_fingerprint(capture_scene(*editor_scene, *renderer, engine_models));
@@ -78,7 +76,6 @@ auto Application::start_open_scene(std::filesystem::path path) -> void {
         stop();
     }
 
-    // The selection and the model-load list name entities that are about to be destroyed.
     selection_context().clear();
     model_loads.clear();
 
@@ -121,8 +118,6 @@ auto Application::update_scene_jobs() -> void {
             scene_path = path;
             scene_clean_fingerprint = fingerprint;
 
-            // The new file is now the most complete source of cooked assets, and if it replaced the file scene_pack
-            // was reading, the old table of contents no longer matches what's on disk.
             if (auto reopened = AssetPack::open(path)) {
                 scene_pack = std::move(*reopened);
             } else {

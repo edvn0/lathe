@@ -17,7 +17,6 @@
 #include <unordered_map>
 #include <utility>
 
-// Font Awesome 6 icon ranges and the compressed solid font, both from ImGuiNotify (toast icons).
 #include "IconsFontAwesome6.h"
 #include "fa-solid-900.h"
 
@@ -49,7 +48,6 @@ namespace gui {
             std::uint32_t base_vertex;
             std::uint32_t texture_id;
             std::uint32_t sampler_id{0};
-            // See gui::linear_source_texture_bit.
             std::uint32_t already_linear{0};
         };
 
@@ -163,7 +161,7 @@ namespace gui {
                     .debug_name = "gui.pipeline",
             });
         }
-    } // namespace
+    }
 
     ImGuiRenderer::ImGuiRenderer(Renderer &r, FontChoice const &font) :
         ImGuiRenderer(r.context().window, r.context().swapchain.frame_count(), r, font) {}
@@ -296,7 +294,6 @@ namespace gui {
         vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
         vkCmdSetViewportWithCount(cmd, 1, &vp);
 
-        // Shader objects bake no blend state, so set it here.
         VkBool32 const blend_enable = VK_TRUE;
         VkColorBlendEquationEXT const blend_equation{
                 .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
@@ -416,7 +413,6 @@ namespace gui {
                     continue;
                 }
 
-                // Strip gui::linear_source_texture_bit to get the bindless index.
                 auto const raw_tex_id = static_cast<std::uint64_t>(imgui_cmd.GetTexID());
                 bool const already_linear = (raw_tex_id & linear_source_texture_bit) != 0;
 
@@ -477,8 +473,6 @@ namespace gui {
             font = io.Fonts->AddFontFromMemoryTTF(font_data.data(), static_cast<int>(font_data.size()), cfg.SizePixels,
                                                   &cfg);
 
-            // Font Awesome glyphs for the toast icons, merged into the UI font. This backend builds a fixed atlas (no
-            // ImGuiBackendFlags_RendererHasTextures), so the glyph ranges must be given up front or they render as '?'.
             static constexpr std::array<ImWchar, 3> icon_ranges{ICON_MIN_FA, ICON_MAX_16_FA, 0};
             ImFontConfig icon_cfg{};
             icon_cfg.MergeMode = true;
@@ -545,4 +539,4 @@ namespace gui {
         sampler = *created_sampler;
     }
 
-} // namespace gui
+}

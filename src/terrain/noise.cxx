@@ -37,7 +37,7 @@ namespace {
         return t * t * (gradient[0] * x + gradient[1] * y);
     }
 
-} // namespace
+}
 
 SimplexNoise2D::SimplexNoise2D(std::uint32_t seed) {
     std::array<std::uint8_t, 256> base{};
@@ -61,7 +61,6 @@ auto SimplexNoise2D::sample(float x, float y) const -> float {
     auto const x0 = x - (static_cast<float>(i) - unskew);
     auto const y0 = y - (static_cast<float>(j) - unskew);
 
-    // Which triangle of the unit square (x0, y0) is in decides the middle corner.
     int const i1 = x0 > y0 ? 1 : 0;
     int const j1 = x0 > y0 ? 0 : 1;
 
@@ -70,7 +69,6 @@ auto SimplexNoise2D::sample(float x, float y) const -> float {
     auto const x2 = x0 - 1.0F + 2.0F * g2;
     auto const y2 = y0 - 1.0F + 2.0F * g2;
 
-    // The 512-entry table absorbs the `+ 1` offsets without a modulo.
     auto const ii = i & 255;
     auto const jj = j & 255;
 
@@ -82,7 +80,6 @@ auto SimplexNoise2D::sample(float x, float y) const -> float {
     auto const n1 = corner_contribution(x1, y1, gi1);
     auto const n2 = corner_contribution(x2, y2, gi2);
 
-    // Standard scale bringing the sum into roughly [-1, 1].
     return 70.0F * (n0 + n1 + n2);
 }
 

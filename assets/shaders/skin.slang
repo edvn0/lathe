@@ -1,25 +1,14 @@
 import scene_types;
 
-// Pre-skin pass: deforms rest-pose vertices by a joint palette into a scratch CompressedVertex array that the draw
-// shaders then read like any other geometry (GpuDraw::vertex_address), so none of them know about skinning. The CPU
-// reference is skin_vertex() in include/gpu/skinning.hxx.
-//
-// Dispatch: one thread per vertex, flattened over a job table. Job j owns ceil(vertex_count / skin_chunk_size)
-// consecutive workgroups (a chunk each); job_first_chunk[j] is the exclusive prefix sum of those counts
-// (job_count + 1 entries, the last being the total). A group finds its job by binary search, so any number of jobs
-// shares one dispatch. Dispatch (min(total, 65535), ceil(total / 65535), 1); groups past the total do nothing.
-
 static const uint skin_chunk_size = 64;
 static const uint skin_dispatch_width = 65535;
 
-// Mirrors GpuSkinVertex in skinning.hxx: bytes of `joints` are joint indices, bytes of `weights` are unorm8.
 struct GpuSkinVertex
 {
     uint joints;
     uint weights;
 };
 
-// Mirrors GpuSkinJob in skinning.hxx. palette[palette_offset + joint] = joint_world * inverse_bind.
 struct GpuSkinJob
 {
     Ptr<CompressedVertex> rest_vertex_addr;
@@ -53,7 +42,6 @@ float2 encode_octahedral(float3 direction)
     return encoded;
 }
 
-// Matches glm::packSnorm2x16.
 uint pack_snorm2x16(float2 value)
 {
     int2 quantised = int2(round(clamp(value, -1.0, 1.0) * 32767.0));
@@ -65,7 +53,6 @@ float3 matrix_column(float3x3 m, uint column)
     return float3(m[0][column], m[1][column], m[2][column]);
 }
 
-// The last job whose first chunk is at or before `chunk`; empty jobs share their successor's first chunk and lose.
 uint chunk_job(uint chunk)
 {
     uint low = 0;
@@ -112,7 +99,6 @@ void main_cs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID
         total += weights[i];
     }
 
-    // No influence at all: stay at rest rather than collapsing to the origin.
     float4x4 blended = float4x4(1.0);
     if (total > 0.0) {
         blended = float4x4(0.0);
@@ -127,7 +113,6 @@ void main_cs(uint3 group_id: SV_GroupID, uint3 group_thread_id: SV_GroupThreadID
     float3 c1 = matrix_column(linear_part, 1);
     float3 c2 = matrix_column(linear_part, 2);
 
-    // The cofactor matrix is det * inverse-transpose; only its direction (and det's sign) matters for a normal.
     float3 cof0 = cross(c1, c2);
     float3 cof1 = cross(c2, c0);
     float3 cof2 = cross(c0, c1);

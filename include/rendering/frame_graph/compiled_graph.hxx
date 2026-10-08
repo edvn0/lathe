@@ -13,7 +13,7 @@ namespace frame_graph {
     enum class OwnershipOp : std::uint8_t { none, release, acquire };
 
     struct ImageBarrier {
-        std::uint32_t resource = 0; // resource slot
+        std::uint32_t resource = 0;
         VkPipelineStageFlags2 src_stages = VK_PIPELINE_STAGE_2_NONE;
         VkAccessFlags2 src_access = VK_ACCESS_2_NONE;
         VkPipelineStageFlags2 dst_stages = VK_PIPELINE_STAGE_2_NONE;
@@ -27,7 +27,6 @@ namespace frame_graph {
         auto operator==(ImageBarrier const &) const -> bool = default;
     };
 
-    // Always whole-buffer.
     struct BufferBarrier {
         std::uint32_t resource = 0;
         VkPipelineStageFlags2 src_stages = VK_PIPELINE_STAGE_2_NONE;
@@ -50,7 +49,6 @@ namespace frame_graph {
         auto operator==(MemoryBarrier const &) const -> bool = default;
     };
 
-    // Everything one vkCmdPipelineBarrier2 records.
     struct BarrierSet {
         std::vector<ImageBarrier> images;
         std::vector<BufferBarrier> buffers;
@@ -62,12 +60,11 @@ namespace frame_graph {
     };
 
     struct CompiledPass {
-        std::uint32_t pass = 0; // index into GraphDesc::passes
+        std::uint32_t pass = 0;
         BarrierSet before;
-        std::uint32_t timestamp_slot = 0; // begin = 2 * slot, end = 2 * slot + 1, in this queue's pool
+        std::uint32_t timestamp_slot = 0;
     };
 
-    // Wait for another queue's timeline to reach `signal_index` (relative to the frame) before this batch starts.
     struct SemaphoreWait {
         LogicalQueue queue = LogicalQueue::graphics;
         std::uint32_t signal_index = 0;
@@ -78,13 +75,13 @@ namespace frame_graph {
 
     struct Batch {
         LogicalQueue queue = LogicalQueue::graphics;
-        BarrierSet acquires; // recorded first: ownership acquires on entry
+        BarrierSet acquires;
         std::vector<CompiledPass> passes;
-        BarrierSet releases; // recorded after the last pass: ownership releases
-        BarrierSet epilogue; // import exit transitions, last graphics batch only
-        std::vector<SemaphoreWait> waits; // at most one per other queue
-        std::uint32_t signal_index = 0; // every batch signals its queue's timeline
-        bool is_prologue = false; // the graphics batch that begins the frame
+        BarrierSet releases;
+        BarrierSet epilogue;
+        std::vector<SemaphoreWait> waits;
+        std::uint32_t signal_index = 0;
+        bool is_prologue = false;
         bool waits_swapchain_acquire = false;
         VkPipelineStageFlags2 swapchain_wait_stages = VK_PIPELINE_STAGE_2_NONE;
         bool signals_render_finished = false;
@@ -102,14 +99,14 @@ namespace frame_graph {
     };
 
     struct CompiledGraph {
-        std::vector<Batch> batches; // submission order: every wait refers to an earlier batch
+        std::vector<Batch> batches;
         std::vector<OwnershipTransfer> transfers;
         std::array<std::uint32_t, logical_queue_count> signal_count{};
         std::vector<bool> pass_culled;
-        std::array<std::vector<std::uint32_t>, logical_queue_count> timestamp_passes; // slot -> pass
+        std::array<std::vector<std::uint32_t>, logical_queue_count> timestamp_passes;
         std::vector<LogicalQueue> pass_queue;
-        std::vector<std::uint32_t> schedule; // live passes in execution order, as declaration indices
+        std::vector<std::uint32_t> schedule;
         std::uint64_t hash = 0;
     };
 
-} // namespace frame_graph
+}

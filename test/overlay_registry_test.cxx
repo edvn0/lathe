@@ -28,7 +28,7 @@ namespace {
 
         return result;
     }
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("OverlayRegistry: rejects invalid descriptions") {
@@ -66,7 +66,6 @@ TEST_SUITE("unit") {
               std::vector<std::string>{"early", "first tie", "second tie", "late"});
         CHECK(names(registry.stage(OverlayStage::ui)) == std::vector<std::string>{"ui"});
 
-        // all() groups by stage: every scene overlay precedes every ui one.
         CHECK(names(registry.all()) == std::vector<std::string>{"early", "first tie", "second tie", "late", "ui"});
     }
 
@@ -153,7 +152,6 @@ TEST_SUITE("unit") {
             REQUIRE(registration.has_value());
             added = std::move(*registration);
 
-            // The span being iterated is untouched until the guard ends.
             CHECK(names(registry.stage(OverlayStage::scene)) == std::vector<std::string>{"kept", "removed"});
             CHECK(before.size() == 2);
         }
@@ -174,7 +172,6 @@ TEST_SUITE("unit") {
 
         CHECK(registry.size() == 0);
 
-        // Its slot was released as well: the registry still has full capacity.
         std::vector<OverlayRegistration> registrations;
         for (std::uint32_t i = 0; i < OverlayRegistry::max_overlays; ++i) {
             auto registration = registry.add(make_desc("overlay " + std::to_string(i)));

@@ -19,7 +19,6 @@ namespace {
         return revision.fetch_add(1, std::memory_order_relaxed) + 1;
     }
 
-    // ScriptHandle has no std::hash, so group by index; get() revalidates the full handle.
     auto group_entities_by_script(entt::registry &registry)
             -> std::unordered_map<std::uint32_t, std::pair<ScriptHandle, std::vector<entt::entity>>> {
         std::unordered_map<std::uint32_t, std::pair<ScriptHandle, std::vector<entt::entity>>> groups;
@@ -46,7 +45,7 @@ namespace {
             visit(slot.material);
         }
     }
-} // namespace
+}
 
 Scene::Scene(Renderer &renderer) : hierarchy_revision_(next_hierarchy_revision()), renderer_(renderer) {
     connect_light_signals();
@@ -54,7 +53,6 @@ Scene::Scene(Renderer &renderer) : hierarchy_revision_(next_hierarchy_revision()
     entt::sink{lights_changed_signal_}.connect<&Renderer::mark_lights_dirty>(renderer);
 }
 
-// entt doesn't signal on_destroy when the registry is destroyed, so release what components own by hand.
 Scene::~Scene() {
     registry.clear<Components::MaterialOverride>();
     registry.clear<Components::StreamedModelTag>();
@@ -85,7 +83,6 @@ auto Scene::mark_hierarchy_changed(entt::registry &, entt::entity) -> void {
 }
 
 auto Scene::connect_hierarchy_signals() -> void {
-    // Transform changes don't move an entity in the tree, so its updates aren't connected.
     registry.on_construct<Components::Transform>().connect<&Scene::mark_hierarchy_changed>(*this);
     registry.on_destroy<Components::Transform>().connect<&Scene::mark_hierarchy_changed>(*this);
 
@@ -111,7 +108,6 @@ auto Scene::on_transform_changed(entt::registry &reg, entt::entity entity) -> vo
     }
 }
 
-// Safety net so a destroyed entity or removed RigidBody never leaks its Bullet body.
 auto Scene::on_rigid_body_destroyed(entt::registry &reg, entt::entity entity) -> void {
     if (physics_world) {
         physics_world->remove_body(reg, entity);
@@ -159,7 +155,6 @@ auto Scene::set_material_override(entt::entity entity, Components::MaterialOverr
         return;
     }
 
-    // Held across the swap so a material in both overrides isn't freed by the removal.
     for_each_material(material_override, [this](MaterialHandle handle) { renderer_.retain_material(handle); });
 
     registry.remove<Components::MaterialOverride>(entity);
@@ -275,7 +270,7 @@ auto systems::script_update(entt::registry &registry, Scene &scene, float delta_
     }
 
     for (auto &future: futures) {
-        future.get(); // every update lands before the next stage
+        future.get();
     }
 }
 

@@ -24,18 +24,15 @@ public:
 
     auto operator==(FlyString rhs) const noexcept -> bool;
 
-    // What the intern pool holds. The pool is never freed, so this only grows; the editor's Memory widget shows it to
-    // catch a caller interning unbounded or unique text.
     struct PoolStats {
         std::size_t strings = 0;
-        std::size_t characters = 0; // summed length, excluding terminators and container overhead
+        std::size_t characters = 0;
     };
 
     [[nodiscard]]
     static auto pool_stats() -> PoolStats;
     auto operator==(std::string_view rhs) const noexcept -> bool { return view() == rhs; }
 
-    // Interned, so equal strings share one address: usable as a hash key without touching the characters.
     [[nodiscard]]
     auto identity() const noexcept -> std::size_t {
         return std::hash<std::string const *>{}(value_);

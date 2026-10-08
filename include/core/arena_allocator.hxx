@@ -7,8 +7,6 @@
 #include <utility>
 #include <vector>
 
-// Bump allocator that never runs destructors: owners must destroy every object explicitly before the arena
-// goes away. Chunks are freed in bulk.
 class ArenaAllocator {
 public:
     explicit ArenaAllocator(std::size_t chunk_size = std::size_t{64} * 1024) : chunk_size_(chunk_size) {
@@ -38,7 +36,6 @@ private:
         auto const padding = aligned_ptr - current_ptr;
 
         if (offset_ + padding + size > current_chunk_capacity_) {
-            // Oversized requests get a dedicated chunk; chunk_size_ is unchanged.
             allocate_chunk(std::max(chunk_size_, size + alignment));
             return allocate(size, alignment);
         }
@@ -58,6 +55,5 @@ private:
     std::size_t offset_ = 0;
     std::size_t current_chunk_capacity_ = 0;
     std::byte *current_chunk_ = nullptr;
-    // Chunk buffers never move: growing the outer vector moves the inner vectors, not their storage.
     std::vector<std::vector<std::byte>> chunks_;
 };

@@ -1,6 +1,5 @@
 #pragma once
 
-// ImGuizmo.h needs imgui.h included first.
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/frame_graph/pass_profiler.hxx"
 #include "rendering/overlay.hxx"
@@ -66,7 +65,6 @@ struct Application {
     explicit Application(VulkanContext &ctx) noexcept;
     ~Application();
 
-    // Lets the Viewport panel show renderer->viewport_target(frame_index).
     auto on_ui(std::uint32_t frame_index) -> void;
 
     VulkanContext &context;
@@ -75,7 +73,6 @@ struct Application {
     std::unique_ptr<gui::ImGuiRenderer> imgui_renderer;
     std::unique_ptr<gui::EditorIcons> editor_icons;
 
-    // Debug lines and the ImGui frame. Declared after the renderers so they unregister first.
     std::vector<OverlayRegistration> overlays;
     ShaderHotReloadWatcher shader_watcher_;
 
@@ -83,20 +80,15 @@ struct Application {
     std::unique_ptr<Scene> runtime_scene;
     bool is_playing = false;
 
-    // Fullscreen play covers the whole swapchain and captures the cursor. Embedded play (the default) renders into
-    // the Viewport panel and keeps the editor usable.
     bool play_fullscreen = false;
 
-    // An installed game: always plays fullscreen with no editor, and Escape never leaves play.
     bool player_mode = false;
 
-    // Embedded play only: set by a click in the Viewport, cleared by Escape or stop().
     bool game_mouse_captured = false;
 
     enum class ModelBrowseTarget : std::uint8_t { spawn_entity, inspector };
     ModelBrowseTarget model_browse_target = ModelBrowseTarget::spawn_entity;
 
-    // The rename field takes keyboard focus on its first frame.
     bool rename_needs_focus = false;
     bool inspector_name_dirty = false;
 
@@ -104,24 +96,18 @@ struct Application {
         return is_playing ? runtime_scene.get() : editor_scene.get();
     }
 
-    // Set by main.cxx before on_startup().
     std::unique_ptr<IGame> game;
 
     auto play() -> void;
     auto stop() -> void;
 
-    // Hides and locks the cursor for mouse-look. ImGui ignores the mouse while it is captured: the disabled cursor's
-    // position is an unbounded virtual accumulator, which ImGui's GLFW backend would otherwise keep hit-testing.
     auto capture_mouse() -> void;
     auto release_mouse() -> void;
 
     EngineModels engine_models{};
 
-    // Null when the game has no streaming terrain.
     std::unique_ptr<TerrainWorld> terrain;
 
-    // Cleared by the benchmark while it runs a scene of its own (app/benchmark_scenarios.hxx): the terrain is neither
-    // streamed nor drawn, and IGame::on_ui() isn't called, so nothing of the game's appears in that scene.
     bool terrain_enabled = true;
     bool game_hooks_enabled = true;
 
@@ -129,13 +115,10 @@ struct Application {
         return terrain_enabled ? terrain.get() : nullptr;
     }
 
-    // Seconds since startup.
     float elapsed_time = 0.0F;
     static constexpr auto stats_record_start_time = 5.0F;
     [[nodiscard]] constexpr auto can_start_recording_statistics() { return elapsed_time > stats_record_start_time; }
 
-    // Cumulative GPU time per frame graph pass for the timings plot, in order of first appearance; buffers[i] stacks on
-    // buffers[i - 1]. Keyed by the pass's stable name_id, label for display.
     struct TimingSeries {
         std::string id;
         std::string label;
@@ -143,33 +126,23 @@ struct Application {
     };
     std::vector<TimingSeries> timing_series;
 
-    // Adds this frame's pass times to the series (a pass not in the frame counts as 0 ms); a pass seen for the first
-    // time starts as a copy of the series below it, so it stacks with zero thickness until now.
     auto add_pass_timings(std::span<frame_graph::PassTiming const> passes) -> void;
     float timing_x = 0.0F;
 
     EditorCamera camera;
 
-    // The selection itself lives in selection_context(); it's cleared on play()/stop(), since the active registry
-    // changes.
-
-    // Inspector model picker: the entity whose Model the picked file replaces.
     entt::entity model_browse_entity = entt::null;
 
-    // Hierarchy inline rename: the row showing a text field, and that field's text.
     entt::entity renaming_entity = entt::null;
     std::array<char, 128> rename_buffer{};
 
-    // Inspector name field: the entity its text belongs to, and whether it holds an uncommitted edit.
     entt::entity inspector_name_entity = entt::null;
     std::array<char, 128> inspector_name_buffer{};
 
-    // The Save As / unsaved-changes path field.
     std::array<char, 512> save_as_buffer{};
     ImGuizmo::OPERATION gizmo_operation = ImGuizmo::TRANSLATE;
     ImGuizmo::MODE gizmo_mode = ImGuizmo::WORLD;
 
-    // Updated each frame by the Viewport panel. Used for input routing, the gizmo rect and the render size.
     bool viewport_hovered = false;
     ImVec2 viewport_screen_pos{};
     ImVec2 viewport_content_size{};
@@ -177,25 +150,18 @@ struct Application {
 
     std::string hierarchy_search;
 
-    // The Hierarchy panel's tree, rebuilt only when the active scene or its hierarchy_revision() changes.
     HierarchyModel hierarchy_model;
     Scene const *hierarchy_model_scene = nullptr;
     std::uint64_t hierarchy_model_revision = 0;
 
-    // The row whose context menu is open. The menu is drawn outside the clipped rows, so it stays open while that
-    // row scrolls out of view.
     entt::entity hierarchy_context_entity = entt::null;
 
-    // A cluster grid edit the renderer refused, shown in Lighting > Debug until it is fixed or replaced.
     std::optional<ClusterGridSettings> refused_cluster_grid;
 
-
-    // The Hi-Z level shown in Lighting > Occlusion culling.
     int hiz_debug_mip = 0;
 
     bool mouse_dragging = false;
 
-    // Scene file modals, opened from outside the ImGui frame (shortcuts, drops) on the next one.
     bool unsaved_changes_popup_requested = false;
     bool save_as_popup_requested = false;
 
@@ -205,57 +171,41 @@ struct Application {
 
     gui::TerminalWidget terminal_widget;
 
-    // Lua console for the editor scene; disabled while playing.
     gui::ScriptWidget script_widget;
 
-    // Shared by the "Load Model" panel and the Inspector's model picker; `model_browse_target` says which opened it.
     gui::FileBrowser model_browser;
 
-    // The model browser is shared with the Environment window's Browse...; this says which one opened it.
     bool browsing_environment = false;
     std::optional<std::filesystem::path> pending_model_pick;
 
-    // Models spawned from the "Load Model" panel, newest last, so it can report how each load went.
     struct StreamedModelLoad {
         Scene *scene = nullptr;
         entt::entity entity = entt::null;
         ModelHandle model{};
         std::string file_name;
-        // Set once the load installed or failed.
         bool settled = false;
         std::string status;
     };
     static constexpr std::size_t max_listed_model_loads = 8;
     std::vector<StreamedModelLoad> model_loads;
 
-    // Streams `path` in and spawns an entity for it in the active scene.
     auto spawn_streamed_model(std::filesystem::path const &path) -> void;
 
-    // Settles finished entries of `model_loads`: records the outcome and gives installed models their collider.
     auto update_model_loads() -> void;
 
-    // Points `entity`'s Model at `model`, taking over one reference the caller holds on `model` and releasing the
-    // entity's reference on its previous model, if it owned one.
     auto set_entity_model(entt::registry &registry, entt::entity entity, ModelHandle model) -> void;
 
-    // ---- Scene files (.lbf); see scene_files.cxx.
-
-    // The file the editor scene was last opened from or saved to; empty while untitled.
     std::filesystem::path scene_path;
 
-    // scene_fingerprint() of the editor scene at the last open/save/populate; differs once the scene is edited.
     std::uint64_t scene_clean_fingerprint = 0;
 
-    // The file the scene was opened from, kept so a save copies unchanged cooked assets instead of re-cooking.
     std::shared_ptr<AssetPack const> scene_pack;
 
     std::optional<SceneSaveJob> scene_save_job;
     std::optional<SceneLoadJob> scene_load_job;
 
-    // Opened once the running save finishes (the "Save and open" choice).
     std::optional<std::filesystem::path> open_after_save;
 
-    // A file waiting on the unsaved-changes prompt.
     std::optional<std::filesystem::path> pending_scene_open;
 
     gui::FileBrowser scene_browser;
@@ -265,29 +215,21 @@ struct Application {
     [[nodiscard]] auto editor_scene_dirty() -> bool;
     auto mark_editor_scene_clean() -> void;
 
-    // Opens `path`, first asking about unsaved changes if there are any.
     auto request_open_scene(std::filesystem::path path) -> void;
     auto start_open_scene(std::filesystem::path path) -> void;
-    // An empty path asks for one.
     auto start_save_scene(std::filesystem::path path) -> void;
 
-    // Steps the background save/load. Called from update().
     auto update_scene_jobs() -> void;
 
-    // OS drag-and-drop onto the window: .lbf opens the scene, .gltf/.glb spawns the model.
     auto on_files_dropped(std::span<std::filesystem::path const> paths) -> void;
 
-    // The "Scene" panel, the unsaved-changes and save-as modals, and the open-scene browser.
     auto draw_scene_file_ui() -> void;
 
-    // State of the "New Material" popup, kept across frames.
     MaterialCreateInfo new_material_info{};
     std::string new_material_name;
 
     std::string save_material_name;
 
-    // Deleting from the Assets panel queues `commit` to run once elapsed_time reaches `delete_at`. Until then the
-    // entry can be restored by dropping it from the queue.
     struct PendingDeletion {
         std::string label;
         float delete_at = 0.0F;
@@ -298,12 +240,10 @@ struct Application {
 
     auto update(float delta_time) -> void;
 
-    // Where the cursor is over the image the game is drawn into; see IGame::on_cursor_position().
     [[nodiscard]] auto cursor_over_game() const -> CursorPositionEvent;
 
     auto on_startup() -> void;
 
-    // Registers the debug-line and ImGui overlays. Called once both renderers exist.
     auto register_overlays() -> void;
 
     auto request_screenshot() -> void;

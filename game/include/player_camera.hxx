@@ -6,28 +6,23 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
-// Distance to the nearest obstruction from `origin` along `direction` within `max_distance`, if any. Lets
-// PlayerCamera avoid walls without depending on physics.
 using CameraOcclusionQuery =
         std::function<std::optional<float>(glm::vec3 const &origin, glm::vec3 const &direction, float max_distance)>;
 
-// Over-the-shoulder follow camera for the player capsule.
 struct PlayerCameraCreateInfo {
-    float follow_distance = 4.0F; // behind the capsule
-    float follow_height = 1.6F; // above the capsule origin
-    float look_ahead_height = 0.8F; // the camera looks at this height above the capsule origin
+    float follow_distance = 4.0F;
+    float follow_height = 1.6F;
+    float look_ahead_height = 0.8F;
 
     float field_of_view_degrees = 65.0F;
     float near_clip = 0.1F;
     float far_clip = 10000.0F;
 
-    // Position spring stiffness; higher is snappier.
     float follow_stiffness = 12.0F;
 
     float bob_amplitude = 0.06F;
-    float bob_frequency = 9.0F; // radians/sec at full speed
+    float bob_frequency = 9.0F;
 
-    // Clearance kept from an obstruction so the near plane doesn't clip through walls.
     float wall_margin = 0.3F;
 };
 
@@ -36,8 +31,6 @@ public:
     PlayerCamera() noexcept = default;
     explicit PlayerCamera(PlayerCameraCreateInfo const &create_info) noexcept;
 
-    // speed_factor is horizontal speed / move_speed (0 idle, 1 walking, > 1 sprinting) and drives the bob; pass 0
-    // to disable it. With an occlusion_query the camera is pulled in front of obstructions.
     auto update(glm::vec3 const &capsule_position, float yaw_degrees, float pitch_degrees, float speed_factor,
                 float delta_time_seconds, CameraOcclusionQuery const &occlusion_query = {}) -> void;
 
@@ -69,5 +62,5 @@ private:
     float far_clip_ = 10000.0F;
 
     float bob_phase_ = 0.0F;
-    bool initialized_ = false; // the first update() snaps instead of springing
+    bool initialized_ = false;
 };

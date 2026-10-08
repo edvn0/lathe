@@ -5,10 +5,8 @@
 #include <memory>
 
 namespace Animation::Humanoid {
-    // 14-joint humanoid, Y-up, about 1.8 m tall, bind pose = standing with arms hanging down.
-    // The character faces +Z; its left side is +X. Rotations use glm's right-handed convention.
     enum Joint : std::uint32_t {
-        Pelvis, // root, at hip height
+        Pelvis,
         Spine,
         Chest,
         Head,
@@ -25,12 +23,9 @@ namespace Animation::Humanoid {
         JointCount,
     };
 
-    // Gait numbers shared by the clips and the state table.
-    inline constexpr float walk_stride = 1.6F; // metres per full cycle (two steps)
+    inline constexpr float walk_stride = 1.6F;
     inline constexpr float run_stride = 3.6F;
 
-    // Skeleton plus the procedural clips. Clips are referenced by pointer from the state table, so the rig is
-    // heap-allocated and never moves.
     struct Rig {
         Rig(Skeleton skeleton_in);
         Rig(Rig const &) = delete;
@@ -53,6 +48,5 @@ namespace Animation::Humanoid {
 
     [[nodiscard]] auto make_skeleton() -> Skeleton;
     [[nodiscard]] auto make_rig() -> std::unique_ptr<Rig>;
-    // Table wiring every state to the rig's clips; the rig must outlive the returned machine.
     [[nodiscard]] auto make_state_table(Rig const &rig) -> StateTable;
-} // namespace Animation::Humanoid
+}

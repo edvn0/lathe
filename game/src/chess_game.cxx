@@ -72,7 +72,6 @@ namespace {
         return pressed;
     }
 
-    // An arc that chases its own tail, drawn into the current window.
     auto spinner(ImVec2 centre, float radius, float thickness) -> void {
         constexpr int segments = 32;
         constexpr float sweep = 4.8F;
@@ -99,7 +98,6 @@ namespace {
     auto describe_result(chess::GameState state, chess::Side side_to_move) -> ResultText {
         switch (state) {
             case chess::GameState::checkmate:
-                // The side to move is the one that has been mated.
                 return {"Checkmate", side_to_move == chess::Side::white ? "Black wins" : "White wins"};
 
             case chess::GameState::stalemate:
@@ -141,8 +139,6 @@ namespace {
         return data_path(std::format("assets/models/{}", relative));
     }
 
-    // The camera orbits the board centre by `angle` radians around the up axis
-    // (0 looks from white's side, pi from black's) and rises while it swings.
     constexpr float camera_flip_lift = 3.0F;
     constexpr float camera_flip_rate = 4.0F;
     constexpr float camera_flip_epsilon = 1e-3F;
@@ -199,7 +195,6 @@ namespace {
         };
 
         auto string_stream = std::ostringstream{};
-        // Time taken
         auto const start_time = std::chrono::high_resolution_clock::now();
 
         for (auto const &[depth, expected]: cases) {
@@ -224,7 +219,7 @@ namespace {
         return true;
     }
 
-} // namespace
+}
 
 auto ChessGame::on_board(Square square) noexcept -> bool {
     return square.x >= 0 && square.x < board_size && square.y >= 0 && square.y < board_size;
@@ -262,11 +257,6 @@ auto ChessGame::model_index(chess::Piece piece) noexcept -> std::size_t {
         return 0;
     }
 
-    // Piece is ordered:
-    //
-    // none,
-    // white pawn, knight, bishop, rook, queen, king,
-    // black pawn, knight, bishop, rook, queen, king.
     return static_cast<std::size_t>(piece) - 1;
 }
 
@@ -309,7 +299,6 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     scene.environment.sun.elevation_degrees = 55.0F;
     scene.environment.sun.azimuth_degrees = 200.0F;
 
-    // The perft self-test takes seconds; it belongs to development, not to an installed game.
     if (!host_.player_mode) {
         auto badge = Badge<ChessGame>{};
         thread_pool().detach_task([badge = badge] { run_chess_self_test(badge); });
@@ -344,13 +333,11 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         return *loaded;
     };
 
-    // Board.
     {
         auto const board = Entity{&scene, "board"};
 
         board.emplace<Components::Transform>(Components::Transform{});
 
-        // An installed game streams its models so the loading screen can show progress; the editor loads them up front.
         auto const model = acquire_model(board_model_path);
 
         if (model.valid()) {
@@ -375,8 +362,6 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         return slot;
     };
 
-    // ChessEngine owns piece placement and gives every physical piece a stable
-    // ID. Build one scene entity for each of those IDs.
     auto const state = chess_engine_.render_state();
 
     for (std::size_t index = 0; index < state.piece_count; ++index) {
@@ -398,8 +383,6 @@ auto ChessGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         });
     }
 
-    // Ensure every promotion model has been loaded even if the exact model
-    // wasn't needed by the loop above for some future custom starting state.
     constexpr std::array all_piece_models{
             chess::Piece::white_pawn, chess::Piece::white_knight, chess::Piece::white_bishop,
             chess::Piece::white_rook, chess::Piece::white_queen,  chess::Piece::white_king,
@@ -595,7 +578,6 @@ auto ChessGame::sync_pieces(Scene &scene) -> void {
         }
     }
 
-    // Anything omitted by RenderState has been captured.
     for (std::size_t id = 0; id < piece_entities_.size(); ++id) {
         if (visible[id]) {
             continue;
@@ -677,7 +659,6 @@ auto ChessGame::execute_move(Scene &scene, chess::Move move) -> void {
 }
 
 auto ChessGame::activate_cursor(Scene &scene) -> void {
-    // Promotion must be resolved before another board action is accepted.
     if (pending_promotion_target_) {
         status_ = "Choose a promotion piece.";
         return;
@@ -686,7 +667,6 @@ auto ChessGame::activate_cursor(Scene &scene) -> void {
     auto const square = to_chess_square(cursor_);
 
     if (selected_) {
-        // Clicking the selected piece again puts it back.
         if (square == *selected_) {
             clear_selection();
             status_.clear();
@@ -718,7 +698,6 @@ auto ChessGame::activate_cursor(Scene &scene) -> void {
             return;
         }
 
-        // Promotions have four legal moves with identical from/to.
         pending_promotion_target_ = square;
         status_ = "Choose promotion: queen, rook, bishop or knight.";
 
@@ -796,7 +775,7 @@ auto ChessGame::pick_square(CursorPositionEvent const &event, float aspect_ratio
     return on_board(square) ? std::optional{square} : std::nullopt;
 }
 
-auto ChessGame::on_cursor_position(Scene & /*scene*/, CursorPositionEvent const &event) -> void {
+auto ChessGame::on_cursor_position(Scene & , CursorPositionEvent const &event) -> void {
     hovered_ = pick_square(event, aspect_ratio_);
 
     if (hovered_) {
@@ -804,7 +783,7 @@ auto ChessGame::on_cursor_position(Scene & /*scene*/, CursorPositionEvent const 
     }
 }
 
-auto ChessGame::on_mouse_button_pressed(Scene & /*scene*/, MouseButtonPressedEvent const &event) -> void {
+auto ChessGame::on_mouse_button_pressed(Scene & , MouseButtonPressedEvent const &event) -> void {
     if (host_.player_mode && screen_ != Screen::playing) {
         return;
     }
@@ -878,7 +857,6 @@ auto ChessGame::update_camera(float delta_time) -> void {
         camera_target_angle_ += glm::radians(180.0F);
     }
 
-    // Exponential approach: fast at first, settling smoothly.
     auto const remaining = camera_target_angle_ - camera_angle_;
 
     if (std::abs(remaining) < camera_flip_epsilon) {
@@ -897,7 +875,6 @@ auto ChessGame::on_update(Scene &scene, float delta_time) -> void {
     }
 
     if (host_.player_mode && screen_ != Screen::playing) {
-        // Behind the menus the board idles: it turns slowly on the menu and holds still elsewhere.
         if (screen_ == Screen::loading || screen_ == Screen::menu) {
             camera_angle_ += menu_orbit_radians_per_second * std::min(delta_time, 0.1F);
             camera_target_angle_ = camera_angle_;
@@ -924,7 +901,6 @@ auto ChessGame::on_update(Scene &scene, float delta_time) -> void {
 
     auto step = std::exchange(cursor_step_, glm::ivec2{0});
 
-    // Keys move the cursor as seen on screen, so mirror them from black's side.
     if (std::cos(camera_target_angle_) < 0.0F) {
         step = -step;
     }
@@ -967,7 +943,7 @@ auto ChessGame::on_update(Scene &scene, float delta_time) -> void {
     place_markers(scene);
 }
 
-auto ChessGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) -> void {
+auto ChessGame::on_key_pressed(Scene & , KeyPressedEvent const &event) -> void {
     if (host_.player_mode) {
         switch (screen_) {
             case Screen::loading:
@@ -1053,7 +1029,6 @@ auto ChessGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) 
             break;
 
         case GLFW_KEY_R:
-            // Plain R only: Ctrl+R is the editor's repopulate.
             restart_requested_ = restart_requested_ || event.modifiers == 0;
             break;
 
@@ -1062,7 +1037,7 @@ auto ChessGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) 
     }
 }
 
-auto ChessGame::on_ui(Scene & /*scene*/, Renderer &renderer) -> void {
+auto ChessGame::on_ui(Scene & , Renderer &renderer) -> void {
     if (frames_since_update_ > 2) {
         return;
     }
@@ -1119,7 +1094,7 @@ auto ChessGame::on_ui(Scene & /*scene*/, Renderer &renderer) -> void {
     });
 }
 
-auto ChessGame::camera(Scene const & /*scene*/, float aspect_ratio) const -> CameraParams {
+auto ChessGame::camera(Scene const & , float aspect_ratio) const -> CameraParams {
     aspect_ratio_ = aspect_ratio;
 
     return CameraParams{
@@ -1224,7 +1199,6 @@ auto ChessGame::draw_loading(Renderer &renderer) -> void {
             loading_peak_ == 0 ? 0.0F : 1.0F - static_cast<float>(pending) / static_cast<float>(loading_peak_);
     auto const warmup_progress = std::min(1.0F, static_cast<float>(loading_frames_) / loading_warmup_frames);
 
-    // Models first; the last frames are the pipelines and the driver settling on the finished board.
     auto const progress = pending == 0 ? 0.5F + 0.5F * warmup_progress : 0.5F * streaming_progress;
 
     if (pending == 0 && warmup_progress >= 1.0F) {

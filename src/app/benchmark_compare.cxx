@@ -26,7 +26,6 @@ namespace {
         return result;
     }
 
-    // The headline metrics decide pass/fail; the rest are context.
     constexpr std::array<std::string_view, 4> headline_metrics{
             "displayed_p99_ms",
             "displayed_median_ms",
@@ -175,7 +174,6 @@ namespace {
             return result;
         }
 
-        // A single run: schema 1 has only GPU stages, schema 2 adds "analysis".
         result.kind = "single";
         result.device = root["device"].as_string();
         result.render_extent = extent_text(root["render_extent"]);
@@ -236,7 +234,6 @@ namespace {
         auto const change = (head->median - base->median) / base->median * 100.0;
         comparison.change_percent = change;
 
-        // Only timings are judged; counts and fractions are shown for context.
         if (!name.ends_with("_ms")) {
             return comparison;
         }
@@ -283,7 +280,7 @@ namespace {
                            result.revision.empty() ? "?" : result.revision, result.frames, result.seed);
     }
 
-} // namespace
+}
 
 BenchmarkCompareArguments::BenchmarkCompareArguments(CommandLine &cli) {
     auto group = cli.group("Benchmark comparison");
@@ -359,7 +356,6 @@ auto compare_benchmark_results(JsonValue const &base_root, JsonValue const &head
                 "Head ran on a software rasterizer (lavapipe): don't read much into the timings.");
     }
 
-    // Cases in head order, then those only in base.
     std::vector<std::string> keys;
     keys.reserve(head.cases.size() + base.cases.size());
     for (auto const &entry: head.cases) {
@@ -388,8 +384,6 @@ auto compare_benchmark_results(JsonValue const &base_root, JsonValue const &head
             }
         }
 
-        // When either side was paced by presentation, its displayed times measure the swapchain, so they inform
-        // but don't decide.
         auto const paced = [](Case const *entry) {
             auto const *metric = entry != nullptr ? entry->find("presentation_bound_fraction") : nullptr;
             return metric != nullptr && metric->median > 0.5;
@@ -422,7 +416,6 @@ auto compare_benchmark_results(JsonValue const &base_root, JsonValue const &head
         comparison.cases.push_back(std::move(case_comparison));
     }
 
-    // ---- Markdown
     auto &out = comparison.markdown;
     out += "### Benchmark: base vs head\n\n";
     out += describe("base", base) + "\n";
@@ -445,7 +438,6 @@ auto compare_benchmark_results(JsonValue const &base_root, JsonValue const &head
 
         std::size_t quiet = 0;
         for (auto const &metric: case_comparison.metrics) {
-            // In suites, list headline metrics, anything flagged and anything that only one side has; count the rest.
             auto const interesting = !repeats || metric.headline || metric.verdict != CompareVerdict::unchanged ||
                                      !metric.base || !metric.head;
             if (!interesting) {
@@ -497,7 +489,7 @@ namespace {
         return std::move(*parsed);
     }
 
-} // namespace
+}
 
 auto run_benchmark_compare(BenchmarkCompareOptions const &options) -> int {
     auto const base = load_json(options.base);

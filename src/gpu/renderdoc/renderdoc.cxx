@@ -24,7 +24,7 @@ namespace {
         return reinterpret_cast<pRENDERDOC_GetAPI>(dlsym(module, "RENDERDOC_GetAPI"));
     }
 
-} // namespace
+}
 
 RenderDocContext::~RenderDocContext() = default;
 

@@ -58,8 +58,6 @@ namespace {
         return type == lbf_chunk::model ? cooked_model_version : cooked_texture_version;
     }
 
-    // Finds `id` in the first source pack that has it at the current chunk version. Older versions still load, but
-    // a save re-cooks them so files converge on the newest layout.
     [[nodiscard]]
     auto find_in_packs(std::span<std::shared_ptr<AssetPack const> const> packs, std::uint32_t type, AssetId id)
             -> std::pair<AssetPack const *, LbfChunkEntry const *> {
@@ -79,7 +77,7 @@ namespace {
 
     struct TextureJob {
         AssetId id;
-        std::optional<AssetPath> path; // or
+        std::optional<AssetPath> path;
         std::vector<std::byte> encoded;
         std::string cache_key;
         TextureRole role = TextureRole::colour;
@@ -92,7 +90,7 @@ namespace {
         ModelCpuData cpu_data;
     };
 
-} // namespace
+}
 
 auto sampler_for(SamplerStorage const &sampler_storage, DefaultSampler sampler) noexcept -> SamplerHandle {
     switch (sampler) {
@@ -134,7 +132,6 @@ auto AssetPack::open(std::filesystem::path const &path, LbfReadOptions const &op
 }
 
 auto AssetPack::from_reader(LbfReader reader) -> std::shared_ptr<AssetPack> {
-    // The constructor is private, so make_shared can't reach it.
     return std::shared_ptr<AssetPack>{new AssetPack{std::move(reader)}};
 }
 
@@ -237,7 +234,6 @@ auto AssetPack::load_model(AssetId id, SamplerStorage const &sampler_storage) co
         auto const texture_id = cooked->images[index].texture;
         auto &source = cpu_data.image_sources[index];
 
-        // A texture missing from the pack (it failed to cook) leaves its slot on the default texture.
         if (!has_texture(texture_id)) {
             warn("AssetPack: model {} references texture {} ('{}'), which isn't in '{}'", id, texture_id,
                  source.debug_name, reader_.path().string());
@@ -269,7 +265,6 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
         return true;
     };
 
-    // Textures are keyed by AssetId so each is cooked or copied once, whoever references it.
     std::unordered_map<AssetId, TextureJob, AssetIdHash> texture_jobs;
     std::unordered_set<AssetId, AssetIdHash> handled_textures;
 
@@ -289,7 +284,6 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
         texture_jobs.try_emplace(job.id, std::move(job));
     };
 
-    // Phase 1: models. Copy what a source pack already has; parse the rest in parallel.
     std::vector<std::future<std::expected<ModelCpuData, ModelLoadError>>> parse_tasks;
     std::vector<ParsedModel> parsed;
     std::unordered_set<AssetId, AssetIdHash> seen_models;
@@ -312,7 +306,6 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
             if (cooked && copy_from_pack(*pack, *entry)) {
                 ++report.models_copied;
 
-                // Its textures come along from whichever pack has them.
                 for (auto const &image: cooked->images) {
                     queue_texture(TextureJob{.id = image.texture});
                 }
@@ -363,7 +356,6 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
         });
     }
 
-    // Phase 2: textures, in parallel. Entries queued only as "copy from pack" that no pack had are skipped.
     struct TextureResult {
         AssetId id;
         FlyString debug_name;
@@ -411,7 +403,6 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
         ++report.textures_cooked;
     }
 
-    // Environments: copied from a source pack that has one, otherwise decoded from the image and encoded as ENVM.
     {
         struct EnvironmentResult {
             AssetId id;
@@ -465,7 +456,6 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
         }
     }
 
-    // Phase 3: encode models. Cheap next to parsing, but meshopt's codecs still like the extra cores.
     std::vector<std::future<std::expected<std::vector<std::byte>, LbfError>>> encode_tasks;
     encode_tasks.reserve(ready_models.size());
 

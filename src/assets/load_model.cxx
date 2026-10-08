@@ -41,12 +41,9 @@
 
 namespace {
 
-    // How a file's data relates to the renderer's left-handed, V-down space. glTF says right-handed with V down, so
-    // the default mirrors across Z. assimp's exporter writes FBX-sourced (left-handed, V-up) data without converting
-    // either, so those files are already in renderer space and only need V flipped.
     struct ImportConvention {
-        bool left_handed = false; // data is already left-handed: skip the Z mirror and the winding reversal
-        bool flip_v = false; // V runs bottom-up
+        bool left_handed = false;
+        bool flip_v = false;
 
         [[nodiscard]]
         auto z_sign() const noexcept -> float {
@@ -81,7 +78,6 @@ namespace {
                         gltf_light.type == fastgltf::LightType::Spot ? ModelLightType::spot : ModelLightType::point;
 
                 light.position = glm::vec3{local_to_model[3]};
-                // glTF lights point down local -Z; local_to_model is already Z-mirrored, which maps that to +Z.
                 light.direction =
                         glm::normalize(glm::mat3{local_to_model} * glm::vec3{0.0F, 0.0F, -convention.z_sign()});
 
@@ -183,8 +179,6 @@ namespace {
         return {bounds_min, bounds_max};
     }
 
-    // glTF is right-handed and the renderer left-handed, so imported data is mirrored across Z (else models render as
-    // their mirror image). Triangle winding is reversed to match, and node transforms become S * M * S.
     auto to_glm(fastgltf::math::fmat4x4 const &matrix, ImportConvention const &convention) noexcept -> glm::mat4 {
         if (convention.left_handed) {
             return glm::make_mat4(matrix.data());
@@ -291,7 +285,7 @@ namespace {
                 glm::vec4{tangent[0], tangent[1], tangent[2], sign};
     }
 
-} // namespace
+}
 
 auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices,
                        std::vector<SkinVertex> *skin) -> std::expected<void, ModelLoadError> {
@@ -414,7 +408,6 @@ auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *
 
     ScopedProfileSample const meshlet_sample{profile != nullptr ? &profile->meshlet_build_ns : nullptr};
 
-    // A level without its own reduced indices aliases the previous level, so it gets no build of its own.
     for (std::uint32_t level = 0; level < lod_count; ++level) {
         auto const *source_indices = level == 0 ? &primitive.indices
                                      : primitive.reduced_indices[level - 1].has_value()
@@ -491,7 +484,6 @@ namespace {
             }
 
             for (std::size_t index = 0; index < vertices.size(); ++index) {
-                // A reflection also flips the bitangent sign.
                 vertices[index].tangent = glm::vec4{tangents[index].x, tangents[index].y, z_sign * tangents[index].z,
                                                     z_sign * tangents[index].w};
             }
@@ -587,8 +579,8 @@ namespace {
     }
 
     struct ImageSource {
-        std::optional<AssetPath> path; // external file; empty if embedded
-        std::vector<std::byte> encoded; // embedded bytes; empty if `path` is set
+        std::optional<AssetPath> path;
+        std::vector<std::byte> encoded;
     };
 
     auto resolve_image_source(fastgltf::Asset const &asset, fastgltf::Image const &image,
@@ -596,7 +588,6 @@ namespace {
             -> std::expected<ImageSource, ModelLoadError> {
         if (auto const *uri_source = std::get_if<fastgltf::sources::URI>(&image.data)) {
             if (uri_source->uri.isLocalPath() && uri_source->fileByteOffset == 0) {
-                // Some exporters write Windows separators into the URI; they are literal characters on POSIX.
                 auto relative = uri_source->uri.fspath().string();
                 std::ranges::replace(relative, '\\', '/');
 
@@ -754,10 +745,6 @@ namespace {
         return cpu_index;
     }
 
-    // Converters (Blender's FBX importer among them) mark materials BLEND because the base colour texture has an
-    // alpha channel, even when every texel is solid. Blended draws skip the depth prepass and shadows and sort per
-    // batch, so geometry that should occlude shows through itself. Such a material is drawn opaque instead, which
-    // renders identically apart from those artefacts.
     auto demote_opaque_blend_materials(ModelCpuData &cpu_data) -> void {
         std::vector<std::size_t> candidates;
 
@@ -800,7 +787,6 @@ namespace {
         std::vector<std::optional<AlphaCoverage>> coverage(candidates.size());
         std::atomic<std::size_t> next{0};
 
-        // Plain threads, not thread_pool(): this can itself run on a pool thread, which mustn't block on the pool.
         auto const worker = [&] {
             for (auto index = next.fetch_add(1); index < candidates.size(); index = next.fetch_add(1)) {
                 coverage[index] = classify(candidates[index]);
@@ -887,7 +873,6 @@ namespace {
 
         material.base_colour_image = *base_colour_image;
 
-        // assimp drops alphaMode, so recover it from the base colour's alpha (these textures store opacity there).
         if (convention.left_handed && material.alpha_mode == AlphaMode::opaque &&
             material.base_colour_image.has_value()) {
             auto const &source = image_sources[*material.base_colour_image];
@@ -953,7 +938,7 @@ namespace {
         return material;
     }
 
-} // namespace
+}
 
 auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_storage,
                                 std::shared_ptr<ModelLoadProfile> profile)
@@ -974,8 +959,6 @@ auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_s
     static thread_local fastgltf::Parser parser{
             fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_lights_punctual,
     };
-    // External images stay URIs: they are streamed from disk later, and eager loading fails the whole parse on
-    // exporter paths that don't resolve here (e.g. the Bistro's backslash-separated "Textures\\x.dds").
     constexpr auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
     auto const base_directory = path.absolute().parent_path();
     auto asset_result = parser.loadGltf(file_data.get(), base_directory, options);
@@ -1234,7 +1217,7 @@ namespace {
         return image_storage.white();
     }
 
-} // namespace
+}
 
 auto start_model_gpu_upload(ModelCpuData cpu_data, ImageStorage &image_storage, TextureStreamer &texture_streamer)
         -> ModelGpuUpload {
@@ -1283,7 +1266,6 @@ auto compute_skin_inflate(ModelCpuData const &cpu_data) -> float {
     auto const &skeleton = cpu_data.animation->skeleton;
     auto const joint_count = skeleton.joint_count();
 
-    // Gather the vertex samples once.
     struct Sample {
         glm::vec3 position;
         GpuSkinVertex skin;
@@ -1424,8 +1406,6 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
             }
 
             if (upload.primitive_cursor < cpu_mesh.primitives.size()) {
-                // Normally done off the render thread by prepare_primitive_gpu_data(). A producer that skipped it still
-                // renders, but warns.
                 std::optional<ModelCpuPrimitive> late_prepared;
 
                 if (cpu_mesh.primitives[upload.primitive_cursor].compressed_vertices.empty()) {
@@ -1453,7 +1433,6 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
 
                 std::array<MeshGeometry, lod_count> lods{};
 
-                // Skin stream; any failure to pack leaves the primitive unskinned.
                 GeometrySlice skin_slice{};
                 std::vector<GpuSkinVertex> gpu_skin;
 
@@ -1533,7 +1512,6 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
 
                     lods[level].indices = *index_slice;
 
-                    // Scene passes draw through task/mesh shaders, so each distinct index buffer needs meshlets.
                     auto const &meshlet_build = cpu_primitive.meshlets[level];
 
                     if (!meshlet_build.has_value()) {
@@ -1542,7 +1520,6 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                         });
                     }
 
-                    // Skinned vertices move, so rest-pose bounds and normal cones are not conservative.
                     MeshletBuild inflated;
 
                     if (primitive_skinned) {
@@ -1599,7 +1576,6 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                 continue;
             }
 
-            // Empty mesh: advance without spending budget.
             ++upload.mesh_cursor;
             upload.primitive_cursor = 0;
             continue;

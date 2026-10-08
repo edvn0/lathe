@@ -5,7 +5,6 @@
 #include <type_traits>
 #include <utility>
 
-// Owner has a get(HandleT) returning a pointer to the held value, so a Holder can dereference.
 template<typename Owner, typename HandleT>
 concept HolderOwnerWithGet =
         requires(Owner &owner, HandleT handle) { requires std::is_pointer_v<decltype(owner.get(handle))>; };
@@ -19,20 +18,11 @@ concept HolderOwnerWithContains = requires(Owner const &owner, HandleT handle) {
     { owner.contains(handle) } -> std::convertible_to<bool>;
 };
 
-// Move-only owner of a handle. Destroying or resetting the Holder hands the handle back through `Release`, a member
-// of Owner such as &ImageStorage::destroy_image, so the owner's full teardown runs rather than a bare slot free.
-// HandleT stays the copyable, non-owning reference.
-//
-// get(), operator* and operator-> exist when Owner has a get(HandleT) returning a pointer.
-//
-// Release runs immediately, with no deferral: for a GPU resource, drop the Holder only once the GPU is done with it.
-// The owner must outlive, and not move under, every Holder referring to it.
 template<typename Owner, typename HandleT, auto Release>
 class Holder {
 public:
     Holder() = default;
 
-    // Takes ownership of `handle`, which must belong to `owner`. Like std::unique_ptr's pointer constructor.
     Holder(Owner &owner, HandleT handle) noexcept : owner_(&owner), handle_(handle) {}
 
     ~Holder() { reset(); }
@@ -117,7 +107,6 @@ public:
         return handle_;
     }
 
-    // True while the handle is still live in its owner, as far as the owner can tell.
     [[nodiscard]]
     explicit operator bool() const noexcept {
         if (owner_ == nullptr) {
@@ -133,7 +122,6 @@ public:
         }
     }
 
-    // Releases the handle through the owner.
     auto reset() noexcept -> void {
         if (owner_ == nullptr) {
             return;
@@ -145,7 +133,6 @@ public:
         handle_ = {};
     }
 
-    // Gives up ownership without releasing; the caller must release it. Like std::unique_ptr::release().
     [[nodiscard]]
     auto detach() noexcept -> HandleT {
         owner_ = nullptr;

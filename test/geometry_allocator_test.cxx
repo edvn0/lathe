@@ -19,7 +19,7 @@ TEST_SUITE("unit") {
 
         auto const second = allocator.allocate(10, 16);
         REQUIRE(second.has_value());
-        CHECK(second->offset == 16); // aligned up from 10
+        CHECK(second->offset == 16);
         CHECK(allocator.used_size() == 26);
     }
 
@@ -29,7 +29,7 @@ TEST_SUITE("unit") {
 
         CHECK(allocator.allocate(0, 4).error().type == GeometryArenaErrorType::invalid_argument);
         CHECK(allocator.allocate(10, 0).error().type == GeometryArenaErrorType::invalid_argument);
-        CHECK(allocator.allocate(10, 3).error().type == GeometryArenaErrorType::invalid_argument); // not power of two
+        CHECK(allocator.allocate(10, 3).error().type == GeometryArenaErrorType::invalid_argument);
     }
 
     TEST_CASE("BumpAllocator reports out_of_memory at the capacity boundary") {
@@ -56,7 +56,6 @@ TEST_SUITE("unit") {
         allocator.rollback(checkpoint);
         CHECK(allocator.used_size() == 0);
 
-        // The freed range, including alignment padding, is reusable.
         auto const reused = allocator.allocate(1024, 4);
         REQUIRE(reused.has_value());
         CHECK(reused->offset == 0);
@@ -70,7 +69,7 @@ TEST_SUITE("unit") {
         REQUIRE(allocation.has_value());
 
         allocator.deallocate(*allocation);
-        CHECK(allocator.used_size() == 16); // bump never frees
+        CHECK(allocator.used_size() == 16);
 
         auto const second = allocator.allocate(1, 4);
         CHECK_FALSE(second.has_value());
@@ -87,7 +86,6 @@ TEST_SUITE("unit") {
         allocator.deallocate(*allocation);
         CHECK(allocator.used_size() == 0);
 
-        // Freed space coalesces back to the full capacity.
         auto const reused = allocator.allocate(1024, 4);
         REQUIRE(reused.has_value());
         CHECK(reused->offset == 0);
@@ -104,7 +102,6 @@ TEST_SUITE("unit") {
         REQUIRE(second.has_value());
         REQUIRE(third.has_value());
 
-        // Coalescing must merge all three ranges regardless of free order.
         allocator.deallocate(*second);
         allocator.deallocate(*first);
         allocator.deallocate(*third);
@@ -168,7 +165,6 @@ TEST_SUITE("unit") {
         allocator.rollback(checkpoint);
         CHECK(allocator.used_size() == 100);
 
-        // The rolled-back range is reusable again.
         auto const third = allocator.allocate(200, 4);
         REQUIRE(third.has_value());
         CHECK(third->offset == second->offset);
@@ -184,7 +180,6 @@ TEST_SUITE("unit") {
         allocator.grow(2048);
         CHECK(allocator.capacity() == 2048);
 
-        // The 24 free bytes at the old tail and the new space form one range.
         auto const big = allocator.allocate(1048, 4);
         REQUIRE(big.has_value());
         CHECK(big->offset == 1000);
@@ -229,7 +224,7 @@ TEST_SUITE("unit") {
 
         std::mt19937 rng{1234U};
         std::uniform_int_distribution<int> size_dist{1, 256};
-        std::uniform_int_distribution<int> alignment_dist{0, 3}; // 4, 8, 16, 32
+        std::uniform_int_distribution<int> alignment_dist{0, 3};
         std::vector<GeometrySlice> live;
 
         for (int iteration = 0; iteration < 5000; ++iteration) {
@@ -254,7 +249,6 @@ TEST_SUITE("unit") {
             live.push_back(*allocation);
         }
 
-        // No two live slices may overlap.
         std::ranges::sort(live, {}, [](GeometrySlice const &slice) { return slice.offset; });
         for (std::size_t i = 1; i < live.size(); ++i) {
             CHECK(live[i - 1].offset + live[i - 1].size <= live[i].offset);

@@ -109,8 +109,6 @@ struct ImageViewRegistration {
     VkImageView storage_2d = VK_NULL_HANDLE;
 };
 
-// `revision` survives slot reuse and only increases, so GpuResourceTable never mistakes a reused slot for an
-// unchanged one.
 struct ImageSlotData {
     Image image{};
 
@@ -136,13 +134,10 @@ public:
     static auto create(VulkanContext &context, ImageStorageCreateInfo const &create_info)
             -> std::expected<ImageStorage, ImageStorageError>;
 
-    // Reserves a bindless slot for a view the caller already owns (e.g. another image's mip_layer_view()). The
-    // source image must outlive this handle.
     [[nodiscard]]
     auto register_view(ImageViewRegistration const &registration) -> std::expected<ImageHandle, ImageStorageError>;
     [[nodiscard]]
     auto create_image(ImageCreateInfo const &create_info) -> std::expected<ImageHandle, ImageStorageError>;
-    // `pixels` as for Image::create(): level 0, or every level with ImageMipSource::provided.
     [[nodiscard]]
     auto
     create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
@@ -151,14 +146,9 @@ public:
     [[nodiscard]] auto create_image(ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
                                     VkCommandBuffer command_buffer) -> std::expected<ImageHandle, ImageStorageError>;
 
-    // Reserves a slot aliasing `fallback`'s views, usable right away. upgrade_pending_image() later installs the
-    // real image under the same handle.
     [[nodiscard]]
     auto create_pending_image(ImageHandle fallback) -> std::expected<ImageHandle, ImageStorageError>;
 
-    // Uploads a block-compressed, pre-mipped texture into `handle`'s slot under the same handle.
-    //
-    // Returns the staging buffer, which the caller must keep alive until `command_buffer` has executed.
     [[nodiscard]]
     auto upgrade_pending_image(ImageHandle handle, CompressedTexture const &texture, VkCommandBuffer command_buffer)
             -> std::expected<Buffer, ImageStorageError>;
@@ -168,7 +158,6 @@ public:
     [[nodiscard]]
     auto destroy_image(ImageHandle handle) -> std::expected<void, ImageStorageError>;
 
-    // Records the six 1x1 default image uploads. Call before any shader samples them.
     [[nodiscard]]
     auto prepare_frame(VkCommandBuffer command_buffer) -> std::expected<void, ImageStorageError>;
 
@@ -213,8 +202,6 @@ public:
         return default_image_handle(DefaultImage::emissive);
     }
 
-    // A 1x1 black cube. GpuResourceTable writes its view into every cube binding slot that has no cube view of its
-    // own, because the table is not PARTIALLY_BOUND. It is not a slot, so default_image_count is unaffected.
     [[nodiscard]]
     auto black_cube_view() const noexcept -> VkImageView {
         return black_cube_.descriptor_view(ImageDescriptorView::sampled_cube);
@@ -273,11 +260,8 @@ private:
     FlyString debug_name_;
 };
 
-// Owns an ImageStorage slot; dropping it runs destroy_image(), which also covers register_view() aliases. Drop it only
-// once the GPU is done with the image.
 using ImageHolder = Holder<ImageStorage, ImageHandle, &ImageStorage::destroy_image>;
 
-// create_image(), with the slot owned by the returned Holder.
 [[nodiscard]]
 inline auto create_held_image(ImageStorage &image_storage, ImageCreateInfo const &create_info)
         -> std::expected<ImageHolder, ImageStorageError> {
@@ -286,7 +270,6 @@ inline auto create_held_image(ImageStorage &image_storage, ImageCreateInfo const
     });
 }
 
-// register_view(), with the slot owned by the returned Holder. The source image must outlive the Holder.
 [[nodiscard]]
 inline auto register_held_view(ImageStorage &image_storage, ImageViewRegistration const &registration)
         -> std::expected<ImageHolder, ImageStorageError> {

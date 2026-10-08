@@ -23,7 +23,6 @@ namespace {
                          glm::unpackHalf1x16(vertex.position_z)};
     }
 
-    // The skirt group an index belongs to and that group's outward normal.
     [[nodiscard]] auto skirt_outward_direction(std::uint32_t index) -> std::optional<glm::vec3> {
         if (index < terrain_chunk_interior_vertex_count) {
             return std::nullopt;
@@ -32,18 +31,18 @@ namespace {
         auto const offset = index - terrain_chunk_interior_vertex_count;
 
         if (offset < terrain_chunk_samples) {
-            return glm::vec3{0.0F, 0.0F, -1.0F}; // min_row
+            return glm::vec3{0.0F, 0.0F, -1.0F};
         }
         if (offset < 2U * terrain_chunk_samples) {
-            return glm::vec3{0.0F, 0.0F, 1.0F}; // max_row
+            return glm::vec3{0.0F, 0.0F, 1.0F};
         }
         if (offset < 3U * terrain_chunk_samples) {
-            return glm::vec3{-1.0F, 0.0F, 0.0F}; // min_col
+            return glm::vec3{-1.0F, 0.0F, 0.0F};
         }
-        return glm::vec3{1.0F, 0.0F, 0.0F}; // max_col
+        return glm::vec3{1.0F, 0.0F, 0.0F};
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("make_terrain_chunk produces the fixed layout at every LOD") {
@@ -117,7 +116,6 @@ TEST_SUITE("unit") {
 
         CHECK(skirt_triangles == terrain_chunk_skirt_index_count / 3);
 
-        // The meshlets carry exactly the chunk's triangles.
         std::size_t meshlet_triangles = 0;
         for (auto const &meshlet: chunk.meshlets.meshlets) {
             meshlet_triangles += meshlet.triangle_count;
@@ -135,14 +133,12 @@ TEST_SUITE("unit") {
         params.greedy_tolerance = 0.05F;
         auto const merged = make_terrain_chunk(TerrainField{params}, TerrainChunkRequest{.cell_size = 1.0F});
 
-        // 0 still merges exact runs, which smooth noise never has.
         params.greedy_tolerance = 0.0F;
         auto const unmerged = make_terrain_chunk(TerrainField{params}, TerrainChunkRequest{.cell_size = 1.0F});
 
         CHECK(unmerged.indices.size() == terrain_chunk_index_count);
         CHECK(merged.indices.size() * 2 < unmerged.indices.size());
 
-        // Same vertices either way: merging only drops triangles.
         CHECK(merged.vertices.size() == unmerged.vertices.size());
         for (std::size_t i = 0; i < merged.vertices.size(); ++i) {
             CHECK(merged.vertices[i].position_y == unmerged.vertices[i].position_y);
@@ -161,7 +157,6 @@ TEST_SUITE("unit") {
             auto const i1 = indices[i + 1];
             auto const i2 = indices[i + 2];
 
-            // Skirt triangles use two interior and two same-group skirt corners, so any skirt index gives the group.
             auto outward = skirt_outward_direction(i0);
             if (!outward) {
                 outward = skirt_outward_direction(i1);
@@ -170,7 +165,7 @@ TEST_SUITE("unit") {
                 outward = skirt_outward_direction(i2);
             }
             if (!outward) {
-                continue; // interior triangle
+                continue;
             }
 
             auto const a = decode_position(chunk.vertices[i0]);
@@ -196,8 +191,8 @@ TEST_SUITE("unit") {
                 field, TerrainChunkRequest{.world_origin_x = span, .world_origin_z = 0.0F, .cell_size = cell_size});
 
         for (std::uint32_t row = 0; row < terrain_chunk_samples; ++row) {
-            auto const a_index = terrain_chunk_interior_index(terrain_chunk_cells, row); // chunk_a's +X edge
-            auto const b_index = terrain_chunk_interior_index(0, row); // chunk_b's -X edge
+            auto const a_index = terrain_chunk_interior_index(terrain_chunk_cells, row);
+            auto const b_index = terrain_chunk_interior_index(0, row);
 
             CHECK(chunk_a.heights[a_index] == chunk_b.heights[b_index]);
             CHECK(chunk_a.vertices[a_index].normal_oct == chunk_b.vertices[b_index].normal_oct);
@@ -212,13 +207,10 @@ TEST_SUITE("unit") {
         auto const lod1 = make_terrain_chunk(
                 field, TerrainChunkRequest{.world_origin_x = 0.0F, .world_origin_z = 0.0F, .cell_size = 2.0F});
 
-        // Both chunks are centred on (0,0), which every LOD's grid passes through, and height() depends only on world
-        // position.
         auto const centre = terrain_chunk_interior_index(32, 32);
         CHECK(lod0.heights[centre] == lod1.heights[centre]);
         CHECK(lod0.heights[centre] == field.height(0.0F, 0.0F));
 
-        // LOD0 column 16 and LOD1 column 24 are both at world x = -16.
         auto const lod0_point = terrain_chunk_interior_index(16, 32);
         auto const lod1_point = terrain_chunk_interior_index(24, 32);
         CHECK(lod0.heights[lod0_point] == lod1.heights[lod1_point]);
@@ -226,16 +218,14 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("mid_height is invariant across chunks with different observed min/max") {
-        // Different observed extremes but the same fixed height range, so vertex Y at a shared reference height must
-        // agree.
         auto const field = default_field();
 
         auto const near = make_terrain_chunk(field, TerrainChunkRequest{.world_origin_x = 0.0F, .cell_size = 1.0F});
         auto const far = make_terrain_chunk(field, TerrainChunkRequest{.world_origin_x = 10000.0F, .cell_size = 1.0F});
 
-        REQUIRE(near.min_height != far.min_height); // different noise neighbourhoods
+        REQUIRE(near.min_height != far.min_height);
 
-        constexpr auto mid_height = (-2.0F + 2.0F) * 0.5F; // == 0 for this field's fixed range
+        constexpr auto mid_height = (-2.0F + 2.0F) * 0.5F;
 
         for (std::uint32_t row = 0; row < terrain_chunk_samples; ++row) {
             for (std::uint32_t column = 0; column < terrain_chunk_samples; ++column) {
@@ -261,7 +251,6 @@ TEST_SUITE("unit") {
 
         for (auto const &vertex: chunk_a.vertices) {
             auto const u = glm::unpackHalf1x16(vertex.texcoord_u);
-            // UVs stay within the chunk's local span however far it is from the origin, keeping half-float precision.
             CHECK(std::fabs(u) <= span * uv_scale + 1.0F);
         }
 
@@ -279,7 +268,6 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("sample_terrain_height is deterministic and matches TerrainField::height directly") {
-        // sample_terrain_height must match TerrainField and be deterministic.
         TerrainParams const params{};
 
         CHECK(sample_terrain_height(params, 0.0F, 0.0F) == sample_terrain_height(params, 0.0F, 0.0F));

@@ -8,8 +8,6 @@
 
 namespace maths {
 
-    // Tightest axis-aligned box around `matrix` applied to a min/max box: sums the absolute transformed half-extent
-    // axes. Mirrors transform_aabb in frustum_cull.slang.
     [[nodiscard]]
     inline auto transform_aabb(glm::mat4 const &matrix, glm::vec3 const &min, glm::vec3 const &max)
             -> std::pair<glm::vec3, glm::vec3> {
@@ -27,4 +25,4 @@ namespace maths {
         return {world_centre - world_extent, world_centre + world_extent};
     }
 
-} // namespace maths
+}

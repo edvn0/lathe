@@ -24,7 +24,6 @@ namespace {
     constexpr glm::mat4 mirror_matrix{1.0F, 0.0F, 0.0F,  0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
                                       0.0F, 0.0F, -1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
 
-    // Reflection across Z of a rotation: axis' = det(S) * S * axis = (-x, -y, z).
     auto mirror_quat(glm::quat const &q) -> glm::quat { return glm::quat{q.w, -q.x, -q.y, q.z}; }
 
     auto decompose(glm::mat4 const &m) -> Animation::JointTransform {
@@ -58,7 +57,6 @@ namespace {
         return values;
     }
 
-    // Keeps times strictly increasing; STEP becomes a hold key just before each change.
     template<typename V>
     void push_keys(std::vector<float> &times, std::vector<V> &values, std::span<float const> in_times,
                    std::span<V const> in_values, bool step, bool mirror, auto &&fix) {
@@ -80,7 +78,7 @@ namespace {
             values.push_back(fix(in_values[i]));
         }
     }
-} // namespace
+}
 
 auto ImportedClip::make_clip() const -> std::unique_ptr<Animation::KeyframeClip> {
     auto clip = std::make_unique<Animation::KeyframeClip>(base, duration);
@@ -131,7 +129,6 @@ auto quantise_skin_weights(std::array<float, 4> weights) -> std::array<std::uint
             largest = i;
         }
     }
-    // Rounding error goes to the dominant influence so the sum is exactly 65535.
     auto const fixed = static_cast<std::int64_t>(out[largest]) + 65535 - static_cast<std::int64_t>(total);
     out[largest] = static_cast<std::uint16_t>(std::clamp<std::int64_t>(fixed, 0, 65535));
     return out;
@@ -208,7 +205,6 @@ auto import_gltf_skin(fastgltf::Asset const &asset, bool const mirror_z)
         }
     }
 
-    // Parent in skin order (-1: root of the skeleton).
     std::vector<std::int64_t> parent_k(joint_count, -1);
     std::vector<std::vector<std::size_t>> children(joint_count);
     std::vector<std::size_t> roots;
@@ -224,7 +220,6 @@ auto import_gltf_skin(fastgltf::Asset const &asset, bool const mirror_z)
         }
     }
 
-    // Topological order: parents before children (iterative DFS keeps siblings in skin order).
     std::vector<std::size_t> order;
     order.reserve(joint_count);
     std::vector<std::size_t> stack;
@@ -268,8 +263,6 @@ auto import_gltf_skin(fastgltf::Asset const &asset, bool const mirror_z)
 
         auto local = node_matrix(node);
         if (parent_k[k] < 0) {
-            // Fold non-joint ancestors (armature/scene transforms) into the root so the skeleton's model space
-            // matches the space the inverse bind matrices were authored in.
             for (auto ancestor = node_parent[skin.joints[k]]; ancestor >= 0;
                  ancestor = node_parent[static_cast<std::size_t>(ancestor)]) {
                 local = node_matrix(asset.nodes[static_cast<std::size_t>(ancestor)]) * local;
@@ -316,7 +309,6 @@ auto import_gltf_skin(fastgltf::Asset const &asset, bool const mirror_z)
             auto const times = read_all<float>(asset, sampler.inputAccessor);
             bool const step = sampler.interpolation == fastgltf::AnimationInterpolation::Step;
             bool const cubic = sampler.interpolation == fastgltf::AnimationInterpolation::CubicSpline;
-            // CUBICSPLINE output is (in-tangent, value, out-tangent) per key: keep the values only.
             auto const strip = [&]<typename V>(std::vector<V> values) {
                 if (!cubic) {
                     return values;

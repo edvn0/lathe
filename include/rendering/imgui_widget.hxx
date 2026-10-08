@@ -6,7 +6,6 @@
 #include <imgui.h>
 
 namespace gui {
-    // Opens window `name` and calls `f` with whichever of (size, position) it accepts. Always calls ImGui::End().
     inline constexpr auto widget = [](char const *name, auto &&f) -> bool {
         if (!ImGui::Begin(name)) {
             ImGui::End();
@@ -27,4 +26,4 @@ namespace gui {
         ImGui::End();
         return false;
     };
-} // namespace gui
+}

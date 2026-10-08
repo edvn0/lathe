@@ -35,7 +35,6 @@ namespace {
         return total;
     }
 
-    // produce (compute) -> consume (graphics), with an independent graphics pass declared after the consumer.
     auto make_overlap_graph() -> FrameGraph {
         auto graph = FrameGraph{};
         auto data = graph.import_buffer({.debug_name = "data"});
@@ -57,7 +56,7 @@ namespace {
         return graph;
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("declaration order is the schedule") {
@@ -74,7 +73,6 @@ TEST_SUITE("unit") {
         REQUIRE(declared.has_value());
         REQUIRE(overlapped.has_value());
 
-        // The consumer waits for the compute producer; the independent pass fills the gap instead of trailing it.
         CHECK(overlapped->schedule == std::vector<std::uint32_t>{0, 2, 1});
         CHECK(position_of(*overlapped, 2) < position_of(*overlapped, 1));
         CHECK(count_waits(*overlapped) <= count_waits(*declared));
@@ -83,8 +81,6 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("pinned and legacy passes never move and are never crossed") {
-        // fence_kind -1 is the control without a fence: "independent" hoists ahead of "consume". With a fence declared
-        // between them, hoisting would cross it, so the declared order stays.
         for (auto const fence_kind: {-1, 0, 1}) {
             auto graph = FrameGraph{};
             auto data = graph.import_buffer({.debug_name = "data"});
@@ -146,14 +142,12 @@ TEST_SUITE("unit") {
                 REQUIRE(declared.has_value());
                 REQUIRE(overlapped.has_value());
 
-                // Same passes, different order.
                 auto sorted = overlapped->schedule;
                 std::ranges::sort(sorted);
                 auto expected = declared->schedule;
                 std::ranges::sort(expected);
                 REQUIRE(sorted == expected);
 
-                // Conflicting passes keep their relative order, as do fences against everything.
                 auto const &desc = graph.description();
                 auto const live = std::vector<bool>(declared->pass_culled.begin(), declared->pass_culled.end());
                 auto live_mask = std::vector<bool>(live.size());

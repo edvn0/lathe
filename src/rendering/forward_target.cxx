@@ -22,7 +22,7 @@ namespace {
         };
     }
 
-} // namespace
+}
 
 auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo const &create_info)
         -> std::expected<ForwardTarget, ForwardTargetError> {
@@ -33,9 +33,6 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
 
     bool const is_msaa = create_info.samples > VK_SAMPLE_COUNT_1_BIT;
 
-    // Each image is held as soon as it's created, so an early return destroys the ones before it.
-
-    // The single-sample HDR image is the render target without MSAA and the resolve target with it.
     auto const resolved_hdr_name = std::string{create_info.debug_name} + ".hdr";
 
     auto resolved_hdr = create_held_image(
@@ -66,7 +63,6 @@ auto ForwardTarget::create(ImageStorage &image_storage, ForwardTargetCreateInfo 
         return std::unexpected(make_image_error(resolved_hdr.error()));
     }
 
-    // The MSAA target is never sampled, so it gets no SAMPLED usage or descriptor view.
     std::expected<ImageHolder, ImageStorageError> msaa_hdr;
 
     if (is_msaa) {

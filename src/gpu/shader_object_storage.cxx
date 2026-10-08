@@ -19,7 +19,7 @@ namespace {
                 .cause = ErrorCause{Boxed<ShaderObjectError>{std::move(error)}},
         };
     }
-} // namespace
+}
 
 ShaderObjectStorage::~ShaderObjectStorage() { destroy(); }
 
@@ -96,7 +96,6 @@ auto ShaderObjectStorage::create_linked(ShaderObjectCreateInfo const &create_inf
 
     perf_events::record(PerfEvent::shader_object_build);
 
-    // Creation shares no state, so it runs unlocked; only the free list needs the mutex.
     auto shader_object =
             ShaderObjectSet::create_linked(*context_, create_info, global_descriptor_set_layout(), binary_cache());
 

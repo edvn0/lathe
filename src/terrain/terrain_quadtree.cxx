@@ -6,13 +6,11 @@
 namespace {
 
     [[nodiscard]] auto floor_div(std::int32_t value, std::int32_t divisor) -> std::int32_t {
-        // Integer division truncates towards zero; negative values need flooring.
         auto const quotient = value / divisor;
         auto const remainder = value % divisor;
         return (remainder != 0 && ((remainder < 0) != (divisor < 0))) ? quotient - 1 : quotient;
     }
 
-    // Chebyshev distance from `point` to [min, max), 0 inside. Gives square residency rings.
     [[nodiscard]] auto distance_to_aabb(glm::vec2 point, glm::vec2 box_min, glm::vec2 box_max) -> float {
         auto const dx = std::max({box_min.x - point.x, 0.0F, point.x - box_max.x});
         auto const dz = std::max({box_min.y - point.y, 0.0F, point.y - box_max.y});
@@ -33,11 +31,11 @@ namespace {
         auto const distance = distance_to_aabb(camera_xz, box_min, box_max);
 
         if (distance > settings.view_distance) {
-            return; // beyond view distance
+            return;
         }
 
         if (key.lod == 0) {
-            out_desired.push_back(key); // no finer LOD to descend into
+            out_desired.push_back(key);
             return;
         }
 
@@ -52,7 +50,7 @@ namespace {
         } else if (distance > threshold * (1.0F + settings.split_hysteresis)) {
             split_now = false;
         } else {
-            split_now = was_split; // inside the deadband: keep last frame's decision
+            split_now = was_split;
         }
 
         if (split_now) {
@@ -71,7 +69,7 @@ namespace {
         }
     }
 
-} // namespace
+}
 
 auto terrain_chunk_centre(ChunkKey const &key, TerrainLodSettings const &settings) -> glm::vec2 {
     auto const span = terrain_chunk_span(settings, key.lod);

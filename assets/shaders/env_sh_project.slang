@@ -4,9 +4,6 @@ import bindless;
 import scene_types;
 import environment;
 
-// Projects a small level of the radiance cube onto L2 spherical harmonics, convolves with the clamped cosine and divides
-// by pi, and writes the result to a GpuEnvironmentSh slot. One 256-thread group walks every texel (24 per thread at
-// 32x32 faces) and reduces the 27 sums through groupshared memory.
 struct EnvShProjectPushConstants
 {
     uint cube_texture_index;
@@ -81,7 +78,6 @@ void main_cs(uint lane: SV_GroupIndex)
     }
 
     if (lane == 0) {
-        // Per-band cosine-lobe factors (pi, 2 pi / 3, pi / 4), already divided by pi.
         const float band_factor[9] = {1.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 0.25, 0.25, 0.25, 0.25, 0.25};
 
         [unroll]

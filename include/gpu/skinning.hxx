@@ -20,21 +20,12 @@
 #include <glm/mat3x3.hpp>
 #include <glm/mat4x4.hpp>
 
-// CPU reference for assets/shaders/skin.slang, plus the host-side layouts the shader reads. The shader must stay
-// bit-for-bit comparable to skin_vertex() within the compression tolerance.
-
-// Per-vertex skinning influences, parallel to the rest vertices (the GPU form of SkinVertex in assets/model_skin.hxx).
-// Mirrors GpuSkinVertex in skin.slang. joints: 4 x u8 (byte i = influence i); weights: 4 x unorm8, same packing.
-// Skinning renormalises the weights, so they need not sum to 255; unused influences are weight 0.
 struct GpuSkinVertex {
     std::uint32_t joints{};
     std::uint32_t weights{};
 };
 static_assert(sizeof(GpuSkinVertex) == 8);
 
-// One mesh instance to skin. Mirrors GpuSkinJob in skin.slang. The addresses point at CompressedModelVertex arrays
-// (rest, out) and a GpuSkinVertex array (skin) of vertex_count entries. palette[palette_offset + joint] is
-// joint_world * inverse_bind, in the same space as the rest vertices.
 struct GpuSkinJob {
     std::uint64_t rest_vertex_addr{};
     std::uint64_t skin_addr{};
@@ -44,9 +35,6 @@ struct GpuSkinJob {
 };
 static_assert(sizeof(GpuSkinJob) == 32);
 
-// Dispatch scheme: one workgroup of skin_chunk_size threads per chunk of one job's vertices; dispatch.x * dispatch.y
-// covers `total` chunks with x <= skin_dispatch_width. job_first_chunk[j] is the exclusive prefix sum of the jobs'
-// chunk counts (job_count + 1 entries); the shader binary-searches it for its group's job.
 constexpr std::uint32_t skin_chunk_size = 64;
 constexpr std::uint32_t skin_dispatch_width = 65535;
 
@@ -72,8 +60,6 @@ constexpr std::uint32_t skin_dispatch_width = 65535;
     return packed;
 }
 
-// Importer form (u16 joints, unorm16 weights summing to 65535) to the GPU form. nullopt if a joint index needs more
-// than 8 bits. Weights are requantised with largest-remainder rounding so they sum to exactly 255 (all-zero stays zero).
 [[nodiscard]] inline auto pack_gpu_skin_vertex(SkinVertex const &vertex) -> std::optional<GpuSkinVertex> {
     std::array<std::uint8_t, 4> joints{};
     std::array<std::uint8_t, 4> weights{};
@@ -114,8 +100,6 @@ constexpr std::uint32_t skin_dispatch_width = 65535;
     return result;
 }
 
-// Skins one vertex. Normal and tangent use the blended matrix's inverse-transpose and plain linear part
-// respectively, so non-uniform scale keeps the normal perpendicular to the surface.
 [[nodiscard]] inline auto skin_vertex(ModelVertex const &rest, GpuSkinVertex const &skin,
                                       std::span<glm::mat4 const> palette) -> ModelVertex {
     std::array<float, 4> weights{};
@@ -125,7 +109,6 @@ constexpr std::uint32_t skin_dispatch_width = 65535;
         total += weights[i];
     }
 
-    // No influence at all: leave the vertex at rest rather than collapsing it to the origin.
     glm::mat4 blended{1.0F};
     if (total > 0.0F) {
         blended = glm::mat4{0.0F};
@@ -135,7 +118,6 @@ constexpr std::uint32_t skin_dispatch_width = 65535;
     }
 
     glm::mat3 const linear{blended};
-    // Cofactor matrix == det * inverse-transpose; only its direction matters, plus det's sign for mirrored poses.
     glm::mat3 const cofactor{glm::cross(linear[1], linear[2]), glm::cross(linear[2], linear[0]),
                              glm::cross(linear[0], linear[1])};
     auto const determinant = glm::dot(linear[0], cofactor[0]);

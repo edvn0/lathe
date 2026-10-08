@@ -119,13 +119,6 @@ struct PipelineRegisterInfo {
     std::string debug_name;
 };
 
-// Owns pipeline storage and a small DAG:
-//
-//   source_file -> shader_stage -> pipeline
-//
-// A changed file dirties its stages, which marks their pipelines for rebuild. process_dirty() recompiles each
-// dirty stage once and rebuilds a pipeline once all its stages are clean. Replaced pipelines are destroyed
-// frames_in_flight frames later.
 class PipelineGraphRepository {
 public:
     PipelineGraphRepository() = default;
@@ -164,13 +157,10 @@ public:
     [[nodiscard]]
     auto shader_object_handle(PipelineNodeHandle handle) const noexcept -> ShaderObjectHandle;
 
-    // Call once per frame with the paths changed since the last call.
     auto on_files_changed(std::span<std::filesystem::path const> changed_files) -> void;
 
-    // Call once per frame. Failed compiles log and keep the live pipeline.
     auto process_dirty() -> void;
 
-    // Call once per frame before recording resolve() results.
     auto tick_retirement() -> void;
 
     auto destroy() noexcept -> void;
@@ -191,7 +181,6 @@ private:
         bool dirty = true;
         bool has_compiled_once = false;
 
-        // Retry a broken shader only after a newer file change.
         std::uint64_t last_change_generation = 0;
         std::uint64_t last_attempt_generation = 0;
     };

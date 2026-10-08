@@ -2,9 +2,6 @@ module light_clusters;
 
 import scene_types;
 
-// Clustered lighting shared by light_cull.slang, light_cluster.slang and the forward fragment shader. Tiles are laid
-// out in NDC rather than pixels, so the build and the lookup agree without knowing the viewport flip.
-
 public uint cluster_tile_count(Ptr<UBO> ubo)
 {
     return ubo.cluster_grid_x * ubo.cluster_grid_y;
@@ -15,7 +12,6 @@ public uint cluster_count(Ptr<UBO> ubo)
     return cluster_tile_count(ubo) * ubo.cluster_grid_z;
 }
 
-// Index of a cluster in the counts and lists.
 public uint cluster_flat_index(Ptr<UBO> ubo, uint tile_x, uint tile_y, uint slice)
 {
     return (slice * ubo.cluster_grid_y + tile_y) * ubo.cluster_grid_x + tile_x;
@@ -26,7 +22,6 @@ public float cluster_slice_depth(Ptr<UBO> ubo, float slice)
     return exp((slice - ubo.cluster_z_bias) / ubo.cluster_z_scale);
 }
 
-// `clip` is the fragment's clip-space position, `view_z` its view-space depth.
 public uint cluster_index(Ptr<UBO> ubo, float4 clip, float view_z)
 {
     const float2 ndc = clip.xy / clip.w;
@@ -44,9 +39,6 @@ public uint cluster_index(Ptr<UBO> ubo, float4 clip, float view_z)
     return cluster_flat_index(ubo, tile_x, tile_y, slice_index);
 }
 
-// World-space bounding sphere (xyz = centre, w = radius) of everything a light can reach. A spot light's lit region
-// is a spherical sector (range, outer cone angle), bounded by the smallest sphere: wide cones by the cap's circle,
-// narrow ones by the sphere through the apex and the rim.
 public float4 light_bounding_sphere(GpuLight light)
 {
     if (light.type != LightType.spot) {
@@ -70,9 +62,6 @@ public float4 light_bounding_sphere(GpuLight light)
     return float4(light.position + direction * (light.range * cos_outer), light.range * sin_outer);
 }
 
-// How much of a punctual light survives screen-size LOD: 0 once its range covers fewer than
-// UBO::light_lod_cull_radius_pixels of radius on screen, easing to 1 at UBO::light_lod_fade_radius_pixels.
-// light_cull.slang drops lights at 0 and the forward pass scales by the rest, so both must call this.
 public float light_screen_fade(Ptr<UBO> ubo, GpuLight light)
 {
     if (ubo.light_lod_fade_radius_pixels <= 0.0) {
@@ -85,7 +74,6 @@ public float light_screen_fade(Ptr<UBO> ubo, GpuLight light)
     return smoothstep(ubo.light_lod_cull_radius_pixels, ubo.light_lod_fade_radius_pixels, radius_pixels);
 }
 
-// View-space direction through an NDC point, scaled to unit view depth.
 public float3 cluster_view_ray(float4x4 inverse_projection, float2 ndc)
 {
     const float4 near_point = mul(inverse_projection, float4(ndc, 0.0, 1.0));
@@ -93,7 +81,6 @@ public float3 cluster_view_ray(float4x4 inverse_projection, float2 ndc)
     return point / point.z;
 }
 
-// A tile's NDC rectangle.
 public void cluster_tile_ndc(Ptr<UBO> ubo, uint tile_x, uint tile_y, out float2 ndc_min, out float2 ndc_max)
 {
     const float2 grid = float2(ubo.cluster_grid_x, ubo.cluster_grid_y);
@@ -101,8 +88,6 @@ public void cluster_tile_ndc(Ptr<UBO> ubo, uint tile_x, uint tile_y, out float2 
     ndc_max = float2(tile_x + 1, tile_y + 1) / grid * 2.0 - 1.0;
 }
 
-// View-space AABB of one cluster. The first slice reaches back to the eye and the last to the far plane, so fragments
-// cluster_index() clamps into them stay covered.
 public void cluster_aabb(Ptr<UBO> ubo, float3 rays[4], uint slice, out float3 aabb_min, out float3 aabb_max)
 {
     const float near_depth = slice == 0 ? 0.0 : cluster_slice_depth(ubo, float(slice));

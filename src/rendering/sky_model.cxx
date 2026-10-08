@@ -8,7 +8,6 @@ namespace {
 
     constexpr float half_pi = std::numbers::pi_v<float> / 2.0F;
 
-    // Perez's all-weather luminance distribution function, F(theta, gamma).
     [[nodiscard]]
     auto perez_factor(float a, float b, float c, float d, float e, float cos_theta, float gamma) noexcept -> float {
         auto const cos_gamma = std::cos(gamma);
@@ -29,7 +28,7 @@ namespace {
                         glm::vec3{0.0F});
     }
 
-} // namespace
+}
 
 auto make_sky_state(SkyModelParams params) -> SkyState {
     auto const turbidity = std::clamp(params.turbidity, sky_min_turbidity, sky_max_turbidity);
@@ -37,7 +36,6 @@ auto make_sky_state(SkyModelParams params) -> SkyState {
 
     auto const t = turbidity;
 
-    // Columns: A, B, C, D, E; each linear in turbidity (Preetham, Table 2).
     std::array<std::array<float, 5>, 3> const perez{{
             {(0.1787F * t) - 1.4630F, (-0.3554F * t) + 0.4275F, (-0.0227F * t) + 5.3251F, (0.1206F * t) - 2.5771F,
              (-0.0670F * t) + 0.3703F},
@@ -47,7 +45,6 @@ auto make_sky_state(SkyModelParams params) -> SkyState {
              (-0.0109F * t) + 0.0529F},
     }};
 
-    // Zenith luminance in kcd/m^2 and chromaticity, as functions of turbidity and the sun's zenith angle.
     auto const chi = ((4.0F / 9.0F) - (t / 120.0F)) * (std::numbers::pi_v<float> - (2.0F * theta_sun));
     auto const zenith_luminance = (((4.0453F * t) - 4.9710F) * std::tan(chi)) - (0.2155F * t) + 2.4192F;
 
@@ -73,7 +70,6 @@ auto make_sky_state(SkyModelParams params) -> SkyState {
         state.perez[channel] = glm::vec4{c[0], c[1], c[2], c[3]};
         state.perez[3][static_cast<int>(channel)] = c[4];
 
-        // F(0, theta_sun): looking at the zenith, the angle to the sun is theta_sun.
         auto const denominator = perez_factor(c[0], c[1], c[2], c[3], c[4], 1.0F, theta_sun);
 
         state.zenith[static_cast<int>(channel)] = zenith[channel] / denominator;
@@ -104,7 +100,7 @@ auto evaluate_sky_rgb(SkyState const &state, glm::vec3 direction, glm::vec3 sun_
 
 auto evaluate_environment_sky_rgb(SkyState const &state, glm::vec3 direction, glm::vec3 sun_direction,
                                   glm::vec3 ground_albedo) -> glm::vec3 {
-    constexpr float blend_height = 0.0349066F; // sin(2 degrees)
+    constexpr float blend_height = 0.0349066F;
 
     auto const sky = evaluate_sky_rgb(state, direction, sun_direction);
 
@@ -114,7 +110,6 @@ auto evaluate_environment_sky_rgb(SkyState const &state, glm::vec3 direction, gl
 
     auto const horizon = evaluate_sky_rgb(state, glm::vec3{1.0F, 0.0F, 0.0F}, sun_direction);
 
-    // The ground is lit by the sky and, roughly, by the horizon band, so it uses the horizon radiance.
     auto const ground = ground_albedo * horizon;
 
     auto const blend = std::clamp(-direction.y / blend_height, 0.0F, 1.0F);

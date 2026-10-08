@@ -49,7 +49,7 @@ namespace {
         }
     };
 
-} // namespace
+}
 
 TEST_CASE("command line: values in both spellings") {
     Fixture f;

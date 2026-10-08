@@ -16,7 +16,6 @@ namespace {
         return HierarchyModel::Node{.entity = entity(id), .parent = parent, .name = std::move(name), .group = group};
     }
 
-    // The rows as (entity id or ~group, depth) pairs, which reads better in failure output than the Row structs.
     [[nodiscard]] auto layout(HierarchyModel &model) -> std::vector<std::pair<std::uint32_t, std::uint32_t>> {
         std::vector<std::pair<std::uint32_t, std::uint32_t>> result;
         for (auto const &row: model.rows()) {
@@ -28,11 +27,6 @@ namespace {
 
     using Layout = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
 
-    // 1
-    // ├── 2
-    // │   └── 4
-    // └── 3
-    // 5
     [[nodiscard]] auto small_tree() -> std::vector<HierarchyModel::Node> {
         return {
                 node(1, "Village"),         node(2, "House", entity(1)), node(3, "Well", entity(1)),
@@ -40,7 +34,7 @@ namespace {
         };
     }
 
-} // namespace
+}
 
 TEST_CASE("Collapsed nodes list only the roots, in order") {
     HierarchyModel model;
@@ -62,7 +56,6 @@ TEST_CASE("Expanding a node lists its children one level deeper, in order") {
     model.set_expanded(entity(2), true);
     CHECK(layout(model) == Layout{{1, 0}, {2, 1}, {4, 2}, {3, 1}, {5, 0}});
 
-    // Collapsing a parent hides the whole subtree but remembers the child's state.
     model.set_expanded(entity(1), false);
     CHECK(layout(model) == Layout{{1, 0}, {5, 0}});
 
@@ -93,7 +86,6 @@ TEST_CASE("Unknown, self and cyclic parents") {
             },
             {});
 
-    // An unlisted or self parent lists the node at the root; a parent cycle is unreachable and not listed.
     CHECK(layout(model) == Layout{{1, 0}, {2, 0}});
 }
 
@@ -134,14 +126,12 @@ TEST_CASE("Filtering lists matches with their ancestors expanded") {
     CHECK(layout(model) == Layout{{1, 0}, {2, 1}, {4, 2}});
     CHECK(model.matching_entities() == std::vector{entity(4)});
 
-    // A collapse while filtering lasts until the filter changes.
     model.set_expanded(entity(1), false);
     CHECK(layout(model) == Layout{{1, 0}});
 
     model.set_filter("lam");
     CHECK(layout(model) == Layout{{1, 0}, {2, 1}, {4, 2}});
 
-    // Clearing the filter brings back the expansion from before it.
     model.set_filter("");
     CHECK_FALSE(model.filtering());
     CHECK(layout(model) == Layout{{1, 0}, {5, 0}});

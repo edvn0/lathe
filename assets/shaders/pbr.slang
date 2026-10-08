@@ -2,7 +2,6 @@ module pbr;
 
 static const float pi = 3.14159265358979323846;
 
-// Trowbridge-Reitz / GGX normal distribution function.
 float distribution_ggx(float ndoth, float roughness)
 {
     float a = roughness * roughness;
@@ -13,7 +12,6 @@ float distribution_ggx(float ndoth, float roughness)
     return a2 / max(denom, 1e-6);
 }
 
-// Height-correlated Smith visibility, already divided by 4 * ndotv * ndotl.
 float visibility_smith_ggx_correlated(float ndotv, float ndotl, float roughness)
 {
     float a2 = roughness * roughness * roughness * roughness;
@@ -29,8 +27,6 @@ float3 fresnel_schlick(float vdoth, float3 f0)
     return f0 + (float3(1.0) - f0) * t5;
 }
 
-// Outgoing radiance from one light. `radiance` is already attenuated and `light_dir` points towards the
-// light. Shadowing is applied by the caller.
 public float3 shade_punctual(float3 normal, float3 view_dir, float3 light_dir, float3 radiance, float3 albedo,
                       float metallic, float roughness)
 {
@@ -45,7 +41,6 @@ public float3 shade_punctual(float3 normal, float3 view_dir, float3 light_dir, f
     float ndoth = max(dot(normal, half_vector), 0.0);
     float vdoth = max(dot(view_dir, half_vector), 0.0);
 
-    // The terms remap roughness to alpha themselves. Clamped to avoid division by zero.
     float safe_roughness = max(roughness, 1e-3);
 
     float3 f0 = lerp(float3(0.04), albedo, metallic);
@@ -56,7 +51,6 @@ public float3 shade_punctual(float3 normal, float3 view_dir, float3 light_dir, f
 
     float3 specular = d * vis * f;
 
-    // Metals have no diffuse; kd also removes what Fresnel already reflects.
     float3 kd = (float3(1.0) - f) * (1.0 - metallic);
     float3 diffuse = kd * albedo / pi;
 

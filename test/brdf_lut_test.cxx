@@ -12,7 +12,6 @@ TEST_CASE("the split-sum LUT stays within the energy bounds") {
             CHECK(lut.x <= 1.0F);
             CHECK(lut.y <= 1.0F);
 
-            // A + B is the reflectance of a perfect (F0 = 1) specular: it never exceeds 1 beyond sampling noise.
             CHECK(lut.x + lut.y <= 1.02F);
         }
     }
@@ -40,7 +39,6 @@ TEST_CASE("rougher surfaces lose energy that multi-scatter compensation puts bac
 
     CHECK(smooth.x + smooth.y > rough.x + rough.y);
 
-    // Fdez-Aguera's compensation 1 + F0 (1 / (A + B) - 1) restores a white (F0 = 1) specular to exactly 1.
     auto const energy = 1.0F + (1.0F * ((1.0F / (rough.x + rough.y)) - 1.0F));
 
     CHECK((rough.x + rough.y) * energy == doctest::Approx(1.0F).epsilon(1e-5));

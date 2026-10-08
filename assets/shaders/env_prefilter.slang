@@ -3,9 +3,6 @@ module env_prefilter;
 import bindless;
 import environment;
 
-// One face of one mip of the specular prefilter cube. Mip 0 mirrors the radiance cube. Higher mips are GGX importance
-// sampled with N = V = R (Karis 2013), and use filtered importance sampling (Colbert and Krivanek 2007) so a small
-// sample count doesn't produce fireflies from bright texels.
 struct EnvPrefilterPushConstants
 {
     uint cube_texture_index;
@@ -40,7 +37,6 @@ void main_cs(uint3 id: SV_DispatchThreadID)
     float3 result;
 
     if (pc.roughness <= 0.0) {
-        // 256 faces from a radiance cube of radiance_size: pick the matching mip.
         result = cube.SampleLevel(sampler, n, max(log2(float(pc.radiance_size) / 256.0), 0.0)).rgb;
     } else {
         float3 tangent;
@@ -61,7 +57,6 @@ void main_cs(uint3 id: SV_DispatchThreadID)
             const float ndotl = dot(n, l);
 
             if (ndotl > 0.0) {
-                // With N = V: pdf = D * NoH / (4 VoH) = D / 4.
                 const float pdf = distribution_ggx_alpha(h_local.z, alpha) * 0.25;
                 const float sample_solid_angle = 1.0 / (float(pc.sample_count) * max(pdf, 1e-6));
                 const float lod = max(0.5 * log2(sample_solid_angle / texel_solid_angle) + 1.0, 0.0);

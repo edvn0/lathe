@@ -4,7 +4,6 @@
 
 namespace frame_graph {
 
-    // Every access bit that writes memory. A barrier's source scope only needs these made available.
     inline constexpr VkAccessFlags2 write_access_mask =
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
@@ -13,7 +12,7 @@ namespace frame_graph {
     struct UseInfo {
         VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_NONE;
         VkAccessFlags2 access = VK_ACCESS_2_NONE;
-        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; // UNDEFINED for buffers and tokens
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
         bool is_image = false;
         bool is_token = false;
         bool reads = false;
@@ -56,9 +55,6 @@ namespace frame_graph {
         return flags;
     }
 
-    // The single source of truth for what a Use means to Vulkan. `stages` only matters for uses with
-    // needs_shader_stages. Whether an attachment use discards its contents depends on its load op; see
-    // `discards_contents`.
     [[nodiscard]] constexpr auto use_info(Use use, ShaderStages stages) noexcept -> UseInfo {
         auto const shader = shader_stage_flags(stages);
         switch (use) {
@@ -91,7 +87,6 @@ namespace frame_graph {
                         .writes = true,
                 };
             case Use::depth_resolve:
-                // The union of stages the existing code relies on: depth resolves run in COLOR_ATTACHMENT_OUTPUT.
                 return {
                         .stages = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
                                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -232,8 +227,6 @@ namespace frame_graph {
         return {};
     }
 
-    // Whether an access throws away the previous contents. Pure writes through transfer_dst and storage_write discard;
-    // attachments discard when they do not load. Buffers never discard implicitly.
     [[nodiscard]] constexpr auto discards_contents(Use use, LoadOp load) noexcept -> bool {
         switch (use) {
             case Use::color_attachment:
@@ -249,4 +242,4 @@ namespace frame_graph {
         }
     }
 
-} // namespace frame_graph
+}

@@ -6,7 +6,6 @@ using namespace frame_graph;
 
 namespace {
 
-    // Fake handles: the translation only copies them.
     template<typename Handle>
     auto handle(std::uintptr_t value) -> Handle {
         return reinterpret_cast<Handle>(value); // NOLINT(performance-no-int-to-ptr)
@@ -40,7 +39,7 @@ namespace {
         return resources;
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("an image barrier keeps its scopes and layouts and covers every mip and layer") {
@@ -185,14 +184,14 @@ TEST_SUITE("unit") {
 
     TEST_CASE("a barrier on a resource with no handle is a failure that names it") {
         auto barriers = BarrierSet{};
-        barriers.images.push_back(ImageBarrier{.resource = 3}); // slot 3 only holds a buffer
+        barriers.images.push_back(ImageBarrier{.resource = 3});
         auto const image = translate(barriers, make_resources());
         REQUIRE_FALSE(image.has_value());
         CHECK(image.error().kind == TranslateFailureKind::missing_image);
         CHECK(image.error().resource == 3);
 
         auto buffers = BarrierSet{};
-        buffers.buffers.push_back(BufferBarrier{.resource = 0}); // slot 0 only holds an image
+        buffers.buffers.push_back(BufferBarrier{.resource = 0});
         auto const buffer = translate(buffers, make_resources());
         REQUIRE_FALSE(buffer.has_value());
         CHECK(buffer.error().kind == TranslateFailureKind::missing_buffer);

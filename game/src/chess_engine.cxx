@@ -137,7 +137,7 @@ namespace {
             std::pair{-1, -1},
     };
 
-} // namespace
+}
 
 namespace chess {
     ChessEngine::ChessEngine() { reset(); }
@@ -188,8 +188,6 @@ namespace chess {
             ++next_id;
         };
 
-        // Matches your existing starting_layout() ordering:
-        // white back rank, white pawns, black back rank, black pawns.
         for (auto const side: {Side::white, Side::black}) {
             auto const back_rank_index = side == Side::white ? 0 : 7;
 
@@ -232,7 +230,6 @@ namespace chess {
         key ^= mix(0x100 + static_cast<std::uint64_t>(position_.side_to_move));
         key ^= mix(0x200 + static_cast<std::uint64_t>(position_.castling_rights));
 
-        // En passant only distinguishes positions when a pawn of the side to move can actually take.
         if (position_.en_passant != Square::none) {
             auto const target = square_index(position_.en_passant);
             auto const file = target & 7;
@@ -270,12 +267,10 @@ namespace chess {
         auto const white_minors = minors(Side::white);
         auto const black_minors = minors(Side::black);
 
-        // King against king, or a king and one minor piece against a bare king.
         if (white_minors + black_minors <= 1) {
             return true;
         }
 
-        // One bishop each, on squares of the same colour.
         if (white_minors == 1 && black_minors == 1 && count(Side::white, PieceType::bishop) == 1 &&
             count(Side::black, PieceType::bishop) == 1) {
             auto const colour = [&](Side side) {
@@ -366,7 +361,6 @@ namespace chess {
 
         auto const target_rank = rank_of(square);
 
-        // Pawns.
         {
             auto const pawn_rank_delta = by_side == Side::white ? -1 : +1;
 
@@ -389,7 +383,6 @@ namespace chess {
             }
         }
 
-        // Knights.
         for (auto const &[dx, dy]: knight_offsets) {
             auto const file = target_file + dx;
 
@@ -404,7 +397,6 @@ namespace chess {
             }
         }
 
-        // Kings.
         for (auto const &[dx, dy]: king_offsets) {
             auto const file = target_file + dx;
 
@@ -810,7 +802,6 @@ namespace chess {
             position_.board[static_cast<std::size_t>(square_index(capture_square))] = Piece::none;
         }
 
-        // Castling rights can also disappear because a rook was captured.
         switch (capture_square) {
             case Square::a1:
                 clear_castling_right(CastlingRights::white_queen);
@@ -880,7 +871,6 @@ namespace chess {
             }
         }
 
-        // Moving a king or rook permanently changes castling rights.
         if (moving_piece == Piece::white_king) {
             clear_castling_right(CastlingRights::white_king);
 
@@ -1134,7 +1124,7 @@ namespace chess {
         return nodes;
     }
 
-    auto ChessEngine::perft(Badge<ChessGame> /*badge*/, int depth) const -> std::uint64_t {
+    auto ChessEngine::perft(Badge<ChessGame> , int depth) const -> std::uint64_t {
         if (depth < 0) {
             return 0;
         }
@@ -1143,4 +1133,4 @@ namespace chess {
         return copy.perft_impl(depth);
     }
 
-} // namespace chess
+}

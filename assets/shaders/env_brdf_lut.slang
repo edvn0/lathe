@@ -3,8 +3,6 @@ module env_brdf_lut;
 import bindless;
 import environment;
 
-// The split-sum BRDF LUT (Karis 2013): x = N.V, y = perceptual roughness, writes (A, B) so that the specular
-// reflectance is F0 * A + B. Uses the same height-correlated Smith visibility as pbr.slang.
 struct EnvBrdfLutPushConstants
 {
     uint dst_storage_index;
@@ -39,7 +37,6 @@ float2 integrate_brdf(float ndotv, float roughness)
             const float lambda_l = ndotv * sqrt(ndotl * ndotl * (1.0 - a2) + a2);
             const float visibility = 0.5 / max(lambda_v + lambda_l, 1e-6);
 
-            // Visibility is divided by 4 NoV NoL already; the importance weight is 4 VoH NoL / NoH.
             const float weighted = visibility * 4.0 * ndotl * vdoth / max(ndoth, 1e-6);
             const float fresnel = pow(1.0 - vdoth, 5.0);
 

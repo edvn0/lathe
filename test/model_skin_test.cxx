@@ -45,7 +45,6 @@ namespace {
         return Loaded{std::move(asset.get()), std::move(**skin)};
     }
 
-    // Finalized ModelCpuData with the fixture's first skinned primitive.
     auto fixture_cpu_data(Loaded const &loaded) -> ModelCpuData {
         auto const &asset = loaded.asset;
         auto const &primitive = asset.meshes[0].primitives[0];
@@ -78,7 +77,7 @@ namespace {
         data.animation = loaded.skin.data;
         return data;
     }
-} // namespace
+}
 
 TEST_SUITE("model skin import") {
     TEST_CASE("skeleton is topologically ordered with 48 joints") {
@@ -186,7 +185,6 @@ TEST_SUITE("model skin import") {
         CHECK(clip_a.rotations[0].times == clip_b.rotations[0].times);
         CHECK(clip_a.rotations[0].values == clip_b.rotations[0].values);
 
-        // A pre-skin (v2) payload is the v3 one without the trailing section (1 byte per primitive + 1).
         auto unskinned = cpu_data;
         unskinned.meshes[0].primitives[0].skin.clear();
         unskinned.animation = nullptr;
@@ -198,7 +196,6 @@ TEST_SUITE("model skin import") {
         CHECK(old_decoded->cpu_data.meshes[0].primitives[0].skin.empty());
         CHECK(old_decoded->cpu_data.animation == nullptr);
 
-        // Truncation inside the skin section is rejected.
         CHECK_FALSE(decode_cooked_model(std::span{*payload}.first(payload->size() - 5)).has_value());
     }
 }

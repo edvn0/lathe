@@ -27,7 +27,7 @@ namespace {
         return static_cast<std::uint32_t>(binding);
     }
 
-} // namespace
+}
 
 GpuResourceTable::~GpuResourceTable() { destroy(); }
 
@@ -69,7 +69,6 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
                     .pImmutableSamplers = nullptr,
             },
             VkDescriptorSetLayoutBinding{
-                    // Scalar-typed view of the sampled_2d images, which SampleCmpLevelZero requires.
                     .binding = binding_index(GpuResourceBinding::sampled_2d_depth),
                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                     .descriptorCount = table.image_capacity_,
@@ -84,7 +83,6 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
                     .pImmutableSamplers = nullptr,
             },
             VkDescriptorSetLayoutBinding{
-                    // Slots without a cube view point at ImageStorage::black_cube_view().
                     .binding = binding_index(GpuResourceBinding::sampled_cube),
                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                     .descriptorCount = table.image_capacity_,
@@ -231,7 +229,6 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
         append_image_write(binding_index(GpuResourceBinding::sampled_2d), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                            sampled_2d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // Same view, declared with a scalar element type for SampleCmpLevelZero.
         append_image_write(binding_index(GpuResourceBinding::sampled_2d_depth), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                            sampled_2d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
@@ -239,7 +236,6 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
                            record.sampled_cube != VK_NULL_HANDLE ? record.sampled_cube : images.black_cube_view(),
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // Array/storage bindings have no fallback images yet, so only write the ones with a view.
         if (record.storage_2d != VK_NULL_HANDLE) {
             append_image_write(binding_index(GpuResourceBinding::storage_2d), index, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                record.storage_2d, VK_IMAGE_LAYOUT_GENERAL);

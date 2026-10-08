@@ -4,7 +4,6 @@
 #include "physics/physics.hxx"
 #include "scene/environment.hxx"
 
-// The umbrella header; it includes entity/snapshot.hpp, which can't be included on its own first.
 #include <entt/entt.hpp>
 
 #include <glm/mat4x4.hpp>
@@ -25,13 +24,12 @@ namespace detail {
     class ReadOnlyEntity;
     class ScriptEntity;
     class AttachedEntity;
-} // namespace detail
+}
 
 class Scene {
 public:
     PhysicsWorldSettings physics_settings{};
 
-    // Sky, image-based lighting, sun and fog. Pushed to the renderer every frame and saved with the scene.
     SceneEnvironment environment = new_scene_environment();
 
     explicit Scene(Renderer &);
@@ -51,12 +49,8 @@ public:
     auto get_scripts() noexcept -> ScriptStorage &;
     [[nodiscard]] auto get_scripts() const noexcept -> ScriptStorage const &;
 
-    // Removes the component if `material_override` is empty.
     auto set_material_override(entt::entity entity, Components::MaterialOverride material_override) -> void;
 
-    // Changes whenever an entity's place or name in the editor hierarchy may have changed: a Transform, name, Parent
-    // or BulletTag added or removed, or a name or Parent edited. Values come from one process-wide counter, so two
-    // scenes never share one.
     [[nodiscard]] auto hierarchy_revision() const noexcept -> std::uint64_t { return hierarchy_revision_; }
 
     [[nodiscard]] auto find_entity(std::string_view) const noexcept -> entt::entity;
@@ -67,12 +61,9 @@ private:
     std::uint64_t hierarchy_revision_ = 0;
 
 public:
-    // Declared after `registry` so it is destroyed first; its destructor uses the registry.
     std::unique_ptr<PhysicsWorld> physics_world;
 
 private:
-    // Scripts live on the Renderer, which editor_scene and runtime_scene share, so script handles survive the
-    // play() clone.
     Renderer &renderer_;
 
     auto mark_lights_dirty(entt::registry &, entt::entity) -> void;
@@ -83,7 +74,6 @@ private:
     auto on_material_override_attached(entt::registry &, entt::entity) -> void;
     auto on_material_override_detached(entt::registry &, entt::entity) -> void;
 
-    // Release a StreamedModelTag entity's model reference exactly once, whichever component goes first.
     auto on_model_destroyed(entt::registry &, entt::entity) -> void;
     auto on_streamed_model_tag_destroyed(entt::registry &, entt::entity) -> void;
 
@@ -120,7 +110,7 @@ namespace detail {
         }
     };
 
-} // namespace detail
+}
 
 template<typename... Components>
 auto clone_registry(entt::registry const &src, entt::registry &dst) -> void {
@@ -142,4 +132,4 @@ namespace systems {
             -> glm::mat4;
     auto lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) -> void;
     auto script_update(entt::registry &registry, Scene &scene, float dt) -> void;
-} // namespace systems
+}

@@ -16,7 +16,6 @@
 #include "core/config.hxx"
 #include "core/object_pool.hxx"
 
-// One submesh: GeometryArena ranges per LOD, material and local bounds. Validated by Renderer::create_mesh.
 struct Submesh {
     std::array<MeshGeometry, lod_count> lods{};
     MaterialHandle material{};
@@ -63,7 +62,6 @@ struct MeshStorageCreateInfo {
     std::uint32_t capacity = 0;
 };
 
-// Generational pool of mesh records. The geometry itself lives in GeometryArena, so no Vulkan resources here.
 class MeshStorage {
 public:
     MeshStorage() = default;

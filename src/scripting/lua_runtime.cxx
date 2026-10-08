@@ -15,9 +15,8 @@ namespace {
 
     constexpr std::size_t max_module_name_length = 128;
     constexpr int load_budget_multiplier = 10;
-} // namespace
+}
 
-// Reached from C callbacks through lua_getextraspace, so it lives in the heap-stable Impl.
 struct LuaRuntimeContext {
     LuaMemoryBudget budget;
     std::chrono::steady_clock::time_point deadline{};
@@ -32,7 +31,6 @@ struct LuaRuntime::Impl {
         auto operator()(lua_State *state) const noexcept -> void { lua_close(state); }
     };
 
-    // Declared first so it outlives the state, whose allocator points at the budget inside it.
     LuaRuntimeContext context;
     std::unique_ptr<lua_State, StateDeleter> state;
     Settings settings;
@@ -53,9 +51,7 @@ namespace {
         return 0;
     }
 
-    // Raised from the count hook once a call outlives its budget. The hook is removed first so the error handler and
-    // the unwinding aren't interrupted themselves.
-    auto deadline_hook(lua_State *state, lua_Debug * /*activation*/) -> void {
+    auto deadline_hook(lua_State *state, lua_Debug * ) -> void {
         auto &context = context_of(state);
 
         if (std::chrono::steady_clock::now() < context.deadline) {
@@ -66,12 +62,10 @@ namespace {
         luaL_error(state, "script exceeded its time budget of %d ms", static_cast<int>(context.active_budget.count()));
     }
 
-    // Appends a traceback to the message. Only C-API objects live here, as errors in handlers longjmp.
     auto message_handler(lua_State *state) -> int {
         auto const *message = lua_tostring(state, 1);
 
         if (message == nullptr) {
-            // Error objects that aren't strings keep their identity; wrap what can be printed.
             if (luaL_callmeta(state, 1, "__tostring") != 0 && lua_type(state, -1) == LUA_TSTRING) {
                 return 1;
             }
@@ -84,7 +78,6 @@ namespace {
         return 1;
     }
 
-    // print(...): the arguments joined by tabs, logged at info.
     auto lua_print(lua_State *state) -> int {
         auto const count = lua_gettop(state);
 
@@ -121,7 +114,6 @@ namespace {
         });
     }
 
-    // Returns 1 with the module, or raises. The std::string locals end before anything that can longjmp.
     auto lua_require(lua_State *state) -> int {
         std::size_t length = 0;
         auto const *raw = luaL_checklstring(state, 1, &length);
@@ -174,7 +166,7 @@ namespace {
         }
 
         if (load_failed) {
-            return lua_error(state); // The compile error is on top.
+            return lua_error(state);
         }
 
         if (native != nullptr) {
@@ -184,7 +176,6 @@ namespace {
         lua_pushvalue(state, 1);
         lua_call(state, 1, 1);
 
-        // A module that returns nothing is stored as true, as in stock Lua.
         if (lua_isnil(state, -1)) {
             lua_pop(state, 1);
             lua_pushboolean(state, 1);
@@ -206,7 +197,6 @@ namespace {
         luaL_requiref(state, LUA_UTF8LIBNAME, luaopen_utf8, 1);
         lua_pop(state, 6);
 
-        // "stop" defeats the memory cap; load, loadfile and dofile read code from outside the loader.
         for (auto const *name: {"dofile", "loadfile", "load", "collectgarbage", "warn"}) {
             lua_pushnil(state);
             lua_setglobal(state, name);
@@ -240,7 +230,7 @@ namespace {
         CallGuard(CallGuard const &) = delete;
         auto operator=(CallGuard const &) -> CallGuard & = delete;
     };
-} // namespace
+}
 
 auto LuaRuntime::create() -> std::expected<LuaRuntime, std::string> { return create(Settings{}); }
 
@@ -431,7 +421,6 @@ auto LuaRuntime::call(char const *name, std::span<double const> numbers, int res
         return {.ok = false, .error = std::move(message)};
     }
 
-    // The handler sits below the results.
     lua_remove(state, handler_index);
 
     return {};

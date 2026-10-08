@@ -75,8 +75,6 @@ namespace {
         return {};
     }
 
-    // "<branch>@<sha>" of the source tree the binary was configured from, read from its .git directory now. It is
-    // the checkout the user rebuilt from, as long as they did rebuild.
     [[nodiscard]] auto source_revision() -> std::string {
         std::filesystem::path const source_dir{LATHE_SOURCE_DIR};
         if (source_dir.empty()) {
@@ -91,7 +89,7 @@ namespace {
 
         constexpr std::string_view ref_prefix = "ref: ";
         if (!head.starts_with(ref_prefix)) {
-            return head.substr(0, 12); // detached
+            return head.substr(0, 12);
         }
 
         auto const ref = head.substr(ref_prefix.size());
@@ -117,7 +115,7 @@ namespace {
         return std::format("{:%Y-%m-%dT%H:%M:%SZ}", now);
     }
 
-} // namespace
+}
 
 auto probe_host_environment(BenchmarkEnvironment &environment) -> void {
     environment.cpu_name = cpu_model_name();
@@ -168,7 +166,6 @@ auto sample_thermals() -> ThermalSample {
         }
     }
 
-    // Mean current frequency over all CPUs.
     auto total_khz = 0.0;
     auto cpus = 0;
     for (auto const &entry: std::filesystem::directory_iterator{"/sys/devices/system/cpu", error}) {

@@ -21,7 +21,7 @@ namespace {
         return sample;
     }
 
-} // namespace
+}
 
 TEST_CASE("timing summaries report tail percentiles and spread") {
     std::vector<float> samples;
@@ -60,14 +60,11 @@ TEST_CASE("analysis finds hitches, attributes them to events and judges the budg
         samples.push_back(frame(i, 5.0F, 2.0F, 4.0F));
     }
 
-    // A texture upload in frame 39, whose cost shows in frame 40's present.
     samples[39].events.values[static_cast<std::size_t>(PerfEvent::texture_upload)] = 2;
     samples[40] = frame(40, 30.0F, 25.0F, 4.0F);
 
-    // A hitch with nothing recorded around it.
     samples[70] = frame(70, 20.0F, 18.0F, 4.0F);
 
-    // A GPU-bound frame: GPU time above CPU busy time.
     samples[90] = frame(90, 5.0F, 2.0F, 6.0F);
 
     auto const analysis = analyse_frames(samples, AnalysisOptions{.target_hz = 144.0F});
@@ -78,7 +75,6 @@ TEST_CASE("analysis finds hitches, attributes them to events and judges the budg
     CHECK(analysis.budget.displayed_over_budget == 2);
     CHECK(analysis.budget.cpu_busy_over_budget == 2);
 
-    // Threshold: the larger of twice the median (10 ms) and the budget (6.94 ms).
     CHECK(analysis.hitch_threshold_ms == doctest::Approx(10.0F));
     REQUIRE(analysis.hitches.size() == 2);
     CHECK(analysis.hitches[0].index == 40);
@@ -90,7 +86,6 @@ TEST_CASE("analysis finds hitches, attributes them to events and judges the budg
     CHECK(uploads.frames_with == 1);
     CHECK(uploads.hitches_with == 1);
 
-    // Ordinary frames spend 4 ms on the GPU against 2 ms of CPU work: GPU-bound. The two hitches are CPU-bound.
     CHECK(analysis.bound.frames_with_gpu == 100);
     CHECK(analysis.bound.cpu_bound == 2);
     CHECK(analysis.bound.gpu_bound == 98);
@@ -122,7 +117,7 @@ TEST_CASE("repeat statistics use the median and the range") {
 
 TEST_CASE("scaling fits give marginal cost, exponent and the load that fills the budget") {
     std::array const loads{1000.0, 2000.0, 4000.0, 8000.0};
-    std::array const linear_cost{2.0, 3.0, 5.0, 9.0}; // 1 ms + 1 ms per 1000
+    std::array const linear_cost{2.0, 3.0, 5.0, 9.0};
 
     auto const fit = fit_scaling(loads, linear_cost);
     CHECK(fit.points == 4);
@@ -130,7 +125,7 @@ TEST_CASE("scaling fits give marginal cost, exponent and the load that fills the
     CHECK(fit.intercept_ms == doctest::Approx(1.0));
     CHECK(fit.r_squared == doctest::Approx(1.0));
     REQUIRE(fit.exponent.has_value());
-    CHECK(*fit.exponent < 1.0); // the fixed millisecond dominates at low load
+    CHECK(*fit.exponent < 1.0);
     REQUIRE(fit.load_at(6.0).has_value());
     CHECK(*fit.load_at(6.0) == doctest::Approx(5000.0));
 
@@ -148,7 +143,6 @@ TEST_CASE("frames the swapchain paced are presentation-bound, and refresh jitter
     std::vector<BenchmarkFrameSample> samples;
     samples.reserve(10);
 
-    // Refresh-paced: 6.95 ms displayed at 144 Hz (a hair over 6.944), 6 ms of it in acquire, the GPU done in 3.4.
     for (std::uint32_t i = 0; i < 8; ++i) {
         auto sample = frame(i, 6.95F, 0.8F, 3.4F);
         sample.cpu.phase_ms[static_cast<std::size_t>(CpuPhase::slot_wait)] = 0.15F;
@@ -156,10 +150,8 @@ TEST_CASE("frames the swapchain paced are presentation-bound, and refresh jitter
         samples.push_back(sample);
     }
 
-    // GPU-bound: waiting on the frame slot, the GPU using the whole interval.
     samples.push_back(frame(8, 10.5F, 0.4F, 10.4F));
 
-    // Blocked in acquire, but the GPU used most of the interval: GPU-bound, not presentation-bound.
     auto busy_gpu = frame(9, 10.0F, 0.4F, 9.5F);
     busy_gpu.cpu.phase_ms[static_cast<std::size_t>(CpuPhase::slot_wait)] = 0.0F;
     busy_gpu.cpu.phase_ms[static_cast<std::size_t>(CpuPhase::acquire)] = 9.6F;
@@ -171,7 +163,6 @@ TEST_CASE("frames the swapchain paced are presentation-bound, and refresh jitter
     CHECK(analysis.bound.cpu_bound == 0);
     CHECK(analysis.bound.presentation_bound_fraction() == doctest::Approx(0.8F));
 
-    // 6.95 ms is within 1% of the 6.944 ms budget; only the two 10 ms frames miss it.
     CHECK(analysis.budget.displayed_over_budget == 2);
 
     auto const strict = analyse_frames(samples, AnalysisOptions{.target_hz = 144.0F, .budget_tolerance = 0.0F});

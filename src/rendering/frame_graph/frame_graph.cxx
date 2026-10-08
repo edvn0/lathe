@@ -17,7 +17,6 @@ namespace frame_graph {
     auto FrameGraph::add_resource(ResourceDesc resource, bool produced) -> std::uint32_t {
         auto const index = static_cast<std::uint32_t>(desc_.resources.size());
         desc_.resources.push_back(std::move(resource));
-        // Version 1 exists from the start; imports and tokens have it written, transients do not.
         desc_.producers.push_back({-1, -1});
         latest_.push_back(1);
         written_.push_back(produced);
@@ -170,7 +169,6 @@ namespace frame_graph {
                 .version = version,
                 .use = use,
                 .stages = stages,
-                // A transient's first write has no earlier contents to preserve.
                 .discard = discard || !written,
                 .produces = info.writes,
         });
@@ -197,7 +195,6 @@ namespace frame_graph {
 
     auto PassBuilder::write(ImageId image, Use use, ShaderStages stages, ExitUse exit) -> ImageId {
         auto const written = write(image, use, stages);
-        // The access recorded above is the pass's last, unless validation rejected it.
         if (!pass_->accesses.empty() && pass_->accesses.back().resource == image.index) {
             pass_->accesses.back().exit_use = exit.use;
         }
@@ -262,7 +259,6 @@ namespace frame_graph {
             }
         }
         if (attached == nullptr) {
-            // Not an attachment of this pass, or one that already has its resolve.
             graph_->record_error(FrameGraphErrorType::conflicting_use, *pass_, attachment.index);
             return target;
         }
@@ -289,4 +285,4 @@ namespace frame_graph {
         return ImageId{.index = index, .generation = 1};
     }
 
-} // namespace frame_graph
+}

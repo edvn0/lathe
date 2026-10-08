@@ -9,9 +9,6 @@
 #include "rendering/frame_graph/compiler.hxx"
 #include "rendering/frame_graph/describe.hxx"
 
-// Test support for the frame graph compiler: an independent happens-before checker. Given the declarations and a
-// compiled plan it asks, for every hazard pair (RAW, WAR, WAW on one resource), whether the plan orders the two
-// accesses, using only what the plan actually records: barrier scopes, semaphore waits and ownership transfers.
 namespace frame_graph::test {
 
     struct Event {
@@ -26,7 +23,7 @@ namespace frame_graph::test {
 
     struct PlacedBarrier {
         std::uint32_t resource = 0;
-        bool global = false; // a MemoryBarrier applies to every resource
+        bool global = false;
         VkPipelineStageFlags2 src_stages = 0;
         VkAccessFlags2 src_access = 0;
         VkPipelineStageFlags2 dst_stages = 0;
@@ -40,7 +37,6 @@ namespace frame_graph::test {
         return (scope & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) != 0 || (needed & ~scope) == 0;
     }
 
-    // Whether `barrier` makes `first`'s access ordered (and, for a write, available) before `second`'s access.
     inline auto barrier_orders(PlacedBarrier const &barrier, Event const &first, Event const &second) -> bool {
         if (barrier.op != OwnershipOp::none) {
             return false;
@@ -66,19 +62,15 @@ namespace frame_graph::test {
         return true;
     }
 
-
-    // A readable dump of a plan, for failure messages.
     inline auto describe(GraphDesc const &graph, CompiledGraph const &compiled) -> std::string {
         return frame_graph::describe(graph, compiled);
     }
 
-    // Returns one message per violation; empty means the plan is sound.
     inline auto check_happens_before(GraphDesc const &graph, CompiledGraph const &compiled,
                                      QueueTopology const &topology) -> std::vector<std::string> {
         auto problems = std::vector<std::string>{};
         auto const batch_count = compiled.batches.size();
 
-        // Structural checks on batches, signals and waits.
         auto last_signal = std::array<std::int64_t, logical_queue_count>{-1, -1};
         auto per_queue_count = std::array<std::uint32_t, logical_queue_count>{};
         for (auto index = std::size_t{0}; index < batch_count; ++index) {
@@ -108,7 +100,6 @@ namespace frame_graph::test {
             problems.emplace_back("signal_count does not match the batches per queue");
         }
 
-        // done[y] = batches that are complete before batch y starts.
         auto done = std::vector<std::vector<bool>>(batch_count, std::vector<bool>(batch_count, false));
         for (auto y = std::size_t{0}; y < batch_count; ++y) {
             for (auto const &wait: compiled.batches[y].waits) {
@@ -126,13 +117,11 @@ namespace frame_graph::test {
             }
         }
 
-        // Execution order of the live passes.
         auto position = std::vector<std::size_t>(graph.passes.size(), 0);
         for (auto index = std::size_t{0}; index < compiled.schedule.size(); ++index) {
             position[compiled.schedule[index]] = index;
         }
 
-        // Flatten the plan into events and placed barriers with a per-queue slot order.
         auto events = std::vector<Event>{};
         auto barriers = std::vector<PlacedBarrier>{};
         auto slot = std::array<std::size_t, logical_queue_count>{};
@@ -189,7 +178,6 @@ namespace frame_graph::test {
                 continue;
             }
 
-            // order[i][j]: access i is ordered before access j (transitively).
             auto order = std::vector<std::vector<bool>>(n, std::vector<bool>(n, false));
             for (auto i = std::size_t{0}; i < n; ++i) {
                 for (auto j = i + 1; j < n; ++j) {
@@ -228,8 +216,6 @@ namespace frame_graph::test {
                     if (!a.info.writes && !b.info.writes) {
                         continue;
                     }
-                    // Concurrent resources: reads on different queues need no order between them (handled by the
-                    // read/read skip above); writes still do.
                     if (!order[i][j]) {
                         problems.push_back(std::format("hazard on '{}' between pass '{}' and pass '{}' is not ordered",
                                                        graph.resources[resource].name, graph.passes[a.pass].name,
@@ -238,8 +224,6 @@ namespace frame_graph::test {
                 }
             }
 
-            // Ownership of an exclusive resource moves at every queue switch between consecutive accesses, unless the
-            // later access discards. Each such switch needs a transfer from the earlier queue to the later one.
             for (auto i = std::size_t{0}; i + 1 < n; ++i) {
                 auto const &a = mine[i];
                 auto const &b = mine[i + 1];
@@ -267,7 +251,6 @@ namespace frame_graph::test {
                 }
             }
         }
-        // Every transfer has matching release and acquire halves, and the acquire is ordered after the release.
         for (auto const &t: compiled.transfers) {
             auto const &release = compiled.batches[t.release_batch];
             auto const &acquire = compiled.batches[t.acquire_batch];
@@ -299,7 +282,6 @@ namespace frame_graph::test {
             }
         }
 
-        // The swapchain is acquired once and render_finished is signalled by the last graphics batch.
         auto last_graphics = std::int64_t{-1};
         auto finished = 0;
         auto acquires = 0;
@@ -321,9 +303,6 @@ namespace frame_graph::test {
         return problems;
     }
 
-
-    // Builds a pseudo-random graph from `seed`: 2-24 passes over 1-12 resources with random queue affinities.
-    // `fence_percent` of the passes are marked pinned.
     inline auto build_random_graph(FrameGraph &graph, std::uint32_t seed, std::uint32_t fence_percent = 0) -> void {
         constexpr auto compute_stage = static_cast<ShaderStages>(ShaderStage::compute);
         constexpr auto fragment_stage = static_cast<ShaderStages>(ShaderStage::fragment);
@@ -378,7 +357,7 @@ namespace frame_graph::test {
         }
 
         for (auto pass_index = std::uint32_t{0}; pass_index < pass_count; ++pass_index) {
-            auto const kind = next(4); // 0 raster, 1-2 compute, 3 transfer
+            auto const kind = next(4);
             auto const type = kind == 0 ? PassType::raster : kind == 3 ? PassType::transfer : PassType::compute;
             auto const affinity_roll = next(4);
             auto const affinity = type == PassType::raster ? QueueAffinity::graphics
@@ -451,4 +430,4 @@ namespace frame_graph::test {
         }
     }
 
-} // namespace frame_graph::test
+}

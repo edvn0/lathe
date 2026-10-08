@@ -159,7 +159,6 @@ namespace chess {
         Piece piece = Piece::none;
         Square square = Square::none;
 
-        // Stable for the lifetime of a game. The initial position uses IDs 0..31.
         std::uint8_t id = 0;
     };
 
@@ -196,7 +195,7 @@ namespace chess {
 
         [[nodiscard]] auto render_state() const -> RenderState;
 
-        [[nodiscard]] auto perft(Badge<ChessGame> /*badge*/, int depth) const -> std::uint64_t;
+        [[nodiscard]] auto perft(Badge<ChessGame> , int depth) const -> std::uint64_t;
 
     private:
         enum class CastlingRights : std::uint8_t {
@@ -281,7 +280,6 @@ namespace chess {
 
         [[nodiscard]] auto perft_impl(int depth) -> std::uint64_t;
 
-        // Identifies the position for repetition: pieces, side to move, castling rights and a capturable en passant.
         [[nodiscard]] auto position_key() const noexcept -> std::uint64_t;
 
         [[nodiscard]] auto insufficient_material() const noexcept -> bool;
@@ -296,14 +294,11 @@ namespace chess {
 
         Position position_{};
 
-        // Separates "which sort of chess piece is on this square?" from "which
-        // physical mesh/entity represents it?".
         std::array<PieceInstance, 32> instances_{};
 
         GameState game_state_ = GameState::playing;
 
-        // Keys of every position since reset(), including the current one. Only update() appends.
         std::vector<std::uint64_t> history_;
     };
 
-} // namespace chess
+}

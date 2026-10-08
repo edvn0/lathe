@@ -42,13 +42,10 @@
 #include "rendering/screenshot.hxx"
 #include "rendering/sky_model.hxx"
 
-// Generated at build time from the shaders' push_constant blocks (see CMakeLists.txt).
 #include "shader_push_constants.hxx"
 
 namespace {
-    // Per overlay timing slot: prepare() begin/end and record() begin/end.
     constexpr std::uint32_t queries_per_overlay = 4;
-    // The frame's own begin and end timestamps come first; per-pass times are the frame graph profiler's.
     constexpr std::uint32_t full_frame_query_count = 2;
     constexpr std::uint32_t overlay_query_base = full_frame_query_count;
     constexpr std::uint32_t total_query_count =
@@ -61,7 +58,7 @@ namespace {
     [[nodiscard]] constexpr auto model_source_key(ModelHandle handle) noexcept -> std::uint64_t {
         return (static_cast<std::uint64_t>(handle.generation) << 32U) | handle.index;
     }
-} // namespace
+}
 
 namespace {
     [[nodiscard]]
@@ -93,12 +90,11 @@ namespace {
         ~FinalAction() { action(); }
     };
 
-    // GpuDrawCommand's leading fields are read by Vulkan as a VkDrawMeshTasksIndirectCommandEXT.
     static_assert(sizeof(VkDrawMeshTasksIndirectCommandEXT) == 12);
     static_assert(offsetof(GpuDrawCommand, group_count_x) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountX));
     static_assert(offsetof(GpuDrawCommand, group_count_y) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountY));
     static_assert(offsetof(GpuDrawCommand, group_count_z) == offsetof(VkDrawMeshTasksIndirectCommandEXT, groupCountZ));
-} // namespace
+}
 
 namespace {
     [[nodiscard]]
@@ -117,7 +113,7 @@ namespace {
             return;
         }
     }
-} // namespace
+}
 
 namespace {
     auto make_error(RendererErrorType type) -> RendererError {
@@ -126,14 +122,10 @@ namespace {
         };
     }
 
-    // Whether the buffers both queues touch are shared concurrently: only with a compute queue family of its own.
     auto buffers_shared_between_queues(VulkanContext const &context) -> bool {
         return context.queue_families.compute != context.queue_families.graphics;
     }
 
-    // A per-frame GPU buffer that the compute and graphics queues both use. With a compute family of its own it is
-    // created for concurrent sharing, so the frame graph's imports of it (Sharing::concurrent) need no ownership
-    // transfers.
     auto create_shared_buffer(VulkanContext &context, BufferCreateInfo info)
             -> decltype(Buffer::create(context, info)) {
         if (buffers_shared_between_queues(context)) {
@@ -185,7 +177,6 @@ namespace {
         };
     }
 
-    // Owns a mesh through Renderer::destroy_mesh(), which also retires its geometry.
     using MeshHolder = Holder<Renderer, MeshHandle, &Renderer::destroy_mesh>;
 
     auto make_image_error(ImageStorageError error) -> RendererError {
@@ -254,7 +245,6 @@ namespace {
         return seed ^ (shadow_signature_mix(value) + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U));
     }
 
-    // OcclusionView::enabled values. Mirrors occlusion_view_* in hiz_occlusion.slang.
     constexpr std::uint32_t occlusion_view_disabled = 0U;
     constexpr std::uint32_t occlusion_view_enabled = 1U;
     constexpr std::uint32_t occlusion_view_force_occluded = 2U;
@@ -264,8 +254,6 @@ namespace {
         std::uint32_t late = occlusion_view_disabled;
     };
 
-    // The enabled state of the phase-1 (history) and phase-2 (this frame's) views. Phase 1 needs a history pyramid;
-    // without one it draws everything, which is always correct.
     [[nodiscard]] constexpr auto occlusion_view_states(bool active, bool history_valid, OcclusionTestMode mode) noexcept
             -> OcclusionViewStates {
         if (!active) {
@@ -291,15 +279,13 @@ namespace {
 
         return {};
     }
-} // namespace
+}
 
 Renderer::Renderer(VulkanContext &context) noexcept :
     context_(context), screenshot_(std::make_unique<ScreenshotCapture>()) {}
 Renderer::~Renderer() noexcept = default;
 
 auto Renderer::compiler() noexcept -> renderer::SlangCompiler & {
-    // Without the Slang libraries (a shipped game) the compiler stays invalid: compile() then serves requests from the
-    // installed ShaderPack and fails any it lacks.
     static auto compiler_ = [] {
         auto created = renderer::SlangCompiler::create();
 
@@ -404,9 +390,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     geometry_arena_ = std::move(*geometry_arena);
     material_storage_ = std::move(*material_storage);
 
-    // Scene pipelines are task + mesh (+ fragment), each with an instanced vertex-shader variant registered after
-    // the rest for batches too small for meshlets. All startup pipelines are registered in one parallel batch;
-    // the indices below must match the push_back() order.
     std::vector<PipelineRegisterInfo> pipeline_infos;
     pipeline_infos.reserve(13);
 
@@ -442,9 +425,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = create_info.samples,
             .debug_name = "renderer.forward_pipeline",
-    }); // index 0: forward
+    });
 
-    // Forward with alpha blending.
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -478,7 +460,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .samples = create_info.samples,
             .blending = true,
             .debug_name = "renderer.forward_blend_pipeline",
-    }); // index 1: forward_blend
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -513,7 +495,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .samples = create_info.samples,
             .blending = true,
             .debug_name = "renderer.light_icon_pipeline",
-    }); // index 2: light_icon
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -540,7 +522,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.shadow_pipeline",
-    }); // index 3: shadow
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -574,7 +556,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.shadow_mask_pipeline",
-    }); // index 4: shadow_mask
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -601,7 +583,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = create_info.samples,
             .debug_name = "renderer.depth_prepass_pipeline",
-    }); // index 5: depth_prepass
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -635,7 +617,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = create_info.samples,
             .debug_name = "renderer.depth_prepass_mask_pipeline",
-    }); // index 6: depth_prepass_mask
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -662,7 +644,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.composite_pipeline",
-    }); // index 7: composite
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -682,7 +664,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.frustum_cull_pipeline",
-    }); // index 8: frustum_cull
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -742,7 +724,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.gtao_pipeline",
-    }); // index 11: gtao
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -762,9 +744,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.gtao_denoise_pipeline",
-    }); // index 12: gtao_denoise
+    });
 
-    // Instanced variants of the scene pipelines (indices 13..18): main_task + main_mesh become main_vs.
     for (std::size_t const meshlet_index: {0U, 1U, 3U, 4U, 5U, 6U}) {
         auto instanced = pipeline_infos[meshlet_index];
 
@@ -801,7 +782,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.light_cluster_pipeline",
-    }); // index 19: light_cluster
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -821,9 +802,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.light_cull_pipeline",
-    }); // index 20: light_cull
+    });
 
-    // Phase 2 of occlusion culling; shares CullPC (and the reflected CullPushConstants) with main_cs.
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
                     {
@@ -842,7 +822,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.occlusion_cull_pipeline",
-    }); // index 21: occlusion_cull
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -862,7 +842,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.hiz_build_pipeline",
-    }); // index 22: hiz_build
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -882,7 +862,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.env_brdf_lut_pipeline",
-    }); // index 23: env_brdf_lut
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -902,7 +882,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.env_equirect_to_cube_pipeline",
-    }); // index 24: env_equirect_to_cube
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -922,7 +902,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.env_sky_to_cube_pipeline",
-    }); // index 25: env_sky_to_cube
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -942,7 +922,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.env_downsample_pipeline",
-    }); // index 26: env_downsample
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -962,7 +942,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.env_sh_project_pipeline",
-    }); // index 27: env_sh_project
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -982,7 +962,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.env_prefilter_pipeline",
-    }); // index 28: env_prefilter
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -1009,7 +989,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = create_info.samples,
             .debug_name = "renderer.skybox_pipeline",
-    }); // index 29: skybox
+    });
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -1029,12 +1009,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.instance_lod_pipeline",
-    }); // index 30: instance_lod
+    });
 
-    // The opaque forward pipelines again, with the outline mask in their fragment shaders: what the forward pass
-    // draws with, as it always has the mask as a second colour target (a stable graph shape, so selecting something
-    // doesn't recompile the plan or reallocate transients). Blended draws use the originals; they write-mask the
-    // second target.
     for (auto const source_index: {std::size_t{0}, std::size_t{13}}) {
         auto outline_info = pipeline_infos[source_index];
 
@@ -1046,7 +1022,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         outline_info.debug_name += ".outline";
         pipeline_infos.push_back(std::move(outline_info));
-    } // indices 31 (forward) and 32 (forward_instanced)
+    }
 
     pipeline_infos.push_back(PipelineRegisterInfo{
             .stages =
@@ -1066,7 +1042,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .stencil_format = VK_FORMAT_UNDEFINED,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.skin_pipeline",
-    }); // index 33: skin
+    });
 
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
@@ -1250,10 +1226,8 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     auto const indirect_size = *indirect_size_result;
     auto const culled_indirect_size = indirect_size;
 
-    // Per batch rather than per draw: prepare_frame refuses more than maximum_cull_batch_count batches.
     auto const cull_batch_capacity = std::min(maximum_draw_count_, maximum_cull_batch_count);
     auto const occlusion_indirect_size = static_cast<VkDeviceSize>(cull_batch_capacity) * sizeof(GpuDrawCommand);
-    // Every batch can end in a partial chunk.
     auto const cull_chunk_capacity =
             static_cast<VkDeviceSize>(cull_batch_capacity) +
             (static_cast<VkDeviceSize>(maximum_draw_count_) + cull_chunk_size - 1) / cull_chunk_size;
@@ -1300,8 +1274,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     shadow_atlas_ = std::move(*shadow_atlas);
 
-    // Mirrors the layout in light_cull.slang. The cluster lists depend on the grid, so prepare_cluster_buffers()
-    // creates them.
     constexpr VkDeviceSize visible_lights_size =
             (sizeof(glm::vec4) + sizeof(std::uint32_t)) * VkDeviceSize{maximum_light_count} + sizeof(std::uint32_t);
 
@@ -1385,7 +1357,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.batch_bounds_buffer = std::move(*batch_bounds);
 
-        // main_cs is the only writer.
         auto culled_indirect = create_shared_buffer(
                 context_, BufferCreateInfo{
                                   .size = culled_indirect_size,
@@ -1430,7 +1401,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.visible_transform_buffer = std::move(*visible_transforms);
 
-        // Occlusion culling. late_cs is the only writer of the indirect buffers; main_cs of the candidates.
         struct OcclusionBufferSpec {
             Buffer *buffer;
             VkDeviceSize size;
@@ -1444,7 +1414,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         constexpr VkBufferUsageFlags indirect_usage = storage_usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
         std::array const occlusion_buffers{
-                // Host-written every frame.
                 OcclusionBufferSpec{.buffer = &frame.occlusion_views_buffer,
                                     .size = 2 * sizeof(GpuOcclusionView),
                                     .usage = storage_usage,
@@ -1470,7 +1439,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                                     .usage = indirect_usage,
                                     .memory = BufferMemory::device,
                                     .debug_name = "renderer.frame_merged_indirect"},
-                // Cleared by vkCmdFillBuffer and read back by a copy.
                 OcclusionBufferSpec{.buffer = &frame.occlusion_stats_buffer,
                                     .size = occlusion_stat_count * sizeof(std::uint32_t),
                                     .usage = storage_usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
@@ -1499,7 +1467,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             *spec.buffer = std::move(*buffer);
         }
 
-        // Host-written every frame.
         auto frustum_planes_buffer =
                 create_shared_buffer(context_, BufferCreateInfo{
                                                        .size = sizeof(glm::vec4) * cull_plane_count,
@@ -1515,7 +1482,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.frustum_planes_buffer = std::move(*frustum_planes_buffer);
 
-        // Host-written every frame: the resident instanced models' LOD jobs (instance_lod.slang).
         auto lod_jobs_buffer =
                 create_shared_buffer(context_, BufferCreateInfo{
                                                        .size = sizeof(GpuLodJob) * maximum_lod_job_count,
@@ -1532,7 +1498,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         frame.lod_jobs_buffer = std::move(*lod_jobs_buffer);
         frame.lod_jobs.reserve(maximum_lod_job_count);
 
-        // GPU skinning: host-written palette/jobs/chunk table, their device copy, and the skinned vertices.
         {
             auto skin_upload = Buffer::create(context_, BufferCreateInfo{
                                                                 .size = skin_input_size(),
@@ -1587,7 +1552,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.lights_buffer = std::move(*lights_buffer);
 
-        // light_cull.slang is the only writer.
         auto visible_lights = create_shared_buffer(context_, BufferCreateInfo{
                                                                      .size = visible_lights_size,
                                                                      .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -1672,8 +1636,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .flags = 0,
             .queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS,
             .queryCount = 1,
-            // Results come back in bit order. Clipping primitives is incompatible with mesh draws
-            // (VUID-vkCmdDrawMeshTasksIndirectEXT-pipelineStatistics-07076), so it is only used without mesh support.
             .pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT |
                                   (context_.mesh_shader_queries_supported
                                            ? VK_QUERY_PIPELINE_STATISTIC_TASK_SHADER_INVOCATIONS_BIT_EXT |
@@ -1778,7 +1740,6 @@ auto Renderer::destroy() noexcept -> void {
     resident_instance_sets_.clear();
     pending_resident_uploads_.clear();
 
-    // The frames' image targets are Holders, destroyed by frames_.clear() below, before image_storage_.
     for (auto &frame: frames_) {
         frame.cluster_stats_readback_buffer.destroy();
         frame.cluster_lights_buffer.destroy();
@@ -1823,7 +1784,6 @@ auto Renderer::destroy() noexcept -> void {
         frame.cluster_stats_pending = false;
     }
 
-    // Transient images are bound into blocks and registered in image_storage_: gone before both.
     transient_allocator_.release_all();
 
     frames_.clear();
@@ -1987,7 +1947,6 @@ auto Renderer::install_model(ModelHandle pending, Model const &model) -> std::ex
         return std::unexpected(handle.error());
     }
 
-    // The slot owns its own meshes now, so it no longer needs the fallback it was drawing.
     if (borrowed_from.valid()) {
         static_cast<void>(destroy_model(borrowed_from));
     }
@@ -2006,7 +1965,6 @@ auto Renderer::create_model_common(
     std::vector<MeshHandle> imported_meshes;
     imported_meshes.resize(model.meshes.size());
 
-    // Held until the model is installed, so every early return below destroys the meshes made so far.
     std::vector<MeshHolder> created_meshes;
     created_meshes.reserve(model.meshes.size());
 
@@ -2111,7 +2069,6 @@ auto Renderer::create_model_common(
         return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
     }
 
-    // The model's draws own the meshes now; destroy_model() releases them.
     for (auto &mesh: created_meshes) {
         static_cast<void>(mesh.detach());
     }
@@ -2282,7 +2239,6 @@ auto Renderer::submit_resident_instances(ModelHandle model, std::span<glm::mat4 
                                          MaterialHandle material_override, std::uint64_t revision) -> bool {
     auto const *model_data = model_slot(model);
 
-    // One draw at its node's origin: the LOD is picked from the instance origin, as for the per-instance path.
     if (model_data == nullptr || model_data->draws.size() != 1 ||
         model_data->draws.front().local_transform != glm::mat4{1.0F}) {
         return false;
@@ -2300,7 +2256,6 @@ auto Renderer::submit_resident_instances(ModelHandle model, std::span<glm::mat4 
         auto const base = material_override.valid() ? material_override : submesh.material;
         auto const groups = resident_lod_groups(submesh, base);
 
-        // Blended batches are sorted by their first transform on the CPU, which a resident model doesn't have.
         for (std::uint32_t group = 0; group < groups.count; ++group) {
             auto const *material = material_storage_.get(groups.material[group]);
             if (material != nullptr && material->alpha_mode == AlphaMode::blend) {
@@ -2311,7 +2266,6 @@ auto Renderer::submit_resident_instances(ModelHandle model, std::span<glm::mat4 
         slots += instance_count * groups.count;
     }
 
-    // Every group reserves a slot per instance in the frame's draw and transform arrays.
     auto const capacity = std::min<std::uint64_t>(maximum_draw_count_, maximum_submission_count_);
     auto const jobs = static_cast<std::uint32_t>(mesh->submeshes.size());
     if (submitted_model_count() + resident_slots_this_frame_ + slots > capacity ||
@@ -2343,7 +2297,6 @@ auto Renderer::submit_resident_instances(ModelHandle model, std::span<glm::mat4 
             return false;
         }
 
-        // A set replaced under the same revision may still be read by frames in flight.
         if (set != resident_instance_sets_.end()) {
             retired_resident_buffers_.push_back(std::move(set->second.transforms));
             resident_instance_sets_.erase(set);
@@ -2415,7 +2368,6 @@ auto Renderer::submit_model_instances(ModelHandle model, std::span<glm::mat4 con
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    // Skinned models need their per-instance vertex streams, which the GPU-picked resident path doesn't have.
     if (model_data->animation != nullptr) {
         resident_revision = 0;
     }
@@ -2460,11 +2412,9 @@ auto Renderer::create_material(MaterialCreateInfo const &create_info, std::strin
         return std::unexpected(make_material_error(material.error()));
     }
 
-    // Held until this material drops it (update_material) or is freed (release_material).
     retain_material(create_info.far_material);
 
     if (!debug_name.empty()) {
-        // A name collision is fine; the material just isn't registered under that name.
         static_cast<void>(assets_.materials().register_asset(std::move(debug_name), *material));
     }
 
@@ -2497,7 +2447,6 @@ auto Renderer::update_material(MaterialHandle handle, MaterialCreateInfo const &
         return std::unexpected(make_material_error(result.error()));
     }
 
-    // Retained before releasing, so keeping the same far material never frees it in between.
     retain_material(create_info.far_material);
     release_material(previous_far_material);
 
@@ -2512,8 +2461,6 @@ auto Renderer::outline_variant(MaterialHandle source) -> MaterialHandle {
         return source;
     }
 
-    // Distant LODs of a material draw with its far material; the copy draws with the source at every LOD, which is
-    // what an outlined (nearby, selected) object wants.
     auto info = *source_info;
     info.far_material = MaterialHandle{};
     info.outlined = true;
@@ -2522,7 +2469,6 @@ auto Renderer::outline_variant(MaterialHandle source) -> MaterialHandle {
 
     if (found != outline_variants_.end()) {
         if (found->refreshed_frame != frame_counter_) {
-            // Straight to the storage: Renderer::update_material would dirty the shadow casters every frame.
             static_cast<void>(material_storage_.update_material(found->variant, info));
             found->refreshed_frame = frame_counter_;
         }
@@ -2565,7 +2511,6 @@ auto Renderer::retain_material(MaterialHandle handle) -> void {
 }
 
 auto Renderer::release_material(MaterialHandle handle) -> void {
-    // Scenes outlive destroy(), which already freed every material.
     if (!initialized_ || !handle.valid() || handle == default_material_handle_) {
         return;
     }
@@ -2586,7 +2531,6 @@ auto Renderer::release_material(MaterialHandle handle) -> void {
         assets_.materials().unregister(handle);
         mark_shadow_casters_dirty();
 
-        // The reference create_material()/update_material() took for it.
         release_material(far_material);
     }
 }
@@ -2623,7 +2567,6 @@ auto Renderer::register_material_name(MaterialHandle handle, std::string name) -
 
 auto Renderer::request_texture(AssetPath source_path, TextureRole role, ImageHandle fallback, std::string debug_name)
         -> ImageHandle {
-    // The handle is stable across the pending-to-loaded upgrade, so it can be named right away.
     auto const handle =
             texture_streamer_.request(image_storage_, std::move(source_path), role, fallback, FlyString{debug_name});
 
@@ -2634,11 +2577,9 @@ auto Renderer::request_texture(AssetPath source_path, TextureRole role, ImageHan
 
 namespace {
 
-    // CullPC::flags in frustum_cull.slang.
     constexpr std::uint32_t cull_flag_late_union_meshlet_batches = 1U;
     constexpr std::uint32_t cull_stage_shift = 8U;
 
-    // Mirrors cull_dispatch_width in frustum_cull.slang: wider dispatches wrap into Y.
     constexpr std::uint32_t cull_dispatch_width = 65'535;
 
     auto dispatch_linear(VkCommandBuffer command_buffer, std::uint32_t group_count) -> void {
@@ -2650,8 +2591,6 @@ namespace {
         vkCmdDispatch(command_buffer, width, height, 1);
     }
 
-    // Compute writes before it, compute reads and writes after. Compute-only, so it also records on a compute-only
-    // queue.
     auto record_compute_barrier(VkCommandBuffer command_buffer) -> void {
         VkMemoryBarrier2 const between_stages{
                 .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -2675,11 +2614,9 @@ namespace {
         vkCmdPipelineBarrier2(command_buffer, &dependency);
     }
 
-    // The test, scan and scatter stages of main_cs or late_cs (frustum_cull.slang), each reading what the one before
-    // wrote.
     auto record_cull_stages(VkCommandBuffer command_buffer, VkPipelineLayout layout, CullPushConstants pc) -> void {
         auto const base_flags = pc.flags;
-        constexpr std::array stages{0U, 1U, 2U}; // test, scan, scatter
+        constexpr std::array stages{0U, 1U, 2U};
 
         for (auto const stage: stages) {
             if (stage != 0U) {
@@ -2689,7 +2626,6 @@ namespace {
             pc.flags = base_flags | (stage << cull_stage_shift);
             vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
 
-            // Scan runs one workgroup per batch, test and scatter one per chunk.
             dispatch_linear(command_buffer, stage == 1U ? pc.batch_count : pc.chunk_count);
         }
     }
@@ -2703,7 +2639,6 @@ namespace {
             return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
 
-        // Every LOD is drawn through task/mesh shaders and needs meshlets.
         if (!std::ranges::all_of(lods, [](MeshGeometry const &lod) { return lod.meshlets.valid(); })) {
             return std::unexpected(make_error(RendererErrorType::invalid_argument));
         }
@@ -2727,7 +2662,7 @@ namespace {
         return {};
     }
 
-} // namespace
+}
 
 auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<MeshHandle, RendererError> {
     if (!initialized_ || create_info.submeshes.empty()) {
@@ -2770,8 +2705,6 @@ auto Renderer::create_mesh(MeshCreateInfo const &create_info) -> std::expected<M
 
 namespace {
 
-    // LODs share the vertex slice and may alias an earlier level's indices/meshlets. Retire each distinct range
-    // once, or GeometryArena's free-list gets the same range twice.
     auto retire_submesh_geometry(GeometryArena &geometry_arena, Submesh const &submesh) -> void {
         std::array<VkDeviceSize, std::size_t{lod_count} * 4> retired_offsets{};
         std::size_t retired_count = 0;
@@ -2800,7 +2733,7 @@ namespace {
         }
     }
 
-} // namespace
+}
 
 auto Renderer::destroy_mesh(MeshHandle handle) -> std::expected<void, RendererError> {
     if (auto const *slot = mesh_storage_.get(handle)) {
@@ -2856,7 +2789,6 @@ auto Renderer::retain_model(ModelHandle handle) -> void {
 }
 
 auto Renderer::release_model(ModelHandle handle) -> void {
-    // Scenes outlive destroy(), which already freed every model.
     if (!initialized_) {
         return;
     }
@@ -2899,7 +2831,6 @@ auto Renderer::destroy_model(ModelHandle handle) -> std::expected<void, Renderer
         return {};
     }
 
-    // A pending slot's draws are its fallback's meshes; only the reference on the fallback is its to drop.
     auto const borrowed_from = slot->borrowed_from;
 
     if (!borrowed_from.valid()) {
@@ -2943,8 +2874,6 @@ auto Renderer::set_environment(SceneEnvironment const &environment) -> void {
 
     auto const &sun = environment.sun;
 
-    // The cascade depth range degenerates for a horizontal light, so the light never drops below 5 degrees even though
-    // the procedural sky follows the sun to the horizon and below.
     auto const elevation = glm::radians(std::clamp(sun.elevation_degrees, 5.0F, 89.0F));
     auto const azimuth = glm::radians(sun.azimuth_degrees);
 
@@ -2962,7 +2891,6 @@ auto Renderer::set_environment(SceneEnvironment const &environment) -> void {
             light.colour *= sun_transmittance(real_elevation, sun.turbidity);
         }
 
-        // Fades out as the sun sets, hiding the 5 degree shadow clamp.
         auto const fade = std::clamp((sun.elevation_degrees + 2.0F) / 7.0F, 0.0F, 1.0F);
         light.intensity *= fade * fade * (3.0F - (2.0F * fade));
     }
@@ -3054,7 +2982,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     texture_streamer_.process_ready(image_storage_, command_buffer, frame_index);
     model_streamer_.process_ready(*this, command_buffer);
 
-    // Before the resource table refresh, so images the environment creates are visible to this frame's shaders.
     if (auto environment = environment_.prepare(command_buffer, ++frame_counter_); !environment) {
         clear_submissions();
         return std::unexpected(environment.error());
@@ -3076,7 +3003,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     frame.view_projection = matrices.projection * matrices.view;
 
-    // This slot's previous submission has completed, so what it may still have been reading can go.
     frame.retired_buffers.clear();
     record_resident_instance_uploads(command_buffer, frame);
 
@@ -3135,8 +3061,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return lod_index;
     };
 
-    // The batch for `key`, activated for this frame on first use. batches_ is node-based, so the reference stays valid
-    // while other batches are added.
     auto const batch_for = [this](BatchKey const &key, MeshHandle mesh, std::uint32_t submesh_index,
                                   MaterialHandle material, std::uint32_t lod_index) -> BatchEntry & {
         auto iterator = batches_.try_emplace(key).first;
@@ -3171,15 +3095,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
     };
 
-    // Instanced submissions share model, material and slot overrides across their instances, so materials resolve once
-    // per submesh and each (submesh, LOD) batch is looked up once per call; only the LOD is chosen per instance. False
-    // for a model that refers to a destroyed mesh.
     auto const lod_slot_count = lod_distances.size() + 1;
     std::vector<BatchEntry *> instanced_batch_cache;
     std::vector<MaterialHandle> instanced_materials;
 
-    // A resident model: per submesh, one LodJob and a batch per LOD group, each reserving a slot per instance for
-    // instance_lod.slang to fill. submit_resident_instances() checked it qualifies.
     std::uint64_t resident_instance_count = 0;
     std::uint64_t resident_reserved_slots = 0;
 
@@ -3187,7 +3106,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         auto const *model = model_slot(instanced.model);
         auto const set = resident_instance_sets_.find(instanced.resident_revision);
         if (model == nullptr || set == resident_instance_sets_.end()) {
-            return true; // destroyed after it was submitted
+            return true;
         }
 
         auto const &model_draw = model->draws.front();
@@ -3243,7 +3162,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
         auto const *model = model_slot(instanced.model);
         if (model == nullptr) {
-            return true; // destroyed after it was submitted, as for individual submissions
+            return true;
         }
 
         auto const transforms =
@@ -3251,7 +3170,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         auto const palette_offsets =
                 std::span{instance_palette_offsets_}.subspan(instanced.first_palette_offset, instanced.palette_count);
 
-        // The palette an instance names must hold the whole skeleton; otherwise it draws at rest.
         auto const joint_count =
                 model->animation != nullptr ? static_cast<std::uint64_t>(model->animation->skeleton.joint_count()) : 0U;
 
@@ -3281,7 +3199,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                         palette_offset = BatchEntry::no_palette;
                     }
                 }
-                // The block of transforms outlives the batches; only a non-identity local transform needs a copy.
                 auto const *instance_transform = &transform;
                 if (!identity_local) {
                     instance_transform = &computed_transforms_.emplace_back(transform * model_draw.local_transform);
@@ -3312,8 +3229,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return true;
     };
 
-    // Instanced submissions are batched where they were submitted relative to individual ones, so every batch gets
-    // its instances in submission order.
     auto next_instanced = std::size_t{0};
     auto const append_instanced_before = [&](std::size_t model_submission_position) -> bool {
         while (next_instanced < instanced_submissions_.size() &&
@@ -3338,7 +3253,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         auto const &model_submission = model_submissions_[position];
         auto const *model = model_slot(model_submission.model);
 
-        // Destroyed after it was submitted this frame, e.g. by the editor swapping an entity's model.
         if (model == nullptr) {
             continue;
         }
@@ -3416,8 +3330,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     mask_batches_.reserve(active_batches_.size());
     blend_batches_.reserve(active_batches_.size());
 
-    // One bit per meshlet of every opaque and mask meshlet-path instance, for meshlet-level occlusion culling. Blend
-    // batches never enter the depth prepass, so they take none.
     MeshletVisibilityLayout meshlet_layout;
 
     auto const emit_batch = [this, &frame, &submitted_triangle_count,
@@ -3434,11 +3346,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         auto const &geometry = submesh.lods[batch.lod_index];
         auto const resident = batch.lod_job != BatchEntry::no_lod_job;
 
-        // A resident group reserves a slot per instance of its model; instance_lod.slang fills the ones at its LOD.
         auto const instance_count =
                 resident ? batch.resident_capacity : static_cast<std::uint32_t>(batch.transforms.size());
 
-        // Unknown for resident groups until the GPU picks their LODs; the stats leave them out.
         if (!resident) {
             submitted_triangle_count += (geometry.indices.index_count / 3) * instance_count;
         }
@@ -3458,8 +3368,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
 
-        // Straight into the upload buffer: one copy per transform, no intermediate frame-side array. Resident groups'
-        // slots are left for the GPU.
         auto *const transform_out = frame.upload_buffer.mapped_data() + frame.transform_upload_offset +
                                     static_cast<std::size_t>(frame.transform_count) * sizeof(glm::mat4);
         for (std::uint32_t instance = 0; !resident && instance < instance_count; ++instance) {
@@ -3489,8 +3397,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                                ? meshlet_layout.reserve(instance_count, geometry.meshlets.meshlet_count)
                                                : std::uint64_t{0};
 
-        // Skinned instances read their own deformed copy of the vertices, written by skin.slang to the frame's scratch
-        // buffer. LODs share one vertex stream, so a job covers every LOD of its submesh.
         auto const skin_stream = !resident && batch.skinned && batch.palette_offsets.size() == instance_count;
         auto const skin_vertex_count = geometry.vertices.vertex_count;
         auto const skin_bytes = (VkDeviceSize{skin_vertex_count} * sizeof(CompressedModelVertex) + 15U) & ~VkDeviceSize{15U};
@@ -3538,8 +3444,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
         frame.draw_count += instance_count;
 
-        // Un-culled command: drawn as-is by the shadow pass and culled by main_cs for the main view. Exactly one of its
-        // halves is live, see uses_meshlet_path(). A resident group's instance count is instance_lod.slang's to write.
         GpuDrawCommand command{
                 .instance_count = resident ? 0U : instance_count,
                 .first_instance = first_instance,
@@ -3572,7 +3476,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                     .batch = static_cast<std::uint32_t>(frame.indirect_commands.size()),
                     .first_instance = first_instance,
                     .meshlet_count = meshlet_path && allocate_meshlet_bits ? geometry.meshlets.meshlet_count : 0U,
-                    // Past the bitset, the offsets clamp to 0 as meshlet_visibility_offset() does.
                     .first_meshlet_bit = static_cast<std::uint32_t>(
                             std::min<std::uint64_t>(first_bit, std::numeric_limits<std::uint32_t>::max())),
                     .draw =
@@ -3630,8 +3533,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
                 auto const &submesh = mesh->submeshes[batch->submesh_index];
                 auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
-                // Resident models never have blended LODs (submit_resident_instances()), but a material can turn to
-                // blend after submission; such a batch sorts as if at the origin.
                 auto const world_centre =
                         batch->transforms.empty()
                                 ? glm::vec3{0.0F}
@@ -3668,7 +3569,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return cascade == GpuMaterial::no_shadow_cascade ? -1 : static_cast<std::int32_t>(cascade);
     };
 
-    // Transforms are left out to keep this cheap; moving casters use mark_dynamic_shadow_casters_dirty().
     std::uint64_t current_shadow_scene_signature = 0;
     std::uint64_t shadow_caster_batch_count = 0;
     bool has_animated_shadow_casters = false;
@@ -3690,23 +3590,17 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(batch->transforms.size()));
         batch_signature = shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(max_cascade));
 
-        // XOR makes the result independent of batch order. The count is mixed in separately so duplicates don't
-        // cancel.
         current_shadow_scene_signature ^= shadow_signature_mix(batch_signature);
         ++shadow_caster_batch_count;
 
-        // A resident group's instances change LOD on the GPU as the camera moves, which this signature can't see.
         has_animated_shadow_casters = has_animated_shadow_casters ||
                                       (material != nullptr && std::abs(material->wind_strength) > 1e-6F) ||
                                       batch->lod_job != BatchEntry::no_lod_job ||
-                                      // Skinned vertices change every frame.
                                       batch->skinned;
     }
     current_shadow_scene_signature =
             shadow_signature_combine(current_shadow_scene_signature, shadow_caster_batch_count);
 
-    // There are only shadow_cascade_count + 1 keys (max cascade 3..0, or no shadows), so repeated in-place
-    // partitions replace a sort. The partition boundaries are the per-cascade indirect prefix counts.
     auto const order_shadow_batches = [&batch_max_shadow_cascade](auto &batches) {
         std::array<std::uint32_t, shadow_cascade_count> prefix_counts{};
         auto bucket_begin = batches.begin();
@@ -3852,8 +3746,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         auto const matrix_changed =
                 !cached.valid || !nearly_equal(candidate_cascades.view_projection[cascade], cached.view_projection);
 
-        // Cascade 0 is always fresh. Far cascades update when their snapped matrix changes or casters move, once
-        // their minimum interval has elapsed.
         auto const dynamic_due = (dynamic_shadow_casters_dirty_ || has_animated_shadow_casters) && period_due;
         auto const update = force_all_cascades || cascade == 0U || (matrix_changed && period_due) || dynamic_due;
 
@@ -3866,7 +3758,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             pending.last_update_frame = shadow_frame_;
             pending.valid = true;
         } else {
-            // Never sample a cached tile with a matrix that did not create it.
             resolved_view_projection[cascade] = cached.view_projection;
             resolved_split_far[cascade] = cached.split_far;
             resolved_texel_world[cascade] = cached.texel_world;
@@ -3874,8 +3765,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
     }
 
-    // Committed only after record_frame() records the tile updates, so a failed shadow pass leaves the cache
-    // metadata untouched.
     frame.pending_shadow_light_direction = light_direction;
     frame.pending_shadow_depth_bias_constant = shadow_settings_.depth_bias_constant;
     frame.pending_shadow_depth_bias_slope = shadow_settings_.depth_bias_slope;
@@ -3887,18 +3776,14 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     auto const frustum_planes = extract_frustum_planes(view_projection);
 
-    // Cluster slices split [near, far] exponentially, so each slice is about as deep as it is wide on screen.
     auto const cluster_near = std::max(matrices.near_clip, 1e-4F);
     auto const cluster_far = std::max(matrices.far_clip, cluster_near * 2.0F);
     auto const cluster_z_scale =
             static_cast<float>(frame.cluster_grid.depth_slices) / std::log(cluster_far / cluster_near);
     auto const cluster_z_bias = -std::log(cluster_near) * cluster_z_scale;
 
-    // projection[1][1] is cot(fov_y / 2) (negated by a Vulkan Y flip), so this maps range / distance to pixels of
-    // radius on the forward target.
     auto const light_lod_pixel_scale = std::abs(projection[1][1]) * static_cast<float>(extent_.height) * 0.5F;
     auto const light_lod_cull = std::max(light_lod_settings_.cull_radius_pixels, 0.0F);
-    // smoothstep() needs fade > cull.
     auto const light_lod_fade = std::max(light_lod_settings_.fade_radius_pixels, light_lod_cull + 1e-3F);
 
     UBO const ubo{
@@ -3972,8 +3857,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
-    // Cascade planes come from the matrices the shadow pass renders with, so a reused tile culls against the
-    // frustum it was drawn with.
     std::array<glm::vec4, cull_plane_count> cull_planes{};
     std::ranges::copy(frustum_planes, cull_planes.begin());
 
@@ -3987,15 +3870,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
-    // Two-phase occlusion culling: record_frame follows this decision for the frame. The pyramid matches the render
-    // extent except between a resize and the frames recreated with it.
     auto const forward_extent = extent_;
     frame.occlusion_active = occlusion_culling_ && occlusion_culling_supported() && static_cast<bool>(hiz_.image) &&
                              hiz_.depth_extent.width == forward_extent.width &&
                              hiz_.depth_extent.height == forward_extent.height;
 
-    // Meshlet-level occlusion needs every opaque and mask meshlet's bit to fit; over the cap, instance-level occlusion
-    // carries on without it.
     if (!meshlet_layout.fits() && !meshlet_visibility_cap_warned_) {
         meshlet_visibility_cap_warned_ = true;
         warn("Renderer: {} meshlet visibility bits exceed the cap of {}; meshlet occlusion culling is off for such "
@@ -4024,7 +3903,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             return std::unexpected(make_device_error(visibility.error()));
         }
 
-        // Nothing in flight still reads the old buffer: it belongs to this slot, whose fence has been waited on.
         frame.meshlet_visibility_buffer = std::move(*visibility);
         frame.meshlet_visibility_capacity_words = capacity_words;
     }
@@ -4035,13 +3913,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         auto const meshlet_visibility_address =
                 frame.meshlet_occlusion_active ? frame.meshlet_visibility_buffer.device_address : VkDeviceAddress{0};
 
-        // The task shader adds to its view's own counter: view [0] counts meshlets phase 1 deferred, view [1] the ones
-        // phase 2 culled for good.
         auto const stats_slot_address = [&frame](std::uint32_t slot) -> VkDeviceAddress {
             return frame.occlusion_stats_buffer.device_address + VkDeviceAddress{slot} * sizeof(std::uint32_t);
         };
 
-        // [0]: last frame's pyramid, projected as it was built. [1]: the pyramid record_frame builds this frame.
         std::array<GpuOcclusionView, 2> const occlusion_views{
                 GpuOcclusionView{
                         .view_projection = hiz_history_view_projection_,
@@ -4070,8 +3945,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
     }
-
-    // The occlusion statistics and the meshlet visibility bitset are cleared by graph passes.
 
     if ((lights_dirty_mask_ & (1u << frame_index)) != 0) {
         light_staging_.clear();
@@ -4121,10 +3994,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     }
 
 #pragma region Culling
-    // The dispatch is the gpu_culling graph pass (record_gpu_culling); fail here, where the error handling is, if it
-    // cannot run.
     if (frame.indirect_command_count != 0) {
-        // instance_lod.slang's chunks share cull_chunks_buffer, at 32 bytes each.
         if (frame.lod_chunk_count > cull_chunk_capacity_ * (cull_chunk_bytes / lod_chunk_bytes)) {
             clear_submissions();
             return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
@@ -4143,8 +4013,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 #pragma endregion
 
 #pragma region LightClustering
-    // The dispatches are graph passes (record_light_cull and friends); fail here, where the error handling is, if
-    // their pipelines are missing.
     if (clustered_lighting_ && (resolve_layout(pipeline_graph_, light_cull_pipeline_) == VK_NULL_HANDLE ||
                                 resolve_layout(pipeline_graph_, light_cluster_pipeline_) == VK_NULL_HANDLE)) {
         clear_submissions();
@@ -4154,7 +4022,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     last_frame_stats_ = FrameStats{
             .submitted_triangle_count = submitted_triangle_count,
-            // Resident groups reserve a slot per instance of their model; count the instances once.
             .submitted_instance_count = static_cast<std::uint32_t>(frame.transform_count - resident_reserved_slots +
                                                                    resident_instance_count),
             .skin_job_count = static_cast<std::uint32_t>(frame.skin_jobs.size()),
@@ -4230,15 +4097,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 }
 
 auto Renderer::record_occlusion_stats_clear(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void {
-    // main_cs and late_cs accumulate into the statistics, so they start at zero. This slot's previous readback copy
-    // finished before its fence was waited on.
     vkCmdFillBuffer(command_buffer, frame.occlusion_stats_buffer.buffer, 0,
                     VkDeviceSize{occlusion_stat_count} * sizeof(std::uint32_t), 0);
 }
 
 auto Renderer::record_meshlet_visibility_clear(VkCommandBuffer command_buffer, RendererFrame const &frame) -> void {
-    // The bitset starts empty every frame: the early prepass phase records into it, the late phase skips what it holds
-    // and adds to it, and forward replays it.
     vkCmdFillBuffer(command_buffer, frame.meshlet_visibility_buffer.buffer, 0,
                     VkDeviceSize{frame.meshlet_visibility_words} * sizeof(std::uint32_t), 0);
 }
@@ -4251,7 +4114,6 @@ auto Renderer::record_resident_instance_uploads(VkCommandBuffer command_buffer, 
     }
 
     if (!pending_resident_uploads_.empty()) {
-        // instance_lod.slang reads them by address, which the frame graph doesn't track.
         VkMemoryBarrier2 const uploaded{
                 .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                 .pNext = nullptr,
@@ -4281,8 +4143,6 @@ auto Renderer::record_resident_instance_uploads(VkCommandBuffer command_buffer, 
     }
     retired_resident_buffers_.clear();
 
-    // Sets nobody submitted for a while. In-flight frames last used them at least resident_set_idle_frames ago, and
-    // this slot's retired buffers outlive another full cycle.
     for (auto set = resident_instance_sets_.begin(); set != resident_instance_sets_.end();) {
         if (frame_counter_ > set->second.last_used_frame + resident_set_idle_frames) {
             frame.retired_buffers.push_back(std::move(set->second.transforms));
@@ -4403,7 +4263,6 @@ auto Renderer::record_instance_lods(render_pass::Context const &pass_context, Re
             ._padding = 0,
     };
 
-    // test, scan, scatter; the last barrier hands the arrays and commands to main_cs's test.
     constexpr std::array stages{0U, 1U, 2U};
     for (auto const stage: stages) {
         pc.stage = stage;
@@ -4419,11 +4278,9 @@ auto Renderer::record_gpu_culling(render_pass::Context const &pass_context, Rend
         -> std::expected<void, RendererError> {
     auto const command_buffer = pass_context.command_buffer;
 
-    // Resident instanced models' LODs, into the source arrays everything below reads.
     if (auto lods = record_instance_lods(pass_context, frame); !lods) {
         return lods;
     }
-
 
     if (frame.indirect_command_count != 0) {
         auto const layout = resolve_layout(pipeline_graph_, frustum_cull_pipeline_);
@@ -4464,9 +4321,7 @@ auto Renderer::record_gpu_culling(render_pass::Context const &pass_context, Rend
 
 auto Renderer::record_cluster_stats_clear(render_pass::Context const &pass_context, RendererFrame const &frame)
         -> void {
-    // The light clustering stage spans the clear, the two dispatches and the statistics readback.
 
-    // light_cluster.slang accumulates into the statistics.
     vkCmdFillBuffer(pass_context.command_buffer, frame.cluster_lights_buffer.buffer, 0, cluster_stats_bytes, 0);
 }
 
@@ -4500,7 +4355,6 @@ auto Renderer::record_light_cull(render_pass::Context const &pass_context, Rende
 
     vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cull_pc), &cull_pc);
 
-    // A single workgroup walks every light, keeping the visible list in light-index order.
     vkCmdDispatch(command_buffer, 1, 1, 1);
     return {};
 }
@@ -4537,7 +4391,6 @@ auto Renderer::record_light_cluster(render_pass::Context const &pass_context, Re
 
     vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(cluster_pc), &cluster_pc);
 
-    // One workgroup per screen tile; each fills its tile's column of clusters.
     vkCmdDispatch(command_buffer, cluster_tile_count(frame.cluster_grid), 1, 1);
     return {};
 }
@@ -4567,7 +4420,6 @@ auto Renderer::record_cluster_stats_readback(render_pass::Context const &pass_co
 }
 
 auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
-    // This frame slot's fence has been waited on, so last use's readback copy has completed.
     if (!frame.occlusion_stats_pending) {
         return;
     }
@@ -4657,7 +4509,6 @@ auto Renderer::create_hiz_pyramid(VkExtent2D depth_extent) -> std::expected<HizP
         return std::unexpected(make_image_error(image.error()));
     }
 
-    // Into the pyramid before its mip slots, so a failed registration still releases the slots first.
     pyramid.image = std::move(*image);
 
     auto const *hiz_image = pyramid.image.get();
@@ -4735,7 +4586,6 @@ auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<vo
         return {};
     }
 
-    // light_cluster.slang is the only writer of the lists; the statistics are cleared and read back by copies.
     auto cluster_lights = create_shared_buffer(
             context_, BufferCreateInfo{
                               .size = cluster_buffer_bytes(cluster_grid_),
@@ -4749,7 +4599,6 @@ auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<vo
         return std::unexpected(make_device_error(cluster_lights.error()));
     }
 
-    // Nothing in flight still reads the old buffer: it belongs to this slot, whose fence has been waited on.
     frame.cluster_lights_buffer = std::move(*cluster_lights);
     frame.cluster_grid = cluster_grid_;
 
@@ -4817,7 +4666,6 @@ auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, Rend
         -> std::expected<void, RendererError> {
     auto const frame_index = pass_context.frame_index;
 
-    // Shadows draw every caster, so this uses the un-culled buffers.
     auto const result = render_pass::shadow(
             pass_context,
             render_pass::ShadowPassInfo{
@@ -4880,9 +4728,6 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
 
     auto const frame_index = pass_context.frame_index;
 
-    // Meshlet-level occlusion: the early phase tests against the history Hi-Z (view [0]) and records the meshlets it
-    // emits; the late phase tests against this frame's Hi-Z (view [1]), skips what the early phase recorded and
-    // records its own. Both count into their view's statistics slot.
     auto const meshlet_view_address = frame.meshlet_occlusion_active ? frame.occlusion_views_buffer.device_address +
                                                                                (late ? sizeof(GpuOcclusionView) : 0U)
                                                                      : VkDeviceAddress{0};
@@ -4917,10 +4762,8 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
 auto Renderer::record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void {
     auto const command_buffer = pass_context.command_buffer;
 
-
     environment_.record(command_buffer, gpu_resource_table_, pass_context.frame_index,
                         ubos_[pass_context.frame_index].device_address);
-
 
     static_cast<void>(frame);
 }
@@ -4960,7 +4803,6 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
         -> std::expected<void, RendererError> {
     auto const command_buffer = pass_context.command_buffer;
 
-
     if (frame.indirect_command_count != 0) {
         auto const layout = resolve_layout(pipeline_graph_, occlusion_cull_pipeline_);
 
@@ -4971,7 +4813,6 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
         bind_compute_node(pipeline_graph_, occlusion_cull_pipeline_, command_buffer);
         gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
 
-        // dst_indirect is main_cs's output, read here for the phase-1 counts.
         CullPushConstants const cull_pc{
                 .src_draws_address = frame.draw_buffer.device_address,
                 .src_transforms_address = frame.transform_buffer.device_address,
@@ -4989,8 +4830,6 @@ auto Renderer::record_occlusion_cull_pass(render_pass::Context const &pass_conte
                 .occlusion_stats_address = frame.occlusion_stats_buffer.device_address,
                 .batch_count = frame.indirect_command_count,
                 .occludable_batch_count = batch_counts(frame).blend_first(),
-                // Meshlet batches' late command covers the early survivors too, so their deferred meshlets get the late
-                // test; the late prepass skips the meshlets the early one already recorded.
                 .flags = frame.meshlet_occlusion_active ? cull_flag_late_union_meshlet_batches : 0U,
                 .chunk_count = frame.cull_chunk_count,
         };
@@ -5066,7 +4905,6 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .lights_address = frame.lights_buffer.device_address,
                     .light_count = frame.light_count,
                     .cluster_lights_address = frame.cluster_lights_buffer.device_address + cluster_stats_bytes,
-                    // View [1]'s bitset is the one both prepass phases recorded into; forward replays it.
                     .occlusion_view_address =
                             frame.meshlet_occlusion_active
                                     ? frame.occlusion_views_buffer.device_address + sizeof(GpuOcclusionView)
@@ -5141,7 +4979,6 @@ auto Renderer::record_overlay_prepares(render_pass::Context const &pass_context)
                 .slot = entry.slot,
         });
 
-        // Written even without a prepare() so all four queries are always available.
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pass_context.timestamp_query_pool,
                              overlay_query(entry.slot, 0));
 
@@ -5150,7 +4987,6 @@ auto Renderer::record_overlay_prepares(render_pass::Context const &pass_context)
             TracyVkZoneTransient(context_.host_query_context.context, gpu_zone, command_buffer, entry.desc.name.c_str(),
                                  true);
 
-            // Whether it wrote GPU data or not, the overlay_data token orders it before every overlay draw.
             static_cast<void>(entry.desc.prepare(OverlayPrepareContext{
                     .command_buffer = command_buffer,
                     .frame_index = pass_context.frame_index,
@@ -5238,7 +5074,6 @@ auto Renderer::register_light_icon_overlay() -> std::expected<void, RendererErro
     auto registration = register_overlay(OverlayDesc{
             .name = "Light icons",
             .stage = OverlayStage::scene,
-            // Before the default-order overlays.
             .order = -100,
             .prepare = {},
             .record =
@@ -5275,8 +5110,6 @@ auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent
         -> std::expected<OwnedFrameTargets, RendererError> {
     OwnedFrameTargets targets;
 
-    // The HDR and depth targets and the AO and bloom images are transients of the frame graph.
-
     auto const viewport_target_name = std::format("renderer.viewport_target_{}", frame_index);
     auto viewport_target = create_held_image(
             image_storage_, ImageCreateInfo{
@@ -5302,8 +5135,6 @@ auto Renderer::create_frame_targets(std::uint32_t frame_index, VkExtent2D extent
 
     targets.viewport_target = std::move(*viewport_target);
 
-    // The bloom chain and the AO images are transients of the frame graph (renderer_frame_graph.cxx).
-
     return targets;
 }
 
@@ -5318,13 +5149,10 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
 
     perf_events::record(PerfEvent::render_resize);
 
-    // The forward targets below are destroyed, so wait for the GPU regardless of what the caller did.
     if (auto waited = wait_idle(); !waited) {
         return std::unexpected(waited.error());
     }
 
-    // Every frame's replacements are built before any frame is touched: on failure the current targets stay, and the
-    // replacements built so far are destroyed with `replacements`.
     std::vector<OwnedFrameTargets> replacements;
     replacements.reserve(frames_.size());
 
@@ -5344,7 +5172,6 @@ auto Renderer::resize(VkExtent2D extent) -> std::expected<void, RendererError> {
         return std::unexpected(hiz.error());
     }
 
-    // Moving in destroys the old targets.
     for (std::size_t index = 0; index < frames_.size(); ++index) {
         auto &frame = frames_[index];
         auto &targets = replacements[index];
@@ -5435,9 +5262,6 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
     auto const indirect_size = static_cast<VkDeviceSize>(frame.indirect_commands.size()) * sizeof(GpuDrawCommand);
     auto const batch_bounds_size = static_cast<VkDeviceSize>(frame.batch_bounds.size()) * sizeof(GpuCullBounds);
 
-    // Draws and transforms were written in place by emit_batch(); only make them visible to the device. Only the
-    // ranges it wrote: resident groups reserve slots the GPU fills, often most of them, and copying those over
-    // PCIe every frame would cost more than the CPU work the resident path saves.
     std::vector<VkBufferCopy2> draw_regions;
     std::vector<VkBufferCopy2> transform_regions;
     draw_regions.reserve(frame.cpu_instance_ranges.size());
@@ -5557,8 +5381,6 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         return {};
     }
 
-    // Draws, transforms and commands are also written by instance_lod.slang (resident models' slots), hence the
-    // write access.
     std::array<VkBufferMemoryBarrier2, 4> barriers{};
     std::uint32_t barrier_count = 0;
 
@@ -5598,7 +5420,6 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         };
     }
 
-    // Read by the shadow pass's indirect draws, its task shader and main_cs.
     if (indirect_size != 0) {
         barriers[barrier_count++] = VkBufferMemoryBarrier2{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -5617,7 +5438,6 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
         };
     }
 
-    // The culled and visible buffers are written only by main_cs, so only batch_bounds_buffer needs a barrier.
     if (batch_bounds_size != 0) {
         barriers[barrier_count++] = VkBufferMemoryBarrier2{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,

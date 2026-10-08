@@ -29,7 +29,7 @@ namespace {
 
         return result;
     }
-} // namespace
+}
 
 TEST_CASE("cube map face centres match Vulkan's face order") {
     CHECK(direction_to_cube_texel(glm::vec3{1, 0, 0}).face == 0);
@@ -49,17 +49,14 @@ TEST_CASE("cube map face centres match Vulkan's face order") {
 }
 
 TEST_CASE("cube map corners follow the Vulkan (sc, tc) table") {
-    // +X looking down the axis: s runs toward -Z, t runs toward -Y (towards the face's lower rows).
     auto const plus_x = cube_texel_direction(0, glm::vec2{0.0F, 0.0F});
     CHECK(plus_x.z > 0.0F);
     CHECK(plus_x.y > 0.0F);
 
-    // +Y: s runs toward +X, t toward +Z.
     auto const plus_y = cube_texel_direction(2, glm::vec2{1.0F, 1.0F});
     CHECK(plus_y.x > 0.0F);
     CHECK(plus_y.z > 0.0F);
 
-    // -Z: s runs toward -X.
     auto const minus_z = cube_texel_direction(5, glm::vec2{1.0F, 0.0F});
     CHECK(minus_z.x < 0.0F);
     CHECK(minus_z.y > 0.0F);

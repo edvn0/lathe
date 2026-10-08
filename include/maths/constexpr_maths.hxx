@@ -46,7 +46,7 @@ namespace maths {
 
             return x;
         }
-    } // namespace detail
+    }
 
     constexpr auto square_root = []<std::floating_point T>(T value) {
         return detail::newton_raphson([value](T x) { return x * x - value; }, [](T x) { return T{2} * x; }, value);
@@ -55,4 +55,4 @@ namespace maths {
     constexpr auto root_three = square_root(3.0F);
     constexpr auto root_two = square_root(2.0F);
 
-} // namespace maths
+}

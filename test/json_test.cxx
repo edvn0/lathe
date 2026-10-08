@@ -31,7 +31,6 @@ TEST_CASE("json parses every value type") {
     CHECK(root["empty_list"].is_array());
     CHECK(root["empty_object"].is_object());
 
-    // Missing keys chain to null instead of failing.
     CHECK(root["missing"]["deeper"].is_null());
     CHECK(root["missing"].as_number(7.0) == 7.0);
     CHECK(root.find("missing") == nullptr);

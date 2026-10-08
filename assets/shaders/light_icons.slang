@@ -58,10 +58,8 @@ void main_mesh(in payload Payload payload, uint3 group_id : SV_GroupID,
     const GpuLight light = pc.lights[payload.light_index[group_id.x]];
     const UBO ubo = pc.ubo[0];
 
-    // Spherical billboard facing the camera.
     const float3 forward = normalize(ubo.camera_position - light.position);
 
-    // Fall back to another up vector when looking straight along world up, where cross() degenerates.
     float3 world_up = float3(0.0, 1.0, 0.0);
     if (abs(dot(forward, world_up)) > 0.999) {
         world_up = float3(1.0, 0.0, 0.0);

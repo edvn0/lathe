@@ -28,7 +28,6 @@ namespace {
     auto to_bt(glm::quat const &q) -> btQuaternion { return btQuaternion{q.x, q.y, q.z, q.w}; }
     auto to_glm(btQuaternion const &q) -> glm::quat { return glm::quat{q.w(), q.x(), q.y(), q.z()}; }
 
-    // Shapes live in the arena, so only destructors run. A compound doesn't destroy its children, so recurse.
     auto destroy_shape(btCollisionShape *shape) -> void {
         if (shape->getShapeType() == COMPOUND_SHAPE_PROXYTYPE) {
             auto *compound = static_cast<btCompoundShape *>(shape);
@@ -46,15 +45,13 @@ namespace {
         explicit ThreadPoolTaskScheduler(BS::priority_thread_pool &pool) :
             btITaskScheduler{"bs_thread_pool"}, pool_{pool} {}
 
-        // Bullet reserves thread index 0 for the caller and gives workers 1..N, and sizes per-thread scratch arrays
-        // from this. Returning only the worker count makes a worker write past the end.
         [[nodiscard]] auto getMaxNumThreads() const -> int override {
             return static_cast<int>(pool_.get_thread_count()) + 1;
         }
         [[nodiscard]] auto getNumThreads() const -> int override {
             return static_cast<int>(pool_.get_thread_count()) + 1;
         }
-        auto setNumThreads(int /*num_threads*/) -> void override {} // pool size is fixed
+        auto setNumThreads(int ) -> void override {}
 
         auto parallelFor(int i_begin, int i_end, int grain_size, btIParallelForBody const &body) -> void override {
             if (i_end - i_begin <= grain_size) {
@@ -64,7 +61,6 @@ namespace {
 
             auto const num_chunks = std::max(1, (i_end - i_begin) / grain_size);
 
-            // Keep the pool's per-call bookkeeping allocations out of the per-frame allocation stats.
             auto const untracked = MemoryTracker::UntrackedScope{};
 
             auto future = pool_.submit_blocks(
@@ -75,15 +71,15 @@ namespace {
             future.wait();
         }
 
-        auto parallelSum(int i_begin, int i_end, int /*grain_size*/, btIParallelSumBody const &body)
+        auto parallelSum(int i_begin, int i_end, int , btIParallelSumBody const &body)
                 -> btScalar override {
-            return body.sumLoop(i_begin, i_end); // Bullet rarely uses this; serial is fine.
+            return body.sumLoop(i_begin, i_end);
         }
 
     private:
         BS::priority_thread_pool &pool_;
     };
-} // namespace
+}
 
 struct PhysicsWorld::Impl {
     Impl(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool, entt::registry &reg) :
@@ -107,7 +103,6 @@ struct PhysicsWorld::Impl {
     }
 
     ~Impl() {
-        // Terrain colliders have no entity, so remove them before the entity loop below.
         for (auto &slot: terrain_colliders) {
             if (slot.active) {
                 world->removeRigidBody(slot.body);
@@ -118,8 +113,6 @@ struct PhysicsWorld::Impl {
             slot.shape->~btHeightfieldTerrainShape();
         }
 
-        // Walk the world's own object array, always removing the last element so removeRigidBody()'s swap-and-pop
-        // doesn't skip anything.
         auto &collision_objects = world->getCollisionObjectArray();
 
         for (auto i = collision_objects.size() - 1; i >= 0; --i) {
@@ -131,8 +124,6 @@ struct PhysicsWorld::Impl {
 
             auto *shape = rigid_body->getCollisionShape();
 
-            // Every remaining body came from add_body() and has a PhysicsBody to remove. No null check on the user
-            // pointer: entity 0 bit-casts to null.
             auto const entity =
                     static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(rigid_body->getUserPointer()));
 
@@ -154,19 +145,17 @@ struct PhysicsWorld::Impl {
         dispatcher->~btCollisionDispatcherMt();
         collision_configuration->~btDefaultCollisionConfiguration();
 
-        // Setting a new scheduler calls the previous one's deactivate(), so clear the global before ours dies.
         if (btGetTaskScheduler() == &task_scheduler) {
             btSetTaskScheduler(nullptr);
         }
     }
 
     struct TerrainColliderSlot {
-        // Bullet's heightfield keeps a raw pointer into this, so it is sized once and only overwritten in place.
         std::vector<float> heights;
 
         btHeightfieldTerrainShape *shape = nullptr;
         btRigidBody *body = nullptr;
-        bool active = false; // in `world`
+        bool active = false;
     };
 
     ArenaAllocator arena{std::size_t{512} * 1024};
@@ -175,7 +164,7 @@ struct PhysicsWorld::Impl {
 
     IDebugLines *debug_lines = nullptr;
 
-    ThreadPoolTaskScheduler task_scheduler; // must outlive world, so declared first
+    ThreadPoolTaskScheduler task_scheduler;
 
     entt::registry &registry;
 
@@ -215,16 +204,14 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
         case Components::BodyShape::heightfield: {
             auto const &heightfield = *body.heightfield;
 
-            // Bullet keeps a raw pointer into heightfield.heights; the RigidBody owning it outlives the shape.
             shape = impl_->arena.construct_with_base<btHeightfieldTerrainShape, btCollisionShape>(
                     static_cast<int>(heightfield.width), static_cast<int>(heightfield.length),
                     heightfield.heights->data(), heightfield.min_height, heightfield.max_height,
-                    /*upAxis=*/1, /*flipQuadEdges=*/false);
+                    1, false);
             shape->setLocalScaling(btVector3{heightfield.cell_size_x, 1.0F, heightfield.cell_size_z});
             break;
         }
         case Components::BodyShape::compound: {
-            // Children are already axis-aligned in compound space, so their transforms are translation-only.
             auto *compound = impl_->arena.construct<btCompoundShape>();
 
             if (body.compound_boxes) {
@@ -278,13 +265,11 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
     }
 
     if (body.shape == Components::BodyShape::sphere) {
-        // Bullet defaults both to zero, which leaves a sphere rolling across a flat floor until something stops it.
-        // Tuned so a ball kicked at a few metres per second runs out in a few seconds, as a ball on grass does.
         rigid_body->setRollingFriction(0.12F);
         rigid_body->setSpinningFriction(0.12F);
     }
 
-    rigid_body->setSleepingThresholds(/*linear=*/0.8F, /*angular=*/1.0F);
+    rigid_body->setSleepingThresholds(0.8F, 1.0F);
     rigid_body->setDeactivationTime(0.8F);
 
     impl_->world->addRigidBody(rigid_body);
@@ -391,7 +376,7 @@ auto PhysicsWorld::reserve_terrain_collider(TerrainColliderDesc const &desc) -> 
 
     slot.shape = impl_->arena.construct<btHeightfieldTerrainShape>(
             static_cast<int>(desc.samples_x), static_cast<int>(desc.samples_z), slot.heights.data(), desc.min_height,
-            desc.max_height, /*upAxis=*/1, /*flipQuadEdges=*/false);
+            desc.max_height, 1, false);
     slot.shape->setLocalScaling(btVector3{desc.cell_size_x, 1.0F, desc.cell_size_z});
 
     btTransform start_transform;
@@ -418,12 +403,11 @@ auto PhysicsWorld::bind_terrain_collider(TerrainColliderHandle handle, glm::vec3
     auto &slot = impl_->terrain_colliders[handle.index];
 
     if (heights.size() != slot.heights.size()) {
-        return; // must match the slot's reserved sample count
+        return;
     }
 
     std::ranges::copy(heights, slot.heights.begin());
 
-    // Rebinding an active slot moves the same surface, so bodies resting on it move by the same delta.
     if (slot.active) {
         glm::vec3 const delta = centre - to_glm(slot.body->getWorldTransform().getOrigin());
 
@@ -431,9 +415,9 @@ auto PhysicsWorld::bind_terrain_collider(TerrainColliderHandle handle, glm::vec3
             btCollisionObject const *self = nullptr;
             std::vector<btRigidBody *> bodies;
 
-            auto addSingleResult(btManifoldPoint & /*contact_point*/, btCollisionObjectWrapper const *col_obj_0_wrap,
-                                 int /*part_id_0*/, int /*index_0*/, btCollisionObjectWrapper const *col_obj_1_wrap,
-                                 int /*part_id_1*/, int /*index_1*/) -> btScalar override {
+            auto addSingleResult(btManifoldPoint & , btCollisionObjectWrapper const *col_obj_0_wrap,
+                                 int , int , btCollisionObjectWrapper const *col_obj_1_wrap,
+                                 int , int ) -> btScalar override {
                 auto const *other = col_obj_0_wrap->getCollisionObject() == self ? col_obj_1_wrap->getCollisionObject()
                                                                                  : col_obj_0_wrap->getCollisionObject();
 
@@ -463,7 +447,6 @@ auto PhysicsWorld::bind_terrain_collider(TerrainColliderHandle handle, glm::vec3
     transform.setOrigin(to_bt(centre));
     slot.body->setWorldTransform(transform);
 
-    // Remove and re-add rather than teleport, so Bullet drops stale contacts and broadphase pairs.
     if (slot.active) {
         impl_->world->removeRigidBody(slot.body);
     }
@@ -534,7 +517,6 @@ auto PhysicsWorld::sweep_capsule(glm::vec3 const &from, glm::vec3 const &to, flo
         btCollisionObject const *ignored_object;
     };
 
-    // Shape origin is its centre, the caller's position is the feet.
     glm::vec3 const centre_offset{0.0F, height * 0.5F, 0.0F};
     btCapsuleShape const shape{radius, std::max(height - 2.0F * radius, 0.0F)};
 

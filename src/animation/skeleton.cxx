@@ -8,7 +8,6 @@
 
 namespace Animation {
     auto local_matrix(glm::vec3 const translation, glm::quat const rotation, glm::vec3 const scale) -> glm::mat4 {
-        // Built by hand instead of translate*rotate*scale: this is the hot path for every joint of every character.
         auto const rotation_matrix = glm::mat3_cast(rotation);
         return glm::mat4{glm::vec4{rotation_matrix[0] * scale.x, 0.0F}, glm::vec4{rotation_matrix[1] * scale.y, 0.0F},
                          glm::vec4{rotation_matrix[2] * scale.z, 0.0F}, glm::vec4{translation, 1.0F}};
@@ -72,4 +71,4 @@ namespace Animation {
             out.scale[i] = glm::mix(a.scale[i], b.scale[i], t);
         }
     }
-} // namespace Animation
+}

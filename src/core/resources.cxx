@@ -23,7 +23,6 @@ namespace {
     }
 
     auto read_from_disk(DataPath const &path) -> std::optional<std::vector<std::byte>> {
-        // Not path.absolute(): that would list the file as a loose data file to ship.
         std::ifstream file{Paths::current().data_root() / path.logical(), std::ios::binary};
 
         if (!file) {
@@ -37,7 +36,7 @@ namespace {
 
         return bytes;
     }
-} // namespace
+}
 
 auto install_resource_provider(std::shared_ptr<ResourceProvider const> provider) -> void {
     installed_provider.store(std::move(provider));

@@ -3,13 +3,8 @@ module environment;
 import bindless;
 import scene_types;
 
-// Shared environment-lighting helpers: cube and equirect conventions, importance sampling, spherical harmonics and the
-// Preetham sky. The CPU mirrors are include/rendering/cube_map.hxx, spherical_harmonics.hxx and sky_model.hxx; keep
-// them in lockstep. See docs/ibl-and-skybox.md.
-
 public static const float env_pi = 3.14159265358979323846;
 
-// UBO::environment_flags.
 public static const uint env_ibl_valid = 1u << 0;
 public static const uint env_skybox = 1u << 1;
 public static const uint env_sky_procedural = 1u << 2;
@@ -18,7 +13,6 @@ public static const uint env_fog_sky = 1u << 4;
 public static const uint env_multi_scatter = 1u << 5;
 public static const uint env_fog_from_environment = 1u << 6;
 
-// Bits 8-11 of the flags: what to show instead of the lit result.
 public static const uint env_debug_shift = 8;
 public static const uint env_debug_none = 0;
 public static const uint env_debug_diffuse_only = 1;
@@ -33,7 +27,6 @@ public uint env_debug_view(uint flags)
     return (flags >> env_debug_shift) & 0xFu;
 }
 
-// Vulkan face order +X -X +Y -Y +Z -Z; uv in [0, 1] with (0, 0) the top-left corner of the face.
 public float3 cube_texel_direction(uint face, float2 uv)
 {
     const float s = 2.0 * uv.x - 1.0;
@@ -65,14 +58,12 @@ public float3 cube_texel_direction(uint face, float2 uv)
     return normalize(direction);
 }
 
-// The centre column faces +Z and the top row is the zenith.
 public float2 direction_to_equirect_uv(float3 direction)
 {
     const float phi = atan2(direction.x, direction.z);
     return float2(0.5 + phi / (2.0 * env_pi), acos(clamp(direction.y, -1.0, 1.0)) / env_pi);
 }
 
-// Yaw by theta about +Y, given (cos theta, sin theta). Lookups rotate by -theta: pass (cos, -sin).
 public float3 rotate_y(float3 v, float2 cos_sin)
 {
     return float3(cos_sin.x * v.x + cos_sin.y * v.z, v.y, -cos_sin.y * v.x + cos_sin.x * v.z);
@@ -83,7 +74,6 @@ float corner_solid_angle(float x, float y)
     return atan2(x * y, sqrt(x * x + y * y + 1.0));
 }
 
-// Exact solid angle of texel (x, y) of a face with `size` x `size` texels; matches cube_texel_solid_angle().
 public float cube_texel_solid_angle(uint x, uint y, uint size)
 {
     const float step = 2.0 / float(size);
@@ -101,7 +91,6 @@ public float2 hammersley(uint index, uint count)
     return float2(float(index) / float(count), float(reversebits(index)) * 2.3283064365386963e-10);
 }
 
-// A half vector around +Z distributed by the GGX normal distribution, for alpha = perceptual roughness squared.
 public float3 importance_sample_ggx(float2 xi, float alpha)
 {
     const float phi = 2.0 * env_pi * xi.x;
@@ -127,7 +116,6 @@ public void tangent_frame(float3 n, out float3 tangent, out float3 bitangent)
     bitangent = cross(n, tangent);
 }
 
-// Basis order: Y00, Y1-1 (y), Y10 (z), Y11 (x), Y2-2 (xy), Y2-1 (yz), Y20 (3z^2 - 1), Y21 (xz), Y22 (x^2 - y^2).
 public struct Sh9Basis
 {
     public float values[9];
@@ -150,7 +138,6 @@ public Sh9Basis sh9_basis(float3 d)
     return basis;
 }
 
-// Irradiance / pi toward `normal` (the coefficients are already cosine-convolved).
 public float3 sh9_eval(Ptr<GpuEnvironmentSh> sh, float3 normal)
 {
     const Sh9Basis basis = sh9_basis(normal);
@@ -165,8 +152,6 @@ public float3 sh9_eval(Ptr<GpuEnvironmentSh> sh, float3 normal)
     return result;
 }
 
-// Preetham et al. (1999): the Perez distribution per xyY channel from the UBO's sky_perez / sky_zenith, converted to
-// linear sRGB. Mirrors evaluate_sky_rgb() in sky_model.cxx.
 public float3 preetham_sky(Ptr<UBO> ubo, float3 direction, float3 sun_direction)
 {
     const float cos_theta = max(direction.y, 1e-2);
@@ -198,7 +183,6 @@ public float3 preetham_sky(Ptr<UBO> ubo, float3 direction, float3 sun_direction)
                float3(0.0));
 }
 
-// The sky plus the ground below the horizon. Mirrors evaluate_environment_sky_rgb().
 public float3 environment_sky(Ptr<UBO> ubo, float3 direction)
 {
     const float3 sun_direction = ubo.sun_direction_cos_radius.xyz;
@@ -217,7 +201,6 @@ public float3 environment_sky(Ptr<UBO> ubo, float3 direction)
     return lerp(horizon, ground, eased);
 }
 
-// Lagarde and de Rousiers (2014).
 public float specular_occlusion(float ndotv, float ambient_occlusion, float roughness)
 {
     const float alpha = roughness * roughness;
@@ -225,7 +208,6 @@ public float specular_occlusion(float ndotv, float ambient_occlusion, float roug
     return saturate(pow(ndotv + ambient_occlusion, exp2(-16.0 * alpha - 1.0)) - 1.0 + ambient_occlusion);
 }
 
-// Fog colour taken from the environment: the blurriest prefilter mip along the view ray, flattened toward the horizon.
 public float3 environment_fog_colour(Ptr<UBO> ubo, float3 view_ray)
 {
     float3 direction = float3(view_ray.x, view_ray.y * 0.25, view_ray.z);

@@ -2,19 +2,6 @@
 
 #include <algorithm>
 
-auto parse_async_compute_mode(std::string_view value) noexcept -> std::optional<AsyncComputeMode> {
-    if (value == "auto") {
-        return AsyncComputeMode::automatic;
-    }
-    if (value == "off") {
-        return AsyncComputeMode::off;
-    }
-    if (value == "same-family") {
-        return AsyncComputeMode::same_family;
-    }
-    return std::nullopt;
-}
-
 auto queue_topology_name(QueueTopologyKind kind) noexcept -> std::string_view {
     switch (kind) {
         case QueueTopologyKind::single:
@@ -46,7 +33,6 @@ auto choose_queue_families(std::span<QueueFamilyInfo const> families, AsyncCompu
         return result;
     }
 
-    // Default: compute is the graphics queue.
     result.compute = result.graphics;
     result.compute_queue_index = 0;
     result.topology = QueueTopologyKind::single;
@@ -60,7 +46,6 @@ auto choose_queue_families(std::span<QueueFamilyInfo const> families, AsyncCompu
             family.queue_count == 0) {
             continue;
         }
-        // Prefer a family whose queues can write timestamps, so per-queue GPU zones work.
         if (dedicated == QueueFamilies::invalid ||
             (families[dedicated].timestamp_valid_bits == 0 && family.timestamp_valid_bits != 0)) {
             dedicated = index;

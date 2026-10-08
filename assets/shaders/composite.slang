@@ -9,7 +9,6 @@ struct CompositePC {
     float exposure;
     float bloom_intensity;
 
-    // The outline mask (R8, 1 where an outlined object drew), or 0 for no outline this frame.
     uint outline_texture_index;
     float outline_thickness;
     float outline_texel_x;
@@ -95,8 +94,6 @@ FragmentOutput main_fs(VertexOutput input, uniform CompositePC pc)
         const var mask_sampler = samplers[sampler_index];
         const float2 texel = float2(pc.outline_texel_x, pc.outline_texel_y);
 
-        // The outline is the ring just outside the mask: strongest where a pixel off the mask has mask pixels within
-        // the thickness around it. Eight directions at the full radius and eight at half of it keep thin gaps closed.
         float nearby = 0.0;
         [unroll]
         for (int i = 0; i < 8; ++i) {

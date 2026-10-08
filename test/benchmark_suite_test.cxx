@@ -24,7 +24,6 @@ namespace {
         };
     }
 
-    // GPU timings whose full frame time equals their serial, so a test can tell which frame they landed on.
     [[nodiscard]] auto gpu_of(std::uint64_t serial) -> FrameTimings {
         FrameTimings timings{.full_frame_ms = static_cast<float>(serial), .valid = true, .frame_serial = serial};
         timings.passes.push_back(
@@ -32,7 +31,6 @@ namespace {
         return timings;
     }
 
-    // Runs the benchmark options through a real CommandLine, as main() does.
     [[nodiscard]] auto parse_benchmark_options(std::span<char const *const> args)
             -> std::expected<std::optional<BenchmarkOptions>, std::string> {
         CommandLine cli{"lathe", ""};
@@ -67,7 +65,7 @@ namespace {
         return result;
     }
 
-} // namespace
+}
 
 TEST_CASE("suite options: defaults, sweeps, scenarios and errors") {
     SUBCASE("suite mode gets repeats and a fixed render size by default") {
@@ -100,7 +98,7 @@ TEST_CASE("suite options: defaults, sweeps, scenarios and errors") {
         CHECK(value.target_hz == 240.0F);
         CHECK(value.render_size == BenchmarkRenderSize{.width = 2560, .height = 1440});
         CHECK(value.scenarios == std::vector<std::string>{"lights", "draw_calls"});
-        REQUIRE(value.sweeps.size() == 1); // the later sweep replaces the earlier
+        REQUIRE(value.sweeps.size() == 1);
         CHECK(value.sweeps[0].loads == std::vector<std::uint32_t>{8});
     }
 
@@ -189,12 +187,10 @@ TEST_CASE("GPU timings land on the frame they were recorded for, however late th
 
     BenchmarkRun run{options, line_path()};
 
-    // Warmup: frame serial 10. Its timings (arriving with serial 12's frame) must not be taken for a measured one's.
     auto const warmup_gpu = FrameTimings{};
     run.on_frame_drawn(BenchmarkFrameInput{.gpu = &warmup_gpu, .frame_serial = 10});
     REQUIRE(run.measuring());
 
-    // Measured frames 11..14, with timings lagging two frames behind.
     for (std::uint64_t serial = 11; serial <= 14; ++serial) {
         auto const gpu = gpu_of(serial - 2);
         CAPTURE(serial);
@@ -202,7 +198,6 @@ TEST_CASE("GPU timings land on the frame they were recorded for, however late th
     }
     CHECK_FALSE(run.finished());
 
-    // A stale repeat of the last timings, then the two drain frames that bring in serials 13 and 14.
     auto const stale = gpu_of(12);
     run.on_frame_drawn(BenchmarkFrameInput{.gpu = &stale, .frame_serial = 15});
     CHECK_FALSE(run.finished());
@@ -233,7 +228,7 @@ TEST_CASE("a run stops waiting for GPU timings after the drain limit") {
     options.drain_frame_limit = 3;
 
     BenchmarkRun run{options, line_path()};
-    run.on_frame_drawn(BenchmarkFrameInput{.frame_serial = 1}); // leaves warmup
+    run.on_frame_drawn(BenchmarkFrameInput{.frame_serial = 1});
     run.on_frame_drawn(BenchmarkFrameInput{.frame_serial = 2});
     run.on_frame_drawn(BenchmarkFrameInput{.frame_serial = 3});
 
@@ -245,7 +240,6 @@ TEST_CASE("a run stops waiting for GPU timings after the drain limit") {
     CHECK(run.finished());
     CHECK(run.analyse().gpu_frame.count == 0);
 
-    // Frames without GPU timings leave the GPU columns empty in the CSV.
     auto const csv = run.to_csv();
     CHECK(csv.starts_with("frame,serial,path_t,displayed_ms"));
     CHECK(csv.find("event_texture_upload") != std::string::npos);
@@ -301,7 +295,7 @@ TEST_CASE("aggregates take the median over repeats; scaling fits each scenario's
     CHECK(aggregates[0].metric("stage_forward_pass_median_ms") != nullptr);
 
     auto const scaling = scaling_of(aggregates);
-    REQUIRE(scaling.size() == 1); // the game has no load axis
+    REQUIRE(scaling.size() == 1);
     CHECK(scaling[0].loads == std::vector<std::uint32_t>{100, 200});
     CHECK(scaling[0].gpu.slope_ms_per_unit == doctest::Approx(0.01));
 
@@ -378,7 +372,6 @@ TEST_CASE("compare does not judge displayed times of presentation-paced cases") 
         return std::move(*parsed);
     };
 
-    // The displayed time doubles (say, the refresh rate halved) but GPU and CPU are unchanged: not a regression.
     auto const comparison = compare_benchmark_results(suite_of(6.94F), suite_of(13.88F), BenchmarkCompareOptions{});
     CHECK_FALSE(comparison.failed);
     REQUIRE(comparison.cases.size() == 1);
@@ -401,8 +394,8 @@ TEST_CASE("compare reads schema 1 single runs") {
     REQUIRE(head.has_value());
 
     auto const comparison = compare_benchmark_results(*base, *head, BenchmarkCompareOptions{});
-    CHECK(comparison.failed); // full frame +37.5%
-    CHECK(comparison.notes.size() == 1); // the device differs
+    CHECK(comparison.failed);
+    CHECK(comparison.notes.size() == 1);
     CHECK(comparison.markdown.find("pass `bloom`") != std::string::npos);
     CHECK(comparison.markdown.find("| new |") != std::string::npos);
 

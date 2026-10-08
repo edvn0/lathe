@@ -41,14 +41,9 @@ namespace render_pass {
         GpuResourceTable &resource_table;
         VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
 
-        // The command buffer belongs to a compute-only queue family, whose barriers cannot name graphics stages
-        // (fragment, task, ...). A pass body that records its own barriers keeps to compute stages then; whoever reads
-        // the result on the graphics queue is covered by the barrier the frame graph derives for it.
         bool compute_only = false;
     };
 
-    // `indirect` holds one GpuDrawCommand per batch, ordered opaque | double_sided | mask | blend like DrawCounts.
-    // `index_buffer` is read by the instanced commands.
     struct DrawBuffers {
         Buffer const &draws;
         Buffer const &transforms;
@@ -56,8 +51,6 @@ namespace render_pass {
         VkBuffer index_buffer = VK_NULL_HANDLE;
     };
 
-    // Consecutive ranges of the indirect commands. double_sided batches are opaque ones drawn without back-face
-    // culling; they share the opaque pipelines.
     struct DrawCounts {
         std::uint32_t opaque = 0;
         std::uint32_t double_sided = 0;
@@ -71,8 +64,6 @@ namespace render_pass {
         }
     };
 
-    // The body of a frame graph raster pass: the executor has begun rendering into the atlas, loading it when
-    // `preserve_contents` and discarding it otherwise, and leaves it sampled.
     struct ShadowPassInfo {
         DrawBuffers draws;
         DrawCounts counts;
@@ -80,19 +71,16 @@ namespace render_pass {
         std::array<std::uint32_t, shadow_cascade_count> const &double_sided_cascade_counts;
         std::array<std::uint32_t, shadow_cascade_count> const &mask_cascade_counts;
 
-        // Only tiles in update_mask are cleared and redrawn; the rest persist across frames.
         std::uint32_t update_mask = (1U << shadow_cascade_count) - 1U;
         bool preserve_contents = false;
 
         bool meshlet_culling = true;
 
-        // Cascade 0's first plane; the task shader offsets by cascade_index * 6.
         VkDeviceAddress cascade_cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
 
-        // Task/mesh pipelines and their instanced vertex-shader variants.
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle mask_pipeline{};
         PipelineNodeHandle opaque_instanced_pipeline{};
@@ -102,59 +90,43 @@ namespace render_pass {
         float depth_bias_slope = -2.5F;
     };
 
-    // Two-phase occlusion culling splits the prepass (docs/occlusion-culling.md): `early` clears and draws the
-    // phase-1 instances, `late` loads that depth and adds the phase-2 ones. `only` is the single pass without it.
     enum class DepthPrepassPhase : std::uint8_t {
         only,
         early,
         late,
     };
 
-    // Meshlet-level occlusion cull bits for DepthPrepassInfo/ForwardGeometryInfo::extra_cull_flags
-    // (docs/occlusion-culling.md, "Meshlet level"). Mirrors cull_*_bit in scene_types.slang.
     inline constexpr std::uint32_t cull_occlusion = 4U;
     inline constexpr std::uint32_t cull_skip_recorded = 8U;
     inline constexpr std::uint32_t cull_record = 16U;
     inline constexpr std::uint32_t cull_replay = 32U;
     inline constexpr std::uint32_t cull_stats = 64U;
 
-    // The body of a frame graph raster pass: the executor has begun rendering into the depth buffer (clearing it, or
-    // loading the early phase's) and resolves it into the single-sample depth under MSAA: MIN for the early phase
-    // (the Hi-Z needs each pixel's farthest sample, reverse-Z), SAMPLE_ZERO otherwise (what GTAO and the rest expect).
     struct DepthPrepassInfo {
         VkExtent2D extent{};
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 
-        // only/early clear the depth buffer; late loads what the early phase wrote.
         DepthPrepassPhase phase = DepthPrepassPhase::only;
 
         DrawBuffers draws;
         DrawCounts counts;
 
-        // The camera's frustum planes, for meshlet culling.
         VkDeviceAddress cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
 
-        // Meshlet-level occlusion: the OcclusionView (PC::occlusion) and the cull_* bits OR-ed into the opaque and
-        // mask draws when meshlet_culling is set. 0 / 0 when it is inactive.
         VkDeviceAddress occlusion_view_address = 0;
         std::uint32_t extra_cull_flags = 0;
 
-        // Task/mesh pipelines and their instanced vertex-shader variants.
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle mask_pipeline{};
         PipelineNodeHandle opaque_instanced_pipeline{};
         PipelineNodeHandle mask_instanced_pipeline{};
 
-        // Must match ForwardGeometryInfo::meshlet_culling, since forward depth-tests EQUAL.
         bool meshlet_culling = true;
     };
 
-    // GTAO from depth alone, then a depth-aware blur: two compute passes of the frame graph between the prepass and
-    // forward. The graph puts the single-sample depth in SHADER_READ_ONLY_OPTIMAL for both and the AO images in the
-    // layouts they are written and sampled in.
     struct AmbientOcclusionInfo {
         VkExtent2D extent{};
 
@@ -175,8 +147,6 @@ namespace render_pass {
         float denoise_depth_sigma = 40.0F;
     };
 
-    // The body of a frame graph raster pass: the executor has begun rendering into the (multisampled) HDR target,
-    // resolving into the single-sample one, with the depth attachment loaded.
     struct ForwardGeometryInfo {
         HdrTextureIndex output_hdr{};
 
@@ -186,19 +156,14 @@ namespace render_pass {
         DrawBuffers draws;
         DrawCounts counts;
 
-        // The camera's frustum planes, for meshlet culling.
         VkDeviceAddress cull_planes_address = 0;
         VkDeviceAddress materials_address = 0;
         VkDeviceAddress ubo_address = 0;
         VkDeviceAddress lights_address = 0;
         std::uint32_t light_count = 0;
 
-        // Per-cluster light counts and lists; only read when the UBO enables clustered lighting.
         VkDeviceAddress cluster_lights_address = 0;
 
-        // Meshlet-level occlusion: the OcclusionView (PC::occlusion) and the cull_* bits OR-ed into the opaque and
-        // mask draws when meshlet_culling is set (cull_replay: forward draws exactly what the prepass phases
-        // recorded). Blend draws never take them. 0 / 0 when it is inactive.
         VkDeviceAddress occlusion_view_address = 0;
         std::uint32_t extra_cull_flags = 0;
 
@@ -206,29 +171,22 @@ namespace render_pass {
 
         bool meshlet_culling = true;
 
-        // Task/mesh pipelines and their instanced vertex-shader variants.
         PipelineNodeHandle opaque_pipeline{};
         PipelineNodeHandle blend_pipeline{};
         PipelineNodeHandle opaque_instanced_pipeline{};
         PipelineNodeHandle blend_instanced_pipeline{};
 
-        // The background, drawn between the mask and blend draws (docs/ibl-and-skybox.md).
         PipelineNodeHandle skybox_pipeline{};
         bool draw_skybox = false;
 
-        // Denoised GTAO, or white when AO is disabled.
         std::uint32_t ao_texture_index = 0;
         std::uint32_t ao_sampler_index = 0;
 
-        // The scope has a second colour attachment, the outline mask, which opaque, double-sided and mask draws write.
         bool outline_mask = false;
     };
 
     inline constexpr std::uint32_t bloom_mip_count = 4;
 
-    // Bloom mip chain on `target` (mip 0 is half the HDR resolution): bloom_mip_count downsamples, then
-    // bloom_mip_count - 1 upsamples accumulating each level into the one above. mip_texture_indices[i] is a
-    // single-mip view registered as sampled_2d and storage_2d. Every level ends in SHADER_READ_ONLY_OPTIMAL.
     struct BloomPassInfo {
         bool enabled = true;
 
@@ -245,7 +203,6 @@ namespace render_pass {
         float threshold = 1.0F;
         float knee = 0.5F;
 
-        // Tent radius in texels of the lower level.
         float filter_radius = 1.0F;
     };
 
@@ -262,13 +219,11 @@ namespace render_pass {
         float exposure = 1.0F;
         float bloom_intensity = 0.0F;
 
-        // The outline mask's bindless index, or 0 when nothing is outlined this frame.
         std::uint32_t outline_texture_index = 0;
         float outline_thickness_pixels = 0.0F;
         glm::vec3 outline_colour{0.0F};
     };
 
-    // Non-owning, allocation-free callback. The callable must outlive the render-pass call.
     struct Callback {
         void *userdata = nullptr;
         void (*invoke)(void *) = nullptr;
@@ -294,15 +249,6 @@ namespace render_pass {
 
     auto depth_prepass(Context const &context, DepthPrepassInfo const &info) -> std::expected<void, RendererError>;
 
-    // Builds the Hi-Z pyramid between the early and late prepasses (docs/occlusion-culling.md), as one compute
-    // dispatch per level (hiz_build.slang), each reading the level below through mip_texture_indices[level - 1] (or the
-    // depth for level 0) and writing mip_texture_indices[level].
-    //
-    // `source_depth` is the single-sample depth the early prepass wrote: the MIN resolve under MSAA, otherwise the
-    // attachment itself. It goes DEPTH_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL -> DEPTH_ATTACHMENT_OPTIMAL, so
-    // the late prepass can load or re-resolve it. `multisampled_depth`, when set, is the MSAA attachment, which the
-    // late prepass loads. Every pyramid level ends in SHADER_READ_ONLY_OPTIMAL, visible to compute, task and fragment
-    // shaders (the occlusion tests and the debug view); the previous contents are discarded.
     struct HizBuildInfo {
         std::uint32_t source_texture_index = 0;
         VkExtent2D depth_extent{};
@@ -315,26 +261,12 @@ namespace render_pass {
 
     auto build_hiz(Context const &context, HizBuildInfo const &info) -> std::expected<void, RendererError>;
 
-    // Both write their half of the stage's timestamps (the stage is AmbientOcclusion): gtao the first, the denoise the
-    // second.
     auto gtao(Context const &context, AmbientOcclusionInfo const &info) -> std::expected<void, RendererError>;
     auto gtao_denoise(Context const &context, AmbientOcclusionInfo const &info) -> std::expected<void, RendererError>;
 
-    // scene_overlays runs inside the forward rendering scope after the scene draws.
     auto forward_geometry(Context const &context, ForwardGeometryInfo const &info, Callback scene_overlays)
             -> std::expected<HdrTextureIndex, RendererError>;
 
-    // The dynamic state every overlay starts from, set before each overlay's record():
-    //
-    //   viewport/scissor   the full scope extent. scene uses the forward pass's flipped-Y, reverse-Z viewport
-    //                      (y = height, height = -height, depth 1..0); ui uses an unflipped 0..1 viewport.
-    //   rasterisation      fill, cull none, counter-clockwise front, no depth bias/clamp, no discard,
-    //                      samples = scope.samples with a full mask, no alpha-to-coverage.
-    //   input assembly     triangle list, no primitive restart, no vertex bindings/attributes.
-    //   depth/stencil      GREATER_OR_EQUAL test when the scope has depth, writes off, stencil off.
-    //   colour             one attachment, blending off, RGBA write mask, logic op off.
-    //
-    // Descriptor sets and push constants are not part of the baseline.
     auto set_overlay_baseline_state(VkCommandBuffer command_buffer, OverlayStage stage,
                                     OverlayScope const &scope) noexcept -> void;
 
@@ -349,15 +281,12 @@ namespace render_pass {
         float icon_world_size = 0.5F;
     };
 
-    // Billboarded icons at every punctual light, for a scene overlay's record().
     auto light_icons(Context const &context, LightIconsInfo const &info, OverlayScope const &scope) noexcept -> void;
 
     auto bloom(Context const &context, BloomPassInfo const &info)
             -> std::expected<std::optional<BloomTextureIndex>, RendererError>;
 
-    // Tonemaps hdr + bloom with a fullscreen triangle, then runs `ui_overlay` (fullscreen play). The body of a frame
-    // graph raster pass: the executor has begun rendering into the swapchain or the viewport target.
     auto composite(Context const &context, CompositePassInfo const &info, Callback ui_overlay)
             -> std::expected<void, RendererError>;
 
-} // namespace render_pass
+}

@@ -20,7 +20,7 @@ namespace {
         return a.first.x < b.second.x && b.first.x < a.second.x && a.first.y < b.second.y && b.first.y < a.second.y;
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("terrain_chunk_children exactly tile the parent's footprint") {
@@ -44,7 +44,6 @@ TEST_SUITE("unit") {
                     CHECK(child_max.y <= parent_max.y);
                 }
 
-                // Children don't overlap and their areas add up to the parent's.
                 for (std::size_t i = 0; i < children.size(); ++i) {
                     for (std::size_t j = i + 1; j < children.size(); ++j) {
                         CHECK_FALSE(overlaps(footprint(children[i], settings), footprint(children[j], settings)));
@@ -124,13 +123,12 @@ TEST_SUITE("unit") {
             std::size_t previous_lod0_count = 0;
             std::size_t flips = 0;
 
-            // Sweep slowly across the LOD0/LOD1 split threshold and back.
             auto const span0 = terrain_chunk_span(settings, 0);
             auto const threshold = settings.split_factor * span0;
 
             for (int step = 0; step <= 200; ++step) {
                 auto const t = static_cast<float>(step) / 200.0F;
-                auto const x = threshold * (0.9F + 0.2F * t); // 0.9x to 1.1x the threshold
+                auto const x = threshold * (0.9F + 0.2F * t);
 
                 select_chunks({x, 0.0F}, settings, split_state, desired);
 

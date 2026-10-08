@@ -13,7 +13,7 @@ namespace {
 
         return result;
     }
-} // namespace
+}
 
 TEST_CASE("a fresh game is in progress with white to move") {
     chess::ChessEngine engine;
@@ -37,7 +37,6 @@ TEST_CASE("scholar's mate ends the game in checkmate") {
 
     CHECK(mate.game_state == GameState::checkmate);
     CHECK(engine.game_state() == GameState::checkmate);
-    // The mated side is the one to move.
     CHECK(engine.side_to_move() == chess::Side::black);
 }
 
@@ -51,7 +50,6 @@ TEST_CASE("the third occurrence of a position is a draw") {
 
         auto const last = play(engine, Square::f6, Square::g8);
 
-        // The start position has now occurred twice after the first round and three times after the second.
         CHECK(last.game_state == (round == 0 ? GameState::playing : GameState::draw_repetition));
     }
 

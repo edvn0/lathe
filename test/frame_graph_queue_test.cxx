@@ -43,7 +43,7 @@ namespace {
         CHECK(problems.empty());
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("async shape: graphics, compute, graphics splits into three batches") {
@@ -73,8 +73,6 @@ TEST_SUITE("unit") {
         CHECK(compiled->batches[1].queue == LogicalQueue::compute);
         CHECK(compiled->batches[2].queue == LogicalQueue::graphics);
 
-        // A -> B is a real ownership transfer (the contents are needed); B -> C is a WAR where C discards, so only a
-        // semaphore and a layout transition from UNDEFINED.
         REQUIRE(compiled->transfers.size() == 1);
         auto const &transfer = compiled->transfers.front();
         CHECK(transfer.from == LogicalQueue::graphics);
@@ -122,7 +120,6 @@ TEST_SUITE("unit") {
             CHECK(batch.acquires.empty());
             CHECK(batch.releases.empty());
         }
-        // The layout change is still made, by a plain barrier on the reading queue.
         auto const &b_before = compiled->batches[1].passes.front().before;
         REQUIRE(b_before.images.size() == 1);
         CHECK(b_before.images.front().old_layout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
@@ -235,7 +232,6 @@ TEST_SUITE("unit") {
         }
         auto const compiled = compile(graph, dedicated());
         REQUIRE(compiled.has_value());
-        // Three switches inside the frame (G to C, C to G, G to C), plus the epilogue returning the import to graphics.
         CHECK(compiled->transfers.size() == 4);
         expect_sound(graph.description(), *compiled, dedicated());
     }
@@ -261,7 +257,6 @@ TEST_SUITE("unit") {
         });
         auto const compiled = compile(graph, dedicated());
         REQUIRE(compiled.has_value());
-        // Two inside the frame, plus the epilogue returning both imports to graphics.
         CHECK(compiled->transfers.size() == 4);
         auto const consumer = std::ranges::find_if(compiled->batches,
                                                    [](Batch const &b) { return b.queue == LogicalQueue::compute; });

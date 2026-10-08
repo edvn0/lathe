@@ -1,4 +1,3 @@
-// describe() overload for the serialisation module's error type.
 #include "core/error_describe.hxx"
 
 #include <format>

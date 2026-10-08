@@ -38,7 +38,6 @@ namespace {
 
     using Triangle = std::array<std::uint32_t, 3>;
 
-    // Rotate the smallest index to the front: keeps winding, ignores the start corner.
     [[nodiscard]] auto canonical(Triangle triangle) -> Triangle {
         auto const first = std::ranges::min_element(triangle) - triangle.begin();
         std::ranges::rotate(triangle, triangle.begin() + first);
@@ -74,7 +73,7 @@ namespace {
         return triangles;
     }
 
-} // namespace
+}
 
 TEST_CASE("meshlets cover every triangle exactly once, with winding preserved") {
     auto const &indices = terrain_chunk_indices();
@@ -158,7 +157,6 @@ TEST_CASE("task group counts cover every (instance, meshlet chunk) within per-di
             CHECK(command.group_count_z == 1);
             CHECK(dispatched >= needed);
 
-            // At most one partial row of no-op groups.
             CHECK(dispatched - needed < std::max<std::uint64_t>(command.group_count_x, 1));
         }
     }
@@ -184,7 +182,6 @@ TEST_CASE("prepare_primitive_gpu_data builds meshlets exactly for levels with th
     SUBCASE("reduced LODs get their own build, missing ones alias") {
         ModelCpuPrimitive primitive{.vertices = capsule->vertices, .indices = capsule->indices};
 
-        // Every other triangle; any distinct index buffer will do.
         std::vector<std::uint32_t> reduced;
         for (std::size_t i = 0; i + 2 < primitive.indices.size(); i += 6) {
             reduced.insert(reduced.end(), primitive.indices.begin() + static_cast<std::ptrdiff_t>(i),
@@ -209,7 +206,6 @@ TEST_CASE("small meshes draw instanced, big ones through meshlets") {
         return static_cast<std::uint32_t>(build_meshlet_topology(indices, vertex_count).meshlets.size());
     };
 
-    // Small meshes like the grass clump (~4 meshlets, ~20K instances) must use the instanced path.
     auto grass = make_grass_clump_mesh();
     REQUIRE(grass.has_value());
     CHECK_FALSE(uses_meshlet_path(count_meshlets(grass->indices, grass->vertices.size())));

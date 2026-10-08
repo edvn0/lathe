@@ -92,8 +92,6 @@ struct SamplerDescriptorRecord {
     bool occupied = false;
 };
 
-// `descriptor_revision` survives slot reuse and only increases, so GpuResourceTable never mistakes a reused
-// slot for an unchanged one.
 struct SamplerSlotData {
     VkSampler sampler = VK_NULL_HANDLE;
 

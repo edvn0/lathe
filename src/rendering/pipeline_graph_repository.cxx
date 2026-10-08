@@ -16,7 +16,6 @@ namespace {
         return (error_code ? path : canonical).generic_string();
     }
 
-    // Requests that differ only in their defines are different stages (and different shader binary cache entries).
     auto to_stage_key(renderer::ShaderCompileRequest const &request) -> std::string {
         auto key = std::format("{}|{}|{}", to_lookup_key(request.source_path.absolute()), request.entry_point,
                                static_cast<int>(std::to_underlying(request.stage)));
@@ -27,7 +26,7 @@ namespace {
 
         return key;
     }
-} // namespace
+}
 
 PipelineGraphRepository::~PipelineGraphRepository() { destroy(); }
 
@@ -143,7 +142,6 @@ auto PipelineGraphRepository::link_stage_source_files(std::uint32_t stage_index)
         file.dependent_stages.push_back(stage_index);
     }
 
-    // Only the entry-point file is watched, not its includes.
 }
 
 auto PipelineGraphRepository::find_or_create_stage(renderer::ShaderCompileRequest const &request,
@@ -364,7 +362,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
         reserved[i] = true;
     }
 
-    // Phase 2 (parallel): every distinct dirty stage compiles once, on thread_pool.
     std::vector<std::uint32_t> dirty_stage_indices;
     {
         std::vector<bool> seen(stage_nodes_.size(), false);
@@ -421,7 +418,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
             stage.has_compiled_once = true;
         }
 
-        // A compile failure fails the whole batch: it usually means a shared shader file is broken.
         if (first_error) {
             for (std::size_t i = 0; i < register_infos.size(); ++i) {
                 if (!reserved[i]) {
@@ -442,7 +438,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
         }
     }
 
-    // Phase 3 (parallel): build every compiled node. The storages and the pipeline cache synchronize internally.
     for (std::size_t i = 0; i < register_infos.size(); ++i) {
         if (!reserved[i]) {
             continue;
@@ -548,7 +543,7 @@ auto PipelineGraphRepository::on_files_changed(std::span<std::filesystem::path c
 
         if (existing == source_file_lookup_.end()) {
             debug("Not found for {}", key);
-            continue; // not part of any registered pipeline
+            continue;
         }
 
         auto const &file = source_files_[existing->second];
@@ -612,7 +607,7 @@ auto PipelineGraphRepository::process_dirty() -> void {
 
         if (!rebuilt) {
             error("Pipeline rebuild failed for {} after successful shader compile(s)", node.register_info.debug_name);
-            continue; // stays pending_rebuild; retried on the next call
+            continue;
         }
 
         retire(node.live_shader_object_handle);

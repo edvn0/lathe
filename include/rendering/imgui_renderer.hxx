@@ -25,15 +25,12 @@ class Pipeline;
 namespace gui {
 
     struct FontChoice {
-        std::string font_path; // root-relative, read through read_resource()
+        std::string font_path;
         float size{20.0F};
     };
 
     using ImGuiFramebuffer = std::tuple<VkExtent2D, VkFormat>;
 
-    // gui.slang decodes sRGB manually, which suits the UNORM textures ImGui normally shows. Textures that are
-    // themselves sRGB (e.g. the viewport target) are already decoded by the sampler; tag their ImTextureID with
-    // this bit to skip the second decode, or they render too dark.
     inline constexpr std::uint64_t linear_source_texture_bit = std::uint64_t{1} << 32;
 
     [[nodiscard]] constexpr auto linear_source_texture_id(std::uint32_t bindless_index) noexcept -> ImTextureID {
@@ -53,7 +50,6 @@ namespace gui {
 
         auto begin_frame(ImGuiFramebuffer main_fb) -> void;
 
-        // frame_index must match the one Renderer::record_frame() uses this frame.
         auto render(VkCommandBuffer cmd, std::uint32_t frame_index) -> void;
         auto end_frame() -> void;
 
@@ -69,7 +65,6 @@ namespace gui {
             std::uint32_t vertex_count{0};
         };
 
-        // ImGui keeps pointing at the TTF (FontDataOwnedByAtlas is off), so it lives as long as the renderer.
         std::vector<std::byte> font_data;
 
         PipelineNodeHandle main_pipeline{};
@@ -95,4 +90,4 @@ namespace gui {
         auto acquire_draw_slot() -> DrawableData &;
     };
 
-} // namespace gui
+}

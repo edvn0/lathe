@@ -45,7 +45,6 @@ namespace {
 
         switch (memory) {
             case BufferMemory::device:
-                // Device-local, not host-visible or mapped. Still has a device address if requested.
                 create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
                 create_info.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -53,7 +52,6 @@ namespace {
                 break;
 
             case BufferMemory::upload:
-                // CPU -> GPU. Persistently mapped; SEQUENTIAL_WRITE lets VMA choose write-combined memory.
                 create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
 
                 create_info.flags =
@@ -66,7 +64,6 @@ namespace {
                 break;
 
             case BufferMemory::readback:
-                // GPU -> CPU. RANDOM access, preferably cached. May be non-coherent; invalidate() handles that.
                 create_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
 
                 create_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
@@ -87,7 +84,7 @@ namespace {
         return DeviceError::buffer_creation(message, result);
     }
 
-} // namespace
+}
 
 Buffer::~Buffer() { destroy(); }
 
@@ -285,7 +282,6 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
         return std::unexpected{make_buffer_error("vmaCreateBuffer failed", vk_result)};
     }
 
-    // Only upload and readback buffers are mapped.
     if (requires_mapping(create_info.memory) && result.allocation_info.pMappedData == nullptr) {
         result.destroy();
         return std::unexpected{make_buffer_error("VMA returned an unmapped host-visible buffer allocation",
@@ -300,7 +296,6 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
         vk::set_object_name(ctx.device, VK_OBJECT_TYPE_BUFFER, vk::object_handle(result.buffer), debug_name);
     }
 
-    // Device addresses don't depend on host visibility.
     if ((create_info.usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
 
         VkBufferDeviceAddressInfo const address_info{

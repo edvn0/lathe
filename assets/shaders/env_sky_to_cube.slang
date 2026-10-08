@@ -4,8 +4,6 @@ import bindless;
 import scene_types;
 import environment;
 
-// Renders the procedural sky into one face of the radiance cube (mip 0), from the Preetham state in the frame's UBO.
-// The sun disc is left out on purpose: the directional light already lights the scene with it.
 struct EnvSkyToCubePushConstants
 {
     Ptr<UBO> ubo;
@@ -13,7 +11,6 @@ struct EnvSkyToCubePushConstants
     uint face;
     uint size;
 
-    // Keeps the generated C++ struct's size aligned, as in gtao_denoise.slang.
     uint _padding;
 };
 

@@ -17,7 +17,6 @@ namespace {
 
     VKAPI_ATTR auto VKAPI_CALL idle_reports_loss(VkDevice) -> VkResult { return VK_ERROR_DEVICE_LOST; }
 
-    // A GPU that hangs: never returns until the test lets it.
     VKAPI_ATTR auto VKAPI_CALL idle_hangs(VkDevice) -> VkResult {
         while (!release_hung_wait.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds{5});
@@ -26,7 +25,6 @@ namespace {
         return VK_SUCCESS;
     }
 
-    // vkDeviceWaitIdle is volk's function pointer, so a test can stand in for the driver.
     struct ScopedDeviceWaitIdle {
         PFN_vkDeviceWaitIdle saved = vkDeviceWaitIdle;
 
@@ -38,7 +36,7 @@ namespace {
         auto operator=(ScopedDeviceWaitIdle const &) -> ScopedDeviceWaitIdle & = delete;
     };
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("wait_idle_bounded passes a healthy or failed wait through") {
@@ -62,7 +60,6 @@ TEST_SUITE("unit") {
         CHECK(wait_idle_bounded(VK_NULL_HANDLE, "test", std::chrono::seconds{1}) == VK_TIMEOUT);
         CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds{3});
 
-        // The detached helper is still inside the "driver"; let it finish before the fake goes out of scope.
         release_hung_wait.store(true, std::memory_order_release);
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
     }

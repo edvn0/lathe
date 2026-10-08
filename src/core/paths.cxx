@@ -42,7 +42,7 @@ namespace {
 
         return std::filesystem::exists(directory / "game.toml", error);
     }
-} // namespace
+}
 
 namespace {
     auto current_storage() -> std::optional<Paths> & {
@@ -50,7 +50,7 @@ namespace {
 
         return storage;
     }
-} // namespace
+}
 
 namespace paths_detail {
     std::atomic<bool> access_recording{false};
@@ -58,7 +58,7 @@ namespace paths_detail {
     namespace {
         std::mutex accessed_mutex;
         std::set<std::string> accessed;
-    } // namespace
+    }
 
     auto note_data_access(std::string const &logical) -> void {
         std::scoped_lock const lock{accessed_mutex};
@@ -79,7 +79,7 @@ namespace paths_detail {
 
         return path;
     }
-} // namespace paths_detail
+}
 
 auto Paths::resolve(PathsOptions const &options) -> Paths {
     auto paths = Paths{};

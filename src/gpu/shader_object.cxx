@@ -56,7 +56,7 @@ namespace {
 
         return std::nullopt;
     }
-} // namespace
+}
 
 ShaderObjectSet::~ShaderObjectSet() { destroy(); }
 
@@ -173,7 +173,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
         return infos;
     };
 
-    auto shader_create_infos = build_create_infos(/*force_spirv=*/false);
+    auto shader_create_infos = build_create_infos(false);
     std::array<VkShaderEXT, ShaderObjectSet::max_stages> created_shaders{};
     auto vk_result = vkCreateShadersEXT(context.device, static_cast<std::uint32_t>(shader_create_infos.size()),
                                         shader_create_infos.data(), nullptr, created_shaders.data());
@@ -186,7 +186,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
         }
         created_shaders.fill(VK_NULL_HANDLE);
 
-        shader_create_infos = build_create_infos(/*force_spirv=*/true);
+        shader_create_infos = build_create_infos(true);
 
         vk_result = vkCreateShadersEXT(context.device, static_cast<std::uint32_t>(shader_create_infos.size()),
                                        shader_create_infos.data(), nullptr, created_shaders.data());
@@ -217,7 +217,6 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
         vk::set_object_name(context.device, VK_OBJECT_TYPE_SHADER_EXT, vk::object_handle(created_shaders[index]),
                             object_name);
 
-        // Cache every stage that didn't come from the cache.
         auto const &shader = create_info.shaders[index];
 
         if (binary_cache != nullptr && !shader.cache_key.empty() && !used_binary[index]) {
@@ -292,7 +291,7 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
         return VkShaderCreateInfoEXT{
                 .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
                 .pNext = nullptr,
-                .flags = 0, // unlinked
+                .flags = 0,
                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                 .nextStage = 0,
                 .codeType = use_binary ? VK_SHADER_CODE_TYPE_BINARY_EXT : VK_SHADER_CODE_TYPE_SPIRV_EXT,
@@ -308,7 +307,7 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
         };
     };
 
-    auto shader_create_info = build_create_info(/*force_spirv=*/false);
+    auto shader_create_info = build_create_info(false);
     auto used_binary = binary_storage.has_value();
 
     VkShaderEXT created_shader = VK_NULL_HANDLE;
@@ -321,7 +320,7 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
             created_shader = VK_NULL_HANDLE;
         }
 
-        shader_create_info = build_create_info(/*force_spirv=*/true);
+        shader_create_info = build_create_info(true);
         used_binary = false;
 
         vk_result = vkCreateShadersEXT(context.device, 1, &shader_create_info, nullptr, &created_shader);

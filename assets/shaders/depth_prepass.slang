@@ -33,7 +33,6 @@ VertexOutput prepass_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_stre
     return output;
 }
 
-// Instanced path for batches too small for meshlets. Same vertex function as main_mesh.
 [shader("vertex")]
 VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform PC pc)
 {
@@ -66,9 +65,6 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
     }
 }
 
-// Only for the masked prepass pipelines; the opaque prepass has no fragment shader. Returns the samples the fragment
-// covers: all of them, or with alpha to coverage under MSAA the share its alpha asks for, so forward (which tests
-// depth EQUAL) shades exactly those.
 [shader("fragment")]
 uint main_fs(VertexOutput input, uniform PC pc) : SV_Coverage
 {
@@ -91,8 +87,6 @@ uint main_fs(VertexOutput input, uniform PC pc) : SV_Coverage
         return 0xFFFFFFFFu;
     }
 
-    // Sharpened so the cutoff edge is about a pixel wide whatever the mip level, then turned into that share of
-    // the samples (Castano's alpha-to-coverage sharpening).
     const float edge_width = max(fwidth(alpha), 1e-4);
     const float coverage = saturate((alpha - material.alpha_cutoff) / edge_width + 0.5);
     const uint covered = min(uint(coverage * float(sample_count) + 0.5), sample_count);
@@ -105,8 +99,6 @@ uint main_fs(VertexOutput input, uniform PC pc) : SV_Coverage
         return 0xFFFFFFFFu;
     }
 
-    // Which samples a partial pixel keeps rotates with the pixel, so neighbouring edge pixels don't all drop the same
-    // samples (that reads as a pattern once resolved).
     const uint2 pixel = uint2(input.position.xy);
     const uint rotation = (pixel.x + pixel.y * 3u) % sample_count;
     const uint all_samples = (1u << sample_count) - 1u;

@@ -37,7 +37,7 @@ namespace {
 
         return value;
     }
-} // namespace
+}
 
 TEST_CASE("the entry script's callbacks are called with their arguments and keep state between calls") {
     auto runtime = make_runtime();
@@ -163,11 +163,9 @@ TEST_CASE("a callback that errors is reported once and disabled until reset") {
     CHECK(failed.error.find("boom") != std::string::npos);
     CHECK(runtime.last_error().find("on_update") != std::string::npos);
 
-    // Disabled: later calls are skipped rather than failing every frame.
     CHECK_FALSE(runtime.has_callback("on_update"));
     CHECK(runtime.call("on_update").ok);
 
-    // Other callbacks are unaffected.
     CHECK(call_number(runtime, "fine") == 1.0);
 
     runtime.reset_errors();
@@ -186,7 +184,6 @@ TEST_CASE("a runaway callback is stopped at its time budget") {
     CHECK_FALSE(result.ok);
     CHECK(result.error.find("time budget") != std::string::npos);
 
-    // The state is usable afterwards, with a fresh budget.
     CHECK(call_number(runtime, "fine") == 7.0);
 }
 

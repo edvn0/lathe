@@ -11,8 +11,6 @@ namespace frame_graph {
             state ^= value + 0x9e3779b97f4a7c15ULL + (state << 6U) + (state >> 2U);
         }
 
-        // What decides the images themselves: each live transient's slot, description and usage. Not the compiled
-        // plan as a whole: passes elsewhere in the graph coming and going must not recreate images.
         auto key_of(GraphDesc const &graph, CompiledGraph const &compiled, bool alias) -> std::uint64_t {
             auto key = std::uint64_t{0x1234567};
             mix(key, alias ? 1U : 0U);
@@ -36,7 +34,6 @@ namespace frame_graph {
         }
 
         auto create_info_of(TransientImageDesc const &desc, VkImageUsageFlags usage) -> ImageCreateInfo {
-            // Bindless views need the matching usage whether or not a pass declared the use.
             if ((desc.descriptor_views & image_descriptor_view_bit(ImageDescriptorView::sampled_2d)) != 0) {
                 usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
             }
@@ -64,7 +61,7 @@ namespace frame_graph {
             return plan;
         }
 
-    } // namespace
+    }
 
     auto TransientAllocator::initialize(VulkanContext &context, ImageStorage &images, std::uint32_t slot_count)
             -> void {
@@ -82,14 +79,11 @@ namespace frame_graph {
 
         auto &state = slots_[slot];
 
-        // The bindless table lists every image in every frame's descriptor set, so another slot's frame still in
-        // flight can reference this slot's images. Reallocation is rare (a resize, a pass toggled), so just wait.
         if ((!state.entries.empty() || !state.blocks.empty()) && context_ != nullptr &&
             context_->device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(context_->device);
         }
 
-        // Images first: they are bound into the blocks.
         state.entries.clear();
         for (auto const block: state.blocks) {
             if (context_ != nullptr && context_->allocator != VK_NULL_HANDLE) {
@@ -117,7 +111,6 @@ namespace frame_graph {
         auto &state = slots_[slot];
         auto const key = key_of(graph, compiled, alias);
 
-        // What each live transient needs; only asked of the device when a description changed.
         if (!state.requirements_valid || state.requirements_key != key) {
             state.requirements.assign(graph.resources.size(), MemoryRequirement{});
             state.infos.assign(graph.resources.size(), ImageCreateInfo{});
@@ -128,7 +121,7 @@ namespace frame_graph {
                 }
                 auto const usage = transient_usage(graph, compiled, resource);
                 if (usage == 0) {
-                    continue; // culled away
+                    continue;
                 }
                 state.infos[resource] = create_info_of(*desc, usage);
                 auto const memory = Image::memory_requirements(*context_, state.infos[resource]);
@@ -142,8 +135,6 @@ namespace frame_graph {
             state.requirements_valid = true;
         }
 
-        // The plan is recomputed every frame (its barriers follow the compiled graph); the images only change when
-        // the placement does.
         auto plan = plan_transients(graph, compiled, state.requirements, alias);
         auto signature = key;
         for (auto const &block: plan.blocks) {
@@ -170,7 +161,6 @@ namespace frame_graph {
             };
             VmaAllocationCreateInfo const allocation_info{
                     .flags = VMA_ALLOCATION_CREATE_CAN_ALIAS_BIT,
-                    // No resource to infer from, so the AUTO usages do not apply: ask for device-local memory.
                     .usage = VMA_MEMORY_USAGE_UNKNOWN,
                     .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                     .preferredFlags = 0,
@@ -296,4 +286,4 @@ namespace frame_graph {
         }
     }
 
-} // namespace frame_graph
+}

@@ -20,26 +20,20 @@ struct IModelSink {
     [[nodiscard]]
     virtual auto create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, RendererError> = 0;
 
-    // Installs a finished Model into `pending` in place. Render thread only.
     [[nodiscard]]
     virtual auto install_model(ModelHandle pending, Model const &model) -> std::expected<void, RendererError> = 0;
 
-    // Adds a reference, for a cache handing the same handle to another caller.
     virtual auto retain_model(ModelHandle handle) -> void = 0;
 
-    // Drops a reference taken by retain_model() or create_pending_model(); the last one destroys the model.
     virtual auto release_model(ModelHandle handle) -> void = 0;
 
-    // Registers `handle` under `name` in the AssetRegistry. A name collision is ignored.
     virtual auto register_model_name(ModelHandle handle, std::string_view name) -> void = 0;
 
-    // Records the file `handle` was loaded from, so saving a scene can reference it by path.
     virtual auto register_model_source(ModelHandle handle, AssetPath const &source) -> void = 0;
 
     [[nodiscard]]
     virtual auto sampler_storage() noexcept -> SamplerStorage & = 0;
 
-    // Resources ModelStreamer needs to run the GPU upload itself across frames.
     [[nodiscard]]
     virtual auto image_storage() noexcept -> ImageStorage & = 0;
     [[nodiscard]]

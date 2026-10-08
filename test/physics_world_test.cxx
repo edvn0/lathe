@@ -10,9 +10,6 @@
 #include <memory>
 #include <vector>
 
-// Repeated construct/step/destroy cycles, as play()/stop() do. Bullet's task scheduler is a process global,
-// and setting a new one calls deactivate() on the previous one, so a PhysicsWorld that doesn't clear it
-// leaves the next one dereferencing a dangling pointer.
 TEST_SUITE("unit") {
     TEST_CASE("PhysicsWorld survives repeated stop/start cycles") {
         BS::priority_thread_pool pool{2};
@@ -34,7 +31,7 @@ TEST_SUITE("unit") {
 
             CHECK(registry.get<Components::Transform>(entity).position.y < 5.0F);
 
-            world.reset(); // as Scene::on_scene_stop() does
+            world.reset();
         }
     }
 
@@ -55,7 +52,7 @@ TEST_SUITE("unit") {
         world.remove_body(registry, entity);
         world.step(registry, 1.0F / 60.0F);
 
-        CHECK(true); // not crashing is the assertion
+        CHECK(true);
     }
 
     namespace {
@@ -66,10 +63,8 @@ TEST_SUITE("unit") {
             }
         }
 
-    } // namespace
+    }
 
-    // What a ball game needs of the sphere shape: it rests on a floor, a sideways impulse rolls it, and rolling
-    // friction brings it back to a stop rather than leaving it travelling forever.
     TEST_CASE("A sphere body rolls from a lateral impulse and comes back to rest") {
         BS::priority_thread_pool pool{2};
         entt::registry registry;
@@ -99,7 +94,6 @@ TEST_SUITE("unit") {
         auto const &position = registry.get<Components::Transform>(ball).position;
         CHECK(position.y == doctest::Approx(radius).epsilon(0.1));
 
-        // 3 m/s along +X.
         world.apply_impulse(registry, ball, glm::vec3{3.0F * mass, 0.0F, 0.0F});
 
         for (int step = 0; step < 30; ++step) {
@@ -135,7 +129,6 @@ TEST_SUITE("unit") {
 
         world.step(registry, 1.0F / 60.0F);
 
-        // Straight up, far faster than one step of gravity can undo.
         world.apply_impulse(registry, entity, glm::vec3{0.0F, 20.0F, 0.0F});
         world.step(registry, 1.0F / 60.0F);
 
@@ -155,7 +148,6 @@ TEST_SUITE("unit") {
         auto const body = registry.emplace<Components::RigidBody>(entity, Components::RigidBody{.mass = 1.0F});
         world.add_body(registry, entity, transform, body);
 
-        // Long enough to be falling fast.
         for (int step = 0; step < 60; ++step) {
             world.step(registry, 1.0F / 60.0F);
         }
@@ -170,7 +162,6 @@ TEST_SUITE("unit") {
         CHECK(position.x == doctest::Approx(spawn.position.x));
         CHECK(position.z == doctest::Approx(spawn.position.z));
 
-        // Only this one step of gravity, not the speed built up before the teleport.
         CHECK(position.y == doctest::Approx(spawn.position.y).epsilon(0.001));
     }
 
@@ -181,7 +172,6 @@ TEST_SUITE("unit") {
         PhysicsWorldSettings const settings{};
         PhysicsWorld world{settings, pool, registry};
 
-        // Flat heightfield centred in its symmetric AABB.
         TerrainColliderDesc const desc{
                 .samples_x = 5,
                 .samples_z = 5,
@@ -239,7 +229,6 @@ TEST_SUITE("unit") {
         settle(world, registry);
         REQUIRE(registry.get<Components::Transform>(entity).position.y == doctest::Approx(5.5F).epsilon(0.1));
 
-        // Rebinding to a new centre must keep the shape working.
         world.bind_terrain_collider(handle, glm::vec3{0.0F, 10.0F, 0.0F}, flat_heights);
         world.set_velocity(registry, entity, glm::vec3{0.0F, 0.0F, 0.0F});
         settle(world, registry);
@@ -270,9 +259,8 @@ TEST_SUITE("unit") {
 
             world->step(registry, 1.0F / 60.0F);
 
-            world.reset(); // as Scene::on_scene_stop() does
+            world.reset();
 
-            // Entity 0's body is torn down normally despite the terrain collider's null user pointer.
             CHECK(registry.valid(entity_zero));
             CHECK_FALSE(registry.all_of<Components::PhysicsBody>(entity_zero));
         }

@@ -37,7 +37,6 @@ namespace gui {
             return unit == 0 ? std::format("{} B", bytes) : std::format("{:.1f} {}", value, units[unit]);
         }
 
-        // Copies `text` into `buffer`, truncating so the terminator always fits.
         template<std::size_t N>
         auto assign_buffer(std::array<char, N> &buffer, std::string_view text) -> void {
             auto const length = std::min(text.size(), N - 1);
@@ -45,7 +44,6 @@ namespace gui {
             buffer[length] = '\0';
         }
 
-        // Draws `icon` tinted, vertically centred on the current text line. No-op without icons.
         auto draw_icon(EditorIcons const *icons, EditorIcon icon, ImVec4 tint) -> void {
             if (icons == nullptr) {
                 return;
@@ -61,7 +59,7 @@ namespace gui {
         constexpr ImVec4 file_tint{0.88F, 0.64F, 0.37F, 1.0F};
         constexpr ImVec4 other_file_tint{0.60F, 0.60F, 0.64F, 1.0F};
 
-    } // namespace
+    }
 
     auto path_to_utf8(std::filesystem::path const &path) -> std::string {
         auto const text = path.u8string();
@@ -241,7 +239,6 @@ namespace gui {
             ImGui::EndTable();
         }
 
-        // Applied after the loop, since navigating rebuilds entries_.
         if (navigate_to) {
             navigate(std::move(*navigate_to));
             file_name_buffer_[0] = '\0';
@@ -277,7 +274,6 @@ namespace gui {
         std::optional<std::filesystem::path> chosen;
         auto const &style = ImGui::GetStyle();
 
-        // Directory bar: up, then an editable path (Enter navigates).
         if (ImGui::ArrowButton("##up", ImGuiDir_Up) && directory_.has_parent_path() &&
             directory_.parent_path() != directory_) {
             navigate(directory_.parent_path());
@@ -311,7 +307,6 @@ namespace gui {
         }
         ImGui::EndChild();
 
-        // Footer: file name and filter, then the buttons.
         bool confirm = false;
 
         float const filter_width = ImGui::GetFontSize() * 16.0F;
@@ -370,4 +365,4 @@ namespace gui {
         return chosen;
     }
 
-} // namespace gui
+}

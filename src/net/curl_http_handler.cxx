@@ -22,7 +22,6 @@ namespace {
         auto operator()(curl_slist *list) const noexcept -> void { curl_slist_free_all(list); }
     };
 
-    // State the libcurl callbacks write into; lives on the stack of send().
     struct Transfer {
         HttpResponseMessage response;
         std::size_t max_bytes = 0;
@@ -36,7 +35,7 @@ namespace {
 
         if (transfer.response.content.size() + bytes > transfer.max_bytes) {
             transfer.too_large = true;
-            return 0; // aborts with CURLE_WRITE_ERROR
+            return 0;
         }
 
         auto const *begin = reinterpret_cast<std::byte const *>(data);
@@ -54,7 +53,6 @@ namespace {
         }
 
         if (line.starts_with("HTTP/")) {
-            // A new response (after a redirect): forget the previous one's headers.
             transfer.response.headers.clear();
         } else if (auto const colon = line.find(':'); colon != std::string_view::npos) {
             auto value = line.substr(colon + 1);
@@ -80,10 +78,10 @@ namespace {
         }
 
         constexpr std::array<char const *, 4> candidates{
-                "/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu
-                "/etc/pki/tls/certs/ca-bundle.crt",   // Fedora, RHEL
-                "/etc/ssl/ca-bundle.pem",             // openSUSE
-                "/etc/ssl/cert.pem",                  // Alpine, macOS
+                "/etc/ssl/certs/ca-certificates.crt",
+                "/etc/pki/tls/certs/ca-bundle.crt",
+                "/etc/ssl/ca-bundle.pem",
+                "/etc/ssl/cert.pem",
         };
 
         std::error_code ec;
@@ -160,7 +158,6 @@ namespace {
             transfer.max_bytes = options.max_response_bytes;
             transfer.stop = std::move(stop);
 
-            // Redirects can't downgrade to plain http either.
             auto const *protocols = options.allow_insecure_http ? "http,https" : "https";
             std::array<char, CURL_ERROR_SIZE> error_buffer{};
 
@@ -213,7 +210,6 @@ namespace {
             }
 
             if (!request.content.empty()) {
-                // Not copied; `request` outlives the transfer.
                 curl_easy_setopt(handle, CURLOPT_POSTFIELDS, reinterpret_cast<char const *>(request.content.data()));
                 curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(request.content.size()));
             }
@@ -247,7 +243,7 @@ namespace {
         }
     };
 
-} // namespace
+}
 
 auto make_curl_http_handler() -> std::unique_ptr<IHttpMessageHandler> {
     return std::make_unique<CurlHttpHandler>();

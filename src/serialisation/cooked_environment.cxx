@@ -71,7 +71,6 @@ auto decode_cooked_environment(std::span<std::byte const> payload, std::uint16_t
         return malformed("ENVM layers must be 1 or 6");
     }
 
-    // Bounded above by 6 * 2048 * 2048 * 4, so this cannot overflow.
     auto const count = static_cast<std::size_t>(image.width) * image.height * image.layers * 4U;
     auto const expected_bytes = count * sizeof(std::uint16_t);
 

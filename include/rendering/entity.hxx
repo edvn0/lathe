@@ -13,12 +13,12 @@ namespace detail {
     struct Meta {
         NameType name;
     };
-} // namespace detail
+}
 
 namespace Components {
     using Meta = detail::Meta<FlyString>;
     using GeneratedMeta = detail::Meta<std::string>;
-} // namespace Components
+}
 
 namespace detail {
     template<typename NameType = FlyString>
@@ -68,8 +68,6 @@ namespace detail {
         friend class Scene;
     };
 
-    // Handed to IScript::on_attach/on_detach. Never adds a name component, since the entity may already be named
-    // either way. Allows emplace<T>(): attach/detach always run on the main thread.
     class AttachedEntity {
     public:
         AttachedEntity(Scene *s, entt::entity e) noexcept : scene(s), entity(e) {}
@@ -126,8 +124,6 @@ namespace detail {
         friend class Scene;
     };
 
-    // Handed to IScript::on_update, which may run concurrently across the thread pool. No structural changes
-    // (adding/removing components or entities); mutating an existing component in place is fine.
     class ScriptEntity {
     public:
         ScriptEntity(Scene *s, entt::entity e) noexcept : scene(s), entity(e) {}
@@ -152,12 +148,10 @@ namespace detail {
         friend class Scene;
     };
 
-} // namespace detail
+}
 
-// Runtime-generated names.
 using GeneratedEntity = detail::Entity<std::string>;
 
-// Authored names, interned.
 using Entity = detail::Entity<FlyString>;
 
 using ReadOnlyEntity = detail::ReadOnlyEntity;

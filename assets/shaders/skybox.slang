@@ -4,9 +4,6 @@ import bindless;
 import scene_types;
 import environment;
 
-// The background, drawn inside the forward pass after the opaque and mask geometry and before the blend draws. A
-// fullscreen triangle at the far plane: the viewport is reversed (stored depth = 1 - ndc.z), so ndc.z = 1 stores 0, and
-// the pass tests GREATER_OR_EQUAL with depth writes off, which only lets through pixels no geometry covered.
 struct SkyboxPushConstants
 {
     Ptr<UBO> ubo;
@@ -54,7 +51,6 @@ FragmentOutput main_fs(VertexOutput input)
 {
     const var ubo = pc.ubo;
 
-    // The same clip coordinates and viewport as the scene, so no extra flip is needed.
     const float4 view_point = mul(ubo.inverse_projection, float4(input.ndc, 1.0, 1.0));
     const float3 view_ray = view_point.xyz / view_point.w;
     const float3 ray = normalize(mul(transpose((float3x3)ubo.view), view_ray));
@@ -67,7 +63,6 @@ FragmentOutput main_fs(VertexOutput input)
     if ((flags & env_sky_procedural) != 0) {
         colour = environment_sky(ubo, ray);
 
-        // The disc is drawn here and not in the radiance capture, which the directional light already accounts for.
         if (dot(ray, ubo.sun_direction_cos_radius.xyz) > ubo.sun_direction_cos_radius.w) {
             colour = ubo.sun_disc_radiance.rgb;
         }

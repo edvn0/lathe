@@ -53,8 +53,6 @@ struct ForwardTargetCreateInfo {
     std::string_view debug_name = "forward_target";
 };
 
-// Owns its images: destroying or overwriting a ForwardTarget destroys them, so do that only once the GPU is done with
-// them. The ImageStorage must outlive it.
 class ForwardTarget {
 public:
     ForwardTarget() = default;

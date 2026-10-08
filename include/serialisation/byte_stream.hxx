@@ -11,9 +11,6 @@
 #include <type_traits>
 #include <vector>
 
-// Little-endian byte streams for the LBF payloads. Values are copied as their in-memory representation, so only
-// trivially copyable types without padding should go through write()/read(); structs with padding are written
-// field by field so the files stay byte-for-byte deterministic.
 static_assert(std::endian::native == std::endian::little, "LBF assumes a little-endian host");
 
 template<typename T>
@@ -39,7 +36,6 @@ public:
         std::memcpy(bytes_.data() + offset, values.data(), values.size_bytes());
     }
 
-    // u32 element count, then the elements.
     template<ByteStreamValue T>
     auto write_array(std::span<T const> values) -> void {
         write(static_cast<std::uint32_t>(values.size()));
@@ -51,13 +47,11 @@ public:
         write_array(std::span<T const>{values});
     }
 
-    // u32 byte count, then the characters; no terminator.
     auto write_string(std::string_view text) -> void {
         write(static_cast<std::uint32_t>(text.size()));
         write_span(std::span<char const>{text.data(), text.size()});
     }
 
-    // Zero-pads to a multiple of `alignment` (a power of two) from the start of this writer.
     auto align(std::size_t alignment) -> void {
         auto const padded = (bytes_.size() + alignment - 1) & ~(alignment - 1);
         bytes_.resize(padded, std::byte{0});
@@ -77,8 +71,6 @@ private:
     std::vector<std::byte> bytes_;
 };
 
-// Bounds-checked reader. An overrun latches failed() and every later read yields zeroes, so a decoder can read a
-// whole record and check once at the end instead of after every field.
 class ByteReader {
 public:
     explicit ByteReader(std::span<std::byte const> bytes) noexcept : bytes_(bytes) {}
@@ -116,7 +108,6 @@ public:
         return true;
     }
 
-    // Reads a write_array(). Counts that can't fit in what's left fail instead of allocating.
     template<ByteStreamValue T>
     auto read_array(std::vector<T> &values) -> bool {
         auto const count = read<std::uint32_t>();
@@ -151,7 +142,6 @@ public:
         return text;
     }
 
-    // A view of the next `size` bytes, advancing past them. Empty and failed() on overrun.
     [[nodiscard]] auto read_bytes(std::size_t size) -> std::span<std::byte const> {
         if (!can_read(size)) {
             return {};
@@ -174,7 +164,6 @@ public:
     [[nodiscard]] auto remaining() const noexcept -> std::size_t { return failed_ ? 0 : bytes_.size() - cursor_; }
     [[nodiscard]] auto cursor() const noexcept -> std::size_t { return cursor_; }
 
-    // Marks the stream bad, e.g. for a value that read fine but is out of range.
     auto fail() noexcept -> void { failed_ = true; }
 
 private:

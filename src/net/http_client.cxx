@@ -33,7 +33,6 @@ namespace {
         };
     }
 
-    // The scheme of an absolute http(s) URI, lowercased; empty for anything else, including a missing host.
     [[nodiscard]]
     auto http_scheme(std::string_view uri) -> std::string {
         auto const separator = uri.find("://");
@@ -88,7 +87,6 @@ namespace {
         return bytes;
     }
 
-    // Writes next to `destination` and renames over it, so readers see the whole file or none of it.
     [[nodiscard]]
     auto write_file_atomically(std::filesystem::path const &destination, std::span<std::byte const> bytes) -> bool {
         std::error_code ec;
@@ -131,7 +129,7 @@ namespace {
         return value;
     }
 
-} // namespace
+}
 
 auto HttpHeaders::add(std::string name, std::string value) -> void {
     entries_.push_back(HttpHeader{.name = std::move(name), .value = std::move(value)});
@@ -162,7 +160,6 @@ public:
     }
 
     ~Impl() {
-        // In-flight requests see this through the per-request stop source; queued ones are failed below.
         shutdown.request_stop();
 
         for (auto &worker: workers) {
@@ -171,7 +168,6 @@ public:
 
         wake.notify_all();
 
-        // jthread joins on destruction.
         workers.clear();
 
         for (auto &task: queue) {
@@ -184,8 +180,6 @@ public:
     auto operator=(Impl const &) -> Impl & = delete;
     auto operator=(Impl &&) -> Impl & = delete;
 
-    // Runs `work(stop)` on a worker and delivers its result, or `canceled` if the client shuts down or `stop` fires
-    // first. `Result` must be constructible from an HttpError wrapped in std::unexpected.
     template<class Result, class Work>
     [[nodiscard]]
     auto enqueue(std::stop_token user_stop, Work work) -> std::future<Result> {
@@ -198,7 +192,6 @@ public:
                 return;
             }
 
-            // One token for the handler that fires on either the caller's or the client's stop.
             std::stop_source request_stop;
             std::stop_callback const on_user_stop{user_stop, [&request_stop] { request_stop.request_stop(); }};
             std::stop_callback const on_shutdown{shutdown.get_token(),
@@ -259,7 +252,6 @@ private:
     std::condition_variable_any wake;
     std::deque<std::move_only_function<void(bool)>> queue;
     std::stop_source shutdown;
-    // Declared last: workers use everything above, so they must be joined first.
     std::vector<std::jthread> workers;
 };
 

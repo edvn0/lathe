@@ -26,7 +26,6 @@ namespace {
         return renderer.create_model_from_cpu_data(to_model_cpu_data(std::move(*mesh)));
     }
 
-    // Matches the cards' material: make_grass_card_texture() keeps coverage at this cutoff in every mip.
     constexpr float grass_card_alpha_cutoff = 0.5F;
 
     auto create_grass_card_texture(Renderer &renderer) -> std::expected<ImageHandle, RendererError> {
@@ -56,7 +55,6 @@ namespace {
         return *image;
     }
 
-    // Updates `handle` to `info` if it is valid, creates a material otherwise.
     auto create_or_update_material(Renderer &renderer, MaterialHandle handle, MaterialCreateInfo const &info,
                                    std::string name) -> std::expected<MaterialHandle, RendererError> {
         if (handle.valid()) {
@@ -68,7 +66,7 @@ namespace {
         return renderer.create_material(info, std::move(name));
     }
 
-} // namespace
+}
 
 auto create_engine_models(Renderer &renderer) -> std::expected<EngineModels, RendererError> {
     auto cube = create_primitive_model(renderer, make_cube_mesh());
@@ -101,7 +99,6 @@ auto create_engine_models(Renderer &renderer) -> std::expected<EngineModels, Ren
         return std::unexpected(grass_card_texture.error());
     }
 
-    // Named so the editor lists the built-ins. create_model_from_cpu_data() doesn't name models itself.
     renderer.register_model_name(*cube, "Cube");
     renderer.register_model_name(*sphere, "Sphere");
     renderer.register_model_name(*grass_clump, "Grass Clump");
@@ -123,7 +120,6 @@ auto grass_materials(Renderer &renderer, EngineModels const &engine_models, Mate
 
     auto cards_info = look;
     cards_info.base_colour_texture = engine_models.grass_card_texture;
-    // Clamped: the card's sides must not pick up the blades on its opposite edge.
     cards_info.sampler = samplers.linear_clamp();
     cards_info.alpha_mode = AlphaMode::mask;
     cards_info.alpha_cutoff = grass_card_alpha_cutoff;

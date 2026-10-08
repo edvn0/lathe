@@ -122,7 +122,7 @@ namespace debug_draw {
             }
 
             void drawContactPoint(btVector3 const &point_on_b, btVector3 const &normal_on_b, btScalar distance,
-                                  int /*life_time*/, btVector3 const &colour) override {
+                                  int , btVector3 const &colour) override {
                 drawLine(point_on_b, point_on_b + normal_on_b * distance, colour);
 
                 constexpr auto marker_radius = btScalar{0.05F};
@@ -155,7 +155,7 @@ namespace debug_draw {
             int debug_mode_ = DBG_NoDebug;
         };
 
-    } // namespace
+    }
 
     struct DebugRenderer::Impl {
         struct FrameBuffer {
@@ -209,8 +209,6 @@ namespace debug_draw {
 
         std::vector<Vertex> pending_lines;
 
-        // Lines from add_line/add_aabb. Cleared every rendered frame, unlike the physics lines, which only update
-        // while playing.
         std::vector<Vertex> extra_lines;
 
         std::vector<FrameBuffer> frame_buffers;
@@ -241,7 +239,6 @@ namespace debug_draw {
         auto const cmd = context.command_buffer;
         auto const frame_index = context.frame_index;
 
-        // Shader objects bake no attachment state; the scope is metadata only.
         if (!impl_->pipeline.valid()) {
             auto created = create_pipeline(impl_->renderer, context.scope);
 
@@ -261,7 +258,6 @@ namespace debug_draw {
 
         auto &frame_buffer = impl_->frame_buffers[frame_index];
 
-        // Host writes to mapped memory need no prepare() or barrier.
         if (!frame_buffer.vertex->write(0, std::span<const Vertex>{impl_->pending_lines}).has_value()) {
             error("[DebugDraw] Failed to write line buffer");
             return;
@@ -285,7 +281,6 @@ namespace debug_draw {
 
         pipeline->bind(cmd);
 
-        // Everything else comes from the scene overlay baseline.
         vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
         vkCmdSetLineWidth(cmd, 1.0F);
 
@@ -320,7 +315,6 @@ namespace debug_draw {
                 {min.x, max.y, max.z},
         }};
 
-        // Bottom face, top face, then the 4 verticals.
         constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 12> edges{{
                 {0, 1},
                 {1, 2},
@@ -357,4 +351,4 @@ namespace debug_draw {
         return impl_->model_bounds_debug_enabled;
     }
 
-} // namespace debug_draw
+}

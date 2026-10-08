@@ -25,10 +25,8 @@ struct SwapchainCreateInfo {
     VkExtent2D framebuffer_extent{};
     bool vsync = true;
 
-    // Used instead of the vsync choice when the surface supports it (--present-mode=).
     std::optional<VkPresentModeKHR> preferred_present_mode;
 
-    // Swapchain images to ask for (--swapchain-images=), clamped to what the surface allows; 0 means 3.
     std::uint32_t image_count = 0;
 };
 
@@ -94,7 +92,6 @@ struct std::formatter<SwapchainBeginFrameError::Kind> : std::formatter<std::stri
 };
 
 struct SwapchainFrame {
-    // Filled in by the caller from QueueSet::command_buffer(); acquire() leaves it null.
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
 
     VkImage image = VK_NULL_HANDLE;
@@ -135,25 +132,17 @@ public:
         recreate_requested_ = true;
     }
 
-    // The frame slot the next acquire() is for; QueueSet::begin_slot() must have run for it. The slot advances when a
-    // frame is presented.
     [[nodiscard]]
     auto current_slot() const noexcept -> std::uint32_t {
         return current_frame_;
     }
 
-    // Acquires the next image into `slot`'s image_available semaphore. Handles pending and out-of-date recreation
-    // (reported as Kind::recreated, with no image acquired). The returned frame has no command buffer: the caller
-    // records into one from QueueSet.
     [[nodiscard]]
     auto acquire(std::uint32_t slot) noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError>;
 
-    // Presents the frame's image, waiting on render_finished(frame.image_index), then advances the slot. The caller
-    // has submitted work that signals that semaphore.
     [[nodiscard]]
     auto present(SwapchainFrame const &frame) noexcept -> SwapchainFrameResult;
 
-    // Binary semaphores the acquire signals and presentation waits on, for the submit in between.
     [[nodiscard]]
     auto image_available(std::uint32_t slot) const noexcept -> VkSemaphore {
         return slot < frames_.size() ? frames_[slot].image_available : VK_NULL_HANDLE;
@@ -175,13 +164,11 @@ public:
         return surface_format_.format;
     }
 
-    // Images in the current swapchain.
     [[nodiscard]]
     auto image_count() const noexcept -> std::uint32_t {
         return static_cast<std::uint32_t>(images_.size());
     }
 
-    // The mode the current swapchain was created with.
     [[nodiscard]]
     auto present_mode() const noexcept -> VkPresentModeKHR {
         return present_mode_;
@@ -247,5 +234,5 @@ private:
 
     std::uint32_t current_frame_ = 0;
     bool recreate_requested_ = false;
-    bool device_lost_ = false; // recreate() found the device lost or hung
+    bool device_lost_ = false;
 };

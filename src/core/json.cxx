@@ -52,7 +52,6 @@ auto JsonValue::operator[](std::string_view key) const noexcept -> JsonValue con
 
 namespace {
 
-    // Containers deeper than this are refused rather than recursed into.
     constexpr std::size_t maximum_depth = 256;
 
     class Parser {
@@ -211,7 +210,7 @@ namespace {
         }
 
         auto parse_string() -> std::expected<std::string, JsonParseError> {
-            ++position_; // opening quote
+            ++position_;
             std::string out;
 
             while (position_ < text_.size()) {
@@ -265,7 +264,6 @@ namespace {
                         if (!code) {
                             return std::unexpected(code.error());
                         }
-                        // A high surrogate followed by an escaped low one is one code point.
                         if (*code >= 0xD800U && *code <= 0xDBFFU && text_.substr(position_, 2) == "\\u") {
                             position_ += 2;
                             auto low = parse_hex4();
@@ -292,7 +290,7 @@ namespace {
         }
 
         auto parse_array(std::size_t depth) -> std::expected<JsonValue, JsonParseError> {
-            ++position_; // [
+            ++position_;
             JsonArray array;
 
             skip_whitespace();
@@ -324,7 +322,7 @@ namespace {
         }
 
         auto parse_object(std::size_t depth) -> std::expected<JsonValue, JsonParseError> {
-            ++position_; // {
+            ++position_;
             JsonObject object;
 
             skip_whitespace();
@@ -374,7 +372,7 @@ namespace {
         std::size_t position_ = 0;
     };
 
-} // namespace
+}
 
 auto parse_json(std::string_view text) -> std::expected<JsonValue, JsonParseError> {
     return Parser{text}.parse_document();
@@ -457,7 +455,6 @@ auto JsonWriter::close(char bracket) -> void {
 auto JsonWriter::begin_object(std::string_view key, bool inline_container) -> JsonWriter & {
     prefix(key);
     out_ += '{';
-    // Containers inside an inline one stay inline.
     auto const keep_inline = inline_container || (!stack_.empty() && stack_.back().inline_container);
     stack_.push_back(Level{.is_object = true, .inline_container = keep_inline});
     return *this;

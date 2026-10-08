@@ -16,7 +16,6 @@ TEST_CASE("meshlet visibility word counts round up to whole 32-bit words") {
 TEST_CASE("consecutive batches get contiguous, disjoint bit ranges") {
     MeshletVisibilityLayout layout;
 
-    // 3 instances of 100 meshlets, then 2 instances of 7, then 1 of 50.
     auto const first = layout.reserve(3, 100);
     auto const second = layout.reserve(2, 7);
     auto const third = layout.reserve(1, 50);
@@ -41,19 +40,16 @@ TEST_CASE("an instance's offset steps by the meshlet count within its batch") {
         CHECK(offset == 100 + (instance * 40));
     }
 
-    // The last instance's last meshlet is the batch's last bit.
     CHECK(meshlet_visibility_offset(batch, 4, 40) + 39 == layout.total_bits() - 1);
 }
 
 TEST_CASE("batches without meshlet bits take none") {
     MeshletVisibilityLayout layout;
 
-    // Instanced (non-meshlet) batches reserve nothing: the renderer never calls reserve() for them.
     CHECK(layout.total_bits() == 0);
     CHECK(layout.word_count() == 0);
     CHECK(layout.fits());
 
-    // A batch of zero instances or zero meshlets is empty and doesn't move the next one.
     CHECK(layout.reserve(0, 64) == 0);
     CHECK(layout.reserve(8, 0) == 0);
     CHECK(layout.reserve(1, 1) == 0);
@@ -73,7 +69,6 @@ TEST_CASE("the layout stops fitting one bit past the cap") {
     CHECK(over_cap.total_bits() == maximum_meshlet_visibility_bits + 1);
     CHECK_FALSE(over_cap.fits());
 
-    // Totals past 32 bits are tracked exactly rather than wrapping.
     MeshletVisibilityLayout huge;
     for (int batch = 0; batch < 4; ++batch) {
         [[maybe_unused]] auto const reserved = huge.reserve(1U << 20U, 1U << 12U);

@@ -51,7 +51,6 @@ namespace frame_graph {
         auto const count = graph.passes.size();
         auto successors = dependency_successors(graph, live);
 
-        // Passes whose result crosses queues: they are held back while their producer is still "in flight".
         auto cross_predecessors = std::vector<std::vector<std::size_t>>(count);
         for (auto source = std::size_t{0}; source < count; ++source) {
             for (auto const target: successors[source]) {
@@ -61,7 +60,6 @@ namespace frame_graph {
             }
         }
 
-        // A fence keeps its place relative to every other live pass.
         for (auto const fence: order) {
             auto const &pass = graph.passes[fence];
             if (!pass.pinned && !pass.legacy) {
@@ -105,7 +103,6 @@ namespace frame_graph {
                     slot = static_cast<std::int64_t>(candidate);
                 }
             }
-            // Prefer a pass that is not waiting on a recent cross-queue producer; otherwise take the earliest.
             auto const pick = static_cast<std::size_t>(best >= 0 ? best : best_delayed);
             scheduled_at[pick] = result.size();
             result.push_back(static_cast<std::uint32_t>(pick));
@@ -116,4 +113,4 @@ namespace frame_graph {
         return result;
     }
 
-} // namespace frame_graph
+}

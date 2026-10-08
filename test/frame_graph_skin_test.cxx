@@ -11,10 +11,6 @@ namespace {
 
     auto noop() -> RecordFn { return RecordFn{}; }
 
-    // The skinning chain of renderer_frame_graph.cxx: the host-written palette/jobs are copied to skin_input
-    // (skin_upload, transfer), skin.slang reads them and writes the deformed vertices to skin_scratch (skin, compute),
-    // then the shadow pass, the early prepass and forward read the scratch through GpuDraw::vertex_address. With
-    // `consumers_declare_scratch` false the raster passes omit the read, which is the bug the declaration prevents.
     auto make_skin_chain(bool consumers_declare_scratch = true) -> FrameGraph {
         auto graph = FrameGraph{};
         auto upload_source = graph.import_buffer({.read_only = true, .debug_name = "skin_upload"});
@@ -74,7 +70,6 @@ namespace {
         return 0;
     }
 
-    // The barriers recorded before the pass called `name`.
     auto barriers_before(GraphDesc const &desc, CompiledGraph const &compiled, std::string_view name)
             -> std::vector<BufferBarrier> {
         for (auto const &batch: compiled.batches) {
@@ -103,7 +98,7 @@ namespace {
                                             VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
     constexpr auto read_access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT;
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("skinning: the first raster reader of the scratch waits for the compute write") {
@@ -113,7 +108,6 @@ TEST_SUITE("unit") {
         auto const &desc = graph.description();
         auto const scratch = resource_named(desc, "skin_scratch");
 
-        // skin is compute, the shadow pass is the first reader: it gets a compute-write -> geometry-read barrier.
         CHECK(has_barrier(barriers_before(desc, *compiled, "shadow_pass"), scratch,
                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, raster_geometry_stages, read_access));
     }
@@ -140,7 +134,6 @@ TEST_SUITE("unit") {
         auto const &desc = graph.description();
         auto const scratch = resource_named(desc, "skin_scratch");
 
-        // Nothing in the graph orders the draw after the compute write: this is the hazard the real graph avoids.
         for (auto const *name: {"shadow_pass", "early_prepass", "forward"}) {
             CHECK_FALSE(has_barrier(barriers_before(desc, *compiled, name), scratch,
                                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, raster_geometry_stages, read_access));

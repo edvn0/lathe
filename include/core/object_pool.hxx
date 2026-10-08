@@ -9,11 +9,6 @@
 #include "core/handle.hxx"
 #include "core/holder.hxx"
 
-// Fixed-capacity, generation-checked free-list pool behind every *Storage class that hands out generational
-// handles.
-//
-// Knows nothing about Vulkan: release() moves the payload out so the wrapper can destroy it. Thread safety,
-// reserved slots and dirty tracking are also left to the wrapper.
 template<typename T, std::uint32_t Sentinel = std::numeric_limits<std::uint32_t>::max()>
 class ObjectPool {
 public:
@@ -55,8 +50,6 @@ public:
         return pool;
     }
 
-    // Reserves a slot and returns its handle and value. The value is T{} on a slot's first use, otherwise
-    // whatever release() left behind, so the caller must overwrite every field it needs. nullopt when full.
     [[nodiscard]]
     auto allocate() -> std::optional<std::pair<HandleT, T &>> {
         if (free_head_ >= slots_.size()) {
@@ -79,11 +72,6 @@ public:
         };
     }
 
-    // Moves the payload out, bumps the generation (never back to 0, which means "never allocated") and frees the
-    // slot. nullopt for a stale or out-of-range handle.
-    //
-    // The moved-from value stays in the slot rather than being reset, so fields like a descriptor revision counter
-    // survive reuse.
     [[nodiscard]]
     auto release(HandleT handle) -> std::optional<T> {
         auto *slot = slot_for(handle);
@@ -110,10 +98,8 @@ public:
         return value;
     }
 
-    // Owns a slot; destroying or resetting it calls release() and destroys the value.
     using HolderT = Holder<ObjectPool, HandleT, &ObjectPool::release>;
 
-    // allocate(), with the slot owned by the returned Holder.
     [[nodiscard]]
     auto acquire() -> std::optional<HolderT> {
         auto allocation = allocate();
@@ -122,7 +108,6 @@ public:
             return std::nullopt;
         }
 
-        // Built in place, so no temporary Holder is moved into the optional.
         return std::optional<HolderT>{
                 std::in_place,
                 *this,
@@ -147,7 +132,6 @@ public:
         return get(handle) != nullptr;
     }
 
-    // Raw-index access for code that iterates every slot by GPU index.
     [[nodiscard]]
     auto get_at(std::uint32_t index) noexcept -> T * {
         return index < slots_.size() ? &slots_[index].value : nullptr;

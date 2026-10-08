@@ -17,7 +17,6 @@
 
 namespace {
 
-    // One pyramid level or the depth buffer itself, row-major.
     struct DepthLevel {
         HizExtent extent{};
         std::vector<float> texels;
@@ -27,8 +26,6 @@ namespace {
         }
     };
 
-    // The reduction hiz_build.slang runs: each texel is the MIN (the farthest, under reverse-Z) of its 2 x 2 children
-    // inside the source's logical extent, with 1.0 (the nearest possible depth) as the neutral value.
     [[nodiscard]] auto build_hiz_reference(DepthLevel const &depth) -> std::vector<DepthLevel> {
         std::vector<DepthLevel> levels;
         auto const mip_count = hiz_mip_count(depth.extent);
@@ -71,7 +68,6 @@ namespace {
         return levels;
     }
 
-    // hiz_occlusion.slang's aabb_occluded(), on a CPU pyramid.
     struct OcclusionQuery {
         glm::mat4 view_projection{1.0F};
         glm::vec3 world_min{0.0F};
@@ -99,8 +95,6 @@ namespace {
         return depth_occluded(rect->nearest_depth, farthest, query.depth_epsilon);
     }
 
-    // hiz_occlusion.slang's sphere_occluded(): the box of centre +- radius, which meshlet_task.slang feeds with the
-    // meshlet's world-space bounding sphere.
     [[nodiscard]] auto sphere_occluded_reference(std::vector<DepthLevel> const &pyramid, HizExtent depth,
                                                  glm::mat4 const &view_projection, glm::vec3 centre,
                                                  float radius) -> bool {
@@ -118,7 +112,6 @@ namespace {
         return std::uniform_int_distribution<std::uint32_t>{low, high}(engine);
     }
 
-    // A background depth with a few nearer and farther rectangles, so boxes behind it are often occluded.
     [[nodiscard]] auto random_depth(std::mt19937 &engine, HizExtent extent) -> DepthLevel {
         DepthLevel depth{
                 .extent = extent,
@@ -152,7 +145,7 @@ namespace {
             HizExtent{.width = 2560, .height = 1440},
     };
 
-} // namespace
+}
 
 TEST_CASE("Hi-Z level extents halve with ceil down to 1 x 1") {
     for (auto const depth: extent_table) {
@@ -165,7 +158,6 @@ TEST_CASE("Hi-Z level extents halve with ceil down to 1 x 1") {
         REQUIRE(mip_count >= 1);
         CHECK(hiz_level_extent(depth, mip_count - 1) == HizExtent{.width = 1, .height = 1});
 
-        // A full chain on the image has at least mip_count levels.
         CHECK(static_cast<std::uint32_t>(std::bit_width(std::max(image.width, image.height))) >= mip_count);
 
         for (std::uint32_t level = 0; level < mip_count; ++level) {
@@ -177,12 +169,10 @@ TEST_CASE("Hi-Z level extents halve with ceil down to 1 x 1") {
             CHECK(logical.width == static_cast<std::uint32_t>(std::ceil(depth.width / divisor)));
             CHECK(logical.height == static_cast<std::uint32_t>(std::ceil(depth.height / divisor)));
 
-            // Vulkan's floor-halved mip of the image holds the logical level.
             CHECK(std::max(image.width >> level, 1U) >= logical.width);
             CHECK(std::max(image.height >> level, 1U) >= logical.height);
         }
 
-        // One level fewer would leave the top level larger than 1 x 1.
         if (mip_count > 1) {
             CHECK_FALSE(hiz_level_extent(depth, mip_count - 2) == HizExtent{.width = 1, .height = 1});
         }
@@ -219,7 +209,6 @@ TEST_CASE("the selected Hi-Z level covers any pixel span with at most 2 x 2 texe
         }
     }
 
-    // Wider than every level but the top: the top level is a single texel.
     CHECK(select_hiz_level(HizPixelRect{.x0 = 0, .y0 = 0, .x1 = 255, .y1 = 255}, mip_count) == mip_count - 1);
     CHECK(hiz_level_extent(depth, mip_count - 1) == HizExtent{.width = 1, .height = 1});
 }
@@ -319,8 +308,6 @@ TEST_CASE("an occluded box has no pixel in its projection at or behind its neare
 
         ++occluded_count;
 
-        // The exact screen rectangle and nearest depth, in double precision. Every pixel whose square touches the
-        // rectangle could receive a sample of the box.
         glm::dvec2 screen_min{1e300};
         glm::dvec2 screen_max{-1e300};
         double nearest = 0.0;
@@ -360,7 +347,6 @@ TEST_CASE("an occluded box has no pixel in its projection at or behind its neare
 
     CHECK(violations == 0);
 
-    // Otherwise the property above was tested on nothing.
     CHECK(occluded_count > 500);
     CHECK(visible_count > 500);
 }
@@ -371,18 +357,14 @@ TEST_CASE("boxes crossing the near plane or behind the eye are never occluded") 
     auto const view_projection = projection * view;
     constexpr HizExtent depth{.width = 64, .height = 64};
 
-    // Straddles the near plane.
     CHECK_FALSE(project_aabb_to_hiz_rect(view_projection, glm::vec3{-0.5F, -0.5F, 0.05F}, glm::vec3{0.5F, 0.5F, 1.0F},
                                          depth, 1.0F));
 
-    // Contains the eye.
     CHECK_FALSE(project_aabb_to_hiz_rect(view_projection, glm::vec3{-1.0F}, glm::vec3{1.0F}, depth, 1.0F));
 
-    // Entirely behind the eye.
     CHECK_FALSE(project_aabb_to_hiz_rect(view_projection, glm::vec3{-1.0F, -1.0F, -5.0F},
                                          glm::vec3{1.0F, 1.0F, -1.0F}, depth, 1.0F));
 
-    // In front: decided, and nearer than a far one.
     auto const near_box =
             project_aabb_to_hiz_rect(view_projection, glm::vec3{-0.1F, -0.1F, 1.0F}, glm::vec3{0.1F, 0.1F, 1.2F},
                                      depth, 1.0F);
@@ -392,13 +374,11 @@ TEST_CASE("boxes crossing the near plane or behind the eye are never occluded") 
     REQUIRE(far_box);
     CHECK(near_box->nearest_depth > far_box->nearest_depth);
 
-    // Off screen to the side: left to the frustum test.
     CHECK_FALSE(project_aabb_to_hiz_rect(view_projection, glm::vec3{40.0F, -0.1F, 5.0F},
                                          glm::vec3{41.0F, 0.1F, 6.0F}, depth, 1.0F));
 }
 
 TEST_CASE("NDC y = +1 maps to pixel row 0 and x maps left to right") {
-    // Identity view-projection: NDC is the world position.
     constexpr HizExtent depth{.width = 100, .height = 100};
 
     auto const top_left = project_aabb_to_hiz_rect(glm::mat4{1.0F}, glm::vec3{-1.0F, 0.9F, 0.5F},
@@ -436,7 +416,6 @@ TEST_CASE("a sub-pixel box reads level 0 and at most 2 x 2 texels") {
     CHECK(texels.x1 - texels.x0 <= 1);
     CHECK(texels.y1 - texels.y0 <= 1);
 
-    // With the default 1-pixel guard the rect is 3 pixels wide, still level 1 at most.
     auto const guarded = project_aabb_to_hiz_rect(glm::mat4{1.0F}, glm::vec3{0.001F, 0.001F, 0.5F},
                                                   glm::vec3{0.002F, 0.002F, 0.5F}, depth, 1.0F);
     REQUIRE(guarded);
@@ -449,7 +428,6 @@ TEST_CASE("occlusion needs the box strictly behind the footprint by more than ep
     CHECK_FALSE(depth_occluded(0.5F, 0.5F, 0.0F));
     CHECK(depth_occluded(0.25F, 0.5F, 0.0F));
 
-    // Nearer than the footprint is never occluded.
     CHECK_FALSE(depth_occluded(0.75F, 0.5F, 0.0F));
 }
 
@@ -459,7 +437,6 @@ TEST_CASE("a box behind a full-screen wall is occluded and one in front of it is
     auto const view = glm::lookAtLH(glm::vec3{0.0F}, glm::vec3{0.0F, 0.0F, 1.0F}, glm::vec3{0.0F, 1.0F, 0.0F});
     auto const view_projection = projection * view;
 
-    // A wall at z = 5 covering the screen.
     auto const wall = glm::vec4(view_projection * glm::vec4(0.0F, 0.0F, 5.0F, 1.0F));
     auto const wall_depth = 1.0F - (wall.z / wall.w);
 
@@ -479,7 +456,6 @@ TEST_CASE("a box behind a full-screen wall is occluded and one in front of it is
                                                        .world_min = glm::vec3{-0.5F, -0.5F, 3.0F},
                                                        .world_max = glm::vec3{0.5F, 0.5F, 4.0F}}));
 
-    // Straddling the wall: its nearest point is in front.
     CHECK_FALSE(aabb_occluded_reference(pyramid, extent,
                                         OcclusionQuery{.view_projection = view_projection,
                                                        .world_min = glm::vec3{-0.5F, -0.5F, 4.5F},
@@ -492,7 +468,6 @@ TEST_CASE("a sphere is occluded exactly when its bounding box is") {
     auto const view = glm::lookAtLH(glm::vec3{0.0F}, glm::vec3{0.0F, 0.0F, 1.0F}, glm::vec3{0.0F, 1.0F, 0.0F});
     auto const view_projection = projection * view;
 
-    // A wall at z = 5 covering the screen.
     auto const wall = glm::vec4(view_projection * glm::vec4(0.0F, 0.0F, 5.0F, 1.0F));
     auto const wall_depth = 1.0F - (wall.z / wall.w);
 
@@ -502,7 +477,6 @@ TEST_CASE("a sphere is occluded exactly when its bounding box is") {
     };
     auto const pyramid = build_hiz_reference(depth);
 
-    // Behind the wall, in front of it, and large enough that its nearest point pokes through.
     CHECK(sphere_occluded_reference(pyramid, extent, view_projection, glm::vec3{0.0F, 0.0F, 9.0F}, 0.5F));
     CHECK_FALSE(sphere_occluded_reference(pyramid, extent, view_projection, glm::vec3{0.0F, 0.0F, 3.0F}, 0.5F));
     CHECK_FALSE(sphere_occluded_reference(pyramid, extent, view_projection, glm::vec3{0.0F, 0.0F, 9.0F}, 6.0F));

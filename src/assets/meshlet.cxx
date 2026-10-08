@@ -8,7 +8,6 @@
 
 namespace {
 
-    // Bounds must come from the half-float positions the mesh shader reads, or a visible meshlet could be culled.
     [[nodiscard]] auto decode_positions(std::span<CompressedModelVertex const> vertices) -> std::vector<glm::vec3> {
         std::vector<glm::vec3> positions;
         positions.reserve(vertices.size());
@@ -21,10 +20,9 @@ namespace {
         return positions;
     }
 
-    // Favour tight normal cones over locality, for backface cone culling.
     constexpr float meshlet_cone_weight = 0.25F;
 
-} // namespace
+}
 
 auto build_meshlet_topology(std::span<std::uint32_t const> indices, std::size_t vertex_count,
                             std::span<CompressedModelVertex const> vertices) -> MeshletTopology {
@@ -148,7 +146,6 @@ auto upload_meshlet_data(GeometryArena &geometry_arena, VkCommandBuffer command_
 auto upload_meshlet_descriptors(GeometryArena &geometry_arena, VkCommandBuffer command_buffer,
                                 std::span<GpuMeshlet const> meshlets)
         -> std::expected<GeometrySlice, GeometryArenaError> {
-    // 16-byte aligned to match the shader-side layout.
     auto slice = geometry_arena.allocate_vertices(command_buffer, std::as_bytes(meshlets),
                                                   static_cast<std::uint32_t>(sizeof(GpuMeshlet)), 16);
 

@@ -7,12 +7,11 @@
 
 struct SweepHit {
     entt::entity entity{entt::null};
-    float fraction{0.0F}; // 0..1 along the sweep
+    float fraction{0.0F};
     glm::vec3 point{0.0F};
-    glm::vec3 normal{0.0F, 1.0F, 0.0F}; // world-space surface normal, facing the capsule
+    glm::vec3 normal{0.0F, 1.0F, 0.0F};
 };
 
-// What CharacterBody needs of a collision world. A seam so the movement maths can be tested without Bullet.
 class CapsuleSweep {
 public:
     CapsuleSweep() = default;
@@ -22,8 +21,6 @@ public:
     auto operator=(CapsuleSweep &&) -> CapsuleSweep & = default;
     virtual ~CapsuleSweep() = default;
 
-    // Sweeps an upright capsule (total `height` including both caps) whose feet are at `from` to `to`. Returns the
-    // first hit, ignoring `ignore`'s body.
     [[nodiscard]] virtual auto sweep_capsule(glm::vec3 const &from, glm::vec3 const &to, float radius, float height,
                                              entt::entity ignore) const -> std::optional<SweepHit> = 0;
 };

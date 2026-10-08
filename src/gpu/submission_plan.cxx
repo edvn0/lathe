@@ -6,7 +6,7 @@ namespace {
         return static_cast<std::size_t>(queue);
     }
 
-} // namespace
+}
 
 auto plan_submissions(std::span<SubmitBatch const> batches, std::array<std::uint64_t, gpu_queue_count> timeline_values,
                       std::array<std::size_t, gpu_queue_count> timeline_of_queue)
@@ -14,7 +14,6 @@ auto plan_submissions(std::span<SubmitBatch const> batches, std::array<std::uint
     auto plan = SubmissionPlan{};
     auto planned = timeline_values;
 
-    // values[q][k] is the absolute value of logical queue q's k-th signal in this frame.
     auto values = std::array<std::vector<std::uint64_t>, gpu_queue_count>{};
 
     for (auto index = std::size_t{0}; index < batches.size(); ++index) {
@@ -42,7 +41,6 @@ auto plan_submissions(std::span<SubmitBatch const> batches, std::array<std::uint
             submit.waits.push_back(TimelineWait{
                     .timeline = timeline_of_queue[waited],
                     .value = values[waited][wait.signal_index],
-                    // A wait cannot name no stages; an unspecified scope waits for everything.
                     .stages = wait.stages != 0 ? wait.stages : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
             });
         }

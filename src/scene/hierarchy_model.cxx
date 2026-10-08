@@ -14,7 +14,7 @@ namespace {
         return lower;
     }
 
-} // namespace
+}
 
 auto HierarchyModel::rebuild(std::vector<Node> nodes, std::vector<std::string> group_labels) -> void {
     nodes_ = std::move(nodes);
@@ -32,7 +32,6 @@ auto HierarchyModel::rebuild(std::vector<Node> nodes, std::vector<std::string> g
         lower_names_.push_back(to_lower(nodes_[node].name));
     }
 
-    // Each node's parent index, or node_count for a root.
     std::vector<std::uint32_t> parent_of(nodes_.size(), node_count);
     first_child_.assign(nodes_.size(), 0);
     child_count_.assign(nodes_.size(), 0);
@@ -48,7 +47,6 @@ auto HierarchyModel::rebuild(std::vector<Node> nodes, std::vector<std::string> g
         }
     }
 
-    // Children laid out contiguously per parent, in node order.
     std::uint32_t running = 0;
     for (std::uint32_t node = 0; node < node_count; ++node) {
         first_child_[node] = running;
@@ -70,9 +68,6 @@ auto HierarchyModel::rebuild(std::vector<Node> nodes, std::vector<std::string> g
             roots_.push_back(node);
         }
     }
-
-    // A Parent cycle leaves its nodes unreachable from any root, so they are never listed (the walks below only
-    // start from roots and group members), and a walk can't loop.
 
     recompute_matches();
     rows_dirty_ = true;
@@ -105,7 +100,6 @@ auto HierarchyModel::recompute_matches() -> void {
         self_match_[node] = lower_names_[node].find(filter_) != std::string::npos;
     }
 
-    // Preorder from every listed start, then propagate matches up in reverse so children come before parents.
     std::vector<std::uint32_t> preorder;
     preorder.reserve(node_count);
     std::vector<std::uint32_t> stack;
@@ -139,7 +133,6 @@ auto HierarchyModel::recompute_matches() -> void {
         subtree_match_[node] = match;
     }
 
-    // Open every node with a matching descendant, and every group with a matching member.
     for (auto const node: preorder) {
         for (std::uint32_t child = 0; child < child_count_[node]; ++child) {
             if (subtree_match_[children_[first_child_[node] + child]]) {
@@ -194,7 +187,6 @@ auto HierarchyModel::rows() -> std::span<Row const> {
 auto HierarchyModel::rebuild_rows() -> void {
     rows_.clear();
 
-    // (node, depth), popped in sibling order because children are pushed in reverse.
     std::vector<std::pair<std::uint32_t, std::uint32_t>> stack;
 
     auto const emit_subtree = [&](std::uint32_t start, std::uint32_t start_depth) {

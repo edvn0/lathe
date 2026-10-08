@@ -38,7 +38,6 @@ namespace {
         return left.type != right.type ? left.type < right.type : left.id < right.id;
     }
 
-    // Compresses `raw` in place when it saves at least `minimum_savings`; otherwise leaves it stored raw.
     [[nodiscard]]
     auto compress_chunk(std::vector<std::byte> &bytes, LbfChunkEntry &entry, LbfWriteOptions const &options)
             -> std::expected<void, LbfError> {
@@ -71,7 +70,7 @@ namespace {
         return {};
     }
 
-} // namespace
+}
 
 auto lbf_chunk_type_name(std::uint32_t type) -> std::string {
     std::string name(4, '?');
@@ -117,7 +116,6 @@ auto LbfWriter::emit(LbfWriteOptions const &options, std::function<bool(std::spa
         -> std::expected<LbfFileHeader, LbfError> {
     ZoneScopedNC("LbfWriter::emit", tracy::Color::Goldenrod);
 
-    // Duplicate (type, id) pairs would make find() ambiguous; keep the first.
     std::vector<std::size_t> order(chunks_.size());
 
     for (std::size_t index = 0; index < order.size(); ++index) {
@@ -151,8 +149,6 @@ auto LbfWriter::emit(LbfWriteOptions const &options, std::function<bool(std::spa
         return compress_chunk(chunk.bytes, chunk.entry, options);
     };
 
-    // Compression runs up to `window` chunks ahead of the write position, so a big file is never held compressed in
-    // full, while every core still has work.
     auto const window =
             options.parallel ? std::max<std::size_t>(2, std::size_t{2} * std::thread::hardware_concurrency()) : 0;
     std::deque<std::future<std::expected<void, LbfError>>> in_flight;
@@ -219,7 +215,6 @@ auto LbfWriter::emit(LbfWriteOptions const &options, std::function<bool(std::spa
 
         table.push_back(chunk.entry);
 
-        // Written; free it now rather than when the writer goes away.
         std::vector<std::byte>{}.swap(chunk.bytes);
     }
 
@@ -368,15 +363,12 @@ auto LbfReader::parse(LbfReader reader, std::span<std::byte const> header_bytes)
         return std::unexpected(make_error(LbfErrorType::not_an_lbf_file, "bad magic"));
     }
 
-    // Minor versions only add things a reader may ignore; a different major changes the layout.
     if (header.version_major != lbf_version_major) {
         return std::unexpected(make_error(LbfErrorType::unsupported_version,
                                           std::format("file is v{}.{}, this build reads v{}.x", header.version_major,
                                                       header.version_minor, lbf_version_major)));
     }
 
-    // Before anything is sized from the header: a truncated or lying file must fail here, not after allocating
-    // whatever its table of contents claims.
     if (header.file_size != reader.source_size_) {
         return std::unexpected(
                 make_error(LbfErrorType::corrupt_header, "file size does not match its header (truncated?)"));
@@ -408,7 +400,6 @@ auto LbfReader::parse(LbfReader reader, std::span<std::byte const> header_bytes)
     for (auto const &entry: reader.chunks_) {
         auto const name = [&] { return std::format("chunk {} {:016x}", lbf_chunk_type_name(entry.type), entry.id); };
 
-        // Payloads live between the header and the table of contents.
         if (entry.offset < header.header_size || entry.offset > header.toc_offset ||
             entry.stored_size > header.toc_offset - entry.offset) {
             return std::unexpected(
@@ -509,8 +500,7 @@ auto LbfReader::stream_chunk(LbfChunkEntry const &entry) const -> std::expected<
     stream.seekg(static_cast<std::streamoff>(entry.offset));
 
     if (entry.compression == LbfCompression::zstd) {
-        // Same check as the in-memory path: the frame header must agree with the table before raw is allocated.
-        std::array<std::byte, 18> head{}; // zstd's maximum frame header size
+        std::array<std::byte, 18> head{};
         auto const head_size = std::min<std::uint64_t>(head.size(), entry.stored_size);
 
         stream.read(reinterpret_cast<char *>(head.data()), static_cast<std::streamsize>(head_size));
@@ -541,7 +531,6 @@ auto LbfReader::stream_chunk(LbfChunkEntry const &entry) const -> std::expected<
                 return std::unexpected(make_error(LbfErrorType::corrupt_table_of_contents, "raw/stored size mismatch"));
             }
 
-            // Straight into the result, a block at a time so the checksum stays cache-hot.
             for (std::uint64_t done = 0; done < entry.stored_size;) {
                 auto const size = std::min(block_size, entry.stored_size - done);
 
@@ -586,14 +575,13 @@ auto LbfReader::stream_chunk(LbfChunkEntry const &entry) const -> std::expected<
                                            std::format("{}: {}", chunk_name(), ZSTD_getErrorName(last_result))));
                     }
 
-                    // Output full with input left over: the frame is bigger than the table says.
                     if (output.pos == output.size && input.pos < input.size && last_result != 0) {
                         return std::unexpected(make_error(LbfErrorType::decompression_failed,
                                                           "decompresses past its raw size; " + chunk_name()));
                     }
 
                     if (last_result == 0 && input.pos < input.size) {
-                        break; // frame finished; trailing bytes are caught by the size check below
+                        break;
                     }
                 }
             }
@@ -637,7 +625,6 @@ auto LbfReader::read_chunk(LbfChunkEntry const &entry) const -> std::expected<st
             return stored;
 
         case LbfCompression::zstd: {
-            // The frame states its own decompressed size; it must agree with the table before anything is sized.
             if (ZSTD_getFrameContentSize(stored->data(), stored->size()) != entry.raw_size) {
                 return std::unexpected(
                         make_error(LbfErrorType::decompression_failed, "frame size disagrees with the table"));

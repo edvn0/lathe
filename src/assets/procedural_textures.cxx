@@ -16,7 +16,6 @@ namespace {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
 
-        // Linear RGBA, alpha straight (not premultiplied).
         std::vector<float> rgba;
 
         [[nodiscard]] auto at(std::uint32_t x, std::uint32_t y) -> float * {
@@ -28,7 +27,6 @@ namespace {
         }
     };
 
-    // One blade silhouette in card space: x across 0..1, height 0 (root) .. 1 (top of the card).
     struct CardBlade {
         float root_x = 0.5F;
         float height = 1.0F;
@@ -38,15 +36,11 @@ namespace {
         float shade = 1.0F;
     };
 
-    // Matches the blade geometry's taper (make_grass_clump_mesh()): wide low down, narrowing to the tip.
     constexpr float card_taper_exponent = 0.72F;
 
     [[nodiscard]] auto card_blades() -> std::vector<CardBlade> {
-        // About as many blades as the clump shows across one card's width: a view sees two or three cards at once,
-        // so a denser card makes distant grass read thicker than the blades it replaces.
         constexpr std::uint32_t blade_count = 11;
 
-        // Fixed seed: the texture is part of the engine's grass clump, not per instance.
         std::mt19937 random_engine{0x43415244U};
         std::uniform_real_distribution<float> unit{0.0F, 1.0F};
         auto const range = [&](float low, float high) { return std::lerp(low, high, unit(random_engine)); };
@@ -55,11 +49,9 @@ namespace {
         blades.reserve(blade_count);
 
         for (std::uint32_t index = 0; index < blade_count; ++index) {
-            // Stratified across the card so there are no bald patches.
             auto const root_x =
                     (static_cast<float>(index) + 0.5F + range(-0.4F, 0.4F)) / static_cast<float>(blade_count);
 
-            // Shorter towards the sides, like the clump's rounded silhouette.
             auto const edge = std::abs(root_x - 0.5F) * 2.0F;
             auto const height = range(0.58F, 0.98F) * std::lerp(1.0F, 0.72F, edge * edge);
 
@@ -78,8 +70,6 @@ namespace {
         return blades;
     }
 
-    // Level 0 with `supersample`^2 samples per texel: alpha is the covered share, RGB the shade of the front-most
-    // blade averaged over the covered samples (white where nothing is).
     [[nodiscard]] auto rasterise_card(std::uint32_t size, std::vector<CardBlade> const &blades) -> LevelImage {
         constexpr std::uint32_t supersample = 4;
 
@@ -99,12 +89,10 @@ namespace {
                                         (static_cast<float>(sample_x) + 0.5F) / static_cast<float>(supersample)) *
                                        inv_size;
 
-                        // Row 0 is the top of the card.
                         auto const height = 1.0F - (static_cast<float>(row) + (static_cast<float>(sample_y) + 0.5F) /
                                                                                       static_cast<float>(supersample)) *
                                                            inv_size;
 
-                        // Later blades are in front.
                         for (auto blade = blades.rbegin(); blade != blades.rend(); ++blade) {
                             auto const t = height / blade->height;
                             if (t < 0.0F || t > 1.0F) {
@@ -138,7 +126,6 @@ namespace {
         return image;
     }
 
-    // 2x2 box filter; colour weighted by alpha so the transparent white around the blades doesn't bleed in.
     [[nodiscard]] auto downsample(LevelImage const &source) -> LevelImage {
         LevelImage result{.width = std::max(source.width / 2U, 1U), .height = std::max(source.height / 2U, 1U)};
         result.rgba.resize(static_cast<std::size_t>(result.width) * result.height * 4U);
@@ -190,7 +177,6 @@ namespace {
         return static_cast<float>(covered) / static_cast<float>(texel_count);
     }
 
-    // The alpha scale that gives `image` `target` coverage at `cutoff` (Castano, "Computing Alpha Mipmaps").
     [[nodiscard]] auto coverage_preserving_scale(LevelImage const &image, float target, float cutoff) -> float {
         auto low = 0.0F;
         auto high = 16.0F;
@@ -211,7 +197,7 @@ namespace {
         return static_cast<std::byte>(static_cast<std::uint8_t>(std::lround(std::clamp(value, 0.0F, 1.0F) * 255.0F)));
     }
 
-} // namespace
+}
 
 auto GeneratedTexture::level_width(std::uint32_t level) const noexcept -> std::uint32_t {
     return std::max(width >> level, 1U);
@@ -258,7 +244,6 @@ auto make_grass_card_texture(std::uint32_t size, float alpha_cutoff) -> Generate
             level = downsample(level);
         }
 
-        // The box filter is kept unscaled for the next level; only what's stored is rescaled.
         auto const alpha_scale = mip == 0 ? 1.0F : coverage_preserving_scale(level, target_coverage, alpha_cutoff);
 
         auto *out = texture.pixels.data() + texture.level_offset(mip);

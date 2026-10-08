@@ -30,7 +30,6 @@ namespace gui {
 
         constexpr std::size_t bytes_per_mib = 1024ULL * 1024;
 
-        // imgui_stdlib.cpp's approach: let ImGui grow the std::string it edits in place.
         auto resize_callback(ImGuiInputTextCallbackData *data) -> int {
             if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
                 auto *const text = static_cast<std::string *>(data->UserData);
@@ -52,14 +51,13 @@ namespace gui {
             }
             return std::format("{}: {}", script_error_kind_name(error.kind), error.message);
         }
-    } // namespace
+    }
 
     ScriptWidget::ScriptWidget(ScriptEngineSettings settings) : settings_(settings), source_(example_script) {}
 
     auto ScriptWidget::draw(std::optional<ScriptWorld> world) -> ScriptWidgetFrame {
         bool const can_run = world.has_value();
 
-        // Toolbar.
         ImGui::BeginDisabled(!can_run);
         bool const run_clicked = ImGui::Button("Run");
         ImGui::EndDisabled();
@@ -99,16 +97,12 @@ namespace gui {
             }
         }
 
-        // Editor. Ctrl+Enter validates a multiline field (plain Enter inserts a newline), which
-        // EnterReturnsTrue reports as `submitted`.
         bool const submitted = input_text_multiline(
                 "##source", source_, ImVec2{-FLT_MIN, -ImGui::GetTextLineHeightWithSpacing() * 3.0F},
                 ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_EnterReturnsTrue);
         bool const chord = ImGui::IsItemFocused() && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Enter);
-        // One request, so the button and Ctrl+Enter in the same frame run once.
         bool const run_requested = run_clicked || submitted || chord;
 
-        // Status.
         if (last_error_.has_value()) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{1.0F, 0.4F, 0.4F, 1.0F});
             ImGui::TextWrapped("%s", error_status(*last_error_).c_str());
@@ -155,7 +149,6 @@ namespace gui {
         return {.ran = true, .transforms_written = report.transforms_written};
     }
 
-    // A successful run only updates the inline status, so repeated Ctrl+Enter doesn't flood the corner.
     auto ScriptWidget::report_error(ScriptError const &error) -> void {
         auto const message = describe(error);
         switch (error.kind) {
@@ -179,4 +172,4 @@ namespace gui {
                 break;
         }
     }
-} // namespace gui
+}

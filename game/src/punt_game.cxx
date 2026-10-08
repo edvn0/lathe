@@ -42,7 +42,7 @@ namespace {
         return std::format("{}:{:02}", whole / 60, whole % 60);
     }
 
-} // namespace
+}
 
 auto PuntGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void {
     if (std::filesystem::exists(scene_file_)) {
@@ -55,7 +55,7 @@ auto PuntGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const 
                 warn("[PuntGame] {}", warning);
             }
 
-            bound_scene_ = nullptr; // rebind on the next on_update()
+            bound_scene_ = nullptr;
             return;
         }
 
@@ -96,7 +96,6 @@ auto PuntGame::bind_to(Scene &scene) -> void {
         return registry.valid(entity) ? registry.try_get<Components::Transform>(entity) : nullptr;
     };
 
-    // Wherever the course puts them now is where a restart puts them back.
     if (auto const *transform = transform_of(player_entity_)) {
         player_spawn_ = *transform;
     }
@@ -116,7 +115,6 @@ auto PuntGame::bind_to(Scene &scene) -> void {
                 glm::vec3{punt::hole_half_size, (punt::floor_top_y - punt::pit_floor_y) * 0.5F, punt::hole_half_size};
     }
 
-    // Facing down the course from the tee.
     player_controller_ = PlayerController{PlayerControllerCreateInfo{.yaw_degrees = 0.0F}};
     player_camera_ = PlayerCamera{PlayerCameraCreateInfo{}};
 
@@ -136,7 +134,6 @@ auto PuntGame::restart(Scene &scene) -> void {
     auto &registry = scene.get_registry();
     auto &physics = *scene.physics_world;
 
-    // The component is what the renderer draws from; the body is what the next step writes back into it.
     registry.get<Components::Transform>(player_entity_) = player_spawn_;
     registry.get<Components::Transform>(ball_entity_) = ball_spawn_;
     physics.set_transform(registry, player_entity_, player_spawn_);
@@ -168,7 +165,6 @@ auto PuntGame::try_punt(Scene &scene) -> void {
         return;
     }
 
-    // Along the camera, flattened: the pitch aims the camera, not the kick, which always has the same arc.
     auto direction = player_camera_.forward();
     direction.y = 0.0F;
 
@@ -211,8 +207,6 @@ auto PuntGame::on_update(Scene &scene, float delta_time) -> void {
         restart(scene);
     }
 
-    // ---- The player.
-
     auto const &player_transform = registry.get<Components::Transform>(player_entity_);
     auto const &player_body = registry.get<Components::RigidBody>(player_entity_);
 
@@ -227,13 +221,10 @@ auto PuntGame::on_update(Scene &scene, float delta_time) -> void {
     auto const desired_velocity = player_controller_.desired_horizontal_velocity();
     physics.set_velocity(registry, player_entity_, desired_velocity);
 
-    // Walked into the shaft, or off the course somehow: back to the tee, at no cost but the time.
     if (player_transform.position.y < punt::floor_top_y - 1.0F) {
         registry.get<Components::Transform>(player_entity_) = player_spawn_;
         physics.set_transform(registry, player_entity_, player_spawn_);
     }
-
-    // ---- The ball.
 
     auto const &ball_transform = registry.get<Components::Transform>(ball_entity_);
 
@@ -246,8 +237,6 @@ auto PuntGame::on_update(Scene &scene, float delta_time) -> void {
         registry.get<Components::Transform>(ball_entity_) = ball_spawn_;
         physics.set_transform(registry, ball_entity_, ball_spawn_);
     }
-
-    // ---- The round.
 
     punt_cooldown_ = std::max(0.0F, punt_cooldown_ - delta_time);
 
@@ -267,7 +256,6 @@ auto PuntGame::on_update(Scene &scene, float delta_time) -> void {
         } else if (phase_ == Phase::playing && time_left_ <= 0.0F) {
             phase_ = Phase::failed;
         } else if (punts_used_ >= punt_allowance) {
-            // Out of punts isn't a loss until the ball has actually stopped; the last one may still go in.
             ball_still_for_ = ball_speed_ < ball_resting_speed ? ball_still_for_ + delta_time : 0.0F;
 
             if (ball_still_for_ >= settle_seconds) {
@@ -275,8 +263,6 @@ auto PuntGame::on_update(Scene &scene, float delta_time) -> void {
             }
         }
     }
-
-    // ---- The camera.
 
     auto const speed_factor = player_controller_.move_speed() > 0.0F
                                       ? glm::length(desired_velocity) / player_controller_.move_speed()
@@ -298,14 +284,13 @@ auto PuntGame::on_update(Scene &scene, float delta_time) -> void {
                           player_controller_.pitch_degrees(), speed_factor, delta_time, occlusion_query);
 }
 
-auto PuntGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) -> void {
+auto PuntGame::on_key_pressed(Scene & , KeyPressedEvent const &event) -> void {
     player_controller_.on_key_pressed(event.key);
 
     if (event.key == GLFW_KEY_E) {
         punt_requested_ = true;
     }
 
-    // Plain R only: Ctrl+R is the editor's repopulate.
     if (event.key == GLFW_KEY_R && event.modifiers == 0) {
         restart_requested_ = true;
     }
@@ -315,7 +300,7 @@ auto PuntGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) -
     }
 }
 
-auto PuntGame::on_key_released(Scene & /*scene*/, KeyReleasedEvent const &event) -> void {
+auto PuntGame::on_key_released(Scene & , KeyReleasedEvent const &event) -> void {
     player_controller_.on_key_released(event.key);
 
     if (event.key == GLFW_KEY_LEFT_SHIFT) {
@@ -323,19 +308,18 @@ auto PuntGame::on_key_released(Scene & /*scene*/, KeyReleasedEvent const &event)
     }
 }
 
-auto PuntGame::on_mouse_moved(Scene & /*scene*/, MouseMovedEvent const &event) -> void {
+auto PuntGame::on_mouse_moved(Scene & , MouseMovedEvent const &event) -> void {
     player_controller_.on_mouse_moved(static_cast<float>(event.delta_x), static_cast<float>(event.delta_y),
-                                      /*look_enabled=*/true);
+                                      true);
 }
 
-auto PuntGame::on_mouse_button_pressed(Scene & /*scene*/, MouseButtonPressedEvent const &event) -> void {
+auto PuntGame::on_mouse_button_pressed(Scene & , MouseButtonPressedEvent const &event) -> void {
     if (event.button == GLFW_MOUSE_BUTTON_LEFT) {
         punt_requested_ = true;
     }
 }
 
-auto PuntGame::on_ui(Scene &scene, Renderer & /*renderer*/) -> void {
-    // See frames_since_update_: on_ui() runs in the editor too, where there is no round.
+auto PuntGame::on_ui(Scene &scene, Renderer & ) -> void {
     if (frames_since_update_ > 2) {
         return;
     }
@@ -401,7 +385,7 @@ auto PuntGame::on_ui(Scene &scene, Renderer & /*renderer*/) -> void {
     });
 }
 
-auto PuntGame::camera(Scene const & /*scene*/, float aspect_ratio) const -> CameraParams {
+auto PuntGame::camera(Scene const & , float aspect_ratio) const -> CameraParams {
     return CameraParams{
             .view = player_camera_.view(),
             .projection = player_camera_.projection(aspect_ratio),
@@ -412,9 +396,7 @@ auto PuntGame::camera(Scene const & /*scene*/, float aspect_ratio) const -> Came
 }
 
 auto PuntGame::benchmark_camera_path() const -> std::vector<CameraKeyframe> {
-    // Tee to hole and back, low enough to see the obstacles against the walls.
     return {
-            // The tee, from the side, with the player and the ball in frame.
             {.position = {-14.0F, 2.0F, 5.5F}, .target = {-13.0F, 0.4F, 0.0F}},
             {.position = {-8.0F, 2.0F, 6.0F}, .target = {0.0F, 0.5F, 0.0F}},
             {.position = {0.0F, 2.0F, -8.0F}, .target = {8.0F, 0.5F, 0.0F}},

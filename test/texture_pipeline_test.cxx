@@ -18,7 +18,6 @@
 
 namespace {
 
-    // A fresh directory per test case.
     auto make_temp_cache_dir(std::string_view label) -> std::filesystem::path {
         auto const dir = std::filesystem::temp_directory_path() /
                          std::format("texture_pipeline_test_{}_{}", label,
@@ -29,7 +28,6 @@ namespace {
         return dir;
     }
 
-    // The cache file must be a valid KTX2 container already in its final block format.
     auto verify_cache_file_round_trips(std::filesystem::path const &cache_dir, VkFormat expected_format) -> void {
         std::vector<std::filesystem::path> ktx2_files;
 
@@ -54,7 +52,7 @@ namespace {
         ktxTexture_Destroy(ktxTexture(raw));
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("load_compressed_texture: colour role transcodes to BC7 sRGB, mips, and caches") {
@@ -76,7 +74,6 @@ TEST_SUITE("unit") {
 
         verify_cache_file_round_trips(cache_dir, VK_FORMAT_BC7_SRGB_BLOCK);
 
-        // Second call is a cache hit with identical output.
         auto second = load_compressed_texture(AssetPath::external(source).value(), TextureRole::colour, cache_dir);
         REQUIRE(second.has_value());
 

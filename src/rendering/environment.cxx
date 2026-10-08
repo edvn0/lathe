@@ -21,7 +21,6 @@
 #include "rendering/sky_model.hxx"
 #include "rendering/spherical_harmonics.hxx"
 
-// Generated at build time from the shaders' push_constant blocks (see CMakeLists.txt).
 #include "shader_push_constants.hxx"
 
 namespace {
@@ -30,14 +29,11 @@ namespace {
     constexpr VkPipelineStageFlags2 reader_stages =
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 
-    // GGX samples for prefilter mips 0-5; mip 0 is a mirror copy and uses none.
     constexpr std::array<std::uint32_t, EnvironmentSystem::prefilter_mips> prefilter_sample_counts{0,  32, 48,
                                                                                                    64, 64, 64};
 
-    // The widest equirect uploaded; larger panoramas are downscaled on the CPU first.
     constexpr std::uint32_t max_equirect_width = 8192;
 
-    // Sun disc radiance is clamped so it blooms without flooding the frame.
     constexpr float max_sun_disc_radiance = 2000.0F;
 
     [[nodiscard]]
@@ -66,7 +62,6 @@ namespace {
         return static_cast<std::int32_t>(std::lround(value * scale));
     }
 
-    // Below the horizon the sky fades toward a dim night floor between -10 and 0 degrees.
     [[nodiscard]]
     auto night_fade(float elevation_degrees) noexcept -> float {
         constexpr float night_floor = 0.02F;
@@ -85,7 +80,7 @@ namespace {
                          std::cos(elevation) * std::sin(azimuth)};
     }
 
-} // namespace
+}
 
 EnvironmentSystem::~EnvironmentSystem() { destroy(); }
 
@@ -342,7 +337,6 @@ auto EnvironmentSystem::ensure_procedural_radiance() -> std::expected<void, Rend
     radiance_is_cube_source_ = false;
     radiance_captured_ = false;
 
-    // A build in flight captured into the old cube.
     building_.reset();
 
     return {};
@@ -489,7 +483,6 @@ auto EnvironmentSystem::upload_cube(VkCommandBuffer command_buffer, HdrImage con
 
 auto EnvironmentSystem::finish_decode(VkCommandBuffer command_buffer, HdrImage const &decoded)
         -> std::expected<void, RendererError> {
-    // Panoramas wider than the cap are downscaled before upload; the cube is at most 1024 per face anyway.
     HdrImage const *source = &decoded;
     HdrImage scaled;
 
@@ -545,7 +538,6 @@ auto EnvironmentSystem::prepare(VkCommandBuffer command_buffer, std::uint64_t fr
 
     frame_number_ = frame_number;
 
-    // The GPU is done with anything retired more than a frames-in-flight cycle ago.
     while (!retired_.empty() && retired_.front().frame + frames_in_flight_ + 1 <= frame_number) {
         retired_.erase(retired_.begin());
     }
@@ -580,7 +572,6 @@ auto EnvironmentSystem::prepare(VkCommandBuffer command_buffer, std::uint64_t fr
 
         if (!wanted.empty() && !loaded_matches && (!decode_ || decode_->path != wanted) && decode_error_ != wanted) {
             if (auto const provided = provided_.find(wanted); provided != provided_.end()) {
-                // Already decoded (a cooked chunk): skip the file, and don't keep a second copy around.
                 std::promise<std::expected<HdrImage, HdrImageError>> ready;
                 ready.set_value(*provided->second);
 
@@ -612,7 +603,6 @@ auto EnvironmentSystem::prepare(VkCommandBuffer command_buffer, std::uint64_t fr
             } else {
                 warn("environment: could not load '{}': {}", decode_->path, result.error().message);
 
-                // Remembered so a failing file is not retried every frame; the path changing clears it.
                 decode_error_ = decode_->path;
                 error_message_ = result.error().message;
             }
@@ -645,7 +635,7 @@ auto EnvironmentSystem::prepare(VkCommandBuffer command_buffer, std::uint64_t fr
     return {};
 }
 
-auto EnvironmentSystem::plan_frame(bool /*amortize*/) -> void {
+auto EnvironmentSystem::plan_frame(bool ) -> void {
     auto &build = *building_;
 
     plan_.target_set = build.target_set;
@@ -735,7 +725,6 @@ auto EnvironmentSystem::ubo_block() const -> EnvironmentUboBlock {
 
         auto state = make_sky_state({.elevation_radians = radians, .turbidity = env.sun.turbidity});
 
-        // Calibration, the user's scale and the night fade all multiply the luminance channel.
         state.zenith.x *= sky_calibration * env.sky_intensity * night_fade(env.sun.elevation_degrees);
 
         block.sky_perez = state.perez;
@@ -891,7 +880,6 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
     auto const &prefilter = prefilter_[plan_.target_set];
 
     if (plan_.capture && radiance_image != VK_NULL_HANDLE) {
-        // Mip 0: projected from an equirect or rendered from the sky. A cubemap source was uploaded straight into it.
         if (!radiance_is_cube_source_) {
             transition_image_subresources(command_buffer, radiance_image, VK_IMAGE_LAYOUT_UNDEFINED,
                                           VK_IMAGE_LAYOUT_GENERAL, reader_stages, compute_stage, VK_ACCESS_2_NONE,
@@ -939,7 +927,6 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
             retire(std::move(equirect_));
         }
 
-        // The mip chain: each level is a 2x2 box of the one below, read through that face's own single-mip view.
         auto const downsample_layout = bind(handles_.downsample);
 
         for (std::uint32_t mip = 1; mip < radiance_.mip_count; ++mip) {
@@ -968,7 +955,6 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
                                           VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 6);
         }
 
-        // SH into the building slot. The slot is not live, so only earlier readers of its previous contents matter.
         auto const slot_offset = static_cast<VkDeviceSize>(plan_.target_set) * sizeof(GpuEnvironmentSh);
 
         VkBufferMemoryBarrier2 sh_barrier{
@@ -1014,7 +1000,6 @@ auto EnvironmentSystem::record(VkCommandBuffer command_buffer, GpuResourceTable 
 
         vkCmdPipelineBarrier2(command_buffer, &sh_dependency);
 
-        // The target prefilter set is rewritten from scratch; the whole image stays GENERAL until it flips.
         transition_image_subresources(command_buffer, prefilter.image->image(), VK_IMAGE_LAYOUT_UNDEFINED,
                                       VK_IMAGE_LAYOUT_GENERAL, reader_stages, compute_stage, VK_ACCESS_2_NONE,
                                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0,
@@ -1101,7 +1086,6 @@ auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
     auto const sh_offset = static_cast<VkDeviceSize>(live_set_) * sizeof(GpuEnvironmentSh);
 
     context_->one_time_submit([&](VkCommandBuffer command_buffer) {
-        // The environment is in sampled layouts, written by earlier frames: only their writes need to be visible.
         transition_image_layout(command_buffer, lut_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, reader_stages | compute_stage,
                                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -1203,7 +1187,6 @@ auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
         return result;
     }
 
-    // The LUT at a 4x4 grid of texels, against the CPU integral with the same sample set.
     for (std::uint32_t gy = 0; gy < 4; ++gy) {
         for (std::uint32_t gx = 0; gx < 4; ++gx) {
             auto const x = (gx * 32U) + 16U;
@@ -1220,7 +1203,6 @@ auto EnvironmentSystem::validate_against_cpu() -> EnvironmentValidation {
         }
     }
 
-    // The SH of the same level, from the same texels.
     Sh9 cpu_sh;
 
     for (std::uint32_t face = 0; face < 6; ++face) {

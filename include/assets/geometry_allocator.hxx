@@ -59,8 +59,6 @@ struct std::formatter<GeometryArenaErrorType> : std::formatter<std::string_view>
     }
 };
 
-// The offset policy behind GeometryArenaT. checkpoint()/rollback() undo an allocation if the following GPU
-// write fails; for BumpAllocator that also reclaims the alignment padding.
 template<typename A>
 concept GeometryAllocatorPolicy = requires(A a, A const &const_a, VkDeviceSize size, VkDeviceSize alignment,
                                            GeometrySlice slice, typename A::Checkpoint checkpoint) {
@@ -76,10 +74,6 @@ concept GeometryAllocatorPolicy = requires(A a, A const &const_a, VkDeviceSize s
     { const_a.capacity() } -> std::same_as<VkDeviceSize>;
 };
 
-// grow(new_capacity) extends the address space in place (no-op unless larger); existing offsets stay valid, and a
-// rollback() to a checkpoint from before the growth keeps the added space.
-
-// Never frees; offsets only advance.
 class BumpAllocator {
 public:
     using Checkpoint = VkDeviceSize;
@@ -141,7 +135,6 @@ public:
     }
 
     auto deallocate(GeometrySlice const &) noexcept -> void {
-        // Bump allocators never free.
     }
 
     [[nodiscard]]
@@ -168,9 +161,6 @@ private:
 
 static_assert(GeometryAllocatorPolicy<BumpAllocator>);
 
-// Address-ordered, coalescing free-list with alignment-aware best fit.
-//
-// Only tracks address space: callers must not deallocate ranges the GPU may still read.
 class FreeListAllocator {
 public:
     struct FreeRange {
@@ -178,8 +168,6 @@ public:
         VkDeviceSize size = 0;
     };
 
-    // A full copy of the free list. Only used as checkpoint, allocate, then commit or rollback, and the list stays
-    // short.
     struct Checkpoint {
         std::vector<FreeRange> free_ranges;
         VkDeviceSize used = 0;
@@ -212,10 +200,8 @@ public:
     }
 
 private:
-    // Marks [from, capacity_) free, merging with a free range that ends at `from`.
     auto add_free_tail(VkDeviceSize from) -> void;
 
-    // Address-ordered, non-overlapping and coalesced.
     std::vector<FreeRange> free_ranges_{};
     VkDeviceSize capacity_ = 0;
     VkDeviceSize used_ = 0;

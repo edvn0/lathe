@@ -15,9 +15,6 @@
 #include "rendering/renderer.hxx"
 #include "scene/camera_path.hxx"
 
-// Benchmarks are only comparable if every run sees the same frames: a continuous looping camera path, the
-// stats the comparison script expects, and a reproducible seed.
-
 namespace {
 
     [[nodiscard]] auto square_path() -> std::vector<CameraKeyframe> {
@@ -31,7 +28,7 @@ namespace {
 
     [[nodiscard]] auto near(glm::vec3 const &a, glm::vec3 const &b) -> bool { return glm::distance(a, b) < 1e-4F; }
 
-} // namespace
+}
 
 TEST_CASE("camera path passes through every keyframe and closes the loop") {
     auto const keyframes = square_path();
@@ -44,7 +41,6 @@ TEST_CASE("camera path passes through every keyframe and closes the loop") {
         CHECK(near(sample.target, keyframes[i].target));
     }
 
-    // Approaching t = 1 lands back on the first keyframe, no jump.
     CHECK(glm::distance(sample_camera_path(keyframes, 0.9999F).position, keyframes[0].position) < 0.01F);
     CHECK(near(sample_camera_path(keyframes, 1.25F).position, sample_camera_path(keyframes, 0.25F).position));
 }
@@ -62,7 +58,6 @@ TEST_CASE("camera path moves smoothly between keyframes") {
         previous = position;
     }
 
-    // The loop is ~40 m long, so each 1/400th step is well under a metre.
     CHECK(largest_step < 0.5F);
 }
 
@@ -85,7 +80,6 @@ TEST_CASE("timing summaries use nearest-rank percentiles") {
 
 namespace {
 
-    // Runs the benchmark options through a real CommandLine, as main() does.
     [[nodiscard]] auto parse_benchmark_options(std::span<char const *const> args)
             -> std::expected<std::optional<BenchmarkOptions>, std::string> {
         CommandLine cli{"lathe", ""};
@@ -98,7 +92,7 @@ namespace {
         return arguments.options();
     }
 
-} // namespace
+}
 
 TEST_CASE("benchmark options") {
     SUBCASE("absent without --benchmark=") {
@@ -154,7 +148,6 @@ TEST_CASE("benchmark run warms up until streaming settles, then records one lap"
         timings.passes.push_back(frame_graph::PassTiming{.name_id = id, .label = id, .milliseconds = 1.0F});
     }
 
-    // Still streaming: stays parked at the first keyframe past the minimum.
     for (int i = 0; i < 5; ++i) {
         CHECK(near(run.camera().position, keyframes[0].position));
         run.on_frame_drawn(timings, false);
@@ -170,7 +163,6 @@ TEST_CASE("benchmark run warms up until streaming settles, then records one lap"
         run.on_frame_drawn(timings, true);
     }
 
-    // 8 frames over 4 keyframes: frames 0, 2, 4, 6.
     CHECK(keyframe_frames == keyframes.size());
 
     CHECK(run.finished());
@@ -184,7 +176,6 @@ TEST_CASE("benchmark run warms up until streaming settles, then records one lap"
     CHECK(json.find("\"cluster_grid\": [16, 9, 24, 256]") != std::string::npos);
     CHECK(json.find("\"occlusion_culling\": false") != std::string::npos);
 
-    // A stage appears once its pass has been seen, so on/off runs compare stage by stage.
     CHECK(json.find("\"id\": \"hiz_build\"") != std::string::npos);
     CHECK(json.find("\"id\": \"occlusion_culling\"") != std::string::npos);
     CHECK(json.find("\"id\": \"depth_prepass_late\"") != std::string::npos);
@@ -192,7 +183,6 @@ TEST_CASE("benchmark run warms up until streaming settles, then records one lap"
     auto const occlusion_json = run.to_json(BenchmarkEnvironment{.device_name = "gpu", .occlusion_culling = true});
     CHECK(occlusion_json.find("\"occlusion_culling\": true") != std::string::npos);
 
-    // Meshlet-level occlusion is recorded separately, so runs with and without it aren't mistaken for one another.
     CHECK(json.find("\"meshlet_occlusion\": false") != std::string::npos);
     CHECK(occlusion_json.find("\"meshlet_occlusion\": false") != std::string::npos);
 
@@ -211,9 +201,8 @@ TEST_CASE("benchmark counters average over valid frames and report the last valu
     FrameTimings timings{};
     timings.valid = true;
 
-    run.on_frame_drawn(timings, true); // warmup
+    run.on_frame_drawn(timings, true);
 
-    // Occlusion readbacks: 10, an invalid frame that must not count as zero, then 20.
     run.on_frame_drawn(timings, true, BenchmarkCounters{.occlusion_valid = true, .frustum_visible_instances = 10});
     run.on_frame_drawn(timings, true, BenchmarkCounters{.frustum_visible_instances = 99});
     run.on_frame_drawn(timings, true,
@@ -227,7 +216,6 @@ TEST_CASE("benchmark counters average over valid frames and report the last valu
     CHECK(json.find("\"frustum_visible_instances\": {\"mean\": 15.0000, \"final\": 20}") != std::string::npos);
     CHECK(json.find("\"stored_lights\": {\"mean\": 7.0000, \"final\": 7}") != std::string::npos);
 
-    // Never read back: null, not zero.
     CHECK(json.find("\"occluded_meshlets\": {\"mean\": null, \"final\": null}") != std::string::npos);
 }
 
@@ -271,7 +259,7 @@ TEST_CASE("stages are keyed by pass id: absent frames count as 0 ms and late arr
     options.warmup_frame_count = 0;
 
     BenchmarkRun run{options, square_path()};
-    run.on_frame_drawn(FrameTimings{.valid = true}, true); // leaves warmup (nothing to measure yet)
+    run.on_frame_drawn(FrameTimings{.valid = true}, true);
 
     auto const frame = [](float full, std::vector<std::pair<char const *, float>> const &passes) {
         auto timings = FrameTimings{.full_frame_ms = full, .valid = true};
@@ -288,7 +276,6 @@ TEST_CASE("stages are keyed by pass id: absent frames count as 0 ms and late arr
 
     auto const json = run.to_json(BenchmarkEnvironment{.device_name = "gpu"});
     CHECK(json.find("\"id\": \"full_frame\"") != std::string::npos);
-    // a: 1, 1, 0 (absent in the last frame); b: 0 (backfilled), 2, 0.5.
     CHECK(json.find("\"id\": \"a\", \"name\": \"a\", \"mean_ms\": 0.6667") != std::string::npos);
     CHECK(json.find("\"id\": \"b\", \"name\": \"b\", \"mean_ms\": 0.8333") != std::string::npos);
     CHECK(json.find("\"full_frame_ms\": [2.0000, 3.0000, 1.0000]") != std::string::npos);

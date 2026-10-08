@@ -1,6 +1,6 @@
 # Scenes
 
-Saved `.lbf` scenes (see `docs/lathe-binary-format.md`). Open one with **Ctrl+O** in the editor, by dropping it
+Saved `.lbf` scenes. Open one with **Ctrl+O** in the editor, by dropping it
 on the window, or at startup with `--scene=assets/scenes/<name>.lbf`.
 
 | File | Contents |

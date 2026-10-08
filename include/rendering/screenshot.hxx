@@ -14,20 +14,16 @@
 #include <optional>
 #include <vector>
 
-// What a screenshot captures.
 enum class ScreenshotSource : std::uint8_t {
-    window, // The composited swapchain image: the whole app including the UI.
-    viewport, // The editor's viewport target: just the rendered scene.
+    window,
+    viewport,
 };
 
-// An image to copy from, with the layout and sync it is in when record() is called and the ones to leave it in.
 struct ScreenshotImage {
     VkImage image = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
 
-    // A frame graph pass has already put the image in TRANSFER_SRC_OPTIMAL and will move it on afterwards: record()
-    // then emits no image barriers and ignores the before/after fields below.
     bool managed_by_graph = false;
 
     VkImageLayout layout_before = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -39,14 +35,6 @@ struct ScreenshotImage {
     VkAccessFlags2 access_after = VK_ACCESS_2_NONE;
 };
 
-// Captures an image (the swapchain or the viewport target) to a PNG in three stages:
-//
-//   1. record()       records a copy into a mapped readback buffer for the current frame slot.
-//   2. try_resolve()  when that slot comes round again its fence has completed; hands the buffer to a worker.
-//   3. worker thread  invalidates if needed, copies the pixels out, releases the slot, then converts and
-//                     encodes the PNG.
-//
-// request() is thread-safe; record() and try_resolve() are render-thread only.
 class ScreenshotCapture {
 public:
     ScreenshotCapture() = default;
@@ -63,7 +51,6 @@ public:
         requested_.store(true, std::memory_order_release);
     }
 
-    // The source of the pending request, if any, so the caller can pick the image to hand to record().
     [[nodiscard]]
     auto pending_source() const noexcept -> std::optional<ScreenshotSource> {
         if (!requested_.load(std::memory_order_acquire)) {
@@ -72,16 +59,12 @@ public:
         return source_.load(std::memory_order_relaxed);
     }
 
-    // Records the copy if a capture is pending and the slot is free, leaving the image in source.layout_after.
-    // Returns whether a copy was recorded.
     [[nodiscard]]
     auto record(VulkanContext &ctx, VkCommandBuffer command_buffer, ScreenshotImage const &source,
                 std::uint32_t frame_index) -> bool;
 
-    // Call once frame_index's fence has been waited on. Hands a completed copy to the worker.
     auto try_resolve(std::uint32_t frame_index) -> void;
 
-    // Waits for pending PNG writes, then frees the readback buffers. The allocator must still be alive.
     auto close() noexcept -> void;
 
 private:

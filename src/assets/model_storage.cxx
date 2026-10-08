@@ -3,7 +3,6 @@
 #include <utility>
 
 auto ModelStorage::create(ModelStorageCreateInfo const &create_info) -> std::expected<ModelStorage, ModelStorageError> {
-    // Slot zero is never used, so at least one more slot is needed.
     if (create_info.capacity < 2) {
         return std::unexpected(ModelStorageError{.type = ModelStorageErrorType::invalid_argument});
     }
@@ -27,7 +26,6 @@ auto ModelStorage::create_model(ModelSlotData data) -> std::expected<ModelHandle
     auto &[handle, slot] = *allocation;
 
     slot = std::move(data);
-    // A new slot has one owner and owns its meshes, whatever `data` carried (e.g. a copied fallback's).
     slot.ref_count = 1;
     slot.borrowed_from = {};
 
@@ -61,7 +59,6 @@ auto ModelStorage::upgrade_pending_model(ModelHandle handle, ModelSlotData data)
         return std::unexpected(ModelStorageError{.type = ModelStorageErrorType::invalid_handle});
     }
 
-    // Replacing the data doesn't change who owns the handle.
     auto const preserved_ref_count = slot->ref_count;
     *slot = std::move(data);
     slot->ref_count = preserved_ref_count;

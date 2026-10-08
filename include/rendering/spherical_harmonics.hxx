@@ -7,11 +7,6 @@
 
 #include "rendering/cube_map.hxx"
 
-// CPU mirror of the L2 spherical-harmonics maths in assets/shaders/environment.slang (sh9_basis, sh9_eval) and
-// assets/shaders/env_sh_project.slang. Keep them in lockstep. See docs/ibl-and-skybox.md.
-//
-// Basis order: Y00, Y1-1 (y), Y10 (z), Y11 (x), Y2-2 (xy), Y2-1 (yz), Y20 (3z^2 - 1), Y21 (xz), Y22 (x^2 - y^2).
-
 inline constexpr std::uint32_t sh9_coefficient_count = 9;
 
 struct Sh9 {
@@ -33,7 +28,6 @@ inline auto sh9_basis(glm::vec3 d) noexcept -> std::array<float, sh9_coefficient
     };
 }
 
-// Adds `radiance` arriving from `direction` over `solid_angle` to the projection.
 inline auto sh9_accumulate(Sh9 &sh, glm::vec3 direction, glm::vec3 radiance, double solid_angle) noexcept -> void {
     auto const basis = sh9_basis(direction);
 
@@ -42,8 +36,6 @@ inline auto sh9_accumulate(Sh9 &sh, glm::vec3 direction, glm::vec3 radiance, dou
     }
 }
 
-// Convolves a radiance projection with the clamped-cosine lobe and divides by pi, so sh9_eval() of the result is
-// irradiance / pi, i.e. the Lambert diffuse radiance for albedo 1. The per-band factors are (pi, 2pi/3, pi/4) / pi.
 [[nodiscard]]
 inline auto sh9_cosine_convolve_over_pi(Sh9 const &radiance) noexcept -> Sh9 {
     constexpr std::array<float, sh9_coefficient_count> band_factor{

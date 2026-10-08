@@ -7,7 +7,6 @@
 
 inline constexpr auto invalid_sampler_index = std::numeric_limits<std::uint32_t>::max();
 
-// Defined in sampler_storage.hxx. Handle<T> doesn't need a complete T.
 struct SamplerSlotData;
 
 using SamplerHandle = Handle<SamplerSlotData>;

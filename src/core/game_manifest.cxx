@@ -15,7 +15,7 @@ namespace {
 
         return text;
     }
-} // namespace
+}
 
 auto GameManifest::load(std::filesystem::path const &path) -> std::expected<GameManifest, std::string> {
     std::ifstream in{path};

@@ -23,7 +23,6 @@
 
 namespace {
 
-    // Folded into the cache key; bump whenever the cached .ktx2 content changes so stale entries are ignored.
     constexpr int texture_pipeline_encoder_version = 3;
 
     auto make_error(TexturePipelineErrorType type, std::string_view message = {},
@@ -47,7 +46,6 @@ namespace {
 
     using KtxTexturePtr = std::unique_ptr<ktxTexture2, KtxTextureDeleter>;
 
-    // FNV-1a. Keys only need to be stable on this machine.
     [[nodiscard]]
     auto fnv1a(std::string_view data) noexcept -> std::uint64_t {
         auto hash = std::uint64_t{14695981039346656037ULL};
@@ -82,7 +80,6 @@ namespace {
         return cache_directory / std::format("{}.{}.ktx2", stem, to_hex(fnv1a(key)));
     }
 
-    // UASTC wants 8-bit input. EXR use here is LDR-range PBR data, so clamping to [0,1] loses nothing.
     [[nodiscard]]
     auto to_rgba8(DecodedImage const &decoded) -> std::vector<std::byte> {
         auto const span = decoded.span();
@@ -115,7 +112,6 @@ namespace {
         std::vector<std::byte> pixels;
     };
 
-    // Gamma-correct downsampling for colour data, linear for everything else.
     [[nodiscard]]
     auto generate_mip_chain(std::vector<std::byte> base_rgba8, std::uint32_t width, std::uint32_t height,
                             TextureRole role) -> std::vector<RawMip> {
@@ -188,12 +184,8 @@ namespace {
         ktxBasisParams params{};
         params.structSize = sizeof(params);
         params.uastc = KTX_TRUE;
-        // Each call already runs as its own thread-pool task, so internal encoder threads would oversubscribe the CPU
-        // during burst loads.
         params.threadCount = 1;
         params.normalMap = role == TextureRole::normal_map ? KTX_TRUE : KTX_FALSE;
-        // Fastest UASTC level: lower quality (43.5 vs 47.5 dB PSNR), but encoding dominated cold-load time. Results
-        // are cached, so it's a one-time cost per texture.
         params.uastcFlags = static_cast<ktx_pack_uastc_flags>(KTX_PACK_UASTC_LEVEL_FASTEST);
 
         if (ktxTexture2_CompressBasisEx(texture.get(), &params) != KTX_SUCCESS) {
@@ -204,7 +196,6 @@ namespace {
         return texture;
     }
 
-    // Best-effort: a failed write only means the next load re-encodes.
     auto write_cache_atomic(ktxTexture2 *texture, std::filesystem::path const &cache_path) -> void {
         std::error_code ec;
 
@@ -280,8 +271,6 @@ namespace {
         return role == TextureRole::normal_map ? KTX_TTF_BC5_RG : KTX_TTF_BC7_RGBA;
     }
 
-    // The cache stores the transcoded BC7/BC5 data, so a hit is just a file read. Returns nullopt on any miss or
-    // corruption so the caller re-encodes.
     [[nodiscard]]
     auto try_load_cached(std::filesystem::path const &cache_path, FlyString debug_name,
                          ModelLoadProfile *profile) -> std::optional<CompressedTexture> {
@@ -315,7 +304,6 @@ namespace {
 
         auto extracted = extract_compressed_texture(texture.get(), debug_name);
 
-        // A truncated or hand-edited cache file can parse as KTX2 yet describe nonsense; fall back to re-encoding.
         if (auto const problem = validate_compressed_texture(extracted); problem.has_value()) {
             warn("texture_pipeline: cache file '{}' is invalid ({}), re-encoding", cache_path.string(), *problem);
             return std::nullopt;
@@ -352,7 +340,6 @@ namespace {
 
         ScopedProfileSample transcode_sample{profile != nullptr ? &profile->texture_transcode_ns : nullptr};
 
-        // Transcodes in place, so the cache file below is already GPU-ready.
         if (ktxTexture2_TranscodeBasis(texture.get(), transcode_target(role), 0) != KTX_SUCCESS) {
             return std::unexpected(
                     make_error(TexturePipelineErrorType::transcode_failed, "ktxTexture2_TranscodeBasis failed"));
@@ -367,7 +354,6 @@ namespace {
         return extract_compressed_texture(texture.get(), debug_name);
     }
 
-    // Shared tail of the file and memory loaders: convert to 8-bit RGBA and encode.
     [[nodiscard]]
     auto compress_decoded_image(DecodedImage const &decoded, TextureRole role, std::filesystem::path const &cache_path,
                                 FlyString debug_name,
@@ -379,7 +365,7 @@ namespace {
         return encode_and_transcode(std::move(rgba8), width, height, role, cache_path, debug_name, profile);
     }
 
-} // namespace
+}
 
 auto default_texture_cache_directory() -> std::filesystem::path {
     if (auto const *xdg_cache = std::getenv("XDG_CACHE_HOME"); xdg_cache != nullptr && *xdg_cache != '\0') {

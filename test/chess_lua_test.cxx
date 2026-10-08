@@ -33,18 +33,17 @@ TEST_CASE("Play starts a game; scholar's mate through mouse clicks ends on the g
 
     harness.start_playing();
 
-    harness.move(4, 1, 4, 3); // e4
-    harness.move(4, 6, 4, 4); // e5
-    harness.move(5, 0, 2, 3); // Bc4
-    harness.move(1, 7, 2, 5); // Nc6
-    harness.move(3, 0, 7, 4); // Qh5
-    harness.move(6, 7, 5, 5); // Nf6
+    harness.move(4, 1, 4, 3);
+    harness.move(4, 6, 4, 4);
+    harness.move(5, 0, 2, 3);
+    harness.move(1, 7, 2, 5);
+    harness.move(3, 0, 7, 4);
+    harness.move(6, 7, 5, 5);
 
     CHECK(harness.string_global("LAST_WINDOW") == "##hud");
 
-    harness.move(7, 4, 5, 6); // Qxf7#
+    harness.move(7, 4, 5, 6);
 
-    // The result is shown after a short delay.
     for (int index = 0; index < 30; ++index) {
         harness.frame(0.1F);
     }
@@ -54,7 +53,6 @@ TEST_CASE("Play starts a game; scholar's mate through mouse clicks ends on the g
     harness.run("TEXTS = {}");
     harness.frame();
 
-    // Checkmate, and black is the side to move, so white won.
     harness.run("RESULT = table.concat(TEXTS, '|')");
 
     auto const texts = harness.string_global("RESULT");
@@ -104,7 +102,6 @@ TEST_CASE("an illegal click is rejected and leaves the board alone") {
 
     harness.start_playing();
 
-    // Selecting a black piece on white's turn does nothing.
     harness.click(4, 6);
     harness.click(4, 4);
 

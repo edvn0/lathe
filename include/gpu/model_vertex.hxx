@@ -12,7 +12,6 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
-// GPU vertex formats and the matching pipeline vertex-input layout.
 struct ModelVertex {
     glm::vec3 position{};
     glm::vec3 normal{};
@@ -60,10 +59,10 @@ auto decode_octahedral(glm::vec2 encoded) -> glm::vec3;
 
 #pragma pack(push, 1)
 struct CompressedModelVertex {
-    glm::uint32 normal_oct{}; // packSnorm2x16(encode_octahedral(normal))
-    glm::uint32 tangent_oct{}; // packSnorm2x16(encode_octahedral(tangent.xyz)); the LSB holds the handedness
-    glm::uint16 position_x{}, position_y{}, position_z{}; // half floats
-    glm::uint16 texcoord_u{}, texcoord_v{}; // half floats
+    glm::uint32 normal_oct{};
+    glm::uint32 tangent_oct{};
+    glm::uint16 position_x{}, position_y{}, position_z{};
+    glm::uint16 texcoord_u{}, texcoord_v{};
     glm::uint16 pad_{};
 };
 #pragma pack(pop)

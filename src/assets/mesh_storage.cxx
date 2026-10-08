@@ -3,7 +3,6 @@
 #include <utility>
 
 auto MeshStorage::create(MeshStorageCreateInfo const &create_info) -> std::expected<MeshStorage, MeshStorageError> {
-    // Slot zero is never used, so at least one more slot is needed.
     if (create_info.capacity < 2) {
         return std::unexpected(MeshStorageError{.type = MeshStorageErrorType::invalid_argument});
     }

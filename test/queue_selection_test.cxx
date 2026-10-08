@@ -19,7 +19,7 @@ namespace {
         };
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("one graphics queue is the single topology") {
@@ -117,7 +117,6 @@ TEST_SUITE("unit") {
                 std::array{info(graphics_family, 1, 64, true), info(compute_family, 4)}, AsyncComputeMode::automatic);
         CHECK(queue_requests(dedicated) == std::vector<QueueRequest>{{0, 1}, {1, 1}});
 
-        // The present family can also be the dedicated compute family: one request covers both.
         auto const shared_family = choose_queue_families(
                 std::array{info(graphics_family, 2), info(compute_family, 1, 64, true), info(compute_family, 4)},
                 AsyncComputeMode::automatic);
@@ -125,7 +124,6 @@ TEST_SUITE("unit") {
         CHECK(shared_family.compute == 1);
         CHECK(queue_requests(shared_family) == std::vector<QueueRequest>{{0, 1}, {1, 1}});
 
-        // Graphics, present and compute on three different families.
         auto const three = choose_queue_families(
                 std::array{info(VK_QUEUE_GRAPHICS_BIT, 1), info(0, 1, 0, true), info(compute_family, 2)},
                 AsyncComputeMode::automatic);
@@ -133,14 +131,6 @@ TEST_SUITE("unit") {
         CHECK(three.present == 1);
         CHECK(three.compute == 2);
         CHECK(queue_requests(three) == std::vector<QueueRequest>{{0, 1}, {1, 1}, {2, 1}});
-    }
-
-    TEST_CASE("--async-compute values parse") {
-        CHECK(parse_async_compute_mode("auto") == AsyncComputeMode::automatic);
-        CHECK(parse_async_compute_mode("off") == AsyncComputeMode::off);
-        CHECK(parse_async_compute_mode("same-family") == AsyncComputeMode::same_family);
-        CHECK_FALSE(parse_async_compute_mode("on").has_value());
-        CHECK_FALSE(parse_async_compute_mode("").has_value());
     }
 
     TEST_CASE("topology names") {

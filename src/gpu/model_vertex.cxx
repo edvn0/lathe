@@ -11,7 +11,7 @@ namespace {
         auto const packed = glm::packSnorm2x16(value);
         return (packed & ~glm::uint32{1}) | (sign_bit ? 1U : 0U);
     }
-} // namespace
+}
 
 auto encode_octahedral(glm::vec3 direction) -> glm::vec2 {
     auto const l1_norm = std::abs(direction.x) + std::abs(direction.y) + std::abs(direction.z);
@@ -58,8 +58,6 @@ auto compress_vertex(ModelVertex const &vertex) -> CompressedModelVertex {
 }
 
 auto compress_vertices(std::span<ModelVertex const> vertices) -> std::vector<CompressedModelVertex> {
-    // Serial on purpose: this runs inside per-primitive tasks on thread_pool(), and blocking one of those workers on
-    // nested pool tasks deadlocks once every worker is inside such a task.
     std::vector<CompressedModelVertex> compressed(vertices.size());
     std::ranges::transform(vertices, compressed.begin(), compress_vertex);
 

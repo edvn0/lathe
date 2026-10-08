@@ -1,8 +1,3 @@
-// X-macro list of every subsystem error type that can be an ErrorCause. Includers define X and NX, include
-// this file, then #undef both.
-//
-// X(Name)        -- type in the global namespace
-// NX(ns, Name)   -- type in namespace `ns`
 
 #if !defined(X) || !defined(NX)
 #error "define X(Name) and NX(ns, Name) before including error_types.def"

@@ -24,7 +24,6 @@ namespace {
 
     using namespace punt;
 
-    // An axis-aligned slab given by its extent along each axis, which is how the course is easiest to describe.
     struct Slab {
         glm::vec3 min;
         glm::vec3 max;
@@ -43,11 +42,8 @@ namespace {
         auto const north_edge = hole_centre.y + hole_half_size;
 
         return {
-                // Everything before the shaft, full depth.
                 Slab{{-course_half_extents.x, bottom, -course_half_extents.y}, {west_edge, top, course_half_extents.y}},
-                // Everything after it, full depth.
                 Slab{{east_edge, bottom, -course_half_extents.y}, {course_half_extents.x, top, course_half_extents.y}},
-                // The two strips either side of the shaft.
                 Slab{{west_edge, bottom, -course_half_extents.y}, {east_edge, top, south_edge}},
                 Slab{{west_edge, bottom, north_edge}, {east_edge, top, course_half_extents.y}},
         };
@@ -69,7 +65,7 @@ namespace {
         };
     }
 
-} // namespace
+}
 
 auto build_punt_level(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void {
     scene.get_registry().clear();
@@ -82,7 +78,6 @@ auto build_punt_level(Scene &scene, Renderer &renderer, EngineModels const &engi
     auto &images = renderer.image_storage();
     auto &samplers = renderer.sampler_storage();
 
-    // One reference each, released at the end; by then the entities below hold their own.
     std::vector<MaterialHandle> created_materials;
 
     auto const flat_material = [&](std::string name, glm::vec3 const &colour, float roughness) -> MaterialHandle {
@@ -118,7 +113,6 @@ auto build_punt_level(Scene &scene, Renderer &renderer, EngineModels const &engi
     auto const flag_look = flat_material("punt.flag", glm::vec3{0.85F, 0.1F, 0.12F}, 0.7F);
     auto const pole_look = flat_material("punt.pole", glm::vec3{0.15F, 0.15F, 0.17F}, 0.4F);
 
-    // Static scenery. `rotation` turns the collider with the mesh, so angled baffles collide as they look.
     auto const add_static_box = [&](std::string_view name, glm::vec3 const &centre, glm::vec3 const &half_extents,
                                     MaterialHandle material,
                                     glm::quat const &rotation = glm::quat{1.0F, 0.0F, 0.0F, 0.0F}) {
@@ -147,11 +141,9 @@ auto build_punt_level(Scene &scene, Renderer &renderer, EngineModels const &engi
         add_static_box(std::format("wall_{}", index), slab.centre(), slab.half_extents(), wall);
     }
 
-    // The shaft's floor, half a metre thick so the ball can't tunnel through it at speed.
     add_static_box("pit_floor", glm::vec3{hole_centre.x, pit_floor_y - 0.25F, hole_centre.y},
                    glm::vec3{hole_half_size, 0.25F, hole_half_size}, pit);
 
-    // Obstacles between the tee and the hole.
     struct Obstacle {
         glm::vec3 centre;
         glm::vec3 half_extents;
@@ -164,7 +156,6 @@ auto build_punt_level(Scene &scene, Renderer &renderer, EngineModels const &engi
             {.centre = {1.5F, 0.9F, 0.0F}, .half_extents = {0.5F, 0.9F, 3.2F}, .yaw_degrees = 0.0F},
             {.centre = {6.5F, 0.5F, 8.0F}, .half_extents = {2.6F, 0.5F, 0.5F}, .yaw_degrees = 0.0F},
             {.centre = {6.5F, 0.5F, -8.0F}, .half_extents = {2.6F, 0.5F, 0.5F}, .yaw_degrees = 0.0F},
-            // Baffles that funnel a well-aimed ball towards the shaft.
             {.centre = {10.5F, 0.5F, 3.6F}, .half_extents = {2.6F, 0.5F, 0.3F}, .yaw_degrees = 25.0F},
             {.centre = {10.5F, 0.5F, -3.6F}, .half_extents = {2.6F, 0.5F, 0.3F}, .yaw_degrees = -25.0F},
     }};
@@ -174,7 +165,6 @@ auto build_punt_level(Scene &scene, Renderer &renderer, EngineModels const &engi
                        glm::angleAxis(glm::radians(obstacle.yaw_degrees), glm::vec3{0.0F, 1.0F, 0.0F}));
     }
 
-    // A flag by the hole, so it reads as a target from across the course.
     constexpr float pole_height = 2.6F;
     auto const pole_base = glm::vec3{hole_centre.x, floor_top_y, hole_centre.y + hole_half_size + 1.1F};
 
@@ -202,12 +192,11 @@ auto build_punt_level(Scene &scene, Renderer &renderer, EngineModels const &engi
         });
         ball.emplace<Components::Model>(Components::Model{.model = engine_models.sphere});
         ball.emplace<Components::RigidBody>(
-                Components::RigidBody::make_sphere(ball_radius, ball_mass, /*restitution=*/0.45F));
+                Components::RigidBody::make_sphere(ball_radius, ball_mass, 0.45F));
         ball.emplace<Components::MaterialOverride>(Components::MaterialOverride{.material = ball_look});
     }
 
     {
-        // The capsule mesh is 1 m tall with a 0.5 m radius; scale it onto the collider's dimensions.
         constexpr glm::vec3 capsule_scale{player_capsule_radius / primitive_half_extent, player_capsule_height,
                                           player_capsule_radius / primitive_half_extent};
 
@@ -215,13 +204,12 @@ auto build_punt_level(Scene &scene, Renderer &renderer, EngineModels const &engi
         player.emplace<Components::Transform>(Components::Transform{.position = player_spawn, .scale = capsule_scale});
         player.emplace<Components::Model>(Components::Model{.model = engine_models.capsule});
         player.emplace<Components::RigidBody>(
-                Components::RigidBody::make_capsule(player_capsule_radius, player_capsule_height, /*mass=*/80.0F));
+                Components::RigidBody::make_capsule(player_capsule_radius, player_capsule_height, 80.0F));
         player.emplace<Components::MaterialOverride>(Components::MaterialOverride{.material = player_look});
         player.emplace<Components::PlayerTag>();
     }
 
     {
-        // Invisible: the shaft is already there to see. See punt::hole_entity_name.
         auto const hole = Entity{&scene, hole_entity_name};
         hole.emplace<Components::Transform>(Components::Transform{
                 .position = glm::vec3{hole_centre.x, (floor_top_y + pit_floor_y) * 0.5F, hole_centre.y},

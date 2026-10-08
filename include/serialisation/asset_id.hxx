@@ -9,18 +9,6 @@
 #include "assets/texture_pipeline.hxx"
 #include "core/paths.hxx"
 
-// Stable identity of a cooked asset: xxh64 of a canonical key string. Scenes reference assets by AssetId and
-// asset packs index their chunks by it, so a scene can find a model in any pack that has it.
-//
-// Keys:
-//   model:   "model:<path>"                  e.g. "model:assets/models/sponza/Sponza.gltf"
-//   texture: "texture:<path>|<role>"         a texture file, cooked for one TextureRole
-//            "texture:<cache key>|<role>"    an image embedded in a glTF (see ModelCpuImageSource::cache_key)
-//   engine:  "engine://<name>"               built-in procedural models (cube, sphere, ...); never cooked
-//   environment: "environment:<path>"        an HDR environment image (.hdr, .exr, .ktx2), cooked to an ENVM chunk
-//
-// Paths are lexically normalised and stored with forward slashes, relative to the working directory when the
-// file lives under it, so a scene saved on one machine still resolves on another.
 struct AssetId {
     std::uint64_t value = 0;
 

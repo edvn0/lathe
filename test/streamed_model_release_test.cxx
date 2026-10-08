@@ -9,7 +9,6 @@
 
 namespace {
 
-    // Wires the same hooks Scene does, recording releases instead of calling the Renderer.
     struct ReleaseRecorder {
         std::vector<ModelHandle> released;
 
@@ -47,7 +46,6 @@ namespace {
         return entity;
     }
 
-    // Pool creation order decides which pool entt empties first, so run each case with both orders.
     auto make_registry(bool tag_pool_first) -> entt::registry {
         entt::registry registry;
 
@@ -62,7 +60,7 @@ namespace {
         return registry;
     }
 
-} // namespace
+}
 
 TEST_SUITE("StreamedModelTag release") {
     TEST_CASE("destroying an owning entity releases its model once") {

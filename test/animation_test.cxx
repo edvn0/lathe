@@ -44,7 +44,7 @@ namespace {
         in.lod = static_cast<Lod>(i % 3);
         return in;
     }
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("Animation: skeleton finds joints and derives inverse bind") {
@@ -70,7 +70,6 @@ TEST_SUITE("unit") {
         pose.set_joint(1, {{0.0F, 2.0F, 0.0F}, glm::quat{1, 0, 0, 0}, glm::vec3{1.0F}});
         auto model = std::vector<glm::mat4>(2);
         compute_model_matrices(skeleton, pose.view(), model);
-        // Child offset (0,2,0) rotated 90 degrees about Z becomes (-2,0,0), then translated by (1,0,0).
         CHECK(model[1][3].x == doctest::Approx(-1.0F));
         CHECK(model[1][3].y == doctest::Approx(0.0F).epsilon(1e-5));
     }
@@ -82,12 +81,12 @@ TEST_SUITE("unit") {
         clip.add_rotation_track({1, {0.0F, 2.0F}, {glm::quat{1, 0, 0, 0}, glm::angleAxis(glm::pi<float>(), glm::vec3{0, 1, 0})}});
 
         auto out = Pose{2};
-        clip.sample(0.25F, out.view()); // t = 0.5 s
+        clip.sample(0.25F, out.view());
         CHECK(out.joint(1).translation.x == doctest::Approx(1.0F));
         CHECK(out.joint(1).rotation.w == doctest::Approx(std::cos(glm::pi<float>() / 8.0F)));
-        clip.sample(1.0F, out.view()); // beyond the last translation key: clamped
+        clip.sample(1.0F, out.view());
         CHECK(out.joint(1).translation.x == doctest::Approx(2.0F));
-        CHECK(out.joint(0).translation.x == doctest::Approx(0.0F)); // untracked joint keeps base
+        CHECK(out.joint(0).translation.x == doctest::Approx(0.0F));
     }
 
     TEST_CASE("Animation: procedural clip goes through the Clip interface") {
@@ -127,7 +126,6 @@ TEST_SUITE("unit") {
         auto const machine = AnimStateMachine{Humanoid::make_state_table(*rig)};
         auto const &walk = machine.definition(State::Walk);
 
-        // Same distance covered at different speeds/frame rates yields the same phase.
         auto phase_after = [&](float speed, float dt, float distance) {
             auto const steps = static_cast<int>(std::round(distance / (speed * dt)));
             auto phase = 0.0F;
@@ -139,7 +137,6 @@ TEST_SUITE("unit") {
         CHECK(phase_after(1.0F, 1.0F / 60.0F, 0.8F) == doctest::Approx(0.5F).epsilon(1e-3));
         CHECK(phase_after(2.0F, 1.0F / 30.0F, 0.8F) == doctest::Approx(0.5F).epsilon(1e-3));
 
-        // And the machine itself obeys it: a stride of walking distance advances one cycle.
         auto state = StateMachineState{};
         state.current = State::Walk;
         auto pose = Pose{Humanoid::JointCount};
@@ -154,7 +151,6 @@ TEST_SUITE("unit") {
         CHECK(state.current == State::Walk);
         CHECK(state.phase == doctest::Approx(0.5F).epsilon(1e-2));
 
-        // Standing still: the gait does not advance at all.
         auto still = StateMachineState{};
         still.current = State::Walk;
         in.horizontal_speed = 0.0F;
@@ -177,7 +173,7 @@ TEST_SUITE("unit") {
                 }
             }
         };
-    } // namespace
+    }
 
     TEST_CASE("Animation: state machine ground locomotion with hysteresis") {
         Harness h;
@@ -190,7 +186,7 @@ TEST_SUITE("unit") {
         in.horizontal_speed = 5.0F;
         h.step(in, 0.1F);
         CHECK(h.state.current == State::Run);
-        in.horizontal_speed = 3.2F; // between run_to_walk and walk_to_run: stays running
+        in.horizontal_speed = 3.2F;
         h.step(in, 0.1F);
         CHECK(h.state.current == State::Run);
         in.horizontal_speed = 0.0F;
@@ -223,7 +219,7 @@ TEST_SUITE("unit") {
         in.prone_requested = true;
         h.step(in, 0.05F);
         CHECK(h.state.current == State::LyingDown);
-        CHECK(h.state.fade < 1.0F); // crossfading from idle
+        CHECK(h.state.fade < 1.0F);
         h.step(in, 2.0F);
         CHECK(h.state.current == State::Prone);
         CHECK(h.state.fade == doctest::Approx(1.0F));
@@ -257,7 +253,6 @@ TEST_SUITE("unit") {
         AnimationBatch serial{rig->skeleton, machine, count, nullptr};
         AnimationBatch pooled{rig->skeleton, machine, count, &pool, {.chunk_size = 64}};
 
-        // Reference: one standalone character at a time, replicating the batch's LOD policy.
         auto const joints = rig->skeleton.joint_count();
         std::vector<StateMachineState> ref_states(count);
         std::vector<float> ref_pending(count, 0.0F);
@@ -330,7 +325,6 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("Animation: LocomotionStateTable maps arbitrary clips and falls back") {
-        // Each clip writes its phase (and its id) into joint 0, so the table's wiring can be read back.
         auto const marker = [](float id) {
             return ProceduralClip{1.0F, [id](float phase, PoseView out) {
                                       out.translation[0] = {phase, id, 0.0F};
@@ -353,20 +347,16 @@ TEST_SUITE("unit") {
 
         CHECK(t[static_cast<std::size_t>(State::Idle)].clip == &idle);
         CHECK(t[static_cast<std::size_t>(State::Walk)].stride == doctest::Approx(1.2F));
-        // No run clip: run reuses walk (and its stride).
         CHECK(t[static_cast<std::size_t>(State::Run)].clip == &walk);
         CHECK(t[static_cast<std::size_t>(State::Run)].stride == doctest::Approx(1.2F));
-        // Airborne states are held poses of the jump clip, whatever phase the machine asks for.
         auto const rise = sample(t[static_cast<std::size_t>(State::JumpRise)], 0.9F);
         CHECK(rise.y == doctest::Approx(3.0F));
         CHECK(rise.x == doctest::Approx(0.3F));
         CHECK(sample(t[static_cast<std::size_t>(State::JumpFall)], 0.1F).x == doctest::Approx(0.7F));
-        // Prone is the last frame of the lie-down clip; getting up plays it backwards.
         CHECK(sample(t[static_cast<std::size_t>(State::Prone)], 0.2F).x == doctest::Approx(1.0F));
         CHECK(sample(t[static_cast<std::size_t>(State::GettingUp)], 0.25F).x == doctest::Approx(0.75F));
         CHECK(sample(t[static_cast<std::size_t>(State::LyingDown)], 0.25F).y == doctest::Approx(4.0F));
 
-        // Only idle: every state falls back to it, and no state is left without a clip.
         LocomotionStateTable const bare{LocomotionClipSet{.idle = &idle}};
         for (auto const &definition : bare.table()) {
             CHECK(definition.clip == &idle);

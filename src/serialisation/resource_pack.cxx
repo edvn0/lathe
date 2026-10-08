@@ -9,7 +9,7 @@ namespace {
     auto resource_id(std::string_view logical) -> std::uint64_t {
         return asset_id_from_key(std::format("file:{}", logical)).value;
     }
-} // namespace
+}
 
 auto ResourcePack::open(std::filesystem::path const &path) -> std::expected<std::shared_ptr<ResourcePack>, LbfError> {
     auto reader = LbfReader::open(path);

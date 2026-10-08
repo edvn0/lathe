@@ -31,7 +31,6 @@ namespace Animation {
         auto const set = [this](State const state, StateDefinition definition) {
             table_[static_cast<std::size_t>(state)] = definition;
         };
-        // name, clip, stride, loop, locomotion, fade_in, transition
         set(State::Idle, {"idle", clips.idle, 0.0F, true, false, 0.25F, Transitions::from_ground});
         set(State::Walk, {"walk", walk, walk_stride, true, walk_stride > 0.0F, 0.2F, Transitions::from_ground});
         set(State::Run, {"run", run, run_stride, true, run_stride > 0.0F, 0.2F, Transitions::from_ground});
@@ -42,4 +41,4 @@ namespace Animation {
         set(State::Prone, {"prone", prone, 0.0F, true, false, 0.1F, Transitions::from_prone});
         set(State::GettingUp, {"getting_up", getting_up, 0.0F, false, false, 0.1F, Transitions::from_getting_up});
     }
-} // namespace Animation
+}

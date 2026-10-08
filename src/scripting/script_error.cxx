@@ -9,7 +9,6 @@
 #include <vector>
 
 namespace {
-    // Globals a script might reach for that the sandbox leaves out on purpose.
     constexpr std::array<std::string_view, 13> blocked_names{
             "os",    "io",      "require",   "load",           "loadstring", "dofile", "loadfile",
             "debug", "package", "coroutine", "collectgarbage", "utf8",       "_G",
@@ -22,7 +21,6 @@ namespace {
 
     constexpr std::array<std::string_view, 5> variable_kinds{"global", "field", "method", "local", "upvalue"};
 
-    // Optimal string alignment: Levenshtein plus adjacent transpositions, no substring edited twice.
     [[nodiscard]] auto osa_distance(std::string_view a, std::string_view b) -> std::size_t {
         auto const columns = b.size() + 1;
         std::vector<std::size_t> before_previous(columns, 0);
@@ -49,7 +47,6 @@ namespace {
         return previous[b.size()];
     }
 
-    // NAME from "attempt to (call|index) a nil value (<kind> 'NAME')", if the message has that shape.
     [[nodiscard]] auto find_nil_value_name(std::string_view message) noexcept -> std::optional<std::string_view> {
         for (auto const prefix: nil_value_prefixes) {
             auto const start = message.find(prefix);
@@ -84,7 +81,7 @@ namespace {
 
         return std::nullopt;
     }
-} // namespace
+}
 
 auto script_error_kind_name(ScriptErrorKind kind) noexcept -> std::string_view {
     switch (kind) {

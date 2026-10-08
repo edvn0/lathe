@@ -41,7 +41,6 @@
 #include "glm/gtc/type_ptr.hpp"
 #include "gpu/context.hxx"
 #include "implot.h"
-// DockBuilder* API.
 #include "imgui_internal.h"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
@@ -68,7 +67,6 @@
 
 namespace {
 
-    // GeneratedMeta wins over Meta if an entity somehow carries both.
     [[nodiscard]] auto entity_display_name(entt::registry const &registry, entt::entity entity) -> std::string {
         char const *raw = nullptr;
         if (auto const *generated = registry.try_get<Components::GeneratedMeta>(entity)) {
@@ -100,7 +98,6 @@ namespace {
         return changed;
     };
 
-    // Rotation is edited as Euler degrees and converted back to a quaternion on each change.
     constexpr auto draw_transform = [](Components::Transform &transform) -> bool {
         bool changed = false;
         changed |= ImGui::DragFloat3("Position", &transform.position.x, 0.1F);
@@ -122,7 +119,6 @@ namespace {
     constexpr auto draw_rigid_body = [](Components::RigidBody &body) -> bool {
         bool changed = false;
 
-        // Heightfield/compound shapes are generated from terrain/mesh data and can't be switched here.
         bool const generated_shape =
                 body.shape == Components::BodyShape::heightfield || body.shape == Components::BodyShape::compound;
 
@@ -130,7 +126,6 @@ namespace {
             ImGui::TextDisabled("Shape: %s (generated, not editable)",
                                 body.shape == Components::BodyShape::heightfield ? "Heightfield" : "Compound");
         } else {
-            // Parallel to shape_names below.
             constexpr std::array selectable_shapes{Components::BodyShape::box, Components::BodyShape::capsule,
                                                    Components::BodyShape::sphere};
             constexpr std::array<char const *, 3> shape_names{"Box", "Capsule", "Sphere"};
@@ -172,13 +167,10 @@ namespace {
         return changed;
     };
 
-    // Copies every component in Cs... that `source` has onto `dest`. Never pass Components::PhysicsBody: it's a
-    // non-owning handle into PhysicsWorld, so a copy would share the original's rigid body.
     template<typename... Cs>
     auto copy_components(entt::registry &registry, entt::entity source, entt::entity dest) -> void {
         (
                 [&] {
-                    // Empty tag types have no storage, so try_get<T>() doesn't compile for them.
                     if constexpr (std::is_empty_v<Cs>) {
                         if (registry.all_of<Cs>(source)) {
                             registry.emplace<Cs>(dest);
@@ -197,16 +189,13 @@ namespace {
         buffer[length] = '\0';
     }
 
-    // Bullets get their own collapsible group in the Hierarchy since they spawn in bursts.
     constexpr std::string_view bullets_group_label = "Bullets";
 
-    // The Hierarchy's nodes: every entity with a Transform and a name, each once. Bullets go in group 0.
     [[nodiscard]] auto collect_hierarchy_nodes(entt::registry const &registry) -> std::vector<HierarchyModel::Node> {
         std::vector<HierarchyModel::Node> nodes;
         std::unordered_set<entt::entity> listed;
 
         auto const add = [&](entt::entity entity) {
-            // An entity carrying both Meta and GeneratedMeta is listed once.
             if (!listed.insert(entity).second) {
                 return;
             }
@@ -230,8 +219,6 @@ namespace {
         return nodes;
     }
 
-    // Writes to GeneratedMeta when the entity has one, since it wins in entity_display_name(), else to Meta.
-    // Surrounding whitespace is trimmed; an empty name is ignored.
     auto rename_entity(entt::registry &registry, entt::entity entity, std::string_view name) -> void {
         auto const is_space = [](unsigned char c) { return std::isspace(c) != 0; };
         while (!name.empty() && is_space(static_cast<unsigned char>(name.front()))) {
@@ -253,11 +240,8 @@ namespace {
         }
     }
 
-    // `entities` without the ones that have a selected ancestor, order kept. Moving, duplicating or deleting an
-    // entity carries its subtree, so acting on those descendants as well would repeat the work.
     [[nodiscard]] auto selection_roots(entt::registry const &registry, std::span<entt::entity const> entities)
             -> std::vector<entt::entity> {
-        // Bounds the walk, so a cyclic Parent chain terminates.
         constexpr std::size_t max_parent_depth = 1024;
 
         std::vector<entt::entity> roots;
@@ -287,7 +271,6 @@ namespace {
         return roots;
     }
 
-    // Splits an affine matrix into position, rotation and scale; shear is dropped.
     auto set_transform_from_matrix(entt::registry &registry, entt::entity entity, glm::mat4 const &matrix) -> void {
         auto const translation = glm::vec3{matrix[3]};
         glm::vec3 const scale{glm::length(glm::vec3{matrix[0]}), glm::length(glm::vec3{matrix[1]}),
@@ -296,7 +279,6 @@ namespace {
                                         glm::vec3{matrix[2]} / scale.z};
         auto const rotation = glm::quat_cast(rotation_matrix);
 
-        // patch<>() so Scene::on_transform_changed fires.
         registry.patch<Components::Transform>(entity, [&](Components::Transform &transform) {
             transform.position = translation;
             transform.rotation = rotation;
@@ -304,7 +286,6 @@ namespace {
         });
     }
 
-    // Filters for the model file browser.
     [[nodiscard]] auto model_file_filters() -> std::vector<gui::FileBrowser::Filter> {
         return {
                 {.label = "glTF models (*.gltf, *.glb)", .extensions = {".gltf", ".glb"}},
@@ -314,14 +295,10 @@ namespace {
 
     using gui::widget;
 
-    // Materials queued in pending_deletions can't be newly assigned while they wait to be destroyed.
     [[nodiscard]] auto material_deletion_label(std::string_view name) -> std::string {
         return std::format("material:{}", name);
     }
 
-    // Lighting > Debug's cluster grid: a preset or the four dimensions, applied as they change so the heatmap
-    // follows, and what the latest frame made of them. `refused` holds an edit past a limit, which stays in the
-    // sliders with the reason until it is fixed.
     auto draw_cluster_grid_settings(Renderer &renderer, std::optional<ClusterGridSettings> &refused) -> void {
         auto grid = refused.value_or(renderer.cluster_grid());
         bool changed = false;
@@ -416,7 +393,7 @@ namespace {
         return std::ranges::any_of(pending_deletions,
                                    [&](Application::PendingDeletion const &pending) { return pending.label == label; });
     }
-} // namespace
+}
 
 auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> passes) -> void {
     timing_x += 1.0F;
@@ -451,7 +428,6 @@ Application::~Application() {
 }
 
 auto Application::on_ui(std::uint32_t frame_index) -> void {
-    // Must match the CompositeTarget main.cxx passes to Renderer::record_frame.
     if (is_playing && play_fullscreen) {
         if (player_mode && game && game_hooks_enabled) {
             game->on_ui(*active_scene(), *renderer);
@@ -476,7 +452,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
     ImGuiID const dockspace_id = ImGui::GetID("MainDockSpace");
 
-    // Build the default layout only when imgui.ini didn't restore one.
     if (ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
         ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
         ImGui::DockBuilderSetNodeSize(dockspace_id, main_viewport->WorkSize);
@@ -517,11 +492,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::Image(gui::linear_source_texture_id(target.index), viewport_content_size);
         }
 
-        // Drawn into the Viewport window's own draw list so it always sits on top of the image.
         if (!is_playing && has_room) {
             auto &registry = active_scene()->get_registry();
 
-            // The gizmo sits on the primary entity; the rest of the selection follows its change.
             auto const selected_entity = selection_context().primary();
 
             if (selected_entity != entt::null && registry.valid(selected_entity) &&
@@ -533,9 +506,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
                 auto const aspect =
                         viewport_content_size.y > 0.0F ? viewport_content_size.x / viewport_content_size.y : 1.0F;
-                // ImGuizmo derives the camera direction (which half of each rotation ring is front-facing) from a
-                // right-handed view matrix. Our camera is left-handed, so flip view-space Z in the view and undo it in
-                // the projection: view * projection is unchanged, but the gizmo's front/back sense is correct.
                 auto const flip_z = glm::scale(glm::mat4(1.0F), glm::vec3(1.0F, 1.0F, -1.0F));
                 auto const view = flip_z * camera.view();
                 auto const projection = camera.projection(aspect) * flip_z;
@@ -545,8 +515,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
                 if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection), gizmo_operation, gizmo_mode,
                                          glm::value_ptr(matrix))) {
-                    // Applied to each entity's own Transform, like the primary's, so the selection moves, turns and
-                    // scales as a group. Descendants of selected entities follow their parent instead.
                     auto const delta = matrix * glm::inverse(previous_matrix);
                     auto const snapshot = selection_context().snapshot();
 
@@ -574,14 +542,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 #endif
     widget("Console", [&] { terminal_widget.draw(); });
 
-    // Scripts edit the editor scene only; in play mode it's hidden behind the runtime clone, so Run is disabled.
     widget("Script", [&] {
         auto const world = is_playing ? std::optional<ScriptWorld>{}
                                       : std::optional<ScriptWorld>{ScriptWorld{
                                                 .registry = &editor_scene->get_registry(),
                                                 .hierarchy_revision = editor_scene->hierarchy_revision(),
                                         }};
-        // Like the gizmo: moved shadow casters need re-sorting.
         if (script_widget.draw(world).transforms_written > 0) {
             renderer->mark_dynamic_shadow_casters_dirty();
         }
@@ -597,7 +563,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
         ImGui::EndDisabled();
 
-        // Newest first.
         for (auto const &load: std::views::reverse(model_loads)) {
             if (!load.settled) {
                 ImGui::TextDisabled("Loading '%s'...", load.file_name.c_str());
@@ -607,7 +572,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    // Returns whether anything changed.
     auto const draw_material_fields = [&](MaterialCreateInfo &info) -> bool {
         bool changed = false;
 
@@ -649,7 +613,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         changed |= ImGui::Checkbox("Debug meshlet colours", &info.debug_meshlet_colours);
 
-        // "(default)" means the slot's engine fallback image.
         auto const texture_picker = [&](char const *label, ImageHandle &slot, ImageHandle default_handle) {
             auto const &textures = renderer->assets().textures();
             bool const is_default = slot == default_handle;
@@ -691,8 +654,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     widget("Assets", [&] {
         auto &assets = renderer->assets();
 
-        // Recursively lists files under `root` with a lowercased extension in `extensions`. Missing or unreadable
-        // directories yield nothing.
         auto scan_directory = [](std::filesystem::path const &root, std::span<std::string_view const> extensions) {
             std::vector<std::filesystem::path> found;
             std::error_code ec;
@@ -722,7 +683,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::BulletText("%s%s", entry.name.c_str(), entry.handle.valid() ? "" : " (invalid)");
         };
 
-        // Registered entries, plus files under `root` that aren't loaded yet.
         auto draw_file_backed_section = [&]<typename HandleT>(char const *label, std::filesystem::path const &root,
                                                               std::span<std::string_view const> extensions,
                                                               NamedAssetTable<HandleT> &table, auto &&load,
@@ -761,7 +721,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 },
                 draw_bullet_entry);
 
-        // ImageHandle::index doubles as the ImTextureID.
         auto const draw_texture_entry = [](auto const &entry) {
             if (!entry.handle.valid()) {
                 ImGui::BulletText("%s (invalid)", entry.name.c_str());
@@ -785,7 +744,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 },
                 draw_texture_entry);
 
-        // Scripts are registered from C++, so this is a read-only list.
         auto draw_named_only_section = [&](char const *label, auto &table) {
             if (!ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen)) {
                 return;
@@ -800,7 +758,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 ImGui::BulletText("%s%s", entry.name.c_str(), entry.handle.valid() ? "" : " (invalid)");
             }
         };
-
 
         if (ImGui::CollapsingHeader("Materials", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (ImGui::Button("New Material")) {
@@ -857,7 +814,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
             for (auto const &entry: materials.entries()) {
                 if (is_material_pending_deletion(pending_deletions, entry.name)) {
-                    continue; // Shown under "Recently deleted" instead.
+                    continue;
                 }
                 any_shown = true;
 
@@ -883,7 +840,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     if (is_default) {
                         ImGui::TextDisabled("The default material can't be deleted.");
                     } else if (ImGui::Button("Delete")) {
-                        // Committed once the grace period elapses; entities still using it keep it alive.
                         pending_deletions.push_back(PendingDeletion{
                                 .label = material_deletion_label(entry.name),
                                 .delete_at = elapsed_time + deletion_grace_seconds,
@@ -937,7 +893,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     ImGui::PopID();
                 }
 
-                // Both are indices into the same vector, so only one is applied per frame.
                 if (restore_index) {
                     pending_deletions.erase(pending_deletions.begin() + static_cast<std::ptrdiff_t>(*restore_index));
                 } else if (commit_now_index) {
@@ -1046,8 +1001,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             return {.icon = gui::EditorIcon::empty, .tint = ImVec4(0.60F, 0.60F, 0.64F, 1.0F)};
         };
 
-        // Rebuilt only when the scene's entities, names or parents change; every other frame lays out just the
-        // rows the clipper shows.
         if (auto const *scene = active_scene();
             scene != hierarchy_model_scene || scene->hierarchy_revision() != hierarchy_model_revision) {
             hierarchy_model_scene = scene;
@@ -1056,24 +1009,15 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
         hierarchy_model.set_filter(hierarchy_search);
 
-        // Actions picked from the context menus are applied after the tree is drawn, so the registry isn't mutated
-        // while the rows are being drawn.
         enum class HierarchyAction : std::uint8_t { none, add_child, duplicate, remove, reparent };
         HierarchyAction pending_action = HierarchyAction::none;
-        // add_child: the new entity's parent (entt::null = root).
-        // duplicate/remove: unused; they act on the selection.
-        // reparent: the new parent (entt::null = root); the moved entity is drag_reparent_source.
         entt::entity action_target = entt::null;
         entt::entity drag_reparent_source = entt::null;
 
         auto &selection = selection_context();
-        // The selection can outlive its entities (deleted, or the registry swapped by play/stop).
         selection.retain_if([&](entt::entity entity) { return registry.valid(entity); });
 
-        // One row per visible line, in draw order. Multi-select identifies each row by its index here and reports
-        // shift-click ranges in those indices; group rows have no entity and are skipped.
         auto const rows = hierarchy_model.rows();
-        // Row clicked this frame; becomes the primary entity so the Inspector follows the click.
         entt::entity clicked_entity = entt::null;
         bool open_context_menu = false;
 
@@ -1096,14 +1040,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
         };
 
-        // A collapsible row standing for a group, e.g. "Bullets (12)". Not selectable.
         auto const draw_group_row = [&](HierarchyModel::Row const &row) {
             ImGui::PushID("hierarchy_group");
             ImGui::PushID(static_cast<int>(row.group));
 
             ImVec2 const row_pos = ImGui::GetCursorPos();
 
-            // The leading space and FramePadding give the node the same height as the Selectable rows.
             ImGui::SetNextItemOpen(row.expanded, ImGuiCond_Always);
             bool const open = ImGui::TreeNodeEx(" ##group_node", ImGuiTreeNodeFlags_SpanAvailWidth |
                                                                          ImGuiTreeNodeFlags_FramePadding |
@@ -1128,15 +1070,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::PopID();
         };
 
-        // One entity's row: a tree node when it has children (its children are rows of their own), a Selectable
-        // otherwise.
         auto const draw_entity_row = [&](HierarchyModel::Row const &row, std::size_t row_index) {
             auto const entity = row.entity;
             auto const name = entity_display_name(registry, entity);
 
             auto visual = visual_for(entity);
             if (row.has_children && visual.icon == gui::EditorIcon::empty) {
-                // Pure grouping entity.
                 visual = {.icon = gui::EditorIcon::folder, .tint = ImVec4(0.95F, 0.80F, 0.45F, 1.0F)};
             }
 
@@ -1155,8 +1094,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 ImGuiTreeNodeFlags const flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow |
                                                  ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_NoTreePushOnOpen |
                                                  (is_selected ? ImGuiTreeNodeFlags_Selected : ImGuiTreeNodeFlags_None);
-                // See draw_group_row for the leading space. OpenOnArrow: clicking the row selects, only the arrow
-                // expands.
                 ImGui::SetNextItemOpen(row.expanded, ImGuiCond_Always);
                 bool const open = ImGui::TreeNodeEx(" ##node", flags);
                 if (open != row.expanded) {
@@ -1165,7 +1102,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 next_row_pos = ImGui::GetCursorPos();
                 label_x = row_pos.x + ImGui::GetTreeNodeToLabelSpacing();
             } else {
-                // Selection changes arrive as multi-select requests, so the return value isn't needed.
                 static_cast<void>(ImGui::Selectable("##row", is_selected, ImGuiSelectableFlags_None,
                                                     ImVec2(avail_width, row_height)));
                 next_row_pos = ImGui::GetCursorPos();
@@ -1178,7 +1114,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 begin_rename(entity);
             }
 
-            // Multi-select already selects an unselected row on right-click, so the menu acts on the selection.
             if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
                 hierarchy_context_entity = entity;
                 open_context_menu = true;
@@ -1205,7 +1140,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 ImGui::EndDragDropTarget();
             }
 
-            // Icon and label are drawn over the widget above, then the cursor is restored.
             ImGui::SetCursorPos(ImVec2(label_x, row_pos.y + (row_height - icon_size) * 0.5F));
             ImGui::ImageWithBg(editor_icons->texture(visual.icon), ImVec2(icon_size, icon_size), ImVec2(0, 0),
                                ImVec2(1, 1), ImVec4(0, 0, 0, 0), visual.tint);
@@ -1222,7 +1156,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 bool const submitted =
                         ImGui::InputText("##rename", rename_buffer.data(), rename_buffer.size(),
                                          ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
-                // Enter or clicking away commits; Escape cancels.
                 if (submitted || (ImGui::IsItemDeactivated() && !ImGui::IsKeyPressed(ImGuiKey_Escape))) {
                     rename_entity(registry, entity, rename_buffer.data());
                     renaming_entity = entt::null;
@@ -1246,13 +1179,10 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::TextDisabled("%zu %s", total_count, total_count == 1 ? "entity" : "entities");
         }
 
-        // Applies one BeginMultiSelect()/EndMultiSelect() batch as a single selection change.
         auto const apply_selection_requests = [&](ImGuiMultiSelectIO const *io) {
             if (io == nullptr || io->Requests.empty()) {
                 return;
             }
-            // Focusing the rename field moves keyboard nav onto an item that isn't selectable, which multi-select
-            // answers by clearing the selection. Only a click changes the selection while a row is being renamed.
             if (renaming_entity != entt::null && !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 return;
             }
@@ -1264,7 +1194,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         if (!request.Selected) {
                             continue;
                         }
-                        // Ctrl+A: everything the filter matches, collapsed children and bullets included.
                         for (auto const entity: hierarchy_model.matching_entities()) {
                             transaction.set(entity, true);
                         }
@@ -1296,8 +1225,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGuiListClipper clipper;
         clipper.Begin(static_cast<int>(rows.size()));
 
-        // Rows that must be submitted even when scrolled away: the shift-click range anchor, and the row with the
-        // rename field so it keeps keyboard focus.
         if (multi_select_io->RangeSrcItem != -1) {
             clipper.IncludeItemByIndex(static_cast<int>(multi_select_io->RangeSrcItem));
         }
@@ -1323,10 +1250,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
         }
 
-        // The rows end with SetCursorPos(); ImGui asserts unless a real item follows.
         ImGui::Dummy(ImVec2(0.0F, 0.0F));
 
-        // Dropping below the tree moves the entity back to root.
         if (ImGui::BeginDragDropTarget()) {
             if (auto const *payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
                 entt::entity dropped{};
@@ -1363,7 +1288,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 if (ImGui::MenuItem("Rename", "F2")) {
                     begin_rename(entity);
                 }
-                // Duplicate and Delete act on the whole selection, which includes this row.
                 if (ImGui::MenuItem(count > 1 ? "Duplicate Selected" : "Duplicate", "Ctrl+D")) {
                     pending_action = HierarchyAction::duplicate;
                 }
@@ -1375,7 +1299,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::EndPopup();
         }
 
-        // Shortcuts while the Hierarchy is focused and no text field has the keyboard.
         if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput) {
             if (auto const primary = selection.primary();
                 ImGui::IsKeyPressed(ImGuiKey_F2, false) && primary != entt::null) {
@@ -1389,8 +1312,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
         }
 
-
-        // NoOpenOverItems: rows have their own "entity_context" popup.
         if (ImGui::BeginPopupContextWindow("hierarchy_bg_context",
                                            ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
             if (ImGui::MenuItem("Create Empty Entity")) {
@@ -1405,7 +1326,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         switch (pending_action) {
             case HierarchyAction::add_child: {
                 auto new_entity = GeneratedEntity{active_scene(), "Entity"};
-                // Only entities with a Transform are listed.
                 new_entity.emplace<Components::Transform>();
                 if (action_target != entt::null && registry.valid(action_target)) {
                     new_entity.emplace<Components::Parent>(Components::Parent{.entity = action_target});
@@ -1414,7 +1334,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 break;
             }
             case HierarchyAction::duplicate: {
-                // Recreates `source`'s subtree under `parent` (entt::null = root).
                 std::function<entt::entity(entt::entity, entt::entity)> duplicate_subtree =
                         [&](entt::entity source, entt::entity parent) -> entt::entity {
                     auto const clone = registry.create();
@@ -1424,14 +1343,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                     Components::Lifetime, Components::PointLight, Components::SpotLight,
                                     Components::Script, Components::BulletTag>(registry, source, clone);
 
-                    // The clone takes its own reference, so deleting either one leaves the other's model alive.
                     if (auto const *model = registry.try_get<Components::Model>(clone);
                         model != nullptr && registry.all_of<Components::StreamedModelTag>(source)) {
                         renderer->retain_model(model->model);
                         registry.emplace<Components::StreamedModelTag>(clone);
                     }
 
-                    // Duplicates are always named through GeneratedMeta.
                     registry.emplace<Components::GeneratedMeta>(
                             clone,
                             Components::GeneratedMeta{.name = entity_display_name(registry, source) + " (Copy)"});
@@ -1447,7 +1364,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     return clone;
                 };
 
-                // The copies replace the originals in the selection, so they can be moved straight away.
                 std::vector<entt::entity> clones;
                 for (auto const source: selected_roots()) {
                     auto const *source_parent = registry.try_get<Components::Parent>(source);
@@ -1466,7 +1382,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         delete_subtree(child);
                     }
 
-                    // A StreamedModelTag entity's model reference is released by Scene's on_destroy hooks.
                     registry.destroy(target);
                 };
 
@@ -1477,7 +1392,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 break;
             }
             case HierarchyAction::reparent: {
-                // Dragging a selected row moves the whole selection; an unselected row moves alone.
                 auto const sources = selection.contains(drag_reparent_source)
                                              ? selected_roots()
                                              : std::vector<entt::entity>{drag_reparent_source};
@@ -1487,7 +1401,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         continue;
                     }
 
-                    // Reject drops onto one of the dragged entity's own descendants.
                     bool creates_cycle = false;
                     for (auto walk = action_target; walk != entt::null && registry.valid(walk);) {
                         if (walk == source) {
@@ -1522,7 +1435,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
     widget("Inspector", [&] {
         auto &registry = active_scene()->get_registry();
-        // Edits apply to the primary entity: the one selected last.
         auto const selected_entity = selection_context().primary();
 
         if (selected_entity == entt::null || !registry.valid(selected_entity)) {
@@ -1534,8 +1446,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::TextDisabled("%zu entities selected -- editing the last one", count);
         }
 
-        // Refilled from the entity whenever the field isn't being edited, so it follows the selection and renames
-        // made elsewhere. An edit is committed to the entity it was typed for once the field loses focus.
         auto const name_id = ImGui::GetID("##entity_name");
         if (ImGui::GetActiveID() != name_id) {
             if (inspector_name_dirty) {
@@ -1551,8 +1461,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
         ImGui::Separator();
 
-        // One collapsible section per present component. `draw_fields` edits in place and returns whether it changed,
-        // which drives patch<T>. Closing the header queues the removal.
         auto section = [&]<typename T>(char const *label, auto &&draw_fields) {
             if (!registry.all_of<T>(selected_entity)) {
                 return;
@@ -1572,7 +1480,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::PopID();
 
             if (!open) {
-                // An owned model's reference goes with the component; Scene's on_destroy hooks release it.
                 if constexpr (std::is_same_v<T, Components::Model>) {
                     registry.remove<Components::StreamedModelTag>(selected_entity);
                 }
@@ -1615,7 +1522,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
             for (auto const &entry: materials.entries()) {
                 bool const is_selected = entry.handle == current;
-                // The default material's handle reads as invalid, i.e. as "none".
                 if (!entry.handle.valid() ||
                     (!is_selected && is_material_pending_deletion(pending_deletions, entry.name))) {
                     continue;
@@ -1713,7 +1619,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 changed = true;
             };
 
-            // A loading model's materials are its placeholder's.
             bool const loading = renderer->model_streamer().state(model) == ModelRequestState::loading;
             auto const sources = loading ? std::vector<MaterialHandle>{} : renderer->model_materials(model);
             if (loading) {
@@ -1801,7 +1706,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 active_scene()->set_material_override(entity, std::move(edited));
             }
 
-            // The override holds its own references now.
             for (auto const handle: created_materials) {
                 renderer->release_material(handle);
             }
@@ -1846,12 +1750,10 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             auto &models = renderer->assets().models();
             auto const current_name = models.name_of(model.model);
 
-            // set_entity_model() patches the component itself, so the section's patch isn't needed.
             if (ImGui::BeginCombo("Asset", current_name.empty() ? "(unnamed)" : std::string(current_name).c_str())) {
                 for (auto const &entry: models.entries()) {
                     bool const is_selected = entry.handle == model.model;
                     if (ImGui::Selectable(entry.name.c_str(), is_selected) && !is_selected && entry.handle.valid()) {
-                        // The combo shares an already-owned handle, so the entity needs its own reference.
                         renderer->retain_model(entry.handle);
                         set_entity_model(registry, selected_entity, entry.handle);
                     }
@@ -1912,7 +1814,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
             return changed;
         });
-        // Empty tag types have no storage, so get<T>() can't be passed to draw_fields.
         auto tag_section = [&]<typename T>(char const *label) {
             if (!registry.all_of<T>(selected_entity)) {
                 return;
@@ -1942,7 +1843,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         if (ImGui::BeginPopup("inspector_add_component")) {
             bool const has_transform = registry.all_of<Components::Transform>(selected_entity);
 
-            // Lights and rigid bodies read the Transform, so it has to exist first.
             if (!has_transform) {
                 if (ImGui::MenuItem("Transform")) {
                     registry.emplace<Components::Transform>(selected_entity);
@@ -1955,7 +1855,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     registry.emplace<Components::SpotLight>(selected_entity);
                 }
                 if (!registry.all_of<Components::RigidBody>(selected_entity) && ImGui::MenuItem("Rigid Body")) {
-                    // Takes effect the next time physics is populated (entering Play).
                     registry.emplace<Components::RigidBody>(selected_entity);
                 }
 
@@ -2010,7 +1909,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
 
         ImGui::SameLine();
-        // Editable mid-play to switch an embedded session to fullscreen and back.
         ImGui::Checkbox("Fullscreen", &play_fullscreen);
 
         ImGui::Separator();
@@ -2063,7 +1961,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::Text("Instances submitted: %s (%u)", fmt(stats.submitted_instance_count),
                     stats.submitted_instance_count);
 
-        // Lags a frames-in-flight cycle behind the rest of the stats.
         auto const culled_percent = stats.submitted_instance_count != 0
                                             ? 100.0F * static_cast<float>(stats.visible_instance_count) /
                                                       static_cast<float>(stats.submitted_instance_count)
@@ -2136,7 +2033,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImPlot::EndPlot();
         }
 
-        // Per-pass times of the last finished frame, graphics queue first.
         if (auto const graph_timings = renderer->frame_graph_timings();
             !graph_timings.empty() &&
             ImGui::BeginTable("Frame graph", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
@@ -2165,7 +2061,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::EndTable();
         }
 
-        // Overlay time is already included in the forward/composite stages above.
         auto const &overlay_timings = renderer->last_frame_timings().overlays;
 
         if (!overlay_timings.empty() &&
@@ -2214,7 +2109,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             renderer->set_meshlet_culling(meshlet_culling);
         }
 
-        // Two-phase Hi-Z occlusion culling of whole instances; see docs/occlusion-culling.md.
         bool const occlusion_supported = renderer->occlusion_culling_supported();
         bool occlusion_culling = renderer->occlusion_culling() && occlusion_supported;
 
@@ -2242,8 +2136,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::SetItemTooltip("The stubs exercise the two-phase draw lists without the Hi-Z test: the frame must "
                                   "look exactly as with occlusion culling off.");
 
-            // Per-meshlet Hi-Z test in the task shader; forward replays the meshlets the prepass phases recorded.
-            // See docs/occlusion-culling.md.
             bool meshlet_occlusion = renderer->meshlet_occlusion_culling();
 
             ImGui::BeginDisabled(!meshlet_culling);
@@ -2271,7 +2163,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     auto const level = hiz_level_extent(depth, mip);
                     auto const image = hiz_image_extent(depth);
 
-                    // Only the level's logical extent is written; crop to it.
                     ImVec2 const uv_max{
                             static_cast<float>(level.width) / static_cast<float>(std::max(image.width >> mip, 1U)),
                             static_cast<float>(level.height) / static_cast<float>(std::max(image.height >> mip, 1U)),
@@ -2302,7 +2193,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         draw_cluster_grid_settings(*renderer, refused_cluster_grid);
         ImGui::EndDisabled();
 
-        // The sun, ambient and fog live in the Environment window and are saved with the scene.
         auto shadows = renderer->shadow_settings();
         bool dirty = false;
 
@@ -2338,7 +2228,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::SeparatorText("Punctual lights");
         auto &registry = active_scene()->get_registry();
 
-        // Point lights first, then spot lights.
         std::vector<entt::entity> light_rows;
         for (auto const entity: registry.view<Components::Transform, Components::PointLight>()) {
             light_rows.push_back(entity);
@@ -2350,8 +2239,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         ImGui::TextDisabled("%zu point, %zu spot", point_light_count, light_rows.size() - point_light_count);
 
-        // One fixed-height row per light, clipped to the visible ones: the scene can hold tens of thousands. Clicking
-        // a row selects the light, which is edited below the list.
         auto &selection = selection_context();
         auto const selected = selection.primary();
 
@@ -2382,7 +2269,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::EndChild();
 
         if (registry.valid(selected)) {
-            // Lights are only re-uploaded when their component changes, so a moved light patches it too.
             auto const edit_light = [&]<typename LightT>(LightT &punctual_light, auto &&draw_light) {
                 auto &transform = registry.get<Components::Transform>(selected);
 
@@ -2405,11 +2291,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-
     widget("Environment", [&] {
         if (gui::draw_environment_panel(active_scene()->environment, renderer->environment_system(), model_browser,
                                         browsing_environment)) {
-            // Edits are picked up by Renderer::set_environment next frame; the scene fingerprint sees them.
         }
     });
 
@@ -2419,7 +2303,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         browsing_environment = false;
         active_scene()->environment.hdr_source = gui::path_to_utf8(*picked);
     } else if (picked) {
-        // Not an environment: handled below as a model pick.
         pending_model_pick = *picked;
     }
 
@@ -2432,7 +2315,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             case ModelBrowseTarget::inspector: {
                 auto &registry = active_scene()->get_registry();
                 if (registry.valid(model_browse_entity) && registry.all_of<Components::Model>(model_browse_entity)) {
-                    // request() returns a reference for us, which set_entity_model() hands to the entity.
                     auto const model = renderer->model_streamer().request(
                             *renderer, AssetPath::from_user(*picked).value_or(AssetPath::missing()), engine_models.cube, FlyString{gui::path_to_utf8(picked->filename())});
                     set_entity_model(registry, model_browse_entity, model);
@@ -2443,7 +2325,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         model_browse_entity = entt::null;
     }
 
-    // Drawn last so the toasts sit on top of the panels.
     gui::render_toasts();
 }
 
@@ -2455,7 +2336,6 @@ auto Application::spawn_streamed_model(std::filesystem::path const &path) -> voi
     auto entity = Entity{active_scene(), gui::path_to_utf8(path.stem())};
     entity.emplace<Components::Transform>();
     entity.emplace<Components::Model>(Components::Model{.model = model});
-    // Lets the entity's reference be released when it's removed or its model is swapped.
     entity.emplace<Components::StreamedModelTag>();
     selection_context().select(entity);
 
@@ -2466,7 +2346,6 @@ auto Application::spawn_streamed_model(std::filesystem::path const &path) -> voi
             .file_name = std::move(file_name),
     });
 
-    // Only settled entries are dropped, so a long-running load keeps reporting.
     while (model_loads.size() > max_listed_model_loads) {
         auto const settled = std::ranges::find_if(model_loads, &StreamedModelLoad::settled);
         if (settled == model_loads.end()) {
@@ -2505,7 +2384,6 @@ auto Application::update_model_loads() -> void {
 
         load.status = std::format("Loaded '{}'", load.file_name);
 
-        // The collider is built from the real submesh bounds, which only exist once the model installed.
         if (load.scene != active_scene()) {
             continue;
         }
@@ -2531,8 +2409,6 @@ auto Application::set_entity_model(entt::registry &registry, entt::entity entity
     registry.patch<Components::Model>(entity, [&](Components::Model &component) { component.model = model; });
     registry.emplace_or_replace<Components::StreamedModelTag>(entity);
 
-    // A swap, not a removal, so Scene's on_destroy hooks don't see it and the old reference is released here. Released
-    // after the swap: if `model` == `previous`, the caller's reference replaces the entity's.
     if (owned_previous) {
         renderer->release_model(previous);
     }
@@ -2541,7 +2417,6 @@ auto Application::set_entity_model(entt::registry &registry, entt::entity entity
 }
 
 auto Application::play() -> void {
-    // The runtime registry has its own entities.
     selection_context().clear();
     renaming_entity = entt::null;
     inspector_name_dirty = false;
@@ -2551,19 +2426,16 @@ auto Application::play() -> void {
     runtime_scene->environment = editor_scene->environment;
     game->clone_into_runtime(*editor_scene, *runtime_scene);
 
-    // Set first so active_scene() resolves to runtime_scene below.
     is_playing = true;
     active_scene()->on_scene_start();
     active_scene()->attach_debug_renderer(*debug_renderer);
 
-    // Each run gets a fresh PhysicsWorld, so terrain colliders from the previous run are stale.
     if (terrain) {
         terrain->on_physics_world_changed(active_scene()->physics_world.get());
     }
 
     game_mouse_captured = false;
 
-    // Embedded play captures the cursor on the first Viewport click instead (see main.cxx).
     if (play_fullscreen) {
         if (!game->wants_cursor()) {
             capture_mouse();
@@ -2577,7 +2449,6 @@ auto Application::stop() -> void {
     renaming_entity = entt::null;
     inspector_name_dirty = false;
 
-    // Before on_scene_stop() destroys the runtime PhysicsWorld.
     if (terrain) {
         terrain->on_physics_world_changed(nullptr);
     }
@@ -2609,8 +2480,6 @@ auto Application::release_mouse() -> void {
     auto &io = ImGui::GetIO();
     io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
 
-    // GLFW moves the cursor back to where it was captured, but X11 reports no motion for that warp, so ImGui would
-    // hover and click at the last virtual position until the mouse next moves.
     double x = 0.0;
     double y = 0.0;
     glfwGetCursorPos(context.window, &x, &y);
@@ -2632,7 +2501,6 @@ auto Application::cursor_over_game() const -> CursorPositionEvent {
             uv = glm::dvec2{x / width, y / height};
         }
     } else if (viewport_content_size.x > 0.0F && viewport_content_size.y > 0.0F) {
-        // ImGui's mouse position and the Viewport's screen position share window coordinates.
         auto const mouse = ImGui::GetIO().MousePos;
         uv = glm::dvec2{(mouse.x - viewport_screen_pos.x) / viewport_content_size.x,
                         (mouse.y - viewport_screen_pos.y) / viewport_content_size.y};
@@ -2648,12 +2516,9 @@ auto Application::cursor_over_game() const -> CursorPositionEvent {
 auto Application::update(float delta_time) -> void {
     ZoneScopedNC("ApplicationUpdate", tracy::Color::Firebrick);
 
-    // Here rather than in the "Load Model" panel, which doesn't run while hidden or during fullscreen play.
     update_model_loads();
     update_scene_jobs();
 
-
-    // Keyed off the player's Transform rather than the follow camera, which springs and would jitter residency.
     if (auto *const streaming_terrain = active_terrain(); streaming_terrain != nullptr) {
         auto camera_xz = glm::vec2{camera.position().x, camera.position().z};
 
@@ -2727,7 +2592,6 @@ auto Application::on_startup() -> void {
     std::array const shader_directories{
             data_path("assets/shaders").absolute(),
     };
-    // An installed game has no shader sources to watch.
     if (!player_mode && !shader_watcher_.start(renderer->shader_change_queue(), shader_directories)) {
         error("Shader hot-reload watcher failed to start -- shaders will not live-reload this run");
     }
@@ -2775,21 +2639,17 @@ auto Application::on_startup() -> void {
 }
 
 auto Application::request_screenshot() -> void {
-    // Fullscreen play has no viewport target; the renderer falls back to the window there anyway.
     renderer->request_screenshot(screenshot_viewport_only ? ScreenshotSource::viewport : ScreenshotSource::window);
 }
 
 auto Application::on_event(KeyPressedEvent ev) -> bool {
     if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL && !scene_load_job.has_value()) {
         renderer->queue_render_thread_event([this] {
-            // The runtime scene was cloned from the editor scene and shares its game-owned models; repopulating
-            // releases the old road models, so the runtime scene would go on drawing destroyed handles.
             if (is_playing) {
                 stop();
             }
 
             game->on_populate(*editor_scene, *renderer, engine_models);
-            // Back to the game's own scene, which isn't a file.
             scene_path.clear();
             scene_pack.reset();
             mark_editor_scene_clean();
@@ -2806,7 +2666,6 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
     }
 
     if (is_playing) {
-        // In embedded play the first Escape releases the mouse capture; the next one stops playing.
         if (ev.key == GLFW_KEY_ESCAPE) {
             if (game_mouse_captured) {
                 game_mouse_captured = false;
@@ -2814,7 +2673,6 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
                 return true;
             }
 
-            // An installed game owns Escape (its pause menu); the engine has no editor to return to.
             if (!player_mode) {
                 stop();
                 return true;
@@ -2823,7 +2681,6 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
 
         game->on_key_pressed(*active_scene(), ev);
     } else {
-        // 1-4 rather than W/E/R, which already move the editor camera.
         if (!ImGui::GetIO().WantCaptureKeyboard) {
             switch (ev.key) {
                 case GLFW_KEY_1:
@@ -2859,7 +2716,6 @@ auto Application::on_event(KeyReleasedEvent ev) -> bool {
 }
 auto Application::on_event(MouseMovedEvent ev) -> bool {
     if (is_playing) {
-        // Embedded play only forwards look input while the Viewport has captured the mouse.
         if (play_fullscreen || game_mouse_captured) {
             game->on_mouse_moved(*active_scene(), ev);
         }

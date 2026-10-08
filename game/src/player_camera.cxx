@@ -16,7 +16,7 @@ namespace {
         return glm::normalize(
                 glm::vec3{std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw)});
     }
-} // namespace
+}
 
 PlayerCamera::PlayerCamera(PlayerCameraCreateInfo const &create_info) noexcept :
     follow_distance_(create_info.follow_distance), follow_height_(create_info.follow_height),
@@ -32,11 +32,9 @@ auto PlayerCamera::update(glm::vec3 const &capsule_position, float yaw_degrees, 
     auto const yaw = glm::radians(yaw_degrees);
     auto const flat_forward = glm::normalize(glm::vec3{std::cos(yaw), 0.0F, std::sin(yaw)});
 
-    // Head bob.
     bob_phase_ += bob_frequency_ * speed_factor * delta_time_seconds;
     auto const bob_offset = (speed_factor > 0.01F) ? (std::sin(bob_phase_) * bob_amplitude_ * speed_factor) : 0.0F;
 
-    // Orbit pivot directly above the capsule, so the occlusion ray tests the segment the camera sits on.
     auto const anchor = capsule_position + glm::vec3{0.0F, follow_height_ + bob_offset, 0.0F};
     auto const target_position = anchor - (flat_forward * follow_distance_);
 
@@ -62,7 +60,6 @@ auto PlayerCamera::update(glm::vec3 const &capsule_position, float yaw_degrees, 
         position_ = desired_position;
         initialized_ = true;
     } else if (obstructed) {
-        // Snap rather than spring, or the camera clips through the wall while easing.
         position_ = desired_position;
     } else {
         auto const t = 1.0F - std::exp(-follow_stiffness_ * delta_time_seconds);

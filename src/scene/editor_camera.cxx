@@ -10,7 +10,6 @@ namespace {
     constexpr float pitch_limit_degrees = 89.0F;
     constexpr glm::vec3 world_up{0.0F, 1.0F, 0.0F};
 
-    // Left-handed spherical to Cartesian basis.
     struct CameraBasis {
         glm::vec3 forward;
         glm::vec3 right;
@@ -36,7 +35,7 @@ namespace {
     auto is_right_key(std::int32_t key) noexcept -> bool { return key == GLFW_KEY_D; }
     auto is_up_key(std::int32_t key) noexcept -> bool { return key == GLFW_KEY_E; }
     auto is_down_key(std::int32_t key) noexcept -> bool { return key == GLFW_KEY_Q; }
-} // namespace
+}
 
 auto EditorCamera::on_key_pressed(std::int32_t key) noexcept -> void {
     if (is_forward_key(key)) {
@@ -107,7 +106,6 @@ auto EditorCamera::look_at(glm::vec3 const &position, glm::vec3 const &target) n
         return;
     }
 
-    // Inverse of compute_basis(): forward = (cos p cos y, sin p, cos p sin y).
     auto const direction = offset / length;
     yaw_degrees_ = glm::degrees(std::atan2(direction.z, direction.x));
     pitch_degrees_ = std::clamp(glm::degrees(std::asin(std::clamp(direction.y, -1.0F, 1.0F))), -pitch_limit_degrees,

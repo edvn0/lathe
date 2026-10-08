@@ -24,7 +24,6 @@ namespace {
         return bytes;
     }
 
-    // A flat (non-RLE) Radiance file; widths below 8 are never run-length encoded.
     auto make_radiance(std::uint32_t width, std::uint32_t height, std::array<std::uint8_t, 4> rgbe) -> std::vector<std::byte> {
         std::string text = "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y " + std::to_string(height) + " +X " + std::to_string(width) + "\n";
 
@@ -90,7 +89,7 @@ namespace {
         return written;
     }
 
-} // namespace
+}
 
 TEST_CASE("sanitize_to_half clamps, zeroes non-finite values and keeps small ones") {
     CHECK(glm::unpackHalf1x16(sanitize_to_half(1.0F)) == doctest::Approx(1.0F));
@@ -101,7 +100,6 @@ TEST_CASE("sanitize_to_half clamps, zeroes non-finite values and keeps small one
 }
 
 TEST_CASE("decode_radiance_hdr reads RGBE to half floats with the clamp") {
-    // (128, 128, 128, 129) decodes to exactly 1.0.
     auto const white = decode_radiance_hdr(make_radiance(4, 2, {128, 128, 128, 129}));
 
     REQUIRE(white.has_value());
@@ -112,7 +110,6 @@ TEST_CASE("decode_radiance_hdr reads RGBE to half floats with the clamp") {
     CHECK(glm::unpackHalf1x16(white->pixels[0]) == doctest::Approx(1.0F));
     CHECK(glm::unpackHalf1x16(white->pixels[3]) == doctest::Approx(1.0F));
 
-    // A huge exponent overflows half floats and is clamped.
     auto const bright = decode_radiance_hdr(make_radiance(4, 2, {255, 0, 0, 160}));
 
     REQUIRE(bright.has_value());
@@ -146,13 +143,10 @@ TEST_CASE("decode_ktx2_float reads an RGBA32F equirect") {
     CHECK(glm::unpackHalf1x16(image->pixels[(3 * 4) + 0]) == doctest::Approx(3.0F));
     CHECK(glm::unpackHalf1x16(image->pixels[(3 * 4) + 1]) == doctest::Approx(0.5F));
     CHECK(glm::unpackHalf1x16(image->pixels[(3 * 4) + 2]) == doctest::Approx(65000.0F).epsilon(1e-3));
-    // Alpha is forced to 1.
     CHECK(glm::unpackHalf1x16(image->pixels[(3 * 4) + 3]) == doctest::Approx(1.0F));
 }
 
 TEST_CASE("decode_ktx2_float reads a shared-exponent cubemap") {
-    // E5B9G9R9: exponent 15 + 9 (value 1.0 = mantissa 512 at exponent 15 - ... ) -> mantissa m, e: m * 2^(e - 24).
-    // e = 24 gives 1:1 mantissas, so r = 2, g = 4, b = 8.
     constexpr std::uint32_t exponent = 24;
     constexpr std::uint32_t packed = (exponent << 27) | (8U << 18) | (4U << 9) | 2U;
 
@@ -218,7 +212,6 @@ TEST_CASE("the vendored Belfast Sunset cubemap loads through load_hdr_image") {
         sum += luminance;
     }
 
-    // A sunset sky is neither black nor blown out on average.
     auto const mean = sum / (512.0 * 512.0 * 6.0);
     CHECK(mean > 0.05);
     CHECK(mean < 50.0);

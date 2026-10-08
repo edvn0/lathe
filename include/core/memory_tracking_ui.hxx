@@ -59,7 +59,6 @@ inline auto on_memory_ui() -> void {
 
     ImGui::Text("Average allocation:   %10.2f bytes", average_allocation_size);
 
-    // The FlyString pool is never freed, so a count that keeps climbing means something interns unique text.
     auto const pool = FlyString::pool_stats();
 
     ImGui::Spacing();

@@ -78,7 +78,6 @@ TEST_SUITE("unit") {
         MaterialHandle const material{.index = 1, .generation = 1};
 
         CHECK(registry.models().register_asset("grass", model));
-        // Different kinds have separate tables, so this isn't a collision.
         CHECK(registry.materials().register_asset("grass", material));
 
         CHECK(registry.models().find("grass") == model);

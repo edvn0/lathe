@@ -29,25 +29,18 @@ namespace frame_graph {
     struct CompileOptions {
         bool async_compute = true;
         SchedulerMode scheduler = SchedulerMode::declaration_order;
-        bool serialize = false; // debug: every derived barrier is widened to ALL_COMMANDS / memory read-write
+        bool serialize = false;
     };
 
-    // Compiles the declared graph into barriers, batches, semaphore waits, ownership transfers and timestamp slots.
-    // Declaration order is the schedule. A topology with one queue, or async_compute = false, puts every pass on
-    // graphics.
     [[nodiscard]] auto compile(GraphDesc const &graph, QueueTopology const &topology,
                                CompileOptions const &options = {}) -> std::expected<CompiledGraph, FrameGraphError>;
 
     [[nodiscard]] auto compile(FrameGraph const &graph, QueueTopology const &topology,
                                CompileOptions const &options = {}) -> std::expected<CompiledGraph, FrameGraphError>;
 
-    // Everything the compiler reads from the declaration, the topology and the options, and nothing it does not:
-    // physical handles, clear values, load/store ops, profiles and transient descs leave the plan unchanged.
     [[nodiscard]] auto declaration_hash(GraphDesc const &graph, QueueTopology const &topology,
                                         CompileOptions const &options) -> std::uint64_t;
 
-    // Holds the last compiled plan. The graph is rebuilt every frame but almost always declares the same thing, so a
-    // matching hash skips the compile. The returned plan stays valid until the next compile() or invalidate().
     class PlanCache {
     public:
         [[nodiscard]] auto compile(FrameGraph const &graph, QueueTopology const &topology,
@@ -65,4 +58,4 @@ namespace frame_graph {
         std::uint64_t misses_ = 0;
     };
 
-} // namespace frame_graph
+}

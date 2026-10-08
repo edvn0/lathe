@@ -24,8 +24,6 @@ public:
     [[nodiscard]]
     static auto stats() noexcept -> MemoryStats;
 
-    // Allocations on this thread while alive are left out of the counters (Tracy still sees them). For allocator
-    // bookkeeping such as the thread pool's per-submission allocations.
     class UntrackedScope {
     public:
         UntrackedScope() noexcept;

@@ -3,10 +3,9 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 
-// Free-look editor camera: WASD/QE movement, right-drag look, scroll to change move speed.
 struct EditorCameraCreateInfo {
     glm::vec3 position{0.0F, 2.0F, 6.0F};
-    float yaw_degrees = -90.0F; // faces -Z
+    float yaw_degrees = -90.0F;
     float pitch_degrees = 0.0F;
 
     float field_of_view_degrees = 60.0F;
@@ -15,7 +14,7 @@ struct EditorCameraCreateInfo {
 
     float move_speed = 5.0F;
     float sprint_multiplier = 4.0F;
-    float look_sensitivity = 0.12F; // degrees per pixel of mouse delta
+    float look_sensitivity = 0.12F;
     float min_move_speed = 0.5F;
     float max_move_speed = 100.0F;
 };
@@ -29,10 +28,8 @@ public:
     auto on_key_pressed(std::int32_t key) noexcept -> void;
     auto on_key_released(std::int32_t key) noexcept -> void;
 
-    // Raw cursor deltas in pixels. Only rotates while `dragging`.
     auto on_mouse_moved(float delta_x, float delta_y, bool dragging) noexcept -> void;
 
-    // Scroll changes move speed, not FOV.
     auto on_mouse_scrolled(float delta_y) noexcept -> void;
 
     auto set_sprinting(bool sprinting) noexcept -> void;
@@ -53,8 +50,6 @@ public:
 
     auto set_position(glm::vec3 const &position) noexcept -> void { position_ = position; }
 
-    // Places the camera at `position` facing `target`, pitch clamped like mouse look. A target equal to the
-    // position keeps the orientation.
     auto look_at(glm::vec3 const &position, glm::vec3 const &target) noexcept -> void;
 
 private:

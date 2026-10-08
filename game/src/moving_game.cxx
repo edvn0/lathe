@@ -40,31 +40,23 @@ namespace {
     constexpr glm::vec3 player_spawn{0.0F, 0.5F, 0.0F};
 
     constexpr std::uint32_t max_crowd = 5000;
-    constexpr float crowd_half_area = 60.0F; // NPCs wander inside +-this on X and Z
+    constexpr float crowd_half_area = 60.0F;
     constexpr float full_lod_distance = 25.0F;
     constexpr float reduced_lod_distance = 70.0F;
 
-    // The primitive meshes are 1 m cubes and r = 0.5 m capsules 2 m tall, so scale is size / those.
     constexpr float cube_half_extent = 0.5F;
 
     constexpr glm::vec3 world_up{0.0F, 1.0F, 0.0F};
 
-    // assets/models/animated_human.glb (Quaternius). Its rest-pose mesh spans y -0.015..5.52 and its clips are in
-    // place, so it is scaled to player_height. It faces -Z (verified: with a zero offset it walked backwards), so it is
-    // turned half a revolution to face the direction of travel (+Z) like the rigid rig.
     constexpr std::string_view skinned_model_path = "assets/models/animated_human.glb";
     constexpr float skinned_feet_y = -0.015F;
     constexpr float skinned_height = 5.535F;
     constexpr float skinned_yaw_offset = std::numbers::pi_v<float>;
-    // Strides come from the walk/run speeds of the crowd (1.4 and 4.5 m/s) times the clips' durations, so the
-    // feet match the ground speed.
     constexpr float skinned_walk_speed = 1.4F;
     constexpr float skinned_run_speed = 4.5F;
 
     enum class Shape : std::uint8_t { cube, capsule, sphere };
 
-    // One rigid body part: the joint it follows, and its shape in that joint's bind-space (centre offset and full
-    // size). Lengths come from the bone offsets in Humanoid::make_skeleton().
     struct PartSpec {
         Joint joint;
         Shape shape;
@@ -72,7 +64,6 @@ namespace {
         glm::vec3 size;
     };
 
-    // Capsule size is (diameter, length, diameter); the mesh is stretched to cover radius + length.
     constexpr std::array<PartSpec, Joint::JointCount> parts{{
             {Joint::Pelvis, Shape::cube, {0.0F, 0.0F, 0.0F}, {0.34F, 0.16F, 0.2F}},
             {Joint::Spine, Shape::cube, {0.0F, 0.1F, 0.0F}, {0.3F, 0.22F, 0.18F}},
@@ -130,7 +121,7 @@ namespace {
         return std::chrono::duration<float, std::milli>(Clock::now() - start).count();
     }
 
-} // namespace
+}
 
 auto MovingGame::active_machine() const -> Animation::AnimStateMachine const & {
     return batch_skinned_ ? *skin_machine_ : *machine_;
@@ -156,7 +147,6 @@ auto MovingGame::load_skinned_model(Scene &scene, Renderer &renderer) -> void {
             return;
         }
 
-        // Clips by name; walk/run/jump/death are optional (the table falls back), idle is required.
         auto const make = [&](std::string_view name) -> Animation::Clip const * {
             auto const *imported = skin_data_->find_clip(name);
             if (imported == nullptr) {
@@ -172,8 +162,6 @@ auto MovingGame::load_skinned_model(Scene &scene, Renderer &renderer) -> void {
         set.walk = make("Walk");
         set.run = make("Run");
         set.jump = make("Jump");
-        // Prone has no dedicated clip in this pack: Death goes from standing to lying on the ground, so it plays
-        // as "lying down", its last frame is the prone pose and getting up plays it backwards.
         set.lie_down = make("Death");
         if (set.idle == nullptr) {
             skin_data_.reset();
@@ -187,7 +175,6 @@ auto MovingGame::load_skinned_model(Scene &scene, Renderer &renderer) -> void {
         skin_machine_ = std::make_unique<Animation::AnimStateMachine>(skin_table_->table());
     }
 
-    // One entity; the transforms and palette offsets are rewritten every frame by compose_skinned().
     auto const entity = GeneratedEntity{&scene, "{}", "moving_skinned"};
     entity.emplace<Components::InstancedModel>(Components::InstancedModel{.model = skinned_model_});
     skinned_entity_ = scene.find_entity("moving_skinned");
@@ -195,15 +182,7 @@ auto MovingGame::load_skinned_model(Scene &scene, Renderer &renderer) -> void {
 
 auto MovingGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void {
     renderer_ = &renderer;
-    if (std::getenv("LATHE_MOVING_SKINNED") != nullptr) {
-        skinned_mode_ = true;
-    }
-    if (auto const *crowd = std::getenv("LATHE_MOVING_CROWD")) {
-        crowd_target_ = static_cast<std::uint32_t>(std::min(std::strtoul(crowd, nullptr, 10), std::uint64_t{max_crowd}));
-    }
-    if (auto const *bench = std::getenv("LATHE_MOVING_BENCH")) {
-        bench_.target = static_cast<std::uint32_t>(std::strtoul(bench, nullptr, 10));
-    }
+    skinned_mode_ = true;
 
     if (auto could_wait = renderer.wait_idle(); !could_wait.has_value()) {
         return;
@@ -229,7 +208,6 @@ auto MovingGame::on_populate(Scene &scene, Renderer &renderer, EngineModels cons
 
     add_static_box("floor", {0.0F, -0.5F, 0.0F}, {80.0F, 0.5F, 80.0F});
 
-    // Stairs: the first rise is under step_height and walks up, the rest need jumps.
     for (int i = 0; i < 4; ++i) {
         auto const height = 0.25F * static_cast<float>(i + 1);
         add_static_box("step_" + std::to_string(i), {6.0F + 1.5F * static_cast<float>(i), height * 0.5F, 0.0F},
@@ -237,9 +215,8 @@ auto MovingGame::on_populate(Scene &scene, Renderer &renderer, EngineModels cons
     }
 
     add_static_box("block_low", {-6.0F, 0.5F, 4.0F}, {1.0F, 0.5F, 1.0F});
-    add_static_box("block_high", {-6.0F, 0.55F, -4.0F}, {1.5F, 0.55F, 1.5F}); // just under a full jump
+    add_static_box("block_high", {-6.0F, 0.55F, -4.0F}, {1.5F, 0.55F, 1.5F});
 
-    // A walkable ramp and one steeper than max_slope_degrees. Rising towards +X.
     add_static_box("ramp_walkable", {0.0F, 1.2F, -10.0F}, {4.0F, 0.2F, 3.0F},
                    glm::angleAxis(glm::radians(20.0F), glm::vec3{0.0F, 0.0F, 1.0F}));
     add_static_box("ramp_steep", {-12.0F, 2.4F, -10.0F}, {3.0F, 0.2F, 3.0F},
@@ -247,8 +224,6 @@ auto MovingGame::on_populate(Scene &scene, Renderer &renderer, EngineModels cons
 
     load_skinned_model(scene, renderer);
 
-    // One InstancedModel per body part. The real transforms are written every frame by on_update(); the single
-    // placeholder keeps the part visible (and never empty) in the editor.
     for (std::size_t i = 0; i < parts.size(); ++i) {
         auto const entity = GeneratedEntity{&scene, "{}", part_name(i)};
         entity.emplace<Components::InstancedModel>(Components::InstancedModel{
@@ -272,8 +247,6 @@ auto MovingGame::bind_to(Scene &scene) -> void {
         rig_ = Animation::Humanoid::make_rig();
         machine_ = std::make_unique<Animation::AnimStateMachine>(Animation::Humanoid::make_state_table(*rig_));
 
-        // The palette is model * inverse-bind, so multiplying the bind model matrix back in gives the posed joint
-        // matrix in the same space the part offsets are authored in.
         auto bind_models = std::vector<glm::mat4>(rig_->skeleton.joint_count());
         Animation::compute_model_matrices(rig_->skeleton, rig_->skeleton.bind_pose().view(), bind_models);
 
@@ -316,17 +289,15 @@ auto MovingGame::set_crowd_size(std::size_t count) -> void {
 }
 
 auto MovingGame::rebuild_batch() -> void {
-    // The batch is sized to its character count, so a new count (or mode) means a new batch and a reset pose.
     batch_skinned_ = skinned_mode_ && skin_machine_ != nullptr && skin_data_ != nullptr;
     auto const &skeleton = batch_skinned_ ? skin_data_->skeleton : rig_->skeleton;
-    batch_ = std::make_unique<Animation::AnimationBatch>(skeleton, active_machine(), inputs_.size(), std::getenv("LATHE_MOVING_SERIAL") != nullptr ? nullptr : &thread_pool());
+    batch_ = std::make_unique<Animation::AnimationBatch>(skeleton, active_machine(), inputs_.size(), &thread_pool());
 }
 
 auto MovingGame::update_crowd(float delta_time, glm::vec3 const &camera_position) -> void {
     thread_local auto random = make_random_engine(0x6e7063U);
     std::uniform_real_distribution<float> unit{0.0F, 1.0F};
 
-    // Idle, walk and run speeds, matched to the clips' natural speeds so the feet don't slide much.
     constexpr std::array<float, 4> gaits{0.0F, 1.4F, 1.4F, 4.5F};
 
     lod_counts_ = {};
@@ -341,7 +312,6 @@ auto MovingGame::update_crowd(float delta_time, glm::vec3 const &camera_position
             npc.heading += (unit(random) - 0.5F) * 2.5F;
         }
 
-        // Turn back towards the middle once outside the area.
         if (std::abs(npc.position.x) > crowd_half_area || std::abs(npc.position.y) > crowd_half_area) {
             auto const to_centre = std::atan2(-npc.position.x, -npc.position.y);
             npc.heading += glm::clamp(wrap_angle(to_centre - npc.heading), -3.0F * delta_time, 3.0F * delta_time);
@@ -370,7 +340,6 @@ auto MovingGame::on_update(Scene &scene, float delta_time) -> void {
     }
 
     if (skinned_mode_ != batch_skinned_ && (skinned_mode_ || batch_skinned_)) {
-        // Only rebuild when the mode can actually change the batch (skinned data may be missing).
         auto const wanted = skinned_mode_ && skin_machine_ != nullptr && skin_data_ != nullptr;
         if (wanted != batch_skinned_) {
             rebuild_batch();
@@ -384,8 +353,6 @@ auto MovingGame::on_update(Scene &scene, float delta_time) -> void {
 
     auto &registry = scene.get_registry();
     auto &physics = *scene.physics_world;
-
-    // ---- The player, on fixed steps.
 
     auto const params = body_->params;
     glm::vec3 direction{0.0F};
@@ -413,7 +380,6 @@ auto MovingGame::on_update(Scene &scene, float delta_time) -> void {
     auto const velocity = body_->velocity();
     auto const horizontal_speed = glm::length(glm::vec2{velocity.x, velocity.z});
 
-    // Turn the body towards where it is moving, not where the camera looks.
     if (horizontal_speed > 0.2F) {
         constexpr float turn_rate = 12.0F;
         auto const target = std::atan2(velocity.x, velocity.z);
@@ -429,7 +395,6 @@ auto MovingGame::on_update(Scene &scene, float delta_time) -> void {
             .lod = Animation::Lod::Full,
     };
 
-    // ---- The camera. PlayerCamera wants the capsule centre; the body position is at the feet.
     auto const occlusion_query = [&physics](glm::vec3 const &origin, glm::vec3 const &dir,
                                             float max_distance) -> std::optional<float> {
         if (auto const hit = physics.raycast(origin, dir, max_distance)) {
@@ -442,14 +407,12 @@ auto MovingGame::on_update(Scene &scene, float delta_time) -> void {
                    controller_.pitch_degrees(), params.walk_speed > 0.0F ? horizontal_speed / params.walk_speed : 0.0F,
                    delta_time, occlusion_query);
 
-    // ---- The crowd and the animation.
     update_crowd(delta_time, camera_.position());
 
     auto const animation_start = Clock::now();
     batch_->update(inputs_, delta_time);
     animation_ms_ = milliseconds_since(animation_start);
 
-    // ---- Compose every character's part transforms: root * posed joint * part offset.
     auto const compose_start = Clock::now();
 
     std::array<std::vector<glm::mat4> *, Joint::JointCount> outputs{};
@@ -489,7 +452,6 @@ auto MovingGame::on_update(Scene &scene, float delta_time) -> void {
         }
     }
 
-    // The renderer keys its GPU copy on the revision; every character moves every frame.
     for (std::size_t p = 0; p < parts.size(); ++p) {
         registry.get<Components::InstancedModel>(part_entities_[p]).touch();
     }
@@ -539,13 +501,10 @@ auto MovingGame::compose_skinned(Scene &scene, glm::vec3 const &player_position)
     skinned.transforms.clear();
     skinned.palette_offsets.clear();
 
-    // The palette is per frame and consumed by prepare_frame(); start from nothing in case update runs twice.
     static_cast<void>(renderer_->set_skin_palette({}));
 
-    // Skinning cost is per vertex of every submitted character, so skip the ones the camera cannot see: farther
-    // than skin_distance_, or behind the camera. The player is always drawn. Nearest max_skinned_ win.
     auto const view = camera_.view();
-    auto const forward = glm::vec3{view[0][2], view[1][2], view[2][2]}; // lookAtLH: +Z of view space is forward
+    auto const forward = glm::vec3{view[0][2], view[1][2], view[2][2]};
     auto const camera_position = camera_.position();
 
     skin_candidates_.clear();
@@ -592,7 +551,7 @@ auto MovingGame::compose_skinned(Scene &scene, glm::vec3 const &player_position)
     skinned.touch();
 }
 
-auto MovingGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) -> void {
+auto MovingGame::on_key_pressed(Scene & , KeyPressedEvent const &event) -> void {
     controller_.on_key_pressed(event.key);
 
     if (event.key == GLFW_KEY_SPACE) {
@@ -606,7 +565,7 @@ auto MovingGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event)
     }
 }
 
-auto MovingGame::on_key_released(Scene & /*scene*/, KeyReleasedEvent const &event) -> void {
+auto MovingGame::on_key_released(Scene & , KeyReleasedEvent const &event) -> void {
     controller_.on_key_released(event.key);
 
     if (event.key == GLFW_KEY_SPACE) {
@@ -617,13 +576,12 @@ auto MovingGame::on_key_released(Scene & /*scene*/, KeyReleasedEvent const &even
     }
 }
 
-auto MovingGame::on_mouse_moved(Scene & /*scene*/, MouseMovedEvent const &event) -> void {
+auto MovingGame::on_mouse_moved(Scene & , MouseMovedEvent const &event) -> void {
     controller_.on_mouse_moved(static_cast<float>(event.delta_x), static_cast<float>(event.delta_y),
-                               /*look_enabled=*/true);
+                               true);
 }
 
-auto MovingGame::on_ui(Scene & /*scene*/, Renderer & /*renderer*/) -> void {
-    // on_ui() also runs in the editor, where nothing is updating; see PuntGame.
+auto MovingGame::on_ui(Scene & , Renderer & ) -> void {
     if (frames_since_update_ > 2 || !body_ || !batch_) {
         return;
     }
@@ -703,7 +661,7 @@ auto MovingGame::on_ui(Scene & /*scene*/, Renderer & /*renderer*/) -> void {
     });
 }
 
-auto MovingGame::camera(Scene const & /*scene*/, float aspect_ratio) const -> CameraParams {
+auto MovingGame::camera(Scene const & , float aspect_ratio) const -> CameraParams {
     return CameraParams{
             .view = camera_.view(),
             .projection = camera_.projection(aspect_ratio),

@@ -25,8 +25,6 @@ namespace {
         std::uint32_t samples_x_ = 0;
     };
 
-    // Plane through the min/min, max/min and min/max corners. The max/max corner and every interior sample are
-    // checked against it like any other sample.
     [[nodiscard]] auto is_planar(HeightGrid const &grid, TerrainGreedyQuad const &quad, float tolerance) -> bool {
         if (quad.width == 1 && quad.height == 1) {
             return true;
@@ -49,8 +47,6 @@ namespace {
         return true;
     }
 
-    // Emits a, b, c wound like an unmerged cell's (min/min, min/max, max/max) triangle: clockwise in (column, row),
-    // which is front-facing +Y with X = column and Z = row.
     auto emit_triangle(std::vector<std::uint32_t> &indices, std::uint32_t samples_x, GridPoint a, GridPoint b,
                        GridPoint c) -> void {
         auto const signed_area =
@@ -69,15 +65,12 @@ namespace {
     }
 
     struct QuadEdges {
-        std::vector<std::uint32_t> bottom; // columns on row `row`, ascending, both corners included
-        std::vector<std::uint32_t> top; // columns on row `row + height`, ascending, both corners included
-        std::vector<std::uint32_t> left; // rows strictly between the corners on column `column`, ascending
-        std::vector<std::uint32_t> right; // rows strictly between the corners on column `column + width`, ascending
+        std::vector<std::uint32_t> bottom;
+        std::vector<std::uint32_t> top;
+        std::vector<std::uint32_t> left;
+        std::vector<std::uint32_t> right;
     };
 
-    // Left and right edge points are fanned to the nearest bottom/top point, then the trapezoid left between the
-    // bottom and top chains is zig-zagged. Every triangle has two points on one grid line and the third off it, so
-    // none are degenerate.
     auto triangulate_quad(std::vector<std::uint32_t> &indices, std::uint32_t samples_x, TerrainGreedyQuad const &quad,
                           QuadEdges const &edges) -> void {
         auto const min_column = quad.column;
@@ -88,7 +81,6 @@ namespace {
         auto const emit = [&](GridPoint a, GridPoint b, GridPoint c) { emit_triangle(indices, samples_x, a, b, c); };
 
         if (edges.bottom.size() == 2 && edges.top.size() == 2 && edges.left.empty() && edges.right.empty()) {
-            // Same diagonal as an unmerged cell.
             emit({.column = min_column, .row = min_row}, {.column = min_column, .row = max_row},
                  {.column = max_column, .row = max_row});
             emit({.column = min_column, .row = min_row}, {.column = max_column, .row = max_row},
@@ -141,7 +133,7 @@ namespace {
         }
     }
 
-} // namespace
+}
 
 auto greedy_merge_terrain_cells(std::span<float const> heights, std::uint32_t samples_x, std::uint32_t samples_z,
                                 float tolerance) -> std::vector<TerrainGreedyQuad> {
@@ -221,7 +213,6 @@ auto triangulate_terrain_quads(std::span<TerrainGreedyQuad const> quads, std::ui
         return indices;
     }
 
-    // Vertices some triangle passes through: every quad corner, plus the whole grid boundary.
     std::vector<std::uint8_t> pinned(static_cast<std::size_t>(samples_x) * samples_z, 0);
 
     auto const pin = [&](std::uint32_t column, std::uint32_t row) {
@@ -248,7 +239,6 @@ auto triangulate_terrain_quads(std::span<TerrainGreedyQuad const> quads, std::ui
         pin(quad.column + quad.width, quad.row + quad.height);
     }
 
-    // Single cells are the common case on rough terrain: two triangles each.
     indices.reserve(quads.size() * 6);
 
     QuadEdges edges;

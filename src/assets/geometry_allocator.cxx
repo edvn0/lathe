@@ -11,7 +11,7 @@ namespace {
         return (value + alignment - 1) & ~(alignment - 1);
     }
 
-} // namespace
+}
 
 auto FreeListAllocator::reset(VkDeviceSize capacity) -> void {
     free_ranges_.clear();
@@ -60,7 +60,6 @@ auto FreeListAllocator::allocate(VkDeviceSize allocation_size, VkDeviceSize alig
 
     alignment = std::max(alignment, VkDeviceSize{4});
 
-    // Best fit by size; ties go to the lowest offset.
     auto best = free_ranges_.end();
     VkDeviceSize best_aligned_offset = 0;
 
@@ -133,7 +132,6 @@ auto FreeListAllocator::deallocate(GeometrySlice const &slice) -> void {
 
     auto it = free_ranges_.insert(insert_pos, FreeRange{.offset = slice.offset, .size = slice.size});
 
-    // Merge the following range first: that keeps `it` valid.
     if (auto next = std::next(it); next != free_ranges_.end() && it->offset + it->size == next->offset) {
         it->size += next->size;
         free_ranges_.erase(next);

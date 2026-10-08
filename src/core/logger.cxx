@@ -119,7 +119,7 @@ namespace logger {
             return state;
         }
 
-    } // namespace
+    }
 
     auto Logger::the() -> Logger & {
         static Logger instance;
@@ -137,4 +137,4 @@ namespace logger {
         logger_state().terminal_sink->drain(output);
     }
 
-} // namespace logger
+}

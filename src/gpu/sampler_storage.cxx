@@ -186,7 +186,7 @@ namespace {
         return sampler;
     }
 
-} // namespace
+}
 
 SamplerStorage::~SamplerStorage() { destroy(); }
 
@@ -239,7 +239,6 @@ auto SamplerStorage::create(VulkanContext &context, std::uint32_t capacity, std:
             return std::unexpected(sampler.error());
         }
 
-        // Allocated first from a fresh pool, so this lands on `index` with generation 1, matching the handles below.
         auto &slot = storage.slots_.allocate()->second;
 
         slot.sampler = *sampler;

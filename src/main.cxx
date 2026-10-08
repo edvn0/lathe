@@ -113,7 +113,6 @@ namespace {
 
         auto view = registry.view<Components::Transform const, Components::Model const>();
 
-        // One wireframe box per submesh, from the same AABBs GPU culling tests.
         auto const draw_model_bounds = application.debug_renderer->model_bounds_debug_enabled();
         constexpr auto model_bounds_debug_colour = glm::vec3{0.2F, 1.0F, 0.4F};
 
@@ -149,7 +148,6 @@ namespace {
         auto instanced_model_view = registry.view<Components::InstancedModel const>();
 
         for (auto [entity, instanced]: instanced_model_view.each()) {
-            // The revision lets the renderer keep the transforms on the GPU and pick their LODs there.
             auto result = application.renderer->submit_model_instances(
                     instanced.model, instanced.transforms, instanced.material_override, instanced.revision,
                     instanced.palette_offsets);
@@ -234,8 +232,6 @@ namespace {
         };
     }
 
-    // Waits for the frame slot's timelines, acquires the next image and begins the slot's graphics command buffer, the
-    // frame's prologue. A timeout in the wait is reported as a device loss, as a hung fence used to be.
     auto begin_gpu_frame(VulkanContext &context,
                          FrameClock &clock) noexcept -> std::expected<SwapchainFrame, SwapchainBeginFrameError> {
         auto const slot = context.swapchain.current_slot();
@@ -265,12 +261,6 @@ namespace {
         return *frame;
     }
 
-    // Ends the frame's command buffer, submits the renderer's batches and presents. `planned` is what
-    // Renderer::submit_batches() produced; if it is empty (recording failed before producing any) the prologue buffer
-    // goes out alone. With --async-compute-smoke on a GPU with a separate compute queue and a single planned batch,
-    // the frame is instead three batches that exercise timeline values and multi-batch submission with no data
-    // dependency: the recorded graphics batch, an empty compute batch that waits on it, and an empty graphics batch
-    // that waits on the compute one and signals the swapchain.
     auto end_gpu_frame(VulkanContext &context, SwapchainFrame const &frame, std::span<SubmitBatch const> planned,
                        FrameClock &clock) noexcept -> SwapchainFrameResult {
         auto submitting = std::optional<FrameClock::Scope>{};
@@ -283,12 +273,6 @@ namespace {
                                                  : SwapchainFrameResult::fatal_error;
         }
 
-        constexpr auto all_commands = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        auto const compute_waits = std::array{frame_graph::SemaphoreWait{
-                .queue = frame_graph::LogicalQueue::graphics, .signal_index = 0, .stages = all_commands}};
-        auto const graphics_waits = std::array{frame_graph::SemaphoreWait{
-                .queue = frame_graph::LogicalQueue::compute, .signal_index = 0, .stages = all_commands}};
-
         std::vector<SubmitBatch> batches{planned.begin(), planned.end()};
         if (batches.empty()) {
             batches.push_back(SubmitBatch{
@@ -296,21 +280,6 @@ namespace {
                     .command_buffer = frame.command_buffer,
                     .signal_index = 0,
                     .waits_swapchain_acquire = true,
-                    .signals_render_finished = true,
-            });
-        }
-
-        if (context.async_compute_smoke && !context.queue_set.aliased() && batches.size() == 1) {
-            batches[0].signals_render_finished = false;
-            batches.push_back(SubmitBatch{
-                    .queue = frame_graph::LogicalQueue::compute,
-                    .waits = compute_waits,
-                    .signal_index = 0,
-            });
-            batches.push_back(SubmitBatch{
-                    .queue = frame_graph::LogicalQueue::graphics,
-                    .waits = graphics_waits,
-                    .signal_index = 1,
                     .signals_render_finished = true,
             });
         }
@@ -361,7 +330,6 @@ namespace {
             auto const submitting = clock.scope(CpuPhase::scene_submit);
 
             if (auto *const terrain = application.active_terrain(); terrain != nullptr) {
-                // Before submit_scene(), so the vertex copies precede every draw in this command buffer.
                 terrain->process_ready(*application.renderer, frame->command_buffer,
                                        application.active_scene()->physics_world.get());
             }
@@ -438,9 +406,6 @@ namespace {
             }
         }
 
-        // Always retire the frame we began, so image_available and the slot's timeline values stay balanced whatever
-        // failed above.
-        // This assumes the renderer never fails with a rendering scope still open.
         auto const end_result = end_gpu_frame(context, *frame, application.renderer->submit_batches(), clock);
         clock.mark_present();
 
@@ -504,7 +469,6 @@ namespace {
         return ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse;
     }
 
-    // viewport_hovered goes false once the mouse is captured, since ImGui then ignores the mouse.
     auto viewport_has_mouse(Application const &app) -> bool {
         return app.viewport_hovered || app.mouse_dragging || app.game_mouse_captured;
     }
@@ -516,8 +480,6 @@ namespace {
             return;
         }
 
-        // Releases are never swallowed, or a key pressed before ImGui took focus would stay held in the camera or
-        // player controller.
         if (action == GLFW_PRESS && !imgui_wants_keyboard()) {
             app->on_event(KeyPressedEvent{.key = key, .modifiers = mods});
         }
@@ -533,11 +495,6 @@ namespace {
             return;
         }
 
-        // The Viewport is an ImGui window, so WantCaptureMouse is true over it; let its input through anyway.
-        //
-        // Releases are never swallowed. A right-drag disables the cursor, after which WantCaptureMouse stays true
-        // (ImGui owns the button) while viewport_hovered reads false, so gating the release would leave mouse-look
-        // stuck on.
         if (action == GLFW_RELEASE) {
             if (!app->is_playing && button == GLFW_MOUSE_BUTTON_RIGHT && app->mouse_dragging) {
                 app->release_mouse();
@@ -557,8 +514,6 @@ namespace {
             }
         } else if (!app->play_fullscreen && app->viewport_hovered && !app->game_mouse_captured &&
                    !app->game->wants_cursor()) {
-            // Embedded play captures the cursor on the first Viewport click; Escape releases it. Games that want the
-            // cursor never capture it.
             app->game_mouse_captured = true;
             app->capture_mouse();
         }
@@ -644,7 +599,6 @@ namespace {
         glfwSetDropCallback(context.window, drop_callback);
     }
 
-    // Shutdown can't do anything useful with a hung device, and further Vulkan calls against it aren't safe.
     auto wait_idle_or_exit(VkDevice device, std::string_view label) noexcept -> VkResult {
         auto const result = wait_idle_bounded(device, label);
 
@@ -655,8 +609,6 @@ namespace {
         return result;
     }
 
-    // The device is gone, so nothing can be drawn. Tell the user plainly, in a native dialog, rather than vanishing
-    // or crashing; the swapchain window is hidden first so it isn't left frozen behind the dialog.
     auto report_device_lost(VulkanContext &context) noexcept -> void {
         error("The GPU device was lost or stopped responding; the application cannot continue.");
 
@@ -683,7 +635,6 @@ namespace {
                 report_vk_error("vkDeviceWaitIdle(application destroy)", result);
             }
         }
-        // An in-flight save finishes writing rather than being lost; both jobs reference the renderer.
         application.scene_save_job.reset();
         application.scene_load_job.reset();
         application.scene_pack.reset();
@@ -694,9 +645,8 @@ namespace {
 
         context.destroy();
     }
-} // namespace
+}
 
-// Defined by the game linked into the executable (game/src/main_entry.cxx). The first name is the default.
 auto game_names() -> std::span<std::string_view const>;
 auto create_game(std::string_view name) -> std::unique_ptr<IGame>;
 
@@ -709,14 +659,6 @@ namespace {
             {"headless", ScreenType::headless},
     }};
 
-    constexpr std::array<std::pair<std::string_view, OcclusionTestMode>, 3> occlusion_test_choices{{
-            {"hiz", OcclusionTestMode::hiz},
-            {"never_occluded", OcclusionTestMode::never_occluded},
-            {"always_defer", OcclusionTestMode::always_defer},
-    }};
-
-    // The engine-wide options that aren't the benchmark's or the presentation's. Registers on construction; read the
-    // members after the CommandLine has parsed. Not movable: the CommandLine holds references to the members.
     [[nodiscard]] auto game_help() -> std::string {
         std::string names;
         for (auto const name: game_names()) {
@@ -741,79 +683,12 @@ namespace {
             display.choice<ScreenType>("--screen-type", "Window mode (default fullscreen)", screen_type_choices,
                                        screen_type);
 
-            auto rendering = cli.group("Rendering");
-            rendering.option("--cluster-grid", "XxYxZ[:CAP]", "Clustered-lighting grid, for comparing grids in benchmarks",
-                             [this](std::string_view text) -> std::expected<void, std::string> {
-                                 auto parsed = parse_cluster_grid(text);
-                                 if (!parsed) {
-                                     return std::unexpected(std::move(parsed.error()));
-                                 }
-                                 cluster_grid = *parsed;
-                                 return {};
-                             });
-            rendering.toggle("--occlusion-culling", "Override occlusion culling (default off)", occlusion_culling);
-            rendering.toggle("--meshlet-occlusion",
-                             "Override meshlet occlusion culling (default off); acts only while occlusion culling and "
-                             "meshlet culling are on",
-                             meshlet_occlusion);
-            rendering.choice<OcclusionTestMode>("--occlusion-test",
-                                                "Occlusion test; the stubs must render exactly like occlusion culling "
-                                                "off, which makes them baselines for the two-phase draw lists",
-                                                occlusion_test_choices, occlusion_test);
-            rendering.toggle("--frame-graph-alias",
-                             "Let the frame graph's transient images share memory (default on); off is for A/B runs",
-                             transient_aliasing);
-            rendering.value("--stress-resize", "N",
-                            "Flip the render size between two values every N frames, to exercise the resize path "
-                            "unattended",
-                            stress_resize_interval);
-            rendering.option("--async-passes", "light,occlusion,gtao",
-                             "Compute passes given compute-queue affinity (only matters on a device with a second queue)",
-                             [this](std::string_view list) -> std::expected<void, std::string> {
-                                 async_passes = 0;
-                                 async_passes_given = true;
-                                 for (auto const name: CommandLine::split(list, ',')) {
-                                     if (name == "light") {
-                                         async_passes |= Renderer::async_light_clustering;
-                                     } else if (name == "occlusion") {
-                                         async_passes |= Renderer::async_occlusion;
-                                     } else if (name == "gtao") {
-                                         async_passes |= Renderer::async_gtao;
-                                     } else {
-                                         return std::unexpected(std::format(
-                                                 "'{}' (expected light, occlusion or gtao)", name));
-                                     }
-                                 }
-                                 return {};
-                             });
-
-            auto queues = cli.group("Queues and synchronisation");
-            queues.option("--async-compute", "auto|off|same-family",
-                          "Compute queue topology (off keeps one queue but still creates the compute queue)",
-                          [this](std::string_view text) -> std::expected<void, std::string> {
-                              auto const mode = parse_async_compute_mode(text);
-                              if (!mode) {
-                                  return std::unexpected(std::format("'{}' (expected auto, off or same-family)", text));
-                              }
-                              async_compute_mode = *mode;
-                              return {};
-                          });
-            queues.flag("--async-compute-smoke", "Submit empty compute and graphics batches each frame to exercise the "
-                                                 "timelines",
-                        async_compute_smoke);
-            queues.flag("--sync-validation", "Turn on the validation layer's synchronisation checks (Debug builds)",
-                        sync_validation);
-            queues.flag("--frame-graph-serialize",
-                        "Put ALL_COMMANDS barriers between all passes, to tell a missing barrier from a bad one",
-                        frame_graph_serialize);
-
             auto diagnostics = cli.group("Diagnostics");
             diagnostics.flag("--frame-graph-dump",
                              "Log the compiled frame graph whenever it changes", dump_frame_graph);
             diagnostics.value("--frame-graph-dot", "FILE.dot",
                               "Write the compiled frame graph as Graphviz whenever it changes (render with `dot "
-                              "-Tsvg`). Occlusion culling, meshlet occlusion and every async pass default to on "
-                              "so the graph shows everything; the individual flags still override",
+                              "-Tsvg`).",
                               frame_graph_dot);
 
             auto game_group = cli.group("Game");
@@ -845,18 +720,6 @@ namespace {
         auto operator=(EngineArguments const &) -> EngineArguments & = delete;
 
         std::optional<ScreenType> screen_type;
-        std::optional<ClusterGridSettings> cluster_grid;
-        std::optional<bool> occlusion_culling;
-        std::optional<bool> meshlet_occlusion;
-        std::optional<OcclusionTestMode> occlusion_test;
-        std::optional<bool> transient_aliasing;
-        std::uint32_t stress_resize_interval = 0;
-        std::uint32_t async_passes = 0;
-        bool async_passes_given = false;
-        std::optional<AsyncComputeMode> async_compute_mode;
-        bool async_compute_smoke = false;
-        bool sync_validation = false;
-        bool frame_graph_serialize = false;
         bool dump_frame_graph = false;
         std::string frame_graph_dot;
         std::string game;
@@ -874,7 +737,7 @@ namespace {
         std::optional<std::filesystem::path> save_scene;
     };
 
-} // namespace
+}
 
 static std::atomic<bool> g_running{true};
 static auto ctrl_c_handler(int) -> void {
@@ -891,7 +754,6 @@ auto main(int argc, char **argv) -> int {
 
     auto const parsed = cli.parse(argc, argv);
     if (!parsed) {
-        // Before any logging, like the compare report below, so stdout stays clean.
         std::println(stderr, "lathe: {}\nTry --help.", parsed.error());
         return EXIT_FAILURE;
     }
@@ -900,14 +762,11 @@ auto main(int argc, char **argv) -> int {
         return EXIT_SUCCESS;
     }
 
-    // --benchmark-compare reads two results and exits, without a window or a device. Before any logging, so the report
-    // on stdout can be redirected as it is.
     if (auto const compare_options = compare_arguments.options()) {
         return run_benchmark_compare(*compare_options);
     }
 
     Paths::set_current(Paths::resolve({.data_dir = engine.data_dir.empty() ? std::nullopt : std::optional{std::filesystem::path{engine.data_dir}}}));
-    // An installed game carries data/game.toml, which makes the engine a player of that game.
     std::optional<GameManifest> manifest;
 
     if (auto const manifest_path = Paths::current().data_root() / "game.toml"; std::filesystem::exists(manifest_path)) {
@@ -964,36 +823,16 @@ auto main(int argc, char **argv) -> int {
         return EXIT_FAILURE;
     }
 
-    auto const &cluster_grid = engine.cluster_grid;
-    // A frame graph export is meant to show every feature, so those default on; explicit flags still win.
-    auto const everything = !engine.frame_graph_dot.empty();
-    auto const occlusion_culling = engine.occlusion_culling.has_value() ? engine.occlusion_culling
-                                   : everything                         ? std::optional{true}
-                                                                        : std::nullopt;
-    auto const meshlet_occlusion = engine.meshlet_occlusion.has_value() ? engine.meshlet_occlusion
-                                   : everything                         ? std::optional{true}
-                                                                        : std::nullopt;
-    auto const &occlusion_test = engine.occlusion_test;
-    auto const &transient_aliasing = engine.transient_aliasing;
-    auto const stress_resize_interval = engine.stress_resize_interval;
     auto const dump_frame_graph = engine.dump_frame_graph;
-    auto const async_passes = (everything && !engine.async_passes_given)
-                                      ? (Renderer::async_light_clustering | Renderer::async_occlusion |
-                                         Renderer::async_gtao)
-                                      : engine.async_passes;
 
-    // The seed has to be set before the game populates the scene.
     if (*benchmark_options) {
         set_fixed_random_seed((*benchmark_options)->seed);
     }
 
     VulkanContext context{};
-    // Vsync caps the displayed frame rate at the refresh rate, so benchmarks turn it off unless asked otherwise.
     context.vsync = presentation.vsync.value_or(!benchmark_options->has_value());
     context.swapchain_image_count = presentation.swapchain_images.value_or(0U);
 
-    // Benchmarks without vsync prefer IMMEDIATE: under MAILBOX some compositors still hand images back only once per
-    // refresh, which caps the frame rate just like vsync.
     auto const chosen_present_mode = presentation.present_mode.has_value() ? presentation.present_mode
                                      : (benchmark_options->has_value() && !context.vsync)
                                              ? std::optional{PresentModeChoice::immediate}
@@ -1015,12 +854,7 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
-    if (engine.async_compute_mode) {
-        context.async_compute_mode = *engine.async_compute_mode;
-    }
-    context.sync_validation = engine.sync_validation;
-    context.async_compute_smoke = engine.async_compute_smoke;
-    context.frame_graph_serialize = engine.frame_graph_serialize;
+    context.sync_validation = true;
 
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
@@ -1052,45 +886,13 @@ auto main(int argc, char **argv) -> int {
         return EXIT_FAILURE;
     }
 
-    if (cluster_grid) {
-        if (auto applied = application.renderer->set_cluster_grid(*cluster_grid); !applied) {
-            error("Invalid --cluster-grid: {}", applied.error());
-        }
-    }
-
-    if (occlusion_culling) {
-        application.renderer->set_occlusion_culling(*occlusion_culling);
-
-        if (*occlusion_culling && !application.renderer->occlusion_culling_supported()) {
-            warn("--occlusion-culling=on: this device has no MIN depth resolve for MSAA, so it stays inactive");
-        }
-    }
-
-    if (occlusion_test) {
-        application.renderer->set_occlusion_test_mode(*occlusion_test);
-    }
-
-    if (transient_aliasing) {
-        application.renderer->set_transient_aliasing(*transient_aliasing);
-    }
-
-    application.renderer->set_async_candidates(async_passes);
+    application.renderer->set_async_candidates(Renderer::async_light_clustering | Renderer::async_occlusion |
+                                               Renderer::async_gtao);
     application.renderer->set_frame_graph_dump(dump_frame_graph);
     application.renderer->set_frame_graph_dot(engine.frame_graph_dot);
 
-    if (meshlet_occlusion) {
-        application.renderer->set_meshlet_occlusion_culling(*meshlet_occlusion);
-
-        if (*meshlet_occlusion &&
-            !(application.renderer->occlusion_culling() && application.renderer->occlusion_culling_supported())) {
-            warn("--meshlet-occlusion=on needs --occlusion-culling=on (and a device that supports it), so it stays "
-                 "inactive");
-        }
-    }
-
     application.on_startup();
 
-    // Queued behind on_startup()'s populate, so the runtime scene is cloned from the game's populated one.
     if (player_mode) {
         application.renderer->queue_render_thread_event([&application] {
             application.play_fullscreen = true;
@@ -1098,9 +900,6 @@ auto main(int argc, char **argv) -> int {
         });
     }
 
-    // Queued behind on_startup()'s populate, so they act on the game's scene once it exists. --scene opens a saved
-    // one in place of the game's; --save-scene then cooks whichever scene is open into a self-contained .lbf (handy
-    // from scripts).
     if (engine.open_scene) {
         application.renderer->queue_render_thread_event(
                 [&application, path = *engine.open_scene] { application.request_open_scene(path); });
@@ -1110,8 +909,6 @@ auto main(int argc, char **argv) -> int {
                 [&application, path = *engine.save_scene] { application.start_save_scene(path); });
     }
 
-    std::uint64_t stress_resize_frames = 0;
-    bool stress_resize_large = false;
     std::optional<BenchmarkDriver> benchmark;
     if (*benchmark_options) {
         auto driver = BenchmarkDriver::create(std::move(**benchmark_options), application);
@@ -1122,8 +919,6 @@ auto main(int argc, char **argv) -> int {
             return EXIT_FAILURE;
         }
 
-        // The layout sets the Viewport size and thus the render resolution, so benchmarks ignore imgui.ini to render at
-        // the same size every run.
         ImGui::GetIO().IniFilename = nullptr;
 
         info("Benchmark: {} measured frames per run, seed {}, writing {}{}", driver->options().frame_count,
@@ -1138,7 +933,6 @@ auto main(int argc, char **argv) -> int {
     info("Initialization complete; close the window to exit");
 
     auto renderer_extent = context.swapchain.extent();
-    // Viewport drags emit a new size nearly every frame; only resize once the size has settled.
     constexpr auto resize_settle_time = std::chrono::milliseconds{150};
     auto pending_extent = renderer_extent;
     auto pending_since = std::chrono::steady_clock::now();
@@ -1147,7 +941,6 @@ auto main(int argc, char **argv) -> int {
 
     std::uint32_t frames_run = 0;
 
-    // --inject-keys: "frame:key" pairs, for scripted runs and screenshots.
     std::vector<std::pair<std::uint32_t, int>> injected_keys;
 
     for (auto const item: CommandLine::split(engine.inject_keys, ',')) {
@@ -1219,7 +1012,6 @@ auto main(int argc, char **argv) -> int {
         }
 
         auto const now = std::chrono::steady_clock::now();
-        // Fixed step under --benchmark, so frame N simulates the same moment on every device.
         auto const delta_time =
                 benchmark ? benchmark_timestep : std::chrono::duration<float>(now - last_frame_time).count();
         last_frame_time = now;
@@ -1230,8 +1022,6 @@ auto main(int argc, char **argv) -> int {
             application.elapsed_time += delta_time;
             application.camera.update(std::min(delta_time, 0.1F));
 
-            // Sets up the next case's scene when one starts, then the camera (terrain streaming follows it) and the
-            // shader clock, which restarts with the measured lap so warmup length can't shift frame N.
             if (benchmark) {
                 benchmark->begin_frame(application);
             }
@@ -1248,7 +1038,6 @@ auto main(int argc, char **argv) -> int {
 
         FrameMark;
 
-        // The timings of the frame slot just recorded (its previous use finished), for the plot.
         if (auto const &timings = application.renderer->last_frame_timings();
             timings.valid && application.can_start_recording_statistics()) {
             application.add_pass_timings(timings.passes);
@@ -1268,7 +1057,6 @@ auto main(int argc, char **argv) -> int {
             }
         }
 
-        // Render resolution follows the Viewport panel, except in fullscreen play where the scene covers the swapchain.
         auto const desired_render_extent = [&]() -> VkExtent2D {
             if (application.is_playing && application.play_fullscreen) {
                 return context.swapchain.extent();
@@ -1276,7 +1064,6 @@ auto main(int argc, char **argv) -> int {
 
             auto const &size = application.viewport_content_size;
             if (size.x <= 0.0F || size.y <= 0.0F) {
-                // Panel not laid out this frame; keep the current size.
                 return renderer_extent;
             }
 
@@ -1286,31 +1073,20 @@ auto main(int argc, char **argv) -> int {
             };
         }();
 
-        // --stress-resize: alternate between two render sizes every n frames, whatever the panel says.
         auto target_render_extent = desired_render_extent;
 
-        // Benchmarks render at a fixed size (and the resolution scenario scales it), whatever the window.
         if (benchmark) {
             auto const size = benchmark->render_size(
                     BenchmarkRenderSize{.width = desired_render_extent.width, .height = desired_render_extent.height});
             target_render_extent = VkExtent2D{.width = size.width, .height = size.height};
         }
-        if (stress_resize_interval != 0) {
-            if (++stress_resize_frames % stress_resize_interval == 0) {
-                stress_resize_large = !stress_resize_large;
-            }
-            target_render_extent = stress_resize_large ? VkExtent2D{.width = 1400, .height = 800}
-                                                       : VkExtent2D{.width = 1000, .height = 640};
-        }
 
-        // Wait for the viewport size to settle before resizing, so dragging a panel edge doesn't rebuild the frame
-        // graph transients every frame. Benchmarks and --stress-resize resize on their own schedule.
         if (!compare(target_render_extent, pending_extent)) {
             pending_extent = target_render_extent;
             pending_since = std::chrono::steady_clock::now();
         }
 
-        auto const settled = benchmark.has_value() || stress_resize_interval != 0 ||
+        auto const settled = benchmark.has_value() ||
                              std::chrono::steady_clock::now() - pending_since >= resize_settle_time;
 
         if (settled && !compare(target_render_extent, renderer_extent)) {

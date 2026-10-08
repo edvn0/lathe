@@ -15,8 +15,6 @@ namespace {
         return indices.size() / 3;
     }
 
-    // Every triangle's winding normal agrees with its vertices' normals, so the face the shader sees as front is
-    // the side the normals point to (forward flips them on back faces of double-sided materials).
     auto check_winding_matches_normals(PrimitiveMeshData const &mesh,
                                        std::vector<std::uint32_t> const &indices) -> void {
         for (std::size_t triangle = 0; triangle + 2 < indices.size(); triangle += 3) {
@@ -32,7 +30,7 @@ namespace {
         }
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("grass clump: hand-made LODs share one vertex buffer and get cheaper with distance") {
@@ -41,9 +39,8 @@ TEST_SUITE("unit") {
 
         REQUIRE(mesh->lod_indices[0].has_value());
         REQUIRE(mesh->lod_indices[1].has_value());
-        CHECK_FALSE(mesh->lod_indices[2].has_value()); // LOD3 reuses the cards
+        CHECK_FALSE(mesh->lod_indices[2].has_value());
 
-        // 12 blades of 5 triangles, 6 of 3, 3 cards of 2. The old two-sided clump was 144.
         CHECK(triangle_count(mesh->indices) == 60);
         CHECK(triangle_count(*mesh->lod_indices[0]) == 18);
         CHECK(triangle_count(*mesh->lod_indices[1]) == 6);
@@ -92,7 +89,6 @@ TEST_SUITE("unit") {
         CHECK(base_coverage > 0.2F);
         CHECK(base_coverage < 0.8F);
 
-        // A plain box filter loses most of the blades by 8x8; these levels keep level 0's share.
         for (std::uint32_t level = 1; level < texture.mip_levels; ++level) {
             if (texture.level_width(level) < 8) {
                 break;
@@ -123,6 +119,6 @@ TEST_SUITE("unit") {
         CHECK(mip_chain_offset(4, 4, 4, 0) == 0);
         CHECK(mip_chain_offset(4, 4, 4, 1) == 64);
         CHECK(mip_chain_offset(4, 4, 4, 3) == 64 + 16 + 4);
-        CHECK(mip_chain_offset(8, 2, 1, 3) == 16 + 4 + 2); // 8x2, 4x1, 2x1
+        CHECK(mip_chain_offset(8, 2, 1, 3) == 16 + 4 + 2);
     }
 }

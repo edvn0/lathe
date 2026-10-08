@@ -22,7 +22,7 @@ namespace {
         };
     }
 
-} // namespace
+}
 
 auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffer,
                              TerrainSlotPoolCreateInfo const &create_info)
@@ -42,7 +42,6 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
         });
     }
 
-    // Never rendered: slots are only drawn after write(), which replaces all of this. One copy serves every slot.
     std::vector<CompressedModelVertex> const placeholder(terrain_chunk_vertex_count);
     MeshletBuild placeholder_build{
             .topology = build_meshlet_topology(std::span{canonical_indices}, terrain_chunk_vertex_count),
@@ -84,7 +83,7 @@ auto TerrainSlotPool::create(IMeshSink &mesh_sink, VkCommandBuffer command_buffe
                     .bounds_min = bounds_min,
                     .bounds_max = bounds_max,
             };
-            submesh.lods.fill(geometry); // chunks have a single LOD each
+            submesh.lods.fill(geometry);
 
             auto mesh = mesh_sink.create_mesh(MeshCreateInfo{.submeshes = std::span{&submesh, 1}});
 
@@ -173,8 +172,6 @@ auto TerrainSlotPool::write(IMeshSink &mesh_sink, VkCommandBuffer command_buffer
         return false;
     }
 
-    // The slot sat in retirement for frames_in_flight frames before acquire(), and retire() defers again, so no
-    // frame still reads these.
     if (slot.owns_geometry) {
         arena.retire(slot.indices.bytes);
         arena.retire(slot.meshlets.descriptors);

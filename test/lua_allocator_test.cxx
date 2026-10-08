@@ -5,7 +5,6 @@
 #include "scripting/lua_allocator.hxx"
 
 namespace {
-    // Lua passes the type tag of the object being created as old_size when block is null; 4 is LUA_TSTRING.
     constexpr std::size_t string_type_tag = 4;
 
     [[nodiscard]] auto allocate(LuaMemoryBudget &budget, std::size_t size) -> void * {
@@ -15,7 +14,7 @@ namespace {
     auto release(LuaMemoryBudget &budget, void *block, std::size_t size) -> void {
         static_cast<void>(lua_budget_alloc(&budget, block, size, 0));
     }
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("LuaMemoryBudget: a new block counts its size, not the type tag") {
@@ -51,7 +50,6 @@ TEST_SUITE("unit") {
         void *block = allocate(budget, 100);
         REQUIRE(block != nullptr);
 
-        // Shrinking works even when the budget is already exhausted.
         budget.limit_bytes = 10;
         void *shrunk = lua_budget_alloc(&budget, block, 100, 50);
         REQUIRE(shrunk != nullptr);

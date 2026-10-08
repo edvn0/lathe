@@ -45,30 +45,16 @@ struct MaterialCreateInfo {
 
     float wind_strength = 0.0F;
 
-    // The farthest cascade this material casts into. Lower it for detail geometry whose shadow disappears at
-    // distance, or use GpuMaterial::no_shadow_cascade to never cast.
     std::uint32_t max_shadow_cascade = shadow_cascade_count - 1;
 
-    // Shade with one flat colour per meshlet instead of the base colour, to inspect how meshoptimizer split the
-    // geometry. Lighting still applies so the surface stays readable. Instanced (non-meshlet) draws get one colour
-    // per instance.
     bool debug_meshlet_colours = false;
 
-    // Drawn without back-face culling, back faces shading with the normal flipped (thin foliage, cloth, cards).
-    // Opaque double-sided materials get their own draw range, so the prepass still runs no fragment shader for them.
     bool double_sided = false;
 
-    // Mask materials: under MSAA the prepass turns alpha into sample coverage (sharpened to about a pixel) instead
-    // of cutting at alpha_cutoff, which antialiases alpha-tested edges. Without MSAA it is the plain cutoff.
     bool alpha_to_coverage = false;
 
-    // The renderer's selected-object outline traces the silhouette of what this material draws. The renderer sets it
-    // on private copies of a material for submissions asked to be outlined; leave it false on your own.
     bool outlined = false;
 
-    // From LOD level `far_material_lod` on, instances draw with `far_material` instead of this material: foliage
-    // whose distant LODs are alpha-tested cards, say, while the near ones are opaque geometry. One hop only: the far
-    // material's own far_material is ignored. The renderer holds a reference to it while this material uses it.
     MaterialHandle far_material{};
     std::uint32_t far_material_lod = 2;
 };
@@ -120,7 +106,6 @@ struct MaterialStorageCreateInfo {
 struct MaterialSlotData {
     GpuMaterial material{};
 
-    // The create info the material was last built from, so the editor can read back its handles.
     MaterialCreateInfo source{};
 
     std::uint32_t ref_count = 0;
@@ -151,7 +136,6 @@ struct MaterialStorage {
     [[nodiscard]]
     auto retain_material(MaterialHandle handle) -> std::expected<void, MaterialStorageError>;
 
-    // Drops a reference; the last one frees the slot.
     [[nodiscard]]
     auto destroy_material(MaterialHandle handle) -> std::expected<void, MaterialStorageError>;
 
@@ -161,15 +145,12 @@ struct MaterialStorage {
     [[nodiscard]]
     auto get(MaterialHandle handle) const noexcept -> GpuMaterial const *;
 
-    // The slot's MaterialSlotData::source, or nullptr for an invalid handle.
     [[nodiscard]]
     auto create_info(MaterialHandle handle) const noexcept -> MaterialCreateInfo const *;
 
     [[nodiscard]]
     auto gpu_index(MaterialHandle handle) const noexcept -> std::uint32_t;
 
-    // The material instances at `lod` draw with: `handle`'s far_material from its far_material_lod on, `handle`
-    // otherwise (and for an invalid handle).
     [[nodiscard]]
     auto material_for_lod(MaterialHandle handle, std::uint32_t lod) const noexcept -> MaterialHandle;
 

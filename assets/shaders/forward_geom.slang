@@ -12,17 +12,14 @@ struct VertexOutput
 
     float3 world_position;
     float3 world_normal;
-    float4 world_tangent; // xyz = tangent, w = handedness sign
+    float4 world_tangent;
     float2 texture_coordinate;
 
     nointerpolation uint material_index;
 
-    // Meshlet index within the mesh on the meshlet path, a salted instance index on the instanced path. Only read
-    // for materials with debug_meshlet_colours set.
     nointerpolation uint debug_cluster_id;
 };
 
-// Keeps instanced-path ids from hashing to the same colours as meshlet ids.
 static const uint debug_instance_salt = 0x9E3779B9u;
 
 [shader("amplification")]
@@ -40,7 +37,6 @@ VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_stre
     float4 world_position = mul(model, float4(vertex.position, 1.0));
     world_position.xz += wind_offset(vertex.position, world_position.xyz, wind_strength, ubo.time);
 
-    // Valid for uniform scale and rotation; non-uniform scale would need the inverse-transpose.
     float3x3 normal_matrix = (float3x3)model;
 
     float3 world_normal = normalize(mul(normal_matrix, vertex.normal));
@@ -58,7 +54,6 @@ VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_stre
     return output;
 }
 
-// Instanced path for batches too small for meshlets. Same vertex function as main_mesh.
 [shader("vertex")]
 VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform PC pc)
 {
@@ -102,14 +97,10 @@ struct OutputFS
     float4 colour : SV_Target0;
 
 #ifdef OUTLINE_MASK
-    // The outline mask: 1 where a material with material_flag_outlined drew. Only in the variant the renderer builds
-    // for frames with outlined objects, which is the only one with a second target to write it to.
     float outline : SV_Target1;
 #endif
 };
 
-// PCG hash: meshoptimizer emits spatially coherent meshlets in order, so consecutive ids must map to unrelated
-// colours or neighbours become indistinguishable.
 uint pcg_hash(uint value)
 {
     const uint state = value * 747796405u + 2891336453u;
@@ -117,7 +108,6 @@ uint pcg_hash(uint value)
     return (word >> 22u) ^ word;
 }
 
-// Saturated, bright hue per id, so every cluster reads clearly under lighting.
 float3 debug_meshlet_colour(uint cluster_id)
 {
     const uint hash = pcg_hash(cluster_id);
@@ -129,8 +119,6 @@ float3 debug_meshlet_colour(uint cluster_id)
     return value * lerp(float3(1.0), hue_rgb, saturation);
 }
 
-// 3x3 hardware PCF. Taps are clamped to a 1-texel inset of the cascade's tile, or edge taps would read the
-// neighbouring cascade in the atlas.
 float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float reference)
 {
     const var atlas = sampled_2d_depth[NonUniformResourceIndex(ubo.shadow_atlas_texture)];
@@ -159,8 +147,6 @@ float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float refe
     return sum * (1.0 / 9.0);
 }
 
-// Radiance from one punctual light, with KHR_lights_punctual's distance and cone falloff. Exactly zero beyond
-// `range` and outside the cone, which the clustered loop relies on.
 float3 shade_light(GpuLight punctual_light, float3 world_position, float3 shading_normal, float3 view_direction,
                    float3 base_colour, float metallic, float roughness)
 {
@@ -168,7 +154,6 @@ float3 shade_light(GpuLight punctual_light, float3 world_position, float3 shadin
     float distance = length(to_light);
     float3 light_dir = to_light / max(distance, 1e-6);
 
-    // KHR_lights_punctual's smooth window on top of inverse-square, reaching zero at `range`.
     float distance_falloff = clamp(1.0 - pow(distance / max(punctual_light.range, 1e-4), 4.0), 0.0, 1.0);
     distance_falloff = (distance_falloff * distance_falloff) / max(distance * distance, 1e-4);
 
@@ -184,8 +169,6 @@ float3 shade_light(GpuLight punctual_light, float3 world_position, float3 shadin
     return shade_punctual(shading_normal, view_direction, light_dir, radiance, base_colour, metallic, roughness);
 }
 
-// Black (no lights) through blue, green and yellow to red at 64 or more lights in the cluster, and magenta past
-// the cluster's capacity, where it drops lights.
 float3 cluster_heatmap_colour(uint light_count, uint capacity)
 {
     if (light_count == 0) {
@@ -209,13 +192,11 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
 
     float3 normal = normalize(input.world_normal);
 
-    // Double-sided materials draw without culling; a back face is lit as the side the camera sees.
     if ((material.flags & material_flag_double_sided) != 0 && !is_front_face) {
         normal = -normal;
     }
     float3 tangent = normalize(input.world_tangent.xyz);
 
-    // Re-orthogonalize after interpolation.
     tangent = normalize(tangent - normal * dot(normal, tangent));
     float3 bitangent = cross(normal, tangent) * input.world_tangent.w;
 
@@ -232,7 +213,6 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
 
     float2 uv = float2(input.texture_coordinate.x, input.texture_coordinate.y);
 
-    // BC5 normal maps store X/Y only; reconstruct Z.
     float2 tangent_normal_xy = normal_texture.Sample(sampler, uv).xy * 2.0 - 1.0;
     tangent_normal_xy *= material.normal_scale;
     float tangent_normal_z = sqrt(saturate(1.0 - dot(tangent_normal_xy, tangent_normal_xy)));
@@ -244,8 +224,6 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
 
     float view_z = mul(ubo.view, float4(input.world_position, 1.0)).z;
 
-    // Inlined on purpose: dynamically indexing a matrix array through Ptr<UBO> in a helper function crashes
-    // Slang's SPIR-V backend.
     uint cascade = ubo.cascade_count;
     [unroll]
     for (uint i = 0; i < shadow_cascade_count; ++i) {
@@ -258,8 +236,6 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
     float shadow = 1.0;
 
     if (ndotl > 0.0 && cascade < ubo.cascade_count) {
-        // Normal-offset bias along the geometric normal; a normal-mapped one can push the sample through geometry.
-        // sqrt(2) covers a texel's diagonal.
         float texel = ubo.cascade_texel_world[cascade];
         float3 biased = input.world_position + normal * (texel * ubo.shadow_normal_offset_texels * 1.41421356);
 
@@ -278,7 +254,6 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
     float ambient_occlusion = ambient_occlusion_texture.Sample(sampler, uv).r;
     ambient_occlusion = lerp(1.0, ambient_occlusion, material.occlusion_strength);
 
-    // Screen-space GTAO multiplies with the baked occlusion; they capture different scales.
     float2 screen_uv = input.position.xy / pc.screen_size;
     const var gtao_texture = sampled_2d[NonUniformResourceIndex(pc.ao_texture_index)];
     const var gtao_sampler = samplers[NonUniformResourceIndex(pc.ao_sampler_index)];
@@ -287,8 +262,6 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
 
 const var base_sample = texture.Sample(sampler, uv);
 
-// With alpha to coverage the prepass already chose the samples (this pass tests depth EQUAL), so cutting here would
-// drop the partly covered edge pixels it kept.
 if (material.alpha_mode == AlphaMode.mask && (material.flags & material_flag_alpha_to_coverage) == 0 &&
     base_sample.a < material.alpha_cutoff) {
     discard;
@@ -301,7 +274,6 @@ var base_colour = base_sample.xyz *
         base_colour = debug_meshlet_colour(input.debug_cluster_id);
     }
 
-    // glTF: roughness in G, metallic in B.
     float2 metallic_roughness = metallic_roughness_texture.Sample(sampler, uv).bg *
                                 float2(material.metallic_factor, material.roughness_factor);
     float metallic = metallic_roughness.x;
@@ -327,9 +299,6 @@ var base_colour = base_sample.xyz *
         const uint list_base = cluster_count(ubo) + cluster * capacity;
         const uint list_end = 0xFFFFFFFFu;
 
-        // Each lane's list is sorted by light index, so the wave merges them: every iteration shades the smallest
-        // pending index across the wave, which keeps the loop uniform and the light load scalar. Lanes whose cluster
-        // lacks that light are out of its range and add zero.
         uint cursor = 0;
         uint lane_next = stored_count != 0 ? pc.cluster_lights[list_base] : list_end;
 
@@ -365,7 +334,6 @@ var base_colour = base_sample.xyz *
         const uint debug_view = env_debug_view(ubo.environment_flags);
         const bool furnace = debug_view == env_debug_white_furnace;
 
-        // Lookups rotate by -theta; the environment as a whole is rotated by +theta.
         const float2 unrotate = float2(ubo.environment_rotation.x, -ubo.environment_rotation.y);
         const float3 reflected = reflect(-view_direction, shading_normal);
 
@@ -375,7 +343,6 @@ var base_colour = base_sample.xyz *
         const float2 scale_bias = sampled_2d[ubo.brdf_lut_texture].SampleLevel(samplers[ubo.environment_sampler], float2(ndotv, roughness), 0).rg;
         const float3 specular_albedo = f0 * scale_bias.x + scale_bias.y;
 
-        // Multi-scatter energy compensation (Fdez-Aguera 2019) from the same LUT.
         float3 energy = float3(1.0);
         if ((ubo.environment_flags & env_multi_scatter) != 0) {
             energy = 1.0 + f0 * (1.0 / max(scale_bias.x + scale_bias.y, 1e-4) - 1.0);
@@ -395,7 +362,6 @@ var base_colour = base_sample.xyz *
             so = lerp(1.0, specular_occlusion(ndotv, ambient_occlusion, roughness), ubo.environment_rotation.w);
         }
 
-        // Keeps the specular lobe from reflecting what lies below the surface.
         const float horizon = saturate(1.0 + dot(reflected, normal));
 
         const float3 diffuse_ibl = base_colour * (1.0 - metallic) * (1.0 - specular_albedo) * irradiance *

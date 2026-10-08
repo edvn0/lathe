@@ -4,7 +4,7 @@
 
 namespace {
     struct TestScript : IScript {};
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("ScriptStorage: create with capacity < 2 fails with invalid_argument") {
@@ -59,7 +59,6 @@ TEST_SUITE("unit") {
         auto storage = ScriptStorage::create({.capacity = 2});
         REQUIRE(storage.has_value());
 
-        // Slot 0 is permanently reserved, leaving exactly one real slot.
         auto first = storage->emplace<TestScript>();
         REQUIRE(first.has_value());
 

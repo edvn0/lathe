@@ -5,7 +5,6 @@
 
 #include "core/renderer_error.hxx"
 
-// The generic describe() overloads and RendererError's. Every other error type's lives next to it.
 auto describe(ErrorContext const &context) -> std::string {
     std::string text = context.message.empty() ? std::string{"(no message)"} : std::string{context.message.view()};
 

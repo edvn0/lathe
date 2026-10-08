@@ -25,7 +25,6 @@ auto encode_cooked_texture(CompressedTexture const &texture, TextureRole role) -
     }
 
     writer.write(static_cast<std::uint64_t>(texture.data.size()));
-    // Block data starts 16-aligned within the payload, matching BC block size.
     writer.align(16);
     writer.write_span(std::span<std::byte const>{texture.data});
 
@@ -34,11 +33,10 @@ auto encode_cooked_texture(CompressedTexture const &texture, TextureRole role) -
 
 namespace {
     inline constexpr std::size_t max_debug_name_length = 256;
-} // namespace
+}
 
 auto decode_cooked_texture(std::span<std::byte const> payload, std::uint16_t version)
         -> std::expected<CookedTexture, LbfError> {
-    // One layout so far. A v2 would branch here and keep this path for v1 files.
     if (version < cooked_texture_oldest_readable_version || version > cooked_texture_version) {
         return std::unexpected(LbfError{.type = LbfErrorType::unsupported_version});
     }
@@ -49,7 +47,6 @@ auto decode_cooked_texture(std::span<std::byte const> payload, std::uint16_t ver
 
     auto const format = reader.read<std::uint32_t>();
 
-    // Checked before the cast: an arbitrary u32 isn't a valid VkFormat value.
     if (compressed_block_bytes(format) == 0) {
         reader.fail();
     }
@@ -66,14 +63,12 @@ auto decode_cooked_texture(std::span<std::byte const> payload, std::uint16_t ver
 
     cooked.role = static_cast<TextureRole>(role);
 
-    // Interned for the life of the process, so a name from a file is capped: real ones are file names.
     auto debug_name = reader.read_string();
     debug_name.resize(std::min(debug_name.size(), max_debug_name_length));
     texture.debug_name = FlyString{debug_name};
 
     auto const mip_count = reader.read<std::uint32_t>();
 
-    // A 64K x 64K texture has 17 levels.
     if (mip_count > 32) {
         reader.fail();
     }

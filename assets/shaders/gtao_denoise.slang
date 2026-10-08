@@ -3,8 +3,6 @@ module gtao_denoise;
 import bindless;
 import scene_types;
 
-// Depth-aware 5x5 blur over the raw GTAO output. Neighbours are weighted by linear view-space depth, since
-// reverse-Z depth is too non-linear at distance to find edges.
 struct GtaoDenoisePushConstants
 {
     Ptr<UBO> ubo;
@@ -17,7 +15,6 @@ struct GtaoDenoisePushConstants
     float2 inv_extent;
     float depth_sigma;
 
-    // Keeps the generated C++ struct's size aligned, as in gtao.slang.
     uint _padding;
 };
 

@@ -8,7 +8,6 @@
 #include <cmath>
 
 namespace {
-    // Gap kept from surfaces so the next sweep doesn't start touching (which Bullet reports as an immediate hit).
     constexpr float skin = 0.01F;
     constexpr int max_slide_iterations = 4;
     constexpr float epsilon = 1e-5F;
@@ -21,7 +20,7 @@ namespace {
         }
         return current + diff * (max_delta / length);
     }
-} // namespace
+}
 
 auto MovementParams::jump_speed() const noexcept -> float { return std::sqrt(2.0F * gravity * jump_height); }
 
@@ -75,7 +74,6 @@ auto CharacterBody::move_and_slide(CapsuleSweep const &world, glm::vec3 delta, b
         glm::vec3 const remaining = delta * (1.0F - hit->fraction);
         delta = remaining - hit->normal * glm::dot(remaining, hit->normal);
 
-        // Walkable ground only redirects the displacement: stripping the velocity would bleed speed on every slope step.
         if (!(keep_velocity_on_walkable && walkable(hit->normal))) {
             float const into = glm::dot(velocity_, hit->normal);
             if (into < 0.0F) {
@@ -96,8 +94,6 @@ auto CharacterBody::try_step_up(CapsuleSweep const &world, glm::vec3 const &hori
         raised += up;
     }
 
-    // A single tick's move can leave the rounded capsule bottom perched on the ledge edge, where the contact normal
-    // is steeper than max_slope and the step would be rejected every tick. Reach far enough to clear the edge.
     glm::vec3 reach = horizontal;
     float const reach_length = glm::length(horizontal);
     float const min_reach = radius_ * 0.5F;
@@ -109,7 +105,6 @@ auto CharacterBody::try_step_up(CapsuleSweep const &world, glm::vec3 const &hori
     if (auto const hit = sweep(world, raised, forward)) {
         forward = raised + reach * hit->fraction;
     }
-    // Barely moved forward: no progress over what sliding already gave.
     if (glm::length(glm::vec2{forward.x - position_.x, forward.z - position_.z}) < skin * 2.0F) {
         return false;
     }
@@ -128,7 +123,6 @@ auto CharacterBody::step(CapsuleSweep const &world, CharacterInput const &input,
 
     jump_buffer_ = input.jump_pressed ? params.jump_buffer_time : std::max(jump_buffer_ - dt, 0.0F);
 
-    // Horizontal: accelerate towards the wish velocity, with separate rates for ground and air.
     glm::vec3 const wish{input.desired_velocity.x, 0.0F, input.desired_velocity.z};
     bool const has_input = glm::length(wish) > epsilon;
     float const accel = grounded_ ? (has_input ? params.ground_accel : params.ground_decel) : params.air_accel;
@@ -159,7 +153,6 @@ auto CharacterBody::step(CapsuleSweep const &world, CharacterInput const &input,
     }
 
     bool const was_grounded = grounded_;
-    // Average of old and new velocity integrates constant gravity exactly, so the apex matches jump_height.
     float const vertical_move = 0.5F * (vy_before + velocity_.y) * dt;
 
     glm::vec3 const horizontal_delta{velocity_.x * dt, 0.0F, velocity_.z * dt};
@@ -175,11 +168,9 @@ auto CharacterBody::step(CapsuleSweep const &world, CharacterInput const &input,
 
     auto const vertical_hit = move_and_slide(world, {0.0F, vertical_move, 0.0F}, false);
     if (vertical_hit && vertical_hit->normal.y < -0.5F && velocity_.y > 0.0F) {
-        velocity_.y = 0.0F; // ceiling
+        velocity_.y = 0.0F;
     }
 
-    // Ground probe. Snapping only when already grounded and not rising keeps small steps and ramps from launching
-    // the character, while a jump or a real drop leaves it airborne.
     bool const rising = velocity_.y > 0.0F;
     float const probe = (was_grounded && !rising) ? params.step_height + skin : skin * 2.0F;
     auto const ground = rising ? std::nullopt : sweep(world, position_, position_ - glm::vec3{0.0F, probe, 0.0F});

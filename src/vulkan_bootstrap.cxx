@@ -195,14 +195,10 @@ namespace {
         info("Was created via renderdoc: {}", renderdoc.is_active());
 
         if (screen_type == ScreenType::headless) {
-            // The null platform needs no display server. It still provides the window for input and framebuffer
-            // size, but has no Vulkan surface support in GLFW 3.4: create_instance() and create_surface() handle
-            // VK_EXT_headless_surface themselves.
             glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_NULL);
             info("Headless: using GLFW's null platform.");
         } else {
 #if defined(__linux__)
-            // RenderDoc can't capture Wayland surfaces.
             glfwInitHint(GLFW_PLATFORM, renderdoc.is_active() ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM);
             warn("Chosing: {} as platform.", renderdoc.is_active() ? "X11" : "auto-detected");
 #endif
@@ -270,7 +266,6 @@ namespace {
                 break;
 
             case ScreenType::borderless:
-                // Borderless window covering the monitor, not exclusive fullscreen.
                 context.window = glfwCreateWindow(mode->width, mode->height, "VK", nullptr, nullptr);
 
                 if (context.window != nullptr) {
@@ -356,15 +351,13 @@ namespace {
             instance_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
 
-        // --sync-validation turns on the validation layer's synchronization checks through layer settings.
         auto sync_validation_enabled = false;
         if (context.sync_validation) {
             if (!validation_enabled) {
-                warn("--sync-validation needs the validation layer (Debug builds); ignoring it");
+                debug("Sync validation needs the validation layer (Debug builds); skipping it");
             } else if (!instance_extension_available(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) &&
                        !instance_extension_available(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME, validation_layers.front())) {
-                // The validation layer itself exports VK_EXT_layer_settings, so it is not in the loader's own list.
-                warn("{} is unavailable; ignoring --sync-validation", VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+                warn("{} is unavailable; skipping sync validation", VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
             } else {
                 sync_validation_enabled = true;
                 instance_extensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
@@ -629,7 +622,6 @@ namespace {
 
             vkGetPhysicalDeviceFeatures2(physical_device, &features2);
 
-            // Timeline semaphores order the graphics and compute queues and replace the per-frame fence.
             if (features2.features.shaderInt64 != VK_TRUE || vulkan12_features.bufferDeviceAddress != VK_TRUE ||
                 vulkan12_features.timelineSemaphore != VK_TRUE || vulkan13_features.synchronization2 != VK_TRUE ||
                 vulkan13_features.dynamicRendering != VK_TRUE) {
@@ -666,7 +658,6 @@ namespace {
         vkGetPhysicalDeviceProperties(context.physical_device, &properties);
         info("Selected physical device: {}", properties.deviceName);
 
-        // VK_EXT_shader_object is optional; without it the renderer falls back to VkPipelines.
         VkPhysicalDeviceExtendedDynamicState3FeaturesEXT extended_dynamic_state3_features{};
         extended_dynamic_state3_features.sType =
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
@@ -706,7 +697,6 @@ namespace {
 
         context.mesh_shader_queries_supported = mesh_shader_query_features.meshShaderQueries == VK_TRUE;
 
-        // Core in Vulkan 1.2.
         VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve_properties{};
         depth_stencil_resolve_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES;
         depth_stencil_resolve_properties.pNext = nullptr;
@@ -727,7 +717,6 @@ namespace {
         info("VK_EXT_shader_object support: {}",
              context.shader_objects_supported ? "yes" : "no (falling back to VkPipeline)");
 
-        // Tracy's host-query context needs calibrated timestamps; otherwise it falls back to another context type.
         context.calibrated_timestamps_supported =
                 supports_device_extension(context.physical_device, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
 
@@ -749,7 +738,6 @@ namespace {
     }
 
     auto create_device(VulkanContext &context) noexcept -> bool {
-        // Every queue has priority 1; the same-family topology asks the graphics family for two.
         constexpr std::array<float, 2> queue_priorities{1.0F, 1.0F};
 
         std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
@@ -921,7 +909,6 @@ namespace {
         context.host_query_context.initialize(context, context.graphics_queue, context.queue_families.graphics,
                                               "graphics");
 
-        // A second context only when compute is its own queue; otherwise its zones belong to the graphics track.
         if (context.compute_queue != context.graphics_queue) {
             context.compute_host_query_context.initialize(context, context.compute_queue,
                                                           context.queue_families.compute, "compute");
@@ -1019,7 +1006,7 @@ namespace {
         });
     }
 
-} // namespace
+}
 
 auto report_vk_error(std::string_view operation, VkResult result) noexcept -> void {
     error("{} failed: {} ({})", operation, vk_result_name(result), static_cast<int>(result));

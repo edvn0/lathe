@@ -35,7 +35,6 @@ namespace {
         return grid;
     }
 
-    // Plateaus, a ramp and some rough ground, so merges of every shape show up next to single cells.
     [[nodiscard]] auto mixed_grid() -> Grid {
         return make_grid(33, 29, [](float x, float z) {
             if (x < 10.0F) {
@@ -57,7 +56,6 @@ namespace {
         return Point{.column = index % grid.samples_x, .row = index / grid.samples_x};
     }
 
-    // Twice the signed area in (column, row); negative for the winding an unmerged cell uses.
     [[nodiscard]] auto doubled_area(Point a, Point b, Point c) -> std::int64_t {
         return (static_cast<std::int64_t>(b.column) - a.column) * (static_cast<std::int64_t>(c.row) - a.row) -
                (static_cast<std::int64_t>(b.row) - a.row) * (static_cast<std::int64_t>(c.column) - a.column);
@@ -72,8 +70,6 @@ namespace {
                (on_row(a, 0) && on_row(b, 0)) || (on_row(a, grid.samples_z - 1) && on_row(b, grid.samples_z - 1));
     }
 
-    // Each directed edge must appear once and, away from the grid boundary, its reverse once too: a manifold,
-    // consistently wound surface. A T-junction leaves a long edge whose reverse is split in pieces, so it fails here.
     auto check_watertight(Grid const &grid, std::vector<std::uint32_t> const &indices) -> void {
         std::map<std::pair<std::uint32_t, std::uint32_t>, int> directed;
 
@@ -90,7 +86,6 @@ namespace {
             auto const b = point_of(grid, edge.second);
 
             if (is_boundary_edge(grid, a, b)) {
-                // Boundary edges stay unit length so skirts and neighbours line up with every vertex.
                 CHECK(std::max(a.column, b.column) - std::min(a.column, b.column) + std::max(a.row, b.row) -
                               std::min(a.row, b.row) ==
                       1U);
@@ -122,7 +117,7 @@ namespace {
         CHECK(std::ranges::all_of(coverage, [](int count) { return count == 1; }));
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("greedy meshing collapses a tilted plane to one quad") {
@@ -133,7 +128,6 @@ TEST_SUITE("unit") {
         CHECK(quads[0].width == 64);
         CHECK(quads[0].height == 64);
 
-        // The boundary stays at full resolution, so the one quad is stitched along all four edges.
         auto const indices = triangulate_terrain_quads(quads, grid.samples_x, grid.samples_z);
         CHECK(indices.size() / 3 == 4U * 64U - 2U);
         check_watertight(grid, indices);
@@ -145,7 +139,6 @@ TEST_SUITE("unit") {
         auto const quads = greedy_merge_terrain_cells(grid.heights, grid.samples_x, grid.samples_z, 0.0F);
         CHECK(quads.size() == 16U * 16U);
 
-        // Unmerged cells triangulate exactly like the plain grid.
         auto const indices = triangulate_terrain_quads(quads, grid.samples_x, grid.samples_z);
         CHECK(indices.size() == 16U * 16U * 6U);
         check_watertight(grid, indices);
@@ -169,11 +162,10 @@ TEST_SUITE("unit") {
             for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
                 auto const area = doubled_area(point_of(grid, indices[i]), point_of(grid, indices[i + 1]),
                                                point_of(grid, indices[i + 2]));
-                CHECK(area < 0); // non-degenerate, and wound like an unmerged cell
+                CHECK(area < 0);
                 doubled_total -= area;
             }
 
-            // Non-overlapping (watertight, below) and summing to the grid's area: the grid is covered exactly.
             CHECK(doubled_total == 2 * std::int64_t{grid.samples_x - 1} * (grid.samples_z - 1));
             check_watertight(grid, indices);
         }
@@ -207,7 +199,6 @@ TEST_SUITE("unit") {
             }
         }
 
-        // The plateau and the ramp both merge.
         CHECK(merged >= 2);
     }
 }

@@ -10,7 +10,6 @@ auto VulkanContext::destroy() -> void {
 
     context.swapchain.destroy();
 
-    // The swapchain waits for the device to go idle, so nothing is still using the queue set.
     context.queue_set.destroy();
 
     context.compute_host_query_context.destroy();
@@ -95,7 +94,6 @@ auto VulkanContext::one_time_submit(std::function<void(VkCommandBuffer)> &&func)
         result = vkQueueSubmit2(graphics_queue, 1, &submit_info, fence);
     }
 
-    // Bounded: an unbounded wait here freezes the app for good when the GPU hangs mid-upload.
     constexpr std::uint64_t one_time_submit_timeout_ns = 10'000'000'000ULL;
 
     if (result == VK_SUCCESS) {
@@ -103,7 +101,6 @@ auto VulkanContext::one_time_submit(std::function<void(VkCommandBuffer)> &&func)
     }
 
     if (result != VK_SUCCESS) {
-        // The callers have no way to act on a failed upload, but the loss is recorded so main can report it.
         error("one_time_submit failed: VkResult {}", static_cast<int>(result));
 
         if (is_device_failure(result)) {
@@ -111,7 +108,6 @@ auto VulkanContext::one_time_submit(std::function<void(VkCommandBuffer)> &&func)
         }
     }
 
-    // A fence still pending after a timeout can't be destroyed; leak it, the device is being abandoned anyway.
     if (fence != VK_NULL_HANDLE && result != VK_TIMEOUT) {
         vkDestroyFence(device, fence, nullptr);
     }

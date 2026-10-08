@@ -47,7 +47,7 @@ namespace {
                 .cause = ErrorCause{Boxed<DeviceError>{error}},
         };
     }
-} // namespace
+}
 
 ImageStorage::~ImageStorage() { destroy(); }
 
@@ -94,7 +94,6 @@ auto ImageStorage::create(VulkanContext &context, ImageStorageCreateInfo const &
 
     storage.slots_ = ObjectPool<ImageSlotData>::create(create_info.capacity);
 
-    // Allocated first from a fresh pool, so they land on indices 0-5 as default_image_handle() expects.
     auto defaults = storage.create_default_images();
 
     if (!defaults) {
@@ -496,8 +495,6 @@ auto ImageStorage::upgrade_pending_image(ImageHandle handle, CompressedTexture c
         return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
     }
 
-    // Every source of a CompressedTexture (cooked packs, the .ktx2 cache, the encoder) ends up here, and a bad
-    // mip table becomes an out-of-bounds buffer-to-image copy on the GPU.
     if (auto const problem = validate_compressed_texture(texture); problem.has_value()) {
         warn("image_storage: rejecting compressed texture '{}': {}", texture.debug_name, *problem);
         return std::unexpected(make_error(ImageStorageErrorType::invalid_argument));
@@ -712,7 +709,6 @@ auto ImageStorage::create_pending_image(ImageHandle fallback) -> std::expected<I
         return std::unexpected(make_error(ImageStorageErrorType::capacity_exceeded));
     }
 
-    // The slot storage never resizes, so fallback_slot stays valid.
     auto [handle, slot] = *slots_.allocate();
 
     if (fallback_slot->is_alias) {

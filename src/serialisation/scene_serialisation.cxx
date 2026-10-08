@@ -27,12 +27,9 @@
 #include "serialisation/cooked_texture.hxx"
 
 namespace {
-    // A source string from a scene file as an AssetPath. One that is empty or climbs out of the data root becomes a
-    // path that doesn't exist, so it fails to load with the usual "could not load" warning.
     [[nodiscard]] auto asset_path_of(std::string const &source) -> AssetPath {
         return AssetPath::from_serialised(source).value_or(AssetPath::missing());
     }
-
 
     auto make_error(LbfErrorType type, std::string_view message,
                     std::source_location location = std::source_location::current()) -> LbfError {
@@ -61,7 +58,6 @@ namespace {
             EngineModelName{.name = "capsule", .member = &EngineModels::capsule},
     };
 
-    // Engine-made textures a material can use, saved by name like the engine models.
     struct EngineTextureName {
         std::string_view name;
         ImageHandle EngineModels::*member;
@@ -71,7 +67,6 @@ namespace {
             EngineTextureName{.name = "grass_card", .member = &EngineModels::grass_card_texture},
     };
 
-    // Texture slots in SceneMaterial::textures order.
     constexpr std::array material_texture_roles{TextureRole::colour, TextureRole::normal_map, TextureRole::generic,
                                                 TextureRole::generic, TextureRole::colour};
 
@@ -90,8 +85,6 @@ namespace {
         }
     }
 
-    // ---- capture -------------------------------------------------------------------------------------------------
-
     class SceneCapture {
     public:
         SceneCapture(Renderer &renderer, EngineModels const &engine_models, SceneCaptureReport *report) :
@@ -103,7 +96,6 @@ namespace {
             }
         }
 
-        // scene_no_index for models with no file behind them (procedural geometry made at runtime).
         auto model_index(ModelHandle handle) -> std::uint32_t {
             if (!handle.valid()) {
                 return scene_no_index;
@@ -256,7 +248,6 @@ namespace {
             description.materials.push_back(std::move(material));
             material_indices_.emplace(key, index);
 
-            // After this material has its index, so a far material that refers back finds it rather than recursing.
             if (far_material.valid()) {
                 auto const far_index = material_index(far_material);
                 description.materials[index].far_material = far_index;
@@ -276,11 +267,9 @@ namespace {
         std::unordered_map<std::uint64_t, std::uint32_t> material_indices_;
     };
 
-    // ---- instantiate ---------------------------------------------------------------------------------------------
-
     struct ResolvedModel {
         ModelHandle handle{};
-        bool owned = false; // we hold the creation reference
+        bool owned = false;
     };
 
     [[nodiscard]]
@@ -295,7 +284,7 @@ namespace {
         return nullptr;
     }
 
-} // namespace
+}
 
 auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &engine_models,
                    SceneCaptureReport *report) -> SceneDescription {
@@ -314,7 +303,6 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
         description.environment_id = asset_id_from_key(environment_asset_key(*hdr));
     }
 
-    // Ascending entity id, so captures of an unchanged registry produce identical bytes.
     std::vector<entt::entity> entities;
 
     for (auto const entity: registry.view<entt::entity>()) {
@@ -474,7 +462,6 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
     SceneInstantiateReport report;
     auto const &packs = options.packs;
 
-    // ---- models: decode every cooked one in parallel, then upload on this thread.
     std::vector<ResolvedModel> models(description.models.size());
 
     struct PendingDecode {
@@ -503,7 +490,6 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
             continue;
         }
 
-        // Already loaded (e.g. reloading the scene): reuse it rather than uploading a second copy.
         if (auto const cached = renderer.cached_model(asset_path_of(reference.source)); cached.valid()) {
             renderer.retain_model(cached);
             models[index] = ResolvedModel{.handle = cached, .owned = true};
@@ -603,7 +589,6 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         ++report.models_from_source;
     }
 
-    // ---- textures and materials.
     auto &images = renderer.image_storage();
     std::vector<std::optional<ImageHandle>> textures(description.textures.size());
 
@@ -647,7 +632,6 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
             handle = renderer.texture_streamer().request_cooked(images, pack->texture_loader(reference.id),
                                                                 AssetPack::texture_cache_key(reference.id), fallback,
                                                                 debug_name);
-            // So saving again references the source file rather than an anonymous cooked image.
             renderer.texture_streamer().set_source(handle, TextureStreamer::Source{
                                                                    .path = asset_path_of(reference.source),
                                                                    .role = reference.role,
@@ -701,10 +685,8 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
                 .far_material_lod = material.far_material_lod,
         };
 
-        // Far materials may come later in the list, so they are linked once every material exists.
         material_infos[index] = info;
 
-        // A named material is an asset: reloading a scene updates it in place instead of piling up copies.
         if (!material.name.empty()) {
             if (auto const existing = renderer.assets().materials().find(material.name); existing.valid()) {
                 if (renderer.update_material(existing, info)) {
@@ -749,7 +731,6 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         return index == scene_no_index ? MaterialHandle{} : materials[index];
     };
 
-    // ---- entities.
     if (auto idle = renderer.wait_idle(); !idle) {
         return std::unexpected(make_error(LbfErrorType::instantiate_failed, describe(idle.error())));
     }
@@ -759,7 +740,6 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
     scene.physics_settings = description.physics_settings;
     scene.environment = description.environment;
 
-    // A cooked image in a pack beats reading the source file, which may not exist on this machine.
     if (description.environment.source == EnvironmentSource::hdr_image && description.environment_id.valid()) {
         for (auto const &pack: packs) {
             if (pack == nullptr || !pack->has_environment(description.environment_id)) {
@@ -815,7 +795,6 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
 
         registry.emplace<Components::Model>(entity, Components::Model{.model = handle});
 
-        // StreamedModelTag entities own a model reference, which Scene releases when the entity or tag goes.
         if (has_flag(description.entities[component.entity].flags, SceneEntityFlags::streamed_model)) {
             renderer.retain_model(handle);
             registry.emplace<Components::StreamedModelTag>(entity);
@@ -830,7 +809,6 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         Components::MaterialOverride material_override{.material = material_at(component.material)};
         auto const *entity_model = registry.try_get<Components::Model>(entities[component.entity]);
 
-        // The model's own materials don't exist until it installs; finish this override then.
         if (!component.slots.empty() && entity_model != nullptr && model_streaming(entity_model->model)) {
             DeferredSlotOverride deferred{.entity = entities[component.entity], .model = entity_model->model};
 
@@ -901,8 +879,6 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
                                                Components::Lifetime{.remaining_seconds = component.remaining_seconds});
     }
 
-    // Overrides now hold their own references; drop the creation reference on unnamed materials so they die with
-    // the last entity using them. Named ones stay, owned by their name.
     for (auto const material: anonymous_materials) {
         renderer.release_material(material);
     }
@@ -922,7 +898,6 @@ auto apply_deferred_slot_overrides(Scene &scene, Renderer &renderer, std::vector
         auto const *model =
                 registry.valid(deferred.entity) ? registry.try_get<Components::Model>(deferred.entity) : nullptr;
 
-        // Skipped if the entity went away or was given another model in the meantime.
         if (model != nullptr && model->model == deferred.model) {
             auto const model_materials = renderer.model_materials(deferred.model);
             auto material_override = registry.all_of<Components::MaterialOverride>(deferred.entity)
@@ -955,14 +930,12 @@ auto apply_deferred_slot_overrides(Scene &scene, Renderer &renderer, std::vector
 
 namespace {
 
-    // The part of a save that doesn't touch the Renderer beyond its SamplerStorage's fixed default handles, so it can
-    // run on a background thread.
     auto write_scene_file(SceneDescription const &description, std::vector<std::string> warnings,
                           SamplerStorage &sampler_storage, std::filesystem::path const &path,
                           SceneSaveOptions const &options, std::chrono::steady_clock::time_point start)
             -> std::expected<SceneSaveResult, LbfError>;
 
-} // namespace
+}
 
 auto save_scene(Scene const &scene, Renderer &renderer, EngineModels const &engine_models,
                 std::filesystem::path const &path, SceneSaveOptions const &options)
@@ -989,8 +962,6 @@ auto SceneSaveJob::start(Scene const &scene, Renderer &renderer, EngineModels co
     job.path_ = path;
     job.fingerprint_ = scene_fingerprint(description);
 
-    // std::async rather than thread_pool(): cooking fans out to the pool and waits on it, which would deadlock from
-    // inside a pool worker.
     job.future_ = std::async(std::launch::async, [description = std::move(description),
                                                   warnings = std::move(capture_report.warnings),
                                                   &sampler_storage = renderer.sampler_storage(), path = std::move(path),
@@ -1033,7 +1004,6 @@ namespace {
                 .payload = encode_scene(description),
         });
 
-        // Which engine and format versions wrote this file; informational, never needed to read it.
         {
             auto const metadata = std::format(
                     "writer=lathe;lbf={}.{};scene={};section={};model={};texture={};environment={}", lbf_version_major,
@@ -1099,7 +1069,7 @@ namespace {
         return result;
     }
 
-} // namespace
+}
 
 namespace {
 
@@ -1109,7 +1079,6 @@ namespace {
         SceneDecodeReport decode;
     };
 
-    // File and CPU work only, so it can run off the render thread.
     auto read_scene_file(std::filesystem::path const &path) -> std::expected<ReadScene, LbfError> {
         ZoneScopedNC("read_scene_file", tracy::Color::Goldenrod);
 
@@ -1165,7 +1134,7 @@ namespace {
         }
     }
 
-} // namespace
+}
 
 auto SceneLoadJob::start(std::filesystem::path path) -> SceneLoadJob {
     SceneLoadJob job;
@@ -1282,9 +1251,6 @@ auto load_scene(Scene &scene, Renderer &renderer, EngineModels const &engine_mod
 auto scene_fingerprint(SceneDescription const &description) -> std::uint64_t {
     ZoneScopedNC("scene_fingerprint", tracy::Color::Goldenrod);
 
-    // Each entity is hashed as a one-entity scene holding its own components and copies of what they reference (and
-    // its parent's own data), so the result doesn't depend on entity, model or material order. The sorted per-entity
-    // hashes are then hashed together.
     auto const entity_count = description.entities.size();
     std::vector<SceneDescription> singles(entity_count);
 

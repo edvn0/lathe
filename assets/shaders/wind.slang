@@ -1,8 +1,5 @@
 module wind;
 
-// Foliage sway. The weight comes from local Y (blade base at 0, tip at 1) so bases stay planted; the phase
-// comes from world XZ so neighbours don't move in lockstep. Must be applied identically in forward,
-// depth_prepass and shadow_depth.
 public float2 wind_offset(float3 local_position, float3 world_position, float wind_strength, float time)
 {
     if (wind_strength <= 0.0) {

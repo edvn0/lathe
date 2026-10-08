@@ -11,7 +11,6 @@ namespace Animation {
           translation_(count * joint_count_), rotation_(count * joint_count_), scale_(count * joint_count_),
           scratch_translation_(count * joint_count_), scratch_rotation_(count * joint_count_),
           scratch_scale_(count * joint_count_), palette_(count * joint_count_) {
-        // Valid output before the first update(): everyone stands in the bind pose.
         auto const bind = skeleton.bind_pose().view();
         for (std::size_t i = 0; i < count; ++i) {
             auto const slice = std::span{palette_}.subspan(i * joint_count_, joint_count_);
@@ -43,7 +42,7 @@ namespace Animation {
         for (auto i = begin; i < end; ++i) {
             auto const lod = inputs[i].lod;
             if (lod == Lod::Hold) {
-                pending_dt_[i] = 0.0F; // frozen: don't bank time, or the character would jump when released
+                pending_dt_[i] = 0.0F;
                 continue;
             }
             pending_dt_[i] += dt;
@@ -64,4 +63,4 @@ namespace Animation {
             compute_skinning_palette(skeleton_, pose, std::span{palette_}.subspan(offset, joint_count_));
         }
     }
-} // namespace Animation
+}

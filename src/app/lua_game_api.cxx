@@ -24,9 +24,6 @@
 #include "scene/components.hxx"
 #include "scripting/lua_runtime.hxx"
 
-// Lua errors are longjmps: the functions below keep only trivially destructible locals alive across anything that can
-// raise one (luaL_check*, lua_newuserdatauv, luaL_error).
-
 namespace {
     constexpr char const *entity_meta = "lathe.Entity";
     constexpr char const *model_meta = "lathe.Model";
@@ -51,7 +48,6 @@ namespace {
         return *static_cast<LuaGameHost *>(LuaRuntime::host(state));
     }
 
-    // A scene exists for the duration of every callback that can reach the API.
     auto registry_of(lua_State *state) -> entt::registry & {
         auto *const scene = game_host(state).scene;
 
@@ -88,8 +84,6 @@ namespace {
 
         return entity->id;
     }
-
-    // ---- scene ----------------------------------------------------------------------------------------------------
 
     auto scene_spawn(lua_State *state) -> int {
         auto *const scene = game_host(state).scene;
@@ -138,8 +132,6 @@ namespace {
 
         return 0;
     }
-
-    // ---- entity ---------------------------------------------------------------------------------------------------
 
     auto entity_valid(lua_State *state) -> int {
         auto const *const entity = static_cast<LuaEntity const *>(luaL_checkudata(state, 1, entity_meta));
@@ -195,7 +187,6 @@ namespace {
         return 3;
     }
 
-    // Radians about X, Y and Z.
     auto entity_set_euler(lua_State *state) -> int {
         auto const id = entity_arg(state, 1);
         auto const x = static_cast<float>(luaL_checknumber(state, 2));
@@ -208,7 +199,6 @@ namespace {
         return 0;
     }
 
-    // One number scales uniformly.
     auto entity_set_scale(lua_State *state) -> int {
         auto const id = entity_arg(state, 1);
         auto const x = static_cast<float>(luaL_checknumber(state, 2));
@@ -267,9 +257,6 @@ namespace {
             luaL_Reg{nullptr, nullptr},
     };
 
-    // ---- assets ---------------------------------------------------------------------------------------------------
-
-    // Streams the model in; the handle is usable at once and shows the cube until the real one is installed.
     auto assets_load_model(lua_State *state) -> int {
         auto &host = game_host(state);
         auto const *const text = luaL_checkstring(state, 1);
@@ -304,8 +291,6 @@ namespace {
         return 1;
     }
 
-    // assets.material(name, r, g, b [, roughness [, metallic]]): a flat-coloured material the caller owns a reference
-    // to; give it to entities with set_material, then assets.release_material it.
     auto assets_material(lua_State *state) -> int {
         auto &host = game_host(state);
         auto const *const name = luaL_checkstring(state, 1);
@@ -358,7 +343,6 @@ namespace {
         return 0;
     }
 
-    // Models and textures still loading.
     auto assets_pending(lua_State *state) -> int {
         auto &host = game_host(state);
 
@@ -383,10 +367,6 @@ namespace {
             luaL_Reg{nullptr, nullptr},
     };
 
-    // ---- camera ---------------------------------------------------------------------------------------------------
-
-    // Where the ray through the cursor (normalised device coordinates) meets the horizontal plane at `y`, as x, z; nil
-    // if it misses. Uses the camera the game returned last.
     auto camera_pick_plane(lua_State *state) -> int {
         auto const ndc_x = static_cast<float>(luaL_checknumber(state, 1));
         auto const ndc_y = static_cast<float>(luaL_checknumber(state, 2));
@@ -429,8 +409,6 @@ namespace {
             luaL_Reg{nullptr, nullptr},
     };
 
-    // ---- game -----------------------------------------------------------------------------------------------------
-
     auto game_quit(lua_State *state) -> int {
         if (auto const &request_exit = game_host(state).host.request_exit) {
             request_exit();
@@ -451,8 +429,6 @@ namespace {
             luaL_Reg{nullptr, nullptr},
     };
 
-    // ---- ui -------------------------------------------------------------------------------------------------------
-
     constexpr ImGuiWindowFlags base_window_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
                                                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
                                                    ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoFocusOnAppearing;
@@ -471,9 +447,6 @@ namespace {
         return value;
     }
 
-    // ui.window(id, options, body): body runs between Begin and End, and End is always reached, so an error in the
-    // body can't leave ImGui's stack unbalanced. options: centred, fullscreen, x, y, pivot_x, pivot_y, bg_alpha,
-    // no_inputs.
     auto ui_window(lua_State *state) -> int {
         auto const *const id = luaL_checkstring(state, 1);
 
@@ -554,7 +527,6 @@ namespace {
         return 0;
     }
 
-    // ui.button(label, width, height, font_scale): centred in the window; true on the frame it is pressed.
     auto ui_button(lua_State *state) -> int {
         auto const *const label = luaL_checkstring(state, 1);
         auto const width = static_cast<float>(luaL_optnumber(state, 2, 300.0));
@@ -573,7 +545,6 @@ namespace {
         return 1;
     }
 
-    // A plain, inline button for toolbars and choices; true on the frame it is pressed.
     auto ui_small_button(lua_State *state) -> int {
         lua_pushboolean(state, ImGui::Button(luaL_checkstring(state, 1)) ? 1 : 0);
 
@@ -591,7 +562,6 @@ namespace {
         return 0;
     }
 
-    // An arc that chases its own tail, centred horizontally at the cursor; it takes the space it needs.
     auto ui_spinner(lua_State *state) -> int {
         constexpr int segments = 32;
         constexpr float sweep = 4.8F;
@@ -626,13 +596,13 @@ namespace {
         return 0;
     }
 
-    auto ui_same_line(lua_State * /*state*/) -> int {
+    auto ui_same_line(lua_State * ) -> int {
         ImGui::SameLine();
 
         return 0;
     }
 
-    auto ui_separator(lua_State * /*state*/) -> int {
+    auto ui_separator(lua_State * ) -> int {
         ImGui::Separator();
 
         return 0;
@@ -662,8 +632,6 @@ namespace {
             luaL_Reg{"display_size", &ui_display_size},
             luaL_Reg{nullptr, nullptr},
     };
-
-    // ---- constants ------------------------------------------------------------------------------------------------
 
     struct IntegerConstant {
         char const *name;
@@ -716,15 +684,15 @@ namespace {
         luaL_setfuncs(state, functions.data(), 0);
         lua_setglobal(state, table_name);
     }
-} // namespace
+}
 
 auto open_lua_game_api(LuaRuntime &runtime) -> void {
     auto *const state = runtime.state();
 
     set_library(state, "scene", std::array{luaL_Reg{"spawn", &scene_spawn}, luaL_Reg{"find", &scene_find},
                                            luaL_Reg{"clear", &scene_clear}, luaL_Reg{nullptr, nullptr}});
-    set_library(state, "assets", assets_functions); // paths: ok (the Lua global named assets)
-    set_library(state, "camera", camera_functions); // paths: ok (the Lua global named assets)
+    set_library(state, "assets", assets_functions);
+    set_library(state, "camera", camera_functions);
     set_library(state, "ui", ui_functions);
 
     lua_createtable(state, 0, 3);
@@ -736,7 +704,6 @@ auto open_lua_game_api(LuaRuntime &runtime) -> void {
     set_constants(state, "key", key_constants);
     set_constants(state, "mouse", mouse_constants);
 
-    // Entity: methods behind __index, and a readable name in error messages.
     luaL_newmetatable(state, entity_meta);
     lua_createtable(state, 0, static_cast<int>(entity_methods.size()));
     luaL_setfuncs(state, entity_methods.data(), 0);

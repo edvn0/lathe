@@ -109,7 +109,7 @@ namespace {
                 return VK_IMAGE_ASPECT_COLOR_BIT;
         }
     }
-} // namespace
+}
 
 Image::~Image() { destroy(); }
 
@@ -195,7 +195,6 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
 
     VkResult result = VK_SUCCESS;
     if (create_info.alias.has_value()) {
-        // Memory comes from the caller's block; only the VkImage is ours.
         image.aliased_ = true;
         result = vmaCreateAliasingImage2(context.allocator, create_info.alias->allocation, create_info.alias->offset,
                                          &image_info, &image.image_);
@@ -387,7 +386,6 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
 
 auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
                    ImageMipSource mip_source) -> std::expected<Image, ImageError> {
-    // A provided chain must be exactly every level of a whole number of bytes per texel.
     std::uint32_t chain_texel_bytes = 0;
     if (mip_source == ImageMipSource::provided) {
         auto const texels =
@@ -490,15 +488,13 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
         copy.imageExtent = {.width = create_info.extent.width, .height = create_info.extent.height, .depth = 1};
         vkCmdCopyBufferToImage(buf, staging.buffer, image->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
-        // Generate mips.
         auto mip_width = static_cast<std::int32_t>(create_info.extent.width);
         auto mip_height = static_cast<std::int32_t>(create_info.extent.height);
 
         for (uint32_t i = 1; i < create_info.mip_levels; i++) {
-            // Level i-1 to TRANSFER_SRC_OPTIMAL.
             barrier.subresourceRange.baseMipLevel = i - 1;
             barrier.subresourceRange.levelCount = 1;
-            barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT; // from buffer copy or previous blit
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
             barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
             barrier.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
             barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
@@ -522,7 +518,6 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
             vkCmdBlitImage(buf, image->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image->image(),
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
 
-            // Level i-1 to SHADER_READ_ONLY_OPTIMAL.
             barrier.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
             barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
             barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -535,7 +530,6 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
             mip_height = next_height;
         }
 
-        // The last level.
         barrier.subresourceRange.baseMipLevel = create_info.mip_levels - 1;
         barrier.subresourceRange.levelCount = 1;
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT;
@@ -702,7 +696,6 @@ namespace {
             }
 
             case EXR_PIXEL_UINT: {
-                // OpenEXR UINT channels are integers, not normalized colour.
                 return std::nullopt;
             }
         }
@@ -710,7 +703,7 @@ namespace {
         return std::nullopt;
     }
 
-} // namespace
+}
 
 [[nodiscard]]
 auto DecodedImage::decode_exr(std::string_view path) -> std::optional<DecodedImage> {
@@ -929,10 +922,7 @@ auto DecodedImage::decode_stbi(std::string_view path, ImageColourSpace colour_sp
     };
 }
 
-
 namespace {
-    // Block decoders for the legacy DDS fourCCs (DXT1/DXT5/ATI2), base mip only. The texture pipeline re-encodes and
-    // mips the result, so only the pixels matter here.
 
     auto expand_565(std::uint16_t packed) noexcept -> std::array<std::uint8_t, 3> {
         auto const r = static_cast<std::uint32_t>((packed >> 11) & 0x1FU);
@@ -950,7 +940,6 @@ namespace {
         return value;
     }
 
-    // Writes one 4x4 colour block (BC1 layout) as RGBA8 into `out`; `allow_alpha` enables BC1's 1-bit punch-through.
     auto decode_bc1_colour(std::byte const *block, bool allow_alpha, std::array<std::uint8_t, 64> &out) noexcept -> void {
         auto const c0 = read_le<std::uint16_t>(block);
         auto const c1 = read_le<std::uint16_t>(block + 2);
@@ -982,7 +971,6 @@ namespace {
         }
     }
 
-    // BC4-style single-channel block: 8 bytes -> 16 values.
     auto decode_bc4_block(std::byte const *block, std::array<std::uint8_t, 16> &out) noexcept -> void {
         auto const a0 = static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(block[0]));
         auto const a1 = static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(block[1]));
@@ -1046,7 +1034,7 @@ namespace {
 
         return bytes;
     }
-} // namespace
+}
 
 auto DecodedImage::decode_dds(std::string_view path, ImageColourSpace colour_space) -> std::optional<DecodedImage> {
     auto const bytes = read_whole_file(path);
@@ -1147,13 +1135,11 @@ auto DecodedImage::decode_dds(std::string_view path, ImageColourSpace colour_spa
 }
 
 namespace {
-    // `transparent` texels have alpha below half, `partial` ones are neither (nearly) clear nor (nearly) solid.
     auto alpha_coverage(std::size_t transparent, std::size_t partial, std::size_t total) noexcept -> AlphaCoverage {
         if (transparent == 0) {
             return AlphaCoverage::opaque;
         }
 
-        // Cut-outs (leaves, grilles) are almost all clear or solid with a thin soft edge; real translucency isn't.
         constexpr double max_mask_partial_fraction = 0.12;
 
         return static_cast<double>(partial) / static_cast<double>(total) <= max_mask_partial_fraction
@@ -1171,7 +1157,6 @@ auto classify_dds_alpha(std::string_view path) -> std::optional<AlphaCoverage> {
 
     auto const *header = bytes->data() + 4;
 
-    // Only BC3 carries a full alpha channel; the other legacy formats here have none (BC1's 1-bit alpha is not used).
     if (read_le<std::uint32_t>(header + 80) != make_fourcc('D', 'X', 'T', '5')) {
         return AlphaCoverage::opaque;
     }
@@ -1185,8 +1170,8 @@ auto classify_dds_alpha(std::string_view path) -> std::optional<AlphaCoverage> {
         return std::nullopt;
     }
 
-    std::size_t transparent = 0; // alpha below half
-    std::size_t partial = 0; // neither (nearly) clear nor (nearly) solid
+    std::size_t transparent = 0;
+    std::size_t partial = 0;
 
     for (std::size_t block = 0; block < blocks; ++block) {
         std::array<std::uint8_t, 16> alpha{};
@@ -1217,7 +1202,6 @@ auto classify_encoded_alpha(std::span<std::byte const> encoded) -> std::optional
         return std::nullopt;
     }
 
-    // No alpha channel in the file, so nothing to decode.
     if (channels == 1 || channels == 3) {
         return AlphaCoverage::opaque;
     }
@@ -1240,7 +1224,6 @@ auto classify_encoded_alpha(std::span<std::byte const> encoded) -> std::optional
 
     stbi_image_free(pixels);
 
-    // Unlike a legacy DDS, any texel short of solid counts here: a few translucent decals keep their material blended.
     if (transparent == 0 && partial != 0) {
         return AlphaCoverage::blend;
     }
@@ -1256,7 +1239,6 @@ auto DecodedImage::load_from_file(std::string_view path, ImageColourSpace colour
     auto const extension = lowercase_extension(path);
 
     if (extension == ".exr") {
-        // OpenEXR data is linear, so never use an sRGB format.
         if (colour_space == ImageColourSpace::srgb) {
             warn("EXR '{}' requested as sRGB; EXR texture data is loaded as linear", path);
         }

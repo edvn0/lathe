@@ -20,7 +20,6 @@ namespace {
         return {begin, begin + text.size()};
     }
 
-    // Answers every request from `respond` instead of the network.
     class FakeHandler final : public IHttpMessageHandler {
     public:
         using Responder = std::function<HttpResult(HttpRequestMessage const &)>;
@@ -47,7 +46,7 @@ namespace {
         return std::filesystem::temp_directory_path() / "lathe_http_client_test" / name;
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("sha256_hex: known vectors") {
@@ -174,7 +173,6 @@ TEST_SUITE("unit") {
         REQUIRE(right.has_value());
         CHECK(std::filesystem::exists(destination));
 
-        // Already present with the right hash: no further request.
         auto const calls_before = calls.load();
         REQUIRE(client.get_file_async({.uri = "https://example.test/f", .destination = destination, .sha256 = good_hash})
                         .get()

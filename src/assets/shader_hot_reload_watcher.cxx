@@ -10,7 +10,7 @@
 struct ShaderHotReloadWatcher::Listener final : efsw::FileWatchListener {
     explicit Listener(ShaderChangeQueue &queue) noexcept : change_queue(&queue) {}
 
-    auto handleFileAction(efsw::WatchID /*watch_id*/, std::string const &directory, std::string const &filename,
+    auto handleFileAction(efsw::WatchID , std::string const &directory, std::string const &filename,
                           efsw::Action action, std::string old_filename) -> void override {
         switch (action) {
             case efsw::Actions::Add:
@@ -67,8 +67,7 @@ auto ShaderHotReloadWatcher::start(ShaderChangeQueue &change_queue, std::span<st
             continue;
         }
 
-        // recursive, to include subfolders
-        auto const watch_id = watcher_->addWatch(directory.string(), listener_.get(), /*recursive*/ true);
+        auto const watch_id = watcher_->addWatch(directory.string(), listener_.get(),  true);
 
         if (watch_id < 0) {
             error("Shader hot-reload: failed to watch directory: {}", directory.string());

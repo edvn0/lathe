@@ -7,8 +7,6 @@
 #include <vector>
 
 namespace Animation {
-    // Plays `source` at one fixed phase (a held pose). Used for states that have no clip of their own, e.g. the
-    // airborne poses taken from a single jump clip.
     class FrozenClip final : public Clip {
     public:
         FrozenClip(Clip const &source, float phase) : source_{&source}, phase_{phase} {}
@@ -21,7 +19,6 @@ namespace Animation {
         float phase_;
     };
 
-    // Plays `source` backwards.
     class ReversedClip final : public Clip {
     public:
         explicit ReversedClip(Clip const &source) : source_{&source} {}
@@ -33,23 +30,19 @@ namespace Animation {
         Clip const *source_;
     };
 
-    // Skeleton-agnostic source clips for the locomotion state machine; any may be null (see make below).
     struct LocomotionClipSet {
         Clip const *idle{nullptr};
         Clip const *walk{nullptr};
         Clip const *run{nullptr};
-        Clip const *jump{nullptr}; // one clip; rise/apex/fall are held poses taken from it
-        Clip const *lie_down{nullptr}; // standing -> lying; prone is its last frame, getting up plays it reversed
-        float walk_stride{1.6F};  // metres per cycle
+        Clip const *jump{nullptr};
+        Clip const *lie_down{nullptr};
+        float walk_stride{1.6F};
         float run_stride{3.6F};
         float jump_rise_phase{0.3F};
         float jump_apex_phase{0.5F};
         float jump_fall_phase{0.7F};
     };
 
-    // Builds the StateTable for arbitrary clips (imported or procedural). Missing clips fall back: run -> walk ->
-    // idle, jump -> idle, lie_down -> idle (so the character just stays standing when prone). `idle` is required.
-    // The table points at clips owned by this object and at the set's clips, which must outlive it.
     class LocomotionStateTable {
     public:
         explicit LocomotionStateTable(LocomotionClipSet const &clips);
@@ -65,4 +58,4 @@ namespace Animation {
         std::vector<std::unique_ptr<Clip>> owned_;
         StateTable table_{};
     };
-} // namespace Animation
+}

@@ -10,13 +10,10 @@
 namespace {
 
     [[noreturn]] auto abort_out_of_memory(std::size_t size) -> void {
-        // std::println can allocate, which would recurse into operator new.
         std::fprintf(stderr, "out of memory allocating %zu bytes\n", size); // NOLINT(modernize-use-std-print)
         std::abort();
     }
 
-    // Each allocation records its size and whether it was tracked, so frees are correct whichever delete overload
-    // runs and whichever thread frees it.
     struct AllocHeader {
         std::size_t size;
         bool tracked;
@@ -64,7 +61,7 @@ namespace {
         std::free(raw);
     }
 
-} // namespace
+}
 
 auto operator new(std::size_t size) -> void * { return allocate(size); }
 
@@ -74,6 +71,6 @@ auto operator delete(void *ptr) noexcept -> void { deallocate(ptr); }
 
 auto operator delete[](void *ptr) noexcept -> void { deallocate(ptr); }
 
-auto operator delete(void *ptr, std::size_t /*free_size*/) noexcept -> void { deallocate(ptr); }
+auto operator delete(void *ptr, std::size_t ) noexcept -> void { deallocate(ptr); }
 
-auto operator delete[](void *ptr, std::size_t /*free_size*/) noexcept -> void { deallocate(ptr); }
+auto operator delete[](void *ptr, std::size_t ) noexcept -> void { deallocate(ptr); }

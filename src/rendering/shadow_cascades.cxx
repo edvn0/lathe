@@ -7,8 +7,6 @@
 
 namespace {
 
-    // View-space bounding sphere of the frustum slice [near_distance, far_distance]. A sphere keeps the cascade
-    // rotation-invariant, so snapping to texels doesn't shimmer.
     struct FrustumSliceSphere {
         float centre_distance = 0.0F;
         float radius = 0.0F;
@@ -60,7 +58,7 @@ namespace {
         return bounds;
     }
 
-} // namespace
+}
 
 auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowCascades {
     ShadowCascades result{};
@@ -102,7 +100,6 @@ auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowC
         auto const z_near = snapped_z - sphere.radius - input.settings.caster_extrusion;
         auto const z_far = snapped_z + sphere.radius;
 
-        // Near/far swapped to bake reverse-Z into the matrix.
         auto const projection = glm::orthoLH_ZO(snapped_x - sphere.radius, snapped_x + sphere.radius,
                                                 snapped_y - sphere.radius, snapped_y + sphere.radius, z_far, z_near);
 
@@ -118,7 +115,6 @@ auto fit_shadow_cascades(ShadowCascadeFitInput const &input) noexcept -> ShadowC
 }
 
 auto extract_frustum_planes(glm::mat4 const &view_projection) noexcept -> std::array<glm::vec4, 6> {
-    // glm::mat4's operator[] returns columns, so gather rows manually.
     auto const row = [&](int index) noexcept {
         return glm::vec4{view_projection[0][index], view_projection[1][index], view_projection[2][index],
                          view_projection[3][index]};
@@ -129,13 +125,12 @@ auto extract_frustum_planes(glm::mat4 const &view_projection) noexcept -> std::a
     auto const row2 = row(2);
     auto const row3 = row(3);
 
-    // Each plane is one of -w <= x <= w, -w <= y <= w, 0 <= z <= w rearranged, so the normal faces inward.
     return std::array<glm::vec4, 6>{
-            normalize_plane(row3 + row0), // left:   x >= -w
-            normalize_plane(row3 - row0), // right:  x <= w
-            normalize_plane(row3 + row1), // bottom: y >= -w
-            normalize_plane(row3 - row1), // top:    y <= w
-            normalize_plane(row2), // near:   z >= 0
-            normalize_plane(row3 - row2), // far:    z <= w
+            normalize_plane(row3 + row0),
+            normalize_plane(row3 - row0),
+            normalize_plane(row3 + row1),
+            normalize_plane(row3 - row1),
+            normalize_plane(row2),
+            normalize_plane(row3 - row2),
     };
 }

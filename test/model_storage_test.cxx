@@ -19,7 +19,7 @@ namespace {
         return data;
     }
 
-} // namespace
+}
 
 TEST_CASE("A pending model borrows its fallback's meshes and holds a reference on it") {
     auto storage = make_storage();
@@ -48,7 +48,6 @@ TEST_CASE("Upgrading a pending model keeps its references and stops borrowing") 
     auto const pending = storage.create_pending_model(*fallback);
     REQUIRE(pending.has_value());
 
-    // A second caller retained the pending handle before it installed.
     ++storage.get(*pending)->ref_count;
 
     auto const upgraded = storage.upgrade_pending_model(*pending, make_slot_data(5));

@@ -59,7 +59,7 @@ namespace frame_graph {
             return info;
         }
 
-    } // namespace
+    }
 
     auto physical_resources_of(GraphDesc const &graph) -> PhysicalResources {
         auto resources = PhysicalResources{};
@@ -218,4 +218,4 @@ namespace frame_graph {
         return storage;
     }
 
-} // namespace frame_graph
+}

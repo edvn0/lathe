@@ -28,8 +28,6 @@ struct IndexSlice {
     VkIndexType index_type = VK_INDEX_TYPE_UINT32;
 };
 
-// Meshlet split of one IndexSlice: `descriptors` holds meshlet_count GpuMeshlets, `data` their vertex indices
-// and packed triangles. Scene passes draw from this; the IndexSlice is kept for triangle counts and LODs.
 struct MeshletSlice {
     GeometrySlice descriptors{};
     GeometrySlice data{};
@@ -46,8 +44,6 @@ struct MeshGeometry {
     IndexSlice indices{};
     MeshletSlice meshlets{};
 
-    // GpuSkinVertex (gpu/skinning.hxx) per vertex, parallel to `vertices`; shared by every LOD like `vertices`.
-    // Invalid for unskinned geometry.
     GeometrySlice skin{};
 
     [[nodiscard]]

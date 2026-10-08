@@ -35,11 +35,10 @@ namespace {
         return accumulator * prime_1 + prime_4;
     }
 
-} // namespace
+}
 
 namespace {
 
-    // Folds the tail (< 32 bytes) into `hash` and applies the final avalanche.
     [[nodiscard]] auto finish(std::uint64_t hash, std::byte const *cursor, std::byte const *end) noexcept
             -> std::uint64_t {
         while (end - cursor >= 8) {
@@ -78,7 +77,7 @@ namespace {
         return hash;
     }
 
-} // namespace
+}
 
 Xxh64Stream::Xxh64Stream(std::uint64_t seed) noexcept :
     seed_(seed), lanes_{seed + prime_1 + prime_2, seed + prime_2, seed, seed - prime_1} {}

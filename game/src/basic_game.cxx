@@ -99,8 +99,6 @@ namespace {
         return glm::angleAxis(std::acos(dot), axis);
     }
 
-    // Uniform Catmull-Rom through `control`, sampled about every `step` metres. Closed loops don't repeat the first
-    // point at the end.
     auto sample_spline(std::span<glm::vec2 const> control, bool closed, float step) -> std::vector<glm::vec2> {
         auto const count = static_cast<int>(control.size());
         auto const point = [&](int index) {
@@ -133,18 +131,17 @@ namespace {
         return samples;
     }
 
-} // namespace
+}
 
 namespace {
 
-    // Pinned to a commit so the bytes can't change underneath the hash.
     constexpr std::string_view helmet_url =
             "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/"
             "5bad5aaa0bbb5d0f9cdc934e626f27d0df1e79b8/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb";
     constexpr std::string_view helmet_sha256 = "a1e3b04de97b11de564ce6e53b95f02954a297f0008183ac63a4f5974f6b32d8";
     auto helmet_path() -> CachePath { return cache_path("downloads/damaged_helmet.glb"); }
 
-} // namespace
+}
 
 auto BasicGame::request_helmet() -> void {
     if (helmet_download_.valid() || helmet_model_.valid()) {
@@ -206,7 +203,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     scene.get_registry().clear();
     engine_models_ = engine_models;
 
-    // Repopulating wipes the registry; a helmet that already arrived is re-spawned, otherwise the download runs.
     if (helmet_model_.valid()) {
         spawn_helmet(scene, renderer);
     } else {
@@ -280,12 +276,11 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     player.emplace<Components::Transform>(
             Components::Transform{.position = glm::vec3{0.0F, 3.0F, 0.0F}, .scale = capsule_scale});
     player.emplace<Components::RigidBody>(
-            Components::RigidBody::make_capsule(physics_radius, physics_height, /*mass=*/80.0F));
+            Components::RigidBody::make_capsule(physics_radius, physics_height, 80.0F));
     player.emplace<Components::PlayerTag>();
     player.emplace<Components::Model>(Components::Model{.model = engine_models.capsule});
     player_entity_ = player;
 
-    // Enemies share one EnemyAIScript instance; each carries its own CircularMotion.
     constexpr auto enemy_count = 10U;
     constexpr float enemy_orbit_radius = 6.0F;
     constexpr float enemy_capsule_radius = 0.3F;
@@ -326,7 +321,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         }
     }
 
-    // load_model() takes a reference on every call, including cache hits.
     auto const release_previous = [&](ModelHandle previous) -> void {
         if (previous.valid() && previous != engine_models.cube) {
             renderer.release_model(previous);
@@ -339,8 +333,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     auto const cube_bounds = renderer.model_bounds(cube_model_);
     cube_half_extents_ = cube_bounds.has_value() ? (cube_bounds->second - cube_bounds->first) * 0.5F : glm::vec3{0.5F};
 
-    // Kept so houses, trees and grass can sit on the generated surface. The mesh itself streams through
-    // terrain_create_info().
     terrain_params_ = TerrainParams{
             .samples_x = 129,
             .samples_z = 129,
@@ -353,7 +345,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .persistence = 0.5F,
             .seed = 1337U,
             .uv_scale = 0.08F,
-            // Kept outside the village ring (radius 14) so the houses stay on gentle ground.
             .hills =
                     {
                             {.world_x = 48.0F, .world_z = -30.0F, .height = 16.0F, .radius = 14.0F},
@@ -368,10 +359,8 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                             {.world_x = -92.0F, .world_z = 72.0F, .height = 13.0F, .radius = 12.0F},
                             {.world_x = 58.0F, .world_z = 88.0F, .height = 12.0F, .radius = 12.0F},
                             {.world_x = -62.0F, .world_z = -88.0F, .height = 19.0F, .radius = 16.0F},
-                            // A proper mountain, well beyond the roads.
                             {.world_x = 125.0F, .world_z = 70.0F, .height = 40.0F, .radius = 28.0F},
                     },
-            // Must cover the noise (+/- amplitude) and the tallest hill above.
             .height_range_min = -1.6F,
             .height_range_max = 44.0F,
     };
@@ -381,7 +370,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     auto &samplers = renderer.sampler_storage();
     auto &streamer = renderer.texture_streamer();
 
-    // Handles render their fallback until the compressed texture streams in.
     auto const terrain_normal_index =
             streamer.request(images, data_path("assets/textures/terrain/terrain_normal.exr"), TextureRole::normal_map,
                              images.flat_normal(), FlyString{"terrain.normal"});
@@ -393,7 +381,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             streamer.request(images, data_path("assets/textures/terrain/terrain_roughness.png"), TextureRole::generic,
                              images.metallic_roughness(), FlyString{"terrain.roughness"});
 
-    // The terrain keeps the material it was created with, so it's made once.
     if (!terrain_material_.valid()) {
         auto const terrain_material = renderer.create_material(
                 MaterialCreateInfo{
@@ -405,7 +392,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                         .emissive_texture = images.emissive(),
                         .sampler = samplers.linear_repeat(),
                 },
-                // Named so the editor can offer it.
                 "terrain");
 
         if (terrain_material) {
@@ -417,10 +403,8 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
     constexpr auto village_radius = 14.0F;
 
-    // Their creation references are dropped at the end, leaving the entities as the only owners.
     std::vector<MaterialHandle> scene_materials;
 
-    // Houses and trees are built from engine primitives; walls, doorways and eaves give GTAO corners to shade.
     auto const flat_material = [&](glm::vec3 const &colour) -> MaterialHandle {
         auto material = renderer.create_material(MaterialCreateInfo{
                 .base_colour_factor = glm::vec4{colour, 1.0F},
@@ -440,8 +424,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         return material.value();
     };
 
-    // `parent` only groups the part in the Hierarchy. `position` stays world-space and physics ignores Parent, so
-    // the parent must keep an identity transform.
     auto const add_static_box = [&](std::string const &name, glm::vec3 const &position, glm::vec3 const &half_extents,
                                     MaterialHandle material, entt::entity parent = entt::null) {
         auto entity = GeneratedEntity{&scene, "{}", name};
@@ -515,11 +497,9 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
 
         auto const part_name = [&](char const *part) { return std::format("house_{}_{}", house_index, part); };
 
-        // Must keep an identity Transform; see add_static_box.
         auto house_entity = GeneratedEntity{&scene, "house_{}", house_index};
         house_entity.emplace<Components::Transform>();
 
-        // The front wall is split to leave a doorway.
         add_static_box(part_name("wall_back"), base + glm::vec3{0.0F, half_h, -half_d},
                        {half_w, half_h, wall_thickness * 0.5F}, wall_material, house_entity);
         add_static_box(part_name("wall_left"), base + glm::vec3{-half_w, half_h, 0.0F},
@@ -598,9 +578,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     }
 
     {
-        // A dense scan (~189K triangles) shown with its meshlets colour-coded. The flag goes on the model's own
-        // material so its baked occlusion stays; it is registered by name so the editor's material panel can toggle
-        // it.
         constexpr auto skull_position = glm::vec3{0.0F, 0.0F, -8.5F};
         constexpr float skull_scale = 8.0F;
 
@@ -609,7 +586,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         release_previous(previous_skull_model);
         auto const skull_model = skull_model_;
 
-        // On a failed load this is the shared engine cube, whose materials must not be touched.
         if (skull_model != engine_models.cube) {
             for (auto const material: renderer.model_materials(skull_model)) {
                 auto const *source = renderer.material_storage().create_info(material);
@@ -625,7 +601,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                     error("Could not enable meshlet colours on the skull material: {}", describe(updated.error()));
                 }
 
-                // The model is cached across repopulates, so its material may already be registered.
                 auto &named_materials = renderer.assets().materials();
                 if (named_materials.name_of(material).empty()) {
                     static_cast<void>(named_materials.register_asset("scattering_skull", material));
@@ -633,7 +608,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             }
         }
 
-        // The model's lowest point is at y = 0; sink it slightly so terrain bumps don't leave it floating.
         auto const base_y = scene.physics_settings.ground_y +
                             sample_terrain_height(terrain_params_, skull_position.x, skull_position.z) - 0.1F;
 
@@ -681,8 +655,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
         });
     }
 
-    // Roads draped over the terrain (hills included), each a ribbon mesh with lamp posts along it. The lamps are the
-    // scene's point lights. Spurs start on a ring and climb the hills.
     {
         struct RoadSpec {
             std::vector<glm::vec2> control;
@@ -711,7 +683,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             roads.push_back(std::move(inner));
         }
 
-        // Spurs: the first point sits on the outer ring (40, 0), (7, -40) and (-38, 14) region.
         roads.push_back(
                 {.control = {{-38.0F, 14.0F}, {-43.0F, 29.0F}, {-55.0F, 37.0F}, {-66.0F, 30.0F}, {-60.0F, 20.0F}},
                  .closed = false,
@@ -726,7 +697,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                          .width = 4.0F,
                          .lamp_colour = {0.75F, 0.5F, 1.0F}});
 
-        constexpr float road_lift = 0.15F; // above the terrain, which coarse LODs can round above the road
+        constexpr float road_lift = 0.15F;
         constexpr float lamp_spacing = 7.0F;
         constexpr float pole_height = 4.5F;
         constexpr float lamp_radius = 0.22F;
@@ -780,7 +751,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                                                   : samples[static_cast<std::size_t>(std::max(i - 1, 0))];
                 return glm::normalize(next - previous);
             };
-            // Perpendicular so the last column is on the right, which faces the ribbon up.
             auto const across_at = [&](int i) {
                 auto const forward = forward_at(i);
                 return glm::vec2{-forward.y, forward.x};
@@ -790,7 +760,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             std::vector<glm::vec3> grid;
             grid.reserve(static_cast<std::size_t>(count + 1) * 3U);
 
-            // A closed loop ends by repeating its first row.
             for (int i = 0; i < count + (road.closed ? 1 : 0); ++i) {
                 auto const index = i % count;
                 auto const centre = samples[static_cast<std::size_t>(index)];
@@ -826,7 +795,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                         Components::MaterialOverride{.material = road_material});
             }
 
-            // Lamps are grouped under one identity-transform entity for the Hierarchy.
             auto const lamp_group = GeneratedEntity{&scene, "road_{}_lamps", road_index};
             lamp_group.emplace<Components::Transform>();
 
@@ -900,7 +868,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .wind_strength = 0.28F,
             .max_shadow_cascade = GpuMaterial::no_shadow_cascade,
     };
-    // Blades up close, alpha-tested cards from grass_clump_card_lod on; see grass_materials().
     if (auto const materials = grass_materials(renderer, engine_models, grass_material_info_, grass_materials_);
         materials) {
         grass_materials_ = *materials;
@@ -909,8 +876,6 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     }
 
     if (grass_materials_.blades.valid()) {
-        // One entity owns every blade's transform; per-blade entities made spawning, iteration and the play() clone
-        // expensive.
         auto const grass_field_entity = GeneratedEntity{&scene, "grass_field"};
         grass_field_entity.emplace<Components::InstancedModel>(Components::InstancedModel{
                 .model = engine_models.grass_clump,
@@ -944,7 +909,6 @@ auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
     std::uniform_real_distribution<float> spawn_roll(0.0F, 1.0F);
 
     std::vector<glm::mat4> grass_transforms;
-    // Upper bound; blotchiness only removes blades.
     grass_transforms.reserve(static_cast<std::size_t>(grass_cells) * static_cast<std::size_t>(grass_cells));
 
     for (auto cell_x = 0; cell_x < grass_cells; ++cell_x) {
@@ -987,12 +951,10 @@ auto BasicGame::rebuild_grass_field(Scene &scene) -> void {
     grass_field_blade_count_ = static_cast<std::uint32_t>(grass_transforms.size());
     auto &field = registry.get<Components::InstancedModel>(grass_field_entity_);
     field.transforms = std::move(grass_transforms);
-    // The renderer keeps the old transforms on the GPU under the old revision.
     field.touch();
 }
 
 auto BasicGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
-    // Enemies need their Script and CircularMotion in the runtime scene to keep moving.
     clone_editor_into_runtime<Components::Script, Components::CircularMotion>(editor_scene, runtime_scene);
 }
 
@@ -1008,7 +970,6 @@ auto BasicGame::on_ui(Scene &scene, Renderer &renderer) -> void {
         material_changed |= ImGui::ColorEdit3("Colour", &grass_material_info_.base_colour_factor.x);
         material_changed |= ImGui::SliderFloat("Wind strength", &grass_material_info_.wind_strength, 0.0F, 2.0F);
 
-        // The cards are the same grass from further away, so both materials follow the look.
         if (material_changed) {
             auto const result = grass_materials(renderer, engine_models_, grass_material_info_, grass_materials_);
 
@@ -1079,7 +1040,7 @@ auto BasicGame::on_update(Scene &scene, float delta_time) -> void {
             physics_world.is_grounded(registry, player_entity_, capsule_half_height, body.capsule_radius);
 
     if (player_controller_.consumes_jump() && is_grounded) {
-        constexpr float jump_velocity = 6.5F; // tuned to gravity
+        constexpr float jump_velocity = 6.5F;
         physics_world.jump(registry, player_entity_, jump_velocity);
     }
 
@@ -1104,17 +1065,17 @@ auto BasicGame::on_update(Scene &scene, float delta_time) -> void {
                           speed_factor, delta_time, occlusion_query);
 }
 
-auto BasicGame::on_key_pressed(Scene & /*scene*/, KeyPressedEvent const &event) -> void {
+auto BasicGame::on_key_pressed(Scene & , KeyPressedEvent const &event) -> void {
     player_controller_.on_key_pressed(event.key);
 }
 
-auto BasicGame::on_key_released(Scene & /*scene*/, KeyReleasedEvent const &event) -> void {
+auto BasicGame::on_key_released(Scene & , KeyReleasedEvent const &event) -> void {
     player_controller_.on_key_released(event.key);
 }
 
-auto BasicGame::on_mouse_moved(Scene & /*scene*/, MouseMovedEvent const &event) -> void {
+auto BasicGame::on_mouse_moved(Scene & , MouseMovedEvent const &event) -> void {
     player_controller_.on_mouse_moved(static_cast<float>(event.delta_x), static_cast<float>(event.delta_y),
-                                      /*look_enabled=*/true);
+                                      true);
 }
 
 auto BasicGame::on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void {
@@ -1129,7 +1090,7 @@ auto BasicGame::on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent co
     }
 }
 
-[[nodiscard]] auto BasicGame::camera(Scene const & /*scene*/, float aspect_ratio) const -> CameraParams {
+[[nodiscard]] auto BasicGame::camera(Scene const & , float aspect_ratio) const -> CameraParams {
     return CameraParams{
             .view = player_camera_.view(),
             .projection = player_camera_.projection(aspect_ratio),
@@ -1139,12 +1100,7 @@ auto BasicGame::on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent co
     };
 }
 
-[[nodiscard]] auto BasicGame::terrain_create_info(Renderer & /*renderer*/) -> std::optional<TerrainWorldCreateInfo> {
-    // on_populate() has already set terrain_params_ and terrain_material_.
-    //
-    // The defaults assume a far larger world: the quadtree keeps ~64 LOD0 chunks around the camera regardless of
-    // view_distance, over the default 48 slots. Shrink view_distance to this terrain and give LOD0 headroom for
-    // the eviction grace period.
+[[nodiscard]] auto BasicGame::terrain_create_info(Renderer & ) -> std::optional<TerrainWorldCreateInfo> {
     return TerrainWorldCreateInfo{
             .params = terrain_params_,
             .lod_settings = TerrainLodSettings{.view_distance = 512.0F},
@@ -1169,7 +1125,7 @@ auto BasicGame::shoot_bullet(Scene &scene, std::size_t n) -> void {
     constexpr auto bullet_mass = 0.2F;
     constexpr auto bullet_lifetime_seconds = 3.0F;
     constexpr auto max_aim_distance = 1000.0F;
-    constexpr auto player_eye_height = 1.5F; // above the player's base position
+    constexpr auto player_eye_height = 1.5F;
 
     auto const &position = ReadOnlyEntity{&scene, player_entity_}.get<Components::Transform>().position;
     auto const muzzle_position = position + glm::vec3{0.0F, player_eye_height, 0.0F};
@@ -1209,8 +1165,6 @@ auto BasicGame::shoot_bullet(Scene &scene, std::size_t n) -> void {
 }
 
 auto BasicGame::benchmark_camera_path() const -> std::vector<CameraKeyframe> {
-    // A loop around the village mixing grass-level shots, close-ups against walls and canopies, and high overviews.
-    // Heights stay above the village-area noise (+1.6 m); the hills sit well clear of this loop.
     return {
             {.position = {0.0F, 2.2F, 6.0F}, .target = {0.0F, 2.0F, -10.0F}},
             {.position = {-6.0F, 2.0F, 2.0F}, .target = {-10.0F, 1.5F, -8.0F}},

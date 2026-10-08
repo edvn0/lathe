@@ -35,7 +35,7 @@ namespace {
         return static_cast<VkDeviceSize>(capacity) * stride;
     }
 
-} // namespace
+}
 
 MaterialStorage::MaterialStorage(MaterialStorage &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), slots_(std::move(other.slots_)),
@@ -58,7 +58,6 @@ auto MaterialStorage::operator=(MaterialStorage &&other) noexcept -> MaterialSto
 
 auto MaterialStorage::create(VulkanContext &context, MaterialStorageCreateInfo const &create_info)
         -> std::expected<MaterialStorage, MaterialStorageError> {
-    // Slot zero is reserved for the default material.
     if (create_info.capacity < 2) {
         return std::unexpected(make_error(MaterialStorageErrorType::invalid_argument));
     }
@@ -108,7 +107,6 @@ auto MaterialStorage::create(VulkanContext &context, MaterialStorageCreateInfo c
     storage.upload_buffer_ = std::move(*upload_buffer);
     storage.slots_ = ObjectPool<MaterialSlotData, 0>::create(create_info.capacity);
 
-    // The pool's first allocation is always index 0, generation 1. It is never released.
     auto &default_slot = storage.slots_.allocate()->second;
 
     default_slot.source = MaterialCreateInfo{};
@@ -192,7 +190,6 @@ auto MaterialStorage::destroy_material(MaterialHandle handle) -> std::expected<v
         return {};
     }
 
-    // release() leaves the payload as-is, so clear the GPU data before freeing the slot.
     slot->material = GpuMaterial{};
     slot->source = MaterialCreateInfo{};
     slot->ref_count = 0;

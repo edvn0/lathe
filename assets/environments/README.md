@@ -1,6 +1,6 @@
 # Environments
 
-HDR cubemaps for image-based lighting and the skybox (see `docs/ibl-and-skybox.md`).
+HDR cubemaps for image-based lighting and the skybox.
 
 | File | Source | License |
 | --- | --- | --- |

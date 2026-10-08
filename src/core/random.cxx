@@ -4,7 +4,7 @@ namespace {
 
     std::optional<std::uint32_t> g_fixed_seed;
 
-} // namespace
+}
 
 auto set_fixed_random_seed(std::optional<std::uint32_t> seed) noexcept -> void { g_fixed_seed = seed; }
 

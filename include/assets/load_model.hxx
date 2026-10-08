@@ -61,7 +61,7 @@ struct ModelCpuLight {
     ModelLightType type = ModelLightType::point;
 
     glm::vec3 position{0.0F};
-    glm::vec3 direction{0.0F, -1.0F, 0.0F}; // world-space, only meaningful for spot
+    glm::vec3 direction{0.0F, -1.0F, 0.0F};
 
     glm::vec3 colour{1.0F};
     float intensity = 1.0F;
@@ -82,11 +82,8 @@ struct Model {
 
     std::vector<ModelCpuLight> lights{};
 
-    // Skeleton + clips when any primitive is skinned, else null. Reachable via Renderer::model_animation().
     std::shared_ptr<ModelAnimationData const> animation;
 
-    // Model-space distance by which skinned vertices may leave their rest pose (already folded into the
-    // bounds above and every skinned submesh's bounds/meshlet radii). 0 for unskinned models.
     float skin_inflate = 0.0F;
 };
 
@@ -111,8 +108,6 @@ struct ModelLoadError {
     std::optional<ErrorCause> cause{std::nullopt};
 };
 
-// The material slot a glTF texture was first resolved into. Decides its TextureRole (colour/generic -> BC7,
-// normal -> BC5) and the default it renders as while pending. The first slot to reference an image wins.
 enum class ModelTextureSlot : std::uint8_t {
     base_colour,
     normal,
@@ -121,17 +116,12 @@ enum class ModelTextureSlot : std::uint8_t {
     emissive,
 };
 
-// Produces an already block-compressed texture, e.g. a TEXR chunk read from an asset pack. Runs on
-// thread_pool(), so it must be thread-safe and must not block on the pool.
 using CookedTextureLoader = std::function<std::expected<CompressedTexture, TexturePipelineError>()>;
 
-// An image not yet decoded or uploaded. Exactly one of `path` (external file, streamed from disk), `encoded`
-// (embedded in the glTF) and `cooked` (pre-compressed, skips the texture pipeline) is set.
 struct ModelCpuImageSource {
     std::optional<AssetPath> path;
     std::vector<std::byte> encoded;
     CookedTextureLoader cooked;
-    // Identifies the image for de-duplication: required with `encoded` and `cooked`, ignored with `path`.
     std::string cache_key;
     ModelTextureSlot slot = ModelTextureSlot::base_colour;
     FlyString debug_name;
@@ -159,29 +149,19 @@ struct ModelCpuMaterial {
 
 struct ModelCpuPrimitive {
     std::vector<ModelVertex> vertices;
-    std::vector<std::uint32_t> indices; // LOD0, full detail
+    std::vector<std::uint32_t> indices;
 
-    // Simplified index buffers for LOD1..LOD(lod_count-1), sharing `vertices`. nullopt means no distinct
-    // simplification; the upload reuses the previous level's buffer.
     std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1> reduced_indices{};
 
     std::optional<std::uint32_t> material_index;
 
-    // GPU-ready data built off the render thread: packed vertices, and the meshlet split of each level's index
-    // buffer (nullopt where the level aliases the previous one).
     std::vector<CompressedModelVertex> compressed_vertices;
     std::array<std::optional<MeshletBuild>, lod_count> meshlets{};
 
-    // Local-space AABB. Set by producers that don't keep `vertices` (cooked assets only carry
-    // compressed_vertices); otherwise computed from `vertices`.
     std::optional<std::pair<glm::vec3, glm::vec3>> bounds;
 
-    // Whether the glTF primitive had a TANGENT accessor. Only used between extract_primitive_cpu() and
-    // finalize_primitive_cpu().
     bool has_tangents = false;
 
-    // Skinning stream parallel to `vertices`/`compressed_vertices` (same count and order); empty when the
-    // primitive isn't skinned. Deliberately not part of ModelVertex so the render vertex layout is untouched.
     std::vector<SkinVertex> skin;
 };
 
@@ -197,58 +177,38 @@ struct ModelCpuData {
     std::vector<std::uint32_t> scene_roots;
     std::vector<ModelCpuLight> lights;
 
-    // Skeleton + clips of the glTF's first skin; null for models without one.
     std::shared_ptr<ModelAnimationData const> animation;
 
-    // Model-space AABB over every vertex, for producers without `vertices`; computed when unset.
     std::optional<std::pair<glm::vec3, glm::vec3>> bounds;
 
-    // Shared by the CPU parse, GPU upload and texture jobs so the whole load's timing ends up in one place.
     std::shared_ptr<ModelLoadProfile> profile;
 };
 
-// `skin`, when non-null and parallel to `vertices`, is re-ordered/welded together with them.
 auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices,
                        std::vector<SkinVertex> *skin = nullptr) -> std::expected<void, ModelLoadError>;
 
-// Simplified index buffers for LOD1..LOD(lod_count-1) from the final LOD0 buffers. Levels meshopt_simplify
-// can't reduce stay nullopt.
 auto generate_mesh_lods(std::vector<ModelVertex> const &vertices, std::vector<std::uint32_t> const &indices)
         -> std::array<std::optional<std::vector<std::uint32_t>>, lod_count - 1>;
 
-// Fills compressed_vertices and meshlets from the primitive's final geometry. `profile` gets
-// vertex_compression_ns and meshlet_build_ns.
 auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *profile = nullptr) -> void;
 
-// `profile` gets the CPU-parse timings and is carried into the returned ModelCpuData.
 [[nodiscard]]
 auto load_model_cpu(AssetPath const &path, SamplerStorage &sampler_storage,
                     std::shared_ptr<ModelLoadProfile> profile = nullptr) -> std::expected<ModelCpuData, ModelLoadError>;
 
-// load_model_cpu() on thread_pool(). Doesn't create a handle, since GPU uploads must happen on the render
-// thread; ModelStreamer pairs this with create_pending_model()/finish_model_load(). Bypasses the path cache.
-//
-// `sampler_storage` must outlive the returned future.
 [[nodiscard]]
 auto load_model_cpu_async(AssetPath path, SamplerStorage &sampler_storage,
                           std::shared_ptr<ModelLoadProfile> profile = nullptr)
         -> std::future<std::expected<ModelCpuData, ModelLoadError>>;
 
-// load_model_cpu() without per-primitive finalization (tangents, LOD simplification), so the caller can
-// finalize primitives in parallel (see ModelPrimitiveFinalization).
 [[nodiscard]]
 auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_storage,
                                 std::shared_ptr<ModelLoadProfile> profile = nullptr)
         -> std::expected<ModelCpuData, ModelLoadError>;
 
-// Parallel per-primitive finalization of a load_model_cpu_unfinalized() result, one thread_pool() task per
-// primitive.
-//
-// Start and step it from outside thread_pool(): a worker blocking on tasks in its own pool can deadlock.
 struct ModelPrimitiveFinalization {
     ModelCpuData cpu_data;
 
-    // tasks[i] goes to cpu_data.meshes[targets[i].first].primitives[targets[i].second].
     std::vector<std::future<std::expected<ModelCpuPrimitive, ModelLoadError>>> tasks;
     std::vector<std::pair<std::size_t, std::size_t>> targets;
 };
@@ -256,12 +216,10 @@ struct ModelPrimitiveFinalization {
 [[nodiscard]]
 auto start_primitive_finalization(ModelCpuData cpu_data) -> ModelPrimitiveFinalization;
 
-// Collects finished tasks. Returns the ModelCpuData once every primitive is done, otherwise nullopt.
 [[nodiscard]]
 auto step_primitive_finalization(ModelPrimitiveFinalization &finalization)
         -> std::expected<std::optional<ModelCpuData>, ModelLoadError>;
 
-// Incremental GPU upload of one model, stepped once per frame so large models spread their cost.
 struct ModelGpuUpload {
     ModelCpuData cpu_data;
     std::vector<ImageHandle> image_handles;
@@ -273,34 +231,22 @@ struct ModelGpuUpload {
     std::size_t mesh_cursor = 0;
     std::size_t primitive_cursor = 0;
 
-    // Computed lazily on the first skinned primitive; see compute_skin_inflate().
     std::optional<float> skin_inflate;
     bool any_skinned = false;
 };
 
-// Conservative model-space displacement bound of skinned vertices: the largest |skinned - rest| over sampled clip
-// poses (bind pose plus 16 phases per clip) and up to 1024 vertices per skinned primitive, times 1.25. Models
-// without clips fall back to the model bounding radius. Palettes outside the model's clips (IK, procedural) may
-// exceed this; such callers must keep their poses within it or accept popping at the culling edges.
 [[nodiscard]]
 auto compute_skin_inflate(ModelCpuData const &cpu_data) -> float;
 
-// Requests every texture `cpu_data` references from the streamer and returns the initial upload state. Render
-// thread only.
 [[nodiscard]]
 auto start_model_gpu_upload(ModelCpuData cpu_data, ImageStorage &image_storage, TextureStreamer &texture_streamer)
         -> ModelGpuUpload;
 
-// Processes up to `item_budget` materials/primitives (a primitive with all its LODs is one item), recording
-// copies into `command_buffer`. Returns the Model when done, otherwise nullopt. Render thread only;
-// `command_buffer` must be recording for this frame.
 [[nodiscard]]
 auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffer, GeometryArena &geometry_arena,
                            ImageStorage &image_storage, MaterialStorage &material_storage, std::uint32_t item_budget)
         -> std::expected<std::optional<Model>, ModelLoadError>;
 
-// Runs the whole GPU upload in one call. Textures are only requested, so materials start with default
-// textures. Meant for small procedural models; streamed models go through ModelStreamer.
 auto record_model_gpu_upload(ModelCpuData const &cpu_data, VkCommandBuffer command_buffer,
                              GeometryArena &geometry_arena, ImageStorage &image_storage,
                              TextureStreamer &texture_streamer, MaterialStorage &material_storage)

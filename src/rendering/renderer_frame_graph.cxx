@@ -18,9 +18,6 @@
 #include "rendering/renderer.hxx"
 #include "rendering/screenshot.hxx"
 
-// The frame as a graph (docs/frame-graph.md, phase 4): every pass is declared here, in recording order, and the
-// compiler derives the barriers between them.
-
 namespace {
     auto make_error(RendererErrorType type) -> RendererError {
         return RendererError{
@@ -31,10 +28,8 @@ namespace {
     constexpr auto fragment_stage = static_cast<frame_graph::ShaderStages>(frame_graph::ShaderStage::fragment);
     constexpr auto compute_stage = static_cast<frame_graph::ShaderStages>(frame_graph::ShaderStage::compute);
 
-    // The editor clears the swapchain under its UI to this.
     constexpr auto ui_clear_colour = VkClearValue{.color = {.float32 = {0.0F, 0.0F, 0.0F, 1.0F}}};
 
-    // The state the previous frame's readers leave a sampled image in.
     constexpr auto sampled_by_fragment_or_compute = frame_graph::ResourceState{
             .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -47,7 +42,6 @@ namespace {
             .access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
     };
 
-    // The depth buffer between the prepass that writes it and forward's LOAD_OP_LOAD.
     constexpr auto depth_attachment_state = frame_graph::ResourceState{
             .layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
             .stages = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -57,12 +51,8 @@ namespace {
     constexpr auto outline_clear_colour = VkClearValue{.color = {.float32 = {0.0F, 0.0F, 0.0F, 0.0F}}};
     constexpr auto forward_clear_colour = VkClearValue{.color = {.float32 = {0.015F, 0.025F, 0.050F, 1.0F}}};
 
-    // Buffers enter and leave the graph with nothing outstanding: whatever wrote them before it (prepare_frame's
-    // uploads, which end with their own barriers to every consumer stage, or the host, which needs none) is already
-    // visible, and nothing outside the graph touches them after it before the frame slot's fence.
     constexpr auto buffer_idle = frame_graph::ResourceState{};
 
-    // The host reads the occlusion statistics back once the slot's fence has passed.
     constexpr auto host_reads = frame_graph::ResourceState{
             .stages = VK_PIPELINE_STAGE_2_HOST_BIT,
             .access = VK_ACCESS_2_HOST_READ_BIT,
@@ -87,7 +77,6 @@ namespace {
         };
     }
 
-    // The Hi-Z pyramid as the occlusion tests (compute, task shaders) and the editor's debug view leave it.
     constexpr auto hiz_readers = frame_graph::ResourceState{
             .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |
@@ -95,13 +84,12 @@ namespace {
             .access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
     };
 
-    // What a viewport (or swapchain) image looks like to the graph: the sampled state the editor panel leaves it in.
     constexpr auto sampled_by_fragment = frame_graph::ResourceState{
             .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             .access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
     };
-} // namespace
+}
 
 auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError> {
     submit_batches_.clear();
@@ -114,7 +102,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    // Reads back and resets this slot's pass timestamps: the slot's earlier work has finished.
     pass_profiler_.begin_slot(info.frame_index);
     last_frame_timings_.passes.assign(pass_profiler_.timings().begin(), pass_profiler_.timings().end());
 
@@ -128,12 +115,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         return std::unexpected(targets.error());
     }
 
-    // Registration changes made by overlay callbacks land after recording, so prepare, stages and timing all see the
-    // same set. It spans every pass of the frame.
     auto const overlay_iteration = overlays_.iterate();
 
-    // Fullscreen play composites into the swapchain with the UI on top. Otherwise the scene goes into the viewport
-    // target the editor's Viewport panel samples and a second pass draws the UI onto the swapchain.
     auto const fullscreen = info.composite_target == CompositeTarget::swapchain;
 
     frame_graph_.reset();
@@ -168,27 +151,17 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     }
 
-    // The targets, the shadow atlas and the AO images persist across frames. Most are written without loading first
-    // (discarding what the previous frame left), so what matters about their entry state is the readers it must wait
-    // for; the exit state is what the editor and the next frame find.
     auto const multisampled = targets->multisampled;
     auto const bloom_enabled = bloom_settings_.enabled;
     auto const ao_enabled = ao_settings_.enabled;
     auto const environment_pending = environment_.has_pending_record();
 
-    // Phase 6: which groups of compute passes ask for the compute queue (--async-passes).
     auto const async_occlusion_enabled = (async_candidates_ & async_occlusion) != 0;
     auto const async_gtao_enabled = (async_candidates_ & async_gtao) != 0;
     auto const async_light_enabled = (async_candidates_ & async_light_clustering) != 0;
 
-    // The HDR and depth targets are transients: created by the first pass that writes them (the prepass for depth,
-    // forward for colour) and given memory after the graph is compiled. Under MSAA each has a multisampled image that
-    // is never sampled and a single-sample resolve target that is; without MSAA one image is both.
     auto hdr_image = frame_graph::ImageId{};
 
-    // The selected-object outline mask: a second colour target of the forward pass, always there so selecting
-    // something doesn't change the graph. Single-sample (the resolve target under MSAA) is what the composition pass
-    // samples.
     auto outline_image = frame_graph::ImageId{};
     auto depth_image = frame_graph::ImageId{};
     auto resolved_depth_image = frame_graph::ImageId{};
@@ -203,8 +176,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         };
     };
 
-    // The shadow atlas persists across frames: only the cascades that moved are redrawn, so the pass loads it, and
-    // forward samples it whether or not any was. Before the first shadow pass it has no contents (and no layout).
     auto shadow_image = frame_graph_.import_image({
             .entry = shadow_atlas_initialized_ ? sampled_by_fragment : frame_graph::ResourceState{},
             .exit = sampled_by_fragment,
@@ -212,9 +183,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .image = physical_image(*targets->shadow_atlas),
     });
 
-    // With AO off forward samples a white texture that is not part of the graph. Otherwise both AO images are
-    // transients created by the passes that write them (GTAO's raw image, the denoise's output); the allocator gives
-    // them memory and bindless indices after the graph is compiled.
     auto ao_raw_image = frame_graph::ImageId{};
     auto ao_image = frame_graph::ImageId{};
     auto const ao_description = [&](std::string_view name) {
@@ -226,24 +194,16 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 .debug_name = name,
         };
     };
-    // The bindless index of a transient, once the allocator has made it.
     auto const transient_index = [&](frame_graph::ImageId image) {
         return transient_allocator_.handle(info.frame_index, image.index).index;
     };
 
-    // The bloom mip chain (half resolution) is a transient created by the bloom pass, which leaves it sampled. With
-    // bloom off nothing creates it.
     auto bloom_image = frame_graph::ImageId{};
 
-    // The per-frame buffers the occlusion chain and the draws reach by device address. Every pass that dereferences one
-    // must declare it, because neither sync validation nor the compiler can see a device-address access otherwise.
-    // The ones nothing in the graph writes are imports marked read-only.
     using frame_graph::ShaderStage;
     constexpr auto geometry_stages = ShaderStage::vertex | ShaderStage::task | ShaderStage::mesh;
     constexpr auto draw_stages = geometry_stages | ShaderStage::fragment;
 
-    // These buffers were created for concurrent sharing when the compute queue has a family of its own (see
-    // create_shared_buffer), so no pass moving between the queues needs an ownership transfer for them.
     auto const buffers_concurrent = context_.queue_families.compute != context_.queue_families.graphics;
 
     auto const import_frame_buffer = [&](Buffer const &buffer, std::string_view name,
@@ -258,16 +218,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     };
 
-    // main_cs always runs (it is plain frustum culling with occlusion off), so what it reads and writes is always
-    // imported: the batch bounds, the occlusion views (disabled with occlusion off), the candidate lists and the
-    // per-chunk scratch.
     auto const batch_bounds = import_frame_buffer(frame.batch_bounds_buffer, "batch_bounds", true);
     auto const occlusion_views = import_frame_buffer(frame.occlusion_views_buffer, "occlusion_views", true);
     auto occlusion_candidates = import_frame_buffer(frame.occlusion_candidates_buffer, "occlusion_candidates", false);
     auto cull_chunks = import_frame_buffer(frame.cull_chunks_buffer, "cull_chunks", false);
 
-    // Clustered lighting: light_cull writes the visible lights, light_cluster the per-cluster lists and statistics
-    // (the first bytes of the one buffer), which the host reads back a frame later.
     auto const clustered = clustered_lighting_;
     auto visible_lights = frame_graph::BufferId{};
     auto cluster_lights = frame_graph::BufferId{};
@@ -283,20 +238,14 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     }
 
-    // late_cs appends to the visible draws and transforms, so they are written when occlusion culling is on.
     auto visible_draws = import_frame_buffer(frame.visible_draw_buffer, "visible_draws", false);
     auto visible_transforms = import_frame_buffer(frame.visible_transform_buffer, "visible_transforms", false);
-    // Every caster, un-culled: the shadow pass draws these, and late_cs culls from them. gpu_culling first fills in
-    // the resident instanced models' slots (instance_lod.slang).
     auto source_draws = import_frame_buffer(frame.draw_buffer, "draws", false);
     auto source_transforms = import_frame_buffer(frame.transform_buffer, "transforms", false);
     auto source_indirect = import_frame_buffer(frame.indirect_buffer, "indirect", false);
     auto culled_indirect = import_frame_buffer(frame.culled_indirect_buffer, "culled_indirect", false);
     auto const frustum_planes = import_frame_buffer(frame.frustum_planes_buffer, "frustum_planes", true);
 
-    // GPU skinning (skin.slang): the host-written palette/jobs/chunk table copied to skin_input by skin_upload, and the
-    // deformed vertices skin writes to skin_scratch, which every scene pass reaches through GpuDraw::vertex_address.
-    // Imported only when something is skinned this frame, so an unskinned scene's graph is unchanged.
     auto const skinning_active = !frame.skin_jobs.empty();
     auto skin_upload_source = frame_graph::BufferId{};
     auto skin_input = frame_graph::BufferId{};
@@ -306,7 +255,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         skin_input = import_frame_buffer(frame.skin_input_buffer, "skin_input", false);
         skin_scratch = import_frame_buffer(frame.skin_scratch_buffer, "skin_scratch", false);
     }
-    // Declared by every pass that draws (or culls from) the scene's vertices.
     auto const read_skinned_vertices = [&](frame_graph::PassBuilder &pass, frame_graph::ShaderStages stages) {
         if (skinning_active) {
             [[maybe_unused]] auto const skinned = pass.read(skin_scratch, frame_graph::Use::shader_read, stages);
@@ -316,8 +264,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     auto const occlusion_active = frame.occlusion_active;
     auto const meshlet_occlusion_active = frame.meshlet_occlusion_active;
 
-    // Phase 2 (late_cs): re-tests main_cs's candidates against this frame's Hi-Z. Everything it reads but does not
-    // write was produced before the frame graph.
     auto late_indirect = frame_graph::BufferId{};
     auto merged_indirect = frame_graph::BufferId{};
     auto hiz_image = frame_graph::ImageId{};
@@ -325,7 +271,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         late_indirect = import_frame_buffer(frame.late_indirect_buffer, "late_indirect", false);
         merged_indirect = import_frame_buffer(frame.merged_indirect_buffer, "merged_indirect", false);
 
-        // Rebuilt from the depth every frame; last frame's readers are what the build has to wait for.
         hiz_image = frame_graph_.import_image({
                 .entry = hiz_readers,
                 .exit = hiz_readers,
@@ -334,8 +279,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     }
 
-    // Meshlet-level occlusion: the prepass phases' task shaders write the visibility bitset and the statistics
-    // counters, forward replays the bitset.
     auto meshlet_bits = frame_graph::BufferId{};
     if (meshlet_occlusion_active) {
         meshlet_bits = import_frame_buffer(frame.meshlet_visibility_buffer, "meshlet_visibility", false);
@@ -349,7 +292,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .buffer = physical_buffer(frame.occlusion_stats_readback_buffer),
     });
 
-    // The render_pass context of a pass: on a compute-only queue family it keeps its own barriers to compute stages.
     auto const topology = context_.queue_set.topology();
     auto const pass_context_of = [&](frame_graph::PassContext const &context) {
         auto const compute_only =
@@ -358,24 +300,18 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         return make_pass_context(context.command_buffer, info.frame_index, compute_only);
     };
 
-    // Shared by the record lambdas, which all run inside frame_graph::record() below.
     struct FrameState {
         std::expected<void, RendererError> result{};
         PassHandoff handoff;
     } state;
 
-    // CPU bookkeeping that used to sit in the legacy body.
     if (frame.occlusion_active) {
-        // Next frame's phase 1 tests against this pyramid, projected as it was built.
         hiz_history_view_projection_ = frame.view_projection;
         hiz_history_valid_ = true;
     } else {
-        // A pyramid from before this gap may not match what is on screen when culling resumes.
         hiz_history_valid_ = false;
     }
 
-    // Overlays' prepare() hooks run before every pass, outside any rendering scope, and may write GPU data (debug
-    // geometry, indirect arguments) the overlay draws read. The token orders them before those draws.
     auto overlay_data = frame_graph_.import_token("overlay_data", {}, {});
     frame_graph_.add_pass("overlay_prepare", frame_graph::PassType::compute,
                           {
@@ -393,10 +329,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               }};
                           });
 
-    // Image-based lighting and the procedural sky: compute that (re)builds the radiance cube, the prefiltered specular
-    // cubes, the BRDF LUT and the SH coefficients, only on the frames the system planned work. It manages its own
-    // layouts per mip and face, and its rebuilds are amortized over frames (a partly filled set must survive between
-    // them), so the graph does not own those images: a token orders the build before the pass that samples the result.
     auto environment_token = frame_graph::BufferId{};
     if (environment_pending) {
         environment_token = frame_graph_.import_token("environment", {}, {});
@@ -417,8 +349,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               });
     }
 
-    // The statistics and the meshlet bitset are accumulated into by the culling and prepass shaders, so they start
-    // empty.
     frame_graph_.add_pass("occlusion_stats_clear", frame_graph::PassType::transfer,
                           {
                                   .name_id = "occlusion_stats_clear",
@@ -474,8 +404,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               },
                               [&](frame_graph::PassBuilder &pass) {
                                   constexpr auto compute = stages_of(ShaderStage::compute);
-                                  // The rest vertices and skin streams live in the geometry arena, which nothing in
-                                  // the graph writes; only the palette/jobs and the scratch are tracked.
                                   [[maybe_unused]] auto const input =
                                           pass.read(skin_input, frame_graph::Use::shader_read, compute);
                                   skin_scratch = pass.write_discard(skin_scratch, frame_graph::Use::shader_write, compute);
@@ -489,8 +417,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               });
     }
 
-    // main_cs: frustum culling of every batch and, with occlusion culling on, phase 1 against last frame's Hi-Z (the
-    // instances it defers become late_cs's candidates).
     frame_graph_.add_pass("gpu_culling", frame_graph::PassType::compute,
                           {
                                   .name_id = "gpu_culling",
@@ -501,7 +427,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               constexpr auto compute = stages_of(ShaderStage::compute);
                               using frame_graph::Use;
 
-                              // Written only where resident instanced models' LODs go (instance_lod.slang).
                               source_draws = pass.write(source_draws, Use::shader_read_write, compute);
                               source_transforms = pass.write(source_transforms, Use::shader_read_write, compute);
                               source_indirect = pass.write(source_indirect, Use::shader_read_write, compute);
@@ -509,7 +434,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               [[maybe_unused]] auto const planes = pass.read(frustum_planes, Use::shader_read, compute);
                               [[maybe_unused]] auto const views = pass.read(occlusion_views, Use::shader_read, compute);
                               if (occlusion_active) {
-                                  // View [0] holds last frame's pyramid, sampled by the occlusion test.
                                   [[maybe_unused]] auto const history = pass.read(hiz_image, Use::sampled, compute);
                               }
 
@@ -528,7 +452,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               }};
                           });
 
-    // Clustered lighting: cull the lights to the frustum, then bin them into the screen-space clusters forward reads.
     if (clustered) {
         frame_graph_.add_pass("cluster_stats_clear", frame_graph::PassType::transfer,
                               {
@@ -624,8 +547,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               });
     }
 
-    // Cascaded shadow maps into the atlas. Only the cascades in the update mask are cleared and redrawn; the rest keep
-    // their contents, so the pass loads the atlas once it has any.
     auto const declare_shadows = [&] {
         if (frame.shadow_update_mask == 0) {
             return;
@@ -666,17 +587,12 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 });
     };
 
-    // With compute passes on another queue the shadows go after the passes that feed them, so there is raster work to
-    // overlap the compute with: after the early prepass (the Hi-Z and late culling) or the late prepass (GTAO).
     auto const shadows_after_early_prepass = async_occlusion_enabled;
     auto const shadows_after_late_prepass = !async_occlusion_enabled && async_gtao_enabled;
     if (!shadows_after_early_prepass && !shadows_after_late_prepass) {
         declare_shadows();
     }
 
-    // The depth prepass (phase 1 with occlusion culling, the only phase without): clears the depth buffer and draws
-    // what main_cs kept. Under MSAA it resolves into the single-sample depth; MIN keeps each pixel's farthest sample,
-    // which the Hi-Z needs to stay conservative (reverse-Z), otherwise SAMPLE_ZERO is what the rest expects.
     frame_graph_.add_pass(
             "depth_prepass", frame_graph::PassType::raster,
             {
@@ -694,8 +610,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
                 read_skinned_vertices(pass, geometry_stages);
                 if (meshlet_occlusion_active) {
-                    // View [0], the history Hi-Z's (sampled by the task shaders' meshlet test), and the bits and
-                    // counters this phase's task shaders record.
                     [[maybe_unused]] auto const views =
                             pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
                     [[maybe_unused]] auto const history =
@@ -738,8 +652,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         declare_shadows();
     }
 
-    // The Hi-Z pyramid: the single-sample depth reduced into a mip chain, one dispatch per level. The levels are
-    // written and sampled one at a time inside the pass; the graph sees it enter writable and leave sampled.
     if (occlusion_active) {
         frame_graph_.add_pass("hiz_build", frame_graph::PassType::compute,
                               {
@@ -774,8 +686,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               });
     }
 
-    // Phase 2 of occlusion culling, culling: re-tests the candidates main_cs deferred against this frame's Hi-Z and
-    // appends the survivors to the visible draws, with the late and merged indirect commands.
     if (occlusion_active) {
         frame_graph_.add_pass(
                 "late_cs", frame_graph::PassType::compute,
@@ -801,11 +711,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const planes = pass.read(frustum_planes, Use::shader_read, compute);
                     [[maybe_unused]] auto const views = pass.read(occlusion_views, Use::shader_read, compute);
                     [[maybe_unused]] auto const candidates = pass.read(occlusion_candidates, Use::shader_read, compute);
-                    // Holds main_cs's candidate counts; late_cs adds its own per-chunk results.
                     cull_chunks = pass.write(cull_chunks, Use::shader_read_write, compute);
 
-                    // Appends past the ranges the early prepass reads, but device-address accesses are not tracked
-                    // per range, so the early prepass's reads are ordered before these writes as a whole.
                     visible_draws = pass.write(visible_draws, Use::shader_read_write, compute);
                     visible_transforms = pass.write(visible_transforms, Use::shader_read_write, compute);
                     late_indirect = pass.write(late_indirect, Use::shader_write, compute);
@@ -825,8 +732,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 });
     }
 
-    // Phase 2 of occlusion culling: draws what late_cs added on top of the early prepass's depth, and leaves the final
-    // single-sample depth.
     if (occlusion_active) {
         frame_graph_.add_pass(
                 "depth_prepass_late", frame_graph::PassType::raster,
@@ -845,7 +750,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
                     read_skinned_vertices(pass, geometry_stages);
                     if (meshlet_occlusion_active) {
-                        // View [1], this frame's pyramid, sampled by the task shaders' meshlet test.
                         [[maybe_unused]] auto const views =
                                 pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
                         [[maybe_unused]] auto const pyramid =
@@ -964,16 +868,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     .color = static_cast<std::uint32_t>(tracy::Color::RoyalBlue),
             },
             [&](frame_graph::PassBuilder &pass) {
-                // The buffers forward reads by device address. Declared so far: the occlusion chain's (draws,
-                // transforms, indirect commands, culling planes, meshlet views and bits). Lights, cluster lists and
-                // the UBO are still ordered by the legacy pass's fences; whichever pass takes over producing one must
-                // declare it here too.
                 [[maybe_unused]] auto const shadows =
                         pass.read(shadow_image, frame_graph::Use::sampled, fragment_stage);
-                // The scene overlays draw inside this pass, from what their prepare() hooks wrote.
                 [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
                 if (environment_pending) {
-                    // Samples the cubes, the LUT and the SH the environment pass just built.
                     [[maybe_unused]] auto const environment =
                             pass.read(environment_token, frame_graph::Use::token_read);
                 }
@@ -993,7 +891,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             pass.read(meshlet_bits, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
                 }
                 if (clustered) {
-                    // The per-cluster light lists (past the statistics) the fragment shader walks.
                     [[maybe_unused]] auto const clusters =
                             pass.read(cluster_lights, frame_graph::Use::shader_read, fragment_stage);
                 }
@@ -1001,7 +898,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const ao = pass.read(ao_image, frame_graph::Use::sampled, fragment_stage);
                 }
 
-                // Multisampled: draw into the MSAA target and resolve; the MSAA contents are not kept.
                 if (multisampled) {
                     auto const msaa = pass.color(
                             pass.create(target_description(hdr_format_, samples_, false, "hdr_msaa")),
@@ -1015,7 +911,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                            forward_clear_colour);
                 }
 
-                // After the HDR target, so it is colour attachment 1.
                 {
                     if (multisampled) {
                         auto const outline_msaa = pass.color(
@@ -1052,7 +947,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
                     };
 
-                    // The denoised AO image, or white when AO is off.
                     state.handoff.ao_texture_index =
                             ao_enabled ? transient_index(ao_image) : image_storage_.white().index;
 
@@ -1077,9 +971,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 },
                 [&](frame_graph::PassBuilder &pass) {
                     [[maybe_unused]] auto const input = pass.read(hdr_image, frame_graph::Use::sampled, compute_stage);
-                    // The mip chain is written, sampled and written again inside the pass, one level at a time; the
-                    // graph only sees it enter writable and leave sampled.
-                    // Single-mip views registered in the bindless table are what the dispatches address.
                     bloom_image = pass.create({
                             .format = VK_FORMAT_R16G16B16A16_SFLOAT,
                             .extent = {targets->extent.width / 2, targets->extent.height / 2, 1},
@@ -1126,7 +1017,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             },
             [&](frame_graph::PassBuilder &pass) {
                 if (fullscreen) {
-                    // The UI overlays draw inside this pass in fullscreen play.
                     [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
                 }
                 if (bloom_enabled) {
@@ -1191,9 +1081,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         .color = static_cast<std::uint32_t>(tracy::Color::Orchid),
                 },
                 [&](frame_graph::PassBuilder &pass) {
-                    // The UI draws the viewport panel by sampling the target the composition pass just wrote. ImGui
-                    // may only sample imports in SHADER_READ_ONLY (the viewport, the Hi-Z debug view) or images outside
-                    // the graph; see docs/frame-graph-status.md before making any ImGui-visible image a transient.
                     [[maybe_unused]] auto const sampled =
                             pass.read(viewport, frame_graph::Use::sampled, fragment_stage);
                     [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
@@ -1219,7 +1106,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 });
     }
 
-    // The host reads the stats a frame later; the copy and the host-visibility barrier are the graph's.
     frame_graph_.add_pass("occlusion_stats_readback", frame_graph::PassType::transfer,
                           {
                                   .name_id = "occlusion_stats_readback",
@@ -1237,7 +1123,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               }};
                           });
 
-    // A pending capture of the viewport target is only honoured in the editor; fullscreen takes the swapchain.
     if (auto const pending = screenshot_->pending_source(); pending.has_value()) {
         auto const from_viewport = *pending == ScreenshotSource::viewport && !fullscreen;
 
@@ -1254,7 +1139,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             pass.read(from_viewport ? viewport : swapchain, frame_graph::Use::transfer_src);
 
                     return frame_graph::RecordFn{[&, from_viewport](frame_graph::PassContext &context) {
-                        // The graph has moved the image to TRANSFER_SRC_OPTIMAL and moves it on afterwards.
                         auto const image = from_viewport
                                                    ? ScreenshotImage{.image = targets->viewport->image(),
                                                                      .format = targets->viewport->format(),
@@ -1270,7 +1154,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 });
     }
 
-    // Last, so the full-frame timestamp closes the frame.
     frame_graph_.add_pass("frame_end", frame_graph::PassType::transfer,
                           {
                                   .name_id = "frame_end",
@@ -1291,15 +1174,13 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                           });
 
     auto const compiled = plan_cache_.compile(frame_graph_, context_.queue_set.topology(),
-                                              {.async_compute = context_.async_compute_mode != AsyncComputeMode::off,
-                                               .serialize = context_.frame_graph_serialize});
+                                              {.async_compute = context_.async_compute_mode != AsyncComputeMode::off});
     if (!compiled) {
         error("Could not compile the frame graph: {}", compiled.error());
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
     frame_plan_ = *compiled;
 
-    // One line whenever the plan was recompiled, so the schedule is visible without a debugger.
     auto const plan_changed = plan_cache_.misses() != logged_plan_misses_;
     if (plan_changed) {
         perf_events::record(PerfEvent::frame_graph_compile);
@@ -1318,8 +1199,6 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                frame_plan_->transfers.size());
     }
 
-    // Memory and images for the transients, recreated only when the compiled plan or a description changed. New
-    // images have new bindless slots, which this frame's descriptor set has not seen yet.
     auto const allocated = transient_allocator_.prepare(info.frame_index, frame_graph_.description(), *frame_plan_,
                                                         transient_aliasing_);
     if (!allocated) {

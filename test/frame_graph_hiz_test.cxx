@@ -17,9 +17,6 @@ namespace {
         return topology;
     }
 
-    // The occlusion chain from docs/frame-graph.md: main_cs (G), early prepass (G), hiz_build (C), late_cs (C),
-    // late prepass (G), forward (G). Hi-Z is one pyramid shared across frames, so it enters and leaves the frame
-    // sampled and owned by graphics.
     auto make_occlusion_chain() -> FrameGraph {
         auto graph = FrameGraph{};
         constexpr auto hiz_state = ResourceState{
@@ -95,7 +92,7 @@ namespace {
         return 0;
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("the occlusion chain keeps Hi-Z owned by graphics across the frame boundary") {
@@ -105,13 +102,9 @@ TEST_SUITE("unit") {
         auto const &desc = graph.description();
         auto const hiz = resource_named(desc, "hiz");
 
-        // Async compute is used for the build and the late cull.
         CHECK(compiled->pass_queue[pass_named(desc, "hiz_build")] == LogicalQueue::compute);
         CHECK(compiled->pass_queue[pass_named(desc, "late_cs")] == LogicalQueue::compute);
 
-        // hiz_build overwrites the whole pyramid, so reaching compute costs a semaphore and a layout transition from
-        // UNDEFINED but no ownership transfer. Leaving compute does: Hi-Z must be back on graphics before the frame
-        // ends.
         auto to_compute = 0;
         auto to_graphics = 0;
         for (auto const &transfer: compiled->transfers) {
@@ -124,7 +117,6 @@ TEST_SUITE("unit") {
         CHECK(to_compute == 0);
         CHECK(to_graphics == 1);
 
-        // The last graphics batch is ordered after the compute work that left Hi-Z there.
         auto const &last = compiled->batches.back();
         CHECK(last.queue == LogicalQueue::graphics);
         CHECK(last.signals_render_finished);
@@ -136,7 +128,6 @@ TEST_SUITE("unit") {
         }
         CHECK(has_hiz_acquire);
 
-        // Frame N+1's first read of Hi-Z, in the state frame N left it, needs no barrier.
         auto const &main_cs = compiled->batches.front().passes.empty() ? compiled->batches[1].passes.front()
                                                                        : compiled->batches.front().passes.front();
         REQUIRE(desc.passes[main_cs.pass].name == "main_cs");
@@ -170,7 +161,6 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("two consecutive frames compile to the same plan") {
-        // Every import leaves in the state the next frame assumes at entry, so the steady state is one plan.
         auto first = make_occlusion_chain();
         auto second = make_occlusion_chain();
         auto const a = compile(first, dedicated());

@@ -1,11 +1,3 @@
-// lathe-env-bake: converts an equirect HDR panorama (.hdr / .exr) into a KTX2 cubemap that the engine loads as an
-// environment source (E5B9G9R9, Zstd supercompressed, one mip). Usage:
-//
-//   lathe-env-bake <input.hdr|.exr> <output.ktx2> [--size 512] [--samples 4] [--preview cross.png]
-//
-// --preview writes a tonemapped 4x3 cross of the six faces for eyeballing orientation.
-// --samples is the per-axis supersampling of each cube texel, which keeps a 4K panorama from aliasing into a 512 face.
-// Reuses the engine's cube map conventions (rendering/cube_map.hxx), so what it writes is what the engine reads.
 
 #include <algorithm>
 #include <array>
@@ -41,7 +33,6 @@ namespace {
         std::string preview;
     };
 
-    // The error is what to tell the user.
     [[nodiscard]]
     auto validate(Options const &options) -> std::expected<void, std::string> {
         if (options.size == 0 || !std::has_single_bit(options.size) || options.size > hdr_cube_max_face_size) {
@@ -56,7 +47,6 @@ namespace {
     struct Bilinear {
         HdrImage const &image;
 
-        // u wraps, v clamps.
         [[nodiscard]]
         auto sample(glm::vec2 uv) const -> glm::vec3 {
             auto const x = (uv.x * static_cast<float>(image.width)) - 0.5F;
@@ -84,7 +74,6 @@ namespace {
         }
     };
 
-    // EXT_texture_shared_exponent reference encoder.
     [[nodiscard]]
     auto encode_rgb9e5(glm::vec3 rgb) -> std::uint32_t {
         constexpr int exponent_bias = 15;
@@ -123,7 +112,6 @@ namespace {
                scale;
     }
 
-    // Faces laid out as the usual cross: +Y on top, -Y below, and -X +Z +X -Z across the middle row.
     auto write_preview(std::string_view path, std::vector<std::uint32_t> const &texels, std::uint32_t size) -> void {
         constexpr std::uint32_t columns = 4;
         constexpr std::uint32_t rows = 3;
@@ -158,7 +146,7 @@ namespace {
                        static_cast<int>(columns * size * 3U));
     }
 
-} // namespace
+}
 
 auto main(int argc, char **argv) -> int {
     Options parsed;
@@ -237,7 +225,7 @@ auto main(int argc, char **argv) -> int {
 
     ktxTextureCreateInfo info{
             .glInternalformat = 0,
-            .vkFormat = 123, // VK_FORMAT_E5B9G9R9_UFLOAT_PACK32
+            .vkFormat = 123,
             .pDfd = nullptr,
             .baseWidth = size,
             .baseHeight = size,

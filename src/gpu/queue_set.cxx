@@ -32,7 +32,7 @@ namespace {
         };
     }
 
-} // namespace
+}
 
 QueueSet::~QueueSet() { destroy(); }
 
@@ -52,7 +52,6 @@ auto QueueSet::initialize(QueueSetCreateInfo const &create_info) noexcept -> std
     physical_of_queue_[queue_index(frame_graph::LogicalQueue::graphics)] = 0;
 
     if (create_info.compute_queue == create_info.graphics_queue) {
-        // One physical queue serves both logical queues: the compute pool and timeline are the graphics ones.
         physical_count_ = 1;
         physical_of_queue_[queue_index(frame_graph::LogicalQueue::compute)] = 0;
     } else {
@@ -85,8 +84,6 @@ auto QueueSet::initialize(QueueSetCreateInfo const &create_info) noexcept -> std
         }
 
         for (auto &slot: slots_) {
-            // Transient: every buffer is recorded once per use and the pool is reset wholesale each time the slot is
-            // reused.
             VkCommandPoolCreateInfo const pool_info{
                     .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                     .pNext = nullptr,
@@ -108,7 +105,6 @@ auto QueueSet::initialize(QueueSetCreateInfo const &create_info) noexcept -> std
 
 auto QueueSet::destroy() noexcept -> void {
     if (device_ != VK_NULL_HANDLE) {
-        // Destroying a pool frees its buffers. The caller has already waited for the device to go idle.
         for (auto &slot: slots_) {
             for (auto &pool: slot.pools) {
                 if (pool != VK_NULL_HANDLE) {
@@ -143,7 +139,6 @@ auto QueueSet::begin_slot(std::uint32_t slot) noexcept -> std::expected<void, Qu
     current_slot_ = slot;
     auto &frame = slots_[slot];
 
-    // A bounded wait so a stuck GPU surfaces as a loss instead of hanging shutdown.
     constexpr std::uint64_t slot_wait_timeout_ns = 2'000'000'000ULL;
 
     for (auto physical = std::size_t{0}; physical < physical_count_; ++physical) {
@@ -161,8 +156,6 @@ auto QueueSet::begin_slot(std::uint32_t slot) noexcept -> std::expected<void, Qu
                 .pValues = &value,
         };
 
-        // The wait is bounded, so a GPU that hangs rather than faults shows up as a timeout. Report it like a loss:
-        // the device is unusable either way and the user gets the same restart notice.
         auto const result = vkWaitSemaphores(device_, &wait_info, slot_wait_timeout_ns);
         if (result != VK_SUCCESS) {
             return std::unexpected(make_vk_error("vkWaitSemaphores", result));
@@ -315,7 +308,6 @@ auto QueueSet::submit(std::span<SubmitBatch const> batches, VkSemaphore acquire,
         }
     }
 
-    // Every timeline that advanced is now what this slot must wait for before it is reused.
     auto &frame = slots_[current_slot_];
     for (auto physical = std::size_t{0}; physical < physical_count_; ++physical) {
         if (plan->timeline_values[physical] != queues_[physical].value) {

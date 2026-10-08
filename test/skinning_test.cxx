@@ -16,7 +16,7 @@ namespace {
     }
 
     auto near(glm::vec3 a, glm::vec3 b, float eps) -> bool { return glm::all(glm::epsilonEqual(a, b, eps)); }
-} // namespace
+}
 
 TEST_CASE("compress/decompress round trip stays within tolerance") {
     auto const vertex = sample_vertex();
@@ -66,7 +66,6 @@ TEST_CASE("normals use the inverse-transpose under non-uniform scale") {
     rest.tangent = {glm::normalize(glm::vec3{1.0F, -1.0F, 0.0F}), 1.0F};
     auto const out = skin_vertex(rest, pack_skin_vertex({0, 0, 0, 0}, {255, 0, 0, 0}), palette);
 
-    // Plain scaling would give (4,1,0)/|..|; the inverse-transpose gives (1/4,1,0)/|..|.
     CHECK(near(out.normal, glm::normalize(glm::vec3{0.25F, 1.0F, 0.0F}), 1e-5F));
     CHECK(glm::dot(out.normal, glm::vec3{out.tangent}) == doctest::Approx(0.0F).epsilon(1e-5).scale(1.0));
 }

@@ -55,7 +55,6 @@ namespace {
         return environment;
     }
 
-    // `payload` without its section of `type`, as a build from before that section existed would have written it.
     auto without_section(std::span<std::byte const> payload, std::uint32_t type) -> std::vector<std::byte> {
         std::vector<std::byte> result;
 
@@ -81,7 +80,7 @@ namespace {
         return result;
     }
 
-} // namespace
+}
 
 TEST_CASE("Environment section round-trips every field") {
     SceneDescription scene;
@@ -95,7 +94,6 @@ TEST_CASE("Environment section round-trips every field") {
     CHECK(decoded->environment == scene.environment);
     CHECK(decoded->environment_id == scene.environment_id);
 
-    // Same input, same bytes: the dirty check compares encodings.
     CHECK(encode_scene(*decoded) == payload);
 }
 
@@ -151,7 +149,6 @@ TEST_CASE("Environment values that would poison the renderer are refused") {
         spoil(scene.environment);
 
         CHECK_FALSE(validate_scene(scene).has_value());
-        // Through the codec too, which is the path a file takes.
         CHECK_FALSE(decode_scene(encode_scene(scene)).has_value());
     };
 
@@ -227,7 +224,6 @@ TEST_CASE("Cooked environments round-trip and refuse hostile payloads") {
     CHECK(cube_decoded->layers == 6);
     CHECK(cube_decoded->pixels == cube.pixels);
 
-    // Truncated and padded payloads.
     auto truncated = payload;
     truncated.pop_back();
     CHECK_FALSE(decode_cooked_environment(truncated).has_value());
@@ -248,7 +244,6 @@ TEST_CASE("Cooked environments round-trip and refuse hostile payloads") {
         return writer.take();
     };
 
-    // Sizes that a payload this small could never hold: refused before anything is allocated.
     CHECK_FALSE(decode_cooked_environment(with_header(16384, 8192, cooked_environment_format, 1)).has_value());
     CHECK_FALSE(decode_cooked_environment(with_header(8, 4, 37, 1)).has_value());
     CHECK_FALSE(decode_cooked_environment(with_header(8, 8, cooked_environment_format, 1)).has_value());
@@ -293,7 +288,6 @@ TEST_CASE("cook_assets cooks an environment into a pack that loads back, and cop
     CHECK(copied.environments_copied == 1);
     CHECK(copied.environments_cooked == 0);
 
-    // A missing file is a reported failure, not a crash, and the scene keeps its source path.
     LbfWriter missing{LbfFileKind::asset_pack};
     auto const failed = cook_assets(AssetCookRequest{.environments = {data_path("no/such/environment.hdr")}}, sampler_storage, missing);
     CHECK(failed.failures.size() == 1);

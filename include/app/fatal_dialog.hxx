@@ -18,11 +18,6 @@
 extern char **environ; // NOLINT(readability-redundant-declaration)
 #endif
 
-// A blocking, native "something went wrong" box for failures where the renderer can't draw one itself, chiefly a lost
-// GPU device: ImGui renders through the device that just died, so the notice has to come from the OS instead.
-//
-// Returns whether a dialog was shown. On Linux it needs zenity, kdialog or xmessage and a display; when none is
-// available (headless runs, minimal installs) it returns false and the caller's log line is all there is.
 inline auto show_fatal_dialog(std::string_view title, std::string_view message) noexcept -> bool {
 #if defined(_WIN32)
     auto const widen = [](std::string_view text) {
@@ -42,7 +37,6 @@ inline auto show_fatal_dialog(std::string_view title, std::string_view message) 
     auto const title_text = std::string{title};
     auto const message_text = std::string{message};
 
-    // Argument vectors, never a shell: the message may contain device names or driver text.
     std::array<std::vector<std::string>, 3> const candidates{{
             {"zenity", "--error", "--no-markup", "--width=440", "--title", title_text, "--text", message_text},
             {"kdialog", "--error", message_text, "--title", title_text},
@@ -60,7 +54,6 @@ inline auto show_fatal_dialog(std::string_view title, std::string_view message) 
 
         pid_t child = 0;
 
-        // posix_spawnp reports a missing program directly, so try the next one.
         if (posix_spawnp(&child, argv.front(), nullptr, nullptr, argv.data(), environ) != 0) {
             continue;
         }

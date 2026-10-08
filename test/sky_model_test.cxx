@@ -18,7 +18,7 @@ namespace {
     }
 
     auto luminance(glm::vec3 rgb) -> float { return glm::dot(rgb, glm::vec3{0.2126F, 0.7152F, 0.0722F}); }
-} // namespace
+}
 
 TEST_CASE("the Preetham state is finite with positive radiance over the whole domain") {
     for (float turbidity = 2.0F; turbidity <= 10.0F; turbidity += 1.0F) {
@@ -68,7 +68,6 @@ TEST_CASE("the zenith is normalised: sun overhead returns the model's zenith lum
     auto const state = make_sky_state({.elevation_radians = pi / 2.0F, .turbidity = turbidity});
     auto const radiance = evaluate_sky_rgb(state, glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0});
 
-    // theta_sun = 0: Yz = (4.0453 T - 4.9710) tan(chi) - 0.2155 T + 2.4192 with chi = (4/9 - T/120) pi.
     auto const chi = ((4.0F / 9.0F) - (turbidity / 120.0F)) * pi;
     auto const expected = ((((4.0453F * turbidity) - 4.9710F) * std::tan(chi)) - (0.2155F * turbidity) + 2.4192F) * sky_calibration;
 
@@ -112,7 +111,6 @@ TEST_CASE("the default sun's upward ambient matches the flat 0.15 term it replac
         }
     }
 
-    // Integral over the cosine-weighted hemisphere, divided by pi, is the Lambert ambient for albedo 1.
     auto const ambient = total * (pi / 2.0 / steps) * (2.0 * pi / steps) / pi;
 
     CHECK(ambient == doctest::Approx(0.15).epsilon(0.1));

@@ -28,7 +28,7 @@ namespace frame_graph {
         std::string resource;
     };
 
-} // namespace frame_graph
+}
 
 template<>
 struct std::formatter<frame_graph::FrameGraphErrorType> : std::formatter<std::string_view> {

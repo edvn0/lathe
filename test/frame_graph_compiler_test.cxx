@@ -36,7 +36,7 @@ namespace {
         return nullptr;
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("RAW colour to sampled gives one image barrier") {
@@ -130,7 +130,6 @@ TEST_SUITE("unit") {
                 found = true;
                 CHECK(barrier.old_layout == barrier.new_layout);
                 CHECK(barrier.dst_stages == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-                // The first read's layout transition is itself a write, so the new stage chains off that read's stage.
                 CHECK(barrier.src_stages == VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
             }
         }

@@ -12,7 +12,6 @@
 #include "assets/meshlet.hxx"
 #include "serialisation/byte_stream.hxx"
 
-// Layouts baked into MODL v1. If one of these fires, bump cooked_model_version (see cooked_model.hxx).
 static_assert(sizeof(CompressedModelVertex) == 20, "CompressedModelVertex changed: bump cooked_model_version");
 static_assert(sizeof(GpuMeshlet) == 48, "GpuMeshlet changed: bump cooked_model_version");
 static_assert(meshlet_max_vertices == 64 && meshlet_max_triangles == 124,
@@ -110,7 +109,6 @@ namespace {
         return {bounds_min, bounds_max};
     }
 
-    // A cooked primitive larger than this is refused rather than allocated: counts come from the file.
     inline constexpr std::uint32_t max_primitive_vertices = 1U << 24U;
     inline constexpr std::uint32_t max_primitive_indices = 3U << 24U;
     inline constexpr std::uint32_t max_node_depth = 256;
@@ -127,7 +125,6 @@ namespace {
         return true;
     }
 
-    // ---- v3 trailing skin section: per-primitive SkinVertex streams, then skeleton + clips. ----
     inline constexpr std::uint32_t max_skin_joints = 4096;
     inline constexpr std::uint32_t max_skin_clips = 4096;
     inline constexpr std::uint32_t max_track_keys = 1U << 22U;
@@ -300,7 +297,6 @@ namespace {
         return std::nullopt;
     }
 
-    // Returns false (reader failed) on a malformed section.
     auto read_skin_section(ByteReader &reader, ModelCpuData &cpu_data) -> void {
         for (auto &mesh: cpu_data.meshes) {
             for (auto &primitive: mesh.primitives) {
@@ -448,7 +444,6 @@ namespace {
 
     auto accumulate_bounds(ModelCpuData const &cpu_data, std::uint32_t node_index, glm::mat4 const &parent,
                            glm::vec3 &bounds_min, glm::vec3 &bounds_max, std::uint32_t depth) -> void {
-        // A cyclic node graph would recurse forever; glTF forbids cycles but files aren't always valid.
         if (node_index >= cpu_data.nodes.size() || depth > 256) {
             return;
         }
@@ -527,7 +522,6 @@ namespace {
         writer.write_span(std::span<std::uint32_t const>{indices});
     }
 
-    // Failure latches in `reader`.
     auto read_indices(ByteReader &reader, std::vector<std::uint32_t> &indices) -> bool {
         auto const count = reader.read<std::uint32_t>();
         auto const encoding = reader.read<std::uint8_t>();
@@ -539,8 +533,6 @@ namespace {
             return false;
         }
 
-        // Everything that sizes `indices` is checked before it is resized: `count` comes from the file, and a few
-        // bytes of header must not be able to ask for gigabytes.
         switch (static_cast<IndexEncoding>(encoding)) {
             case IndexEncoding::raw:
                 if (size != static_cast<std::uint64_t>(count) * sizeof(std::uint32_t)) {
@@ -556,7 +548,6 @@ namespace {
                 return true;
 
             case IndexEncoding::meshopt:
-                // The index codec spends at least one byte per triangle.
                 if (count / 3 > size) {
                     reader.fail();
                     return false;
@@ -582,10 +573,6 @@ namespace {
         writer.write_array(build.topology.data);
     }
 
-    // The mesh shader sizes its outputs from meshlet_max_vertices/triangles and the draw reads the vertex buffer
-    // through the meshlet's vertex list, so every number here has to be in range before it goes near the GPU: an index
-    // past `primitive_vertex_count` is an out-of-bounds buffer read, a meshlet larger than the limits an out-of-bounds
-    // write into shared memory.
     auto read_meshlets(ByteReader &reader, MeshletBuild &build, std::uint32_t primitive_vertex_count) -> bool {
         reader.read_array(build.meshlets);
         reader.read_array(build.topology.data);
@@ -597,7 +584,6 @@ namespace {
         auto const data_size = data.size();
 
         for (auto const &meshlet: build.meshlets) {
-            // Vertex indices then packed triangles, both inside `data`.
             if (static_cast<std::uint64_t>(meshlet.vertex_offset) + meshlet.vertex_count > data_size ||
                 static_cast<std::uint64_t>(meshlet.triangle_offset) + meshlet.triangle_count > data_size) {
                 reader.fail();
@@ -618,7 +604,6 @@ namespace {
                 return false;
             }
 
-            // Packed i0 | i1 << 8 | i2 << 16, each local to the meshlet's own vertex list.
             auto const triangles =
                     std::span<std::uint32_t const>{data}.subspan(meshlet.triangle_offset, meshlet.triangle_count);
 
@@ -632,7 +617,6 @@ namespace {
                 return false;
             }
 
-            // Culling reads these on the GPU; NaN makes every test pass or fail unpredictably.
             if (!all_finite(meshlet.centre) || !std::isfinite(meshlet.radius) || meshlet.radius < 0.0F ||
                 !all_finite(meshlet.cone_axis) || !std::isfinite(meshlet.cone_cutoff)) {
                 reader.fail();
@@ -650,12 +634,9 @@ namespace {
         return reader.ok();
     }
 
-    // Each entry of the node graph is reachable once from the scene roots, and no deeper than the recursive walks
-    // elsewhere allow. A cycle would recurse forever; a node shared by several parents turns a few bytes of file into
-    // exponentially many visits.
     [[nodiscard]] auto node_graph_is_a_forest(ModelCpuData const &cpu_data) -> bool {
         std::vector<bool> visited(cpu_data.nodes.size(), false);
-        std::vector<std::pair<std::uint32_t, std::uint32_t>> stack; // node, depth
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> stack;
 
         stack.reserve(cpu_data.scene_roots.size());
 
@@ -684,7 +665,7 @@ namespace {
         return true;
     }
 
-} // namespace
+}
 
 auto encode_cooked_model(ModelCpuData const &cpu_data, std::span<CookedImageRef const> images,
                          std::span<DefaultSampler const> material_samplers)
@@ -787,7 +768,6 @@ auto encode_cooked_model(ModelCpuData const &cpu_data, std::span<CookedImageRef 
             writer.write(static_cast<std::uint32_t>(encoded_size));
             writer.write_span(std::span<std::byte const>{encoded}.first(encoded_size));
 
-            // Bit L: level L has its own index buffer and meshlets; otherwise it aliases level L-1.
             std::uint8_t level_mask = 1;
 
             for (std::uint32_t level = 1; level < lod_count; ++level) {
@@ -839,8 +819,6 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
     auto const bounds_max = read_vec3(reader);
     cpu_data.bounds = std::pair{bounds_min, bounds_max};
 
-    // Every record below has a minimum size, so a count can't exceed the bytes left divided by it. Without the division
-    // a 100-byte file could still ask for tens of gigabytes of default-constructed structs.
     auto const bounded_count = [&](std::size_t minimum_record_size = 1) {
         auto const count = reader.read<std::uint32_t>();
 
@@ -868,7 +846,6 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
 
         image.slot = static_cast<ModelTextureSlot>(slot);
 
-        // Interned for the life of the process, so a name from a file is capped: real ones are file names.
         auto debug_name = reader.read_string();
         debug_name.resize(std::min(debug_name.size(), max_debug_name_length));
         image.debug_name = FlyString{debug_name};
@@ -971,8 +948,6 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
             auto const encoded_size = reader.read<std::uint32_t>();
             auto const encoded = reader.read_bytes(encoded_size);
 
-            // The vertex codec spends at least one header byte per byte lane per 16-vertex block, so the encoded size
-            // bounds the count; the cap keeps even a consistent file from asking for gigabytes.
             if (reader.failed() || vertex_count == 0 || vertex_count > max_primitive_vertices ||
                 vertex_count / 16 > encoded_size) {
                 reader.fail();
@@ -1015,7 +990,6 @@ auto decode_cooked_model(std::span<std::byte const> payload, std::uint16_t versi
         }
     }
 
-    // v3 appends the skin section; v1/v2 payloads simply end after the meshes.
     if (version >= 3 && !reader.failed()) {
         read_skin_section(reader, cpu_data);
     }

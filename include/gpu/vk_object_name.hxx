@@ -37,4 +37,4 @@ namespace vk {
         static_cast<void>(vkSetDebugUtilsObjectNameEXT(device, &info));
     }
 
-} // namespace vk
+}

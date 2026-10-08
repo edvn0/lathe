@@ -102,7 +102,6 @@ auto CommandLine::positional(std::string_view name, std::string_view help, std::
 }
 
 auto CommandLine::parse(std::span<char const *const> args) -> std::expected<Outcome, std::string> {
-    // lyra::args takes the program name from the first element.
     std::vector<std::string> storage;
     storage.reserve(args.size() + 1);
     storage.push_back(impl_->program);
@@ -131,7 +130,6 @@ auto CommandLine::help_text() const -> std::string {
         text += "\n" + impl_->description + "\n";
     }
 
-    // One column for every section, so the descriptions line up.
     constexpr std::size_t max_left_width = 40;
     constexpr std::string_view help_left = "-h, --help, -?";
     auto left_width = help_left.size();

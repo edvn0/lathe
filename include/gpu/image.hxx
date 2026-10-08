@@ -22,7 +22,6 @@
 
 inline constexpr auto invalid_image_index = std::numeric_limits<std::uint32_t>::max();
 
-// Defined in image_storage.hxx.
 struct ImageSlotData;
 
 using ImageHandle = Handle<ImageSlotData>;
@@ -60,21 +59,16 @@ struct ImageError {
     std::optional<ErrorCause> cause;
 };
 
-// Binds the image into memory somebody else allocated (a frame graph transient block) instead of giving it its own.
-// The allocation must outlive the image; the image does not free it.
 struct ImageAliasing {
     VmaAllocation allocation = VK_NULL_HANDLE;
     VkDeviceSize offset = 0;
 };
 
-// Where an uploaded image's mip levels come from.
 enum class ImageMipSource : std::uint8_t {
-    generate, // blitted from level 0 on the GPU
-    provided, // part of the uploaded pixels
+    generate,
+    provided,
 };
 
-// Bytes from the start of a tightly packed mip chain of a `width` x `height` image, `texel_bytes` per texel, to
-// `level`.
 [[nodiscard]] constexpr auto mip_chain_offset(std::uint32_t width, std::uint32_t height, std::uint32_t texel_bytes,
                                               std::uint32_t level) noexcept -> std::size_t {
     std::size_t offset = 0;
@@ -100,10 +94,8 @@ struct ImageCreateInfo {
 
     VkImageType image_type = VK_IMAGE_TYPE_2D;
 
-    // The primary view, used for attachments and Image::view().
     VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_2D;
 
-    // Extra views registered in the GPU resource table.
     ImageDescriptorViewFlags descriptor_views = 0;
 
     VkImageCreateFlags flags = 0;
@@ -136,13 +128,10 @@ public:
     [[nodiscard]]
     static auto create(VulkanContext &context, ImageCreateInfo const &create_info) -> std::expected<Image, ImageError>;
 
-    // `pixels` is level 0, from which the other levels are blitted, or with ImageMipSource::provided every level
-    // from 0 down, tightly packed (for mips made on the CPU, e.g. coverage-preserving alpha).
     [[nodiscard]]
     static auto create(VulkanContext &context, ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
                        ImageMipSource mip_source = ImageMipSource::generate) -> std::expected<Image, ImageError>;
 
-    // What an image of `create_info` needs from memory (vkGetDeviceImageMemoryRequirements), without creating it.
     [[nodiscard]]
     static auto memory_requirements(VulkanContext &context, ImageCreateInfo const &create_info) -> VkMemoryRequirements;
 
@@ -158,7 +147,6 @@ public:
         return image_;
     }
 
-    // Full-resource view, usable as an attachment.
     [[nodiscard]]
     auto view() const noexcept -> VkImageView {
         return view_;
@@ -269,7 +257,7 @@ private:
 
     std::vector<VkImageView> mip_layer_views_;
     VmaAllocation allocation_ = VK_NULL_HANDLE;
-    bool aliased_ = false; // image_ is bound into someone else's allocation_-less memory: vkDestroyImage, no VMA
+    bool aliased_ = false;
 
     VmaAllocationInfo allocation_info_{};
 
@@ -311,20 +299,15 @@ enum class ImageColourSpace : std::uint8_t {
     srgb,
 };
 
-// How a texture's alpha channel is used by the material that samples it.
 enum class AlphaCoverage : std::uint8_t {
-    opaque, // no meaningful alpha
-    mask, // a cut-out: nearly every texel is clear or solid
-    blend, // genuine translucency
+    opaque,
+    mask,
+    blend,
 };
 
-// Scans the alpha of a legacy BC3 (DXT5) `.dds` base mip. nullopt if the file can't be read or isn't a DDS; every
-// other DDS format reports opaque.
 [[nodiscard]]
 auto classify_dds_alpha(std::string_view path) -> std::optional<AlphaCoverage>;
 
-// Scans the alpha of an encoded (PNG, JPEG, ...) image. Files without an alpha channel report opaque without
-// decoding. nullopt if the data can't be decoded.
 [[nodiscard]]
 auto classify_encoded_alpha(std::span<std::byte const> encoded) -> std::optional<AlphaCoverage>;
 

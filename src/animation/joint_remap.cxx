@@ -25,10 +25,9 @@ namespace Animation {
             }
             return false;
         }
-    } // namespace
+    }
 
     auto canonical_joint_name(std::string_view const name) -> std::string {
-        // Side markers: "Left"/"Right" prefix, or a trailing ".L"/"_R"/"_l" style suffix in the raw name.
         char side = 0;
         std::string_view raw = name;
         if (raw.size() > 2 && (raw[raw.size() - 2] == '.' || raw[raw.size() - 2] == '_')) {
@@ -98,4 +97,4 @@ namespace Animation {
     }
 
     auto remap_to_humanoid(Skeleton const &source) -> JointRemap { return remap_joints(source, humanoid_joint_names()); }
-} // namespace Animation
+}

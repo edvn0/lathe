@@ -1,14 +1,6 @@
 import scene_types;
 import light_clusters;
 
-// First half of the light clustering: tests every punctual light's bounding sphere against the camera frustum, drops
-// the ones light_screen_fade() LODs out, and compacts the rest, as view-space spheres plus their light index, so
-// light_cluster.slang only reads lights that can reach the screen.
-//
-// One workgroup walks the whole light buffer. A shared-memory prefix sum keeps the compaction in light-index order,
-// which light_cluster.slang relies on to emit sorted per-cluster lists. A few tens of thousands of lights is only a
-// couple of hundred iterations.
-
 static const uint group_size = 256;
 
 struct LightCullPushConstants
@@ -16,11 +8,8 @@ struct LightCullPushConstants
     Ptr<UBO> ubo;
     Ptr<GpuLight> lights;
 
-    // The camera's inward-facing world-space planes: left, right, bottom, top, near, far.
     Ptr<float4> frustum_planes;
 
-    // Outputs: view-space spheres (xyz = centre, w = radius) and light indices for the first visible_light_count
-    // slots.
     Ptr<float4> visible_spheres;
     Ptr<uint> visible_light_indices;
     Ptr<uint> visible_light_count;
@@ -73,7 +62,6 @@ void main_cs(uint lane: SV_GroupIndex)
             visible = light_screen_fade(pc.ubo, light) > 0.0 && sphere_in_frustum(sphere);
         }
 
-        // Wave ops stay outside the branch so every lane contributes.
         const uint wave_exclusive = WavePrefixCountBits(visible);
         const uint wave_total = WaveActiveCountBits(visible);
 
@@ -102,7 +90,6 @@ void main_cs(uint lane: SV_GroupIndex)
 
         written += s_block_total;
 
-        // s_wave_totals/s_block_total are rewritten by the next block.
         GroupMemoryBarrierWithGroupSync();
     }
 

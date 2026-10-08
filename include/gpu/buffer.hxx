@@ -16,13 +16,10 @@
 #include <type_traits>
 
 enum class BufferMemory : std::uint8_t {
-    // GPU-local, normally not mapped. Filled through transfers from an upload buffer.
     device,
 
-    // CPU -> GPU. Persistently mapped, for sequential writes.
     upload,
 
-    // GPU -> CPU. Persistently mapped, preferably cached.
     readback,
 };
 
@@ -32,8 +29,6 @@ struct BufferCreateInfo {
     BufferMemory memory = BufferMemory::device;
     VkBufferCreateFlags flags = 0;
 
-    // Concurrent sharing between these queue families (VK_SHARING_MODE_CONCURRENT) instead of exclusive ownership;
-    // empty is exclusive. For buffers two queue families both touch, so the frame graph needs no ownership transfers.
     std::array<std::uint32_t, 2> concurrent_families{};
     std::uint32_t concurrent_family_count = 0;
 

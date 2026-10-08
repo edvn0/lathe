@@ -13,7 +13,6 @@
 #include "assets/model.hxx"
 #include "core/object_pool.hxx"
 
-// One flattened draw: the mesh and its model-space transform with every ancestor folded in.
 struct ModelDraw {
     MeshHandle mesh{};
     glm::mat4 local_transform{1.0F};
@@ -27,17 +26,11 @@ struct ModelSlotData {
 
     std::vector<ModelCpuLight> lights;
 
-    // Skeleton and clips of a skinned model (null otherwise), plus the bound already folded into its bounds.
     std::shared_ptr<ModelAnimationData const> animation;
     float skin_inflate = 0.0F;
 
-    // Callers holding this handle. The model caches retain it when handing it out again; destroy_model() only
-    // frees the slot once it reaches zero. create_model()/upgrade_pending_model() handle it explicitly rather than
-    // overwriting it.
     std::uint32_t ref_count = 1;
 
-    // Set on a pending slot, whose draws are a copy of this model's and point at its meshes. The pending slot holds
-    // a reference on it, so those meshes outlive the copy, and must never destroy them itself.
     ModelHandle borrowed_from{};
 };
 
@@ -75,7 +68,6 @@ struct ModelStorageCreateInfo {
     std::uint32_t capacity = 0;
 };
 
-// Generational pool of CPU-side, flattened model scene graphs. Owns no Vulkan resources.
 class ModelStorage {
 public:
     ModelStorage() = default;
@@ -92,17 +84,12 @@ public:
     [[nodiscard]]
     auto create_model(ModelSlotData data) -> std::expected<ModelHandle, ModelStorageError>;
 
-    // Reserves a slot holding a copy of `fallback`'s data until upgrade_pending_model() installs the real model. The
-    // copy shares `fallback`'s meshes, so it records `fallback` in borrowed_from and retains it.
     [[nodiscard]]
     auto create_pending_model(ModelHandle fallback) -> std::expected<ModelHandle, ModelStorageError>;
 
-    // Replaces a slot's data in place; the handle stays the same. The caller releases the slot's previous
-    // borrowed_from, if any.
     [[nodiscard]]
     auto upgrade_pending_model(ModelHandle handle, ModelSlotData data) -> std::expected<ModelHandle, ModelStorageError>;
 
-    // Releases the slot. ref_count must already be zero and the draws' meshes torn down.
     [[nodiscard]]
     auto release(ModelHandle handle) -> std::expected<void, ModelStorageError>;
 

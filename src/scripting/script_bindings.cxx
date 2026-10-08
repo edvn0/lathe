@@ -1,11 +1,3 @@
-// The Lua-facing API. Lua is compiled as C, so a raised error longjmps past every C++ frame up to the protected
-// call. Every lua_CFunction here therefore:
-//   - reads and checks its arguments with luaL_check*/luaL_test* before creating any C++ object,
-//   - does its C++ work (map lookups, std::format, registry.patch) inside a {} scope that ends before any call
-//     that can raise,
-//   - carries error text out of that scope in a std::array<char, N>,
-//   - raises only through luaL_error.
-// sol2 is used for the Vec3 usertype only.
 
 #include "scripting/lua_api.hxx"
 
@@ -37,15 +29,11 @@ namespace scripting::detail {
         constexpr char const *entity_metatable = "lathe.Entity";
         constexpr char const *transform_metatable = "lathe.Transform";
 
-        // For luaL_error's "%s"; the same text as invalid_entity_tag.
         constexpr char const *invalid_entity_tag_cstr = "[invalid_entity] ";
         static_assert(std::string_view{invalid_entity_tag_cstr} == invalid_entity_tag);
 
-        // print() output past this many bytes per line is cut off.
         constexpr std::size_t max_print_line_bytes = 4ULL * 1024;
 
-        // Base-library functions scripts keep. Left out: dofile, loadfile, load (binary chunks), collectgarbage
-        // ("stop" defeats the memory cap), warn and _G (the real globals also hold sol2's internals).
         constexpr std::array<char const *, 18> copied_base_names{
                 "assert",       "error",    "getmetatable", "ipairs", "next",   "pairs",
                 "pcall",        "rawequal", "rawget",       "rawlen", "rawset", "select",
@@ -58,7 +46,6 @@ namespace scripting::detail {
                 "get_entity", "get_children_or_empty", "get_transform", "translation", "x", "y", "z", "random", "new",
         };
 
-        // Full userdata; the generation catches refs that outlive a registry change.
         struct LuaEntityRef {
             entt::entity id;
             std::uint32_t generation;
@@ -69,8 +56,6 @@ namespace scripting::detail {
             std::uint32_t generation;
         };
 
-        // Returns the live entity behind the ref at `index`, or raises "[invalid_entity] entity <id> no longer
-        // exists".
         template<typename Ref>
         auto check_ref(lua_State *state, int index, char const *metatable) -> entt::entity {
             auto const *const ref = static_cast<Ref const *>(luaL_checkudata(state, index, metatable));
@@ -89,7 +74,6 @@ namespace scripting::detail {
             return check_ref<LuaEntityRef>(state, index, entity_metatable);
         }
 
-        // Also requires the Transform to still be there.
         auto check_transform(lua_State *state, int index) -> entt::entity {
             auto const entity = check_ref<LuaTransformRef>(state, index, transform_metatable);
             if (!run_context(state).world.registry->all_of<Components::Transform>(entity)) {
@@ -116,7 +100,6 @@ namespace scripting::detail {
             }
         }
 
-        // Accepts scene.get_entity(name) and scene:get_entity(name).
         auto scene_get_entity(lua_State *state) -> int {
             int const name_index = lua_gettop(state) >= 2 && lua_isstring(state, 1) == 0 ? 2 : 1;
             std::size_t length = 0;
@@ -131,7 +114,6 @@ namespace scripting::detail {
                 found = context.entity_index->find(name);
                 if (found == entt::null || !context.world.registry->valid(found)) {
                     auto const limit = static_cast<std::ptrdiff_t>(message.size() - 1);
-                    // The array is zeroed and one byte is held back, so the text stays terminated.
                     if (auto const suggestion = closest_name(name, context.entity_index->names())) {
                         static_cast<void>(std::format_to_n(
                                 message.data(), limit, "no entity named '{}' (did you mean '{}'?)", name, *suggestion));
@@ -152,8 +134,6 @@ namespace scripting::detail {
         auto entity_get_children_or_empty(lua_State *state) -> int {
             auto const entity = check_entity(state, lua_upvalueindex(1));
 
-            // A view into the engine's index: nothing here owns memory, so a raise below leaks nothing. The index
-            // can't be rebuilt mid-run, since a run's world (and so its revision) is fixed.
             std::span<entt::entity const> children;
             {
                 auto &context = run_context(state);
@@ -165,7 +145,6 @@ namespace scripting::detail {
             lua_createtable(state, static_cast<int>(children.size()), 0);
             lua_Integer count = 0;
             for (auto const child: children) {
-                // Parent may have been edited in place since the index was built.
                 auto const *const parent =
                         registry->valid(child) ? registry->try_get<Components::Parent>(child) : nullptr;
                 if (parent == nullptr || parent->entity != entity) {
@@ -187,8 +166,6 @@ namespace scripting::detail {
             return 1;
         }
 
-        // __index. Methods are closures over the entity, so both e.get_transform() (the documented form) and
-        // e:get_transform() work.
         auto entity_index(lua_State *state) -> int {
             luaL_checkudata(state, 1, entity_metatable);
 
@@ -204,8 +181,6 @@ namespace scripting::detail {
                 }
             }
 
-            // Unknown keys are nil, so calling one reads "attempt to call a nil value (field 'x')" plus a
-            // suggestion.
             if (method == nullptr) {
                 lua_pushnil(state);
                 return 1;
@@ -216,7 +191,6 @@ namespace scripting::detail {
             return 1;
         }
 
-        // "Entity(42, 'Helmets')"; never raises, so a stale ref can still be printed.
         auto entity_to_string(lua_State *state) -> int {
             auto const *const ref = static_cast<LuaEntityRef const *>(luaL_checkudata(state, 1, entity_metatable));
 
@@ -258,7 +232,6 @@ namespace scripting::detail {
             return 1;
         }
 
-        // "translation" -> a Vec3 copy of the position.
         auto transform_index(lua_State *state) -> int {
             auto const entity = check_transform(state, 1);
 
@@ -278,8 +251,6 @@ namespace scripting::detail {
             return 1;
         }
 
-        // "translation" = Vec3 -> registry.patch, which fires on_update<Transform> (and so
-        // Scene::on_transform_changed).
         auto transform_new_index(lua_State *state) -> int {
             std::size_t length = 0;
             char const *const raw_key = luaL_checklstring(state, 2, &length);
@@ -310,7 +281,6 @@ namespace scripting::detail {
             return 0;
         }
 
-        // Vec3.random(lo, hi): each component uniform in [lo, hi).
         auto vec3_random(lua_State *state) -> int {
             auto const first = luaL_checknumber(state, 1);
             auto const second = luaL_checknumber(state, 2);
@@ -357,11 +327,9 @@ namespace scripting::detail {
             return 1;
         }
 
-        // print(...) -> logger::info("[script] ..."), tab-separated like the standard print. Capped per run.
         auto sandbox_print(lua_State *state) -> int {
             int const count = lua_gettop(state);
 
-            // Built in Lua memory, so a raise from a __tostring here leaks nothing.
             luaL_Buffer buffer;
             luaL_buffinit(state, &buffer);
             for (int index = 1; index <= count; ++index) {
@@ -390,23 +358,17 @@ namespace scripting::detail {
             return 0;
         }
 
-        // __newindex on a read-only proxy; upvalue 1 is the library name.
         auto read_only_new_index(lua_State *state) -> int {
             return luaL_error(state, "'%s' is read-only", lua_tostring(state, lua_upvalueindex(1)));
         }
 
-        // __call on a proxy: calls the proxied object (upvalue 1) with the same arguments, as if it had been called
-        // directly. Calling a table runs its own __call with the table prepended, which is what sol2's
-        // call_constructor expects.
         auto forward_call(lua_State *state) -> int {
-            // [proxy, args...] -> [target, args...]
             lua_pushvalue(state, lua_upvalueindex(1));
             lua_replace(state, 1);
             lua_call(state, lua_gettop(state) - 1, LUA_MULTRET);
             return lua_gettop(state);
         }
 
-        // __pairs on a proxy: iterates the proxied table (upvalue 1).
         auto proxy_pairs(lua_State *state) -> int {
             lua_getglobal(state, "next");
             lua_pushvalue(state, lua_upvalueindex(1));
@@ -414,9 +376,6 @@ namespace scripting::detail {
             return 3;
         }
 
-        // Pushes a read-only proxy for the table at `table_index`. The proxy is a zero-size full userdata rather than
-        // a table, so rawset() can't plant fields on it either. Proxies persist across runs, so this is what keeps
-        // one script from changing the libraries the next one sees.
         auto make_read_only(lua_State *state, int table_index, char const *name, bool forward_calls) -> void {
             table_index = lua_absindex(state, table_index);
 
@@ -446,7 +405,6 @@ namespace scripting::detail {
             lua_setmetatable(state, -2);
         }
 
-        // Pushes the Vec3 usertype table (registered through a throwaway staging table, never a global).
         auto push_vec3_usertype(lua_State *state) -> void {
             sol::state_view lua{state};
             sol::table staging = lua.create_table();
@@ -489,20 +447,19 @@ namespace scripting::detail {
             lua_setfield(state, -2, "__metatable");
             lua_pop(state, 1);
         }
-    } // namespace
+    }
 
     auto run_context(lua_State *state) noexcept -> RunContext & {
         return **static_cast<RunContext **>(lua_getextraspace(state));
     }
 
-    auto build_sandbox(lua_State *state, RunContext & /*context*/) -> void {
+    auto build_sandbox(lua_State *state, RunContext & ) -> void {
         luaL_requiref(state, LUA_GNAME, &luaopen_base, 1);
         luaL_requiref(state, LUA_STRLIBNAME, &luaopen_string, 1);
         luaL_requiref(state, LUA_TABLIBNAME, &luaopen_table, 1);
         luaL_requiref(state, LUA_MATHLIBNAME, &luaopen_math, 1);
         lua_pop(state, 4);
 
-        // Nothing else may reach the string metatable through getmetatable("").
         lua_pushliteral(state, "");
         if (lua_getmetatable(state, -1) != 0) {
             lua_pushboolean(state, 0);
@@ -557,16 +514,11 @@ namespace scripting::detail {
             if (lua_getinfo(state, "Sl", activation) != 0 && activation->currentline > 0) {
                 context.timeout_line = activation->currentline;
             }
-            // From now on every instruction raises, so `while true do pcall(f) end` can't swallow the timeout: the
-            // loop's own instructions between pcalls raise outside any pcall.
             lua_sethook(state, &deadline_hook, LUA_MASKCOUNT, 1);
         }
-        // The text is unused; classify() keys off context.timed_out.
         luaL_error(state, "[timeout]");
     }
 
-    // No traceback, which keeps the allocation small; sol2's default handler is replaced because it holds a
-    // std::string across luaL_traceback.
     auto message_handler(lua_State *state) -> int {
         auto &context = run_context(state);
         if (context.budget != nullptr) {
@@ -586,8 +538,6 @@ namespace scripting::detail {
         return 1;
     }
 
-    // Runs inside the protected call: gives the chunk at index 1 a fresh _ENV that reads through to the sandbox,
-    // so globals one run assigns are gone in the next, and calls it.
     auto run_chunk_entry(lua_State *state) -> int {
         luaL_checktype(state, 1, LUA_TFUNCTION);
 
@@ -599,7 +549,6 @@ namespace scripting::detail {
         lua_setfield(state, -2, "__metatable");
         lua_setmetatable(state, -2);
 
-        // Upvalue 1 of a main chunk is _ENV.
         static_cast<void>(lua_setupvalue(state, 1, 1));
 
         lua_settop(state, 1);
@@ -608,4 +557,4 @@ namespace scripting::detail {
     }
 
     auto bound_member_names() noexcept -> std::span<std::string_view const> { return member_names; }
-} // namespace scripting::detail
+}

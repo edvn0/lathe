@@ -9,7 +9,7 @@ namespace frame_graph {
             return static_cast<std::size_t>(queue);
         }
 
-    } // namespace
+    }
 
     PassProfiler::~PassProfiler() { destroy(); }
 
@@ -97,7 +97,6 @@ namespace frame_graph {
             auto const logical = queue == 0 ? LogicalQueue::graphics : LogicalQueue::compute;
 
             if (entry.pool == VK_NULL_HANDLE) {
-                // No timestamps on this queue: still list the passes, without a time.
                 for (auto const &written: entry.written) {
                     timings_.push_back(PassTiming{.name_id = written.name_id,
                                                   .label = written.label,
@@ -128,7 +127,6 @@ namespace frame_graph {
                     if (result == VK_SUCCESS) {
                         auto const begin = ticks[2 * static_cast<std::size_t>(written.timestamp_slot)];
                         auto const end = ticks[2 * static_cast<std::size_t>(written.timestamp_slot) + 1];
-                        // The counter may wrap within its valid bits.
                         auto const delta = (end - begin) & mask;
                         timing.milliseconds = static_cast<float>(delta) * timestamp_period_ / 1'000'000.0F;
                     }
@@ -151,7 +149,6 @@ namespace frame_graph {
 
         auto &entry = pools_[slot][queue_index(queue)];
 
-        // Without timestamps, remember the pass so it is still listed.
         if (timestamp_slot < max_passes_) {
             entry.written.push_back(Written{
                     .name_id = std::string{name_id}, .label = std::string{label}, .timestamp_slot = timestamp_slot});
@@ -161,11 +158,6 @@ namespace frame_graph {
             return;
         }
 
-        // ALL_COMMANDS, not TOP_OF_PIPE: the begin timestamp is written once every earlier command on the queue has
-        // finished. A TOP_OF_PIPE begin is written as soon as the pass is reached, while its end waits for all earlier
-        // work, so a cheap pass recorded behind an expensive one reported that one's remaining time as its own (e.g.
-        // cluster_stats_clear reading exactly gpu_culling's time). Now passes on a queue don't overlap: a pass's time
-        // is from the queue draining before it to its own end, and the times of one queue add up to at most its span.
         vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, entry.pool, 2 * timestamp_slot);
     }
 
@@ -191,7 +183,6 @@ namespace frame_graph {
             return found->second;
         }
 
-        // Tracy keeps these pointers for the life of the process, so the strings and the location are never freed.
         auto const &name = names_.emplace_back(label);
         auto const &location = locations_.emplace_back(tracy::SourceLocationData{
                 .name = name.c_str(),
@@ -207,4 +198,4 @@ namespace frame_graph {
 #endif
     }
 
-} // namespace frame_graph
+}

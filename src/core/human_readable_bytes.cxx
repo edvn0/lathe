@@ -25,4 +25,4 @@ namespace detail {
         return std::format("{:.2f} {}", value, units[unit]);
     }
 
-} // namespace detail
+}

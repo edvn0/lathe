@@ -23,7 +23,7 @@ namespace Animation {
             auto const first = second - 1;
             return {first, second, (time - times[first]) / (times[second] - times[first])};
         }
-    } // namespace
+    }
 
     void KeyframeClip::sample(float const phase, PoseView const out) const {
         copy_pose(base_.view(), out);
@@ -80,4 +80,4 @@ namespace Animation {
         auto const wrapped = phase - std::floor(phase);
         return wrapped;
     }
-} // namespace Animation
+}

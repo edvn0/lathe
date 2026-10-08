@@ -54,7 +54,7 @@ namespace {
         return summarise_timings(values);
     }
 
-} // namespace
+}
 
 auto analyse_frames(std::span<BenchmarkFrameSample const> samples, AnalysisOptions const &options) -> FrameAnalysis {
     FrameAnalysis analysis;
@@ -126,7 +126,6 @@ auto analyse_frames(std::span<BenchmarkFrameSample const> samples, AnalysisOptio
 
         auto const is_hitch = displayed > analysis.hitch_threshold_ms;
 
-        // Events of this frame and the previous one, for attributing a hitch.
         auto window = sample.events;
         if (i > 0) {
             for (std::size_t event = 0; event < perf_event_count; ++event) {
@@ -259,7 +258,7 @@ namespace {
         return LineFit{.intercept = mean_y - slope * mean_x, .slope = slope, .r_squared = r_squared, .valid = true};
     }
 
-} // namespace
+}
 
 auto fit_scaling(std::span<double const> loads, std::span<double const> costs_ms) -> ScalingFit {
     auto const count = std::min(loads.size(), costs_ms.size());

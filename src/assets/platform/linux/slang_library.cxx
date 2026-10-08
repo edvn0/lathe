@@ -93,7 +93,7 @@ namespace {
         return result;
     }
 
-} // namespace
+}
 
 struct SlangLibrary::Impl {
     void *handle = nullptr;
@@ -160,7 +160,7 @@ auto SlangLibrary::create(std::filesystem::path const &library_path) -> std::exp
         return std::unexpected{std::move(absolute_result.error())};
     }
 
-    dlerror(); // Clear any pending error.
+    dlerror();
 
     impl->handle = dlopen(absolute_result->c_str(), RTLD_NOW | RTLD_LOCAL);
 
@@ -170,7 +170,7 @@ auto SlangLibrary::create(std::filesystem::path const &library_path) -> std::exp
                                                       absolute_result->string(), dl_error_message()))};
     }
 
-    dlerror(); // Clear any pending error.
+    dlerror();
 
     auto *symbol = dlsym(impl->handle, "slang_createGlobalSession2");
 

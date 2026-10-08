@@ -14,7 +14,6 @@ struct PC
     uint base_vertex;
     uint texture_id;
     uint sampler_id;
-    // Non-zero when the texture is sRGB and already decoded by the sampler.
     uint already_linear;
 }
 

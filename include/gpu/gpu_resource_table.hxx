@@ -89,7 +89,6 @@ public:
     static auto create(VulkanContext &context, GpuResourceTableCreateInfo const &create_info)
             -> std::expected<GpuResourceTable, GpuResourceTableError>;
 
-    // Call only after frame_index's fence has completed.
     [[nodiscard]]
     auto prepare_frame(std::uint32_t frame_index, ImageStorage const &images, SamplerStorage const &samplers)
             -> std::expected<void, GpuResourceTableError>;

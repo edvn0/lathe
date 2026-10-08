@@ -34,7 +34,6 @@ namespace {
         return extension;
     }
 
-    // libktx leaks its memstream when it rejects a buffer with a bad identifier, so screen those out first.
     constexpr std::array<unsigned char, 12> ktx2_identifier{0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB, '\r', '\n', 0x1A, '\n'};
     constexpr std::size_t ktx2_header_size = 80;
 
@@ -48,7 +47,6 @@ namespace {
 
     using KtxTexturePtr = std::unique_ptr<ktxTexture2, KtxTextureDeleter>;
 
-    // Unsigned small float with `exponent_bits` and `mantissa_bits`, bias 15 (the B10G11R11 channels).
     [[nodiscard]]
     auto decode_small_float(std::uint32_t bits, std::uint32_t mantissa_bits) noexcept -> float {
         auto const mantissa = bits & ((1U << mantissa_bits) - 1U);
@@ -60,7 +58,7 @@ namespace {
         }
 
         if (exponent == 31) {
-            return 0.0F; // inf / NaN
+            return 0.0F;
         }
 
         return std::ldexp(1.0F + (static_cast<float>(mantissa) / scale), static_cast<int>(exponent) - 15);
@@ -133,7 +131,7 @@ namespace {
         }
     }
 
-} // namespace
+}
 
 auto sanitize_to_half(float value) noexcept -> std::uint16_t {
     if (!std::isfinite(value)) {

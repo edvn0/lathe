@@ -18,7 +18,6 @@
 
 namespace {
 
-    // A new case may resize the render targets and repopulate the scene, which happens over its first frames.
     constexpr std::uint32_t minimum_case_warmup_frames = 4;
 
     [[nodiscard]] auto present_mode_name(VkPresentModeKHR mode) -> std::string {
@@ -66,7 +65,7 @@ namespace {
              analysis.bound.cpu_bound_fraction() * 100.0F, analysis.bound.presentation_bound_fraction() * 100.0F);
     }
 
-} // namespace
+}
 
 auto BenchmarkDriver::create(BenchmarkOptions options,
                              Application const &application) -> std::expected<BenchmarkDriver, std::string> {
@@ -79,7 +78,6 @@ auto BenchmarkDriver::create(BenchmarkOptions options,
             return std::unexpected(std::string{"--benchmark: this game defines no benchmark_camera_path()"});
         }
 
-        // The game's scene as it was populated at startup, as before suites existed.
         driver.scenarios_.push_back(BenchmarkScenario{.info = {.name = "game"}, .source = BenchmarkSceneSource::game});
         driver.cases_.push_back(BenchmarkCase{.scenario = 0, .id = BenchmarkCaseId{.scenario = "game"}});
 
@@ -115,7 +113,6 @@ auto BenchmarkDriver::start_case(Application &application) -> void {
     auto const &current = cases_[case_index_];
     auto const &scenario = scenarios_[current.scenario];
 
-    // Every case and repeat populates from the same seed.
     set_fixed_random_seed(options_.seed);
 
     std::vector<CameraKeyframe> keyframes;
@@ -124,12 +121,10 @@ auto BenchmarkDriver::start_case(Application &application) -> void {
         application.terrain_enabled = true;
         application.game_hooks_enabled = true;
 
-        // A single run measures the scene populated at startup; the suite rebuilds it, since other cases replace it.
         if (options_.mode == BenchmarkMode::suite) {
             application.game->on_populate(*application.editor_scene, *application.renderer, application.engine_models);
             application.mark_editor_scene_clean();
 
-            // on_populate() waited for the GPU and replaced the previous scene.
             release_scenario_materials(application);
         }
 
@@ -169,7 +164,6 @@ auto BenchmarkDriver::start_case(Application &application) -> void {
 
     run_.emplace(std::move(run_options), std::move(keyframes));
 
-    // Before warmup, so reading sysfs never lands in a measured frame.
     thermals_start_ = sample_thermals();
 
     last_events_ = perf_events::snapshot();
@@ -194,7 +188,6 @@ auto BenchmarkDriver::begin_frame(Application &application) -> void {
         start_case(application);
     }
 
-    // The shader clock restarts with the measured lap, so warmup length can't shift frame N.
     application.elapsed_time = run_->simulated_time();
 
     auto const keyframe = run_->camera();
@@ -265,7 +258,6 @@ auto BenchmarkDriver::end_frame(Application &application, VulkanContext const &c
 
     auto const &renderer = *application.renderer;
 
-    // A frame that recorded nothing (the swapchain was recreated instead) leaves the count where it was.
     auto const recorded = renderer.recorded_frame_count();
     auto const frame_serial = recorded != last_frame_serial_ ? recorded : 0U;
     last_frame_serial_ = recorded;
@@ -361,7 +353,6 @@ auto BenchmarkDriver::finish_case(Application &application, VulkanContext const 
         return status;
     }
 
-    // The suite is done: everything aggregated, in one JSON and one report.
     auto const json_path = options_.output_path / "suite.json";
     auto const report_path = options_.output_path / "report.md";
 

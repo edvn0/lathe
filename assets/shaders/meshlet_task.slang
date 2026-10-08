@@ -3,17 +3,6 @@ module meshlet_task;
 import scene_types;
 import hiz_occlusion;
 
-// Task stage shared by every meshlet scene pass, so all passes cull identically; forward depth-tests EQUAL
-// against the prepass, so any mismatch shows up as holes.
-//
-// With meshlet occlusion (docs/occlusion-culling.md, "Meshlet level") the depth prepass phases test each meshlet's sphere against
-// the Hi-Z and record a bit per emitted meshlet; forward replays those bits instead of testing, since no single
-// pyramid reproduces both phases' decisions.
-//
-// One workgroup covers up to meshlets_per_task meshlets of one instance. SV_GroupID (flattened over X/Y)
-// picks the (instance, meshlet chunk), each lane tests one meshlet, and survivors are compacted in lane order
-// before a single DispatchMesh.
-
 public struct MeshletPayload
 {
     public uint instance_index;
@@ -25,16 +14,10 @@ groupshared MeshletPayload s_payload;
 groupshared uint s_visible[meshlets_per_task];
 groupshared uint s_occluded[meshlets_per_task];
 
-// wind_offset() moves a vertex at most wind_strength along each of X and Z, so sqrt(2) * wind_strength bounds
-// the displacement.
 static const float wind_radius_scale = 1.41421356;
 
-// Max/min axis scale ratio below which a transform counts as uniform. Cone culling rotates the axis with the
-// model matrix, which is only exact for uniform scale.
 static const float uniform_scale_tolerance = 1.01;
 
-// Frustum and normal-cone tests. Returns the meshlet's world-space bounding sphere (wind padding included) for the
-// occlusion test.
 bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet_index, out float3 centre,
                      out float radius)
 {
@@ -66,8 +49,6 @@ bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet
         }
     }
 
-    // Skip wind-swayed meshlets (the rest-pose cone no longer bounds their normals). Mirrored transforms flip the
-    // front face.
     if ((pc.cull_flags & cull_backface_bit) != 0 && meshlet.cone_cutoff < 1.0 && wind_strength <= 0.0 &&
         max_scale <= min_scale * uniform_scale_tolerance && dot(cross(axis_x, axis_y), axis_z) > 0.0) {
         const float3 cone_axis = normalize(mul(model, float4(meshlet.cone_axis, 0.0)).xyz);
@@ -81,8 +62,6 @@ bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet
     return true;
 }
 
-// `plane_offset`: this view's first plane in pc.cull_planes (0 for the camera, cascade_index * 6 for a
-// cascade).
 public void run_meshlet_task(PC pc, uint plane_offset, uint draw_index, uint3 group_id, uint lane)
 {
     const DrawCommand command = pc.task_commands[draw_index];
@@ -101,7 +80,6 @@ public void run_meshlet_task(PC pc, uint plane_offset, uint draw_index, uint3 gr
     const uint flags = pc.cull_flags;
     const uint bitset_flags = cull_replay_bit | cull_skip_recorded_bit | cull_record_bit;
 
-    // Only dereferenced when a flag needs it: the shadow pass and the non-occlusion paths pass a null PC::occlusion.
     Ptr<uint> bits = Ptr<uint>(nullptr);
     uint bit_word = 0;
     uint bit_mask = 0;
@@ -114,11 +92,9 @@ public void run_meshlet_task(PC pc, uint plane_offset, uint draw_index, uint3 gr
     }
 
     if (visible && (flags & cull_replay_bit) != 0) {
-        // Forward: exactly what a prepass phase drew.
         visible = (bits[bit_word] & bit_mask) != 0;
     } else if (visible) {
         if ((flags & cull_skip_recorded_bit) != 0 && (bits[bit_word] & bit_mask) != 0) {
-            // Phase 1 already emitted it; don't draw or count it twice.
             visible = false;
         }
 

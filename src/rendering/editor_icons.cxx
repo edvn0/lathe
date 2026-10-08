@@ -33,7 +33,7 @@ namespace gui {
                 IconFile{.icon = EditorIcon::local, .name = "local"},
                 IconFile{.icon = EditorIcon::world, .name = "world"},
         };
-    } // namespace
+    }
 
     EditorIcons::EditorIcons(Renderer &renderer) {
         for (auto const &file: icon_files) {
@@ -75,4 +75,4 @@ namespace gui {
         return ImTextureID{textures_[static_cast<std::size_t>(icon)].index};
     }
 
-} // namespace gui
+}

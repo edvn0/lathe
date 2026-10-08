@@ -108,7 +108,7 @@ namespace renderer {
         std::unique_ptr<Impl> impl_;
     };
 
-} // namespace renderer
+}
 
 template<>
 struct std::formatter<renderer::ShaderCompileErrorType> : std::formatter<std::string_view> {

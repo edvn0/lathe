@@ -191,7 +191,7 @@ namespace renderer {
 
             return {};
         }
-    } // namespace
+    }
 
     namespace spirv_opt {
         [[nodiscard]]
@@ -215,7 +215,6 @@ namespace renderer {
 
             auto options = spvtools::OptimizerOptions{};
 
-            // Slang already validated the SPIR-V.
             options.set_run_validator(false);
 
             if (!optimizer.Run(spirv.data(), spirv.size(), &optimized, options)) {
@@ -225,12 +224,11 @@ namespace renderer {
 
             return optimized;
         }
-    } // namespace spirv_opt
+    }
 
     struct SlangCompiler::Impl {
         SlangLibrary library;
 
-        // Serializes the whole Slang pipeline; see compile().
         std::mutex compile_mutex;
         Slang::ComPtr<slang::IGlobalSession> global_session;
     };
@@ -323,7 +321,6 @@ namespace renderer {
 
         auto source = std::move(*source_result);
 
-        // SessionDesc strings must stay alive until createSession() returns.
         auto search_path_storage = std::vector<std::string>{};
 
         search_path_storage.reserve(request.include_directories.size() + 1);
@@ -410,8 +407,6 @@ namespace renderer {
 
         auto session = Slang::ComPtr<slang::ISession>{};
 
-        // Concurrent loadModuleFromSourceString() calls on separate ISessions sharing one IGlobalSession returned null
-        // modules and crashed, so compiles are serialized. Pipeline registration still overlaps its other work.
         std::lock_guard const compile_lock{impl_->compile_mutex};
 
         auto const session_result = impl_->global_session->createSession(session_description, session.writeRef());
@@ -424,7 +419,6 @@ namespace renderer {
 
         auto diagnostics = std::string{};
 
-        // Concurrent loads with the same module name returned null modules, so every call gets a unique name.
         static std::atomic<std::uint64_t> module_name_counter{0};
 
         auto module_name = request.source_path.absolute().stem().string();
@@ -540,7 +534,7 @@ namespace renderer {
         }
 
         if (request.optimize) {
-            auto opt_result = spirv_opt::run(std::move(spirv), /*optimize_for_size=*/false);
+            auto opt_result = spirv_opt::run(std::move(spirv), false);
 
             if (!opt_result) {
                 return std::unexpected{std::move(opt_result.error())};
@@ -573,4 +567,4 @@ namespace renderer {
 
         impl_.reset();
     }
-} // namespace renderer
+}

@@ -35,7 +35,7 @@ namespace {
         };
     }
 
-} // namespace
+}
 
 template<GeometryAllocatorPolicy Allocator>
 auto GeometryArenaT<Allocator>::destroy(VulkanContext &) -> void {
@@ -277,7 +277,6 @@ auto GeometryArenaT<Allocator>::allocate_bytes(VkCommandBuffer command_buffer, V
         return allocation;
     }
 
-    // Room for the allocation plus worst-case alignment padding.
     if (auto grown = grow(command_buffer, size + std::max(alignment, VkDeviceSize{4})); !grown) {
         return std::unexpected(grown.error());
     }
@@ -326,7 +325,6 @@ auto GeometryArenaT<Allocator>::grow(VkCommandBuffer command_buffer, VkDeviceSiz
         return std::unexpected{from_device_error(new_upload.error())};
     }
 
-    // Earlier uploads recorded into this command buffer wrote the old buffer; they must land before the copy reads it.
     VkBufferMemoryBarrier2 const old_barrier{
             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
             .pNext = nullptr,
@@ -403,7 +401,6 @@ auto GeometryArenaT<Allocator>::grow(VkCommandBuffer command_buffer, VkDeviceSiz
 
     vkCmdPipelineBarrier2(command_buffer, &after_copy);
 
-    // Copies already recorded this frame still read the old staging buffer, so it's retired along with the old buffer.
     retired_buffers_.push_back(RetiredBuffers{
             .device = std::move(buffer),
             .upload = std::move(upload_buffer),

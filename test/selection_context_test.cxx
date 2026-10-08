@@ -13,7 +13,7 @@ namespace {
 
     [[nodiscard]] auto entity(std::uint32_t id) -> entt::entity { return entt::entity{id}; }
 
-} // namespace
+}
 
 TEST_CASE("select replaces the selection and makes the entity primary") {
     SelectionContext selection;
@@ -62,11 +62,9 @@ TEST_CASE("modify publishes a batch as one version") {
     CHECK(selection.size() == 3);
     CHECK(selection.primary() == entity(1));
 
-    // Re-selecting an entity only moves the primary, which still counts as a change.
     selection.modify([](SelectionContext::Transaction &transaction) { transaction.set(entity(2), true); });
     CHECK(selection.version() == before + 2);
 
-    // A batch that changes nothing doesn't publish.
     selection.modify([](SelectionContext::Transaction &transaction) { transaction.set(entity(2), true); });
     CHECK(selection.version() == before + 2);
 }

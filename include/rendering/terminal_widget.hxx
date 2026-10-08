@@ -73,29 +73,26 @@ namespace gui {
 
         MessageRing history_;
 
-        // Swapped with TerminalSink's buffer each frame, so the allocation is reused.
         std::vector<logger::ConsoleMessage> pending_;
 
-        // Logical indices into history_.
         std::vector<std::size_t> visible_indices_;
 
         ImGuiTextFilter filter_;
 
         std::array<bool, level_count> enabled_levels_{
-                true, // trace
-                true, // debug
-                true, // info
-                true, // warn
-                true, // error
-                true, // fatal
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
         };
 
         bool auto_scroll_{true};
         bool wrap_text_{true};
         bool visibility_dirty_{true};
 
-        // ImGuiListClipper assumes uniform line height, and a message can contain '\n'.
         bool visible_has_multiline_messages_{false};
     };
 
-} // namespace gui
+}

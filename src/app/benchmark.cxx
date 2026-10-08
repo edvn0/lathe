@@ -56,7 +56,7 @@ namespace {
             "overflowing_clusters",      "maximum_lights",    "stored_lights",
     };
 
-} // namespace
+}
 
 auto parse_render_size(std::string_view text) -> std::expected<BenchmarkRenderSize, std::string> {
     auto const x = text.find('x');
@@ -85,7 +85,7 @@ namespace {
             {"fifo_relaxed", PresentModeChoice::fifo_relaxed},
     }};
 
-} // namespace
+}
 
 PresentationArguments::PresentationArguments(CommandLine &cli) {
     auto group = cli.group("Presentation");
@@ -164,7 +164,6 @@ BenchmarkArguments::BenchmarkArguments(CommandLine &cli) {
                     sweep.loads.push_back(*load);
                 }
 
-                // A repeated scenario replaces its earlier sweep.
                 std::erase_if(options_.sweeps,
                               [&](BenchmarkSweep const &other) { return other.scenario == sweep.scenario; });
                 options_.sweeps.push_back(std::move(sweep));
@@ -202,8 +201,6 @@ auto BenchmarkArguments::options() const -> std::expected<std::optional<Benchmar
     return options;
 }
 
-// ---- BenchmarkCaseId
-
 auto BenchmarkCaseId::key() const -> std::string {
     if (load_axis.empty()) {
         return scenario;
@@ -217,8 +214,6 @@ auto BenchmarkCaseId::file_stem() const -> std::string {
     }
     return std::format("{}_{}_{}_r{}", sanitise_file_name(scenario), sanitise_file_name(load_axis), load, repeat);
 }
-
-// ---- BenchmarkRun
 
 BenchmarkRun::BenchmarkRun(BenchmarkOptions options, std::vector<CameraKeyframe> keyframes) :
     options_(std::move(options)), keyframes_(std::move(keyframes)) {
@@ -239,7 +234,6 @@ auto BenchmarkRun::at_keyframe() const noexcept -> bool {
         return false;
     }
 
-    // The keyframe segment frame `i` is in; a keyframe is crossed where it changes.
     auto const segment = [&](std::uint32_t frame) {
         return static_cast<std::uint64_t>(frame) * keyframes_.size() / options_.frame_count;
     };
@@ -265,7 +259,6 @@ auto BenchmarkRun::attach_gpu(FrameTimings const &timings, std::size_t row) -> v
     for (auto const &pass: timings.passes) {
         auto found = std::ranges::find_if(stages_, [&](StageSamples const &stage) { return stage.id == pass.name_id; });
         if (found == stages_.end()) {
-            // First seen: earlier frames count as 0 ms for it.
             stages_.push_back(StageSamples{
                     .id = pass.name_id, .name = pass.label, .samples_ms = std::vector<float>(samples_.size(), 0.0F)});
             found = std::prev(stages_.end());
@@ -290,7 +283,6 @@ auto BenchmarkRun::on_frame_drawn(BenchmarkFrameInput const &input) -> void {
             streaming_settled_ = input.streaming_idle;
         }
 
-        // Timings of warmup frames have no row to land in; remember them so they are not taken for a later frame's.
         if (input.gpu != nullptr && input.gpu->valid) {
             last_gpu_serial_ = std::max(last_gpu_serial_, input.gpu->frame_serial);
         }
@@ -345,7 +337,6 @@ auto BenchmarkRun::on_frame_drawn(BenchmarkFrameInput const &input) -> void {
         auto const &timings = *input.gpu;
 
         if (timings.frame_serial == 0) {
-            // Untagged: belongs to the frame just drawn.
             if (phase_ == Phase::measuring && !samples_.back().gpu_valid) {
                 attach_gpu(timings, samples_.size() - 1);
             }
@@ -440,7 +431,6 @@ namespace {
     auto write_stages(JsonWriter &writer, std::span<BenchmarkStage const> stages) -> void {
         writer.begin_array("stages");
         for (auto const &stage: stages) {
-            // The first keys match schema 1, which tools/perf/compare_benchmarks.py reads.
             writer.begin_object({}, true)
                     .value("id", stage.id)
                     .value("name", stage.name)
@@ -487,7 +477,7 @@ namespace {
         return names;
     }
 
-} // namespace
+}
 
 auto write_environment_json(JsonWriter &writer, std::string_view key, BenchmarkEnvironment const &environment) -> void {
     writer.begin_object(key)
@@ -568,7 +558,6 @@ auto write_analysis_json(JsonWriter &writer, std::string_view key, FrameAnalysis
             .value("hitch_threshold_ms", analysis.hitch_threshold_ms)
             .value("hitch_count", static_cast<std::uint64_t>(analysis.hitches.size()));
 
-    // The worst hitches, by displayed time; all of them are in the CSV.
     constexpr std::size_t listed_hitches = 32;
     auto worst = analysis.hitches;
     std::ranges::sort(worst, std::greater{}, &HitchFrame::displayed_ms);
@@ -693,8 +682,6 @@ auto BenchmarkRun::to_json(BenchmarkEnvironment const &environment) const -> std
 
     write_stages(writer, all_stages);
 
-    // Per-frame means over the frames the counter was read back for, and the last such frame's value. Counters whose
-    // group was never valid (occlusion off, no lights) are null.
     writer.begin_object("counters");
     for (std::size_t i = 0; i < counter_count; ++i) {
         writer.begin_object(counter_names[i], true);
@@ -710,7 +697,6 @@ auto BenchmarkRun::to_json(BenchmarkEnvironment const &environment) const -> std
     write_environment_json(writer, "environment", environment);
     write_analysis_json(writer, "analysis", analysis);
 
-    // GPU time of every measured frame that has one, in path order.
     std::vector<float> full_frame;
     full_frame.reserve(samples_.size());
     for (auto const &sample: samples_) {
@@ -808,8 +794,6 @@ auto BenchmarkRun::write(BenchmarkEnvironment const &environment) const -> std::
     return write_text_file(csv_path, to_csv());
 }
 
-// ---- Suite
-
 auto plan_benchmark_cases(std::span<BenchmarkScenarioInfo const> scenarios, BenchmarkOptions const &options)
         -> std::expected<std::vector<BenchmarkCase>, std::string> {
     auto const known = [&](std::string_view name) {
@@ -837,7 +821,6 @@ auto plan_benchmark_cases(std::span<BenchmarkScenarioInfo const> scenarios, Benc
         }
     }
 
-    // One entry per (scenario, load), in scenario order then load order.
     struct Level {
         std::size_t scenario;
         std::uint32_t load;
@@ -904,7 +887,6 @@ auto BenchmarkAggregate::metric(std::string_view name) const noexcept -> RepeatS
 auto aggregate_cases(std::span<BenchmarkCaseResult const> results) -> std::vector<BenchmarkAggregate> {
     std::vector<BenchmarkAggregate> aggregates;
 
-    // Group by case key, in order of first appearance.
     std::vector<std::vector<BenchmarkCaseResult const *>> groups;
     for (auto const &result: results) {
         auto const key = result.id.key();
@@ -953,7 +935,6 @@ auto aggregate_cases(std::span<BenchmarkCaseResult const> results) -> std::vecto
         add("presentation_bound_fraction",
             [](BenchmarkCaseResult const &r) { return r.analysis.bound.presentation_bound_fraction(); });
 
-        // Every stage seen in any repeat, 0 in a repeat without it.
         std::vector<std::string> stage_ids;
         for (auto const *result: group) {
             for (auto const &stage: result->stages) {
@@ -1032,7 +1013,7 @@ namespace {
         writer.end_object();
     }
 
-} // namespace
+}
 
 auto suite_to_json(BenchmarkOptions const &options, BenchmarkEnvironment const &environment,
                    std::span<BenchmarkCaseResult const> results) -> std::string {
@@ -1134,7 +1115,6 @@ namespace {
                            precision);
     }
 
-    // The dominant limiter across a case's repeats, e.g. "GPU 100%" or "presentation 97%".
     [[nodiscard]] auto limiter_text(BenchmarkAggregate const &aggregate) -> std::string {
         constexpr std::array<std::pair<std::string_view, std::string_view>, 3> limiters{{
                 {"GPU", "gpu_bound_fraction"},
@@ -1159,7 +1139,6 @@ namespace {
             return "not enough points";
         }
 
-        // Marginal cost per 1000 objects reads better than per object, per layer better than per 1000 layers.
         auto const unit = largest_load >= 5000 ? 1000U : largest_load >= 500 ? 100U : 1U;
         auto text = unit == 1 ? std::format("{:+.4f} ms per {}", fit.slope_ms_per_unit, axis)
                               : std::format("{:+.4f} ms per {} {}", fit.slope_ms_per_unit * unit, unit, axis);
@@ -1174,7 +1153,7 @@ namespace {
         return text;
     }
 
-} // namespace
+}
 
 auto suite_report_markdown(BenchmarkOptions const &options, BenchmarkEnvironment const &environment,
                            std::span<BenchmarkCaseResult const> results) -> std::string {
@@ -1201,7 +1180,6 @@ auto suite_report_markdown(BenchmarkOptions const &options, BenchmarkEnvironment
         out += std::format("- :warning: {}\n", warning);
     }
 
-    // Cases whose frames were mostly paced by the swapchain: their displayed times say little about the engine.
     std::vector<std::string> presentation_paced;
     for (auto const &aggregate: aggregates) {
         if (auto const *paced = aggregate.metric("presentation_bound_fraction");
@@ -1256,7 +1234,6 @@ auto suite_report_markdown(BenchmarkOptions const &options, BenchmarkEnvironment
         }
     }
 
-    // Events that coincide with hitches, over every run.
     std::array<std::uint64_t, perf_event_count> hitches_with{};
     std::uint64_t total_hitches = 0;
     std::uint64_t unexplained = 0;

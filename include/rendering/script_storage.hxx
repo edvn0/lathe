@@ -27,7 +27,6 @@ struct ScriptSlotData {
     std::unique_ptr<IScript> script;
 };
 
-// Generational pool of script instances. Each handle owns one IScript shared by every entity referencing it.
 class ScriptStorage {
 public:
     ScriptStorage() = default;
@@ -41,7 +40,6 @@ public:
     [[nodiscard]]
     static auto create(ScriptStorageCreateInfo const &create_info) -> std::expected<ScriptStorage, ScriptStorageError>;
 
-    // Creates one shared instance. Call once per behaviour and share the handle, not once per entity.
     template<typename T, typename... Args>
     [[nodiscard]] auto emplace(Args &&...args) -> std::expected<ScriptHandle, ScriptStorageError> {
         auto allocation = slots_.allocate();
@@ -64,5 +62,4 @@ private:
     ObjectPool<ScriptSlotData, 0> slots_;
 };
 
-// Owns a script instance; dropping it destroys the IScript. Entities still pointing at it see a stale handle.
 using ScriptHolder = Holder<ScriptStorage, ScriptHandle, &ScriptStorage::destroy>;

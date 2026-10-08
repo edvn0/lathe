@@ -19,14 +19,12 @@ TEST_SUITE("unit") {
         constexpr float radius = 0.3F;
         constexpr float height = 1.8F;
 
-        // Solid half-space below a plane, optionally limited to an x range. Only the capsule's lowest point is
-        // tested, which is all the ground logic needs.
         struct Plane {
             glm::vec3 normal{0.0F, 1.0F, 0.0F};
             glm::vec3 point{0.0F};
             float x_min = -1e9F;
             float x_max = 1e9F;
-            float y_max = 1e9F; // highest feet height the plane still blocks
+            float y_max = 1e9F;
         };
 
         class FakeWorld final : public CapsuleSweep {
@@ -75,7 +73,6 @@ TEST_SUITE("unit") {
             return body;
         }
 
-        // Steps until the character lands and returns the highest y reached.
         auto jump_apex(CharacterBody &body, FakeWorld const &world, int held_steps) -> float {
             float apex = body.position().y;
             for (int i = 0; i < 120; ++i) {
@@ -88,13 +85,13 @@ TEST_SUITE("unit") {
             }
             return apex;
         }
-    } // namespace
+    }
 
     TEST_CASE("CharacterBody lands and stays grounded on flat ground") {
         auto const world = flat_world();
         auto const body = settled(world);
         CHECK(body.grounded());
-        CHECK(std::abs(body.position().y) < 0.02F); // within skin
+        CHECK(std::abs(body.position().y) < 0.02F);
     }
 
     TEST_CASE("CharacterBody jump apex matches jump_height") {
@@ -158,7 +155,6 @@ TEST_SUITE("unit") {
         CharacterBody body{{0.0F, 0.3F, 0.0F}, radius, height};
         bool jumped = false;
         for (int i = 0; i < 60 && !jumped; ++i) {
-            // Press while still airborne and falling.
             body.step(world, {.jump_pressed = i == 2, .jump_held = true}, dt);
             jumped = body.velocity().y > 0.5F;
         }
@@ -167,7 +163,7 @@ TEST_SUITE("unit") {
         CharacterBody early{{0.0F, 3.0F, 0.0F}, radius, height};
         early.step(world, {.jump_pressed = true, .jump_held = true}, dt);
         run(early, world, {}, 120);
-        CHECK(early.grounded()); // buffer expired long before landing: no jump
+        CHECK(early.grounded());
         CHECK(early.velocity().y == doctest::Approx(0.0F));
     }
 
@@ -293,7 +289,6 @@ TEST_SUITE("unit") {
         CHECK(steps == 3);
         CHECK(alpha == doctest::Approx(0.5F));
 
-        // A stall is clamped to max_steps and the backlog dropped.
         steps = 0;
         alpha = stepper.advance(2.0F, count);
         CHECK(steps == 5);
@@ -355,7 +350,7 @@ TEST_SUITE("unit") {
         world.step(registry, dt);
 
         CharacterBody body{{3.0F, 0.0F, 0.0F}, radius, height};
-        for (int i = 0; i < 120; ++i) { // ends on the top step (x 9.75..11.25)
+        for (int i = 0; i < 120; ++i) {
             body.step(world, {.desired_velocity = {4.0F, 0.0F, 0.0F}}, dt);
         }
         CHECK(body.grounded());

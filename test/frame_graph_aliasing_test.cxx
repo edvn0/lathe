@@ -35,7 +35,6 @@ namespace {
         return pass.create({.format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {4, 4, 1}, .debug_name = name});
     }
 
-    // Sizes, indexed by resource slot: every transient image of `graph` takes `size` bytes.
     auto uniform(GraphDesc const &graph, std::uint64_t size, std::uint64_t alignment = 1, std::uint32_t type_bits = ~0U)
             -> std::vector<MemoryRequirement> {
         auto requirements = std::vector<MemoryRequirement>(graph.resources.size());
@@ -58,7 +57,6 @@ namespace {
         return 0;
     }
 
-    // Two chains, each a write then a read, one after the other: the first transient is dead before the second.
     auto disjoint_chains(FrameGraph &graph) -> void {
         auto first = ImageId{};
         auto second = ImageId{};
@@ -84,7 +82,6 @@ namespace {
         });
     }
 
-    // The same two transients, but both are alive at the third pass.
     auto overlapping_pair(FrameGraph &graph) -> void {
         auto first = ImageId{};
         auto second = ImageId{};
@@ -106,8 +103,6 @@ namespace {
         });
     }
 
-    // A graphics pass writes `first` and a buffer; a compute-queue pass that reads the buffer writes `second`. With
-    // `ordered` the compute pass depends on the graphics one, otherwise the two are independent.
     auto two_queues(FrameGraph &graph, bool ordered) -> void {
         auto const handoff = graph.import_buffer({.entry = {}, .exit = {}, .debug_name = "handoff"});
         auto buffer = handoff;
@@ -132,10 +127,9 @@ namespace {
         });
     }
 
-    // Independent happens-before, written from the plan's own fields rather than from the planner's.
     struct Reference {
         std::vector<std::vector<bool>> batch_before;
-        std::vector<std::pair<std::int64_t, std::size_t>> location; // per pass: batch, position
+        std::vector<std::pair<std::int64_t, std::size_t>> location;
 
         Reference(GraphDesc const &graph, CompiledGraph const &compiled) {
             auto const count = compiled.batches.size();
@@ -146,7 +140,6 @@ namespace {
                                                                                position};
                 }
             }
-            // Edges by repeated relaxation until nothing changes.
             batch_before.assign(count, std::vector<bool>(count, false));
             for (auto changed = true; changed;) {
                 changed = false;
@@ -212,7 +205,7 @@ namespace {
         return a.block == b.block && a.offset < b.offset + b.size && b.offset < a.offset + a.size;
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("transients with disjoint lifetimes on one queue share memory") {
@@ -280,7 +273,6 @@ TEST_SUITE("unit") {
         auto const plan = plan_transients(desc, *compiled, uniform(desc, 256), true);
 
         REQUIRE(plan.barriers.size() == 1);
-        // The second transient is first used by "write_second" (declaration index 2).
         CHECK(plan.barriers[0].pass == 2);
         CHECK((plan.barriers[0].barrier.src_stages & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) != 0);
         CHECK((plan.barriers[0].barrier.src_access & VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT) != 0);
@@ -303,7 +295,6 @@ TEST_SUITE("unit") {
             CHECK_FALSE(offsets_overlap(*first, *second));
         }
         {
-            // Ordered through a buffer and so a semaphore wait: the first is dead before the second starts.
             auto graph = FrameGraph{};
             two_queues(graph, true);
             auto const compiled = compile(graph, dedicated());
@@ -319,7 +310,6 @@ TEST_SUITE("unit") {
             CHECK(plan.barriers.size() == 1);
         }
         {
-            // On one queue the independent pair is simply serialized in declaration order.
             auto graph = FrameGraph{};
             two_queues(graph, false);
             auto const compiled = compile(graph, single_queue());
@@ -362,7 +352,7 @@ TEST_SUITE("unit") {
         for (auto const &placement: plan.placements) {
             CHECK(placement.offset % 64 == 0);
         }
-        CHECK(plan.blocks[0].size == 228); // 0..100, then 128..228
+        CHECK(plan.blocks[0].size == 228);
     }
 
     TEST_CASE("culled transients are not allocated") {
@@ -477,7 +467,6 @@ TEST_SUITE("unit") {
             }
         }
 
-        // The generator makes transients and orders them, so aliasing must actually have been exercised.
         CHECK(graphs_with_transients > 100);
         CHECK(aliased_pairs > 0);
     }
@@ -497,7 +486,7 @@ TEST_SUITE("unit") {
         CHECK(text.find("batch 0 queue graphics") != std::string::npos);
         CHECK(text.find("pass write_first") != std::string::npos);
         CHECK(text.find("use 'first'") != std::string::npos);
-        CHECK(text.find("alias memory") != std::string::npos); // before write_second
+        CHECK(text.find("alias memory") != std::string::npos);
         CHECK(text.find("transients: 256 bytes in 1 blocks (512 without aliasing)") != std::string::npos);
         CHECK(text.find("'second' block 0 offset 0 size 256") != std::string::npos);
     }

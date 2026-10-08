@@ -71,7 +71,6 @@ auto TerrainWorld::request_missing() -> void {
         }
     }
 
-    // Nearest first, so close chunks win under the in-flight cap.
     std::ranges::sort(candidates, {}, [&](ChunkKey const &key) {
         return glm::distance(terrain_chunk_centre(key, create_info_.lod_settings), camera_xz_);
     });
@@ -102,8 +101,6 @@ auto TerrainWorld::upload_ready(IMeshSink &mesh_sink, VkCommandBuffer command_bu
         in_flight_.erase(key);
 
         if (uploaded_this_frame >= create_info_.max_uploads_per_frame) {
-            // Out of budget: drop the result. The key is no longer tracked, so the next update() requests it again if
-            // it's still wanted.
             return;
         }
 
@@ -177,8 +174,6 @@ auto TerrainWorld::evict(PhysicsWorld *physics) -> void {
 
         ++chunk.frames_undesired;
 
-        // Keep undesired chunks for a few frames so their replacement can load first: a brief overlap instead of a
-        // hole.
         if (chunk.frames_undesired < create_info_.eviction_grace_frames ||
             evictions >= create_info_.max_evictions_per_frame) {
             ++it;
@@ -221,7 +216,6 @@ auto TerrainWorld::on_physics_world_changed(PhysicsWorld *physics) -> void {
         return;
     }
 
-    // Reserved once per PhysicsWorld, bounded by slots_per_lod.
     TerrainColliderDesc const desc{
             .samples_x = terrain_chunk_samples,
             .samples_z = terrain_chunk_samples,

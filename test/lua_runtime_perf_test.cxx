@@ -10,12 +10,6 @@
 #include "chess_lua_harness.hxx"
 #include "scripting/lua_runtime.hxx"
 
-// Performance of the Lua runtime: what a game's scripts can afford per frame, and where its limits are.
-//
-// Each case prints what it measured (run `cargo xtask test -- -R "lua perf" -V` to see the numbers) and asserts only
-// very loose bounds, so a regression of an order of magnitude fails but ordinary machine and build-type differences
-// (a Debug build is several times slower) do not. A frame at 60 Hz is 16.7 ms.
-
 namespace {
     using Clock = std::chrono::steady_clock;
 
@@ -23,7 +17,6 @@ namespace {
         return std::chrono::duration<double>(Clock::now() - start).count();
     }
 
-    // Long budgets: these cases measure work, not the time limit.
     auto make_runtime(LuaRuntime::Settings settings = {.call_budget = std::chrono::seconds{20}}) -> LuaRuntime {
         auto runtime = LuaRuntime::create(settings);
 
@@ -46,9 +39,8 @@ namespace {
         std::println("[lua perf] {:<34} {}", name, measurement);
     }
 
-    auto nop(lua_State * /*state*/) -> int { return 0; }
+    auto nop(lua_State * ) -> int { return 0; }
 
-    // Three numbers in, as the entity position setters take.
     auto nop_three_numbers(lua_State *state) -> int {
         luaL_checknumber(state, 1);
         luaL_checknumber(state, 2);
@@ -66,7 +58,7 @@ namespace {
 
         return 1;
     }
-} // namespace
+}
 
 TEST_CASE("lua perf: calling an empty callback from the host") {
     auto runtime = make_runtime();
@@ -176,7 +168,6 @@ TEST_CASE("lua perf: allocation churn and the collector") {
            std::format("{:.2f} M allocations/s, {:.1f} MiB in use after", allocations / elapsed / 1e6,
                        static_cast<double>(runtime.memory_in_use()) / (1024.0 * 1024.0)));
 
-    // Garbage is collected, not accumulated: a million dead tables must not still be resident.
     CHECK(runtime.memory_in_use() < 64ULL * 1024 * 1024);
 }
 
@@ -206,7 +197,6 @@ TEST_CASE("lua perf: how much fits under the memory cap") {
     report("array of numbers under 32 MiB",
            std::format("{} elements ({:.1f} bytes each)", count, static_cast<double>(cap) / static_cast<double>(count)));
 
-    // The cap stopped the script, and the state is intact afterwards.
     CHECK_FALSE(finished);
     CHECK(count > 1'000'000);
     CHECK(runtime.call("alive", {}, 1).ok);
@@ -313,7 +303,6 @@ TEST_CASE("lua perf: a frame of the chess script") {
     report("chess on_update + on_ui (stub API)",
            std::format("{:.1f} us per frame ({:.2f}% of a 60 Hz frame)", per_frame_us, per_frame_us / 16'667.0 * 100.0));
 
-    // The script's own logic should be a rounding error next to the frame.
     CHECK(per_frame_us < 2'000.0);
 }
 
@@ -322,8 +311,6 @@ TEST_CASE("lua perf: callbacks per frame the budget allows") {
 
     runtime.register_native_module("bench", &bench_module);
 
-    // A game that pushes N entity-sized updates a frame: one native call with three numbers each, plus the Lua
-    // arithmetic around it.
     load(runtime, R"(
         local set = require("bench").nop3
         return { update = function(dt, count)
@@ -345,7 +332,6 @@ TEST_CASE("lua perf: callbacks per frame the budget allows") {
         runtime.reset_errors();
     }
 
-    // 1000 per-frame updates are an ordinary game; they must fit comfortably.
     std::array const arguments{0.016, 1'000.0};
     auto const start = Clock::now();
 

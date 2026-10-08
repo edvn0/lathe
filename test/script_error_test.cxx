@@ -10,7 +10,7 @@ namespace {
     std::array<std::string, 5> const api_names{
             "get_children_or_empty", "get_entity", "get_transform", "random", "translation",
     };
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("ScriptError: split_lua_error_location separates the line from the text") {
@@ -41,7 +41,6 @@ TEST_SUITE("unit") {
         REQUIRE(suggestion.has_value());
         CHECK(*suggestion == "get_entity");
 
-        // Adjacent transposition counts as one edit.
         auto const swapped = closest_name("get_entiyt", api_names);
         REQUIRE(swapped.has_value());
         CHECK(*swapped == "get_entity");

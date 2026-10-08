@@ -2,8 +2,6 @@
 
 class btIDebugDraw;
 
-// The part of DebugRenderer PhysicsWorld needs for collider wireframes. DebugRenderer sits above physics, so
-// depending on it directly would be a cycle.
 struct IDebugLines {
     [[nodiscard]]
     virtual auto bullet_debug_draw() noexcept -> btIDebugDraw * = 0;

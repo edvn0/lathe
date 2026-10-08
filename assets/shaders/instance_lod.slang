@@ -1,50 +1,27 @@
 import scene_types;
 
-// GPU level-of-detail selection for resident instanced models (docs/occlusion-culling.md, "Resident instances").
-//
-// A resident instanced model keeps its transforms in a GPU buffer from frame to frame, so the CPU neither copies them
-// nor picks their LODs. Each frame it emits, per submesh, one batch per distinct (geometry, material) its LODs use
-// (an "LOD group"), each reserving a slot for every instance, and one LodJob tying them together. This shader then
-// gives every instance the LOD Renderer::prepare_frame() would have (the first lod_distances entry its origin is
-// closer than, as select_lod_index() does) and writes its GpuDraw and transform into its group's batch, in the frame's
-// source draw and transform arrays, and the group's instance count into its indirect command. Everything after it
-// (shadows, main_cs, late_cs, the draws) reads those arrays as if the CPU had written them.
-//
-// Three dispatches, like frustum_cull.slang, so the result is deterministic (source order within each group):
-//   test    one workgroup per chunk of 256 instances: count the chunk's instances per group;
-//   scan    one workgroup per job: prefix-sum its chunks' counts per group, write the groups' commands;
-//   scatter one workgroup per chunk: write each instance at its group offset plus its rank in the chunk.
-
 static const uint WG_SIZE = 256;
 
-// lod_count in config.hxx.
 static const uint max_lod_groups = 4;
 
-// One output batch of a job. Mirrors GpuLodGroup in renderer.hxx.
 public struct LodGroup
 {
-    // Its indirect command (source array index), where its instances start in the source draw and transform arrays,
-    // and, for meshlet batches, its meshlet count and first meshlet visibility bit (0 / 0 otherwise).
     public uint batch;
     public uint first_instance;
     public uint meshlet_count;
     public uint first_meshlet_bit;
 
-    // Every instance's GpuDraw but meshlet_visibility_offset.
     public GpuDraw draw;
 };
 
-// One submesh of one resident instanced model. Mirrors GpuLodJob in renderer.hxx.
 public struct LodJob
 {
     public Ptr<float4x4> transforms;
     public uint instance_count;
 
-    // The job's chunks are consecutive from here, ceil(instance_count / WG_SIZE) of them, in job order.
     public uint first_chunk;
     public uint group_count;
 
-    // Byte `lod` is the group LOD `lod` draws with.
     public uint lod_groups;
     public uint _pad0;
     public uint _pad1;
@@ -52,7 +29,6 @@ public struct LodJob
     public LodGroup groups[max_lod_groups];
 };
 
-// Per-chunk scratch: test's counts and scan's offsets, per group.
 public struct LodChunk
 {
     public uint counts[max_lod_groups];
@@ -63,10 +39,8 @@ static const uint lod_stage_test = 0u;
 static const uint lod_stage_scan = 1u;
 static const uint lod_stage_scatter = 2u;
 
-// Mirrors cull_dispatch_width in renderer.cxx.
 static const uint lod_dispatch_width = 65535;
 
-// Mirrors maximum_meshlet_visibility_bits in meshlet_visibility.hxx.
 static const uint64_t maximum_meshlet_visibility_bits = 1ull << 28;
 
 public struct LodPC
@@ -74,7 +48,6 @@ public struct LodPC
     public Ptr<LodJob> jobs;
     public Ptr<LodChunk> chunks;
 
-    // The frame's source arrays (what main_cs culls and the shadow pass draws).
     public Ptr<GpuDraw> draws;
     public Ptr<float4x4> transforms;
     public Ptr<DrawCommand> indirect;
@@ -84,7 +57,6 @@ public struct LodPC
     public float camera_z;
     public uint job_count;
 
-    // lod_distances, squared.
     public float lod_distance_sq0;
     public float lod_distance_sq1;
     public float lod_distance_sq2;
@@ -94,7 +66,6 @@ public struct LodPC
     public uint _padding;
 };
 
-// Same as frustum_cull.slang's: the task-shader grid for a command's instances.
 static const uint max_task_group_count_x = 65535;
 
 void set_task_group_counts(inout DrawCommand command)
@@ -112,7 +83,6 @@ uint linear_group(uint3 group_id)
     return group_id.y * lod_dispatch_width + group_id.x;
 }
 
-// The job `chunk` belongs to: the last one whose first_chunk is at or before it.
 uint chunk_job(LodPC pc, uint chunk)
 {
     uint low = 0;
@@ -130,8 +100,6 @@ uint chunk_job(LodPC pc, uint chunk)
     return low;
 }
 
-// The group instance `local_index` of `job` draws with. Matches select_lod_index() in renderer.cxx: distance from the
-// instance's origin to the camera against lod_distances.
 uint instance_group(LodPC pc, LodJob job, uint local_index)
 {
     const float3 origin = mul(job.transforms[local_index], float4(0.0, 0.0, 0.0, 1.0)).xyz;
@@ -155,7 +123,6 @@ groupshared uint s_wave_totals[WG_SIZE];
 groupshared uint s_wave_offsets[WG_SIZE];
 groupshared uint s_total;
 
-// Workgroup-wide exclusive prefix sum; see frustum_cull.slang's workgroup_scan. Uniform control flow only.
 void workgroup_scan(uint value, uint lane, out uint exclusive, out uint total)
 {
     uint wave_exclusive = WavePrefixSum(value);
@@ -201,7 +168,6 @@ void lod_test(LodPC pc, uint chunk, uint lane)
 
     const uint my_group = local_index < job.instance_count ? instance_group(pc, job, local_index) : max_lod_groups;
 
-    // One shared atomic per wave and group: a lane each would serialise the whole workgroup on one address.
     for (uint group = 0; group < job.group_count; ++group) {
         const uint count = WaveActiveCountBits(my_group == group);
         if (WaveIsFirstLane() && count != 0) {
@@ -261,7 +227,6 @@ void lod_scatter(LodPC pc, uint chunk, uint lane)
     const uint my_group = live ? instance_group(pc, job, local_index) : max_lod_groups;
     const LodChunk state = pc.chunks[chunk];
 
-    // The group loop runs the same number of times on every lane, so the scans stay in uniform control flow.
     for (uint group = 0; group < job.group_count; ++group) {
         uint rank;
         uint total;

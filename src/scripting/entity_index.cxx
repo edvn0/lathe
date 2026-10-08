@@ -33,7 +33,6 @@ namespace scripting::detail {
             }
         };
 
-        // GeneratedMeta wins over Meta when an entity carries both, as in the editor's display name.
         for (auto [entity, meta]: registry.view<Components::GeneratedMeta const>().each()) {
             add(meta.name, entity);
         }
@@ -88,4 +87,4 @@ namespace scripting::detail {
         children_.clear();
         names_.clear();
     }
-} // namespace scripting::detail
+}

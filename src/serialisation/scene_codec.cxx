@@ -30,8 +30,6 @@ namespace {
         };
     }
 
-    // ---- field helpers -------------------------------------------------------------------------------------------
-
     auto write_vec3(ByteWriter &writer, glm::vec3 const &value) -> void {
         writer.write(value.x);
         writer.write(value.y);
@@ -80,8 +78,6 @@ namespace {
         reader.read(transform.rotation.z);
         transform.scale = read_vec3(reader);
 
-        // Saved rotations are unit length; renormalise so a slightly-off or hand-edited one doesn't skew the matrix.
-        // A zero or non-finite one is left alone for validate_scene() to reject.
         auto const length = glm::length(transform.rotation);
 
         if (std::isfinite(length) && length > 1e-6F) {
@@ -95,7 +91,6 @@ namespace {
 
     [[nodiscard]] auto read_bool(ByteReader &reader) -> bool { return reader.read<std::uint8_t>() != 0; }
 
-    // A record count, bounded by the bytes left so a corrupt count can't trigger a huge allocation.
     [[nodiscard]] auto read_count(ByteReader &reader, std::size_t minimum_record_size) -> std::uint32_t {
         auto const count = reader.read<std::uint32_t>();
 
@@ -106,12 +101,6 @@ namespace {
 
         return count;
     }
-
-    // ---- sections ------------------------------------------------------------------------------------------------
-    //
-    // Each section's writer emits the current version; its reader takes the version it was written with. When a
-    // layout changes: bump scene_section_version (or give that section its own constant), branch on `version` in the
-    // reader, and keep the old branch.
 
     auto write_settings(ByteWriter &writer, SceneDescription const &scene) -> void {
         write_vec3(writer, scene.physics_settings.gravity);
@@ -230,7 +219,6 @@ namespace {
                 reader.read(texture);
             }
 
-            // v1 has none of these: single-sided, hard cutoff, no far material.
             if (version >= 2) {
                 material.double_sided = read_bool(reader);
                 material.alpha_to_coverage = read_bool(reader);
@@ -317,21 +305,12 @@ namespace {
         }
     }
 
-    // ---- instance transforms -------------------------------------------------------------------------------------
-    //
-    // v2 writes each component's instances as float columns, one per field, every column byte-shuffled: all the
-    // values' first bytes, then all their second bytes, and so on. Neighbouring instances share sign, exponent and
-    // high mantissa bytes, so the shuffled planes are long runs zstd compresses well. When every instance decomposes
-    // into translation, rotation and scale the columns are those 10 floats instead of the 16 matrix floats.
-    //
-    // On a 14,892-blade grass field this is 288 KiB compressed against 464 KiB for v1's interleaved matrices.
-
     enum class InstanceEncoding : std::uint8_t {
         matrices = 0,
         trs = 1,
     };
 
-    inline constexpr std::size_t trs_column_count = 10; // translation xyz, rotation wxyz, scale xyz
+    inline constexpr std::size_t trs_column_count = 10;
     inline constexpr std::size_t matrix_column_count = 16;
 
     struct InstanceTrs {
@@ -349,7 +328,6 @@ namespace {
         return matrix;
     }
 
-    // nullopt unless `matrix` is affine, without shear, and recomposes from its TRS to within float rounding.
     [[nodiscard]] auto decompose(glm::mat4 const &matrix) -> std::optional<InstanceTrs> {
         if (matrix[0][3] != 0.0F || matrix[1][3] != 0.0F || matrix[2][3] != 0.0F || matrix[3][3] != 1.0F) {
             return std::nullopt;
@@ -363,7 +341,6 @@ namespace {
 
         glm::mat3 basis{glm::vec3{matrix[0]} / scale.x, glm::vec3{matrix[1]} / scale.y, glm::vec3{matrix[2]} / scale.z};
 
-        // A mirroring matrix becomes a proper rotation and a negative X scale.
         if (glm::determinant(basis) < 0.0F) {
             scale.x = -scale.x;
             basis[0] = -basis[0];
@@ -375,7 +352,6 @@ namespace {
                 .scale = scale,
         };
 
-        // Shear survives the steps above as a wrong rotation, which the recomposition exposes.
         auto const recomposed = compose(trs);
         float largest = 1.0F;
         float worst_error = 0.0F;
@@ -393,7 +369,6 @@ namespace {
         return trs;
     }
 
-    // `columns` holds column_count columns of `count` floats each, column after column.
     auto write_shuffled_columns(ByteWriter &writer, std::span<float const> columns, std::size_t count) -> void {
         std::vector<std::byte> shuffled(columns.size_bytes());
         auto const *source = reinterpret_cast<std::byte const *>(columns.data());
@@ -468,7 +443,6 @@ namespace {
             return;
         }
 
-        // Any instance that isn't a plain TRS (shear, projection) keeps the whole component as exact matrices.
         writer.write(InstanceEncoding::matrices);
 
         std::vector<float> columns(matrix_column_count * count);
@@ -532,7 +506,6 @@ namespace {
             reader.read(component.material);
 
             if (version == 1) {
-                // v1: interleaved column-major matrices.
                 component.transforms.resize(read_count(reader, sizeof(glm::mat4)));
 
                 for (auto &transform: component.transforms) {
@@ -644,8 +617,6 @@ namespace {
 
             auto const shape = reader.read<std::uint8_t>();
 
-            // Heightfields are never written; see SceneRigidBodyComponent. Spheres only exist from v2 on, so a v1
-            // file holding one is corrupt rather than merely old.
             auto const highest_shape = version >= 2 ? Components::BodyShape::sphere : Components::BodyShape::compound;
 
             if (shape > std::to_underlying(highest_shape) ||
@@ -714,7 +685,7 @@ namespace {
         constexpr std::uint8_t multi_scatter = 1U << 4U;
         constexpr std::uint8_t fog_enabled = 1U << 5U;
         constexpr std::uint8_t fog_from_environment = 1U << 6U;
-    } // namespace environment_flag_bits
+    }
 
     auto write_environment(ByteWriter &writer, SceneDescription const &scene) -> void {
         namespace bits = environment_flag_bits;
@@ -812,20 +783,17 @@ namespace {
         reader.read(environment.fog.inscattering);
     }
 
-    // ---- section table -------------------------------------------------------------------------------------------
-
     using SectionWriter = void (*)(ByteWriter &, SceneDescription const &);
     using SectionReader = void (*)(ByteReader &, std::uint16_t, SceneDescription &);
 
     struct SectionCodec {
         std::uint32_t type;
-        std::uint16_t version; // written
+        std::uint16_t version;
         std::uint16_t oldest_readable;
         SectionWriter write;
         SectionReader read;
     };
 
-    // Order matters only for writing; readers accept sections in any order.
     constexpr std::array section_codecs{
             SectionCodec{
                     .type = scene_section::settings,
@@ -945,11 +913,6 @@ namespace {
         return material == scene_no_index || material < scene.materials.size();
     }
 
-    // ---- value checks --------------------------------------------------------------------------------------------
-    //
-    // Index checks keep instantiate from reading out of bounds; these keep NaN, infinities and negative sizes out of
-    // transforms, physics and GPU buffers, where they poison culling, shadow and physics state for the whole scene.
-
     [[nodiscard]] auto finite(float value) noexcept -> bool { return std::isfinite(value); }
 
     template<glm::length_t N>
@@ -967,10 +930,8 @@ namespace {
         return finite(value[0]) && finite(value[1]) && finite(value[2]) && finite(value[3]);
     }
 
-    // finite and >= 0
     [[nodiscard]] auto non_negative(float value) noexcept -> bool { return std::isfinite(value) && value >= 0.0F; }
 
-    // Why `environment` can't be rendered or saved, if anything.
     [[nodiscard]] auto environment_problem(SceneEnvironment const &environment) -> std::optional<std::string_view> {
         auto const &sun = environment.sun;
         auto const &fog = environment.fog;
@@ -1026,18 +987,14 @@ namespace {
         return std::nullopt;
     }
 
-
     [[nodiscard]] auto valid_transform(Components::Transform const &transform) noexcept -> bool {
         auto const &q = transform.rotation;
         auto const length_squared = (q.w * q.w) + (q.x * q.x) + (q.y * q.y) + (q.z * q.z);
 
-        // A zero quaternion has no direction to normalise to; it turns every child matrix into NaN.
         return finite(transform.position) && finite(transform.scale) && std::isfinite(length_squared) &&
                length_squared > 1e-12F;
     }
 
-    // Each entity may hold at most one of any component; instantiate emplaces them, and EnTT treats a second
-    // emplace as a bug (assert in debug, undefined behaviour in release).
     template<typename Components>
     [[nodiscard]] auto entities_unique(SceneDescription const &scene, Components const &components) -> bool {
         std::vector<bool> seen(scene.entities.size(), false);
@@ -1053,7 +1010,7 @@ namespace {
         return true;
     }
 
-} // namespace
+}
 
 auto encode_scene(SceneDescription const &scene) -> std::vector<std::byte> {
     ZoneScopedNC("encode_scene", tracy::Color::Goldenrod);
@@ -1102,7 +1059,6 @@ auto decode_scene(std::span<std::byte const> payload, std::uint16_t chunk_versio
         auto const *codec = find_codec(type);
 
         if (codec == nullptr || version > codec->version) {
-            // Written by a newer engine: unknown component, or a layout this build can't read. Keep the rest.
             if (report != nullptr) {
                 ++report->skipped_sections;
             }
@@ -1144,7 +1100,6 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
             return fail("entity parent out of range");
         }
 
-        // Walking up more than entity_count links means a cycle.
         auto cursor = parent;
 
         for (std::size_t steps = 0; cursor != scene_no_index; ++steps) {
@@ -1199,7 +1154,6 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
         return fail("component entity out of range");
     }
 
-    // Everything from here on indexes by entity, which is now known to be in range.
     if (!entities_unique(scene, scene.model_components) || !entities_unique(scene, scene.material_overrides) ||
         !entities_unique(scene, scene.instanced_models) || !entities_unique(scene, scene.point_lights) ||
         !entities_unique(scene, scene.spot_lights) || !entities_unique(scene, scene.rigid_bodies) ||
@@ -1229,7 +1183,6 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
             return fail("material has a non-finite factor");
         }
 
-        // The renderer buckets shadow batches by cascade 0..shadow_cascade_count-1; anything else matches no bucket.
         if (material.max_shadow_cascade >= shadow_cascade_count &&
             material.max_shadow_cascade != GpuMaterial::no_shadow_cascade) {
             return fail("material shadow cascade out of range");

@@ -18,7 +18,6 @@ namespace {
         glm::vec3 tangent;
     };
 
-    // tangent x cross(normal, tangent) == normal for each face, so winding is consistent.
     constexpr std::array<CubeFace, 6> cube_faces{{
             {.normal = {1.0F, 0.0F, 0.0F}, .tangent = {0.0F, 1.0F, 0.0F}},
             {.normal = {-1.0F, 0.0F, 0.0F}, .tangent = {0.0F, 1.0F, 0.0F}},
@@ -31,7 +30,7 @@ namespace {
     constexpr std::array<glm::vec2, 4> corner_signs{{{-0.5F, -0.5F}, {0.5F, -0.5F}, {0.5F, 0.5F}, {-0.5F, 0.5F}}};
     constexpr std::array<glm::vec2, 4> corner_uvs{{{0.0F, 0.0F}, {1.0F, 0.0F}, {1.0F, 1.0F}, {0.0F, 1.0F}}};
 
-} // namespace
+}
 
 auto make_cube_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError> {
     std::vector<ModelVertex> vertices;
@@ -128,7 +127,6 @@ auto make_sphere_mesh(std::uint32_t rings, std::uint32_t segments) -> std::expec
 
 namespace {
 
-    // One grass blade's centreline and width profile, before it is cut into a particular LOD's rows.
     struct GrassBlade {
         glm::vec3 root{0.0F};
         glm::vec3 across{1.0F, 0.0F, 0.0F};
@@ -139,12 +137,8 @@ namespace {
         float curve = 0.05F;
     };
 
-    // Non-linear taper keeps the lower blade wide.
     constexpr float grass_taper_exponent = 0.72F;
 
-    // Emits `blade` as a strip of quads through `row_heights` (fractions of its height, the first 0) closed by a
-    // single tip triangle at the top, one-sided: the material is double-sided. Wider by `width_scale`, and
-    // straighter by `curve_scale` for the coarse LOD, whose few blades can't show much bend.
     auto emit_grass_blade(GrassBlade const &blade, std::span<float const> row_heights, float width_scale,
                           float curve_scale, std::vector<ModelVertex> &vertices,
                           std::vector<std::uint32_t> &indices) -> void {
@@ -155,7 +149,6 @@ namespace {
             return blade.root + glm::vec3{0.0F, blade.height * t, 0.0F} + horizontal;
         };
 
-        // Derivative of centre(t); width only varies along `across`, so the taper doesn't change the normal.
         auto const normal = [&](float t) {
             auto const tangent =
                     glm::normalize(glm::vec3{0.0F, blade.height, 0.0F} +
@@ -171,7 +164,6 @@ namespace {
             auto const row_centre = centre(t);
             auto const row_normal = normal(t);
 
-            // UV.y runs from 0 at the root to 1 at the tip.
             vertices.push_back(ModelVertex{
                     .position = row_centre - blade.across * half_width,
                     .normal = row_normal,
@@ -195,7 +187,6 @@ namespace {
 
         auto const row_count = static_cast<std::uint32_t>(row_heights.size());
 
-        // Wound so the face whose normal points at the camera is the front face.
         for (std::uint32_t row = 0; row + 1U < row_count; ++row) {
             auto const lower_left = base_index + row * 2U;
             auto const lower_right = lower_left + 1U;
@@ -210,9 +201,6 @@ namespace {
         indices.insert(indices.end(), {top_left, top_left + 1U, tip});
     }
 
-    // Three vertical cards through the clump's centre, 60 degrees apart, `half_width` either side and `height` tall.
-    // UV.x runs across the card (mirrored on alternate cards, so neighbours don't repeat), UV.y from 0 at the top to
-    // 1 at the root, matching make_grass_card_texture()'s rows.
     auto emit_grass_cards(float half_width, float height, std::vector<ModelVertex> &vertices,
                           std::vector<std::uint32_t> &indices) -> void {
         constexpr std::uint32_t card_count = 3;
@@ -246,22 +234,19 @@ namespace {
         }
     }
 
-} // namespace
+}
 
 auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError> {
     constexpr auto blade_count = 12U;
 
-    // Outer blades reach ~0.30 m from the clump origin.
     constexpr auto clump_radius = 0.30F;
 
     constexpr auto min_height = 0.48F;
     constexpr auto max_height = 0.90F;
 
-    // Full blade width is twice these values.
     constexpr auto min_half_width = 0.012F;
     constexpr auto max_half_width = 0.028F;
 
-    // Horizontal permanent curvature before wind deformation.
     constexpr auto min_lean = 0.015F;
     constexpr auto max_lean = 0.090F;
 
@@ -271,22 +256,17 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
     constexpr auto pi = std::numbers::pi_v<float>;
     constexpr auto two_pi = 2.0F * pi;
 
-    // Golden angle spreads blades more evenly than uniform random sampling.
     constexpr auto golden_angle = pi * (3.0F - 2.2360679774997896964F);
 
-    // LOD0: two quads and a tip triangle per blade. LOD1: one quad and a tip, on every other blade, widened to keep
-    // roughly the same coverage.
     constexpr std::array near_rows{0.0F, 0.32F, 0.68F};
     constexpr std::array mid_rows{0.0F, 0.5F};
     constexpr auto mid_blade_stride = 2U;
     constexpr auto mid_width_scale = 2.0F;
     constexpr auto mid_curve_scale = 0.5F;
 
-    // LOD2+: crossed cards spanning the blades' reach (lean included) and most of their height.
     constexpr auto card_half_width = 0.36F;
     constexpr auto card_height = 0.85F;
 
-    // Fixed seed so the mesh is deterministic; instances add the variation.
     std::mt19937 random_engine{0x47524153U};
 
     std::uniform_real_distribution<float> unit_distribution{0.0F, 1.0F};
@@ -300,7 +280,6 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
     blades.reserve(blade_count);
 
     for (std::uint32_t blade = 0; blade < blade_count; ++blade) {
-        // Sunflower distribution, avoiding empty patches and clusters.
         auto const radial_fraction = (static_cast<float>(blade) + 0.35F) / static_cast<float>(blade_count);
 
         auto const radius = clump_radius * std::sqrt(radial_fraction);
@@ -308,13 +287,11 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
         auto const position_angle =
                 static_cast<float>(blade) * golden_angle + signed_distribution(random_engine) * 0.20F;
 
-        // Facing independent of radial position, or the clump looks like a star.
         auto const yaw = unit_distribution(random_engine) * two_pi;
 
         auto const across = glm::normalize(glm::vec3{std::cos(yaw), 0.0F, std::sin(yaw)});
         auto const face_normal = glm::normalize(glm::vec3{-across.z, 0.0F, across.x});
 
-        // Shorter blades near the edge give a rounded silhouette.
         auto const edge_factor = radius / clump_radius;
 
         auto height = random_range(min_height, max_height);
@@ -322,7 +299,6 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
 
         auto const half_width = random_range(min_half_width, max_half_width);
 
-        // Lean mostly normal to the blade plane, with some sideways variation.
         auto const bend_angle = random_range(-0.65F, 0.65F);
 
         auto bend_direction = face_normal * std::cos(bend_angle) + across * std::sin(bend_angle);
@@ -359,7 +335,6 @@ auto make_grass_clump_mesh() -> std::expected<PrimitiveMeshData, ModelLoadError>
     static_assert(grass_clump_card_lod == 2);
     emit_grass_cards(card_half_width, card_height, mesh.vertices, mesh.lod_indices[1].emplace());
 
-    // LOD3 reuses the cards.
     return mesh;
 }
 
@@ -373,7 +348,6 @@ auto to_model_cpu_data(PrimitiveMeshData mesh) -> ModelCpuData {
             .material_index = std::nullopt,
     };
 
-    // Procedural meshes skip finalize_primitive_cpu(), so build the GPU data here.
     prepare_primitive_gpu_data(primitive);
 
     cpu_data.meshes.push_back(ModelCpuMesh{
@@ -396,7 +370,7 @@ auto make_capsule_mesh(std::uint32_t segments, std::uint32_t rings)
     rings = std::max(rings, 1U);
 
     constexpr float radius = 0.5F;
-    constexpr float half_cylinder_height = 0.5F; // Cylinder height 1, capsule height 2.
+    constexpr float half_cylinder_height = 0.5F;
 
     auto const row_stride = segments + 1;
     auto const total_rings = rings * 2 + 1;
@@ -409,12 +383,10 @@ auto make_capsule_mesh(std::uint32_t segments, std::uint32_t rings)
         float y_offset = 0.0F;
 
         if (ring <= rings) {
-            // Top hemisphere: theta from 0 (pole) to pi/2 (equator).
             auto const v_hemi = static_cast<float>(ring) / static_cast<float>(rings);
             theta = v_hemi * (std::numbers::pi_v<float> * 0.5F);
             y_offset = half_cylinder_height;
         } else {
-            // Bottom hemisphere: theta from pi/2 (equator) to pi (pole).
             auto const v_hemi = static_cast<float>(ring - (rings + 1)) / static_cast<float>(rings);
             theta = (std::numbers::pi_v<float> * 0.5F) + v_hemi * (std::numbers::pi_v<float> * 0.5F);
             y_offset = -half_cylinder_height;
@@ -499,7 +471,6 @@ auto make_ribbon_mesh(std::span<glm::vec3 const> grid, std::uint32_t columns, fl
             vertices.push_back(ModelVertex{
                     .position = at(row, column),
                     .normal = normal,
-                    // Placeholder; generate_tangents() overwrites it.
                     .tangent = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F},
                     .texcoord = glm::vec2{fraction * width * uv_scale, along * uv_scale},
             });

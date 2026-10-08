@@ -7,10 +7,6 @@
 
 #include <glm/glm.hpp>
 
-// CPU reference for assets/shaders/env_brdf_lut.slang: the split-sum BRDF LUT (Karis 2013). Keep the two in lockstep. The
-// result (A, B) gives the specular reflectance as F0 * A + B, integrated with the same height-correlated Smith
-// visibility as pbr.slang and a Hammersley sequence of GGX importance samples. See docs/ibl-and-skybox.md.
-
 [[nodiscard]]
 inline auto brdf_hammersley(std::uint32_t index, std::uint32_t count) noexcept -> glm::vec2 {
     auto bits = index;
@@ -23,7 +19,6 @@ inline auto brdf_hammersley(std::uint32_t index, std::uint32_t count) noexcept -
     return glm::vec2{static_cast<float>(index) / static_cast<float>(count), static_cast<float>(bits) * 2.3283064365386963e-10F};
 }
 
-// A half vector around +Z distributed by GGX, for alpha = perceptual roughness squared.
 [[nodiscard]]
 inline auto importance_sample_ggx_reference(glm::vec2 xi, float alpha) noexcept -> glm::vec3 {
     auto const phi = 2.0F * std::numbers::pi_v<float> * xi.x;
@@ -33,7 +28,6 @@ inline auto importance_sample_ggx_reference(glm::vec2 xi, float alpha) noexcept 
     return glm::vec3{sin_theta * std::cos(phi), sin_theta * std::sin(phi), cos_theta};
 }
 
-// `ndotv` in (0, 1], `roughness` the perceptual roughness (the forward shader clamps it to 0.045 and above).
 [[nodiscard]]
 inline auto integrate_brdf(float ndotv, float roughness, std::uint32_t sample_count) noexcept -> glm::vec2 {
     auto const alpha = roughness * roughness;
@@ -56,7 +50,6 @@ inline auto integrate_brdf(float ndotv, float roughness, std::uint32_t sample_co
             auto const lambda_l = ndotv * std::sqrt((ndotl * ndotl * (1.0F - a2)) + a2);
             auto const visibility = 0.5F / std::max(lambda_v + lambda_l, 1e-6F);
 
-            // Visibility is divided by 4 NoV NoL already; the importance weight is 4 VoH NoL / NoH.
             auto const weighted = visibility * 4.0F * ndotl * vdoth / std::max(ndoth, 1e-6F);
             auto const fresnel = std::pow(1.0F - vdoth, 5.0F);
 

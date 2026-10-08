@@ -21,7 +21,6 @@ namespace {
         });
     }
 
-    // The shape record_frame will use: one legacy pass around the old body, which does its own present transition.
     auto add_frame_legacy(FrameGraph &graph, ImageId &swapchain) -> void {
         graph.add_pass("frame_legacy", PassType::raster, {}, [&](PassBuilder &p) {
             p.legacy();
@@ -37,7 +36,7 @@ namespace {
         }));
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("a legacy pass around the swapchain: entered as an attachment, left as PRESENT") {
@@ -51,17 +50,14 @@ TEST_SUITE("unit") {
         auto const &batch = compiled->batches.front();
         REQUIRE(batch.passes.size() == 1);
 
-        // Entry: UNDEFINED to attachment, which the old body then transitions from UNDEFINED again.
         auto const &before = batch.passes.front().before;
         REQUIRE(before.images.size() == 1);
         CHECK(before.images.front().old_layout == VK_IMAGE_LAYOUT_UNDEFINED);
         CHECK(before.images.front().new_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         CHECK(before.images.front().dst_stages == VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
 
-        // Exit: already PRESENT, so the epilogue transitions nothing.
         CHECK(batch.epilogue.images.empty());
 
-        // The acquire wait uses the attachment stage, as the old single submit did.
         CHECK(batch.waits_swapchain_acquire);
         CHECK(batch.swapchain_wait_stages == VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
         CHECK(batch.signals_render_finished);
@@ -79,7 +75,6 @@ TEST_SUITE("unit") {
         REQUIRE(compiled.has_value());
         auto const &batch = compiled->batches.front();
 
-        // Before it, and after it: with nothing after it on the queue, the fence goes into the epilogue.
         CHECK(fences(batch.passes.front().before) == 1);
         CHECK(fences(batch.epilogue) == 1);
     }
@@ -127,7 +122,6 @@ TEST_SUITE("unit") {
                 .debug_name = "chain",
         });
 
-        // Bloom-style: writes its mips as storage and leaves the whole image sampled.
         graph.add_pass("build", PassType::compute, {}, [&](PassBuilder &p) {
             image = p.write(image, Use::storage_write, compute_stage, ExitUse{Use::sampled});
             return noop();
@@ -143,11 +137,9 @@ TEST_SUITE("unit") {
         auto const &passes = compiled->batches.front().passes;
         REQUIRE(passes.size() == 2);
 
-        // The build pass enters as GENERAL...
         REQUIRE(passes[0].before.images.size() == 1);
         CHECK(passes[0].before.images.front().new_layout == VK_IMAGE_LAYOUT_GENERAL);
 
-        // ...and the consumer finds it already sampled: no barrier, no layout change.
         CHECK(passes[1].before.images.empty());
         CHECK(compiled->batches.front().epilogue.images.empty());
     }
@@ -189,7 +181,6 @@ TEST_SUITE("unit") {
         REQUIRE(graph.records().size() == 3);
         PassContext *context = nullptr;
         for (auto &record: graph.records()) {
-            // The compiler never calls these; calling through a null context proves only that they are stored.
             if (record) {
                 (void) context;
             }

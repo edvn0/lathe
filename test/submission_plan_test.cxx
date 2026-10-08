@@ -21,7 +21,7 @@ namespace {
         return SubmitBatch{.queue = LogicalQueue::compute, .waits = waits, .signal_index = signal_index};
     }
 
-} // namespace
+}
 
 TEST_SUITE("unit") {
     TEST_CASE("one graphics batch signals the next value on its timeline") {
@@ -67,7 +67,6 @@ TEST_SUITE("unit") {
         auto const batches =
                 std::array{graphics_batch(0), compute_batch(0, compute_waits), graphics_batch(1, graphics_waits)};
 
-        // A previous frame already advanced both timelines.
         auto const plan = plan_submissions(batches, {10, 4}, separate_timelines);
         REQUIRE(plan.has_value());
         REQUIRE(plan->submits.size() == 3);

@@ -16,9 +16,6 @@
 
 #include "core/error_context.hxx"
 
-// An HTTP client modelled on .NET's System.Net.Http: HttpClient sends HttpRequestMessages through an
-// IHttpMessageHandler and hands back futures of HttpResponseMessages. Swap the handler to fake the network in tests.
-
 enum class HttpMethod : std::uint8_t {
     get,
     head,
@@ -33,12 +30,10 @@ struct HttpHeader {
     std::string value;
 };
 
-// Case-insensitive lookup, insertion-ordered, duplicates allowed (a response may repeat a header).
 class HttpHeaders {
 public:
     auto add(std::string name, std::string value) -> void;
 
-    // The first header called `name`.
     [[nodiscard]]
     auto find(std::string_view name) const noexcept -> std::optional<std::string_view>;
 
@@ -93,7 +88,6 @@ enum class HttpErrorType : std::uint8_t {
 
 struct HttpError {
     HttpErrorType type = HttpErrorType::backend_error;
-    // Set for unsuccessful_status_code.
     int status_code = 0;
     std::optional<ErrorCause> cause{std::nullopt};
 };
@@ -136,29 +130,20 @@ struct std::formatter<HttpErrorType> : std::formatter<std::string_view> {
     }
 };
 
-// Every limit is enforced, so a hostile or broken server can't make a request run, redirect or grow forever.
 struct HttpClientOptions {
-    // Whole request, redirects included.
     std::chrono::milliseconds timeout{std::chrono::seconds{30}};
     std::chrono::milliseconds connect_timeout{std::chrono::seconds{10}};
-    // A response body past this fails with response_too_large instead of being buffered.
     std::size_t max_response_bytes = std::size_t{64} * 1024U * 1024U;
     long max_redirects = 5;
-    // Plain http:// is refused (including as a redirect target) unless this is set.
     bool allow_insecure_http = false;
     std::string user_agent = "lathe";
-    // Sent on every request unless the request sets the same header.
     HttpHeaders default_request_headers;
-    // PEM bundle of trusted roots; empty probes the usual system locations.
     std::filesystem::path ca_bundle;
-    // Requests running at once; the rest queue.
     unsigned worker_count = 2;
 };
 
 using HttpResult = std::expected<HttpResponseMessage, HttpError>;
 
-// Performs one request, blocking. Called from a client worker thread, so it must be thread-safe. Poll `stop` and
-// return HttpErrorType::canceled once it fires.
 class IHttpMessageHandler {
 public:
     IHttpMessageHandler() = default;
@@ -173,15 +158,12 @@ public:
             -> HttpResult = 0;
 };
 
-// The libcurl-backed handler: https, redirects capped, response size capped, cancellable.
 [[nodiscard]]
 auto make_curl_http_handler() -> std::unique_ptr<IHttpMessageHandler>;
 
-// Where get_file_async() puts a download and what it must hash to.
 struct HttpFileDownload {
     std::string uri;
     std::filesystem::path destination;
-    // Lowercase hex SHA-256 of the file. Required: a download nobody can verify isn't kept.
     std::string sha256;
 };
 
@@ -194,13 +176,11 @@ public:
     auto operator=(HttpClient const &) -> HttpClient & = delete;
     auto operator=(HttpClient &&) -> HttpClient & = delete;
 
-    // Cancels what is in flight, fails what is queued with `canceled` and joins the workers.
     ~HttpClient();
 
     [[nodiscard]]
     auto options() const noexcept -> HttpClientOptions const &;
 
-    // Any status code is a success here; check is_success_status_code(). Failing to get a response is an error.
     [[nodiscard]]
     auto send_async(HttpRequestMessage request, std::stop_token stop = {}) -> std::future<HttpResult>;
 
@@ -211,14 +191,10 @@ public:
     auto post_async(std::string uri, std::vector<std::byte> content, std::string content_type,
                     std::stop_token stop = {}) -> std::future<HttpResult>;
 
-    // The body of a 2xx response; any other status is unsuccessful_status_code.
     [[nodiscard]]
     auto get_byte_array_async(std::string uri, std::stop_token stop = {})
             -> std::future<std::expected<std::vector<std::byte>, HttpError>>;
 
-    // Downloads to `destination` once the body hashes to `sha256`, writing through a temporary file so a partial or
-    // mismatching download never lands there. A file already at `destination` with that hash is kept and no request
-    // is made.
     [[nodiscard]]
     auto get_file_async(HttpFileDownload download, std::stop_token stop = {})
             -> std::future<std::expected<void, HttpError>>;

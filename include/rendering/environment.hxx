@@ -23,24 +23,12 @@
 #include "rendering/pipeline_graph_repository.hxx"
 #include "scene/environment.hxx"
 
-// Image-based lighting and the skybox's resources. See docs/ibl-and-skybox.md.
-//
-// From one radiance cube (an HDR image projected to a cube, or the procedural sky rendered into one) compute passes
-// build an L2 spherical-harmonics irradiance and a GGX-prefiltered specular cube, and a split-sum BRDF LUT is built
-// once. The prefilter cube and SH are double buffered: the forward pass reads the live set while a rebuild writes the
-// other, so a half-built environment is never sampled. Procedural rebuilds are spread over frames; an HDR load builds
-// at once.
-
-// Nine RGB spherical-harmonics coefficients, cosine-convolved and divided by pi. Mirrors GpuEnvironmentSh in
-// assets/shaders/scene_types.slang.
 struct GpuEnvironmentSh {
     glm::vec4 coefficients[9]{};
 };
 
 static_assert(sizeof(GpuEnvironmentSh) == 144);
 
-// UBO::environment, appended to the frame UBO. Field for field the same as the environment_* members at the end of UBO
-// in assets/shaders/scene_types.slang, which are flat there; both are scalar layout, so the offsets agree.
 struct EnvironmentUboBlock {
     std::uint32_t flags = 0;
     float exposure = 1.0F;
@@ -69,7 +57,6 @@ static_assert(offsetof(EnvironmentUboBlock, sky_zenith) == 120);
 static_assert(offsetof(EnvironmentUboBlock, sun_direction_cos_radius) == 152);
 static_assert(offsetof(EnvironmentUboBlock, sh_address) == 184);
 
-// Mirrors the env_* constants in assets/shaders/environment.slang.
 namespace environment_flag {
     inline constexpr std::uint32_t ibl_valid = 1U << 0;
     inline constexpr std::uint32_t skybox = 1U << 1;
@@ -79,7 +66,7 @@ namespace environment_flag {
     inline constexpr std::uint32_t multi_scatter = 1U << 5;
     inline constexpr std::uint32_t fog_from_environment = 1U << 6;
     inline constexpr std::uint32_t debug_shift = 8;
-} // namespace environment_flag
+}
 
 enum class EnvironmentDebugView : std::uint8_t {
     none = 0,
@@ -126,52 +113,38 @@ struct EnvironmentPipelines {
 };
 
 enum class EnvironmentPhase : std::uint8_t {
-    // Flat ambient, or nothing to do.
     idle,
-    // The HDR is being read and decoded off thread.
     decoding,
-    // Compute work for a rebuild is still being recorded, one step per frame.
     building,
-    // The live environment matches what the scene asks for.
     ready,
-    // Loading the HDR failed; see EnvironmentStatus::message. Lighting stays as it was.
     failed,
 };
 
 struct EnvironmentStatus {
     EnvironmentPhase phase = EnvironmentPhase::idle;
 
-    // Progress of the running build, in prefilter steps.
     std::uint32_t step = 0;
     std::uint32_t step_count = 0;
 
     std::string message;
 
-    // Whether forward shading uses IBL right now.
     bool ibl_live = false;
 };
 
-// Settings for the editor's Environment panel that are not saved with the scene.
 struct EnvironmentDebugSettings {
     EnvironmentDebugView view = EnvironmentDebugView::none;
 
-    // The prefilter mip shown by EnvironmentDebugView::sky_prefilter.
     float prefilter_lod = 0.0F;
 
-    // Spread procedural rebuilds over several frames instead of doing them at once.
     bool amortize_rebuilds = true;
 };
 
-// The outcome of EnvironmentSystem::validate_against_cpu().
 struct EnvironmentValidation {
-    // False when there was nothing built to check yet.
     bool ran = false;
     bool passed = false;
 
-    // Largest absolute difference over the sampled LUT texels (stored as half floats, so about 1e-3 of rounding).
     float lut_max_error = 0.0F;
 
-    // Largest SH coefficient difference relative to the largest coefficient.
     float sh_max_relative_error = 0.0F;
 
     std::string summary;
@@ -200,7 +173,6 @@ public:
     [[nodiscard]]
     auto initialize(CreateInfo const &create_info) -> std::expected<void, RendererError>;
 
-    // What the scene asks for. Cheap: it only remembers the value, and prepare() works out what changed.
     auto set_environment(SceneEnvironment const &environment) -> void { desired_ = environment; }
     [[nodiscard]] auto environment() const noexcept -> SceneEnvironment const & { return desired_; }
 
@@ -213,45 +185,30 @@ public:
         return debug_;
     }
 
-    // An already-decoded image for `source` (the path the scene names), e.g. from a cooked ENVM chunk. The next time
-    // `source` needs loading it is used instead of reading the file, then dropped.
     auto provide_hdr(std::string source, HdrImage image) -> void {
         provided_.insert_or_assign(std::move(source), std::make_shared<HdrImage const>(std::move(image)));
     }
 
-    // Throws away the live environment and builds again from scratch (also after a hot reload of an environment
-    // shader).
     auto rebuild() noexcept -> void { ++generation_; }
 
-    // Once per frame, before GpuResourceTable::prepare_frame() so images created here are visible this frame. Finishes
-    // an HDR decode (creating and uploading its images into `command_buffer`), retires what the GPU is done with, and
-    // plans this frame's compute work.
     [[nodiscard]]
     auto prepare(VkCommandBuffer command_buffer, std::uint64_t frame_number) -> std::expected<void, RendererError>;
 
-    // The environment block of this frame's UBO; call after prepare().
     [[nodiscard]]
     auto ubo_block() const -> EnvironmentUboBlock;
 
-    // Whether record() has anything to do this frame: the BRDF LUT, a capture or some prefilter faces were planned by
-    // prepare(). The frame graph only adds the environment pass then.
     [[nodiscard]]
     auto has_pending_record() const -> bool;
 
-    // Records this frame's compute work. `ubo_address` is this frame's UBO, which the procedural capture reads.
     auto record(VkCommandBuffer command_buffer, GpuResourceTable &resource_table, std::uint32_t frame_index,
                 VkDeviceAddress ubo_address) -> void;
 
     [[nodiscard]]
     auto status() const -> EnvironmentStatus;
 
-    // Reads the BRDF LUT, the live SH and the radiance level the SH came from back to the CPU and compares them against
-    // the CPU references (brdf_lut.hxx, spherical_harmonics.hxx). Blocks until the GPU is done: a debug action, not for
-    // frame recording. Render thread.
     [[nodiscard]]
     auto validate_against_cpu() -> EnvironmentValidation;
 
-    // Bindless slots, for the editor's debug views. 0 when absent.
     [[nodiscard]] auto brdf_lut_texture_index() const noexcept -> std::uint32_t;
     [[nodiscard]] auto radiance_face_texture_index(std::uint32_t mip, std::uint32_t face) const noexcept
             -> std::uint32_t;
@@ -260,7 +217,6 @@ public:
             -> std::uint32_t;
     [[nodiscard]] static constexpr auto prefilter_mip_count() noexcept -> std::uint32_t { return prefilter_mips; }
 
-    // True once the GPU has executed the build that produced the live set: the SH slot can then be read back.
     [[nodiscard]] auto live_sh_address() const noexcept -> VkDeviceAddress;
 
     auto destroy() noexcept -> void;
@@ -272,8 +228,6 @@ public:
     static constexpr std::uint32_t sh_level_size = 32;
 
 private:
-    // A cube image with one bindless slot per (mip, face), for storage writes and single-face sampled reads. The slots
-    // alias views of `image`, so they are released first: declared after it for destruction.
     struct CubeResource {
         ImageHolder image;
         std::vector<ImageHolder> face_slots;
@@ -300,14 +254,11 @@ private:
         }
     };
 
-    // The inputs the radiance of a build depends on. Rotation, exposure and the intensities apply at lookup, so they
-    // are not here and never trigger a rebuild.
     struct BuildKey {
         EnvironmentSource source = EnvironmentSource::flat_ambient;
         std::string hdr_source;
         std::uint32_t cube_size = 0;
 
-        // Procedural only, quantised so a slider drag does not rebuild on noise.
         std::int32_t azimuth_centidegrees = 0;
         std::int32_t elevation_centidegrees = 0;
         std::int32_t turbidity_milli = 0;
@@ -324,7 +275,6 @@ private:
         std::future<std::expected<HdrImage, HdrImageError>> future;
     };
 
-    // One rebuild in flight. Capture, the mip chain, SH and prefilter mip 0 happen in its first frame.
     struct Build {
         BuildKey key;
         std::uint32_t target_set = 0;
@@ -333,7 +283,6 @@ private:
         std::uint32_t faces_done = 0;
     };
 
-    // What prepare() decided for this frame.
     struct FramePlan {
         bool brdf_lut = false;
         bool capture = false;
@@ -384,7 +333,6 @@ private:
     EnvironmentDebugSettings debug_{};
     std::uint64_t generation_ = 0;
 
-    // Resources.
     ImageHolder brdf_lut_;
     CubeResource radiance_;
     EnvironmentSource radiance_source_ = EnvironmentSource::flat_ambient;
@@ -396,7 +344,6 @@ private:
     SamplerHandle equirect_sampler_{};
     std::vector<Retired> retired_;
 
-    // HDR.
     std::unordered_map<std::string, std::shared_ptr<HdrImage const>> provided_;
     std::optional<DecodeJob> decode_;
     std::string decode_error_;
@@ -404,7 +351,6 @@ private:
     std::string loaded_hdr_;
     bool equirect_pending_projection_ = false;
 
-    // Build state.
     bool lut_ready_ = false;
     bool radiance_captured_ = false;
     std::optional<Build> building_;

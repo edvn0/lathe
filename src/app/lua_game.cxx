@@ -18,7 +18,7 @@
 #include "scripting/lua_runtime.hxx"
 
 namespace {
-    constexpr char const *default_entry = "assets/scripts/main.lua"; // paths: ok
+    constexpr char const *default_entry = "assets/scripts/main.lua";
 
     auto read_data_file(std::string_view relative) -> std::optional<std::string> {
         auto const path = Paths::current().data(relative);
@@ -43,7 +43,7 @@ namespace {
     constexpr float default_fov_degrees = 60.0F;
     constexpr float default_near_clip = 0.1F;
     constexpr float default_far_clip = 1000.0F;
-} // namespace
+}
 
 struct LuaGame::Impl {
     GameHost host;
@@ -51,12 +51,10 @@ struct LuaGame::Impl {
     std::vector<std::pair<std::string, lua_CFunction>> native_modules;
     std::unique_ptr<LuaRuntime> runtime;
 
-    // Why the game isn't running at all: no entry script, a syntax error, an error while populating.
     std::string fatal_error;
 
     Scene const *bound_scene = nullptr;
 
-    // The camera's matrices are needed by picking, which runs from other callbacks.
     mutable CameraParams last_camera{};
     mutable bool have_camera = false;
 
@@ -92,7 +90,6 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
     self.have_camera = false;
     self.fatal_error.clear();
 
-    // A fresh state every time, so Ctrl+R reloads every script.
     self.runtime.reset();
 
     auto created = LuaRuntime::create();
@@ -107,7 +104,7 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
     self.runtime = std::make_unique<LuaRuntime>(std::move(*created));
     self.runtime->set_host(&self.bindings);
     self.runtime->set_source_loader([](std::string const &module_path) -> std::optional<std::string> {
-        return read_data_file("assets/scripts/" + module_path + ".lua"); // paths: ok
+        return read_data_file("assets/scripts/" + module_path + ".lua");
     });
 
     for (auto const &[name, opener]: self.native_modules) {
@@ -201,7 +198,6 @@ auto LuaGame::on_ui(Scene &scene, Renderer &renderer) -> void {
         return;
     }
 
-    // Shown over the game so a script error can't pass unnoticed; the log has the full traceback.
     ImGui::SetNextWindowPos(ImVec2{16.0F, 16.0F}, ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.9F);
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{1.0F, 0.45F, 0.4F, 1.0F});
@@ -217,7 +213,7 @@ auto LuaGame::on_ui(Scene &scene, Renderer &renderer) -> void {
     ImGui::PopStyleColor();
 }
 
-auto LuaGame::camera(Scene const & /*scene*/, float aspect_ratio) const -> CameraParams {
+auto LuaGame::camera(Scene const & , float aspect_ratio) const -> CameraParams {
     auto &self = *impl_;
 
     glm::vec3 eye{0.0F, 6.0F, -8.0F};
@@ -248,7 +244,6 @@ auto LuaGame::camera(Scene const & /*scene*/, float aspect_ratio) const -> Camer
         }
     }
 
-    // The engine's camera convention: left-handed, depth 0 to 1.
     CameraParams params{
             .view = glm::lookAtLH(eye, target, glm::vec3{0.0F, 1.0F, 0.0F}),
             .projection = glm::perspectiveLH_ZO(glm::radians(fov), aspect_ratio, near_clip, far_clip),
