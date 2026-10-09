@@ -2,7 +2,15 @@
 
 #include <algorithm>
 
+#include "gpu/image.hxx"
+
 namespace frame_graph {
+
+    auto previewable(ResourceDesc const &resource) -> bool {
+        return resource.kind == ResourceKind::image && !resource.imported && resource.transient_image &&
+               resource.transient_image->samples == VK_SAMPLE_COUNT_1_BIT &&
+               has_image_descriptor_view(resource.transient_image->descriptor_views, ImageDescriptorView::sampled_2d);
+    }
 
     auto describe_resource(FrameGraphView const &view, std::uint32_t resource) -> ResourceInfo {
         auto info = ResourceInfo{};

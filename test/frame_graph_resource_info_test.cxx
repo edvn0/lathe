@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "frame_graph_test_support.hxx"
+#include "gpu/image.hxx"
 #include "rendering/frame_graph/names.hxx"
 #include "rendering/frame_graph/resource_info.hxx"
 
@@ -76,5 +77,25 @@ TEST_SUITE("unit") {
         CHECK(format_name(VK_FORMAT_R16G16B16A16_SFLOAT) == "RGBA16 SFLOAT");
         CHECK(format_name(VK_FORMAT_D32_SFLOAT) == "D32 SFLOAT");
         CHECK(format_name(VK_FORMAT_ASTC_4x4_UNORM_BLOCK) == "other format");
+    }
+
+    TEST_CASE("only single-sample transient images with a sampled view are previewable") {
+        auto const sampled = image_descriptor_view_bit(ImageDescriptorView::sampled_2d);
+        auto const make = [&](bool imported, VkSampleCountFlagBits samples, std::uint32_t views) {
+            return ResourceDesc{
+                    .name = "image",
+                    .kind = ResourceKind::image,
+                    .imported = imported,
+                    .transient_image = TransientImageDesc{.samples = samples, .descriptor_views = views},
+            };
+        };
+
+        CHECK(previewable(make(false, VK_SAMPLE_COUNT_1_BIT, sampled)));
+        CHECK_FALSE(previewable(make(true, VK_SAMPLE_COUNT_1_BIT, sampled)));
+        CHECK_FALSE(previewable(make(false, VK_SAMPLE_COUNT_4_BIT, sampled)));
+        CHECK_FALSE(previewable(make(false, VK_SAMPLE_COUNT_1_BIT, 0)));
+
+        auto buffer = ResourceDesc{.name = "buffer", .kind = ResourceKind::buffer};
+        CHECK_FALSE(previewable(buffer));
     }
 }

@@ -20,6 +20,9 @@ namespace frame_graph {
         std::vector<std::uint32_t> shares_memory_with;
     };
 
+    // Whether the UI pass could sample this resource: a single-sample transient image with a sampled 2D view.
+    [[nodiscard]] auto previewable(ResourceDesc const &resource) -> bool;
+
     [[nodiscard]] auto describe_resource(FrameGraphView const &view, std::uint32_t resource) -> ResourceInfo;
 
 }
