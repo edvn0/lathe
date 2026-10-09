@@ -7,6 +7,7 @@
 
 #include "rendering/frame_graph/names.hxx"
 #include "rendering/frame_graph/resource_info.hxx"
+#include "rendering/imgui_renderer.hxx"
 #include "rendering/renderer.hxx"
 
 namespace gui {
@@ -28,6 +29,20 @@ namespace gui {
             return "";
         }
 
+        auto preview_button(frame_graph::GraphDesc const &graph, std::uint32_t resource_index, Renderer &renderer)
+                -> void {
+            if (resource_index >= graph.resources.size() || !frame_graph::previewable(graph.resources[resource_index])) {
+                return;
+            }
+
+            auto const &name = graph.resources[resource_index].name;
+            if (renderer.preview_resource() == name) {
+                ImGui::TextDisabled("previewing");
+            } else if (ImGui::SmallButton("Preview")) {
+                renderer.set_preview_resource(name);
+            }
+        }
+
         auto find_barriers(frame_graph::CompiledGraph const &compiled, std::uint32_t pass)
                 -> frame_graph::BarrierSet const * {
             for (auto const &batch: compiled.batches) {
@@ -40,7 +55,7 @@ namespace gui {
             return nullptr;
         }
 
-        auto draw_pass(frame_graph::FrameGraphView const &view, std::uint32_t pass_index, Renderer const &renderer)
+        auto draw_pass(frame_graph::FrameGraphView const &view, std::uint32_t pass_index, Renderer &renderer)
                 -> void {
             auto const &graph = view.graph;
             auto const &pass = graph.passes[pass_index];
@@ -54,11 +69,12 @@ namespace gui {
                 }
             }
 
-            if (ImGui::BeginTable("accesses", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            if (ImGui::BeginTable("accesses", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
                 ImGui::TableSetupColumn("Resource");
                 ImGui::TableSetupColumn("Use");
                 ImGui::TableSetupColumn("");
                 ImGui::TableSetupColumn("Version");
+                ImGui::TableSetupColumn("");
                 ImGui::TableHeadersRow();
 
                 for (auto const &access: pass.accesses) {
@@ -72,6 +88,10 @@ namespace gui {
                     ImGui::TextDisabled("%s%s", access.produces ? "writes" : "reads", access.discard ? " (discard)" : "");
                     ImGui::TableNextColumn();
                     ImGui::Text("%u", access.version);
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(static_cast<int>(access.resource));
+                    preview_button(graph, access.resource, renderer);
+                    ImGui::PopID();
                 }
 
                 ImGui::EndTable();
@@ -102,7 +122,7 @@ namespace gui {
     }
 
     auto draw_pass_details(frame_graph::FrameGraphView const &view, std::span<std::uint32_t const> passes,
-                           Renderer const &renderer) -> void {
+                           Renderer &renderer) -> void {
         for (auto const pass: passes) {
             if (pass < view.graph.passes.size()) {
                 draw_pass(view, pass, renderer);
@@ -125,8 +145,8 @@ namespace gui {
 
     }
 
-    auto draw_resource_details(frame_graph::FrameGraphView const &view, std::span<std::uint32_t const> resources)
-            -> void {
+    auto draw_resource_details(frame_graph::FrameGraphView const &view, std::span<std::uint32_t const> resources,
+                               Renderer &renderer) -> void {
         auto const &graph = view.graph;
 
         for (auto const resource_index: resources) {
@@ -139,6 +159,7 @@ namespace gui {
 
             ImGui::PushID(static_cast<int>(resource_index));
             ImGui::SeparatorText(resource.name.c_str());
+            preview_button(graph, resource_index, renderer);
 
             auto const origin = resource.imported ? "imported" : "transient";
             if (resource.transient_image) {
@@ -175,6 +196,39 @@ namespace gui {
 
             ImGui::PopID();
         }
+    }
+
+    auto previewed_resource(frame_graph::FrameGraphView const &view, Renderer const &renderer)
+            -> std::optional<std::uint32_t> {
+        if (renderer.preview_resource().empty()) {
+            return std::nullopt;
+        }
+
+        for (auto index = std::size_t{0}; index < view.graph.resources.size(); ++index) {
+            auto const &resource = view.graph.resources[index];
+            if (resource.name == renderer.preview_resource() && frame_graph::previewable(resource)) {
+                return static_cast<std::uint32_t>(index);
+            }
+        }
+        return std::nullopt;
+    }
+
+    auto draw_preview(frame_graph::FrameGraphView const &view, std::uint32_t resource, Renderer &renderer) -> void {
+        constexpr auto maximum_width = 320.0F;
+        constexpr auto maximum_height = 170.0F;
+
+        auto const &desc = view.graph.resources[resource];
+        ImGui::TextUnformatted(desc.name.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Close")) {
+            renderer.set_preview_resource({});
+            return;
+        }
+
+        auto const extent = desc.transient_image->extent;
+        auto const aspect = static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1U));
+        auto height = std::min(maximum_width / aspect, maximum_height);
+        ImGui::Image(preview_texture_id(), ImVec2{height * aspect, height});
     }
 
 }
