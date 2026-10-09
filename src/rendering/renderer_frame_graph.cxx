@@ -121,8 +121,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
     frame_graph_.reset();
 
+    // The acquire semaphore is waited at colour-attachment-output, so the first barrier on the image has to chain
+    // from that stage to be ordered after the acquire.
     auto swapchain = frame_graph_.import_image({
-            .entry = {.layout = VK_IMAGE_LAYOUT_UNDEFINED},
+            .entry = {.layout = VK_IMAGE_LAYOUT_UNDEFINED, .stages = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT},
             .exit = {.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR},
             .swapchain = true,
             .debug_name = "swapchain",
