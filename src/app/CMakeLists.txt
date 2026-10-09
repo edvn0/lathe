@@ -15,6 +15,7 @@ add_library(
         benchmark_scenarios.cxx
         lua_game.cxx
         lua_game_api.cxx
+        pass_timeline.cxx
         scene_files.cxx
         stage_registry.cxx
 )

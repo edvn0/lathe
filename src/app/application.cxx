@@ -42,6 +42,7 @@
 #include "gpu/context.hxx"
 #include "implot.h"
 #include "imgui_internal.h"
+#include "app/pass_timeline.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
@@ -1999,7 +2000,19 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    widget("Frame graph", [&] { frame_graph_editor.draw(*renderer, stage_registry); });
+    widget("Frame graph", [&] {
+        if (ImGui::BeginTabBar("##frame_graph_tabs")) {
+            if (ImGui::BeginTabItem("Graph")) {
+                frame_graph_editor.draw(*renderer, stage_registry);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Timeline")) {
+                gui::draw_pass_timeline(*renderer);
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+    });
 
     widget("Lighting", [&] {
         auto const draw_stage = [&](char const *id) {
