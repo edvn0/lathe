@@ -513,6 +513,12 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     [[nodiscard]] auto submit_batches() const noexcept -> std::span<SubmitBatch const> { return submit_batches_; }
 
+    // Names a transient image for the UI pass to sample, so a tool can show it. Empty clears it. The image shows
+    // through gui::preview_texture_id(), which the ImGui renderer resolves when it records.
+    auto set_preview_resource(std::string name) -> void { preview_resource_ = std::move(name); }
+    [[nodiscard]] auto preview_resource() const noexcept -> std::string const & { return preview_resource_; }
+    [[nodiscard]] auto preview_texture_index() const noexcept -> std::uint32_t { return preview_texture_index_; }
+
     [[nodiscard]] auto frame_graph_view() const noexcept -> frame_graph::FrameGraphView const & {
         return frame_graph_view_;
     }
@@ -1391,6 +1397,8 @@ private:
     frame_graph::PlanCache plan_cache_;
     frame_graph::CompiledGraph const *frame_plan_ = nullptr;
     frame_graph::FrameGraphView frame_graph_view_;
+    std::string preview_resource_;
+    std::uint32_t preview_texture_index_ = 0;
     std::vector<SubmitBatch> submit_batches_;
     frame_graph::PassProfiler pass_profiler_;
 

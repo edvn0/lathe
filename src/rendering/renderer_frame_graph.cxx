@@ -1072,6 +1072,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 }};
             });
 
+    auto const preview_image =
+            preview_resource_.empty() ? std::nullopt : frame_graph_.find_image(preview_resource_);
+
     if (!fullscreen) {
         frame_graph_.add_pass(
                 "ui", frame_graph::PassType::raster,
@@ -1084,6 +1087,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const sampled =
                             pass.read(viewport, frame_graph::Use::sampled, fragment_stage);
                     [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
+                    if (preview_image) {
+                        [[maybe_unused]] auto const previewed =
+                                pass.read(*preview_image, frame_graph::Use::sampled, fragment_stage);
+                    }
                     swapchain = pass.color(swapchain, frame_graph::LoadOp::clear, frame_graph::StoreOp::store,
                                            ui_clear_colour);
                     pass.render_area({.offset = {0, 0}, .extent = swapchain_image.extent});
@@ -1094,6 +1101,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         }
 
                         auto const pass_context = pass_context_of(context);
+
+                        auto const previewed = preview_image
+                                                       ? transient_allocator_.handle(info.frame_index, preview_image->index)
+                                                       : ImageHandle{};
+                        preview_texture_index_ = previewed.valid() ? previewed.index : image_storage_.white().index;
 
                         OverlayScope const ui_scope{
                                 .extent = swapchain_image.extent,
