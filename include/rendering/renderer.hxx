@@ -544,6 +544,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto hdr_format() const noexcept { return hdr_format_; }
     [[nodiscard]] auto samples() const noexcept { return samples_; }
 
+    // Takes effect at the start of the next frame. Counts the device does not support are clamped down.
+    auto set_samples(VkSampleCountFlagBits samples) noexcept -> void;
+    [[nodiscard]] auto max_samples() const noexcept -> VkSampleCountFlagBits;
+
     [[nodiscard]] auto image_storage() noexcept -> ImageStorage & override { return image_storage_; }
     [[nodiscard]] auto material_storage() noexcept -> MaterialStorage & override { return material_storage_; }
     [[nodiscard]] auto sampler_storage() noexcept -> SamplerStorage & override { return sampler_storage_; }
@@ -1215,6 +1219,7 @@ private:
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     VkFormat swapchain_format_ = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
+    VkSampleCountFlagBits pending_samples_ = VK_SAMPLE_COUNT_1_BIT;
     VkExtent2D extent_{};
 
     GeometryArena geometry_arena_{};

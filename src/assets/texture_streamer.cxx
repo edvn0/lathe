@@ -33,8 +33,10 @@ auto TextureStreamer::request(ImageStorage &images, AssetPath source_path, Textu
 
     auto recorded_path = source_path;
 
-    auto future = pool.submit_task([path = std::move(source_path), role, profile = std::move(profile)]() {
-        return load_compressed_texture(path, role, default_texture_cache_directory(), profile);
+    auto preview = std::make_shared<TexturePreviewSlot>();
+
+    auto future = pool.submit_task([path = std::move(source_path), role, profile = std::move(profile), preview]() {
+        return load_compressed_texture(path, role, default_texture_cache_directory(), profile, preview);
     });
 
     path_requests_.insert_or_assign(path_key, *pending_handle);
@@ -44,6 +46,7 @@ auto TextureStreamer::request(ImageStorage &images, AssetPath source_path, Textu
             .handle = *pending_handle,
             .debug_name = debug_name,
             .future = std::move(future),
+            .preview = std::move(preview),
     });
 
     return *pending_handle;
@@ -67,16 +70,19 @@ auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std:
 
     sources_.insert_or_assign(source_key(*pending_handle), Source{.cache_key = cache_key, .role = role});
 
+    auto preview = std::make_shared<TexturePreviewSlot>();
+
     auto future = pool.submit_task([encoded = std::move(encoded_bytes), role, cache_key = std::move(cache_key),
-                                    profile = std::move(profile)]() {
+                                    profile = std::move(profile), preview]() {
         return load_compressed_texture_from_encoded_memory(encoded, role, cache_key, default_texture_cache_directory(),
-                                                           profile);
+                                                           profile, preview);
     });
 
     pending_.push_back(PendingRequest{
             .handle = *pending_handle,
             .debug_name = debug_name,
             .future = std::move(future),
+            .preview = std::move(preview),
     });
 
     return *pending_handle;
@@ -152,6 +158,23 @@ auto TextureStreamer::process_ready(ImageStorage &images, VkCommandBuffer comman
 
     std::erase_if(pending_, [&](PendingRequest &request) {
         if (request.future.wait_for(0s) != std::future_status::ready) {
+            if (request.preview == nullptr) {
+                return false;
+            }
+
+            if (auto preview = request.preview->take(); preview.has_value()) {
+                auto uploaded = images.upgrade_pending_image(request.handle, *preview, command_buffer);
+
+                if (uploaded) {
+                    debug("texture_streamer: '{}' preview uploaded to GPU", request.debug_name);
+                    request.preview_uploaded = true;
+                    retiring_staging_[frame_index].push_back(std::move(*uploaded));
+                } else {
+                    warn("texture_streamer: '{}' preview failed to upload ({})", request.debug_name,
+                         uploaded.error().type);
+                }
+            }
+
             return false;
         }
 

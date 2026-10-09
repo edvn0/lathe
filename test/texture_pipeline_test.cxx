@@ -84,6 +84,43 @@ TEST_SUITE("unit") {
         std::filesystem::remove_all(cache_dir);
     }
 
+    TEST_CASE("load_compressed_texture: cache hit publishes a preview that matches the full mip tail") {
+        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.png";
+        auto const cache_dir = make_temp_cache_dir("preview");
+
+        auto const path = AssetPath::external(source).value();
+        auto const miss_preview = std::make_shared<TexturePreviewSlot>();
+        auto full = load_compressed_texture(path, TextureRole::colour, cache_dir, nullptr, miss_preview);
+        REQUIRE(full.has_value());
+        CHECK_FALSE(miss_preview->take().has_value());
+
+        auto const hit_preview = std::make_shared<TexturePreviewSlot>();
+        auto cached = load_compressed_texture(path, TextureRole::colour, cache_dir, nullptr, hit_preview);
+        REQUIRE(cached.has_value());
+        CHECK(cached->data == full->data);
+
+        auto preview = hit_preview->take();
+
+        if (std::max(full->width, full->height) > 256) {
+            REQUIRE(preview.has_value());
+            CHECK(std::max(preview->width, preview->height) <= 256);
+            CHECK_FALSE(validate_compressed_texture(*preview).has_value());
+
+            auto const skipped = full->mips.size() - preview->mips.size();
+            auto const &full_level = full->mips[skipped];
+            auto const &preview_level = preview->mips.front();
+
+            CHECK(preview_level.width == full_level.width);
+            CHECK(std::equal(preview->data.begin() + preview_level.byte_offset,
+                             preview->data.begin() + preview_level.byte_offset + preview_level.byte_length,
+                             full->data.begin() + full_level.byte_offset));
+        } else {
+            CHECK_FALSE(preview.has_value());
+        }
+
+        std::filesystem::remove_all(cache_dir);
+    }
+
     TEST_CASE("load_compressed_texture: normal_map role transcodes to BC5") {
         auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_normal.exr";
         auto const cache_dir = make_temp_cache_dir("normal");

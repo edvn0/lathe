@@ -8,10 +8,12 @@
 #include <filesystem>
 #include <format>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "assets/model_load_profile.hxx"
@@ -32,13 +34,34 @@ struct TexturePipelineError {
     std::optional<ErrorCause> cause;
 };
 
+// Cache hits publish a low-resolution tail of the mip chain here before the full texture is read, so the streamer can
+// show something while the large mips are still loading.
+class TexturePreviewSlot {
+public:
+    auto publish(CompressedTexture texture) -> void {
+        std::lock_guard const lock{mutex_};
+        texture_ = std::move(texture);
+    }
+
+    [[nodiscard]]
+    auto take() -> std::optional<CompressedTexture> {
+        std::lock_guard const lock{mutex_};
+        return std::exchange(texture_, std::nullopt);
+    }
+
+private:
+    std::mutex mutex_;
+    std::optional<CompressedTexture> texture_;
+};
+
 [[nodiscard]]
 auto default_texture_cache_directory() -> std::filesystem::path;
 
 [[nodiscard]]
 auto load_compressed_texture(AssetPath const &source_path, TextureRole role,
                              std::filesystem::path const &cache_directory = default_texture_cache_directory(),
-                             std::shared_ptr<ModelLoadProfile> const &profile = nullptr)
+                             std::shared_ptr<ModelLoadProfile> const &profile = nullptr,
+                             std::shared_ptr<TexturePreviewSlot> const &preview = nullptr)
         -> std::expected<CompressedTexture, TexturePipelineError>;
 
 [[nodiscard]]
@@ -52,7 +75,8 @@ auto load_compressed_texture_from_memory(
 auto load_compressed_texture_from_encoded_memory(
         std::span<std::byte const> encoded_bytes, TextureRole role, std::string_view cache_key,
         std::filesystem::path const &cache_directory = default_texture_cache_directory(),
-        std::shared_ptr<ModelLoadProfile> const &profile = nullptr)
+        std::shared_ptr<ModelLoadProfile> const &profile = nullptr,
+        std::shared_ptr<TexturePreviewSlot> const &preview = nullptr)
         -> std::expected<CompressedTexture, TexturePipelineError>;
 
 template<>

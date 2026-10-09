@@ -662,6 +662,9 @@ namespace {
         vkGetPhysicalDeviceProperties(context.physical_device, &properties);
         info("Selected physical device: {}", properties.deviceName);
 
+        context.supported_sample_counts =
+                properties.limits.framebufferColorSampleCounts & properties.limits.framebufferDepthSampleCounts;
+
         VkPhysicalDeviceExtendedDynamicState3FeaturesEXT extended_dynamic_state3_features{};
         extended_dynamic_state3_features.sType =
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
