@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "app/frame_graph_editor.hxx"
 #include "app/game.hxx"
 #include "app/stage_registry.hxx"
 #include "assets/material_storage.hxx"
@@ -158,6 +159,7 @@ struct Application {
     entt::entity hierarchy_context_entity = entt::null;
 
     stages::Registry stage_registry;
+    gui::FrameGraphEditor frame_graph_editor;
 
     bool mouse_dragging = false;
 

@@ -1998,6 +1998,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
+    widget("Frame graph", [&] { frame_graph_editor.draw(*renderer, stage_registry); });
+
     widget("Lighting", [&] {
         auto const draw_stage = [&](char const *id) {
             auto const *stage = stage_registry.find(FlyString{id});
