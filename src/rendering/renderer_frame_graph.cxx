@@ -1211,6 +1211,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
     if (plan_changed || *allocated) {
+        // A resize reallocates transients without changing the plan, so the copy of the graph (which holds their
+        // extents) has to follow.
+        frame_graph_view_.graph = frame_graph_.description();
         frame_graph_view_.transients = transient_allocator_.plan(info.frame_index);
     }
     if (*allocated) {
