@@ -2029,21 +2029,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         draw_stage("occlusion_culling");
         draw_stage("clustered_lighting");
 
-        auto shadows = renderer->shadow_settings();
-        bool dirty = false;
-
-        ImGui::SeparatorText("Shadows");
-        dirty |= ImGui::SliderFloat("Split lambda", &shadows.cascades.split_lambda, 0.0F, 1.0F);
-        dirty |= ImGui::SliderFloat("Shadow distance", &shadows.cascades.shadow_distance, 20.0F, 500.0F);
-        dirty |= ImGui::SliderFloat("PCF radius", &shadows.pcf_radius_texels, 0.5F, 4.0F);
-        dirty |= ImGui::SliderFloat("Normal offset", &shadows.normal_offset_texels, 0.0F, 8.0F);
-        dirty |= ImGui::SliderFloat("Depth bias", &shadows.depth_bias_world, 0.0F, 0.5F);
-        dirty |= ImGui::SliderFloat("Bias slope", &shadows.depth_bias_slope, -8.0F, 0.0F);
-        dirty |= ImGui::Checkbox("Cascade tint", &shadows.debug_cascade_tint);
-
-        if (dirty) {
-            renderer->set_shadow_settings(shadows);
-        }
+        draw_stage("shadows");
+        draw_stage("ambient_occlusion");
+        draw_stage("bloom");
 
         ImGui::SeparatorText("Punctual lights");
         auto &registry = active_scene()->get_registry();

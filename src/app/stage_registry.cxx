@@ -255,6 +255,73 @@ namespace stages {
             }
         }
 
+        auto draw_shadows(Context &context) -> void {
+            auto shadows = context.renderer.shadow_settings();
+            bool dirty = false;
+
+            dirty |= ImGui::SliderFloat("Split lambda", &shadows.cascades.split_lambda, 0.0F, 1.0F);
+            dirty |= ImGui::SliderFloat("Shadow distance", &shadows.cascades.shadow_distance, 20.0F, 500.0F);
+            dirty |= ImGui::SliderFloat("PCF radius", &shadows.pcf_radius_texels, 0.5F, 4.0F);
+            dirty |= ImGui::SliderFloat("Normal offset", &shadows.normal_offset_texels, 0.0F, 8.0F);
+            dirty |= ImGui::SliderFloat("Depth bias", &shadows.depth_bias_world, 0.0F, 0.5F);
+            dirty |= ImGui::SliderFloat("Bias slope", &shadows.depth_bias_slope, -8.0F, 0.0F);
+            dirty |= ImGui::Checkbox("Cascade tint", &shadows.debug_cascade_tint);
+
+            if (dirty) {
+                context.renderer.set_shadow_settings(shadows);
+            }
+        }
+
+        auto draw_ambient_occlusion(Context &context) -> void {
+            auto ao = context.renderer.ao_settings();
+            bool dirty = false;
+
+            dirty |= ImGui::Checkbox("Ambient occlusion (GTAO)", &ao.enabled);
+
+            ImGui::BeginDisabled(!ao.enabled);
+            dirty |= ImGui::SliderFloat("Radius", &ao.radius, 0.05F, 3.0F);
+            dirty |= ImGui::SliderFloat("Falloff range", &ao.falloff_range, 0.05F, 1.0F);
+            dirty |= ImGui::SliderFloat("Intensity", &ao.intensity, 0.0F, 2.0F);
+
+            auto slices = static_cast<int>(ao.slice_count);
+            if (ImGui::SliderInt("Slices", &slices, 1, 8)) {
+                ao.slice_count = static_cast<std::uint32_t>(slices);
+                dirty = true;
+            }
+
+            auto steps = static_cast<int>(ao.step_count);
+            if (ImGui::SliderInt("Steps", &steps, 1, 16)) {
+                ao.step_count = static_cast<std::uint32_t>(steps);
+                dirty = true;
+            }
+
+            dirty |= ImGui::SliderFloat("Denoise depth sigma", &ao.denoise_depth_sigma, 1.0F, 200.0F, "%.1f",
+                                        ImGuiSliderFlags_Logarithmic);
+            ImGui::EndDisabled();
+
+            if (dirty) {
+                context.renderer.set_ao_settings(ao);
+            }
+        }
+
+        auto draw_bloom(Context &context) -> void {
+            auto bloom = context.renderer.bloom_settings();
+            bool dirty = false;
+
+            dirty |= ImGui::Checkbox("Bloom", &bloom.enabled);
+
+            ImGui::BeginDisabled(!bloom.enabled);
+            dirty |= ImGui::SliderFloat("Threshold", &bloom.threshold, 0.0F, 8.0F);
+            dirty |= ImGui::SliderFloat("Knee", &bloom.knee, 0.0F, 2.0F);
+            dirty |= ImGui::SliderFloat("Filter radius", &bloom.filter_radius, 0.25F, 4.0F);
+            dirty |= ImGui::SliderFloat("Intensity", &bloom.intensity, 0.0F, 1.0F);
+            ImGui::EndDisabled();
+
+            if (dirty) {
+                context.renderer.set_bloom_settings(bloom);
+            }
+        }
+
         auto passes_of(std::initializer_list<std::string_view> names) -> std::vector<FlyString> {
             auto passes = std::vector<FlyString>{};
             passes.reserve(names.size());
@@ -304,6 +371,43 @@ namespace stages {
                 .state = [](Renderer const &renderer) { return State{.enabled = renderer.clustered_lighting()}; },
                 .set_enabled = [](Renderer &renderer, bool enabled) { renderer.set_clustered_lighting(enabled); },
                 .draw_settings = draw_clustered_lighting,
+        });
+
+        add(Stage{
+                .id = FlyString{"shadows"},
+                .title = "Shadows",
+                .passes = passes_of({"shadow_pass"}),
+                .state = [](Renderer const &) { return State{}; },
+                .set_enabled = {},
+                .draw_settings = draw_shadows,
+        });
+
+        add(Stage{
+                .id = FlyString{"ambient_occlusion"},
+                .title = "Ambient occlusion",
+                .passes = passes_of({"gtao", "gtao_denoise"}),
+                .state = [](Renderer const &renderer) { return State{.enabled = renderer.ao_settings().enabled}; },
+                .set_enabled =
+                        [](Renderer &renderer, bool enabled) {
+                            auto ao = renderer.ao_settings();
+                            ao.enabled = enabled;
+                            renderer.set_ao_settings(ao);
+                        },
+                .draw_settings = draw_ambient_occlusion,
+        });
+
+        add(Stage{
+                .id = FlyString{"bloom"},
+                .title = "Bloom",
+                .passes = passes_of({"bloom"}),
+                .state = [](Renderer const &renderer) { return State{.enabled = renderer.bloom_settings().enabled}; },
+                .set_enabled =
+                        [](Renderer &renderer, bool enabled) {
+                            auto bloom = renderer.bloom_settings();
+                            bloom.enabled = enabled;
+                            renderer.set_bloom_settings(bloom);
+                        },
+                .draw_settings = draw_bloom,
         });
     }
 
