@@ -78,7 +78,7 @@ namespace gui {
         for (auto const &pass: view.graph.passes) {
             node_ids_.push_back(FlyString{pass.name}.identity());
         }
-        fit_countdown_ = placed_.empty() ? 2 : fit_countdown_;
+        fit_countdown_ = placed_.empty() ? 6 : fit_countdown_;
     }
 
     auto FrameGraphEditor::draw(Renderer const &renderer, stages::Registry const &registry) -> void {
@@ -93,6 +93,10 @@ namespace gui {
         }
         if (view.revision != laid_out_revision_) {
             relayout(view);
+        }
+
+        if (ImGui::Button("Fit")) {
+            fit_countdown_ = 1;
         }
 
         ed::SetCurrentEditor(context_->editor);
@@ -116,7 +120,8 @@ namespace gui {
             auto const title = pass.profile.label.empty() ? pass.name : std::string{pass.profile.label};
             ImGui::TextUnformatted(title.c_str());
 
-            if (auto const *stage = registry.stage_of_pass(FlyString{pass.name}); stage != nullptr) {
+            if (auto const *stage = registry.stage_of_pass(FlyString{pass.name});
+                stage != nullptr && stage->title != title) {
                 ImGui::TextDisabled("%s", stage->title.data());
             }
 
@@ -146,7 +151,7 @@ namespace gui {
         for (auto index = std::size_t{0}; index < layout_.edges.size(); ++index) {
             auto const &edge = layout_.edges[index];
             ed::Link(ed::LinkId{link_id_tag | index}, output_pin_of(node_ids_[edge.from]),
-                     input_pin_of(node_ids_[edge.to]));
+                     input_pin_of(node_ids_[edge.to]), ImVec4{0.62F, 0.68F, 0.78F, 0.45F}, 1.5F);
         }
 
         if (auto const hovered = ed::GetHoveredLink(); hovered) {
@@ -160,7 +165,7 @@ namespace gui {
         }
 
         if (fit_countdown_ > 0 && --fit_countdown_ == 0) {
-            ed::NavigateToContent(0.0F);
+            ed::NavigateToContent();
         }
 
         ed::End();
