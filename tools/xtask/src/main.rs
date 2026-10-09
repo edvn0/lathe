@@ -157,7 +157,7 @@ enum Task {
         #[arg(long, default_value = "0.1.0")]
         version: String,
 
-        /// Frames to run while recording shaders and assets. More frames reach more code paths.
+        /// Frames to run while recording assets and resources. More frames reach more code paths.
         #[arg(long, default_value_t = 240)]
         frames: u32,
 
@@ -678,7 +678,19 @@ impl Config {
         let assets = scratch.join("assets.txt");
         let resources = scratch.join("resources.lbf");
 
-        println!("Recording shaders and data files over {frames} frames...");
+        // Every shader the engine and the game ship (assets/shaders/**, plus variants.txt) is compiled up front, with no
+        // window, GPU or frame count, so the pack cannot miss a shader the recording frames never reached.
+        println!("Baking shaders...");
+
+        run_checked(
+            Command::new(&executable)
+                .current_dir(&bin_dir)
+                .arg("--bake-shaders")
+                .arg(&shaders),
+        )
+        .context("baking the shader pack failed")?;
+
+        println!("Recording data files over {frames} frames...");
 
         let engine_game = engine_game.unwrap_or(game);
 
@@ -701,8 +713,6 @@ impl Config {
 
         run_checked(
             recording
-                .arg("--record-shaders")
-                .arg(&shaders)
                 .arg("--record-resources")
                 .arg(&resources)
                 .arg("--record-assets")

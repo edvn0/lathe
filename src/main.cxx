@@ -46,6 +46,7 @@
 #include "app/frame_clock.hxx"
 #include "app/game.hxx"
 #include "assets/shader_hot_reload_watcher.hxx"
+#include "assets/shader_bake.hxx"
 #include "assets/shader_pack.hxx"
 #include "core/allocator.hxx"
 #include "core/config.hxx"
@@ -674,6 +675,7 @@ namespace {
         explicit EngineArguments(CommandLine &cli) {
             auto packaging = cli.group("Packaging");
             packaging.value("--shader-pack", "FILE.lsp", "Precompiled shaders to use (default: shaders.lsp in the data directory)", shader_pack);
+            packaging.value("--bake-shaders", "FILE.lsp", "Compile every shader under assets/shaders (plus assets/shaders/variants.txt) into a shader pack, then exit; needs no GPU or window", bake_shaders);
             packaging.value("--record-shaders", "FILE.lsp", "Write every shader this run compiles to a shader pack, then exit", record_shaders);
             packaging.value("--record-resources", "FILE.lbf", "Write the editor font and icons this run loaded to a resource pack, then exit", record_resources);
             packaging.value("--record-assets", "FILE.txt", "Write the data files this run opened to a list, then exit", record_assets);
@@ -730,6 +732,7 @@ namespace {
         bool player = false;
         std::string shader_pack;
         std::string record_shaders;
+        std::string bake_shaders;
         std::string record_assets;
         std::string record_resources;
         std::uint32_t exit_after_frames = 0;
@@ -795,6 +798,19 @@ auto main(int argc, char **argv) -> int {
         } else {
             error("Ignoring resource pack: {}", describe(pack.error()));
         }
+    }
+
+    if (!engine.bake_shaders.empty()) {
+        auto const baked = renderer::bake_shaders(Renderer::compiler(), engine.bake_shaders);
+
+        if (!baked) {
+            error("{}", baked.error());
+            return EXIT_FAILURE;
+        }
+
+        info("Baked {} entry points and {} variants to '{}'", baked->entry_points, baked->variants,
+             engine.bake_shaders);
+        return EXIT_SUCCESS;
     }
 
     if (!engine.record_shaders.empty()) {

@@ -8,6 +8,7 @@
 #include <array>
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -557,6 +558,137 @@ namespace renderer {
         }
     }
 
+    namespace {
+        [[nodiscard]] auto from_slang_stage(SlangStage stage) noexcept -> std::optional<ShaderStage> {
+            switch (stage) {
+                case SLANG_STAGE_VERTEX:
+                    return ShaderStage::vertex;
+                case SLANG_STAGE_FRAGMENT:
+                    return ShaderStage::fragment;
+                case SLANG_STAGE_COMPUTE:
+                    return ShaderStage::compute;
+                case SLANG_STAGE_AMPLIFICATION:
+                    return ShaderStage::task;
+                case SLANG_STAGE_MESH:
+                    return ShaderStage::mesh;
+                default:
+                    return std::nullopt;
+            }
+        }
+    }
+
+    auto SlangCompiler::discover_entry_points(DataPath const &source_path) const
+            -> std::expected<std::vector<DiscoveredEntryPoint>, ShaderCompileError> {
+        if (!valid()) {
+            return std::unexpected{make_error(ShaderCompileErrorType::slang_global_session_failed,
+                                              SLANG_E_NOT_AVAILABLE, "SlangCompiler is not initialized.")};
+        }
+
+        auto source = read_source_file(source_path.absolute());
+
+        if (!source) {
+            return std::unexpected{std::move(source.error())};
+        }
+
+        auto lease = acquire_session();
+
+        if (!lease) {
+            return std::unexpected{std::move(lease.error())};
+        }
+
+        auto const search_path = source_path.absolute().parent_path().string();
+        auto const *search_path_pointer = search_path.c_str();
+
+        auto options = std::array{make_integer_option(slang::CompilerOptionName::EmitSpirvDirectly, 1),
+                                  make_integer_option(slang::CompilerOptionName::VulkanUseEntryPointName, 1)};
+
+        auto target_description = slang::TargetDesc{
+                .structureSize = sizeof(slang::TargetDesc),
+                .format = SLANG_SPIRV,
+                .profile = lease->get()->findProfile("spirv_1_6"),
+        };
+
+        auto session_description = slang::SessionDesc{
+                .structureSize = sizeof(slang::SessionDesc),
+                .targets = &target_description,
+                .targetCount = 1,
+                .defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR,
+                .searchPaths = &search_path_pointer,
+                .searchPathCount = 1,
+                .compilerOptionEntries = options.data(),
+                .compilerOptionEntryCount = static_cast<std::uint32_t>(options.size()),
+        };
+
+        auto session = Slang::ComPtr<slang::ISession>{};
+
+        if (SLANG_FAILED(lease->get()->createSession(session_description, session.writeRef())) || session == nullptr) {
+            return std::unexpected{make_error(ShaderCompileErrorType::slang_session_failed, SLANG_FAIL,
+                                              "IGlobalSession::createSession() failed.")};
+        }
+
+        static std::atomic<std::uint64_t> discovery_counter{0};
+
+        auto const module_name = std::format("discover_{}", discovery_counter.fetch_add(1, std::memory_order_relaxed));
+        auto const absolute = source_path.absolute().string();
+        auto diagnostics = Slang::ComPtr<slang::IBlob>{};
+
+        auto module = Slang::ComPtr<slang::IModule>{session->loadModuleFromSourceString(
+                module_name.c_str(), absolute.c_str(), source->c_str(), diagnostics.writeRef())};
+
+        if (module == nullptr) {
+            auto text = std::string{};
+            append_diagnostics(text, diagnostics);
+            return std::unexpected{make_error(ShaderCompileErrorType::module_load_failed, SLANG_FAIL, std::move(text))};
+        }
+
+        auto const get_entry_point = std::bit_cast<decltype(&spReflection_getEntryPointByIndex)>(
+                impl_->library.symbol("spReflection_getEntryPointByIndex"));
+        auto const get_name = std::bit_cast<decltype(&spReflectionEntryPoint_getName)>(
+                impl_->library.symbol("spReflectionEntryPoint_getName"));
+        auto const get_stage = std::bit_cast<decltype(&spReflectionEntryPoint_getStage)>(
+                impl_->library.symbol("spReflectionEntryPoint_getStage"));
+
+        if (get_entry_point == nullptr || get_name == nullptr || get_stage == nullptr) {
+            return std::unexpected{make_error(ShaderCompileErrorType::slang_global_session_failed,
+                                              SLANG_E_NOT_AVAILABLE,
+                                              "The Slang library does not export the reflection functions.")};
+        }
+
+        auto found = std::vector<DiscoveredEntryPoint>{};
+
+        for (SlangInt32 index = 0; index < module->getDefinedEntryPointCount(); ++index) {
+            auto entry_point = Slang::ComPtr<slang::IEntryPoint>{};
+
+            if (SLANG_FAILED(module->getDefinedEntryPoint(index, entry_point.writeRef())) || entry_point == nullptr) {
+                continue;
+            }
+
+            auto layout_diagnostics = Slang::ComPtr<slang::IBlob>{};
+            auto *layout = reinterpret_cast<SlangReflection *>(entry_point->getLayout(0, layout_diagnostics.writeRef()));
+            auto *entry_layout = layout != nullptr ? get_entry_point(layout, 0) : nullptr;
+
+            if (entry_layout == nullptr) {
+                auto text = std::string{};
+                append_diagnostics(text, layout_diagnostics);
+                return std::unexpected{make_error(ShaderCompileErrorType::entry_point_not_found, SLANG_FAIL,
+                                                  "Could not reflect an entry point. " + text)};
+            }
+
+            auto const *name = get_name(entry_layout);
+            auto const stage = from_slang_stage(get_stage(entry_layout));
+
+            if (!stage) {
+                warn("Shader bake: skipping entry point '{}' in '{}' (unsupported stage)", name,
+                     source_path.logical());
+                continue;
+            }
+
+            found.push_back(DiscoveredEntryPoint{.name = FlyString{name}, .stage = *stage});
+        }
+
+        return found;
+    }
+
     auto SlangCompiler::compile_group(std::span<ShaderCompileRequest const *const> requests) const
             -> std::vector<std::expected<CompiledShader, ShaderCompileError>> {
         auto const group_start = perf_clock::now();
@@ -572,8 +704,11 @@ namespace renderer {
         };
 
         if (!valid()) {
-            return fail_all(make_error(ShaderCompileErrorType::slang_global_session_failed, SLANG_E_NOT_AVAILABLE,
-                                       "SlangCompiler is not initialized."));
+            return fail_all(make_error(
+                    ShaderCompileErrorType::slang_global_session_failed, SLANG_E_NOT_AVAILABLE,
+                    std::format("Shader '{}' [{}] is not in the shader pack and Slang is not available to compile "
+                                "it; re-bake the pack with --bake-shaders.",
+                                requests.front()->source_path.logical(), requests.front()->entry_point)));
         }
 
         perf_events::record(PerfEvent::shader_compile, requests.size());

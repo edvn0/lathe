@@ -82,7 +82,9 @@ namespace renderer {
 
         for (auto it = std::filesystem::recursive_directory_iterator{shader_directory, error};
              !error && it != std::filesystem::recursive_directory_iterator{}; it.increment(error)) {
-            if (it->is_regular_file(error) && it->path().extension() == ".slang") {
+            auto const is_source = it->path().extension() == ".slang" || it->path().filename() == "variants.txt";
+
+            if (it->is_regular_file(error) && is_source) {
                 files.push_back(it->path());
             }
         }

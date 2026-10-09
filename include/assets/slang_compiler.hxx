@@ -72,6 +72,11 @@ namespace renderer {
         std::string diagnostics;
     };
 
+    struct DiscoveredEntryPoint {
+        FlyString name;
+        ShaderStage stage = ShaderStage::vertex;
+    };
+
     class SlangCompiler {
     public:
         SlangCompiler() noexcept;
@@ -91,6 +96,12 @@ namespace renderer {
 
         [[nodiscard]]
         auto compile(ShaderCompileRequest const &request) const -> std::expected<CompiledShader, ShaderCompileError>;
+
+        // The entry points a source file defines (via [shader("...")] attributes) and their stages, found by loading
+        // the module without any defines. Shader bake uses this to compile every shader without a hand-kept list.
+        [[nodiscard]]
+        auto discover_entry_points(DataPath const &source_path) const
+                -> std::expected<std::vector<DiscoveredEntryPoint>, ShaderCompileError>;
 
         // Starts compiling the requests on the thread pool, one session and module per source file. `compile` then
         // returns the prefetched result for a matching request, blocking only if it is not done yet.

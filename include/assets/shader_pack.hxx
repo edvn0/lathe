@@ -46,7 +46,7 @@ namespace renderer {
         std::unordered_map<std::string, Entry> entries_;
     };
 
-    // FNV-1a over every .slang file under the directory (relative path and contents, in path order), or nullopt when
+    // FNV-1a over every .slang file and variants.txt under the directory (relative path and contents, in path order), or nullopt when
     // the directory does not exist. Shaders import each other, so any source change invalidates the whole pack.
     [[nodiscard]] auto hash_shader_sources(std::filesystem::path const &shader_directory) -> std::optional<std::uint64_t>;
 
