@@ -282,7 +282,7 @@ namespace gui {
                     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                     if (ImGui::TreeNode("Settings")) {
                         ImGui::PushItemWidth(settings_item_width);
-                        registry.draw_settings(stage.id, renderer);
+                        registry.draw_settings(stage.id, renderer, settings_item_width);
                         ImGui::PopItemWidth();
                         ImGui::TreePop();
                     }
@@ -341,7 +341,7 @@ namespace gui {
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if (ImGui::TreeNode("Settings")) {
                     ImGui::PushItemWidth(settings_item_width);
-                    registry.draw_settings(stage.id, renderer);
+                    registry.draw_settings(stage.id, renderer, settings_item_width);
                     ImGui::PopItemWidth();
                     ImGui::TreePop();
                 }

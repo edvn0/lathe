@@ -28,6 +28,9 @@ namespace stages {
     struct Context {
         Renderer &renderer;
         UiState &ui;
+        // Previews fill the available width unless this is positive. Needed where the available width follows the
+        // content, as in a node.
+        float max_preview_width = 0.0F;
     };
 
     // A user-facing renderer stage. Unlike a frame graph pass it exists whether or not the graph currently contains
@@ -49,7 +52,7 @@ namespace stages {
         [[nodiscard]] auto find(FlyString id) const -> Stage const *;
         [[nodiscard]] auto stage_of_pass(FlyString pass) const -> Stage const *;
 
-        auto draw_settings(FlyString id, Renderer &renderer) -> void;
+        auto draw_settings(FlyString id, Renderer &renderer, float max_preview_width = 0.0F) -> void;
 
     private:
         auto add(Stage stage) -> void;

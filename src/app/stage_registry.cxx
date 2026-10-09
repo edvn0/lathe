@@ -153,7 +153,10 @@ namespace stages {
                         static_cast<float>(level.height) / static_cast<float>(std::max(image.height >> mip, 1U)),
                 };
 
-                auto const width = ImGui::GetContentRegionAvail().x;
+                auto width = ImGui::GetContentRegionAvail().x;
+                if (context.max_preview_width > 0.0F) {
+                    width = std::min(width, context.max_preview_width);
+                }
                 auto const height = width * static_cast<float>(depth.height) / static_cast<float>(depth.width);
 
                 ImGui::Image(gui::linear_source_texture_id(view.index), ImVec2(width, height), ImVec2(0.0F, 0.0F),
@@ -323,9 +326,9 @@ namespace stages {
         return found == by_pass_.end() ? nullptr : &stages_[found->second];
     }
 
-    auto Registry::draw_settings(FlyString id, Renderer &renderer) -> void {
+    auto Registry::draw_settings(FlyString id, Renderer &renderer, float max_preview_width) -> void {
         if (auto const *stage = find(id); stage != nullptr && stage->draw_settings) {
-            auto context = Context{.renderer = renderer, .ui = ui_};
+            auto context = Context{.renderer = renderer, .ui = ui_, .max_preview_width = max_preview_width};
             stage->draw_settings(context);
         }
     }
