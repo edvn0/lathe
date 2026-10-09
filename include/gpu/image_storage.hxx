@@ -257,6 +257,14 @@ private:
 
     std::vector<Buffer> pending_uploads_;
 
+    struct RetiredImage {
+        Image image;
+        std::uint32_t frames_remaining = 0;
+    };
+
+    // Replaced images stay alive until every frame that may still sample them has finished.
+    std::vector<RetiredImage> retired_images_;
+
     FlyString debug_name_;
 };
 

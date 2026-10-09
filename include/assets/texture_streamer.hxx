@@ -58,6 +58,8 @@ private:
         ImageHandle handle;
         FlyString debug_name;
         std::future<std::expected<CompressedTexture, TexturePipelineError>> future;
+        std::shared_ptr<TexturePreviewSlot> preview;
+        bool preview_uploaded = false;
     };
 
     std::vector<PendingRequest> pending_;

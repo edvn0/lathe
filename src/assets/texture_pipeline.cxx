@@ -1,13 +1,17 @@
 #include "assets/texture_pipeline.hxx"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <source_location>
 #include <string_view>
 #include <system_error>
@@ -271,30 +275,198 @@ namespace {
         return role == TextureRole::normal_map ? KTX_TTF_BC5_RG : KTX_TTF_BC7_RGBA;
     }
 
-    [[nodiscard]]
-    auto try_load_cached(std::filesystem::path const &cache_path, FlyString debug_name,
-                         ModelLoadProfile *profile) -> std::optional<CompressedTexture> {
-        std::error_code ec;
+    // Cache files are written by libktx after transcoding, so they are plain 2D KTX2 containers with no
+    // supercompression. Reading them directly lets each level range land in its final buffer with a single copy.
+    constexpr std::uint32_t ktx2_header_bytes = 80;
+    constexpr std::uint32_t ktx2_level_entry_bytes = 24;
+    constexpr std::uint32_t ktx2_max_levels = 32;
+    constexpr std::uint32_t preview_max_extent = 256;
 
+    constexpr std::array<std::uint8_t, 12> ktx2_identifier{0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
+                                                           0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+
+    struct Ktx2Level {
+        std::uint64_t offset = 0;
+        std::uint64_t length = 0;
+    };
+
+    class Ktx2File {
+    public:
+        // Missing files are an ordinary cache miss, so only an unreadable or unexpected layout is reported.
+        [[nodiscard]]
+        static auto open(std::filesystem::path const &path) -> std::optional<Ktx2File> {
+            Ktx2File file;
+            file.stream_.open(path, std::ios::binary);
+
+            if (!file.stream_) {
+                return std::nullopt;
+            }
+
+            std::error_code ec;
+            auto const file_size = std::filesystem::file_size(path, ec);
+
+            if (ec || !file.read_layout(file_size)) {
+                warn("texture_pipeline: cache file '{}' has an unexpected layout, re-encoding", path.string());
+                return std::nullopt;
+            }
+
+            return file;
+        }
+
+        // First level whose largest side fits in the preview budget, or 0 when the texture is already that small.
+        [[nodiscard]]
+        auto preview_level() const noexcept -> std::uint32_t {
+            auto const largest = std::max(width_, height_);
+
+            for (std::uint32_t level = 0; level + 1 < levels_.size(); ++level) {
+                if ((largest >> level) <= preview_max_extent) {
+                    return level;
+                }
+            }
+
+            return 0;
+        }
+
+        // Reads levels [first_level, end) as a texture whose base is first_level. Smaller levels are stored first in
+        // the file, so this is one contiguous range.
+        [[nodiscard]]
+        auto read(std::uint32_t first_level, FlyString debug_name) -> std::optional<CompressedTexture> {
+            if (first_level >= levels_.size()) {
+                return std::nullopt;
+            }
+
+            auto range_begin = std::numeric_limits<std::uint64_t>::max();
+            std::uint64_t range_end = 0;
+
+            for (auto level = first_level; level < levels_.size(); ++level) {
+                range_begin = std::min(range_begin, levels_[level].offset);
+                range_end = std::max(range_end, levels_[level].offset + levels_[level].length);
+            }
+
+            if (range_end - range_begin > std::numeric_limits<std::uint32_t>::max()) {
+                return std::nullopt;
+            }
+
+            CompressedTexture result;
+            result.format = format_;
+            result.width = std::max<std::uint32_t>(width_ >> first_level, 1);
+            result.height = std::max<std::uint32_t>(height_ >> first_level, 1);
+            result.debug_name = debug_name;
+            result.data.resize(range_end - range_begin);
+
+            stream_.seekg(static_cast<std::streamoff>(range_begin));
+            stream_.read(reinterpret_cast<char *>(result.data.data()), static_cast<std::streamsize>(result.data.size()));
+
+            if (!stream_) {
+                return std::nullopt;
+            }
+
+            result.mips.reserve(levels_.size() - first_level);
+
+            for (auto level = first_level; level < levels_.size(); ++level) {
+                result.mips.push_back(CompressedMipLevel{
+                        .width = std::max<std::uint32_t>(width_ >> level, 1),
+                        .height = std::max<std::uint32_t>(height_ >> level, 1),
+                        .byte_offset = static_cast<std::uint32_t>(levels_[level].offset - range_begin),
+                        .byte_length = static_cast<std::uint32_t>(levels_[level].length),
+                });
+            }
+
+            return result;
+        }
+
+    private:
+        [[nodiscard]]
+        auto read_layout(std::uint64_t file_size) -> bool {
+            std::array<std::byte, ktx2_header_bytes> header{};
+            stream_.read(reinterpret_cast<char *>(header.data()), static_cast<std::streamsize>(header.size()));
+
+            if (!stream_ || std::memcmp(header.data(), ktx2_identifier.data(), ktx2_identifier.size()) != 0) {
+                return false;
+            }
+
+            auto const field = [&](std::size_t offset) {
+                std::uint32_t value = 0;
+                std::memcpy(&value, header.data() + offset, sizeof(value));
+                return value;
+            };
+
+            auto const depth = field(28);
+            auto const layers = field(32);
+            auto const faces = field(36);
+            auto const level_count = field(40);
+            auto const supercompression = field(44);
+
+            if (depth > 1 || layers > 1 || faces != 1 || supercompression != 0 || level_count == 0 ||
+                level_count > ktx2_max_levels) {
+                return false;
+            }
+
+            format_ = static_cast<VkFormat>(field(12));
+            width_ = field(20);
+            height_ = field(24);
+
+            if (width_ == 0 || height_ == 0) {
+                return false;
+            }
+
+            std::array<std::byte, ktx2_max_levels * ktx2_level_entry_bytes> index{};
+            stream_.read(reinterpret_cast<char *>(index.data()),
+                         static_cast<std::streamsize>(level_count * ktx2_level_entry_bytes));
+
+            if (!stream_) {
+                return false;
+            }
+
+            levels_.resize(level_count);
+
+            for (std::uint32_t level = 0; level < level_count; ++level) {
+                std::memcpy(&levels_[level].offset, index.data() + level * ktx2_level_entry_bytes, 8);
+                std::memcpy(&levels_[level].length, index.data() + level * ktx2_level_entry_bytes + 8, 8);
+
+                if (levels_[level].offset > file_size || levels_[level].length > file_size - levels_[level].offset) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        std::ifstream stream_;
+        VkFormat format_ = VK_FORMAT_UNDEFINED;
+        std::uint32_t width_ = 0;
+        std::uint32_t height_ = 0;
+        std::vector<Ktx2Level> levels_;
+    };
+
+    [[nodiscard]]
+    auto try_load_cached(std::filesystem::path const &cache_path, FlyString debug_name, ModelLoadProfile *profile,
+                         TexturePreviewSlot *preview) -> std::optional<CompressedTexture> {
         ScopedProfileSample lookup_sample{profile != nullptr ? &profile->texture_cache_lookup_ns : nullptr};
 
-        if (!std::filesystem::exists(cache_path, ec) || ec) {
+        auto file = Ktx2File::open(cache_path);
+
+        if (!file) {
             return std::nullopt;
         }
 
-        ktxTexture2 *raw = nullptr;
+        if (preview != nullptr) {
+            if (auto const level = file->preview_level(); level > 0) {
+                if (auto tail = file->read(level, debug_name);
+                    tail.has_value() && !validate_compressed_texture(*tail).has_value()) {
+                    preview->publish(std::move(*tail));
+                }
+            }
+        }
 
-        auto const create_result = ktxTexture2_CreateFromNamedFile(cache_path.string().c_str(),
-                                                                   KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw);
+        auto texture = file->read(0, debug_name);
 
-        if (create_result != KTX_SUCCESS || raw == nullptr) {
+        lookup_sample.stop();
+
+        if (!texture) {
             warn("texture_pipeline: cache file '{}' failed to load, re-encoding", cache_path.string());
             return std::nullopt;
         }
-
-        KtxTexturePtr texture{raw};
-
-        lookup_sample.stop();
 
         debug("texture_pipeline: '{}' loaded from cache '{}'", debug_name, cache_path.string());
 
@@ -302,14 +474,12 @@ namespace {
             profile->texture_cache_hits.fetch_add(1, std::memory_order_relaxed);
         }
 
-        auto extracted = extract_compressed_texture(texture.get(), debug_name);
-
-        if (auto const problem = validate_compressed_texture(extracted); problem.has_value()) {
+        if (auto const problem = validate_compressed_texture(*texture); problem.has_value()) {
             warn("texture_pipeline: cache file '{}' is invalid ({}), re-encoding", cache_path.string(), *problem);
             return std::nullopt;
         }
 
-        return extracted;
+        return texture;
     }
 
     [[nodiscard]]
@@ -381,7 +551,8 @@ auto default_texture_cache_directory() -> std::filesystem::path {
 
 auto load_compressed_texture(AssetPath const &asset_path, TextureRole role,
                              std::filesystem::path const &cache_directory,
-                             std::shared_ptr<ModelLoadProfile> const &profile)
+                             std::shared_ptr<ModelLoadProfile> const &profile,
+                             std::shared_ptr<TexturePreviewSlot> const &preview)
         -> std::expected<CompressedTexture, TexturePipelineError> {
     auto const &source_path = asset_path.absolute();
     auto *const profile_ptr = profile.get();
@@ -419,7 +590,7 @@ auto load_compressed_texture(AssetPath const &asset_path, TextureRole role,
     auto const stem = source_path.stem().string();
     auto const cache_path = cache_path_for(identity, role, cache_directory, stem);
 
-    if (auto cached = try_load_cached(cache_path, FlyString{stem}, profile_ptr); cached.has_value()) {
+    if (auto cached = try_load_cached(cache_path, FlyString{stem}, profile_ptr, preview.get()); cached.has_value()) {
         return std::move(*cached);
     }
 
@@ -443,7 +614,8 @@ auto load_compressed_texture(AssetPath const &asset_path, TextureRole role,
 auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> encoded_bytes, TextureRole role,
                                                  std::string_view cache_key,
                                                  std::filesystem::path const &cache_directory,
-                                                 std::shared_ptr<ModelLoadProfile> const &profile)
+                                                 std::shared_ptr<ModelLoadProfile> const &profile,
+                                                 std::shared_ptr<TexturePreviewSlot> const &preview)
         -> std::expected<CompressedTexture, TexturePipelineError> {
     auto *const profile_ptr = profile.get();
 
@@ -458,7 +630,7 @@ auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> enco
     auto const identity = std::format("encoded-memory|{}", cache_key);
     auto const cache_path = cache_path_for(identity, role, cache_directory, "embedded");
 
-    if (auto cached = try_load_cached(cache_path, FlyString{cache_key}, profile_ptr); cached.has_value()) {
+    if (auto cached = try_load_cached(cache_path, FlyString{cache_key}, profile_ptr, preview.get()); cached.has_value()) {
         return std::move(*cached);
     }
 
@@ -497,7 +669,7 @@ auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels,
     auto const identity = std::format("memory|{}", cache_key);
     auto const cache_path = cache_path_for(identity, role, cache_directory, "embedded");
 
-    if (auto cached = try_load_cached(cache_path, FlyString{cache_key}, profile_ptr); cached.has_value()) {
+    if (auto cached = try_load_cached(cache_path, FlyString{cache_key}, profile_ptr, nullptr); cached.has_value()) {
         return std::move(*cached);
     }
 

@@ -41,6 +41,9 @@ struct VulkanContext {
 
     bool depth_resolve_min_supported = false;
 
+    // Sample counts usable for both colour and depth/stencil framebuffer attachments.
+    VkSampleCountFlags supported_sample_counts = VK_SAMPLE_COUNT_1_BIT;
+
     HostQueryContext host_query_context{};
     HostQueryContext compute_host_query_context{};
 

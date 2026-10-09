@@ -2088,6 +2088,26 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     });
 
     widget("Lighting", [&] {
+        ImGui::SeparatorText("Anti-aliasing");
+
+        {
+            auto const max_samples = static_cast<std::uint32_t>(renderer->max_samples());
+            auto const current = static_cast<std::uint32_t>(renderer->samples());
+            auto const label = [](std::uint32_t count) {
+                return count == 1 ? std::string{"Off"} : std::format("MSAA {}x", count);
+            };
+
+            if (ImGui::BeginCombo("MSAA", label(current).c_str())) {
+                for (std::uint32_t count = 1; count <= max_samples; count <<= 1U) {
+                    if (ImGui::Selectable(label(count).c_str(), count == current)) {
+                        renderer->set_samples(static_cast<VkSampleCountFlagBits>(count));
+                    }
+                }
+
+                ImGui::EndCombo();
+            }
+        }
+
         ImGui::SeparatorText("Debug");
         bool draw_light_icons = renderer->debug_draw_light_icons();
         if (ImGui::Checkbox("Draw light icons", &draw_light_icons)) {

@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "core/config.hxx"
 #include "core/logger.hxx"
 #include "gpu/context.hxx"
 
@@ -55,7 +56,8 @@ ImageStorage::ImageStorage(ImageStorage &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), slots_(std::move(other.slots_)),
     default_upload_buffer_(std::move(other.default_upload_buffer_)), black_cube_(std::move(other.black_cube_)),
     defaults_uploaded_(std::exchange(other.defaults_uploaded_, false)),
-    pending_uploads_(std::move(other.pending_uploads_)), debug_name_(other.debug_name_) {}
+    pending_uploads_(std::move(other.pending_uploads_)), retired_images_(std::move(other.retired_images_)),
+    debug_name_(other.debug_name_) {}
 
 auto ImageStorage::operator=(ImageStorage &&other) noexcept -> ImageStorage & {
     if (this == &other) {
@@ -73,6 +75,8 @@ auto ImageStorage::operator=(ImageStorage &&other) noexcept -> ImageStorage & {
     black_cube_ = std::move(other.black_cube_);
 
     defaults_uploaded_ = std::exchange(other.defaults_uploaded_, false);
+
+    retired_images_ = std::move(other.retired_images_);
 
     debug_name_ = other.debug_name_;
 
@@ -684,7 +688,7 @@ auto ImageStorage::upgrade_pending_image(ImageHandle handle, CompressedTexture c
         slot->alias_storage_2d = VK_NULL_HANDLE;
         slot->is_alias = false;
     } else {
-        slot->image.destroy();
+        retired_images_.push_back(RetiredImage{.image = std::move(slot->image), .frames_remaining = frames_in_flight + 1});
     }
 
     slot->image = std::move(*image);
@@ -815,6 +819,17 @@ auto ImageStorage::record_black_cube_clear(VkCommandBuffer command_buffer) const
 }
 
 auto ImageStorage::prepare_frame(VkCommandBuffer command_buffer) -> std::expected<void, ImageStorageError> {
+    std::erase_if(retired_images_, [](RetiredImage &retired) {
+        if (retired.frames_remaining > 0) {
+            --retired.frames_remaining;
+            return false;
+        }
+
+        retired.image.destroy();
+
+        return true;
+    });
+
     if (defaults_uploaded_) [[likely]] {
         return {};
     }
@@ -968,6 +983,11 @@ auto ImageStorage::destroy() noexcept -> void {
         buffer.destroy();
     }
     pending_uploads_.clear();
+
+    for (auto &retired: retired_images_) {
+        retired.image.destroy();
+    }
+    retired_images_.clear();
 
     for (std::uint32_t index = 0; index < slots_.capacity(); ++index) {
         if (!slots_.occupied_at(index)) {

@@ -1018,6 +1018,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     depth_format_ = create_info.depth_format;
     swapchain_format_ = create_info.swapchain_format;
     samples_ = create_info.samples;
+    pending_samples_ = create_info.samples;
     extent_ = create_info.extent;
 
     auto rollback_on_failure = true;
@@ -1892,6 +1893,7 @@ auto Renderer::destroy() noexcept -> void {
     depth_format_ = VK_FORMAT_UNDEFINED;
 
     samples_ = VK_SAMPLE_COUNT_1_BIT;
+    pending_samples_ = VK_SAMPLE_COUNT_1_BIT;
     extent_ = {};
 
     initialized_ = false;
@@ -3003,6 +3005,21 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     if (!initialized_ || command_buffer == VK_NULL_HANDLE || frame_index >= frames_.size()) {
         clear_submissions();
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    if (pending_samples_ != samples_) {
+        // Frame-graph targets are keyed on their sample count, so they reallocate by themselves; the idle wait only
+        // guarantees the previous count is no longer in flight.
+        if (auto waited = wait_idle(); !waited) {
+            clear_submissions();
+            return std::unexpected(waited.error());
+        }
+
+        info("Renderer: MSAA {}x -> {}x", static_cast<std::uint32_t>(samples_),
+             static_cast<std::uint32_t>(pending_samples_));
+
+        samples_ = pending_samples_;
+        hiz_history_valid_ = false;
     }
 
     std::uint32_t submitted_triangle_count = 0;
@@ -4586,6 +4603,25 @@ auto Renderer::create_hiz_pyramid(VkExtent2D depth_extent) -> std::expected<HizP
     }
 
     return pyramid;
+}
+
+auto Renderer::max_samples() const noexcept -> VkSampleCountFlagBits {
+    auto const supported = context_.supported_sample_counts;
+
+    for (auto const candidate: {VK_SAMPLE_COUNT_64_BIT, VK_SAMPLE_COUNT_32_BIT, VK_SAMPLE_COUNT_16_BIT,
+                                VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_2_BIT}) {
+        if ((supported & candidate) != 0) {
+            return candidate;
+        }
+    }
+
+    return VK_SAMPLE_COUNT_1_BIT;
+}
+
+auto Renderer::set_samples(VkSampleCountFlagBits samples) noexcept -> void {
+    auto const max = max_samples();
+
+    pending_samples_ = samples > max ? max : samples;
 }
 
 auto Renderer::occlusion_culling_supported() const noexcept -> bool {
