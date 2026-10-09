@@ -15,6 +15,7 @@ add_library(
         lua_game.cxx
         lua_game_api.cxx
         scene_files.cxx
+        stage_registry.cxx
 )
 
 # Recorded in benchmark results (app/benchmark_environment.hxx): the build type, and where to read the source
