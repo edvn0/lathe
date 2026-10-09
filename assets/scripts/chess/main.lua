@@ -67,6 +67,17 @@ local cursor_step = { 0, 0 }
 local pending_activate = false
 local pending_restart = false
 
+-- Online play: `session` (chess/online.lua) exists from "Play online" until the player leaves it. `online_play` is true
+-- while a networked game is on the board; the local engine then only mirrors the server's move history.
+local session = nil
+local online_play = false
+local online_applied = 0
+local online_side = "white"
+local online_url = "ws://127.0.0.1:9002"
+local online_room_text = "1"
+local notice_text = ""
+local PROMOTION_BY_LETTER = { q = "queen", r = "rook", b = "bishop", n = "knight" }
+
 local function stow(entity)
     entity:set_position(STOWED[1], STOWED[2], STOWED[3])
 end
@@ -127,12 +138,12 @@ local function start_new_game()
     screen = "playing"
 end
 
-local function execute(from, to, promotion)
+-- Plays a move on the local engine and reports it in the HUD. Returns false if the engine refuses it.
+local function apply_move(from, to, promotion)
     local result = engine:move(from, to, promotion)
 
     if not result.moved then
-        status = "That move is not legal."
-        return
+        return false
     end
 
     status = board.name(from) .. (result.capture and "x" or "-") .. board.name(to)
@@ -153,9 +164,131 @@ local function execute(from, to, promotion)
     if game.player_mode and result.state ~= "playing" then
         game_over_timer = GAME_OVER_DELAY
     end
+
+    return true
+end
+
+local function execute(from, to, promotion)
+    if online_play then
+        -- The server decides; the move reaches the board when its history comes back.
+        session:move(board.name(from), board.name(to), promotion)
+        clear_selection()
+        status = "Sent " .. board.name(from) .. board.name(to)
+        return
+    end
+
+    if not apply_move(from, to, promotion) then
+        status = "That move is not legal."
+    end
+end
+
+-- Brings the local engine in line with the server's move history, which also resyncs after a reconnect.
+local function apply_online_state(state)
+    local history = state.history or {}
+
+    local function replay(first)
+        for index = first, #history do
+            local move = history[index]
+            local from, to = board.parse(move:sub(1, 2)), board.parse(move:sub(3, 4))
+
+            if not from or not to or not apply_move(from, to, PROMOTION_BY_LETTER[move:sub(5, 5)]) then
+                return false
+            end
+        end
+
+        return true
+    end
+
+    if #history < online_applied or not replay(online_applied + 1) then
+        -- The mirror drifted: rebuild it from the whole history.
+        engine:reset()
+        clear_selection()
+
+        if not replay(1) then
+            status = "Out of sync with the server."
+        end
+    end
+
+    online_applied = #history
+    sync_pieces()
+end
+
+local function begin_online_game(state)
+    engine:reset()
+    sync_pieces()
+
+    online_play = true
+    online_applied = 0
+    online_side = state.your_side or "white"
+
+    clear_selection()
+
+    -- The camera stays behind our own pieces for the whole game.
+    camera_side = engine:side_to_move()
+    camera_target_angle = online_side == "black" and math.pi or 0.0
+    camera_angle = camera_target_angle
+
+    cursor = online_side == "black" and board.square(4, 6) or board.square(4, 1)
+    hovered = nil
+    status = ""
+    game_over_timer = 0.0
+    screen = "playing"
+end
+
+local function leave_online()
+    if session then
+        session:leave()
+        session:close()
+    end
+
+    session = nil
+    online_play = false
+    online_applied = 0
+    notice_text = ""
+
+    -- Put the pieces back so the menu does not idle over the last game's position.
+    engine:reset()
+    camera_side = engine:side_to_move()
+    camera_target_angle = 0.0
+    camera_angle = 0.0
+    clear_selection()
+    sync_pieces()
+end
+
+local function handle_session_events(events)
+    for _, event in ipairs(events) do
+        if event.kind == "state" then
+            if not online_play then
+                begin_online_game(event.state)
+            end
+
+            apply_online_state(event.state)
+        elseif event.kind == "room_closed" then
+            if online_play then
+                online_play = false
+                notice_text = event.reason == "player_left" and "Your opponent left the game."
+                    or event.reason == "player_timeout" and "Your opponent did not come back."
+                    or event.reason == "session_expired" and "The server no longer has your game."
+                    or "The game was closed (" .. event.reason .. ")."
+                screen = "notice"
+            end
+        elseif event.kind == "game_over" then
+            -- The final state already ended the game on the board. The room is gone, so a rematch starts from the
+            -- lobby; online_play stays set until then so the camera holds still behind the player's side.
+            status = status
+        elseif event.kind == "notice" then
+            status = event.text
+        end
+    end
 end
 
 local function select_square(square)
+    if online_play and engine:side_to_move() ~= online_side then
+        clear_selection()
+        status = "Waiting for your opponent."
+        return
+    end
+
     local piece = engine:piece_at(square)
     local mine = piece and is_black(piece) == (engine:side_to_move() == "black")
 
@@ -218,7 +351,8 @@ end
 local function update_camera(dt)
     local side = engine:side_to_move()
 
-    if side ~= camera_side then
+    -- Hot-seat play turns the board to whoever moves; online it stays behind the player's own pieces.
+    if not online_play and side ~= camera_side then
         camera_side = side
         camera_target_angle = camera_target_angle + math.pi
     end
@@ -351,6 +485,10 @@ end
 -- Per frame ---------------------------------------------------------------------------------------------------------
 
 function M.on_update(dt)
+    if session then
+        handle_session_events(session:update(dt))
+    end
+
     if game.player_mode and screen ~= "playing" then
         -- Behind the menus the board idles: it turns slowly on the menu and holds still elsewhere.
         if screen == "loading" or screen == "menu" then
@@ -447,6 +585,28 @@ function M.on_key(k, modifiers)
     if game.player_mode then
         if screen == "loading" then
             return
+        elseif screen == "online" then
+            if k == key.ESCAPE then
+                leave_online()
+                screen = "menu"
+            end
+
+            return
+        elseif screen == "notice" then
+            if k == key.ENTER or k == key.SPACE or k == key.ESCAPE then
+                leave_online()
+                screen = "menu"
+            end
+
+            return
+        elseif screen == "game_over" and session then
+            -- Online, the next game starts from the lobby.
+            if k == key.ENTER or k == key.SPACE then
+                online_play = false
+                screen = "online"
+            end
+
+            return
         elseif screen == "menu" or screen == "game_over" then
             if k == key.ENTER or k == key.SPACE then
                 start_new_game()
@@ -480,7 +640,7 @@ function M.on_key(k, modifiers)
         status = ""
     elseif pending_promotion and PROMOTION_KEYS[k] then
         execute(pending_promotion.from, pending_promotion.to, PROMOTION_KEYS[k])
-    elseif k == key.R and modifiers == 0 then
+    elseif k == key.R and modifiers == 0 and not online_play then
         pending_restart = true
     end
 end
@@ -493,7 +653,13 @@ local function result_lines()
 
     if state == "checkmate" then
         -- The side to move is the one that has been mated.
-        return "Checkmate", engine:side_to_move() == "white" and "Black wins" or "White wins"
+        local winner = engine:side_to_move() == "white" and "black" or "white"
+
+        if session then
+            return "Checkmate", winner == online_side and "You win" or "You lose"
+        end
+
+        return "Checkmate", winner == "white" and "White wins" or "Black wins"
     end
 
     return text and text[1] or "", text and text[2] or ""
@@ -538,8 +704,104 @@ local function draw_menu()
 
         ui.dummy(0, 4)
 
+        if ui.button("Play online") then
+            screen = "online"
+        end
+
+        ui.dummy(0, 4)
+
         if ui.button("Quit") then
             game.quit()
+        end
+
+        ui.dummy(0, 8)
+    end)
+end
+
+-- The online lobby: pick a server, connect, then create or join a room and wait for the opponent.
+local function draw_online()
+    ui.window("##online", { centred = true, bg_alpha = 0.88 }, function()
+        ui.dummy(380, 8)
+        ui.text_centred("Play online", 3.0)
+        ui.dummy(0, 14)
+
+        if not session then
+            ui.text_centred("Server", 1.2)
+            online_url = ui.input_text("##server", online_url, 340)
+            ui.dummy(0, 8)
+
+            if ui.button("Connect") then
+                session = require("chess.online").connect(online_url)
+            end
+        elseif session.phase == "connecting" or session.phase == "reconnecting" then
+            ui.spinner(24, 4)
+            ui.text_centred(session.status, 1.2)
+        elseif session.phase == "failed" then
+            ui.text_centred(session.status, 1.2)
+            ui.dummy(0, 8)
+
+            if ui.button("Try again") then
+                session:retry()
+            end
+        elseif session.phase == "lobby" then
+            ui.text_centred("Connected as player " .. tostring(session.player), 1.2)
+
+            if session.error then
+                ui.text_centred(session.error, 1.2)
+            end
+
+            ui.dummy(0, 8)
+
+            if ui.button("Create room") then
+                session:create_room()
+            end
+
+            ui.dummy(0, 10)
+            ui.text_centred("Room number", 1.2)
+            online_room_text = ui.input_text("##room", online_room_text, 120)
+
+            if ui.button("Join room") then
+                local room = tonumber(online_room_text)
+
+                if room then
+                    session:join_room(math.floor(room))
+                else
+                    session.error = "Enter the room number"
+                end
+            end
+        elseif session.phase == "waiting" then
+            ui.spinner(24, 4)
+            ui.text_centred("Room " .. tostring(session.room), 2.0)
+            ui.text_centred("Waiting for an opponent...", 1.2)
+            ui.text_centred("You play " .. tostring(session.side), 1.2)
+        end
+
+        ui.dummy(0, 14)
+
+        if ui.button(session and session.phase == "waiting" and "Leave room" or "Back") then
+            if session and session.phase == "waiting" then
+                session:leave()
+            else
+                leave_online()
+                screen = "menu"
+            end
+        end
+
+        ui.dummy(0, 8)
+    end)
+end
+
+local function draw_notice()
+    ui.window("##notice", { centred = true, bg_alpha = 0.88 }, function()
+        ui.dummy(380, 8)
+        ui.text_centred("Game ended", 3.0)
+        ui.dummy(0, 8)
+        ui.text_centred(notice_text, 1.4)
+        ui.dummy(0, 18)
+
+        if ui.button("Main menu") then
+            leave_online()
+            screen = "menu"
         end
 
         ui.dummy(0, 8)
@@ -558,14 +820,21 @@ local function draw_pause()
 
         ui.dummy(0, 4)
 
-        if ui.button("Restart") then
-            start_new_game()
-        end
+        if online_play then
+            if ui.button("Leave game") then
+                leave_online()
+                screen = "menu"
+            end
+        else
+            if ui.button("Restart") then
+                start_new_game()
+            end
 
-        ui.dummy(0, 4)
+            ui.dummy(0, 4)
 
-        if ui.button("Main menu") then
-            screen = "menu"
+            if ui.button("Main menu") then
+                screen = "menu"
+            end
         end
 
         ui.dummy(0, 4)
@@ -587,13 +856,22 @@ local function draw_game_over()
         ui.text_centred(reason, 2.0)
         ui.dummy(0, 18)
 
-        if ui.button("Play again") then
-            start_new_game()
+        if ui.button(session and "Back to lobby" or "Play again") then
+            if session then
+                online_play = false
+                screen = "online"
+            else
+                start_new_game()
+            end
         end
 
         ui.dummy(0, 4)
 
         if ui.button("Main menu") then
+            if session then
+                leave_online()
+            end
+
             screen = "menu"
         end
 
@@ -609,7 +887,18 @@ end
 
 local function draw_hud()
     ui.window("##hud", { x = 16, y = 16, bg_alpha = 0.45 }, function()
-        ui.text(engine:side_to_move() == "white" and "White to move" or "Black to move", 1.6)
+        if online_play then
+            local mine = engine:side_to_move() == online_side
+
+            ui.text("You are " .. online_side, 1.2)
+            ui.text(mine and "Your move" or "Opponent's move", 1.6)
+
+            if session.phase == "reconnecting" then
+                ui.text(session.status, 1.2)
+            end
+        else
+            ui.text(engine:side_to_move() == "white" and "White to move" or "Black to move", 1.6)
+        end
 
         if status ~= "" then
             ui.text(status, 1.6)
@@ -639,6 +928,10 @@ function M.on_ui()
         draw_loading()
     elseif screen == "menu" then
         draw_menu()
+    elseif screen == "online" then
+        draw_online()
+    elseif screen == "notice" then
+        draw_notice()
     elseif screen == "paused" then
         draw_pause()
     elseif screen == "game_over" then

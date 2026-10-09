@@ -228,6 +228,10 @@ namespace {
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+
+        // GLFW minimises a fullscreen window when it loses focus, and keeps doing so after the window manager has
+        // taken the window out of fullscreen. Alt-Tabbing or clicking another window should not hide the game.
+        glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
         glfwWindowHint(GLFW_DECORATED, screen_type == ScreenType::borderless ? GLFW_FALSE : GLFW_TRUE);
 
         std::int32_t monitor_count{};

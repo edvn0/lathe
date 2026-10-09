@@ -325,6 +325,18 @@ target_include_directories(
         "${lyra_SOURCE_DIR}/include"
 )
 
+# WebSocket server for lathe-server, used only behind gameserver::IServerTransport. TLS and zlib are off: it serves
+# plain ws:// on a trusted network, or sits behind a TLS-terminating proxy.
+cpmaddpackage(
+    NAME IXWebSocket
+    GITHUB_REPOSITORY machinezone/IXWebSocket
+    GIT_TAG v11.4.6
+    OPTIONS
+        "USE_TLS OFF"
+        "USE_ZLIB OFF"
+        "IXWEBSOCKET_INSTALL OFF"
+)
+
 CPMAddPackage(
     NAME bullet3
     GITHUB_REPOSITORY bulletphysics/bullet3
@@ -592,6 +604,7 @@ endif()
 
 mark_target_includes_system(meshoptimizer)
 mark_target_includes_system(efsw)
+mark_target_includes_system(ixwebsocket)
 mark_target_includes_system(TracyClient)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/add_mikktspace.cmake")
@@ -839,13 +852,15 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/renderdoc_config.cmake")
 
 # ------------------------------------------------------------------------------
 # Module libraries, in dependency order:
-# core < gpu < assets < net < physics < scene < terrain < rendering < serialisation < scripting < app
+# core < gpu < assets < net < gameserver < gameclient < physics < scene < terrain < rendering < serialisation < scripting < app
 # ------------------------------------------------------------------------------
 
 add_subdirectory(src/core)
 add_subdirectory(src/gpu)
 add_subdirectory(src/assets)
 add_subdirectory(src/net)
+add_subdirectory(src/gameserver)
+add_subdirectory(src/gameclient)
 add_subdirectory(src/animation)
 add_subdirectory(src/physics)
 add_subdirectory(src/scene)
@@ -874,7 +889,7 @@ add_library(
 target_link_libraries(
     lathe-core
     INTERFACE
-        "$<LINK_GROUP:RESCAN,engine_app,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_assets,engine_gpu,engine_core>"
+        "$<LINK_GROUP:RESCAN,engine_app,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_gameserver,engine_gameclient,engine_assets,engine_gpu,engine_core>"
 )
 
 add_library(
@@ -895,6 +910,31 @@ add_executable(
 target_link_libraries(
     lathe
     PRIVATE
+        lathe::core
+        engine_gameclient_ix
+        engine_options
+)
+
+# Headless game server: transport-agnostic session logic (engine_gameserver) behind an IXWebSocket transport, with the
+# chess rules registered as the first game.
+add_executable(
+    lathe-server
+    tools/server/main.cxx
+    game/src/chess_engine.cxx
+    game/src/chess_server_game.cxx
+)
+
+target_include_directories(
+    lathe-server
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/game/include"
+)
+
+target_link_libraries(
+    lathe-server
+    PRIVATE
+        engine_gameserver_ix
         lathe::core
         engine_options
 )
