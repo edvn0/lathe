@@ -329,7 +329,9 @@ auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> pass
 
 Application::Application(VulkanContext &ctx) noexcept :
     context(ctx), renderer(std::make_unique<Renderer>(context)),
-    debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)) {}
+    debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)) {
+    stage_registry.bind_debug_renderer(debug_renderer.get());
+}
 
 Application::~Application() {
     if (terrain) {
@@ -2023,21 +2025,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         draw_stage("msaa");
 
-        ImGui::SeparatorText("Debug");
-        bool draw_light_icons = renderer->debug_draw_light_icons();
-        if (ImGui::Checkbox("Draw light icons", &draw_light_icons)) {
-            renderer->set_debug_draw_light_icons(draw_light_icons);
-        }
-
-        bool draw_physics_debug = debug_renderer->physics_debug_enabled();
-        if (ImGui::Checkbox("Draw physics colliders", &draw_physics_debug)) {
-            debug_renderer->set_physics_debug_enabled(draw_physics_debug);
-        }
-
-        bool draw_model_bounds_debug = debug_renderer->model_bounds_debug_enabled();
-        if (ImGui::Checkbox("Draw model submesh bounds", &draw_model_bounds_debug)) {
-            debug_renderer->set_model_bounds_debug_enabled(draw_model_bounds_debug);
-        }
+        draw_stage("debug_overlays");
 
         draw_stage("occlusion_culling");
         draw_stage("clustered_lighting");

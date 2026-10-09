@@ -12,6 +12,10 @@
 
 class Renderer;
 
+namespace debug_draw {
+    class DebugRenderer;
+}
+
 namespace stages {
 
     struct State {
@@ -31,6 +35,7 @@ namespace stages {
         // Previews fill the available width unless this is positive. Needed where the available width follows the
         // content, as in a node.
         float max_preview_width = 0.0F;
+        debug_draw::DebugRenderer *debug_renderer = nullptr;
     };
 
     // A user-facing renderer stage. Unlike a frame graph pass it exists whether or not the graph currently contains
@@ -52,6 +57,10 @@ namespace stages {
         [[nodiscard]] auto find(FlyString id) const -> Stage const *;
         [[nodiscard]] auto stage_of_pass(FlyString pass) const -> Stage const *;
 
+        auto bind_debug_renderer(debug_draw::DebugRenderer *debug_renderer) noexcept -> void {
+            debug_renderer_ = debug_renderer;
+        }
+
         auto draw_settings(FlyString id, Renderer &renderer, float max_preview_width = 0.0F) -> void;
 
     private:
@@ -61,6 +70,7 @@ namespace stages {
         std::unordered_map<FlyString, std::size_t> by_id_;
         std::unordered_map<FlyString, std::size_t> by_pass_;
         UiState ui_;
+        debug_draw::DebugRenderer *debug_renderer_ = nullptr;
     };
 
 }

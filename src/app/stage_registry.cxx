@@ -11,6 +11,7 @@
 
 #include <imgui.h>
 
+#include "rendering/debug_renderer.hxx"
 #include "rendering/hiz_occlusion.hxx"
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/renderer.hxx"
@@ -322,6 +323,28 @@ namespace stages {
             }
         }
 
+        auto draw_debug_overlays(Context &context) -> void {
+            bool draw_light_icons = context.renderer.debug_draw_light_icons();
+            if (ImGui::Checkbox("Draw light icons", &draw_light_icons)) {
+                context.renderer.set_debug_draw_light_icons(draw_light_icons);
+            }
+
+            auto *debug = context.debug_renderer;
+            if (debug == nullptr) {
+                return;
+            }
+
+            bool draw_physics_debug = debug->physics_debug_enabled();
+            if (ImGui::Checkbox("Draw physics colliders", &draw_physics_debug)) {
+                debug->set_physics_debug_enabled(draw_physics_debug);
+            }
+
+            bool draw_model_bounds_debug = debug->model_bounds_debug_enabled();
+            if (ImGui::Checkbox("Draw model submesh bounds", &draw_model_bounds_debug)) {
+                debug->set_model_bounds_debug_enabled(draw_model_bounds_debug);
+            }
+        }
+
         auto passes_of(std::initializer_list<std::string_view> names) -> std::vector<FlyString> {
             auto passes = std::vector<FlyString>{};
             passes.reserve(names.size());
@@ -371,6 +394,15 @@ namespace stages {
                 .state = [](Renderer const &renderer) { return State{.enabled = renderer.clustered_lighting()}; },
                 .set_enabled = [](Renderer &renderer, bool enabled) { renderer.set_clustered_lighting(enabled); },
                 .draw_settings = draw_clustered_lighting,
+        });
+
+        add(Stage{
+                .id = FlyString{"debug_overlays"},
+                .title = "Debug overlays",
+                .passes = passes_of({"overlay_prepare"}),
+                .state = [](Renderer const &) { return State{}; },
+                .set_enabled = {},
+                .draw_settings = draw_debug_overlays,
         });
 
         add(Stage{
@@ -432,7 +464,8 @@ namespace stages {
 
     auto Registry::draw_settings(FlyString id, Renderer &renderer, float max_preview_width) -> void {
         if (auto const *stage = find(id); stage != nullptr && stage->draw_settings) {
-            auto context = Context{.renderer = renderer, .ui = ui_, .max_preview_width = max_preview_width};
+            auto context = Context{.renderer = renderer, .ui = ui_, .max_preview_width = max_preview_width,
+                                   .debug_renderer = debug_renderer_};
             stage->draw_settings(context);
         }
     }
