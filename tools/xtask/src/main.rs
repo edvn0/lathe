@@ -33,6 +33,8 @@ Environment variables:
   RENDERDOC_INCLUDE_PATH
       Host directory containing renderdoc_app.h.
 
+      Default: ~/.cache/renderdoc-include, if `cargo xtask setup-renderdoc` has been run.
+
   PROFILE_BUILD=1
       Adds -fno-omit-frame-pointer.
 
@@ -98,6 +100,16 @@ enum Task {
 
     /// Build the existing configuration.
     Build,
+
+    /// Copy renderdoc_app.h into ~/.cache/renderdoc-include so builds enable RenderDoc by default.
+    ///
+    /// The header is copied to a directory of its own because the build container bind-mounts the include path; mounting
+    /// a system directory such as /usr/local/include would hide the container's own headers.
+    SetupRenderdoc {
+        /// Directory containing renderdoc_app.h (default: searched for in the usual system include directories).
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
 
     /// Remove the build directory, configure, and build.
     Rebuild,
@@ -270,7 +282,11 @@ impl Config {
 
         let renderdoc_include_path = env::var_os("RENDERDOC_INCLUDE_PATH")
             .filter(|value| !value.is_empty())
-            .map(PathBuf::from);
+            .map(PathBuf::from)
+            .or_else(|| {
+                let default = default_renderdoc_dir(&home);
+                default.join("renderdoc_app.h").is_file().then_some(default)
+            });
 
         Ok(Self {
             project_dir,
@@ -931,11 +947,55 @@ fn run_checked(command: &mut Command) -> Result<()> {
     Ok(())
 }
 
+fn default_renderdoc_dir(home: &Path) -> PathBuf {
+    home.join(".cache/renderdoc-include")
+}
+
+fn setup_renderdoc(from: Option<PathBuf>) -> Result<()> {
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .context("HOME is not set")?;
+
+    let candidates = match from {
+        Some(dir) => vec![dir],
+        None => ["/usr/local/include", "/usr/include", "/usr/include/renderdoc"]
+            .map(PathBuf::from)
+            .to_vec(),
+    };
+
+    let Some(source) = candidates
+        .iter()
+        .map(|dir| dir.join("renderdoc_app.h"))
+        .find(|header| header.is_file())
+    else {
+        bail!(
+            "renderdoc_app.h was not found in {candidates:?}; pass --from <dir> (it ships with RenderDoc under renderdoc/api/app)"
+        );
+    };
+
+    let dir = default_renderdoc_dir(&home);
+
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    fs::copy(&source, dir.join("renderdoc_app.h"))
+        .with_context(|| format!("failed to copy {}", source.display()))?;
+
+    println!("Copied {} to {}", source.display(), dir.display());
+    println!("Builds now enable RenderDoc by default; rerun `cargo xtask rebuild` to apply.");
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Task::SetupRenderdoc { from } = cli.command {
+        return setup_renderdoc(from);
+    }
+
     let config = Config::load()?;
 
     match cli.command {
+        Task::SetupRenderdoc { .. } => unreachable!("handled before the config is loaded"),
         Task::Configure => config.configure(),
         Task::Build => config.build(),
         Task::Rebuild => config.rebuild(),
