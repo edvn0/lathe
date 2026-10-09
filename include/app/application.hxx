@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "app/game.hxx"
+#include "app/stage_registry.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/shader_hot_reload_watcher.hxx"
 #include "gpu/context.hxx"
@@ -156,9 +157,7 @@ struct Application {
 
     entt::entity hierarchy_context_entity = entt::null;
 
-    std::optional<ClusterGridSettings> refused_cluster_grid;
-
-    int hiz_debug_mip = 0;
+    stages::Registry stage_registry;
 
     bool mouse_dragging = false;
 
