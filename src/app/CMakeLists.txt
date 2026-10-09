@@ -6,6 +6,7 @@ add_library(
     engine_app
     STATIC
         application.cxx
+        frame_graph_details.cxx
         frame_graph_editor.cxx
         benchmark.cxx
         benchmark_analysis.cxx

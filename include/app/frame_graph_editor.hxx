@@ -52,6 +52,8 @@ namespace gui {
         std::vector<Ghost> ghosts_;
         std::unordered_set<std::uintptr_t> placed_;
         std::unordered_map<std::uintptr_t, float> measured_height_;
+        std::vector<std::uint32_t> selected_passes_;
+        bool has_selection_ = false;
         int settle_countdown_ = 0;
         int fit_countdown_ = 0;
     };

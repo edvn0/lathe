@@ -8,6 +8,7 @@
 #include <imgui.h>
 #include <imgui_node_editor.h>
 
+#include "app/frame_graph_details.hxx"
 #include "core/fly_string.hxx"
 #include "rendering/renderer.hxx"
 
@@ -20,6 +21,7 @@ namespace gui {
         constexpr auto stage_base_height = 90.0F;
         constexpr auto stage_settings_height = 300.0F;
         constexpr auto settings_item_width = 260.0F;
+        constexpr auto details_height = 230.0F;
 
         auto node_id_of(std::uintptr_t key) -> ed::NodeId { return ed::NodeId{key * 4}; }
         auto input_pin_of(std::uintptr_t key) -> ed::PinId { return ed::PinId{(key * 4) + 1}; }
@@ -235,7 +237,11 @@ namespace gui {
         auto const stage_list = registry.stages();
 
         ed::SetCurrentEditor(context_->editor);
-        ed::Begin("frame_graph");
+        auto const editor_height = has_selection_ ? std::max(ImGui::GetContentRegionAvail().y - details_height -
+                                                                     ImGui::GetStyle().ItemSpacing.y,
+                                                             120.0F)
+                                                  : 0.0F;
+        ed::Begin("frame_graph", ImVec2{0.0F, editor_height});
 
         for (auto index = std::size_t{0}; index < layout_.nodes.size(); ++index) {
             auto const &node = layout_.nodes[index];
@@ -382,8 +388,30 @@ namespace gui {
             ed::NavigateToContent();
         }
 
+        selected_passes_.clear();
+        if (auto const count = ed::GetSelectedObjectCount(); count > 0) {
+            auto selected = std::vector<ed::NodeId>(static_cast<std::size_t>(count));
+            auto const nodes = ed::GetSelectedNodes(selected.data(), count);
+            for (auto chosen = 0; chosen < nodes; ++chosen) {
+                for (auto index = std::size_t{0}; index < layout_.nodes.size(); ++index) {
+                    if (node_id_of(node_keys_[index]) == selected[static_cast<std::size_t>(chosen)]) {
+                        selected_passes_.insert(selected_passes_.end(), layout_.nodes[index].passes.begin(),
+                                                layout_.nodes[index].passes.end());
+                    }
+                }
+            }
+        }
+
         ed::End();
         ed::SetCurrentEditor(nullptr);
+
+        has_selection_ = !selected_passes_.empty();
+        if (has_selection_ && ImGui::BeginChild("##pass_details", ImVec2{0.0F, 0.0F}, ImGuiChildFlags_Borders)) {
+            draw_pass_details(view, selected_passes_, renderer);
+        }
+        if (has_selection_) {
+            ImGui::EndChild();
+        }
     }
 
 }
