@@ -18,6 +18,7 @@ add_library(
         frame_graph/describe.cxx
         frame_graph/executor.cxx
         frame_graph/frame_graph.cxx
+        frame_graph/layout.cxx
         frame_graph/pass_profiler.cxx
         frame_graph/scheduler.cxx
         frame_graph/transient_allocator.cxx
