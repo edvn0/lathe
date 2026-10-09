@@ -63,6 +63,7 @@ namespace gui {
         bool positions_dirty_ = false;
         std::unordered_map<std::uintptr_t, float> measured_height_;
         std::vector<std::uint32_t> selected_passes_;
+        std::vector<std::uint32_t> selected_resources_;
         bool has_selection_ = false;
         int settle_countdown_ = 0;
         int fit_countdown_ = 0;

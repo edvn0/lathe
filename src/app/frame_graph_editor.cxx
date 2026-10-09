@@ -472,6 +472,23 @@ namespace gui {
             }
         }
 
+        selected_resources_.clear();
+        if (auto const count = ed::GetSelectedObjectCount(); count > 0) {
+            auto selected = std::vector<ed::LinkId>(static_cast<std::size_t>(count));
+            auto const links = ed::GetSelectedLinks(selected.data(), count);
+            for (auto chosen = 0; chosen < links; ++chosen) {
+                auto const index = static_cast<std::size_t>(selected[static_cast<std::size_t>(chosen)].Get() & ~link_id_tag);
+                if (index >= layout_.edges.size()) {
+                    continue;
+                }
+                for (auto const resource: layout_.edges[index].resources) {
+                    if (std::ranges::find(selected_resources_, resource) == selected_resources_.end()) {
+                        selected_resources_.push_back(resource);
+                    }
+                }
+            }
+        }
+
         ed::End();
         ed::SetCurrentEditor(nullptr);
 
@@ -479,8 +496,9 @@ namespace gui {
             save_positions();
         }
 
-        has_selection_ = !selected_passes_.empty();
+        has_selection_ = !selected_passes_.empty() || !selected_resources_.empty();
         if (has_selection_ && ImGui::BeginChild("##pass_details", ImVec2{0.0F, 0.0F}, ImGuiChildFlags_Borders)) {
+            draw_resource_details(view, selected_resources_);
             draw_pass_details(view, selected_passes_, renderer);
         }
         if (has_selection_) {
