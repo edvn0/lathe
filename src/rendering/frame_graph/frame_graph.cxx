@@ -25,6 +25,16 @@ namespace frame_graph {
 
     auto FrameGraph::latest_version(std::uint32_t resource) const -> std::uint32_t { return latest_[resource]; }
 
+    auto FrameGraph::find_image(std::string_view name) const -> std::optional<ImageId> {
+        for (auto index = std::size_t{0}; index < desc_.resources.size(); ++index) {
+            auto const &resource = desc_.resources[index];
+            if (resource.kind == ResourceKind::image && resource.name == name) {
+                return ImageId{.index = static_cast<std::uint32_t>(index), .generation = latest_[index]};
+            }
+        }
+        return std::nullopt;
+    }
+
     auto FrameGraph::record_error(FrameGraphErrorType type, PassDesc const &pass, std::uint32_t resource) -> void {
         errors_.push_back(FrameGraphError{
                 .type = type,

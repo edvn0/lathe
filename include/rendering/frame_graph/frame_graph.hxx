@@ -147,6 +147,9 @@ namespace frame_graph {
             return PassId{.index = static_cast<std::uint32_t>(desc_.passes.size() - 1), .generation = 1};
         }
 
+        // The latest version of the image named `name`, as a later pass would read it.
+        [[nodiscard]] auto find_image(std::string_view name) const -> std::optional<ImageId>;
+
         [[nodiscard]] auto description() const -> GraphDesc const & { return desc_; }
         [[nodiscard]] auto declaration_errors() const -> std::vector<FrameGraphError> const & { return errors_; }
 
