@@ -27,6 +27,7 @@ namespace gui {
         constexpr auto stage_settings_height = 300.0F;
         constexpr auto settings_item_width = 260.0F;
         constexpr auto details_height = 230.0F;
+        constexpr auto preview_column_width = 340.0F;
         constexpr auto layout_file_name = "frame_graph_layout.txt";
 
         auto node_id_of(std::uintptr_t key) -> ed::NodeId { return ed::NodeId{key * 4}; }
@@ -496,10 +497,24 @@ namespace gui {
             save_positions();
         }
 
-        has_selection_ = !selected_passes_.empty() || !selected_resources_.empty();
+        auto const previewed = previewed_resource(view, renderer);
+        has_selection_ = !selected_passes_.empty() || !selected_resources_.empty() || previewed.has_value();
         if (has_selection_ && ImGui::BeginChild("##pass_details", ImVec2{0.0F, 0.0F}, ImGuiChildFlags_Borders)) {
-            draw_resource_details(view, selected_resources_);
+            auto const split = previewed && ImGui::BeginTable("##details_layout", 2, ImGuiTableFlags_SizingStretchProp);
+            if (split) {
+                ImGui::TableSetupColumn("details", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("preview", ImGuiTableColumnFlags_WidthFixed, preview_column_width);
+                ImGui::TableNextColumn();
+            }
+
+            draw_resource_details(view, selected_resources_, renderer);
             draw_pass_details(view, selected_passes_, renderer);
+
+            if (split) {
+                ImGui::TableNextColumn();
+                draw_preview(view, *previewed, renderer);
+                ImGui::EndTable();
+            }
         }
         if (has_selection_) {
             ImGui::EndChild();
