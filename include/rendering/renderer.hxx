@@ -467,6 +467,12 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto set_fog_settings(FogSettings const &settings) noexcept -> void { fog_settings_ = settings; }
     [[nodiscard]] auto fog_settings() const noexcept -> FogSettings const & { return fog_settings_; }
 
+    auto set_ao_settings(AoSettings const &settings) noexcept -> void { ao_settings_ = settings; }
+    [[nodiscard]] auto ao_settings() const noexcept -> AoSettings const & { return ao_settings_; }
+
+    auto set_bloom_settings(BloomSettings const &settings) noexcept -> void { bloom_settings_ = settings; }
+    [[nodiscard]] auto bloom_settings() const noexcept -> BloomSettings const & { return bloom_settings_; }
+
     auto set_light_lod_settings(LightLodSettings const &settings) noexcept -> void { light_lod_settings_ = settings; }
     [[nodiscard]] auto light_lod_settings() const noexcept -> LightLodSettings const & { return light_lod_settings_; }
 
