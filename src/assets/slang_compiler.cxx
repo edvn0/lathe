@@ -454,7 +454,13 @@ namespace renderer {
             }
         }
 
-        return compile_with_slang(request);
+        auto compiled = compile_with_slang(request);
+
+        if (compiled && shader_recording()) {
+            record_compiled_shader(request, *compiled);
+        }
+
+        return compiled;
     }
 
     auto SlangCompiler::compile_with_slang(ShaderCompileRequest const &request) const

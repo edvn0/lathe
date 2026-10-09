@@ -30,7 +30,9 @@
 #include "assets/material_storage.hxx"
 #include "assets/slang_compiler.hxx"
 #include "core/logger.hxx"
+#include "assets/shader_pack.hxx"
 #include "core/thread_pool.hxx"
+#include <atomic>
 #include <thread>
 #include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
@@ -947,8 +949,14 @@ namespace {
     }
 }
 
+namespace {
+    // Creating the compiler costs ~300 ms, so a run served entirely by a shader pack never creates one.
+    std::atomic<bool> compiler_created{false}; // NOLINT: process-wide, like the compiler itself.
+}
+
 auto Renderer::compiler() noexcept -> renderer::SlangCompiler & {
     static auto compiler_ = [] {
+        compiler_created.store(true, std::memory_order_release);
         auto created = renderer::SlangCompiler::create();
 
         if (!created) {
@@ -970,16 +978,26 @@ auto Renderer::prefetch_shaders() -> void {
     // Compiling needs no Vulkan state, only the shader requests, so it can overlap window and device creation.
     // The formats in the create info only shape the pipelines, never the compile requests.
     shader_prefetch_thread = std::jthread{[] {
-        auto const &shader_compiler = compiler();
-
-        if (!shader_compiler.valid()) {
-            return;
-        }
-
         auto requests = std::vector<renderer::ShaderCompileRequest>{};
 
         for (auto const &info: make_pipeline_register_infos(RendererCreateInfo{})) {
             requests.insert(requests.end(), info.stages.begin(), info.stages.end());
+        }
+
+        if (auto const pack = renderer::installed_shader_pack()) {
+            std::erase_if(requests, [&pack](auto const &request) {
+                return pack->find(renderer::shader_request_key(request)).has_value();
+            });
+        }
+
+        if (requests.empty()) {
+            return;
+        }
+
+        auto const &shader_compiler = compiler();
+
+        if (!shader_compiler.valid()) {
+            return;
         }
 
         shader_compiler.prefetch(requests);
@@ -1850,7 +1868,9 @@ auto Renderer::destroy() noexcept -> void {
     if (shader_prefetch_thread.joinable()) {
         shader_prefetch_thread.join();
     }
-    compiler().destroy();
+    if (compiler_created.load(std::memory_order_acquire)) {
+        compiler().destroy();
+    }
 
     clear_submissions();
 
