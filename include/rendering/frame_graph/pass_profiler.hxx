@@ -19,11 +19,26 @@
 
 namespace frame_graph {
 
+    // Signed distance in ticks from `from` to `to` for counters that keep only `valid_bits` bits and so wrap.
+    [[nodiscard]] constexpr auto timestamp_distance(std::uint64_t from, std::uint64_t to,
+                                                    std::uint32_t valid_bits) noexcept -> std::int64_t {
+        if (valid_bits == 0 || valid_bits >= 64) {
+            return static_cast<std::int64_t>(to - from);
+        }
+
+        auto const modulus = std::uint64_t{1} << valid_bits;
+        auto const delta = (to - from) & (modulus - 1);
+        return delta >= (modulus >> 1U) ? static_cast<std::int64_t>(delta) - static_cast<std::int64_t>(modulus)
+                                        : static_cast<std::int64_t>(delta);
+    }
+
     struct PassTiming {
         std::string name_id;
         std::string label;
         LogicalQueue queue = LogicalQueue::graphics;
         std::optional<float> milliseconds;
+        // From the earliest pass start of the frame, across queues.
+        std::optional<float> start_milliseconds;
     };
 
     struct PassProfilerCreateInfo {
@@ -66,6 +81,8 @@ namespace frame_graph {
                 -> tracy::SourceLocationData const *;
 
     private:
+        auto assign_start_offsets(std::span<std::optional<std::uint64_t> const> begins) -> void;
+
         struct Written {
             std::string name_id;
             std::string label;
