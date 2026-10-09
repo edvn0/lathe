@@ -6,8 +6,10 @@
 #include <spirv-tools/optimizer.hpp>
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <fstream>
 #include <future>
@@ -24,7 +26,6 @@
 #include "assets/shader_pack.hxx"
 #include "assets/slang_library.hxx"
 #include "core/logger.hxx"
-#include "core/thread_pool.hxx"
 
 namespace renderer {
     namespace {
@@ -237,11 +238,19 @@ namespace renderer {
         SlangLibrary library;
 
         // Slang's global session is not safe to share between threads, so every concurrent compile leases its own.
+        // Creating one costs ~140 ms and Slang serializes creation, so the count is capped and callers wait for a
+        // free session instead of creating more.
         std::mutex session_mutex;
+        std::condition_variable session_available;
         std::vector<Slang::ComPtr<slang::IGlobalSession>> idle_sessions;
+        std::size_t session_count = 0;
+        std::size_t max_sessions = 1;
 
         std::mutex prefetch_mutex;
         std::unordered_map<std::string, std::shared_future<Result>> prefetched;
+        // Dedicated threads rather than the shared pool: pool workers block on prefetched results, and the producers
+        // must never queue behind those blocked consumers.
+        std::vector<std::thread> prefetch_workers;
     };
 
     namespace {
@@ -302,8 +311,12 @@ namespace renderer {
                 return;
             }
 
-            std::scoped_lock const lock{impl_->session_mutex};
-            impl_->idle_sessions.push_back(std::move(session_));
+            {
+                std::scoped_lock const lock{impl_->session_mutex};
+                impl_->idle_sessions.push_back(std::move(session_));
+            }
+
+            impl_->session_available.notify_one();
         }
 
         [[nodiscard]] auto get() const noexcept -> slang::IGlobalSession * { return session_.get(); }
@@ -363,6 +376,8 @@ namespace renderer {
             }};
         }
         impl->idle_sessions.push_back(std::move(session));
+        impl->session_count = 1;
+        impl->max_sessions = std::clamp<std::size_t>(std::thread::hardware_concurrency(), 2, 4);
         return SlangCompiler{
                 std::move(impl),
         };
@@ -370,12 +385,21 @@ namespace renderer {
 
     auto SlangCompiler::acquire_session() const -> std::expected<SessionLease, ShaderCompileError> {
         {
-            std::scoped_lock const lock{impl_->session_mutex};
+            auto lock = std::unique_lock{impl_->session_mutex};
 
-            if (!impl_->idle_sessions.empty()) {
-                auto session = std::move(impl_->idle_sessions.back());
-                impl_->idle_sessions.pop_back();
-                return SessionLease{*impl_, std::move(session)};
+            while (true) {
+                if (!impl_->idle_sessions.empty()) {
+                    auto session = std::move(impl_->idle_sessions.back());
+                    impl_->idle_sessions.pop_back();
+                    return SessionLease{*impl_, std::move(session)};
+                }
+
+                if (impl_->session_count < impl_->max_sessions) {
+                    ++impl_->session_count;
+                    break;
+                }
+
+                impl_->session_available.wait(lock);
             }
         }
 
@@ -384,6 +408,13 @@ namespace renderer {
         auto const result = impl_->library.create_global_session(session.writeRef());
 
         if (SLANG_FAILED(result) || session == nullptr) {
+            {
+                std::scoped_lock const lock{impl_->session_mutex};
+                --impl_->session_count;
+            }
+
+            impl_->session_available.notify_one();
+
             return std::unexpected{make_error(ShaderCompileErrorType::slang_global_session_failed, result,
                                               "Failed to create an additional Slang global session.")};
         }
@@ -458,26 +489,51 @@ namespace renderer {
             }
         }
 
-        auto const groups = group_requests(std::span<ShaderCompileRequest const>{wanted});
-        auto shared_requests = std::make_shared<std::vector<ShaderCompileRequest>>(std::move(wanted));
-        auto shared_promises = std::make_shared<std::vector<std::promise<Impl::Result>>>(std::move(promises));
+        if (wanted.empty()) {
+            return;
+        }
 
-        for (auto const &group: groups) {
-            thread_pool().detach_task([this, group, shared_requests, shared_promises] {
-                auto entries = std::vector<ShaderCompileRequest const *>{};
+        struct PrefetchJob {
+            std::vector<ShaderCompileRequest> requests;
+            std::vector<std::promise<Impl::Result>> promises;
+            std::vector<std::vector<std::size_t>> groups;
+            std::atomic<std::size_t> next_group{0};
+        };
 
-                for (auto const index: group) {
-                    entries.push_back(&(*shared_requests)[index]);
-                }
+        auto job = std::make_shared<PrefetchJob>();
+        job->groups = group_requests(std::span<ShaderCompileRequest const>{wanted});
+        job->requests = std::move(wanted);
+        job->promises = std::move(promises);
 
-                auto results = compile_group(entries);
+        auto const worker_count = std::min(impl_->max_sessions, job->groups.size());
 
-                for (std::size_t k = 0; k < group.size(); ++k) {
-                    if (results[k] && shader_recording()) {
-                        record_compiled_shader(*entries[k], *results[k]);
+        std::scoped_lock const lock{impl_->prefetch_mutex};
+
+        for (std::size_t worker = 0; worker < worker_count; ++worker) {
+            impl_->prefetch_workers.emplace_back([this, job] {
+                while (true) {
+                    auto const group_index = job->next_group.fetch_add(1, std::memory_order_relaxed);
+
+                    if (group_index >= job->groups.size()) {
+                        return;
                     }
 
-                    (*shared_promises)[group[k]].set_value(std::move(results[k]));
+                    auto const &group = job->groups[group_index];
+                    auto entries = std::vector<ShaderCompileRequest const *>{};
+
+                    for (auto const index: group) {
+                        entries.push_back(&job->requests[index]);
+                    }
+
+                    auto results = compile_group(entries);
+
+                    for (std::size_t k = 0; k < group.size(); ++k) {
+                        if (results[k] && shader_recording()) {
+                            record_compiled_shader(*entries[k], *results[k]);
+                        }
+
+                        job->promises[group[k]].set_value(std::move(results[k]));
+                    }
                 }
             });
         }
@@ -802,19 +858,21 @@ namespace renderer {
             return;
         }
 
-        // Prefetch tasks borrow this compiler, so let them finish before the sessions and library go away.
-        auto pending = std::vector<std::shared_future<Impl::Result>>{};
+        // Prefetch workers borrow this compiler, so let them finish before the sessions and library go away.
+        auto workers = std::vector<std::thread>{};
 
         {
             std::scoped_lock const lock{impl_->prefetch_mutex};
-            for (auto &entry: impl_->prefetched) {
-                pending.push_back(std::move(entry.second));
-            }
-            impl_->prefetched.clear();
+            workers = std::move(impl_->prefetch_workers);
         }
 
-        for (auto const &future: pending) {
-            future.wait();
+        for (auto &worker: workers) {
+            worker.join();
+        }
+
+        {
+            std::scoped_lock const lock{impl_->prefetch_mutex};
+            impl_->prefetched.clear();
         }
 
         {

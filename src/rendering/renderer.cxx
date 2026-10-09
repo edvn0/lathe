@@ -31,6 +31,7 @@
 #include "assets/slang_compiler.hxx"
 #include "core/logger.hxx"
 #include "core/thread_pool.hxx"
+#include <thread>
 #include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
 #include "gpu/device_error.hxx"
@@ -961,10 +962,14 @@ auto Renderer::compiler() noexcept -> renderer::SlangCompiler & {
     return *compiler_;
 }
 
+namespace {
+    std::jthread shader_prefetch_thread; // NOLINT: process-wide, joined by Renderer::destroy.
+}
+
 auto Renderer::prefetch_shaders() -> void {
     // Compiling needs no Vulkan state, only the shader requests, so it can overlap window and device creation.
     // The formats in the create info only shape the pipelines, never the compile requests.
-    thread_pool().detach_task([] {
+    shader_prefetch_thread = std::jthread{[] {
         auto const &shader_compiler = compiler();
 
         if (!shader_compiler.valid()) {
@@ -978,7 +983,7 @@ auto Renderer::prefetch_shaders() -> void {
         }
 
         shader_compiler.prefetch(requests);
-    });
+    }};
 }
 
 auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expected<void, RendererError> {
@@ -1842,6 +1847,9 @@ auto Renderer::destroy() noexcept -> void {
     texture_streamer_.wait_all();
     image_storage_.destroy();
     geometry_arena_.destroy(context_);
+    if (shader_prefetch_thread.joinable()) {
+        shader_prefetch_thread.join();
+    }
     compiler().destroy();
 
     clear_submissions();
