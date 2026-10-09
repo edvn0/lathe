@@ -13,4 +13,8 @@ namespace gui {
     auto draw_pass_details(frame_graph::FrameGraphView const &view, std::span<std::uint32_t const> passes,
                            Renderer const &renderer) -> void;
 
+    // What a link carries: format and size, who writes and reads it, and which memory it shares.
+    auto draw_resource_details(frame_graph::FrameGraphView const &view, std::span<std::uint32_t const> resources)
+            -> void;
+
 }

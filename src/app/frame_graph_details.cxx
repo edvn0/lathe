@@ -1,10 +1,12 @@
 #include "app/frame_graph_details.hxx"
 
+#include <format>
 #include <string>
 
 #include <imgui.h>
 
 #include "rendering/frame_graph/names.hxx"
+#include "rendering/frame_graph/resource_info.hxx"
 #include "rendering/renderer.hxx"
 
 namespace gui {
@@ -105,6 +107,73 @@ namespace gui {
             if (pass < view.graph.passes.size()) {
                 draw_pass(view, pass, renderer);
             }
+        }
+    }
+
+    namespace {
+
+        auto pass_names(frame_graph::GraphDesc const &graph, std::vector<std::uint32_t> const &passes) -> std::string {
+            auto text = std::string{};
+            for (auto const pass: passes) {
+                text += text.empty() ? "" : ", ";
+                text += pass < graph.passes.size() ? graph.passes[pass].name : std::string{"?"};
+            }
+            return text.empty() ? std::string{"none"} : text;
+        }
+
+        auto mebibytes(std::uint64_t bytes) -> double { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
+
+    }
+
+    auto draw_resource_details(frame_graph::FrameGraphView const &view, std::span<std::uint32_t const> resources)
+            -> void {
+        auto const &graph = view.graph;
+
+        for (auto const resource_index: resources) {
+            if (resource_index >= graph.resources.size()) {
+                continue;
+            }
+
+            auto const &resource = graph.resources[resource_index];
+            auto const info = frame_graph::describe_resource(view, resource_index);
+
+            ImGui::PushID(static_cast<int>(resource_index));
+            ImGui::SeparatorText(resource.name.c_str());
+
+            auto const origin = resource.imported ? "imported" : "transient";
+            if (resource.transient_image) {
+                auto const &image = *resource.transient_image;
+                auto const format = frame_graph::format_name(image.format);
+                ImGui::Text("%s image, %.*s, %ux%u, %u mip%s, %ux samples", origin, static_cast<int>(format.size()),
+                            format.data(), image.extent.width, image.extent.height, image.mip_levels,
+                            image.mip_levels == 1 ? "" : "s", static_cast<unsigned>(image.samples));
+            } else {
+                ImGui::Text("%s %s", origin, resource.kind == frame_graph::ResourceKind::buffer ? "buffer" : "token");
+            }
+
+            ImGui::TextDisabled("Written by %s", pass_names(graph, info.producers).c_str());
+            ImGui::TextDisabled("Read by %s", pass_names(graph, info.consumers).c_str());
+
+            if (info.first_pass && info.last_pass) {
+                ImGui::TextDisabled("Alive from %s to %s", graph.passes[*info.first_pass].name.c_str(),
+                                    graph.passes[*info.last_pass].name.c_str());
+            }
+
+            if (info.placement) {
+                ImGui::Text("%.2f MiB at offset %llu of block %u", mebibytes(info.placement->size),
+                            static_cast<unsigned long long>(info.placement->offset), info.placement->block);
+
+                if (!info.shares_memory_with.empty()) {
+                    auto names = std::string{};
+                    for (auto const other: info.shares_memory_with) {
+                        names += names.empty() ? "" : ", ";
+                        names += other < graph.resources.size() ? graph.resources[other].name : std::string{"?"};
+                    }
+                    ImGui::TextDisabled("Shares memory with %s", names.c_str());
+                }
+            }
+
+            ImGui::PopID();
         }
     }
 
