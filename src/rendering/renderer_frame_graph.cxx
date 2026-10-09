@@ -1185,6 +1185,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     if (plan_changed) {
         perf_events::record(PerfEvent::frame_graph_compile);
         logged_plan_misses_ = plan_cache_.misses();
+        frame_graph_view_ = frame_graph::FrameGraphView{
+                .graph = frame_graph_.description(),
+                .compiled = *frame_plan_,
+                .revision = frame_graph_view_.revision + 1,
+        };
         auto per_queue = std::array<std::size_t, frame_graph::logical_queue_count>{};
         auto passes_per_queue = std::array<std::size_t, frame_graph::logical_queue_count>{};
         auto waits = std::size_t{0};

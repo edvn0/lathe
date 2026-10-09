@@ -61,6 +61,7 @@
 #include "rendering/frame_graph/frame_graph.hxx"
 #include "rendering/frame_graph/pass_profiler.hxx"
 #include "rendering/frame_graph/transient_allocator.hxx"
+#include "rendering/frame_graph/view.hxx"
 #include "rendering/hiz_occlusion.hxx"
 #include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
@@ -505,6 +506,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError>;
 
     [[nodiscard]] auto submit_batches() const noexcept -> std::span<SubmitBatch const> { return submit_batches_; }
+
+    [[nodiscard]] auto frame_graph_view() const noexcept -> frame_graph::FrameGraphView const & {
+        return frame_graph_view_;
+    }
 
     [[nodiscard]] auto frame_graph_timings() const noexcept -> std::span<frame_graph::PassTiming const> {
         return pass_profiler_.timings();
@@ -1379,6 +1384,7 @@ private:
     frame_graph::FrameGraph frame_graph_;
     frame_graph::PlanCache plan_cache_;
     frame_graph::CompiledGraph const *frame_plan_ = nullptr;
+    frame_graph::FrameGraphView frame_graph_view_;
     std::vector<SubmitBatch> submit_batches_;
     frame_graph::PassProfiler pass_profiler_;
 
