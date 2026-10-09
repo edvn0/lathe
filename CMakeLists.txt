@@ -397,6 +397,15 @@ CPMAddPackage(
     DOWNLOAD_ONLY YES
 )
 
+# Node-graph canvas for the frame graph editor. The repo root holds the sources; the examples are not fetched.
+CPMAddPackage(
+    NAME ImGuiNodeEditor
+    GITHUB_REPOSITORY thedmd/imgui-node-editor
+    GIT_TAG 021aa0ea4da13fed864bafb2a92d4c5205076866
+    GIT_SHALLOW NO
+    DOWNLOAD_ONLY YES
+)
+
 # Header-only toasts. Only src/rendering/toast.cxx includes it (see gui::toast_*).
 CPMAddPackage(
     NAME ImGuiNotify
@@ -536,7 +545,7 @@ CPMAddPackage(
 
 mark_target_includes_system(ktx)
 
-if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
+if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR AND ImGuiNodeEditor_SOURCE_DIR)
   add_library(
       imgui
       STATIC
@@ -551,6 +560,19 @@ if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
           ${ImPlot_SOURCE_DIR}/implot.cpp
           ${ImPlot_SOURCE_DIR}/implot_items.cpp
           ${ImGuizmo_SOURCE_DIR}/ImGuizmo.cpp
+          ${ImGuiNodeEditor_SOURCE_DIR}/crude_json.cpp
+          ${ImGuiNodeEditor_SOURCE_DIR}/imgui_canvas.cpp
+          ${ImGuiNodeEditor_SOURCE_DIR}/imgui_node_editor.cpp
+          ${ImGuiNodeEditor_SOURCE_DIR}/imgui_node_editor_api.cpp
+  )
+
+  # crude_json.h uses std::aligned_storage, deprecated in C++23.
+  set_source_files_properties(
+      ${ImGuiNodeEditor_SOURCE_DIR}/crude_json.cpp
+      ${ImGuiNodeEditor_SOURCE_DIR}/imgui_node_editor.cpp
+      ${ImGuiNodeEditor_SOURCE_DIR}/imgui_node_editor_api.cpp
+      PROPERTIES
+          COMPILE_OPTIONS "-Wno-deprecated-declarations"
   )
 
   target_include_directories(
@@ -560,6 +582,7 @@ if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR)
           ${ImGui_SOURCE_DIR}/backends
           ${ImPlot_SOURCE_DIR}
           ${ImGuizmo_SOURCE_DIR}
+          ${ImGuiNodeEditor_SOURCE_DIR}
   )
 
   target_link_libraries(
