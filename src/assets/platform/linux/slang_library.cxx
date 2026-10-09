@@ -247,6 +247,14 @@ auto SlangLibrary::create_global_session(SlangGlobalSessionDesc const &descripti
     return impl_->create_global_session(&description, session);
 }
 
+auto SlangLibrary::symbol(char const *name) const noexcept -> void * {
+    if (impl_ == nullptr || impl_->handle == nullptr) {
+        return nullptr;
+    }
+
+    return dlsym(impl_->handle, name);
+}
+
 auto SlangLibrary::valid() const noexcept -> bool {
     return impl_ != nullptr && impl_->handle != nullptr && impl_->create_global_session != nullptr;
 }

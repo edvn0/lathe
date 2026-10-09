@@ -1,16 +1,20 @@
 #include "assets/shader_pack.hxx"
 
+#include "core/paths.hxx"
+
 #include <atomic>
 #include <bit>
 #include <cstring>
+#include <algorithm>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 
 namespace renderer {
 
     namespace {
         constexpr char magic[4] = {'L', 'S', 'H', 'P'};
-        constexpr std::uint32_t format_version = 1;
+        constexpr std::uint32_t format_version = 2;
 
         template<typename T>
         auto write_value(std::ofstream &out, T value) -> void {
@@ -53,6 +57,66 @@ namespace renderer {
         }
     }
 
+    namespace {
+        constexpr std::uint64_t fnv_offset = 14695981039346656037ULL;
+        constexpr std::uint64_t fnv_prime = 1099511628211ULL;
+
+        auto fnv_append(std::uint64_t hash, std::string_view bytes) -> std::uint64_t {
+            for (auto const byte: bytes) {
+                hash ^= static_cast<std::uint8_t>(byte);
+                hash *= fnv_prime;
+            }
+
+            return hash;
+        }
+    }
+
+    auto hash_shader_sources(std::filesystem::path const &shader_directory) -> std::optional<std::uint64_t> {
+        std::error_code error;
+
+        if (!std::filesystem::is_directory(shader_directory, error)) {
+            return std::nullopt;
+        }
+
+        auto files = std::vector<std::filesystem::path>{};
+
+        for (auto it = std::filesystem::recursive_directory_iterator{shader_directory, error};
+             !error && it != std::filesystem::recursive_directory_iterator{}; it.increment(error)) {
+            auto const is_source = it->path().extension() == ".slang" || it->path().filename() == "variants.txt";
+
+            if (it->is_regular_file(error) && is_source) {
+                files.push_back(it->path());
+            }
+        }
+
+        std::ranges::sort(files);
+
+        auto hash = fnv_offset;
+
+        for (auto const &file: files) {
+            std::ifstream in{file, std::ios::binary};
+            auto const contents = std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+
+            hash = fnv_append(hash, file.lexically_relative(shader_directory).generic_string());
+            hash = fnv_append(hash, std::string_view{"\0", 1});
+            hash = fnv_append(hash, contents);
+            hash = fnv_append(hash, std::string_view{"\0", 1});
+        }
+
+        // 0 is reserved for "not hashed", so an (absurdly unlikely) zero hash must not read as unchecked.
+        return hash == 0 ? 1 : hash;
+    }
+
+    auto ShaderPack::matches_sources(std::filesystem::path const &shader_directory) const -> bool {
+        if (source_hash_ == 0) {
+            return true;
+        }
+
+        auto const current = hash_shader_sources(shader_directory);
+
+        return !current.has_value() || *current == source_hash_;
+    }
+
     auto ShaderPack::add(std::string key, CompiledShader const &shader) -> void {
         entries_.insert_or_assign(std::move(key), Entry{
                                                            .stage = shader.stage,
@@ -89,6 +153,7 @@ namespace renderer {
 
         out.write(magic, sizeof(magic));
         write_value(out, format_version);
+        write_value(out, source_hash_);
         write_value(out, static_cast<std::uint32_t>(entries_.size()));
 
         for (auto const &[key, entry]: entries_) {
@@ -117,13 +182,16 @@ namespace renderer {
         char header[4]{};
         std::uint32_t version = 0;
         std::uint32_t count = 0;
+        std::uint64_t source_hash = 0;
 
         if (!in.read(header, sizeof(header)) || std::memcmp(header, magic, sizeof(magic)) != 0 ||
-            !read_value(in, version) || version != format_version || !read_value(in, count)) {
+            !read_value(in, version) || version != format_version || !read_value(in, source_hash) ||
+            !read_value(in, count)) {
             return std::unexpected{std::format("'{}' is not a shader pack of version {}", path.string(), format_version)};
         }
 
         ShaderPack pack;
+        pack.source_hash_ = source_hash;
 
         for (std::uint32_t index = 0; index < count; ++index) {
             std::string key;
@@ -195,6 +263,10 @@ namespace renderer {
 
         if (!state.pack) {
             return std::unexpected{"shader recording was not started"};
+        }
+
+        if (auto const hash = hash_shader_sources(Paths::current().data_root() / "assets" / "shaders")) {
+            state.pack->set_source_hash(*hash);
         }
 
         auto const count = state.pack->size();

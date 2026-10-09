@@ -30,7 +30,10 @@
 #include "assets/material_storage.hxx"
 #include "assets/slang_compiler.hxx"
 #include "core/logger.hxx"
+#include "assets/shader_pack.hxx"
 #include "core/thread_pool.hxx"
+#include <atomic>
+#include <thread>
 #include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
 #include "gpu/device_error.hxx"
@@ -285,111 +288,9 @@ Renderer::Renderer(VulkanContext &context) noexcept :
     context_(context), screenshot_(std::make_unique<ScreenshotCapture>()) {}
 Renderer::~Renderer() noexcept = default;
 
-auto Renderer::compiler() noexcept -> renderer::SlangCompiler & {
-    static auto compiler_ = [] {
-        auto created = renderer::SlangCompiler::create();
-
-        if (!created) {
-            warn("Slang is unavailable ({}); shaders come from the shader pack only", created.error().diagnostics);
-            return std::make_unique<renderer::SlangCompiler>();
-        }
-
-        return std::make_unique<renderer::SlangCompiler>(std::move(*created));
-    }();
-
-    return *compiler_;
-}
-
-auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expected<void, RendererError> {
-    debug("[Renderer::initialize] enter");
-
-    if (initialized_ || create_info.extent.width == 0 || create_info.extent.height == 0 || frames_in_flight == 0 ||
-        create_info.material_capacity < 2 || create_info.mesh_capacity < 2 || create_info.model_capacity < 2 ||
-        create_info.script_capacity < 2 || create_info.maximum_draw_count == 0 ||
-        create_info.maximum_submission_count == 0) {
-        return std::unexpected(make_error(RendererErrorType::invalid_argument));
-    }
-
-    hdr_format_ = create_info.hdr_format;
-    depth_format_ = create_info.depth_format;
-    swapchain_format_ = create_info.swapchain_format;
-    samples_ = create_info.samples;
-    extent_ = create_info.extent;
-
-    auto rollback_on_failure = true;
-    auto const rollback_guard = FinalAction{[this, &rollback_on_failure] {
-        if (rollback_on_failure) {
-            destroy();
-        }
-    }};
-
-    auto geometry_arena = GeometryArena::create(context_, GeometryArenaCreateInfo{
-                                                                  .capacity = create_info.geometry_capacity,
-                                                                  .debug_name = "renderer.geometry",
-                                                          });
-
-    if (!geometry_arena) {
-        return std::unexpected(make_geometry_error(geometry_arena.error()));
-    }
-
-    auto material_storage = MaterialStorage::create(context_, MaterialStorageCreateInfo{
-                                                                      .capacity = create_info.material_capacity,
-                                                                      .debug_name = "renderer.materials",
-                                                              });
-
-    if (!material_storage) {
-        return std::unexpected(make_material_error(material_storage.error()));
-    }
-
-    auto image_storage = ImageStorage::create(context_, ImageStorageCreateInfo{
-                                                                .capacity = create_info.image_capacity,
-                                                                .debug_name = "renderer.images",
-                                                        });
-
-    if (!image_storage) {
-        return std::unexpected(make_error(RendererErrorType::device_error));
-    }
-
-    auto sampler_storage = SamplerStorage::create(context_, create_info.sampler_capacity);
-
-    if (!sampler_storage) {
-        return std::unexpected(make_error(RendererErrorType::device_error));
-    }
-
-    auto gpu_resource_table =
-            GpuResourceTable::create(context_, GpuResourceTableCreateInfo{
-                                                       .frames_in_flight = frames_in_flight,
-                                                       .image_capacity = create_info.image_capacity,
-                                                       .sampler_capacity = create_info.sampler_capacity,
-                                                       .debug_name = "renderer.resources",
-                                               });
-
-    if (!gpu_resource_table) {
-        return std::unexpected(make_resource_table_error(gpu_resource_table.error()));
-    }
-
-    gpu_resource_table_ = std::move(*gpu_resource_table);
-
-    auto pipeline_graph = PipelineGraphRepository::create(
-            context_, PipelineGraphCreateInfo{
-                              .pipeline_capacity = create_info.pipeline_capacity,
-                              .frames_in_flight = frames_in_flight,
-                              .global_descriptor_set_layout = gpu_resource_table_.layout(),
-                              .cache_file_path = cache_path("pipeline_cache.bin").absolute(),
-                              .shader_binary_cache_directory = cache_path("shader_binaries").absolute(),
-                              .debug_name = "renderer.pipelines",
-                      });
-
-    if (!pipeline_graph) {
-        return std::unexpected(make_pipeline_graph_error(pipeline_graph.error()));
-    }
-
-    pipeline_graph_ = std::move(*pipeline_graph);
-    image_storage_ = std::move(*image_storage);
-    sampler_storage_ = std::move(*sampler_storage);
-    geometry_arena_ = std::move(*geometry_arena);
-    material_storage_ = std::move(*material_storage);
-
+namespace {
+    [[nodiscard]] auto make_pipeline_register_infos(RendererCreateInfo const &create_info)
+            -> std::vector<PipelineRegisterInfo> {
     std::vector<PipelineRegisterInfo> pipeline_infos;
     pipeline_infos.reserve(13);
 
@@ -1043,6 +944,157 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.skin_pipeline",
     });
+
+        return pipeline_infos;
+    }
+}
+
+namespace {
+    // Creating the compiler costs ~300 ms, so a run served entirely by a shader pack never creates one.
+    std::atomic<bool> compiler_created{false}; // NOLINT: process-wide, like the compiler itself.
+}
+
+auto Renderer::compiler() noexcept -> renderer::SlangCompiler & {
+    static auto compiler_ = [] {
+        compiler_created.store(true, std::memory_order_release);
+        auto created = renderer::SlangCompiler::create();
+
+        if (!created) {
+            warn("Slang is unavailable ({}); shaders come from the shader pack only", created.error().diagnostics);
+            return std::make_unique<renderer::SlangCompiler>();
+        }
+
+        return std::make_unique<renderer::SlangCompiler>(std::move(*created));
+    }();
+
+    return *compiler_;
+}
+
+namespace {
+    std::jthread shader_prefetch_thread; // NOLINT: process-wide, joined by Renderer::destroy.
+}
+
+auto Renderer::prefetch_shaders() -> void {
+    // Compiling needs no Vulkan state, only the shader requests, so it can overlap window and device creation.
+    // The formats in the create info only shape the pipelines, never the compile requests.
+    shader_prefetch_thread = std::jthread{[] {
+        auto requests = std::vector<renderer::ShaderCompileRequest>{};
+
+        for (auto const &info: make_pipeline_register_infos(RendererCreateInfo{})) {
+            requests.insert(requests.end(), info.stages.begin(), info.stages.end());
+        }
+
+        if (auto const pack = renderer::installed_shader_pack()) {
+            std::erase_if(requests, [&pack](auto const &request) {
+                return pack->find(renderer::shader_request_key(request)).has_value();
+            });
+        }
+
+        if (requests.empty()) {
+            return;
+        }
+
+        auto const &shader_compiler = compiler();
+
+        if (!shader_compiler.valid()) {
+            return;
+        }
+
+        shader_compiler.prefetch(requests);
+    }};
+}
+
+auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expected<void, RendererError> {
+    debug("[Renderer::initialize] enter");
+
+    if (initialized_ || create_info.extent.width == 0 || create_info.extent.height == 0 || frames_in_flight == 0 ||
+        create_info.material_capacity < 2 || create_info.mesh_capacity < 2 || create_info.model_capacity < 2 ||
+        create_info.script_capacity < 2 || create_info.maximum_draw_count == 0 ||
+        create_info.maximum_submission_count == 0) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    hdr_format_ = create_info.hdr_format;
+    depth_format_ = create_info.depth_format;
+    swapchain_format_ = create_info.swapchain_format;
+    samples_ = create_info.samples;
+    extent_ = create_info.extent;
+
+    auto rollback_on_failure = true;
+    auto const rollback_guard = FinalAction{[this, &rollback_on_failure] {
+        if (rollback_on_failure) {
+            destroy();
+        }
+    }};
+
+    auto geometry_arena = GeometryArena::create(context_, GeometryArenaCreateInfo{
+                                                                  .capacity = create_info.geometry_capacity,
+                                                                  .debug_name = "renderer.geometry",
+                                                          });
+
+    if (!geometry_arena) {
+        return std::unexpected(make_geometry_error(geometry_arena.error()));
+    }
+
+    auto material_storage = MaterialStorage::create(context_, MaterialStorageCreateInfo{
+                                                                      .capacity = create_info.material_capacity,
+                                                                      .debug_name = "renderer.materials",
+                                                              });
+
+    if (!material_storage) {
+        return std::unexpected(make_material_error(material_storage.error()));
+    }
+
+    auto image_storage = ImageStorage::create(context_, ImageStorageCreateInfo{
+                                                                .capacity = create_info.image_capacity,
+                                                                .debug_name = "renderer.images",
+                                                        });
+
+    if (!image_storage) {
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
+    auto sampler_storage = SamplerStorage::create(context_, create_info.sampler_capacity);
+
+    if (!sampler_storage) {
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
+    auto gpu_resource_table =
+            GpuResourceTable::create(context_, GpuResourceTableCreateInfo{
+                                                       .frames_in_flight = frames_in_flight,
+                                                       .image_capacity = create_info.image_capacity,
+                                                       .sampler_capacity = create_info.sampler_capacity,
+                                                       .debug_name = "renderer.resources",
+                                               });
+
+    if (!gpu_resource_table) {
+        return std::unexpected(make_resource_table_error(gpu_resource_table.error()));
+    }
+
+    gpu_resource_table_ = std::move(*gpu_resource_table);
+
+    auto pipeline_graph = PipelineGraphRepository::create(
+            context_, PipelineGraphCreateInfo{
+                              .pipeline_capacity = create_info.pipeline_capacity,
+                              .frames_in_flight = frames_in_flight,
+                              .global_descriptor_set_layout = gpu_resource_table_.layout(),
+                              .cache_file_path = cache_path("pipeline_cache.bin").absolute(),
+                              .shader_binary_cache_directory = cache_path("shader_binaries").absolute(),
+                              .debug_name = "renderer.pipelines",
+                      });
+
+    if (!pipeline_graph) {
+        return std::unexpected(make_pipeline_graph_error(pipeline_graph.error()));
+    }
+
+    pipeline_graph_ = std::move(*pipeline_graph);
+    image_storage_ = std::move(*image_storage);
+    sampler_storage_ = std::move(*sampler_storage);
+    geometry_arena_ = std::move(*geometry_arena);
+    material_storage_ = std::move(*material_storage);
+
+    auto pipeline_infos = make_pipeline_register_infos(create_info);
 
     debug("[Renderer::initialize] calling register_pipelines_parallel with {} entries", pipeline_infos.size());
     auto registered_pipelines = pipeline_graph_.register_pipelines_parallel(pipeline_infos);
@@ -1813,7 +1865,12 @@ auto Renderer::destroy() noexcept -> void {
     texture_streamer_.wait_all();
     image_storage_.destroy();
     geometry_arena_.destroy(context_);
-    compiler().destroy();
+    if (shader_prefetch_thread.joinable()) {
+        shader_prefetch_thread.join();
+    }
+    if (compiler_created.load(std::memory_order_acquire)) {
+        compiler().destroy();
+    }
 
     clear_submissions();
 

@@ -78,6 +78,11 @@ public:
     auto create_global_session(SlangGlobalSessionDesc const &description,
                                slang::IGlobalSession **session) const noexcept -> SlangResult;
 
+    // An exported function of the loaded library, or null. Slang's reflection wrappers in slang.h call C functions
+    // this program does not link against, so they are resolved from the library by name.
+    [[nodiscard]]
+    auto symbol(char const *name) const noexcept -> void *;
+
     [[nodiscard]]
     auto valid() const noexcept -> bool;
     [[nodiscard]]

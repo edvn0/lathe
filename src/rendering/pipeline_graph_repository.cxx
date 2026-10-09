@@ -1,6 +1,7 @@
 #include "rendering/pipeline_graph_repository.hxx"
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 #include "core/error_describe.hxx"
@@ -321,6 +322,11 @@ auto PipelineGraphRepository::register_pipeline(PipelineRegisterInfo register_in
 
 auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegisterInfo> register_infos)
         -> std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>> {
+    using perf_clock = std::chrono::steady_clock;
+    auto const elapsed_ms = [](perf_clock::time_point since) {
+        return std::chrono::duration<double, std::milli>(perf_clock::now() - since).count();
+    };
+    auto const total_start = perf_clock::now();
 
     std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>> results(register_infos.size());
 
@@ -380,6 +386,9 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
             }
         }
     }
+
+    auto const reserve_ms = elapsed_ms(total_start);
+    auto phase_start = perf_clock::now();
 
     auto &pool = thread_pool();
 
@@ -452,6 +461,11 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
         node.occupied = true;
     }
 
+    auto const compile_ms = elapsed_ms(phase_start);
+    debug("[Perf] register_pipelines_parallel: {} dirty stages compiled in {:.2f} ms", dirty_stage_indices.size(),
+          compile_ms);
+    phase_start = perf_clock::now();
+
     std::vector<std::size_t> build_order;
     build_order.reserve(register_infos.size());
 
@@ -494,6 +508,10 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
                 .generation = node.generation,
         };
     }
+
+    debug("[Perf] register_pipelines_parallel: {} pipelines: total {:.2f} ms (reserve {:.2f}, compile {:.2f}, "
+          "build {:.2f})",
+          build_order.size(), elapsed_ms(total_start), reserve_ms, compile_ms, elapsed_ms(phase_start));
 
     return results;
 }

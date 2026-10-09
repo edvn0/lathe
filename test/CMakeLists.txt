@@ -38,7 +38,6 @@ target_link_libraries(
         engine_options
 )
 
-doctest_discover_tests(
-    lathe-tests
-    ADD_LABELS 1
-)
+# No ADD_LABELS: it relaunches the test binary once per test case to look up its
+# suite, which added ~3.5 minutes to every link.
+doctest_discover_tests(lathe-tests)

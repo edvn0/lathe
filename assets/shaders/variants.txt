@@ -1,0 +1,6 @@
+# Extra compiles of one entry point with defines, which entry point discovery cannot find on its own.
+# `lathe --bake-shaders` compiles these on top of every entry point under assets/shaders, so a pack made by
+# `cargo xtask package` covers them. Format: <file> <entry> [NAME[=VALUE]]...  (a define without a value is 1)
+
+# Renderer::initialize derives the outline pipelines from these two forward_geom fragment stages (OUTLINE_MASK).
+forward_geom.slang main_fs OUTLINE_MASK=1

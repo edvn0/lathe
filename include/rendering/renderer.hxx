@@ -641,6 +641,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     static auto compiler() noexcept -> renderer::SlangCompiler &;
 
+    // Starts compiling the engine shaders in the background; call as early as possible, after any shader pack is installed.
+    static auto prefetch_shaders() -> void;
+
 private:
     struct Submission {
         MeshHandle mesh{};
