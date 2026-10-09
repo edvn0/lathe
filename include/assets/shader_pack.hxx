@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <memory>
@@ -23,6 +24,15 @@ namespace renderer {
 
         auto add(std::string key, CompiledShader const &shader) -> void;
 
+        // Hash of the shader sources the pack was compiled from; 0 means the pack was recorded without sources and
+        // is never considered stale.
+        [[nodiscard]] auto source_hash() const noexcept -> std::uint64_t { return source_hash_; }
+        auto set_source_hash(std::uint64_t hash) noexcept -> void { source_hash_ = hash; }
+
+        // False when the sources in `shader_directory` differ from the ones the pack was compiled from. A missing
+        // directory (an installed game ships the pack without sources) or an unhashed pack counts as current.
+        [[nodiscard]] auto matches_sources(std::filesystem::path const &shader_directory) const -> bool;
+
         [[nodiscard]] auto size() const noexcept -> std::size_t { return entries_.size(); }
 
     private:
@@ -32,8 +42,13 @@ namespace renderer {
             std::vector<std::uint32_t> spirv;
         };
 
+        std::uint64_t source_hash_ = 0;
         std::unordered_map<std::string, Entry> entries_;
     };
+
+    // FNV-1a over every .slang file under the directory (relative path and contents, in path order), or nullopt when
+    // the directory does not exist. Shaders import each other, so any source change invalidates the whole pack.
+    [[nodiscard]] auto hash_shader_sources(std::filesystem::path const &shader_directory) -> std::optional<std::uint64_t>;
 
     [[nodiscard]] auto shader_request_key(ShaderCompileRequest const &request) -> std::string;
 

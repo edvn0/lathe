@@ -805,8 +805,14 @@ auto main(int argc, char **argv) -> int {
 
         if (std::filesystem::exists(pack_path)) {
             if (auto pack = renderer::ShaderPack::load(pack_path)) {
-                info("Using {} precompiled shaders from '{}'", pack->size(), pack_path.string());
-                renderer::install_shader_pack(std::make_shared<renderer::ShaderPack const>(std::move(*pack)));
+                if (pack->matches_sources(Paths::current().data_root() / "assets" / "shaders")) {
+                    info("Using {} precompiled shaders from '{}'", pack->size(), pack_path.string());
+                    renderer::install_shader_pack(std::make_shared<renderer::ShaderPack const>(std::move(*pack)));
+                } else {
+                    warn("Ignoring shader pack '{}': the shader sources changed since it was recorded; "
+                         "re-record it with --record-shaders",
+                         pack_path.string());
+                }
             } else {
                 error("Ignoring shader pack: {}", pack.error());
             }
