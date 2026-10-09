@@ -35,9 +35,9 @@
 #include "core/logger.hxx"
 #include "core/thread_pool.hxx"
 #include "gpu/image.hxx"
-#include "gpu/skinning.hxx"
 #include "gpu/image_storage.hxx"
 #include "gpu/sampler_storage.hxx"
+#include "gpu/skinning.hxx"
 
 namespace {
 
@@ -63,10 +63,6 @@ namespace {
                                 std::vector<ModelCpuLight> &out_lights) -> void {
         auto const &gltf_node = asset.nodes[node_index];
         auto const local_to_model = parent_transform * cpu_data.nodes[node_index].local_transform;
-
-        debug("accumulate_node_lights: visiting node {} ('{}'), lightIndex={}", node_index,
-              gltf_node.name.empty() ? "<unnamed>" : std::string{gltf_node.name},
-              gltf_node.lightIndex.has_value() ? static_cast<int>(*gltf_node.lightIndex) : -1);
 
         if (gltf_node.lightIndex.has_value()) {
             auto const &gltf_light = asset.lights[*gltf_node.lightIndex];
@@ -285,7 +281,7 @@ namespace {
                 glm::vec4{tangent[0], tangent[1], tangent[2], sign};
     }
 
-}
+} // namespace
 
 auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint32_t> &indices,
                        std::vector<SkinVertex> *skin) -> std::expected<void, ModelLoadError> {
@@ -328,9 +324,8 @@ auto generate_tangents(std::vector<ModelVertex> &vertices, std::vector<std::uint
             {expanded.data(), sizeof(ModelVertex), sizeof(ModelVertex)},
             {expanded_skin.data(), sizeof(SkinVertex), sizeof(SkinVertex)},
     }};
-    auto const unique_vertex_count = meshopt_generateVertexRemapMulti(remap.data(), nullptr, expanded.size(),
-                                                                      expanded.size(), streams.data(),
-                                                                      has_skin ? 2 : 1);
+    auto const unique_vertex_count = meshopt_generateVertexRemapMulti(
+            remap.data(), nullptr, expanded.size(), expanded.size(), streams.data(), has_skin ? 2 : 1);
 
     std::vector<ModelVertex> welded_vertices(unique_vertex_count);
     meshopt_remapVertexBuffer(welded_vertices.data(), expanded.data(), expanded.size(), sizeof(ModelVertex),
@@ -583,8 +578,7 @@ namespace {
         std::vector<std::byte> encoded;
     };
 
-    auto resolve_image_source(fastgltf::Asset const &asset, fastgltf::Image const &image,
-                              AssetPath const &gltf_path)
+    auto resolve_image_source(fastgltf::Asset const &asset, fastgltf::Image const &image, AssetPath const &gltf_path)
             -> std::expected<ImageSource, ModelLoadError> {
         if (auto const *uri_source = std::get_if<fastgltf::sources::URI>(&image.data)) {
             if (uri_source->uri.isLocalPath() && uri_source->fileByteOffset == 0) {
@@ -694,8 +688,7 @@ namespace {
     template<IndexableTexture TextureInfoT>
     auto resolve_texture_cpu(fastgltf::Asset const &asset, std::optional<TextureInfoT> const &info,
                              ModelTextureSlot slot, std::string_view slot_name, std::string_view material_name,
-                             AssetPath const &gltf_path,
-                             ImageCache &image_cache, ImageSources &image_sources)
+                             AssetPath const &gltf_path, ImageCache &image_cache, ImageSources &image_sources)
             -> std::expected<std::optional<std::size_t>, ModelLoadError> {
         if (!info.has_value()) {
             return std::nullopt;
@@ -888,9 +881,9 @@ namespace {
             }
         }
 
-        auto metallic_roughness_image = resolve_texture_cpu(
-                asset, gltf_material.pbrData.metallicRoughnessTexture, ModelTextureSlot::metallic_roughness,
-                "metallic_roughness", material_name, gltf_path, image_cache, image_sources);
+        auto metallic_roughness_image = resolve_texture_cpu(asset, gltf_material.pbrData.metallicRoughnessTexture,
+                                                            ModelTextureSlot::metallic_roughness, "metallic_roughness",
+                                                            material_name, gltf_path, image_cache, image_sources);
 
         if (!metallic_roughness_image) {
             return std::unexpected(metallic_roughness_image.error());
@@ -915,9 +908,8 @@ namespace {
             material.occlusion_strength = gltf_material.occlusionTexture->strength;
         }
 
-        auto occlusion_image =
-                resolve_texture_cpu(asset, gltf_material.occlusionTexture, ModelTextureSlot::occlusion, "occlusion",
-                                    material_name, gltf_path, image_cache, image_sources);
+        auto occlusion_image = resolve_texture_cpu(asset, gltf_material.occlusionTexture, ModelTextureSlot::occlusion,
+                                                   "occlusion", material_name, gltf_path, image_cache, image_sources);
 
         if (!occlusion_image) {
             return std::unexpected(occlusion_image.error());
@@ -925,9 +917,8 @@ namespace {
 
         material.occlusion_image = *occlusion_image;
 
-        auto emissive_image =
-                resolve_texture_cpu(asset, gltf_material.emissiveTexture, ModelTextureSlot::emissive, "emissive",
-                                    material_name, gltf_path, image_cache, image_sources);
+        auto emissive_image = resolve_texture_cpu(asset, gltf_material.emissiveTexture, ModelTextureSlot::emissive,
+                                                  "emissive", material_name, gltf_path, image_cache, image_sources);
 
         if (!emissive_image) {
             return std::unexpected(emissive_image.error());
@@ -938,7 +929,7 @@ namespace {
         return material;
     }
 
-}
+} // namespace
 
 auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_storage,
                                 std::shared_ptr<ModelLoadProfile> profile)
@@ -1080,8 +1071,8 @@ auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_s
     return cpu_data;
 }
 
-auto load_model_cpu(AssetPath const &path, SamplerStorage &sampler_storage,
-                    std::shared_ptr<ModelLoadProfile> profile) -> std::expected<ModelCpuData, ModelLoadError> {
+auto load_model_cpu(AssetPath const &path, SamplerStorage &sampler_storage, std::shared_ptr<ModelLoadProfile> profile)
+        -> std::expected<ModelCpuData, ModelLoadError> {
     ZoneScopedNC("LoadModelCpu", tracy::Color::Goldenrod);
 
     auto cpu_data = load_model_cpu_unfinalized(path, sampler_storage, std::move(profile));
@@ -1107,8 +1098,7 @@ auto load_model_cpu(AssetPath const &path, SamplerStorage &sampler_storage,
     return cpu_data;
 }
 
-auto load_model_cpu_async(AssetPath path, SamplerStorage &sampler_storage,
-                          std::shared_ptr<ModelLoadProfile> profile)
+auto load_model_cpu_async(AssetPath path, SamplerStorage &sampler_storage, std::shared_ptr<ModelLoadProfile> profile)
         -> std::future<std::expected<ModelCpuData, ModelLoadError>> {
     return thread_pool().submit_task([path = std::move(path), &sampler_storage, profile = std::move(profile)] {
         return load_model_cpu_unfinalized(path, sampler_storage, profile);
@@ -1217,7 +1207,7 @@ namespace {
         return image_storage.white();
     }
 
-}
+} // namespace
 
 auto start_model_gpu_upload(ModelCpuData cpu_data, ImageStorage &image_storage, TextureStreamer &texture_streamer)
         -> ModelGpuUpload {
@@ -1310,7 +1300,10 @@ auto compute_skin_inflate(ModelCpuData const &cpu_data) -> float {
         Animation::compute_skinning_palette(skeleton, pose.view(), palette);
 
         for (auto const &sample: samples) {
-            auto const skinned = skin_vertex(ModelVertex{.position = sample.position, .normal = {0.0F, 0.0F, 1.0F}, .tangent = {1.0F, 0.0F, 0.0F, 1.0F}}, sample.skin, palette);
+            auto const skinned = skin_vertex(ModelVertex{.position = sample.position,
+                                                         .normal = {0.0F, 0.0F, 1.0F},
+                                                         .tangent = {1.0F, 0.0F, 0.0F, 1.0F}},
+                                             sample.skin, palette);
             max_displacement = std::max(max_displacement, glm::length(skinned.position - sample.position));
         }
     };
@@ -1464,8 +1457,8 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                         upload.skin_inflate = compute_skin_inflate(cpu_data);
                     }
 
-                    auto skin_alloc = geometry_arena.allocate_vertices(
-                            command_buffer, std::span<GpuSkinVertex const>{gpu_skin});
+                    auto skin_alloc =
+                            geometry_arena.allocate_vertices(command_buffer, std::span<GpuSkinVertex const>{gpu_skin});
 
                     if (!skin_alloc) {
                         geometry_arena.retire(vertex_slice->bytes);

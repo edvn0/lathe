@@ -174,6 +174,36 @@ TEST_CASE("the lobby reports a server that is not there and offers to try again"
     REQUIRE(wait_until({{&harness, "LAST_WINDOW == '##online' and has_text('Could not connect')"}}));
 }
 
+TEST_CASE("a Lua client that receives the game start and the first move in one frame shows the move") {
+    live_server::LiveServer live;
+
+    Harness white;
+    Harness black;
+
+    reach_menu(white);
+    reach_menu(black);
+
+    connect(white, live.url());
+    connect(black, live.url());
+
+    press(white, "Create room");
+    REQUIRE(wait_until({{&white, "has_text('Waiting for an opponent')"}}));
+
+    black.run("INPUT['##room'] = '1'");
+    press(black, "Join room");
+
+    // Black is not framed while white starts and moves, so both states are waiting for its next frame.
+    REQUIRE(wait_until({{&white, "LAST_WINDOW == '##hud' and has_text('Your move')"}}));
+
+    white.move(4, 1, 4, 3);
+
+    REQUIRE(wait_until({{&white, "has_text(\"Opponent's move\")"}}));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+
+    REQUIRE(wait_until({{&black, "LAST_WINDOW == '##hud' and has_text('Your move')"}}));
+}
+
 TEST_CASE("a Lua client whose connection drops resumes the game") {
     live_server::LiveServer live;
 

@@ -217,6 +217,10 @@ local function begin_online_game(state)
     engine:reset()
     sync_pieces()
 
+    -- on_populate/on_bind queue a restart that waits out the menus. Left pending it would reset the engine again
+    -- once the game screen shows, wiping any state applied in the same frame.
+    pending_restart = false
+
     online_play = true
     online_applied = 0
     online_side = state.your_side or "white"

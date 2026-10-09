@@ -28,7 +28,7 @@ Environment variables:
       default
       mold
 
-      Default: default
+      Default: mold
 
   RENDERDOC_INCLUDE_PATH
       Host directory containing renderdoc_app.h.
@@ -59,7 +59,7 @@ Examples:
   cargo xtask rebuild
 
   CMAKE_BUILD_TYPE=RelWithDebInfo \
-    LINKER=mold \
+    LINKER=default \
     cargo xtask rebuild
 
   CMAKE_BUILD_TYPE=Debug \
@@ -187,7 +187,7 @@ enum Linker {
 impl Linker {
     fn from_env() -> Result<Self> {
         match env::var("LINKER")
-            .unwrap_or_else(|_| "default".to_owned())
+            .unwrap_or_else(|_| "mold".to_owned())
             .as_str()
         {
             "default" => Ok(Self::Default),
