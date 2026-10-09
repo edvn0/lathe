@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <string_view>
 #include <type_traits>
 
@@ -551,6 +552,27 @@ namespace {
         return 1;
     }
 
+    // ui.input_text(label, text [, width]) -> text: an edited single-line field, returned each frame.
+    auto ui_input_text(lua_State *state) -> int {
+        constexpr std::size_t capacity = 256;
+
+        auto const *const label = luaL_checkstring(state, 1);
+        auto const *const current = luaL_checkstring(state, 2);
+        auto const width = static_cast<float>(luaL_optnumber(state, 3, 300.0));
+
+        std::array<char, capacity> buffer{};
+
+        std::strncpy(buffer.data(), current, capacity - 1);
+
+        ImGui::SetCursorPosX(std::max(0.0F, (ImGui::GetWindowSize().x - width) * 0.5F));
+        ImGui::SetNextItemWidth(width);
+        ImGui::InputText(label, buffer.data(), capacity);
+
+        lua_pushstring(state, buffer.data());
+
+        return 1;
+    }
+
     auto ui_progress(lua_State *state) -> int {
         auto const fraction = static_cast<float>(luaL_checknumber(state, 1));
         auto const width = static_cast<float>(luaL_optnumber(state, 2, 300.0));
@@ -624,6 +646,7 @@ namespace {
             luaL_Reg{"text_centred", &ui_text_centred},
             luaL_Reg{"button", &ui_button},
             luaL_Reg{"small_button", &ui_small_button},
+            luaL_Reg{"input_text", &ui_input_text},
             luaL_Reg{"progress", &ui_progress},
             luaL_Reg{"spinner", &ui_spinner},
             luaL_Reg{"dummy", &ui_dummy},

@@ -29,6 +29,22 @@ function board.name(square)
     return string.char(97 + board.file(square)) .. tostring(board.rank(square) + 1)
 end
 
+-- The inverse of name(): "e2" -> 12, or nil if the text is not a square.
+function board.parse(text)
+    if type(text) ~= "string" or #text ~= 2 then
+        return nil
+    end
+
+    local file = text:byte(1) - 97
+    local rank = text:byte(2) - 49
+
+    if file < 0 or file > 7 or rank < 0 or rank > 7 then
+        return nil
+    end
+
+    return board.square(file, rank)
+end
+
 -- The square under a point on the board plane, or nil off the board.
 function board.from_world(x, z)
     local file = math.floor(x / board.square_size + 4.0)

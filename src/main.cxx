@@ -562,7 +562,9 @@ namespace {
             return;
         }
 
-        if (focused == GLFW_FALSE && app->is_playing) {
+        // The editor leaves play when the window loses focus; an installed game (--player) has no editor to fall back
+        // into, so it carries on, which an online game needs to keep its connection and turn.
+        if (focused == GLFW_FALSE && app->is_playing && !app->player_mode) {
             app->stop();
         }
     }

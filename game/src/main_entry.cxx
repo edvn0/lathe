@@ -10,6 +10,7 @@
 #include "chess_lua.hxx"
 #include "core/logger.hxx"
 #include "moving_game.hxx"
+#include "net_lua.hxx"
 #include "punt_game.hxx"
 
 namespace {
@@ -34,6 +35,7 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
         auto game = std::make_unique<LuaGame>();
 
         game->add_native_module("native.chess", &luaopen_lathe_chess);
+        game->add_native_module("native.net", &luaopen_lathe_net);
 
         return game;
     }

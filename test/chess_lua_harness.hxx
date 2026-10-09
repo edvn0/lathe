@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "chess_lua.hxx"
+#include "net_lua.hxx"
 #include "scripting/lua_runtime.hxx"
 
 namespace chess_lua_test {
@@ -35,6 +36,7 @@ namespace chess_lua_test {
         PICK = nil
         QUIT = false
         PENDING = 0
+        INPUT = {}
 
         local function entity(name)
             local e = { name = name, position = { 0, 0, 0 }, outlined = false }
@@ -81,6 +83,7 @@ namespace chess_lua_test {
             same_line = function() end,
             separator = function() end,
             display_size = function() return 1920, 1080 end,
+            input_text = function(label, text) return INPUT[label] or text end,
         }
     )";
 
@@ -95,6 +98,7 @@ namespace chess_lua_test {
 
         Harness() {
             runtime.register_native_module("native.chess", &luaopen_lathe_chess);
+            runtime.register_native_module("native.net", &luaopen_lathe_net);
             runtime.set_source_loader([](std::string const &path) -> std::optional<std::string> {
                 return read_asset("assets/scripts/" + path + ".lua");
             });
