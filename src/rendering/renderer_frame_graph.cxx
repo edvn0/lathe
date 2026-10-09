@@ -1210,6 +1210,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         error("Could not allocate the frame graph's transients: {}", allocated.error().message);
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
+    if (plan_changed || *allocated) {
+        frame_graph_view_.transients = transient_allocator_.plan(info.frame_index);
+    }
     if (*allocated) {
         perf_events::record(PerfEvent::transient_allocation);
         auto const total_bytes = transient_allocator_.total_bytes();

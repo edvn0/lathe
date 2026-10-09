@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "rendering/frame_graph/aliasing.hxx"
 #include "rendering/frame_graph/compiled_graph.hxx"
 #include "rendering/frame_graph/frame_graph.hxx"
 
@@ -13,6 +14,7 @@ namespace frame_graph {
     struct FrameGraphView {
         GraphDesc graph;
         CompiledGraph compiled;
+        TransientPlan transients;
         std::uint64_t revision = 0;
     };
 
