@@ -813,6 +813,8 @@ auto main(int argc, char **argv) -> int {
         }
     }
 
+    Renderer::prefetch_shaders();
+
     info("Starting GLFW Vulkan test, data directory {}", Paths::current().data_root().string());
 
     std::signal(SIGINT, ctrl_c_handler);

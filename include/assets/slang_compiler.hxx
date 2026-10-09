@@ -10,6 +10,7 @@
 #include <format>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -91,6 +92,10 @@ namespace renderer {
         [[nodiscard]]
         auto compile(ShaderCompileRequest const &request) const -> std::expected<CompiledShader, ShaderCompileError>;
 
+        // Starts compiling the requests on the thread pool, one session and module per source file. `compile` then
+        // returns the prefetched result for a matching request, blocking only if it is not done yet.
+        auto prefetch(std::span<ShaderCompileRequest const> requests) const -> void;
+
         [[nodiscard]]
         auto valid() const noexcept -> bool;
 
@@ -98,6 +103,18 @@ namespace renderer {
 
     private:
         struct Impl;
+        class SessionLease;
+
+        [[nodiscard]]
+        auto acquire_session() const -> std::expected<SessionLease, ShaderCompileError>;
+
+        [[nodiscard]]
+        auto compile_group(std::span<ShaderCompileRequest const *const> requests) const
+                -> std::vector<std::expected<CompiledShader, ShaderCompileError>>;
+
+        [[nodiscard]]
+        auto compile_entry(slang::ISession &session, slang::IModule &module, ShaderCompileRequest const &request,
+                           std::string diagnostics) const -> std::expected<CompiledShader, ShaderCompileError>;
 
         [[nodiscard]]
         auto compile_with_slang(ShaderCompileRequest const &request) const
