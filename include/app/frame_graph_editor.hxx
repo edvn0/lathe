@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "app/frame_graph_layout_store.hxx"
 #include "app/stage_registry.hxx"
 #include "rendering/frame_graph/layout.hxx"
 
@@ -40,7 +41,12 @@ namespace gui {
         };
 
         auto relayout(frame_graph::FrameGraphView const &view, stages::Registry const &registry) -> void;
+        auto replace_nodes() -> void;
         auto reset_layout() -> void;
+        auto load_positions() -> void;
+        auto save_positions() -> void;
+        auto place(std::uintptr_t key, NodePosition fallback) -> void;
+        auto track_drag(std::uintptr_t key) -> void;
 
         std::unique_ptr<Context> context_;
         std::uint64_t laid_out_revision_ = 0;
@@ -51,6 +57,10 @@ namespace gui {
         std::vector<std::uint32_t> pass_barriers_;
         std::vector<Ghost> ghosts_;
         std::unordered_set<std::uintptr_t> placed_;
+        NodePositions saved_positions_;
+        NodePositions applied_positions_;
+        bool positions_loaded_ = false;
+        bool positions_dirty_ = false;
         std::unordered_map<std::uintptr_t, float> measured_height_;
         std::vector<std::uint32_t> selected_passes_;
         bool has_selection_ = false;

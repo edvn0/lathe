@@ -1,7 +1,11 @@
 #include "app/frame_graph_editor.hxx"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 
@@ -10,6 +14,7 @@
 
 #include "app/frame_graph_details.hxx"
 #include "core/fly_string.hxx"
+#include "core/paths.hxx"
 #include "rendering/renderer.hxx"
 
 namespace ed = ax::NodeEditor;
@@ -22,6 +27,7 @@ namespace gui {
         constexpr auto stage_settings_height = 300.0F;
         constexpr auto settings_item_width = 260.0F;
         constexpr auto details_height = 230.0F;
+        constexpr auto layout_file_name = "frame_graph_layout.txt";
 
         auto node_id_of(std::uintptr_t key) -> ed::NodeId { return ed::NodeId{key * 4}; }
         auto input_pin_of(std::uintptr_t key) -> ed::PinId { return ed::PinId{(key * 4) + 1}; }
@@ -63,6 +69,8 @@ namespace gui {
         auto barrier_total(frame_graph::BarrierSet const &set) -> std::uint32_t {
             return static_cast<std::uint32_t>(set.images.size() + set.buffers.size() + set.memory.size());
         }
+
+        auto stage_key(stages::Stage const &stage) -> std::uintptr_t { return stable_key("stage", stage.id.view()); }
 
         auto stage_height(stages::Stage const &stage) -> float {
             return stage_base_height + (stage.draw_settings ? stage_settings_height : 0.0F);
@@ -126,10 +134,71 @@ namespace gui {
     FrameGraphEditor::FrameGraphEditor() = default;
     FrameGraphEditor::~FrameGraphEditor() = default;
 
-    auto FrameGraphEditor::reset_layout() -> void {
+    auto FrameGraphEditor::replace_nodes() -> void {
         placed_.clear();
+        applied_positions_.clear();
         layout_dirty_ = true;
         fit_countdown_ = 6;
+    }
+
+    auto FrameGraphEditor::reset_layout() -> void {
+        saved_positions_.clear();
+        positions_dirty_ = true;
+        replace_nodes();
+    }
+
+    auto FrameGraphEditor::load_positions() -> void {
+        positions_loaded_ = true;
+
+        auto const path = state_path(layout_file_name);
+        if (auto file = std::ifstream{path.absolute(), std::ios::binary}; file) {
+            auto const text = std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+            saved_positions_ = parse_positions(text);
+        }
+    }
+
+    auto FrameGraphEditor::save_positions() -> void {
+        positions_dirty_ = false;
+
+        auto const path = state_path(layout_file_name);
+        auto error = std::error_code{};
+        std::filesystem::create_directories(path.absolute().parent_path(), error);
+        if (auto file = std::ofstream{path.absolute(), std::ios::binary | std::ios::trunc}; file) {
+            file << serialise_positions(saved_positions_);
+        }
+    }
+
+    // A node the user has not moved sits where the layout puts it; one they have moved goes back where they left it.
+    auto FrameGraphEditor::place(std::uintptr_t key, NodePosition fallback) -> void {
+        if (!placed_.insert(key).second) {
+            return;
+        }
+
+        auto const saved = saved_positions_.find(key);
+        auto const position = saved != saved_positions_.end() ? saved->second : fallback;
+        ed::SetNodePosition(node_id_of(key), ImVec2{position.x, position.y});
+        applied_positions_[key] = position;
+    }
+
+    // Only while the mouse is down, so a node the editor moves by itself is not mistaken for the user dragging it.
+    auto FrameGraphEditor::track_drag(std::uintptr_t key) -> void {
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            return;
+        }
+
+        auto const applied = applied_positions_.find(key);
+        if (applied == applied_positions_.end()) {
+            return;
+        }
+
+        auto const current = ed::GetNodePosition(node_id_of(key));
+        if (std::abs(current.x - applied->second.x) < 0.5F && std::abs(current.y - applied->second.y) < 0.5F) {
+            return;
+        }
+
+        applied->second = NodePosition{.x = current.x, .y = current.y};
+        saved_positions_[key] = applied->second;
+        positions_dirty_ = true;
     }
 
     auto FrameGraphEditor::relayout(frame_graph::FrameGraphView const &view, stages::Registry const &registry)
@@ -139,7 +208,7 @@ namespace gui {
         auto group_heights = std::vector<float>(stages.size());
 
         for (auto index = std::size_t{0}; index < stages.size(); ++index) {
-            auto const measured = measured_height_.find(stages[index].id.identity());
+            auto const measured = measured_height_.find(stage_key(stages[index]));
             group_heights[index] = measured != measured_height_.end() ? measured->second : stage_height(stages[index]);
         }
 
@@ -163,10 +232,10 @@ namespace gui {
 
         for (auto const &node: layout_.nodes) {
             if (node.group != frame_graph::no_group) {
-                node_keys_.push_back(stages[node.group].id.identity());
+                node_keys_.push_back(stage_key(stages[node.group]));
                 present[node.group] = true;
             } else {
-                node_keys_.push_back(FlyString{view.graph.passes[node.passes.front()].name}.identity());
+                node_keys_.push_back(stable_key("pass", view.graph.passes[node.passes.front()].name));
             }
 
             auto const height = node.group != frame_graph::no_group ? group_heights[node.group]
@@ -188,7 +257,7 @@ namespace gui {
             for (auto index = std::size_t{0}; index < stages.size(); ++index) {
                 if (!present[index]) {
                     ghosts_.push_back({.stage = index,
-                                       .key = stages[index].id.identity(),
+                                       .key = stage_key(stages[index]),
                                        .x = column * params.column_width,
                                        .y = bottom + params.lane_gap});
                     column += 1.0F;
@@ -206,6 +275,9 @@ namespace gui {
 
         if (!context_) {
             context_ = std::make_unique<Context>();
+        }
+        if (!positions_loaded_) {
+            load_positions();
         }
 
         if (ImGui::Button("Fit")) {
@@ -229,7 +301,7 @@ namespace gui {
         }
 
         if (settle_countdown_ > 0 && --settle_countdown_ == 0) {
-            reset_layout();
+            replace_nodes();
             relayout(view, registry);
         }
 
@@ -247,9 +319,7 @@ namespace gui {
             auto const &node = layout_.nodes[index];
             auto const key = node_keys_[index];
 
-            if (placed_.insert(key).second) {
-                ed::SetNodePosition(node_id_of(key), ImVec2{node.x, node.y});
-            }
+            place(key, {.x = node.x, .y = node.y});
 
             auto stats = NodeStats{};
             for (auto const pass: node.passes) {
@@ -317,14 +387,13 @@ namespace gui {
             ImGui::EndGroup();
             ed::EndNode();
             measured_height_[key] = ed::GetNodeSize(node_id_of(key)).y;
+            track_drag(key);
         }
 
         for (auto const &ghost: ghosts_) {
             auto const &stage = stage_list[ghost.stage];
 
-            if (placed_.insert(ghost.key).second) {
-                ed::SetNodePosition(node_id_of(ghost.key), ImVec2{ghost.x, ghost.y});
-            }
+            place(ghost.key, {.x = ghost.x, .y = ghost.y});
 
             ed::BeginNode(node_id_of(ghost.key));
             ImGui::BeginGroup();
@@ -357,6 +426,7 @@ namespace gui {
             ImGui::EndGroup();
             ed::EndNode();
             measured_height_[ghost.key] = ed::GetNodeSize(node_id_of(ghost.key)).y;
+            track_drag(ghost.key);
         }
 
         for (auto index = std::size_t{0}; index < layout_.edges.size(); ++index) {
@@ -404,6 +474,10 @@ namespace gui {
 
         ed::End();
         ed::SetCurrentEditor(nullptr);
+
+        if (positions_dirty_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            save_positions();
+        }
 
         has_selection_ = !selected_passes_.empty();
         if (has_selection_ && ImGui::BeginChild("##pass_details", ImVec2{0.0F, 0.0F}, ImGuiChildFlags_Borders)) {
