@@ -502,6 +502,18 @@ namespace renderer {
 
         auto job = std::make_shared<PrefetchJob>();
         job->groups = group_requests(std::span<ShaderCompileRequest const>{wanted});
+
+        // Start the most expensive groups first so the biggest one is not left for last on an otherwise idle pool.
+        // Cost scales with the source size and with every entry point compiled from the loaded module.
+        {
+            auto const cost = [&wanted](std::vector<std::size_t> const &group) {
+                std::error_code error;
+                auto const size = std::filesystem::file_size(wanted[group.front()].source_path.absolute(), error);
+                return (error ? std::uintmax_t{0} : size) * group.size();
+            };
+
+            std::ranges::stable_sort(job->groups, [&cost](auto const &lhs, auto const &rhs) { return cost(lhs) > cost(rhs); });
+        }
         job->requests = std::move(wanted);
         job->promises = std::move(promises);
 

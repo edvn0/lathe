@@ -1,6 +1,9 @@
 #include <doctest/doctest.h>
 
+#include <unistd.h>
+
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <string>
 
@@ -13,7 +16,9 @@ namespace {
     }
 
     struct TempDirectory {
-        std::filesystem::path path = std::filesystem::temp_directory_path() / "lathe_shader_pack_test";
+        // ctest runs each test case as its own process, so the directory must be unique per process.
+        std::filesystem::path path =
+                std::filesystem::temp_directory_path() / std::format("lathe_shader_pack_test_{}", getpid());
 
         TempDirectory() {
             std::filesystem::remove_all(path);
