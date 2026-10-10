@@ -22,6 +22,7 @@
 
 #include "app/frame_graph_editor.hxx"
 #include "app/game.hxx"
+#include "app/game_packager.hxx"
 #include "app/stage_registry.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/shader_hot_reload_watcher.hxx"
@@ -230,6 +231,37 @@ struct Application {
     auto on_files_dropped(std::span<std::filesystem::path const> paths) -> void;
 
     auto draw_scene_file_ui() -> void;
+
+    // Packaging (package_ui.cxx): the editor cooks the scene, then GamePackageJob builds the game on a worker thread
+    // while a modal progress popup dims the editor and update() stops stepping the simulation.
+    std::string game_name;
+    std::string script_entry;
+
+    struct PackageForm {
+        std::array<char, 128> name{};
+        std::array<char, 128> title{};
+        std::array<char, 32> version{};
+        std::array<char, 512> output{};
+        bool archive = true;
+    } package_form;
+
+    std::optional<SceneSaveJob> package_scene_job;
+    std::optional<GamePackageJob> package_job;
+    std::optional<PackageOptions> package_pending;
+    std::filesystem::path package_staged_scene;
+    std::string package_status;
+    bool package_popup_requested = false;
+    bool package_progress_popup_open = false;
+    bool play_when_loaded = false;
+
+    [[nodiscard]] auto packaging_active() const noexcept -> bool {
+        return package_scene_job.has_value() || package_job.has_value();
+    }
+
+    auto request_package_dialog() -> void;
+    auto start_package() -> void;
+    auto update_package_jobs() -> void;
+    auto draw_package_ui() -> void;
 
     MaterialCreateInfo new_material_info{};
     std::string new_material_name;

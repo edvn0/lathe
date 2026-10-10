@@ -8,6 +8,7 @@ add_library(
         application.cxx
         frame_graph_details.cxx
         frame_graph_editor.cxx
+        game_packager.cxx
         benchmark.cxx
         benchmark_analysis.cxx
         benchmark_compare.cxx
@@ -16,6 +17,7 @@ add_library(
         benchmark_scenarios.cxx
         lua_game.cxx
         lua_game_api.cxx
+        package_ui.cxx
         pass_timeline.cxx
         scene_files.cxx
         stage_registry.cxx

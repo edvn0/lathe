@@ -2369,6 +2369,12 @@ auto Application::update(float delta_time) -> void {
 
     update_model_loads();
     update_scene_jobs();
+    update_package_jobs();
+
+    // Packaging pauses the simulation; rendering and the modal progress popup keep running.
+    if (packaging_active()) {
+        return;
+    }
 
     if (auto *const streaming_terrain = active_terrain(); streaming_terrain != nullptr) {
         auto camera_xz = glm::vec2{camera.position().x, camera.position().z};
@@ -2510,6 +2516,10 @@ auto Application::request_screenshot() -> void {
 }
 
 auto Application::on_event(KeyPressedEvent ev) -> bool {
+    if (packaging_active()) {
+        return true;
+    }
+
     if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL && !scene_load_job.has_value()) {
         renderer->queue_render_thread_event([this] {
             if (is_playing) {
@@ -2593,11 +2603,19 @@ auto Application::on_event(MouseMovedEvent ev) -> bool {
     return true;
 }
 auto Application::on_event(MouseScrolledEvent ev) -> bool {
+    if (packaging_active()) {
+        return true;
+    }
+
     camera.on_mouse_scrolled(static_cast<float>(ev.delta_y));
 
     return true;
 }
 auto Application::on_event(MouseButtonPressedEvent ev) -> bool {
+    if (packaging_active()) {
+        return true;
+    }
+
     if (ev.button == GLFW_MOUSE_BUTTON_RIGHT) {
         mouse_dragging = true;
     }
