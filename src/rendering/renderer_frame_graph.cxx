@@ -13,6 +13,7 @@
 
 #include "rendering/frame_graph/describe.hxx"
 #include "rendering/frame_graph/executor.hxx"
+#include "rendering/frame_graph/lint.hxx"
 #include "rendering/frame_graph/pass_context.hxx"
 #include "rendering/render_passes.hxx"
 #include "rendering/renderer.hxx"
@@ -314,6 +315,47 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         hiz_history_valid_ = false;
     }
 
+    // The game's slice of the frame: it may add passes at fixed slots through the hook, and a slot whose
+    // declarations are rejected is dropped so the engine's frame still renders.
+    auto game_properties = VkPhysicalDeviceProperties{};
+    vkGetPhysicalDeviceProperties(context_.physical_device, &game_properties);
+    auto game_graph = GameGraph{
+            frame_graph_,
+            game_gpu().memory(),
+            GameGraphServices{
+                    .renderer = this,
+                    .frame_index = info.frame_index,
+                    .scene_extent = targets->extent,
+                    .max_group_count = {game_properties.limits.maxComputeWorkGroupCount[0],
+                                        game_properties.limits.maxComputeWorkGroupCount[1],
+                                        game_properties.limits.maxComputeWorkGroupCount[2]},
+                    .bindless_index = [&](std::uint32_t resource) {
+                        return transient_allocator_.handle(info.frame_index, resource).index;
+                    },
+                    .import_buffer = [&](GameBufferHandle handle) -> std::optional<frame_graph::BufferId> {
+                        auto const *buffer = game_gpu().buffer(handle, info.frame_index);
+                        if (buffer == nullptr) {
+                            return std::nullopt;
+                        }
+                        return frame_graph_.import_buffer({
+                                .entry = buffer_idle,
+                                .exit = buffer_idle,
+                                .sharing = buffers_concurrent ? frame_graph::Sharing::concurrent
+                                                              : frame_graph::Sharing::exclusive,
+                                .owner = frame_graph::Owner::game,
+                                .debug_name = game_gpu().buffer_name(handle),
+                                .buffer = physical_buffer(*buffer),
+                        });
+                    },
+            },
+    };
+    auto const run_game_slot = [&](GameSlot slot, std::optional<frame_graph::ImageId> depth,
+                                   std::optional<frame_graph::ImageId> hdr) {
+        if (game_graph_hook_) {
+            game_graph.run_slot(slot, depth, hdr, game_graph_hook_);
+        }
+    };
+
     auto overlay_data = frame_graph_.import_token("overlay_data", {}, {});
     frame_graph_.add_pass("overlay_prepare", frame_graph::PassType::compute,
                           {
@@ -350,6 +392,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                   }};
                               });
     }
+
+    run_game_slot(GameSlot::frame_start, std::nullopt, std::nullopt);
 
     frame_graph_.add_pass("occlusion_stats_clear", frame_graph::PassType::transfer,
                           {
@@ -790,6 +834,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         declare_shadows();
     }
 
+    run_game_slot(GameSlot::after_depth, resolved_depth_image, std::nullopt);
+
     if (ao_enabled) {
         frame_graph_.add_pass(
                 "gtao", frame_graph::PassType::compute,
@@ -877,6 +923,13 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     [[maybe_unused]] auto const environment =
                             pass.read(environment_token, frame_graph::Use::token_read);
                 }
+                // What the game's scene draws read, so they run after the passes that wrote it.
+                for (auto const &game_read: game_graph.forward_reads()) {
+                    [[maybe_unused]] auto const read = pass.read(
+                            frame_graph::BufferId{.index = game_read.buffer.index,
+                                                  .generation = frame_graph_.latest_version(game_read.buffer.index)},
+                            frame_graph::Use::shader_read, game_read.stages);
+                }
                 [[maybe_unused]] auto const draws =
                         pass.read(visible_draws, frame_graph::Use::shader_read, draw_stages);
                 [[maybe_unused]] auto const transforms =
@@ -947,6 +1000,18 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     };
                     auto scene_overlays = [&] {
                         record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
+
+                        if (game_graph.has_scene_draws()) {
+                            ZoneScopedNC("Game scene draws", tracy::Color::DeepPink);
+                            TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer,
+                                         "Game scene draws", tracy::Color::DeepPink);
+                            game_graph.record_scene_draws(context, OverlayRecordContext{
+                                                                           .command_buffer = pass_context.command_buffer,
+                                                                           .frame_index = info.frame_index,
+                                                                           .scope = scene_scope,
+                                                                           .view_projection = frame.view_projection,
+                                                                   });
+                        }
                     };
 
                     state.handoff.ao_texture_index =
@@ -962,6 +1027,8 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     }
                 }};
             });
+
+    run_game_slot(GameSlot::after_lighting, resolved_depth_image, hdr_image);
 
     if (bloom_enabled) {
         frame_graph_.add_pass(
@@ -1010,6 +1077,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 });
     }
 
+    run_game_slot(GameSlot::before_composite, resolved_depth_image, hdr_image);
+
+    // A game can swap the image composition samples (a post-process result); otherwise it is the forward pass's HDR.
+    auto const scene_colour = game_graph.scene_colour().value_or(hdr_image);
+
     frame_graph_.add_pass(
             "composition", frame_graph::PassType::raster,
             {
@@ -1021,6 +1093,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 if (fullscreen) {
                     [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
                 }
+                // The composite shader samples the scene colour, so the graph has to know: it orders the read after
+                // the pass that wrote it and keeps the image's memory from being reused before composition.
+                [[maybe_unused]] auto const colour = pass.read(scene_colour, frame_graph::Use::sampled, fragment_stage);
                 if (bloom_enabled) {
                     [[maybe_unused]] auto const bloom =
                             pass.read(bloom_image, frame_graph::Use::sampled, fragment_stage);
@@ -1056,7 +1131,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             pass_context,
                             render_pass::CompositePassInfo{
                                     .extent = fullscreen ? swapchain_image.extent : targets->extent,
-                                    .hdr = state.handoff.hdr,
+                                    .hdr = game_graph.scene_colour()
+                                                   ? render_pass::HdrTextureIndex{transient_index(scene_colour)}
+                                                   : state.handoff.hdr,
                                     .bloom = state.handoff.bloom,
                                     .bloom_fallback_texture_index = image_storage_.emissive().index,
                                     .linear_sampler_index = sampler_storage_.linear_clamp().index,
@@ -1204,6 +1281,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 .compiled = *frame_plan_,
                 .revision = frame_graph_view_.revision + 1,
         };
+        for (auto const &finding: frame_graph::lint(frame_graph_.description(), *frame_plan_)) {
+            ::warn("Frame graph lint: {}", finding);
+        }
         auto per_queue = std::array<std::size_t, frame_graph::logical_queue_count>{};
         auto passes_per_queue = std::array<std::size_t, frame_graph::logical_queue_count>{};
         auto waits = std::size_t{0};

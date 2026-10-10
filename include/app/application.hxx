@@ -112,6 +112,7 @@ struct Application {
 
     bool terrain_enabled = true;
     bool game_hooks_enabled = true;
+    float last_delta_time = 0.0F;
 
     [[nodiscard]] auto active_terrain() const noexcept -> TerrainWorld * {
         return terrain_enabled ? terrain.get() : nullptr;

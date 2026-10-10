@@ -62,6 +62,7 @@
 #include "rendering/frame_graph/pass_profiler.hxx"
 #include "rendering/frame_graph/transient_allocator.hxx"
 #include "rendering/frame_graph/view.hxx"
+#include "rendering/game_gpu.hxx"
 #include "rendering/hiz_occlusion.hxx"
 #include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
@@ -620,6 +621,18 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto set_transient_aliasing(bool enabled) noexcept -> void { transient_aliasing_ = enabled; }
 
     auto set_frame_graph_dump(bool enabled) noexcept -> void { dump_frame_graph_ = enabled; }
+
+    // The game's way into the frame graph. The renderer calls the hook at each GameSlot while it declares a frame;
+    // the engine owns the graph and the game only sees a GameGraph (rendering/game_graph.hxx).
+    using GameGraphHook = std::function<void(GameGraph &)>;
+    auto set_game_graph_hook(GameGraphHook hook) -> void { game_graph_hook_ = std::move(hook); }
+
+    [[nodiscard]] auto game_gpu() -> GameGpu & {
+        if (!game_gpu_) {
+            game_gpu_ = std::make_unique<GameGpu>(*this);
+        }
+        return *game_gpu_;
+    }
     auto set_frame_graph_dot(std::string path) -> void { frame_graph_dot_path_ = std::move(path); }
     [[nodiscard]] auto last_frame_pipeline_stats() const noexcept -> PipelineStats const & {
         return last_frame_pipeline_stats_;
@@ -1409,6 +1422,8 @@ private:
     std::uint64_t logged_transient_bytes_ = 0;
     bool dump_frame_graph_ = false;
     std::string frame_graph_dot_path_;
+    GameGraphHook game_graph_hook_;
+    std::unique_ptr<GameGpu> game_gpu_;
 
     struct FramePipelineQuery {
         VkQueryPool query_pool{VK_NULL_HANDLE};

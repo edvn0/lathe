@@ -2325,6 +2325,8 @@ auto Application::cursor_over_game() const -> CursorPositionEvent {
 auto Application::update(float delta_time) -> void {
     ZoneScopedNC("ApplicationUpdate", tracy::Color::Firebrick);
 
+    last_delta_time = delta_time;
+
     update_model_loads();
     update_scene_jobs();
 
@@ -2424,6 +2426,12 @@ auto Application::on_startup() -> void {
         }
 
         engine_models = *models;
+
+        renderer->set_game_graph_hook([this](GameGraph &graph) {
+            if (game && game_hooks_enabled) {
+                game->on_frame_graph(graph, last_delta_time);
+            }
+        });
 
         game->on_populate(*editor_scene, *renderer, engine_models);
         mark_editor_scene_clean();

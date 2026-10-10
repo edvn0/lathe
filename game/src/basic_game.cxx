@@ -203,6 +203,10 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     scene.get_registry().clear();
     engine_models_ = engine_models;
 
+    if (auto const created = particles_.create(renderer.game_gpu()); !created) {
+        warn("Could not set up the particle field: {}", describe(created.error()));
+    }
+
     if (helmet_model_.valid()) {
         spawn_helmet(scene, renderer);
     } else {
@@ -1021,6 +1025,8 @@ auto BasicGame::on_ui(Scene &scene, Renderer &renderer) -> void {
         }
     });
 }
+
+auto BasicGame::on_frame_graph(GameGraph &graph, float delta_time) -> void { particles_.declare(graph, delta_time); }
 
 auto BasicGame::on_update(Scene &scene, float delta_time) -> void {
     auto &registry = scene.get_registry();

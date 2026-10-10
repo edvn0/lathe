@@ -9,6 +9,7 @@
 
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
+#include "rendering/game_graph.hxx"
 #include "rendering/scene.hxx"
 #include "scene/camera_path.hxx"
 #include "scene/components.hxx"
@@ -83,6 +84,13 @@ public:
     virtual auto on_ui(Scene &scene, Renderer &renderer) -> void {
         (void) scene;
         (void) renderer;
+    }
+
+    // Called while the renderer declares each frame, once per GameSlot (see rendering/game_graph.hxx). The place to
+    // add compute passes and scene draws; GPU resources come from Renderer::game_gpu().
+    virtual auto on_frame_graph(GameGraph &graph, float delta_time) -> void {
+        (void) graph;
+        (void) delta_time;
     }
 
     [[nodiscard]] virtual auto terrain_create_info(Renderer &renderer) -> std::optional<TerrainWorldCreateInfo> {

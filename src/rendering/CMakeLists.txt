@@ -19,12 +19,15 @@ add_library(
         frame_graph/executor.cxx
         frame_graph/frame_graph.cxx
         frame_graph/layout.cxx
+        frame_graph/lint.cxx
         frame_graph/resource_info.cxx
         frame_graph/pass_profiler.cxx
         frame_graph/scheduler.cxx
         frame_graph/transient_allocator.cxx
         frame_graph/vk_translate.cxx
         forward_target.cxx
+        game_graph.cxx
+        game_gpu.cxx
         imgui_renderer.cxx
         overlay.cxx
         pipeline_graph_repository.cxx

@@ -20,6 +20,8 @@ namespace frame_graph {
         raster_pass_with_compute_affinity,
         token_on_compute_pass,
         import_exit_not_on_graphics,
+        foreign_write,
+        unsupported_usage,
     };
 
     struct FrameGraphError {
@@ -60,6 +62,10 @@ struct std::formatter<frame_graph::FrameGraphErrorType> : std::formatter<std::st
                     return "token_on_compute_pass";
                 case import_exit_not_on_graphics:
                     return "import_exit_not_on_graphics";
+                case foreign_write:
+                    return "foreign_write";
+                case unsupported_usage:
+                    return "unsupported_usage";
             }
             return "unknown_frame_graph_error";
         }();
