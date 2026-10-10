@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <cmath>
 #include <numbers>
 #include <optional>
@@ -23,6 +24,7 @@
 #include "core/logger.hxx"
 #include "core/paths.hxx"
 #include "core/random.hxx"
+#include "net/http.hxx"
 #include "core/thread_pool.hxx"
 #include "physics/physics_world.hxx"
 #include "rendering/entity.hxx"
@@ -49,9 +51,15 @@ namespace {
     constexpr glm::vec3 world_up{0.0F, 1.0F, 0.0F};
 
     constexpr std::string_view skinned_model_path = "assets/models/animated_human.glb";
-    constexpr float skinned_feet_y = -0.015F;
-    constexpr float skinned_height = 5.535F;
-    constexpr float skinned_yaw_offset = std::numbers::pi_v<float>;
+    constexpr std::string_view brainstem_url =
+            "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/"
+            "5bad5aaa0bbb5d0f9cdc934e626f27d0df1e79b8/Models/BrainStem/glTF-Binary/BrainStem.glb";
+    constexpr std::string_view brainstem_sha256 = "ddda3a53b5c9771f992463034a430340ba2bac571e5869c723f7cba4976e9174";
+    auto brainstem_path() -> CachePath { return cache_path("downloads/brainstem.glb"); }
+    // BrainStem's fit to the player capsule, measured from its bind pose; the human's defaults live in the header.
+    constexpr float brainstem_feet_y = -0.0006F;
+    constexpr float brainstem_height = 1.834F;
+    constexpr float brainstem_yaw_offset = 0.0F;
     constexpr float skinned_walk_speed = 1.4F;
     constexpr float skinned_run_speed = 4.5F;
 
@@ -130,10 +138,15 @@ auto MovingGame::active_machine() const -> Animation::AnimStateMachine const & {
 auto MovingGame::load_skinned_model(Scene &scene, Renderer &renderer) -> void {
     skinned_entity_ = entt::null;
 
+    auto const label = use_brainstem_ ? std::string_view{"BrainStem"} : skinned_model_path;
+
     if (!skinned_model_.valid()) {
-        auto loaded = renderer.load_model(data_path(skinned_model_path));
+        auto loaded = use_brainstem_
+                              ? renderer.load_model(
+                                        AssetPath::external(brainstem_path().absolute()).value_or(AssetPath::missing()))
+                              : renderer.load_model(data_path(skinned_model_path));
         if (!loaded) {
-            warn("[MovingGame] Could not load '{}': {}; skinned mode is unavailable", skinned_model_path,
+            warn("[MovingGame] Could not load '{}': {}; skinned mode is unavailable", label,
                  describe(loaded.error()));
             return;
         }
@@ -143,14 +156,17 @@ auto MovingGame::load_skinned_model(Scene &scene, Renderer &renderer) -> void {
     if (!skin_data_) {
         skin_data_ = renderer.model_animation(skinned_model_);
         if (!skin_data_) {
-            warn("[MovingGame] '{}' has no skin; skinned mode is unavailable", skinned_model_path);
+            warn("[MovingGame] '{}' has no skin; skinned mode is unavailable", label);
             return;
         }
 
         auto const make = [&](std::string_view name) -> Animation::Clip const * {
             auto const *imported = skin_data_->find_clip(name);
             if (imported == nullptr) {
-                warn("[MovingGame] '{}' has no '{}' clip", skinned_model_path, name);
+                if (skin_data_->find_clip("Idle") == nullptr) {
+                    return nullptr;
+                }
+                warn("[MovingGame] '{}' has no '{}' clip", label, name);
                 return nullptr;
             }
             skin_clips_.push_back(imported->make_clip());
@@ -159,6 +175,11 @@ auto MovingGame::load_skinned_model(Scene &scene, Renderer &renderer) -> void {
 
         Animation::LocomotionClipSet set;
         set.idle = make("Idle");
+        if (set.idle == nullptr && !skin_data_->clips.empty()) {
+            // Models without locomotion clip names (BrainStem) loop their first clip as the idle.
+            skin_clips_.push_back(skin_data_->clips.front().make_clip());
+            set.idle = skin_clips_.back().get();
+        }
         set.walk = make("Walk");
         set.run = make("Run");
         set.jump = make("Jump");
@@ -175,9 +196,65 @@ auto MovingGame::load_skinned_model(Scene &scene, Renderer &renderer) -> void {
         skin_machine_ = std::make_unique<Animation::AnimStateMachine>(skin_table_->table());
     }
 
+    // Instances past the renderer's skin budget would draw unskinned (lying down), so never ask for more.
+    max_skinned_ = std::min(max_skinned_, static_cast<std::int32_t>(std::max(renderer.max_skinned_instances(skinned_model_), 1U)));
+
+    skinned_entity_ = scene.find_entity("moving_skinned");
+    if (auto &registry = scene.get_registry(); registry.valid(skinned_entity_)) {
+        registry.get<Components::InstancedModel>(skinned_entity_).model = skinned_model_;
+        return;
+    }
+
     auto const entity = GeneratedEntity{&scene, "{}", "moving_skinned"};
     entity.emplace<Components::InstancedModel>(Components::InstancedModel{.model = skinned_model_});
     skinned_entity_ = scene.find_entity("moving_skinned");
+}
+
+auto MovingGame::request_brainstem() -> void {
+    if (brainstem_download_.valid() || use_brainstem_) {
+        return;
+    }
+
+    std::error_code directory_error;
+    std::filesystem::create_directories(brainstem_path().absolute().parent_path(), directory_error);
+
+    brainstem_download_ = http_client_.get_file_async({
+            .uri = std::string{brainstem_url},
+            .destination = brainstem_path().absolute(),
+            .sha256 = std::string{brainstem_sha256},
+    });
+}
+
+auto MovingGame::poll_brainstem(Scene &scene, Renderer &renderer) -> void {
+    if (!brainstem_download_.valid() ||
+        brainstem_download_.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+        return;
+    }
+
+    auto const result = brainstem_download_.get();
+    if (!result) {
+        warn("[MovingGame] Could not fetch BrainStem: {}; keeping the animated human", describe(result.error()));
+        return;
+    }
+
+    if (auto could_wait = renderer.wait_idle(); !could_wait.has_value()) {
+        return;
+    }
+
+    use_brainstem_ = true;
+    skinned_height_ = brainstem_height;
+    skinned_feet_y_ = brainstem_feet_y;
+    skinned_yaw_offset_ = brainstem_yaw_offset;
+    skinned_model_ = {};
+    skin_data_.reset();
+    skin_clips_.clear();
+    skin_machine_.reset();
+    skin_table_.reset();
+    batch_skinned_ = false;
+    load_skinned_model(scene, renderer);
+    rebuild_batch();
+    info("[MovingGame] Swapped in BrainStem (skinned: {}, clips: {})", batch_skinned_,
+         skin_data_ ? skin_data_->clips.size() : 0U);
 }
 
 auto MovingGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void {
@@ -223,6 +300,7 @@ auto MovingGame::on_populate(Scene &scene, Renderer &renderer, EngineModels cons
                    glm::angleAxis(glm::radians(65.0F), glm::vec3{0.0F, 0.0F, 1.0F}));
 
     load_skinned_model(scene, renderer);
+    request_brainstem();
 
     for (std::size_t i = 0; i < parts.size(); ++i) {
         auto const entity = GeneratedEntity{&scene, "{}", part_name(i)};
@@ -333,6 +411,10 @@ auto MovingGame::on_update(Scene &scene, float delta_time) -> void {
 
     if (bound_scene_ != &scene) {
         bind_to(scene);
+    }
+
+    if (renderer_ != nullptr) {
+        poll_brainstem(scene, *renderer_);
     }
 
     if (scene.physics_world == nullptr || !body_) {
@@ -524,8 +606,8 @@ auto MovingGame::compose_skinned(Scene &scene, glm::vec3 const &player_position)
         skin_candidates_.resize(limit);
     }
 
-    auto const fit = glm::translate(glm::scale(glm::mat4{1.0F}, glm::vec3{player_height / skinned_height}),
-                                    {0.0F, -skinned_feet_y, 0.0F});
+    auto const fit = glm::translate(glm::scale(glm::mat4{1.0F}, glm::vec3{player_height / skinned_height_}),
+                                    {0.0F, -skinned_feet_y_, 0.0F});
 
     auto const add = [&](std::uint32_t c) {
         auto const root = c == 0 ? root_matrix(player_position, facing_yaw_)
@@ -535,7 +617,7 @@ auto MovingGame::compose_skinned(Scene &scene, glm::vec3 const &player_position)
         if (!offset) {
             return false;
         }
-        skinned.transforms.push_back(root * glm::rotate(glm::mat4{1.0F}, skinned_yaw_offset, world_up) * fit);
+        skinned.transforms.push_back(root * glm::rotate(glm::mat4{1.0F}, skinned_yaw_offset_, world_up) * fit);
         skinned.palette_offsets.push_back(*offset);
         return true;
     };

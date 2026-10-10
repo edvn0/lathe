@@ -377,6 +377,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     [[nodiscard]] auto model_animation(ModelHandle model) const -> std::shared_ptr<ModelAnimationData const>;
 
+    // How many instances of a skinned model fit in one frame's skin scratch and job budget; instances past this draw
+    // unskinned. Zero for a model without skin streams.
+    [[nodiscard]] auto max_skinned_instances(ModelHandle model) const -> std::uint32_t;
+
     auto model_bounds(ModelHandle model) const -> std::optional<std::pair<glm::vec3, glm::vec3>>;
 
     [[nodiscard]]

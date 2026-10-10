@@ -6,6 +6,7 @@
 #include <fastgltf/tools.hpp>
 
 #include <future>
+#include <cmath>
 #include <glm/gtc/packing.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
@@ -277,8 +278,18 @@ namespace {
                                      int vert) -> void {
         auto *user_data = static_cast<MikktspaceUserData *>(context->m_pUserData);
 
-        (*user_data->vertices)[mikktspace_vertex_index(face, vert)].tangent =
-                glm::vec4{tangent[0], tangent[1], tangent[2], sign};
+        auto &vertex = (*user_data->vertices)[mikktspace_vertex_index(face, vert)];
+        auto const generated = glm::vec3{tangent[0], tangent[1], tangent[2]};
+
+        // Without usable UVs (BrainStem has none) MikkTSpace yields zero or non-finite tangents, which shade black.
+        if (std::isfinite(glm::dot(generated, generated)) && glm::dot(generated, generated) > 1e-12F &&
+            std::isfinite(sign)) {
+            vertex.tangent = glm::vec4{generated, sign};
+            return;
+        }
+
+        auto const up = std::abs(vertex.normal.y) < 0.99F ? glm::vec3{0.0F, 1.0F, 0.0F} : glm::vec3{1.0F, 0.0F, 0.0F};
+        vertex.tangent = glm::vec4{glm::normalize(glm::cross(up, vertex.normal)), 1.0F};
     }
 
 } // namespace

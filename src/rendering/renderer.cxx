@@ -2089,9 +2089,11 @@ auto Renderer::create_model_common(
                 return std::unexpected(make_error(RendererErrorType::invalid_mesh));
             }
 
+            // A skinned mesh ignores its node's transform (glTF 2.0): the joint matrices already carry every
+            // ancestor, so applying it again would double-rotate e.g. a Z-up to Y-up parent node.
             flattened_draws.push_back(ModelDraw{
                     .mesh = imported_meshes[node.mesh_index],
-                    .local_transform = local_to_model,
+                    .local_transform = model.animation != nullptr ? glm::mat4{1.0F} : local_to_model,
             });
         }
 
@@ -2151,6 +2153,43 @@ auto Renderer::model_bounds(ModelHandle model) const -> std::optional<std::pair<
 auto Renderer::model_animation(ModelHandle model) const -> std::shared_ptr<ModelAnimationData const> {
     auto const *slot = model_slot(model);
     return slot != nullptr ? slot->animation : nullptr;
+}
+
+auto Renderer::max_skinned_instances(ModelHandle model) const -> std::uint32_t {
+    auto const *slot = model_slot(model);
+
+    if (slot == nullptr) {
+        return 0;
+    }
+
+    VkDeviceSize scratch_per_instance = 0;
+    std::uint32_t jobs_per_instance = 0;
+
+    for (auto const &draw: slot->draws) {
+        auto const *mesh = mesh_slot(draw.mesh);
+
+        if (mesh == nullptr) {
+            continue;
+        }
+
+        for (auto const &submesh: mesh->submeshes) {
+            auto const &geometry = submesh.lods[0];
+
+            if (geometry.skin.valid()) {
+                // Matches the per-job reservation in the draw loop.
+                scratch_per_instance +=
+                        (VkDeviceSize{geometry.vertices.vertex_count} * sizeof(CompressedModelVertex) + 15U) & ~VkDeviceSize{15U};
+                ++jobs_per_instance;
+            }
+        }
+    }
+
+    if (jobs_per_instance == 0 || scratch_per_instance == 0) {
+        return 0;
+    }
+
+    return static_cast<std::uint32_t>(std::min<VkDeviceSize>(skin_scratch_capacity_ / scratch_per_instance,
+                                                              maximum_skin_jobs_ / jobs_per_instance));
 }
 
 auto Renderer::model_submesh_bounds(ModelHandle model) const

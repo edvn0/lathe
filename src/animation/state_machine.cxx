@@ -74,7 +74,12 @@ namespace Animation {
             if (!context.finished) {
                 return State::GettingUp;
             }
-            return from_ground({context.inputs, State::Idle, context.state_time, true});
+            return from_ground({
+                    .inputs = context.inputs,
+                    .current = State::Idle,
+                    .state_time = context.state_time,
+                    .finished = true,
+            });
         }
     }
 
@@ -92,7 +97,12 @@ namespace Animation {
 
         auto const &current_def = definition(state.current);
         auto const finished = !current_def.loop && state.phase >= 1.0F;
-        auto const next = current_def.next({inputs, state.current, state.state_time, finished});
+        auto const next = current_def.next({
+                .inputs = inputs,
+                .current = state.current,
+                .state_time = state.state_time,
+                .finished = finished,
+        });
 
         if (next != state.current) {
             auto const &next_def = definition(next);
