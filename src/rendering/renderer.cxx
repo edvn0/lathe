@@ -1756,6 +1756,9 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 auto Renderer::destroy() noexcept -> void {
     debug("[Renderer::destroy] enter");
 
+    // Its buffers come out of the allocator torn down below.
+    game_gpu_.reset();
+
     light_icon_overlay_.reset();
 
     screenshot_->close();

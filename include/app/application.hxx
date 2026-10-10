@@ -28,7 +28,9 @@
 #include "gpu/context.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "rendering/debug_renderer.hxx"
+#include "rendering/effect_system.hxx"
 #include "rendering/engine_models.hxx"
+#include "rendering/particle_system.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/terminal_widget.hxx"
 #include "scene/editor_camera.hxx"
@@ -113,6 +115,8 @@ struct Application {
     bool terrain_enabled = true;
     bool game_hooks_enabled = true;
     float last_delta_time = 0.0F;
+    ParticleSystem particle_system;
+    EffectSystem effect_system;
 
     [[nodiscard]] auto active_terrain() const noexcept -> TerrainWorld * {
         return terrain_enabled ? terrain.get() : nullptr;

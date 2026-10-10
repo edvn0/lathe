@@ -12,7 +12,6 @@
 #include "assets/model.hxx"
 #include "net/http.hxx"
 #include "player_camera.hxx"
-#include "particle_field.hxx"
 #include "player_controller.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/script_storage.hxx"
@@ -39,8 +38,6 @@ public:
 
     auto on_ui(Scene &scene, Renderer &renderer) -> void override;
 
-    auto on_frame_graph(GameGraph &graph, float delta_time) -> void override;
-
     [[nodiscard]] auto camera(Scene const &scene, float aspect_ratio) const -> CameraParams override;
 
     [[nodiscard]] auto terrain_create_info(Renderer &renderer) -> std::optional<TerrainWorldCreateInfo> override;
@@ -57,8 +54,6 @@ private:
     auto request_helmet() -> void;
     auto poll_helmet(Scene &scene, Renderer &renderer) -> void;
     auto spawn_helmet(Scene &scene, Renderer &renderer) -> void;
-
-    ParticleField particles_;
 
     entt::entity player_entity_{entt::null};
     PlayerController player_controller_;

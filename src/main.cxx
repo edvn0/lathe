@@ -900,6 +900,7 @@ auto main(int argc, char **argv) -> int {
             .player_mode = player_mode,
             .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
             .script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{},
+            .effects = &application.effect_system,
     });
 
     if (manifest && !manifest->title.empty()) {

@@ -9,6 +9,8 @@ add_library(
         cluster_grid.cxx
         debug_renderer.cxx
         editor_icons.cxx
+        effect_manifest.cxx
+        effect_system.cxx
         engine_models.cxx
         environment_panel.cxx
         environment.cxx
@@ -30,6 +32,7 @@ add_library(
         game_gpu.cxx
         imgui_renderer.cxx
         overlay.cxx
+        particle_system.cxx
         pipeline_graph_repository.cxx
         renderer.cxx
         renderer_frame_graph.cxx

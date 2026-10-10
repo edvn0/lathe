@@ -5,6 +5,7 @@
 #include <expected>
 #include <optional>
 
+#include "core/error_describe.hxx"
 #include "core/logger.hxx"
 #include "core/perf_events.hxx"
 #include "gpu/context.hxx"
@@ -317,6 +318,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
     // The game's slice of the frame: it may add passes at fixed slots through the hook, and a slot whose
     // declarations are rejected is dropped so the engine's frame still renders.
+    game_gpu().begin_frame(info.frame_index);
     auto game_properties = VkPhysicalDeviceProperties{};
     vkGetPhysicalDeviceProperties(context_.physical_device, &game_properties);
     auto game_graph = GameGraph{
@@ -332,19 +334,24 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     .bindless_index = [&](std::uint32_t resource) {
                         return transient_allocator_.handle(info.frame_index, resource).index;
                     },
-                    .import_buffer = [&](GameBufferHandle handle) -> std::optional<frame_graph::BufferId> {
-                        auto const *buffer = game_gpu().buffer(handle, info.frame_index);
-                        if (buffer == nullptr) {
+                    .acquire_buffer = [&](GameBufferRequest const &request) -> std::optional<frame_graph::BufferId> {
+                        auto buffer = request.persistent
+                                              ? game_gpu().acquire_persistent_buffer(request.name, request.size)
+                                              : game_gpu().acquire_frame_buffer(info.frame_index, request.size,
+                                                                                request.name);
+                        if (!buffer) {
+                            ::error("Game buffer '{}' could not be allocated: {}", request.name,
+                                  ::describe(buffer.error()));
                             return std::nullopt;
                         }
                         return frame_graph_.import_buffer({
-                                .entry = buffer_idle,
-                                .exit = buffer_idle,
+                                .entry = request.persistent ? persistent_buffer_state : buffer_idle,
+                                .exit = request.persistent ? persistent_buffer_state : buffer_idle,
                                 .sharing = buffers_concurrent ? frame_graph::Sharing::concurrent
                                                               : frame_graph::Sharing::exclusive,
                                 .owner = frame_graph::Owner::game,
-                                .debug_name = game_gpu().buffer_name(handle),
-                                .buffer = physical_buffer(*buffer),
+                                .debug_name = request.name,
+                                .buffer = physical_buffer(**buffer),
                         });
                     },
             },

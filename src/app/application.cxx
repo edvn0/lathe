@@ -98,6 +98,36 @@ namespace {
         return changed;
     };
 
+    constexpr auto draw_particle_emitter = [](Components::ParticleEmitter &emitter) -> bool {
+        bool changed = false;
+
+        auto count = static_cast<int>(emitter.count);
+        if (ImGui::DragInt("Count", &count, 16.0F, 1, static_cast<int>(Components::ParticleEmitter::max_count))) {
+            emitter.count = static_cast<std::uint32_t>(count);
+            changed = true;
+        }
+        changed |= ImGui::Checkbox("Emitting", &emitter.emitting);
+        changed |= ImGui::DragFloat("Rate", &emitter.rate, 1.0F, 0.0F, 1.0e6F, "%.0f / s");
+        changed |= ImGui::DragFloat("Lifetime", &emitter.lifetime, 0.05F, 0.01F, 3600.0F, "%.2f s");
+        changed |= ImGui::DragFloat3("Gravity", &emitter.gravity.x, 0.1F);
+
+        constexpr std::array<char const *, 4> shapes{"Point", "Sphere", "Box", "Cone"};
+        auto shape = static_cast<int>(emitter.shape);
+        if (ImGui::Combo("Shape", &shape, shapes.data(), static_cast<int>(shapes.size()))) {
+            emitter.shape = static_cast<Components::ParticleShape>(shape);
+            changed = true;
+        }
+        changed |= ImGui::DragFloat("Shape size", &emitter.shape_size, 0.01F, 0.0F, 1.0e4F);
+        changed |= ImGui::SliderFloat("Cone", &emitter.cone_degrees, 0.0F, 180.0F, "%.1f deg");
+        changed |= ImGui::DragFloat("Speed", &emitter.speed, 0.05F, -1.0e4F, 1.0e4F);
+        changed |= ImGui::SliderFloat("Speed variance", &emitter.speed_variance, 0.0F, 1.0F);
+        changed |= ImGui::DragFloat("Size start", &emitter.size_start, 0.005F, 0.0F, 1.0e3F);
+        changed |= ImGui::DragFloat("Size end", &emitter.size_end, 0.005F, 0.0F, 1.0e3F);
+        changed |= ImGui::ColorEdit4("Colour start", &emitter.colour_start.x);
+        changed |= ImGui::ColorEdit4("Colour end", &emitter.colour_end.x);
+        return changed;
+    };
+
     constexpr auto draw_transform = [](Components::Transform &transform) -> bool {
         bool changed = false;
         changed |= ImGui::DragFloat3("Position", &transform.position.x, 0.1F);
@@ -339,6 +369,10 @@ Application::~Application() {
     }
 
     shader_watcher_.stop();
+
+    // A Lua game's finalizers release effects through effect_system, which is declared after `game` and so would be
+    // destroyed first.
+    game.reset();
 }
 
 auto Application::on_ui(std::uint32_t frame_index) -> void {
@@ -1256,7 +1290,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     copy_components<Components::Transform, Components::Model, Components::InstancedModel,
                                     Components::RigidBody, Components::MaterialOverride, Components::PlayerTag,
                                     Components::Lifetime, Components::PointLight, Components::SpotLight,
-                                    Components::Script, Components::BulletTag>(registry, source, clone);
+                                    Components::ParticleEmitter, Components::Script, Components::BulletTag>(
+                            registry, source, clone);
 
                     if (auto const *model = registry.try_get<Components::Model>(clone);
                         model != nullptr && registry.all_of<Components::StreamedModelTag>(source)) {
@@ -1630,6 +1665,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         section.operator()<Components::Transform>("Transform", draw_transform);
         section.operator()<Components::PointLight>("Point Light", draw_point_light);
         section.operator()<Components::SpotLight>("Spot Light", draw_spot_light);
+        section.operator()<Components::ParticleEmitter>("Particle Emitter", draw_particle_emitter);
         section.operator()<Components::RigidBody>("Rigid Body", draw_rigid_body);
         section.operator()<Components::Lifetime>("Lifetime", draw_lifetime);
 
@@ -1768,6 +1804,10 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 }
                 if (!registry.all_of<Components::SpotLight>(selected_entity) && ImGui::MenuItem("Spot Light")) {
                     registry.emplace<Components::SpotLight>(selected_entity);
+                }
+                if (!registry.all_of<Components::ParticleEmitter>(selected_entity) &&
+                    ImGui::MenuItem("Particle Emitter")) {
+                    registry.emplace<Components::ParticleEmitter>(selected_entity);
                 }
                 if (!registry.all_of<Components::RigidBody>(selected_entity) && ImGui::MenuItem("Rigid Body")) {
                     registry.emplace<Components::RigidBody>(selected_entity);
@@ -2427,8 +2467,18 @@ auto Application::on_startup() -> void {
 
         engine_models = *models;
 
+        if (auto const created = particle_system.create(renderer->game_gpu()); !created) {
+            warn("Could not set up particles: {}", describe(created.error()));
+        }
+
+        effect_system.create(renderer->game_gpu());
+
         renderer->set_game_graph_hook([this](GameGraph &graph) {
+            if (auto const *scene = active_scene(); scene != nullptr) {
+                particle_system.declare(graph, scene->get_registry(), &renderer->material_storage(), last_delta_time);
+            }
             if (game && game_hooks_enabled) {
+                effect_system.declare(graph);
                 game->on_frame_graph(graph, last_delta_time);
             }
         });

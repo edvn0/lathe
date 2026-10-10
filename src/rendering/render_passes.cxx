@@ -673,6 +673,11 @@ namespace render_pass {
         return info.output_hdr;
     }
 
+    auto set_overlay_blending(VkCommandBuffer command_buffer, OverlayScope const &scope, bool blending) noexcept
+            -> void {
+        detail::set_shader_object_color_blend_state(command_buffer, scope.colour_attachment_count, blending);
+    }
+
     auto set_overlay_baseline_state(VkCommandBuffer command_buffer, OverlayStage stage,
                                     OverlayScope const &scope) noexcept -> void {
         auto const width = static_cast<float>(scope.extent.width);
