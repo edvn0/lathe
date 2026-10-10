@@ -577,7 +577,8 @@ namespace renderer {
         }
     }
 
-    auto SlangCompiler::discover_entry_points(DataPath const &source_path) const
+    auto SlangCompiler::discover_entry_points(DataPath const &source_path,
+                                              std::span<std::filesystem::path const> include_directories) const
             -> std::expected<std::vector<DiscoveredEntryPoint>, ShaderCompileError> {
         if (!valid()) {
             return std::unexpected{make_error(ShaderCompileErrorType::slang_global_session_failed,
@@ -596,8 +597,17 @@ namespace renderer {
             return std::unexpected{std::move(lease.error())};
         }
 
-        auto const search_path = source_path.absolute().parent_path().string();
-        auto const *search_path_pointer = search_path.c_str();
+        auto search_path_storage = std::vector<std::string>{source_path.absolute().parent_path().string()};
+
+        for (auto const &include_directory: include_directories) {
+            search_path_storage.push_back(include_directory.string());
+        }
+
+        auto search_paths = std::vector<char const *>{};
+
+        for (auto const &search_path: search_path_storage) {
+            search_paths.push_back(search_path.c_str());
+        }
 
         auto options = std::array{make_integer_option(slang::CompilerOptionName::EmitSpirvDirectly, 1),
                                   make_integer_option(slang::CompilerOptionName::VulkanUseEntryPointName, 1)};
@@ -613,8 +623,8 @@ namespace renderer {
                 .targets = &target_description,
                 .targetCount = 1,
                 .defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR,
-                .searchPaths = &search_path_pointer,
-                .searchPathCount = 1,
+                .searchPaths = search_paths.data(),
+                .searchPathCount = static_cast<SlangInt>(search_paths.size()),
                 .compilerOptionEntries = options.data(),
                 .compilerOptionEntryCount = static_cast<std::uint32_t>(options.size()),
         };

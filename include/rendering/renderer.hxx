@@ -61,6 +61,8 @@
 #include "rendering/frame_graph/frame_graph.hxx"
 #include "rendering/frame_graph/pass_profiler.hxx"
 #include "rendering/frame_graph/transient_allocator.hxx"
+#include "rendering/frame_graph/view.hxx"
+#include "rendering/game_gpu.hxx"
 #include "rendering/hiz_occlusion.hxx"
 #include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
@@ -375,6 +377,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]]
     [[nodiscard]] auto model_animation(ModelHandle model) const -> std::shared_ptr<ModelAnimationData const>;
 
+    // How many instances of a skinned model fit in one frame's skin scratch and job budget; instances past this draw
+    // unskinned. Zero for a model without skin streams.
+    [[nodiscard]] auto max_skinned_instances(ModelHandle model) const -> std::uint32_t;
+
     auto model_bounds(ModelHandle model) const -> std::optional<std::pair<glm::vec3, glm::vec3>>;
 
     [[nodiscard]]
@@ -466,6 +472,12 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto set_fog_settings(FogSettings const &settings) noexcept -> void { fog_settings_ = settings; }
     [[nodiscard]] auto fog_settings() const noexcept -> FogSettings const & { return fog_settings_; }
 
+    auto set_ao_settings(AoSettings const &settings) noexcept -> void { ao_settings_ = settings; }
+    [[nodiscard]] auto ao_settings() const noexcept -> AoSettings const & { return ao_settings_; }
+
+    auto set_bloom_settings(BloomSettings const &settings) noexcept -> void { bloom_settings_ = settings; }
+    [[nodiscard]] auto bloom_settings() const noexcept -> BloomSettings const & { return bloom_settings_; }
+
     auto set_light_lod_settings(LightLodSettings const &settings) noexcept -> void { light_lod_settings_ = settings; }
     [[nodiscard]] auto light_lod_settings() const noexcept -> LightLodSettings const & { return light_lod_settings_; }
 
@@ -505,6 +517,16 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto record_frame(FrameRecordInfo const &info) -> std::expected<void, RendererError>;
 
     [[nodiscard]] auto submit_batches() const noexcept -> std::span<SubmitBatch const> { return submit_batches_; }
+
+    // Names a transient image for the UI pass to sample, so a tool can show it. Empty clears it. The image shows
+    // through gui::preview_texture_id(), which the ImGui renderer resolves when it records.
+    auto set_preview_resource(std::string name) -> void { preview_resource_ = std::move(name); }
+    [[nodiscard]] auto preview_resource() const noexcept -> std::string const & { return preview_resource_; }
+    [[nodiscard]] auto preview_texture_index() const noexcept -> std::uint32_t { return preview_texture_index_; }
+
+    [[nodiscard]] auto frame_graph_view() const noexcept -> frame_graph::FrameGraphView const & {
+        return frame_graph_view_;
+    }
 
     [[nodiscard]] auto frame_graph_timings() const noexcept -> std::span<frame_graph::PassTiming const> {
         return pass_profiler_.timings();
@@ -603,6 +625,18 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto set_transient_aliasing(bool enabled) noexcept -> void { transient_aliasing_ = enabled; }
 
     auto set_frame_graph_dump(bool enabled) noexcept -> void { dump_frame_graph_ = enabled; }
+
+    // The game's way into the frame graph. The renderer calls the hook at each GameSlot while it declares a frame;
+    // the engine owns the graph and the game only sees a GameGraph (rendering/game_graph.hxx).
+    using GameGraphHook = std::function<void(GameGraph &)>;
+    auto set_game_graph_hook(GameGraphHook hook) -> void { game_graph_hook_ = std::move(hook); }
+
+    [[nodiscard]] auto game_gpu() -> GameGpu & {
+        if (!game_gpu_) {
+            game_gpu_ = std::make_unique<GameGpu>(*this);
+        }
+        return *game_gpu_;
+    }
     auto set_frame_graph_dot(std::string path) -> void { frame_graph_dot_path_ = std::move(path); }
     [[nodiscard]] auto last_frame_pipeline_stats() const noexcept -> PipelineStats const & {
         return last_frame_pipeline_stats_;
@@ -1379,6 +1413,9 @@ private:
     frame_graph::FrameGraph frame_graph_;
     frame_graph::PlanCache plan_cache_;
     frame_graph::CompiledGraph const *frame_plan_ = nullptr;
+    frame_graph::FrameGraphView frame_graph_view_;
+    std::string preview_resource_;
+    std::uint32_t preview_texture_index_ = 0;
     std::vector<SubmitBatch> submit_batches_;
     frame_graph::PassProfiler pass_profiler_;
 
@@ -1389,6 +1426,8 @@ private:
     std::uint64_t logged_transient_bytes_ = 0;
     bool dump_frame_graph_ = false;
     std::string frame_graph_dot_path_;
+    GameGraphHook game_graph_hook_;
+    std::unique_ptr<GameGpu> game_gpu_;
 
     struct FramePipelineQuery {
         VkQueryPool query_pool{VK_NULL_HANDLE};

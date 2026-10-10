@@ -20,6 +20,7 @@
 #include "physics/physics_components.hxx"
 
 #include <algorithm>
+#include <atomic>
 #include <vector>
 
 namespace {
@@ -27,6 +28,18 @@ namespace {
     auto to_glm(btVector3 const &v) -> glm::vec3 { return glm::vec3{v.x(), v.y(), v.z()}; }
     auto to_bt(glm::quat const &q) -> btQuaternion { return btQuaternion{q.x, q.y, q.z, q.w}; }
     auto to_glm(btQuaternion const &q) -> glm::quat { return glm::quat{q.w(), q.x(), q.y(), q.z()}; }
+
+    // A body's entity travels in its Bullet user pointer. Entity ids start at 0, which is a null pointer and would read
+    // back as "no entity", so the pointer holds the id plus one.
+    auto entity_to_pointer(entt::entity entity) -> void * {
+        return std::bit_cast<void *>(static_cast<std::uintptr_t>(entt::to_integral(entity)) + 1U);
+    }
+
+    auto pointer_to_entity(void const *pointer) -> entt::entity {
+        auto const value = std::bit_cast<std::uintptr_t>(pointer);
+
+        return value == 0 ? entt::entity{entt::null} : static_cast<entt::entity>(value - 1U);
+    }
 
     auto destroy_shape(btCollisionShape *shape) -> void {
         if (shape->getShapeType() == COMPOUND_SHAPE_PROXYTYPE) {
@@ -103,6 +116,12 @@ struct PhysicsWorld::Impl {
     }
 
     ~Impl() {
+        for (auto &mesh_body: mesh_bodies) {
+            world->removeRigidBody(mesh_body.body.get());
+        }
+
+        mesh_bodies.clear();
+
         for (auto &slot: terrain_colliders) {
             if (slot.active) {
                 world->removeRigidBody(slot.body);
@@ -124,8 +143,7 @@ struct PhysicsWorld::Impl {
 
             auto *shape = rigid_body->getCollisionShape();
 
-            auto const entity =
-                    static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(rigid_body->getUserPointer()));
+            auto const entity = pointer_to_entity(rigid_body->getUserPointer());
 
             if (registry.valid(entity)) {
                 registry.remove<Components::PhysicsBody>(entity);
@@ -158,6 +176,14 @@ struct PhysicsWorld::Impl {
         bool active = false;
     };
 
+    // Heap-owned (the shape belongs to the shared MeshCollider), unlike the arena-built shapes of ordinary bodies.
+    struct MeshBody {
+        std::shared_ptr<MeshCollider const> mesh;
+        std::unique_ptr<btRigidBody> body;
+    };
+
+    std::vector<MeshBody> mesh_bodies;
+
     ArenaAllocator arena{std::size_t{512} * 1024};
 
     std::vector<TerrainColliderSlot> terrain_colliders;
@@ -177,7 +203,12 @@ struct PhysicsWorld::Impl {
 };
 
 PhysicsWorld::PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool,
-                           entt::registry &registry) : impl_{std::make_unique<Impl>(settings, thread_pool, registry)} {}
+                           entt::registry &registry) :
+    id_{[] {
+        static std::atomic<std::uint64_t> counter{0};
+        return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+    }()},
+    impl_{std::make_unique<Impl>(settings, thread_pool, registry)} {}
 
 PhysicsWorld::~PhysicsWorld() = default;
 
@@ -253,7 +284,7 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
     construction_info.m_restitution = body.restitution;
 
     auto *rigid_body = impl_->arena.construct<btRigidBody>(construction_info);
-    rigid_body->setUserPointer(std::bit_cast<void *>(static_cast<std::uintptr_t>(entity)));
+    rigid_body->setUserPointer(entity_to_pointer(entity));
 
     if (!body.is_static) {
         rigid_body->setLinearVelocity(to_bt(body.velocity));
@@ -278,6 +309,22 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
                                                               .rigid_body = rigid_body,
                                                               .shape = shape,
                                                       });
+}
+
+auto PhysicsWorld::add_static_mesh(entt::entity entity, Components::Transform const &transform,
+                                   std::shared_ptr<MeshCollider const> mesh) -> void {
+    btTransform start_transform;
+    start_transform.setIdentity();
+    start_transform.setOrigin(to_bt(transform.position));
+    start_transform.setRotation(to_bt(transform.rotation));
+
+    btRigidBody::btRigidBodyConstructionInfo construction_info{0.0F, nullptr, mesh->shape(), btVector3{0, 0, 0}};
+    construction_info.m_startWorldTransform = start_transform;
+
+    auto body = std::make_unique<btRigidBody>(construction_info);
+    body->setUserPointer(entity_to_pointer(entity));
+    impl_->world->addRigidBody(body.get());
+    impl_->mesh_bodies.push_back({.mesh = std::move(mesh), .body = std::move(body)});
 }
 
 auto PhysicsWorld::set_velocity(entt::registry const &registry, entt::entity entity, glm::vec3 const &linear_velocity)
@@ -539,8 +586,8 @@ auto PhysicsWorld::sweep_capsule(glm::vec3 const &from, glm::vec3 const &to, flo
 
     entt::entity hit_entity = entt::null;
     auto const *hit_body = btRigidBody::upcast(callback.m_hitCollisionObject);
-    if (hit_body != nullptr && hit_body->getUserPointer() != nullptr) {
-        hit_entity = static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(hit_body->getUserPointer()));
+    if (hit_body != nullptr) {
+        hit_entity = pointer_to_entity(hit_body->getUserPointer());
     }
 
     return SweepHit{
@@ -565,8 +612,8 @@ auto PhysicsWorld::raycast(glm::vec3 const &from, glm::vec3 const &to) const -> 
     auto const *hit_body = btRigidBody::upcast(ray_callback.m_collisionObject);
     entt::entity hit_entity = entt::null;
 
-    if (hit_body && hit_body->getUserPointer()) {
-        hit_entity = static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(hit_body->getUserPointer()));
+    if (hit_body != nullptr) {
+        hit_entity = pointer_to_entity(hit_body->getUserPointer());
     }
 
     return RaycastHit{
@@ -594,8 +641,8 @@ auto PhysicsWorld::raycast(glm::vec3 const &origin, glm::vec3 const &direction, 
     auto const *hit_body = btRigidBody::upcast(ray_callback.m_collisionObject);
     entt::entity hit_entity = entt::null;
 
-    if (hit_body && hit_body->getUserPointer()) {
-        hit_entity = static_cast<entt::entity>(reinterpret_cast<std::uintptr_t>(hit_body->getUserPointer()));
+    if (hit_body != nullptr) {
+        hit_entity = pointer_to_entity(hit_body->getUserPointer());
     }
 
     auto const hit_point = to_glm(ray_callback.m_hitPointWorld);

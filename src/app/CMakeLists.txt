@@ -6,15 +6,22 @@ add_library(
     engine_app
     STATIC
         application.cxx
+        frame_graph_details.cxx
+        frame_graph_editor.cxx
+        game_packager.cxx
         benchmark.cxx
         benchmark_analysis.cxx
         benchmark_compare.cxx
         benchmark_driver.cxx
         benchmark_environment.cxx
         benchmark_scenarios.cxx
+        lua_animation.cxx
         lua_game.cxx
         lua_game_api.cxx
+        package_ui.cxx
+        pass_timeline.cxx
         scene_files.cxx
+        stage_registry.cxx
 )
 
 # Recorded in benchmark results (app/benchmark_environment.hxx): the build type, and where to read the source

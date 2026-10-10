@@ -16,6 +16,9 @@ namespace frame_graph {
 
     enum class PassType : std::uint8_t { raster, compute, transfer };
 
+    // Who declared a pass or created a resource. A game pass may not write an engine resource.
+    enum class Owner : std::uint8_t { engine, game };
+
     enum class Use : std::uint8_t {
         color_attachment,
         color_resolve,

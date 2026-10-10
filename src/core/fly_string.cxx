@@ -6,6 +6,8 @@ FlyString::FlyString() noexcept = default;
 
 FlyString::FlyString(std::string_view value) : value_(&pool().intern(value)) {}
 
+FlyString::FlyString(std::string &&value) : value_(&pool().intern(std::move(value))) {}
+
 [[nodiscard]]
 auto FlyString::view() const noexcept -> std::string_view {
     return value_ != nullptr ? std::string_view{*value_} : std::string_view{};
@@ -26,6 +28,17 @@ auto FlyString::operator==(FlyString rhs) const noexcept -> bool { return value_
 auto FlyString::Pool::intern(std::string_view value) -> std::string const & {
     std::scoped_lock lock{mutex_};
     auto const [iterator, inserted] = strings_.emplace(value);
+
+    if (inserted) {
+        characters_ += iterator->size();
+    }
+
+    return *iterator;
+}
+
+auto FlyString::Pool::intern(std::string &&value) -> std::string const & {
+    std::scoped_lock lock{mutex_};
+    auto const [iterator, inserted] = strings_.emplace(std::move(value));
 
     if (inserted) {
         characters_ += iterator->size();

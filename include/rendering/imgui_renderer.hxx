@@ -37,6 +37,13 @@ namespace gui {
         return ImTextureID{static_cast<std::uint64_t>(bindless_index) | linear_source_texture_bit};
     }
 
+    // Stands for the image Renderer::set_preview_resource names. The bindless index of a transient is only known
+    // once the frame graph has allocated it, which is after the UI is built, so the ImGui renderer resolves this
+    // tag when it records.
+    inline constexpr std::uint64_t preview_texture_bit = std::uint64_t{1} << 33;
+
+    [[nodiscard]] constexpr auto preview_texture_id() noexcept -> ImTextureID { return ImTextureID{preview_texture_bit}; }
+
     class ImGuiRenderer {
     public:
         ImGuiRenderer(Renderer &, FontChoice const &);

@@ -147,6 +147,7 @@ namespace frame_graph {
                         .frame_index = info.frame_index,
                         .queue = batch.queue,
                         .resources = &info.resources,
+                        .accesses = info.graph.passes[compiled_pass.pass].accesses,
                 };
                 info.records[compiled_pass.pass](context);
             }

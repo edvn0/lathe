@@ -19,6 +19,12 @@ the upstream repository, pinned to a commit and verified against a SHA-256 befor
 | --- | --- | --- |
 | `damaged_helmet.glb` | [DamagedHelmet](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/5bad5aaa0bbb5d0f9cdc934e626f27d0df1e79b8/Models/DamagedHelmet) from the Khronos glTF Sample Assets. Converted to glTF by ctxwing; earlier version by theblueturtle\_. | Conversion: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Original model: [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) |
 
+| `downloads/brainstem.glb` (cache dir) | [BrainStem](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/5bad5aaa0bbb5d0f9cdc934e626f27d0df1e79b8/Models/BrainStem) from the Khronos glTF Sample Assets, (c) 2017 Smith Micro Software, Inc. | [Poser EULA](https://archive.org/stream/poser-pro-2014-reference-manual/Poser_Pro_2014_reference_manual_djvu.txt) |
+
+`--game=moving` fetches BrainStem (a skinned, animated robot) in the background and swaps it in for the animated human
+once it arrives; if the fetch fails it keeps the human. Its single unnamed clip is looped as the idle. The Poser EULA is
+not a clear redistribution licence, so it is only downloaded, never committed.
+
 The helmet is for **non-commercial use only** (the CC BY-NC term follows the file, not the engine's MIT code). Credit
 both authors if you show it. To change the pinned commit or hash, edit `game/src/basic_game.cxx`.
 

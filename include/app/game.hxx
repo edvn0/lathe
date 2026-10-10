@@ -9,6 +9,7 @@
 
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
+#include "rendering/game_graph.hxx"
 #include "rendering/scene.hxx"
 #include "scene/camera_path.hxx"
 #include "scene/components.hxx"
@@ -16,14 +17,15 @@
 #include "terrain/terrain_world.hxx"
 
 class Scene;
+class EffectSystem;
 struct Renderer;
 
 template<typename... ExtraComponents>
 auto clone_editor_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
     clone_registry<Components::Transform, Components::Model, Components::InstancedModel, Components::RigidBody,
                    Components::MaterialOverride, Components::PlayerTag, Components::Lifetime, Components::PointLight,
-                   Components::SpotLight, Components::GeneratedMeta, Components::Meta, Components::Parent,
-                   ExtraComponents...>(editor_scene.get_registry(), runtime_scene.get_registry());
+                   Components::SpotLight, Components::ParticleEmitter, Components::GeneratedMeta, Components::Meta,
+                   Components::Parent, ExtraComponents...>(editor_scene.get_registry(), runtime_scene.get_registry());
 }
 
 struct CameraParams {
@@ -40,6 +42,9 @@ struct GameHost {
     std::function<void()> request_exit;
 
     std::string script_entry;
+
+    // What scripts attach compute effects through (rendering/effect_system.hxx); null where there are none.
+    EffectSystem *effects = nullptr;
 };
 
 class IGame {
@@ -83,6 +88,13 @@ public:
     virtual auto on_ui(Scene &scene, Renderer &renderer) -> void {
         (void) scene;
         (void) renderer;
+    }
+
+    // Called while the renderer declares each frame, once per GameSlot (see rendering/game_graph.hxx). The place to
+    // add compute passes and scene draws; GPU resources come from Renderer::game_gpu().
+    virtual auto on_frame_graph(GameGraph &graph, float delta_time) -> void {
+        (void) graph;
+        (void) delta_time;
     }
 
     [[nodiscard]] virtual auto terrain_create_info(Renderer &renderer) -> std::optional<TerrainWorldCreateInfo> {

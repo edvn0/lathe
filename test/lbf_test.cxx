@@ -153,6 +153,7 @@ namespace {
         scene.model_components.push_back(SceneModelComponent{.entity = 0, .model = 0});
         scene.point_lights.push_back(ScenePointLightComponent{.entity = 0});
         scene.spot_lights.push_back(SceneSpotLightComponent{.entity = 0});
+        scene.particle_emitters.push_back(SceneParticleEmitterComponent{.entity = 0});
         scene.rigid_bodies.push_back(SceneRigidBodyComponent{.entity = 0});
         scene.lifetimes.push_back(SceneLifetimeComponent{.entity = 0, .remaining_seconds = 1.0F});
         return scene;
@@ -483,6 +484,15 @@ TEST_SUITE("unit") {
                 .entity = 1, .model = 0, .transforms = {glm::mat4{1.0F}, glm::mat4{2.0F}}});
         scene.point_lights.push_back(ScenePointLightComponent{.entity = 1, .light = {.intensity = 4.0F}});
         scene.spot_lights.push_back(SceneSpotLightComponent{.entity = 2, .light = {.outer_cone_degrees = 45.0F}});
+        scene.particle_emitters.push_back(SceneParticleEmitterComponent{
+                .entity = 1,
+                .emitter = {.count = 77,
+                            .rate = 12.5F,
+                            .gravity = {0.0F, 1.0F, 0.0F},
+                            .shape = Components::ParticleShape::box,
+                            .colour_end = {0.25F, 0.5F, 0.75F, 0.125F},
+                            .emitting = false},
+                .material = 1});
         scene.rigid_bodies.push_back(SceneRigidBodyComponent{
                 .entity = 2, .body = Components::RigidBody::from_submesh_boxes({{glm::vec3{0.0F}, glm::vec3{1.0F}}})});
         scene.rigid_bodies.push_back(SceneRigidBodyComponent{
@@ -516,6 +526,13 @@ TEST_SUITE("unit") {
         CHECK(decoded->instanced_models[0].transforms[1][0][0] == doctest::Approx(2.0F));
         CHECK(decoded->point_lights[0].light.intensity == doctest::Approx(4.0F));
         CHECK(decoded->spot_lights[0].light.outer_cone_degrees == doctest::Approx(45.0F));
+        REQUIRE(decoded->particle_emitters.size() == 1);
+        CHECK(decoded->particle_emitters[0].emitter.count == 77);
+        CHECK(decoded->particle_emitters[0].emitter.rate == doctest::Approx(12.5F));
+        CHECK(decoded->particle_emitters[0].emitter.shape == Components::ParticleShape::box);
+        CHECK(decoded->particle_emitters[0].emitter.colour_end.w == doctest::Approx(0.125F));
+        CHECK_FALSE(decoded->particle_emitters[0].emitter.emitting);
+        CHECK(decoded->particle_emitters[0].material == 1);
         CHECK(decoded->rigid_bodies[0].body.shape == Components::BodyShape::compound);
         REQUIRE(decoded->rigid_bodies[0].body.compound_boxes != nullptr);
         CHECK(decoded->rigid_bodies[0].body.compound_boxes->size() == 1);
@@ -1056,6 +1073,20 @@ TEST_SUITE("unit") {
             rejected([&](SceneDescription &scene) { scene.point_lights[0].light.intensity = nan; });
             rejected([&](SceneDescription &scene) { scene.point_lights[0].light.range = -1.0F; });
             rejected([&](SceneDescription &scene) { scene.spot_lights[0].light.outer_cone_degrees = inf; });
+        }
+
+        SUBCASE("particle emitters") {
+            rejected([&](SceneDescription &scene) { scene.particle_emitters[0].material = 77; });
+            rejected([&](SceneDescription &scene) { scene.particle_emitters[0].emitter.count = 0; });
+            rejected([&](SceneDescription &scene) {
+                scene.particle_emitters[0].emitter.count = Components::ParticleEmitter::max_count + 1;
+            });
+            rejected([&](SceneDescription &scene) { scene.particle_emitters[0].emitter.lifetime = 0.0F; });
+            rejected([&](SceneDescription &scene) { scene.particle_emitters[0].emitter.rate = nan; });
+            rejected([&](SceneDescription &scene) { scene.particle_emitters[0].emitter.colour_start.x = inf; });
+            rejected([&](SceneDescription &scene) {
+                scene.particle_emitters[0].emitter.shape = static_cast<Components::ParticleShape>(9);
+            });
         }
 
         SUBCASE("rigid bodies") {
