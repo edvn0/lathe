@@ -6,6 +6,7 @@ add_library(
     engine_physics
     STATIC
         character_body.cxx
+        mesh_collider.cxx
         physics_world.cxx
 )
 

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <expected>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,7 +22,11 @@
 #include "assets/model_streamer.hxx"
 #include "assets/texture_streamer.hxx"
 #include "core/fly_string.hxx"
+#include "app/lua_animation.hxx"
 #include "core/paths.hxx"
+#include "physics/character_body.hxx"
+#include "physics/mesh_collider.hxx"
+#include "physics/physics_world.hxx"
 #include "rendering/effect_system.hxx"
 #include "rendering/entity.hxx"
 #include "rendering/renderer.hxx"
@@ -37,6 +42,9 @@ namespace {
     constexpr char const *effect_shader_meta = "lathe.EffectShader";
     constexpr char const *effect_meta = "lathe.Effect";
     constexpr char const *effect_buffer_meta = "lathe.EffectBuffer";
+    constexpr char const *character_meta = "lathe.Character";
+    constexpr char const *rig_meta = "lathe.Rig";
+    constexpr char const *actor_meta = "lathe.Actor";
 
     struct LuaEntity {
         entt::entity id;
@@ -92,6 +100,39 @@ namespace {
         }
 
         return entity->id;
+    }
+
+    // Fields of an optional options table at `index`; a missing table or field gives the fallback.
+    auto option_number(lua_State *state, int index, char const *key, double fallback) -> double {
+        return lua_istable(state, index) ? lua_field_number(state, index, key, fallback) : fallback;
+    }
+
+    auto option_bool(lua_State *state, int index, char const *key, bool fallback) -> bool {
+        if (!lua_istable(state, index)) {
+            return fallback;
+        }
+
+        lua_getfield(state, index, key);
+        auto const value = lua_isnil(state, -1) ? fallback : lua_toboolean(state, -1) != 0;
+        lua_pop(state, 1);
+
+        return value;
+    }
+
+    auto option_string(lua_State *state, int index, char const *key, char const *fallback) -> std::string {
+        if (!lua_istable(state, index)) {
+            return fallback;
+        }
+
+        lua_getfield(state, index, key);
+        std::string value = lua_isstring(state, -1) != 0 ? lua_tostring(state, -1) : fallback;
+        lua_pop(state, 1);
+
+        return value;
+    }
+
+    auto model_key(ModelHandle handle) -> std::uint64_t {
+        return (static_cast<std::uint64_t>(handle.index) << 32U) | handle.generation;
     }
 
     auto scene_spawn(lua_State *state) -> int {
@@ -331,6 +372,407 @@ namespace {
         return 0;
     }
 
+
+    // ---- physics ----------------------------------------------------------------------------------------------
+
+    struct LuaCharacter {
+        CharacterBody body;
+    };
+
+    static_assert(std::is_trivially_destructible_v<CharacterBody>);
+
+    auto physics_world_of(lua_State *state) -> PhysicsWorld & {
+        auto *const scene = game_host(state).scene;
+
+        if (scene == nullptr || scene->physics_world == nullptr) {
+            luaL_error(state, "physics is only available while the game is playing");
+        }
+
+        return *scene->physics_world;
+    }
+
+    auto character_arg(lua_State *state, int index) -> CharacterBody & {
+        return static_cast<LuaCharacter *>(luaL_checkudata(state, index, character_meta))->body;
+    }
+
+    auto physics_character(lua_State *state) -> int {
+        auto const x = static_cast<float>(luaL_checknumber(state, 1));
+        auto const y = static_cast<float>(luaL_checknumber(state, 2));
+        auto const z = static_cast<float>(luaL_checknumber(state, 3));
+        auto const radius = static_cast<float>(option_number(state, 4, "radius", 0.35));
+        auto const height = static_cast<float>(option_number(state, 4, "height", 1.8));
+
+        if (!(radius > 0.0F) || !(height > 2.0F * radius)) {
+            return luaL_error(state, "a character needs radius > 0 and height > 2 * radius");
+        }
+
+        MovementParams params;
+        params.gravity = static_cast<float>(option_number(state, 4, "gravity", params.gravity));
+        params.jump_height = static_cast<float>(option_number(state, 4, "jump_height", params.jump_height));
+        params.step_height = static_cast<float>(option_number(state, 4, "step_height", params.step_height));
+        params.max_slope_degrees = static_cast<float>(option_number(state, 4, "max_slope", params.max_slope_degrees));
+        params.ground_accel = static_cast<float>(option_number(state, 4, "ground_accel", params.ground_accel));
+        params.ground_decel = static_cast<float>(option_number(state, 4, "ground_decel", params.ground_decel));
+        params.air_accel = static_cast<float>(option_number(state, 4, "air_accel", params.air_accel));
+
+        auto *const character = static_cast<LuaCharacter *>(lua_newuserdatauv(state, sizeof(LuaCharacter), 0));
+        new (character) LuaCharacter{CharacterBody{{x, y, z}, radius, height, params}};
+        luaL_setmetatable(state, character_meta);
+
+        return 1;
+    }
+
+    // update(dt, move_x, move_z, jump_pressed, jump_held): moves at the given world-space velocity (metres per
+    // second), with gravity, slopes, steps and jumping, in fixed substeps.
+    auto character_update(lua_State *state) -> int {
+        auto &body = character_arg(state, 1);
+        auto const delta = std::clamp(static_cast<float>(luaL_checknumber(state, 2)), 0.0F, 0.1F);
+        auto const &world = physics_world_of(state);
+
+        CharacterInput input;
+        input.desired_velocity = {static_cast<float>(luaL_checknumber(state, 3)), 0.0F,
+                                  static_cast<float>(luaL_checknumber(state, 4))};
+        input.jump_pressed = lua_toboolean(state, 5) != 0;
+        input.jump_held = lua_toboolean(state, 6) != 0;
+
+        constexpr float substep = 1.0F / 60.0F;
+        auto const steps = std::max(1, static_cast<int>(std::ceil(delta / substep)));
+
+        for (int step = 0; step < steps; ++step) {
+            body.step(world, input, delta / static_cast<float>(steps));
+            input.jump_pressed = false;
+        }
+
+        return 0;
+    }
+
+    auto character_position(lua_State *state) -> int {
+        auto const &position = character_arg(state, 1).position();
+
+        lua_pushnumber(state, position.x);
+        lua_pushnumber(state, position.y);
+        lua_pushnumber(state, position.z);
+
+        return 3;
+    }
+
+    auto character_velocity(lua_State *state) -> int {
+        auto const &velocity = character_arg(state, 1).velocity();
+
+        lua_pushnumber(state, velocity.x);
+        lua_pushnumber(state, velocity.y);
+        lua_pushnumber(state, velocity.z);
+
+        return 3;
+    }
+
+    auto character_grounded(lua_State *state) -> int {
+        lua_pushboolean(state, character_arg(state, 1).grounded() ? 1 : 0);
+
+        return 1;
+    }
+
+    auto character_teleport(lua_State *state) -> int {
+        character_arg(state, 1).teleport({static_cast<float>(luaL_checknumber(state, 2)),
+                                          static_cast<float>(luaL_checknumber(state, 3)),
+                                          static_cast<float>(luaL_checknumber(state, 4))});
+
+        return 0;
+    }
+
+    constexpr std::array character_methods{
+            luaL_Reg{"update", &character_update},     luaL_Reg{"position", &character_position},
+            luaL_Reg{"velocity", &character_velocity}, luaL_Reg{"grounded", &character_grounded},
+            luaL_Reg{"teleport", &character_teleport}, luaL_Reg{nullptr, nullptr},
+    };
+
+    // raycast(ox, oy, oz, dx, dy, dz, max_distance) -> distance, px, py, pz, nx, ny, nz  (nil when nothing is hit)
+    auto physics_raycast(lua_State *state) -> int {
+        auto const &world = physics_world_of(state);
+        glm::vec3 const origin{static_cast<float>(luaL_checknumber(state, 1)),
+                               static_cast<float>(luaL_checknumber(state, 2)),
+                               static_cast<float>(luaL_checknumber(state, 3))};
+        glm::vec3 const direction{static_cast<float>(luaL_checknumber(state, 4)),
+                                  static_cast<float>(luaL_checknumber(state, 5)),
+                                  static_cast<float>(luaL_checknumber(state, 6))};
+        auto const max_distance = static_cast<float>(luaL_optnumber(state, 7, 1000.0));
+
+        auto const hit = world.raycast(origin, direction, max_distance);
+
+        if (!hit) {
+            lua_pushnil(state);
+            return 1;
+        }
+
+        for (auto const value: {hit->distance, hit->point.x, hit->point.y, hit->point.z, hit->normal.x, hit->normal.y,
+                                hit->normal.z}) {
+            lua_pushnumber(state, value);
+        }
+
+        return 7;
+    }
+
+    // add_mesh_collider(entity, model): the entity's position places the model's triangles as static geometry. The
+    // model must have been loaded with { collider = true }; collision starts once its triangles are built.
+    auto physics_add_mesh_collider(lua_State *state) -> int {
+        auto &host = game_host(state);
+        auto const id = entity_arg(state, 1);
+        auto const *const model = static_cast<LuaModel const *>(luaL_checkudata(state, 2, model_meta));
+        auto const slot = host.collider_slots.find(model_key(model->handle));
+
+        if (slot == host.collider_slots.end()) {
+            return luaL_error(state, "the model was not loaded with { collider = true }");
+        }
+
+        host.mesh_colliders.push_back({.entity = id, .slot = slot->second});
+
+        return 0;
+    }
+
+    // ready(model) -> true once the model's mesh collider is built.
+    auto physics_ready(lua_State *state) -> int {
+        auto &host = game_host(state);
+        auto const *const model = static_cast<LuaModel const *>(luaL_checkudata(state, 1, model_meta));
+        auto const slot = host.collider_slots.find(model_key(model->handle));
+
+        lua_pushboolean(state, slot != host.collider_slots.end() && slot->second->ready.load(std::memory_order_acquire));
+
+        return 1;
+    }
+
+    constexpr std::array physics_functions{
+            luaL_Reg{"character", &physics_character},
+            luaL_Reg{"raycast", &physics_raycast},
+            luaL_Reg{"add_mesh_collider", &physics_add_mesh_collider},
+            luaL_Reg{"ready", &physics_ready},
+            luaL_Reg{nullptr, nullptr},
+    };
+
+
+    // ---- animation --------------------------------------------------------------------------------------------
+
+    struct LuaRig {
+        std::uint32_t rig;
+    };
+
+    struct LuaActor {
+        std::uint32_t rig;
+        std::uint32_t index;
+    };
+
+    // animation.rig(model, options) -> Rig. The model is a skinned one loaded with assets.load_model.
+    auto animation_rig(lua_State *state) -> int {
+        auto &host = game_host(state);
+        auto const *const model = static_cast<LuaModel const *>(luaL_checkudata(state, 1, model_meta));
+
+        if (host.scene == nullptr || host.animation == nullptr) {
+            return luaL_error(state, "animation can only be used from on_populate and later");
+        }
+
+        LuaAnimationSystem::RigOptions options;
+        options.height = static_cast<float>(option_number(state, 2, "height", options.height));
+        options.model_height = static_cast<float>(option_number(state, 2, "model_height", options.model_height));
+        options.model_feet_y = static_cast<float>(option_number(state, 2, "model_feet_y", options.model_feet_y));
+        options.yaw_offset = static_cast<float>(option_number(state, 2, "yaw_offset", options.yaw_offset));
+        options.walk_speed = static_cast<float>(option_number(state, 2, "walk_speed", options.walk_speed));
+        options.run_speed = static_cast<float>(option_number(state, 2, "run_speed", options.run_speed));
+
+        if (!(options.height > 0.0F) || !(options.model_height > 0.0F) || !(options.walk_speed > 0.0F) ||
+            !(options.run_speed > 0.0F)) {
+            return luaL_error(state, "height, model_height, walk_speed and run_speed must be positive");
+        }
+
+        auto *const rig = static_cast<LuaRig *>(lua_newuserdatauv(state, sizeof(LuaRig), 0));
+        rig->rig = host.animation->create_rig(*host.scene, model->handle, options);
+        luaL_setmetatable(state, rig_meta);
+
+        return 1;
+    }
+
+    auto rig_arg(lua_State *state, int index) -> std::uint32_t {
+        return static_cast<LuaRig *>(luaL_checkudata(state, index, rig_meta))->rig;
+    }
+
+    auto rig_ready(lua_State *state) -> int {
+        auto &host = game_host(state);
+        auto const rig = rig_arg(state, 1);
+
+        lua_pushboolean(state, host.renderer != nullptr && host.animation->ready(*host.renderer, rig) ? 1 : 0);
+
+        return 1;
+    }
+
+    auto rig_spawn(lua_State *state) -> int {
+        auto &host = game_host(state);
+        auto const rig = rig_arg(state, 1);
+
+        auto *const actor = static_cast<LuaActor *>(lua_newuserdatauv(state, sizeof(LuaActor), 0));
+        actor->rig = rig;
+        actor->index = host.animation->add_actor(rig);
+        luaL_setmetatable(state, actor_meta);
+
+        return 1;
+    }
+
+    constexpr std::array rig_methods{
+            luaL_Reg{"ready", &rig_ready},
+            luaL_Reg{"spawn", &rig_spawn},
+            luaL_Reg{nullptr, nullptr},
+    };
+
+    auto actor_arg(lua_State *state, int index) -> LuaAnimationSystem::Actor & {
+        auto const *const handle = static_cast<LuaActor const *>(luaL_checkudata(state, index, actor_meta));
+        auto *const actor = game_host(state).animation->actor(handle->rig, handle->index);
+
+        if (actor == nullptr) {
+            luaL_error(state, "the actor no longer exists");
+        }
+
+        return *actor;
+    }
+
+    // place(x, y, z, yaw): where its feet are and which way it faces (radians about +Y; 0 faces +Z).
+    auto actor_place(lua_State *state) -> int {
+        auto &actor = actor_arg(state, 1);
+
+        actor.position = {static_cast<float>(luaL_checknumber(state, 2)), static_cast<float>(luaL_checknumber(state, 3)),
+                          static_cast<float>(luaL_checknumber(state, 4))};
+        actor.yaw = static_cast<float>(luaL_checknumber(state, 5));
+
+        return 0;
+    }
+
+    // move(speed, grounded, vertical_velocity): how it is moving, which picks idle, walk, run or a jump pose.
+    auto actor_move(lua_State *state) -> int {
+        auto &actor = actor_arg(state, 1);
+
+        actor.inputs.horizontal_speed = std::max(static_cast<float>(luaL_checknumber(state, 2)), 0.0F);
+        actor.inputs.grounded = lua_isnone(state, 3) || lua_toboolean(state, 3) != 0;
+        actor.inputs.vertical_velocity = static_cast<float>(luaL_optnumber(state, 4, 0.0));
+
+        return 0;
+    }
+
+    auto actor_set_visible(lua_State *state) -> int {
+        actor_arg(state, 1).active = lua_toboolean(state, 2) != 0;
+
+        return 0;
+    }
+
+    auto actor_state(lua_State *state) -> int {
+        auto const *const handle = static_cast<LuaActor const *>(luaL_checkudata(state, 1, actor_meta));
+        auto const name = game_host(state).animation->state_name(handle->rig, handle->index);
+
+        lua_pushlstring(state, name.data(), name.size());
+
+        return 1;
+    }
+
+    constexpr std::array actor_methods{
+            luaL_Reg{"place", &actor_place},
+            luaL_Reg{"move", &actor_move},
+            luaL_Reg{"set_visible", &actor_set_visible},
+            luaL_Reg{"state", &actor_state},
+            luaL_Reg{nullptr, nullptr},
+    };
+
+    constexpr std::array animation_functions{
+            luaL_Reg{"rig", &animation_rig},
+            luaL_Reg{nullptr, nullptr},
+    };
+
+    // body options: shape = "box" | "sphere" | "capsule", half_extents = {x, y, z}, radius, height, mass, restitution,
+    // static (boolean), lock_rotation (boolean)
+    auto entity_add_body(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+        auto &registry = registry_of(state);
+
+        Components::RigidBody body;
+        auto const shape = option_string(state, 2, "shape", "box");
+
+        if (shape == "box") {
+            body.shape = Components::BodyShape::box;
+        } else if (shape == "sphere") {
+            body.shape = Components::BodyShape::sphere;
+        } else if (shape == "capsule") {
+            body.shape = Components::BodyShape::capsule;
+            body.lock_rotation = true;
+        } else {
+            return luaL_error(state, "unknown body shape '%s' (box, sphere or capsule)", shape.c_str());
+        }
+
+        if (lua_istable(state, 2)) {
+            auto const half = lua_field_vec3(state, 2, "half_extents", {0.5F, 0.5F, 0.5F});
+            body.half_extents = {half.x, half.y, half.z};
+        }
+
+        body.sphere_radius = static_cast<float>(option_number(state, 2, "radius", body.sphere_radius));
+        body.capsule_radius = static_cast<float>(option_number(state, 2, "radius", body.capsule_radius));
+        body.capsule_height = static_cast<float>(option_number(state, 2, "height", body.capsule_height));
+        body.mass = static_cast<float>(option_number(state, 2, "mass", body.mass));
+        body.restitution = static_cast<float>(option_number(state, 2, "restitution", body.restitution));
+        body.is_static = option_bool(state, 2, "static", false);
+        body.lock_rotation = option_bool(state, 2, "lock_rotation", body.lock_rotation);
+
+        if (!(body.mass > 0.0F) || !(body.sphere_radius > 0.0F) || !(body.capsule_radius > 0.0F) ||
+            !(body.capsule_height > 0.0F)) {
+            return luaL_error(state, "mass, radius and height must be positive");
+        }
+
+        registry.emplace_or_replace<Components::RigidBody>(id, body);
+
+        // The scene may already be simulating (a body made during play); otherwise it is built when play starts.
+        if (auto *const scene = game_host(state).scene; scene != nullptr && scene->physics_world != nullptr) {
+            if (registry.all_of<Components::PhysicsBody>(id)) {
+                scene->physics_world->remove_body(registry, id);
+            }
+
+            scene->physics_world->add_body(registry, id, registry.get_or_emplace<Components::Transform>(id), body);
+        }
+
+        return 0;
+    }
+
+    auto entity_set_velocity(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+        auto &world = physics_world_of(state);
+
+        world.set_velocity(registry_of(state), id,
+                           {static_cast<float>(luaL_checknumber(state, 2)),
+                            static_cast<float>(luaL_checknumber(state, 3)),
+                            static_cast<float>(luaL_checknumber(state, 4))});
+
+        return 0;
+    }
+
+    auto entity_apply_impulse(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+        auto &world = physics_world_of(state);
+
+        world.apply_impulse(registry_of(state), id,
+                            {static_cast<float>(luaL_checknumber(state, 2)),
+                             static_cast<float>(luaL_checknumber(state, 3)),
+                             static_cast<float>(luaL_checknumber(state, 4))});
+
+        return 0;
+    }
+
+    auto key_down(lua_State *state) -> int {
+        lua_pushboolean(state, game_host(state).keys_down.contains(static_cast<int>(luaL_checkinteger(state, 1))) ? 1 : 0);
+
+        return 1;
+    }
+
+    // delta() -> dx, dy: mouse movement in pixels since the previous update.
+    auto mouse_delta(lua_State *state) -> int {
+        auto const &host = game_host(state);
+
+        lua_pushnumber(state, host.mouse_delta_x);
+        lua_pushnumber(state, host.mouse_delta_y);
+
+        return 2;
+    }
+
     constexpr std::array entity_methods{
             luaL_Reg{"valid", &entity_valid},
             luaL_Reg{"destroy", &entity_destroy},
@@ -345,6 +787,9 @@ namespace {
             luaL_Reg{"add_particles", &entity_add_particles},
             luaL_Reg{"set_particles", &entity_set_particles},
             luaL_Reg{"remove_particles", &entity_remove_particles},
+            luaL_Reg{"add_body", &entity_add_body},
+            luaL_Reg{"set_velocity", &entity_set_velocity},
+            luaL_Reg{"apply_impulse", &entity_apply_impulse},
             luaL_Reg{nullptr, nullptr},
     };
 
@@ -362,8 +807,18 @@ namespace {
             return luaL_error(state, "'%s' is not a valid asset path", text);
         }
 
-        auto const handle = host.renderer->model_streamer().request(*host.renderer, *path, host.engine_models->cube,
-                                                                    FlyString{std::string_view{text}});
+        auto const wants_collider = option_bool(state, 2, "collider", false);
+        auto const min_extent = static_cast<float>(option_number(state, 2, "min_extent", 0.0));
+
+        auto observer = wants_collider ? std::optional{make_collider_observer(min_extent)} : std::nullopt;
+
+        auto const handle = host.renderer->model_streamer().request(
+                *host.renderer, *path, host.engine_models->cube, FlyString{std::string_view{text}},
+                observer ? std::move(observer->observer) : std::function<void(ModelCpuData const &)>{});
+
+        if (observer) {
+            host.collider_slots[model_key(handle)] = observer->slot;
+        }
 
         push_model(state, handle);
 
@@ -1112,6 +1567,8 @@ namespace {
             IntegerConstant{"X", GLFW_KEY_X},           IntegerConstant{"Y", GLFW_KEY_Y},
             IntegerConstant{"Z", GLFW_KEY_Z},           IntegerConstant{"F1", GLFW_KEY_F1},
             IntegerConstant{"F2", GLFW_KEY_F2},         IntegerConstant{"F3", GLFW_KEY_F3},
+            IntegerConstant{"LEFT_SHIFT", GLFW_KEY_LEFT_SHIFT},
+            IntegerConstant{"LEFT_CONTROL", GLFW_KEY_LEFT_CONTROL},
     };
 
     constexpr std::array mouse_constants{
@@ -1147,6 +1604,8 @@ auto open_lua_game_api(LuaRuntime &runtime) -> void {
                 std::array{luaL_Reg{"spawn", &scene_spawn}, luaL_Reg{"find", &scene_find},
                            luaL_Reg{"clear", &scene_clear}, luaL_Reg{"add_effect", &scene_add_effect},
                            luaL_Reg{"remove_effect", &scene_remove_effect}, luaL_Reg{nullptr, nullptr}});
+    set_library(state, "physics", physics_functions);
+    set_library(state, "animation", animation_functions);
     set_library(state, "compute", compute_functions);
     set_library(state, "entity", entity_functions);
     set_library(state, "assets", assets_functions);
@@ -1161,6 +1620,35 @@ auto open_lua_game_api(LuaRuntime &runtime) -> void {
 
     set_constants(state, "key", key_constants);
     set_constants(state, "mouse", mouse_constants);
+
+    lua_getglobal(state, "key");
+    lua_pushcfunction(state, &key_down);
+    lua_setfield(state, -2, "down");
+    lua_pop(state, 1);
+
+    lua_getglobal(state, "mouse");
+    lua_pushcfunction(state, &mouse_delta);
+    lua_setfield(state, -2, "delta");
+    lua_pop(state, 1);
+
+    for (auto const &[meta, methods]: {std::pair<char const *, luaL_Reg const *>{rig_meta, rig_methods.data()},
+                                       std::pair<char const *, luaL_Reg const *>{actor_meta, actor_methods.data()}}) {
+        luaL_newmetatable(state, meta);
+        lua_createtable(state, 0, 4);
+        luaL_setfuncs(state, methods, 0);
+        lua_setfield(state, -2, "__index");
+        lua_pushstring(state, meta);
+        lua_setfield(state, -2, "__name");
+        lua_pop(state, 1);
+    }
+
+    luaL_newmetatable(state, character_meta);
+    lua_createtable(state, 0, static_cast<int>(character_methods.size()));
+    luaL_setfuncs(state, character_methods.data(), 0);
+    lua_setfield(state, -2, "__index");
+    lua_pushstring(state, character_meta);
+    lua_setfield(state, -2, "__name");
+    lua_pop(state, 1);
 
     luaL_newmetatable(state, entity_meta);
     lua_createtable(state, 0, static_cast<int>(entity_methods.size()));
@@ -1203,4 +1691,24 @@ auto open_lua_game_api(LuaRuntime &runtime) -> void {
     lua_pop(state, 1);
 
     lua_settop(state, 0);
+}
+
+auto update_lua_game_physics(LuaGameHost &host) -> void {
+    if (host.scene == nullptr || host.scene->physics_world == nullptr) {
+        return;
+    }
+
+    auto &world = *host.scene->physics_world;
+    auto &registry = host.scene->get_registry();
+
+    for (auto &pending: host.mesh_colliders) {
+        if (pending.added_to_world == world.id() || !pending.slot->ready.load(std::memory_order_acquire) ||
+            !registry.valid(pending.entity)) {
+            continue;
+        }
+
+        world.add_static_mesh(pending.entity, registry.get_or_emplace<Components::Transform>(pending.entity),
+                              pending.slot->mesh);
+        pending.added_to_world = world.id();
+    }
 }

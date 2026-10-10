@@ -79,3 +79,11 @@ key.F1 = 290
 key.F2 = 291
 ---@type integer
 key.F3 = 292
+---@type integer
+key.LEFT_SHIFT = 340
+---@type integer
+key.LEFT_CONTROL = 341
+---True while the key is held down. Only keys the game receives while playing are tracked.
+---@param code integer one of the key constants
+---@return boolean
+function key.down(code) end

@@ -43,6 +43,20 @@ function Entity:add_particles(options) end
 ---@param options ParticleOptions
 function Entity:set_particles(options) end
 function Entity:remove_particles() end
+---Gives the entity a physics body, simulated while the game plays. Raises an error on an unknown shape or a
+---non-positive size.
+---@param options? BodyOptions
+function Entity:add_body(options) end
+---Sets the body's horizontal velocity and keeps its vertical speed. Only while playing.
+---@param x number
+---@param y number
+---@param z number
+function Entity:set_velocity(x, y, z) end
+---Pushes the body. Only while playing.
+---@param x number
+---@param y number
+---@param z number
+function Entity:apply_impulse(x, y, z) end
 
 ---entity.add_particles(e, options) is e:add_particles(options).
 ---@param e Entity
@@ -78,3 +92,15 @@ function entity.remove_particles(e) end
 ---| "sphere" # starts inside a ball of shape_size and flies outwards
 ---| "box" # starts inside a cube of half extent shape_size and flies along +Y within cone_degrees
 ---| "cone" # starts at the entity and flies along +Y within cone_degrees
+
+---@alias BodyShape "box"|"sphere"|"capsule"
+
+---@class BodyOptions
+---@field shape? BodyShape (default "box")
+---@field half_extents? number[] {x, y, z} of a box (default {0.5, 0.5, 0.5})
+---@field radius? number of a sphere or capsule (default 0.5 and 0.4)
+---@field height? number of a capsule
+---@field mass? number (default 1)
+---@field restitution? number bounciness (default 0.4)
+---@field static? boolean never moves (default false)
+---@field lock_rotation? boolean stays upright (default false; true for capsules)

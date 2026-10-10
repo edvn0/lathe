@@ -33,6 +33,11 @@ auto ModelStreamer::reserve(IModelSink &sink, AssetPath const &source_path, Mode
 
 auto ModelStreamer::request(IModelSink &sink, AssetPath source_path, ModelHandle fallback,
                             FlyString debug_name) -> ModelHandle {
+    return request(sink, std::move(source_path), fallback, std::move(debug_name), {});
+}
+
+auto ModelStreamer::request(IModelSink &sink, AssetPath source_path, ModelHandle fallback, FlyString debug_name,
+                            std::function<void(ModelCpuData const &)> on_loaded) -> ModelHandle {
     auto const reservation = reserve(sink, source_path, fallback, debug_name.view());
 
     if (reservation.final) {
@@ -41,6 +46,19 @@ auto ModelStreamer::request(IModelSink &sink, AssetPath source_path, ModelHandle
 
     auto profile = std::make_shared<ModelLoadProfile>();
     auto future = load_model_cpu_async(source_path, sink.sampler_storage(), profile);
+
+    if (on_loaded) {
+        // A thread of its own rather than a pool worker, so waiting on the load cannot starve it.
+        future = std::async(std::launch::async, [loading = std::move(future), on_loaded = std::move(on_loaded)]() mutable {
+            auto result = loading.get();
+
+            if (result) {
+                on_loaded(*result);
+            }
+
+            return result;
+        });
+    }
 
     pending_.push_back(PendingRequest{
             .handle = reservation.handle,

@@ -20,6 +20,7 @@
 #include "physics/physics_components.hxx"
 
 #include <algorithm>
+#include <atomic>
 #include <vector>
 
 namespace {
@@ -115,6 +116,12 @@ struct PhysicsWorld::Impl {
     }
 
     ~Impl() {
+        for (auto &mesh_body: mesh_bodies) {
+            world->removeRigidBody(mesh_body.body.get());
+        }
+
+        mesh_bodies.clear();
+
         for (auto &slot: terrain_colliders) {
             if (slot.active) {
                 world->removeRigidBody(slot.body);
@@ -169,6 +176,14 @@ struct PhysicsWorld::Impl {
         bool active = false;
     };
 
+    // Heap-owned (the shape belongs to the shared MeshCollider), unlike the arena-built shapes of ordinary bodies.
+    struct MeshBody {
+        std::shared_ptr<MeshCollider const> mesh;
+        std::unique_ptr<btRigidBody> body;
+    };
+
+    std::vector<MeshBody> mesh_bodies;
+
     ArenaAllocator arena{std::size_t{512} * 1024};
 
     std::vector<TerrainColliderSlot> terrain_colliders;
@@ -188,7 +203,12 @@ struct PhysicsWorld::Impl {
 };
 
 PhysicsWorld::PhysicsWorld(PhysicsWorldSettings const &settings, BS::priority_thread_pool &thread_pool,
-                           entt::registry &registry) : impl_{std::make_unique<Impl>(settings, thread_pool, registry)} {}
+                           entt::registry &registry) :
+    id_{[] {
+        static std::atomic<std::uint64_t> counter{0};
+        return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+    }()},
+    impl_{std::make_unique<Impl>(settings, thread_pool, registry)} {}
 
 PhysicsWorld::~PhysicsWorld() = default;
 
@@ -289,6 +309,22 @@ auto PhysicsWorld::add_body(entt::registry &registry, entt::entity entity, Compo
                                                               .rigid_body = rigid_body,
                                                               .shape = shape,
                                                       });
+}
+
+auto PhysicsWorld::add_static_mesh(entt::entity entity, Components::Transform const &transform,
+                                   std::shared_ptr<MeshCollider const> mesh) -> void {
+    btTransform start_transform;
+    start_transform.setIdentity();
+    start_transform.setOrigin(to_bt(transform.position));
+    start_transform.setRotation(to_bt(transform.rotation));
+
+    btRigidBody::btRigidBodyConstructionInfo construction_info{0.0F, nullptr, mesh->shape(), btVector3{0, 0, 0}};
+    construction_info.m_startWorldTransform = start_transform;
+
+    auto body = std::make_unique<btRigidBody>(construction_info);
+    body->setUserPointer(entity_to_pointer(entity));
+    impl_->world->addRigidBody(body.get());
+    impl_->mesh_bodies.push_back({.mesh = std::move(mesh), .body = std::move(body)});
 }
 
 auto PhysicsWorld::set_velocity(entt::registry const &registry, entt::entity entity, glm::vec3 const &linear_velocity)
