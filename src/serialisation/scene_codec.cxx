@@ -566,6 +566,56 @@ namespace {
         }
     }
 
+    auto write_particle_emitters(ByteWriter &writer, SceneDescription const &scene) -> void {
+        writer.write(static_cast<std::uint32_t>(scene.particle_emitters.size()));
+
+        for (auto const &component: scene.particle_emitters) {
+            auto const &emitter = component.emitter;
+
+            writer.write(component.entity);
+            writer.write(emitter.count);
+            writer.write(emitter.rate);
+            writer.write(emitter.lifetime);
+            write_vec3(writer, emitter.gravity);
+            writer.write(static_cast<std::uint8_t>(emitter.shape));
+            writer.write(emitter.shape_size);
+            writer.write(emitter.cone_degrees);
+            writer.write(emitter.speed);
+            writer.write(emitter.speed_variance);
+            writer.write(emitter.size_start);
+            writer.write(emitter.size_end);
+            write_vec4(writer, emitter.colour_start);
+            write_vec4(writer, emitter.colour_end);
+            write_bool(writer, emitter.emitting);
+            writer.write(component.material);
+        }
+    }
+
+    auto read_particle_emitters(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+        scene.particle_emitters.resize(read_count(reader, 90));
+
+        for (auto &component: scene.particle_emitters) {
+            auto &emitter = component.emitter;
+
+            reader.read(component.entity);
+            reader.read(emitter.count);
+            reader.read(emitter.rate);
+            reader.read(emitter.lifetime);
+            emitter.gravity = read_vec3(reader);
+            emitter.shape = static_cast<Components::ParticleShape>(reader.read<std::uint8_t>());
+            reader.read(emitter.shape_size);
+            reader.read(emitter.cone_degrees);
+            reader.read(emitter.speed);
+            reader.read(emitter.speed_variance);
+            reader.read(emitter.size_start);
+            reader.read(emitter.size_end);
+            emitter.colour_start = read_vec4(reader);
+            emitter.colour_end = read_vec4(reader);
+            emitter.emitting = read_bool(reader);
+            reader.read(component.material);
+        }
+    }
+
     auto write_rigid_bodies(ByteWriter &writer, SceneDescription const &scene) -> void {
         writer.write(static_cast<std::uint32_t>(scene.rigid_bodies.size()));
 
@@ -866,6 +916,13 @@ namespace {
                     .read = read_spot_lights,
             },
             SectionCodec{
+                    .type = scene_section::particle_emitters,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_particle_emitters,
+                    .read = read_particle_emitters,
+            },
+            SectionCodec{
                     .type = scene_section::rigid_bodies,
                     .version = rigid_bodies_section_version,
                     .oldest_readable = 1,
@@ -1150,13 +1207,15 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
     };
 
     if (!entities_valid(scene.point_lights) || !entities_valid(scene.spot_lights) ||
-        !entities_valid(scene.rigid_bodies) || !entities_valid(scene.scripts) || !entities_valid(scene.lifetimes)) {
+        !entities_valid(scene.particle_emitters) || !entities_valid(scene.rigid_bodies) ||
+        !entities_valid(scene.scripts) || !entities_valid(scene.lifetimes)) {
         return fail("component entity out of range");
     }
 
     if (!entities_unique(scene, scene.model_components) || !entities_unique(scene, scene.material_overrides) ||
         !entities_unique(scene, scene.instanced_models) || !entities_unique(scene, scene.point_lights) ||
-        !entities_unique(scene, scene.spot_lights) || !entities_unique(scene, scene.rigid_bodies) ||
+        !entities_unique(scene, scene.spot_lights) || !entities_unique(scene, scene.particle_emitters) ||
+        !entities_unique(scene, scene.rigid_bodies) ||
         !entities_unique(scene, scene.scripts) || !entities_unique(scene, scene.lifetimes)) {
         return fail("entity has the same component more than once");
     }
@@ -1217,6 +1276,23 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
         if (!finite(light.colour) || !non_negative(light.intensity) || !non_negative(light.range) ||
             !non_negative(light.inner_cone_degrees) || !non_negative(light.outer_cone_degrees)) {
             return fail("spot light has a non-finite or negative value");
+        }
+    }
+
+    for (auto const &component: scene.particle_emitters) {
+        auto const &emitter = component.emitter;
+
+        if (!material_in_range(scene, component.material)) {
+            return fail("particle emitter material out of range");
+        }
+
+        if (emitter.count == 0 || emitter.count > Components::ParticleEmitter::max_count ||
+            std::to_underlying(emitter.shape) > std::to_underlying(Components::ParticleShape::cone) ||
+            !non_negative(emitter.rate) || !finite(emitter.lifetime) || emitter.lifetime <= 0.0F ||
+            !finite(emitter.gravity) || !non_negative(emitter.shape_size) || !non_negative(emitter.cone_degrees) ||
+            !finite(emitter.speed) || !non_negative(emitter.speed_variance) || !non_negative(emitter.size_start) ||
+            !non_negative(emitter.size_end) || !finite(emitter.colour_start) || !finite(emitter.colour_end)) {
+            return fail("particle emitter has an invalid value");
         }
     }
 

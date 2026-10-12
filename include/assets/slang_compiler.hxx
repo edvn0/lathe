@@ -98,9 +98,10 @@ namespace renderer {
         auto compile(ShaderCompileRequest const &request) const -> std::expected<CompiledShader, ShaderCompileError>;
 
         // The entry points a source file defines (via [shader("...")] attributes) and their stages, found by loading
-        // the module without any defines. Shader bake uses this to compile every shader without a hand-kept list.
+        // the module without any defines, searching `include_directories` after the file's own. Shader bake uses this to compile every shader without a hand-kept list.
         [[nodiscard]]
-        auto discover_entry_points(DataPath const &source_path) const
+        auto discover_entry_points(DataPath const &source_path,
+                                   std::span<std::filesystem::path const> include_directories = {}) const
                 -> std::expected<std::vector<DiscoveredEntryPoint>, ShaderCompileError>;
 
         // Starts compiling the requests on the thread pool, one session and module per source file. `compile` then

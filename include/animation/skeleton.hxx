@@ -52,11 +52,23 @@ namespace Animation {
               scale_(joint_count, glm::vec3{1.0F}) {}
 
         [[nodiscard]] auto size() const -> std::size_t { return translation_.size(); }
-        [[nodiscard]] auto view() -> PoseView { return {translation_, rotation_, scale_}; }
-        [[nodiscard]] auto view() const -> ConstPoseView { return {translation_, rotation_, scale_}; }
+        [[nodiscard]] auto view() -> PoseView {
+            return {.translation = translation_, .rotation = rotation_, .scale = scale_};
+        }
+        [[nodiscard]] auto view() const -> ConstPoseView {
+            return {
+                    translation_,
+                    rotation_,
+                    scale_,
+            };
+        }
 
         [[nodiscard]] auto joint(std::size_t index) const -> JointTransform {
-            return {translation_[index], rotation_[index], scale_[index]};
+            return {
+                    .translation = translation_[index],
+                    .rotation = rotation_[index],
+                    .scale = scale_[index],
+            };
         }
         void set_joint(std::size_t index, JointTransform const &transform) {
             translation_[index] = transform.translation;

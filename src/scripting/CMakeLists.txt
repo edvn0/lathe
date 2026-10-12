@@ -8,6 +8,7 @@ add_library(
     STATIC
         entity_index.cxx
         lua_allocator.cxx
+        lua_particles.cxx
         lua_runtime.cxx
         script_bindings.cxx
         script_engine.cxx

@@ -118,7 +118,7 @@ namespace renderer {
             auto logical = (std::filesystem::path{"assets"} / "shaders" / relative).generic_string();
 
             discoveries.push_back(thread_pool().submit_task(
-                    [&compiler, logical = std::move(logical), relative = std::move(relative)]() mutable {
+                    [&compiler, &shader_directory, logical = std::move(logical), relative = std::move(relative)]() mutable {
                         auto path = Paths::current().data(logical);
 
                         if (!path) {
@@ -134,7 +134,7 @@ namespace renderer {
                         return FileEntryPoints{
                                 .logical = logical,
                                 .relative = std::move(relative),
-                                .entry_points = compiler.discover_entry_points(*path),
+                                .entry_points = compiler.discover_entry_points(*path, std::span{&shader_directory, 1}),
                         };
                     }));
         }
@@ -158,6 +158,7 @@ namespace renderer {
                         .source_path = *Paths::current().data(file.logical),
                         .entry_point = entry.name,
                         .stage = entry.stage,
+                        .include_directories = {shader_directory},
                 });
             }
         }
@@ -176,6 +177,7 @@ namespace renderer {
                     .source_path = *Paths::current().data(std::format("assets/shaders/{}", variant.file)),
                     .entry_point = FlyString{variant.entry},
                     .stage = stage->second,
+                    .include_directories = {shader_directory},
                     .defines = variant.defines,
             });
         }

@@ -787,7 +787,8 @@ namespace frame_graph {
             hasher.mix(static_cast<std::uint64_t>(pass.type));
             hasher.mix(static_cast<std::uint64_t>(pass.affinity));
             hasher.mix(static_cast<std::uint64_t>(pass.side_effect) | (static_cast<std::uint64_t>(pass.legacy) << 1U) |
-                       (static_cast<std::uint64_t>(pass.pinned) << 2U));
+                       (static_cast<std::uint64_t>(pass.pinned) << 2U) |
+                       (static_cast<std::uint64_t>(pass.owner) << 3U));
             for (auto const &access: pass.accesses) {
                 hasher.mix(access.resource);
                 hasher.mix(access.version);
@@ -811,7 +812,8 @@ namespace frame_graph {
                        (static_cast<std::uint64_t>(resource.exit.queue) << 8U) |
                        (static_cast<std::uint64_t>(resource.imported) << 16U) |
                        (static_cast<std::uint64_t>(resource.swapchain) << 17U) |
-                       (static_cast<std::uint64_t>(resource.read_only) << 18U));
+                       (static_cast<std::uint64_t>(resource.read_only) << 18U) |
+                       (static_cast<std::uint64_t>(resource.owner) << 19U));
         }
         return hasher.state;
     }

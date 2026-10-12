@@ -86,6 +86,9 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
     self.bindings.scene = &scene;
     self.bindings.renderer = &renderer;
     self.bindings.engine_models = &engine_models;
+    self.bindings.animation = std::make_unique<LuaAnimationSystem>();
+    self.bindings.collider_slots.clear();
+    self.bindings.mesh_colliders.clear();
     self.bound_scene = nullptr;
     self.have_camera = false;
     self.fatal_error.clear();
@@ -145,15 +148,35 @@ auto LuaGame::on_update(Scene &scene, float delta_time) -> void {
         self.call("on_bind");
     }
 
+    update_lua_game_physics(self.bindings);
+
     std::array const arguments{static_cast<double>(delta_time)};
 
     self.call("on_update", arguments);
+
+    if (self.bindings.renderer != nullptr) {
+        self.bindings.animation->update(scene, *self.bindings.renderer, delta_time);
+    }
+
+    // A frame's mouse movement is seen by one update.
+    self.bindings.mouse_delta_x = 0.0;
+    self.bindings.mouse_delta_y = 0.0;
+}
+
+auto LuaGame::on_key_released(Scene & , KeyReleasedEvent const &event) -> void {
+    impl_->bindings.keys_down.erase(event.key);
+}
+
+auto LuaGame::on_mouse_moved(Scene & , MouseMovedEvent const &event) -> void {
+    impl_->bindings.mouse_delta_x += event.delta_x;
+    impl_->bindings.mouse_delta_y += event.delta_y;
 }
 
 auto LuaGame::on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void {
     auto &self = *impl_;
 
     self.bindings.scene = &scene;
+    self.bindings.keys_down.insert(event.key);
 
     std::array const arguments{static_cast<double>(event.key), static_cast<double>(event.modifiers)};
 

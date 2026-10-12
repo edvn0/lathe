@@ -892,14 +892,17 @@ auto main(int argc, char **argv) -> int {
 
     Application application{context};
     application.player_mode = player_mode;
-    application.game = create_game(!engine.game.empty() ? std::string_view{engine.game}
-                                   : manifest           ? std::string_view{manifest->game}
-                                                        : game_names().front());
+    application.game_name = !engine.game.empty() ? engine.game
+                            : manifest           ? manifest->game
+                                                 : std::string{game_names().front()};
+    application.script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{};
+    application.game = create_game(application.game_name);
 
     application.game->attach_host(GameHost{
             .player_mode = player_mode,
             .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
             .script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{},
+            .effects = &application.effect_system,
     });
 
     if (manifest && !manifest->title.empty()) {
@@ -919,7 +922,17 @@ auto main(int argc, char **argv) -> int {
 
     application.on_startup();
 
-    if (player_mode) {
+    // A packaged game ships its own cooked scene; it has to be open before play starts, because opening stops play.
+    auto const manifest_scene = manifest && !manifest->scene.empty() && !engine.open_scene
+                                        ? std::optional{Paths::current().data_root() / manifest->scene}
+                                        : std::nullopt;
+
+    if (manifest_scene) {
+        application.renderer->queue_render_thread_event([&application, path = *manifest_scene] {
+            application.play_when_loaded = true;
+            application.request_open_scene(path);
+        });
+    } else if (player_mode) {
         application.renderer->queue_render_thread_event([&application] {
             application.play_fullscreen = true;
             application.play();

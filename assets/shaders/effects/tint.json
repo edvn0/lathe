@@ -1,0 +1,13 @@
+{
+  "shader": "effects/tint.slang",
+  "group_size": [8, 8],
+  "bindings": [
+    { "name": "source", "image": "in", "source": "scene_colour" },
+    { "name": "result", "image": "out", "format": "rgba16f", "replaces": "scene_colour" }
+  ],
+  "params": [
+    { "name": "strength", "type": "float", "default": 0.6, "min": 0.0, "max": 1.0 },
+    { "name": "tint", "type": "float3", "default": [1.0, 0.7, 0.4], "min": 0.0, "max": 4.0 }
+  ],
+  "dispatch": { "per_pixel_of": "result" }
+}

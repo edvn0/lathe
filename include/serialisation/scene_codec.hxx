@@ -127,6 +127,13 @@ struct SceneSpotLightComponent {
     Components::SpotLight light;
 };
 
+// `emitter.material` is not stored in the component; `material` indexes the scene's materials instead.
+struct SceneParticleEmitterComponent {
+    std::uint32_t entity = 0;
+    Components::ParticleEmitter emitter;
+    std::uint32_t material = scene_no_index;
+};
+
 struct SceneRigidBodyComponent {
     std::uint32_t entity = 0;
     Components::RigidBody body;
@@ -158,6 +165,7 @@ struct SceneDescription {
     std::vector<SceneInstancedModelComponent> instanced_models;
     std::vector<ScenePointLightComponent> point_lights;
     std::vector<SceneSpotLightComponent> spot_lights;
+    std::vector<SceneParticleEmitterComponent> particle_emitters;
     std::vector<SceneRigidBodyComponent> rigid_bodies;
     std::vector<SceneScriptComponent> scripts;
     std::vector<SceneLifetimeComponent> lifetimes;
@@ -180,6 +188,7 @@ namespace scene_section {
     inline constexpr std::uint32_t scripts = 12;
     inline constexpr std::uint32_t lifetimes = 13;
     inline constexpr std::uint32_t environment = 14;
+    inline constexpr std::uint32_t particle_emitters = 15;
 }
 
 inline constexpr std::uint16_t scene_section_version = 1;

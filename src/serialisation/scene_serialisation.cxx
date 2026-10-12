@@ -210,7 +210,7 @@ namespace {
             auto const *info = renderer_.material_storage().create_info(handle);
 
             if (info == nullptr) {
-                warn_once("a material override references a destroyed material; it was dropped");
+                warn_once("a component references a destroyed material; it was dropped");
                 material_indices_.emplace(key, scene_no_index);
                 return scene_no_index;
             }
@@ -417,6 +417,16 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
 
         if (auto const *light = registry.try_get<Components::SpotLight>(entity)) {
             description.spot_lights.push_back(SceneSpotLightComponent{.entity = entity_index, .light = *light});
+        }
+
+        if (auto const *emitter = registry.try_get<Components::ParticleEmitter>(entity)) {
+            auto copy = *emitter;
+            copy.material = {};
+            description.particle_emitters.push_back(SceneParticleEmitterComponent{
+                    .entity = entity_index,
+                    .emitter = copy,
+                    .material = capture.material_index(emitter->material),
+            });
         }
 
         if (auto const *body = registry.try_get<Components::RigidBody>(entity)) {
@@ -856,6 +866,13 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
 
     for (auto const &component: description.spot_lights) {
         registry.emplace<Components::SpotLight>(entities[component.entity], component.light);
+    }
+
+    for (auto const &component: description.particle_emitters) {
+        // A material that was missing when the scene was saved loads as none (untinted).
+        auto emitter = component.emitter;
+        emitter.material = material_at(component.material);
+        registry.emplace<Components::ParticleEmitter>(entities[component.entity], emitter);
     }
 
     for (auto const &component: description.rigid_bodies) {
@@ -1317,6 +1334,13 @@ auto scene_fingerprint(SceneDescription const &description) -> std::uint64_t {
         component.material = add_material(single, component.material);
         component.entity = 0;
         single.instanced_models.push_back(std::move(component));
+    }
+
+    for (auto component: description.particle_emitters) {
+        auto &single = singles[component.entity];
+        component.material = add_material(single, component.material);
+        component.entity = 0;
+        single.particle_emitters.push_back(std::move(component));
     }
 
     auto const add_plain = [&](auto const &components, auto member) {

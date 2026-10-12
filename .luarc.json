@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime": { "version": "Lua 5.4" },
+  "workspace": {
+    "library": ["lua-api"],
+    "checkThirdParty": false
+  },
+  "diagnostics": {
+    "globals": ["scene", "assets", "camera", "ui", "game", "entity", "compute", "key", "mouse"]
+  }
+}

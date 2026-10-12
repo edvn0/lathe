@@ -90,6 +90,7 @@ namespace frame_graph {
         }
 
         timings_.clear();
+        auto begins = std::vector<std::optional<std::uint64_t>>{};
 
         for (auto queue = std::size_t{0}; queue < logical_queue_count; ++queue) {
             auto &entry = pools_[slot][queue];
@@ -102,6 +103,7 @@ namespace frame_graph {
                                                   .label = written.label,
                                                   .queue = logical,
                                                   .milliseconds = std::nullopt});
+                    begins.emplace_back();
                 }
                 entry.written.clear();
                 continue;
@@ -124,19 +126,52 @@ namespace frame_graph {
                                              .queue = logical,
                                              .milliseconds = std::nullopt};
 
+                    auto pass_begin = std::optional<std::uint64_t>{};
                     if (result == VK_SUCCESS) {
                         auto const begin = ticks[2 * static_cast<std::size_t>(written.timestamp_slot)];
                         auto const end = ticks[2 * static_cast<std::size_t>(written.timestamp_slot) + 1];
                         auto const delta = (end - begin) & mask;
                         timing.milliseconds = static_cast<float>(delta) * timestamp_period_ / 1'000'000.0F;
+                        pass_begin = begin;
                     }
 
                     timings_.push_back(std::move(timing));
+                    begins.push_back(pass_begin);
                 }
             }
 
             entry.written.clear();
             vkResetQueryPool(device_, entry.pool, 0, 2 * max_passes_);
+        }
+
+        assign_start_offsets(begins);
+    }
+
+    auto PassProfiler::assign_start_offsets(std::span<std::optional<std::uint64_t> const> begins) -> void {
+        auto bits = std::uint32_t{64};
+        for (auto const queue_bits: valid_bits_) {
+            bits = queue_bits != 0 ? std::min(bits, queue_bits) : bits;
+        }
+
+        auto const first = std::ranges::find_if(begins, [](auto const &begin) { return begin.has_value(); });
+        if (first == begins.end()) {
+            return;
+        }
+
+        auto offsets = std::vector<std::optional<std::int64_t>>(begins.size());
+        auto earliest = std::int64_t{0};
+        for (auto index = std::size_t{0}; index < begins.size(); ++index) {
+            if (begins[index]) {
+                offsets[index] = timestamp_distance(**first, *begins[index], bits);
+                earliest = std::min(earliest, *offsets[index]);
+            }
+        }
+
+        for (auto index = std::size_t{0}; index < offsets.size() && index < timings_.size(); ++index) {
+            if (offsets[index]) {
+                timings_[index].start_milliseconds =
+                        static_cast<float>(*offsets[index] - earliest) * timestamp_period_ / 1'000'000.0F;
+            }
         }
     }
 

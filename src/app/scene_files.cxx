@@ -161,6 +161,12 @@ auto Application::update_scene_jobs() -> void {
             scene_path = path;
             scene_pack = std::move((*finished)->pack);
             mark_editor_scene_clean();
+            if (play_when_loaded) {
+                play_when_loaded = false;
+                play_fullscreen = true;
+                play();
+            }
+
             scene_status =
                     std::format("Opened '{}' in {:.2f}s{}", gui::path_to_utf8(path.filename()), (*finished)->seconds,
                                 (*finished)->instantiate.warnings.empty() ? "" : " with warnings; see the console");
@@ -198,6 +204,8 @@ auto Application::on_files_dropped(std::span<std::filesystem::path const> paths)
 auto Application::draw_scene_file_ui() -> void {
     bool const busy = scene_save_job.has_value() || scene_load_job.has_value();
 
+    draw_package_ui();
+
     gui::widget("Scene", [&] {
         auto const title = scene_path.empty() ? std::string{"(untitled)"} : gui::path_to_utf8(scene_path);
         ImGui::Text("File: %s", title.c_str());
@@ -215,6 +223,16 @@ auto Application::draw_scene_file_ui() -> void {
             start_save_scene({});
         }
         ImGui::EndDisabled();
+
+        ImGui::BeginDisabled(busy || packaging_active());
+        if (ImGui::Button("Package Game...")) {
+            request_package_dialog();
+        }
+        ImGui::EndDisabled();
+
+        if (!package_status.empty()) {
+            ImGui::TextWrapped("%s", package_status.c_str());
+        }
 
         if (!scene_status.empty()) {
             ImGui::TextWrapped("%s", scene_status.c_str());

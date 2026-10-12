@@ -9,6 +9,8 @@ add_library(
         cluster_grid.cxx
         debug_renderer.cxx
         editor_icons.cxx
+        effect_manifest.cxx
+        effect_system.cxx
         engine_models.cxx
         environment_panel.cxx
         environment.cxx
@@ -18,13 +20,19 @@ add_library(
         frame_graph/describe.cxx
         frame_graph/executor.cxx
         frame_graph/frame_graph.cxx
+        frame_graph/layout.cxx
+        frame_graph/lint.cxx
+        frame_graph/resource_info.cxx
         frame_graph/pass_profiler.cxx
         frame_graph/scheduler.cxx
         frame_graph/transient_allocator.cxx
         frame_graph/vk_translate.cxx
         forward_target.cxx
+        game_graph.cxx
+        game_gpu.cxx
         imgui_renderer.cxx
         overlay.cxx
+        particle_system.cxx
         pipeline_graph_repository.cxx
         renderer.cxx
         renderer_frame_graph.cxx

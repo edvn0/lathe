@@ -38,6 +38,7 @@ namespace frame_graph {
         Sharing sharing = Sharing::exclusive;
         bool read_only = false;
         bool swapchain = false;
+        Owner owner = Owner::engine;
         std::string_view debug_name;
         PhysicalImage image{};
         PhysicalBuffer buffer{};
@@ -57,6 +58,7 @@ namespace frame_graph {
         bool imported = false;
         bool swapchain = false;
         bool read_only = false;
+        Owner owner = Owner::engine;
         Sharing sharing = Sharing::exclusive;
         ResourceState entry;
         ResourceState exit;
@@ -84,6 +86,7 @@ namespace frame_graph {
         bool side_effect = false;
         bool legacy = false;
         bool pinned = false;
+        Owner owner = Owner::engine;
         std::optional<RenderingDesc> rendering;
     };
 
@@ -141,11 +144,38 @@ namespace frame_graph {
 
         template<std::invocable<PassBuilder &> Setup>
         auto add_pass(std::string_view name, PassType type, PassProfile profile, Setup &&setup) -> PassId {
+            return add_pass(name, type, profile, Owner::engine, std::forward<Setup>(setup));
+        }
+
+        template<std::invocable<PassBuilder &> Setup>
+        auto add_pass(std::string_view name, PassType type, PassProfile profile, Owner owner, Setup &&setup)
+                -> PassId {
             auto &pass = begin_pass(name, type, profile);
+            pass.owner = owner;
             auto builder = PassBuilder{*this, pass};
             records_.push_back(std::forward<Setup>(setup)(builder));
             return PassId{.index = static_cast<std::uint32_t>(desc_.passes.size() - 1), .generation = 1};
         }
+
+        // A game pass can only add resources and passes, never change an engine resource (foreign_write), so a
+        // declaration made after a checkpoint can be discarded without touching what the engine declared before it.
+        struct Checkpoint {
+            std::size_t resources = 0;
+            std::size_t passes = 0;
+            std::size_t errors = 0;
+        };
+        [[nodiscard]] auto checkpoint() const -> Checkpoint;
+        // Drops everything declared since `mark` and returns the errors that were recorded since.
+        auto rollback(Checkpoint mark) -> std::vector<FrameGraphError>;
+
+        // True when `buffer` names the latest version of an existing buffer resource that is already written.
+        [[nodiscard]] auto is_current(BufferId buffer) const -> bool;
+        [[nodiscard]] auto is_current(ImageId image) const -> bool;
+        [[nodiscard]] auto latest_version(std::uint32_t resource) const -> std::uint32_t;
+        [[nodiscard]] auto owner_of(std::uint32_t resource) const -> Owner;
+
+        // The latest version of the image named `name`, as a later pass would read it.
+        [[nodiscard]] auto find_image(std::string_view name) const -> std::optional<ImageId>;
 
         [[nodiscard]] auto description() const -> GraphDesc const & { return desc_; }
         [[nodiscard]] auto declaration_errors() const -> std::vector<FrameGraphError> const & { return errors_; }
@@ -157,7 +187,6 @@ namespace frame_graph {
 
         auto begin_pass(std::string_view name, PassType type, PassProfile profile) -> PassDesc &;
         auto add_resource(ResourceDesc resource, bool produced) -> std::uint32_t;
-        [[nodiscard]] auto latest_version(std::uint32_t resource) const -> std::uint32_t;
         auto record_error(FrameGraphErrorType type, PassDesc const &pass, std::uint32_t resource) -> void;
         auto validate_access(PassDesc const &pass, std::uint32_t resource, std::uint32_t version) -> bool;
         auto produce(std::uint32_t resource) -> std::uint32_t;

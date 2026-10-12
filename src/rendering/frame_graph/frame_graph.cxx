@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "gpu/image.hxx"
+
 namespace frame_graph {
 
     auto FrameGraph::reset() -> void {
@@ -14,6 +16,30 @@ namespace frame_graph {
         errors_.clear();
     }
 
+    namespace {
+        [[nodiscard]] constexpr auto is_depth_format(VkFormat format) noexcept -> bool {
+            return format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_X8_D24_UNORM_PACK32 ||
+                   format == VK_FORMAT_D32_SFLOAT || format == VK_FORMAT_D16_UNORM_S8_UINT ||
+                   format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+        }
+
+        // Whether `use` of the transient `image` would need a descriptor view or format it was not created with.
+        // Only the shader-visible uses are checked: attachments and transfers do not go through the bindless views.
+        [[nodiscard]] constexpr auto usage_unsupported(TransientImageDesc const &image, Use use) noexcept -> bool {
+            switch (use) {
+                case Use::sampled:
+                    return !has_image_descriptor_view(image.descriptor_views, ImageDescriptorView::sampled_2d);
+                case Use::storage_read:
+                case Use::storage_write:
+                case Use::storage_read_write:
+                    return is_depth_format(image.format) ||
+                           !has_image_descriptor_view(image.descriptor_views, ImageDescriptorView::storage_2d);
+                default:
+                    return false;
+            }
+        }
+    }
+
     auto FrameGraph::add_resource(ResourceDesc resource, bool produced) -> std::uint32_t {
         auto const index = static_cast<std::uint32_t>(desc_.resources.size());
         desc_.resources.push_back(std::move(resource));
@@ -24,6 +50,47 @@ namespace frame_graph {
     }
 
     auto FrameGraph::latest_version(std::uint32_t resource) const -> std::uint32_t { return latest_[resource]; }
+
+    auto FrameGraph::checkpoint() const -> Checkpoint {
+        return Checkpoint{.resources = desc_.resources.size(), .passes = desc_.passes.size(), .errors = errors_.size()};
+    }
+
+    auto FrameGraph::rollback(Checkpoint mark) -> std::vector<FrameGraphError> {
+        auto dropped = std::vector<FrameGraphError>(errors_.begin() + static_cast<std::ptrdiff_t>(mark.errors),
+                                                    errors_.end());
+        errors_.resize(mark.errors);
+        desc_.passes.resize(mark.passes);
+        records_.resize(mark.passes);
+        desc_.resources.resize(mark.resources);
+        desc_.producers.resize(mark.resources);
+        latest_.resize(mark.resources);
+        written_.resize(mark.resources);
+        return dropped;
+    }
+
+    auto FrameGraph::is_current(BufferId buffer) const -> bool {
+        return buffer.index < desc_.resources.size() && desc_.resources[buffer.index].kind == ResourceKind::buffer &&
+               buffer.generation == latest_[buffer.index] && written_[buffer.index];
+    }
+
+    auto FrameGraph::is_current(ImageId image) const -> bool {
+        return image.index < desc_.resources.size() && desc_.resources[image.index].kind == ResourceKind::image &&
+               image.generation == latest_[image.index] && written_[image.index];
+    }
+
+    auto FrameGraph::owner_of(std::uint32_t resource) const -> Owner {
+        return resource < desc_.resources.size() ? desc_.resources[resource].owner : Owner::engine;
+    }
+
+    auto FrameGraph::find_image(std::string_view name) const -> std::optional<ImageId> {
+        for (auto index = std::size_t{0}; index < desc_.resources.size(); ++index) {
+            auto const &resource = desc_.resources[index];
+            if (resource.kind == ResourceKind::image && resource.name == name) {
+                return ImageId{.index = static_cast<std::uint32_t>(index), .generation = latest_[index]};
+            }
+        }
+        return std::nullopt;
+    }
 
     auto FrameGraph::record_error(FrameGraphErrorType type, PassDesc const &pass, std::uint32_t resource) -> void {
         errors_.push_back(FrameGraphError{
@@ -41,6 +108,7 @@ namespace frame_graph {
                         .imported = true,
                         .swapchain = desc.swapchain,
                         .read_only = desc.read_only,
+                        .owner = desc.owner,
                         .sharing = desc.sharing,
                         .entry = desc.entry,
                         .exit = desc.exit,
@@ -60,6 +128,7 @@ namespace frame_graph {
                         .kind = ResourceKind::buffer,
                         .imported = true,
                         .read_only = desc.read_only,
+                        .owner = desc.owner,
                         .sharing = desc.sharing,
                         .entry = desc.entry,
                         .exit = desc.exit,
@@ -152,6 +221,16 @@ namespace frame_graph {
         if (std::ranges::any_of(pass.accesses, [&](AccessDesc const &a) { return a.resource == resource; })) {
             graph.record_error(FrameGraphErrorType::conflicting_use, pass, resource);
             return false;
+        }
+        if (pass.owner == Owner::game) {
+            if (info.writes && desc.owner == Owner::engine) {
+                graph.record_error(FrameGraphErrorType::foreign_write, pass, resource);
+                return false;
+            }
+            if (desc.transient_image && usage_unsupported(*desc.transient_image, use)) {
+                graph.record_error(FrameGraphErrorType::unsupported_usage, pass, resource);
+                return false;
+            }
         }
         if (info.writes && desc.read_only) {
             graph.record_error(FrameGraphErrorType::write_to_read_only_import, pass, resource);
@@ -279,6 +358,7 @@ namespace frame_graph {
                 ResourceDesc{
                         .name = std::string{desc.debug_name},
                         .kind = ResourceKind::image,
+                        .owner = pass_->owner,
                         .transient_image = desc,
                 },
                 false);

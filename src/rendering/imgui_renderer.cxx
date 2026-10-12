@@ -414,13 +414,15 @@ namespace gui {
                 }
 
                 auto const raw_tex_id = static_cast<std::uint64_t>(imgui_cmd.GetTexID());
-                bool const already_linear = (raw_tex_id & linear_source_texture_bit) != 0;
+                bool const is_preview = (raw_tex_id & preview_texture_bit) != 0;
+                bool const already_linear = is_preview || (raw_tex_id & linear_source_texture_bit) != 0;
 
                 PC pc{
                         .lrtb = {L, R, T, B},
                         .vb = drawable.vertex->device_address,
                         .base_vertex = vertex_offset + imgui_cmd.VtxOffset,
-                        .texture_id = static_cast<std::uint32_t>(raw_tex_id & 0xFFFFFFFFULL),
+                        .texture_id = is_preview ? renderer.preview_texture_index()
+                                                 : static_cast<std::uint32_t>(raw_tex_id & 0xFFFFFFFFULL),
                         .sampler_id = sampler.index,
                         .already_linear = already_linear ? 1U : 0U,
                 };

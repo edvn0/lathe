@@ -34,6 +34,7 @@ them is part of the engine binary.
 | [ImPlot](https://github.com/epezent/implot) | `bd99f8d8` | MIT |
 | [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo) | `a15acd87` | MIT |
 | [ImGuiNotify](https://github.com/TyomaVader/ImGuiNotify) | `d00e45f8` | MIT |
+| [imgui-node-editor](https://github.com/thedmd/imgui-node-editor) | `021aa0ea` | MIT |
 | [Lua](https://github.com/lua/lua) | `v5.4.8` | MIT |
 | [sol2](https://github.com/ThePhD/sol2) | `v3.5.0` | MIT |
 | [tinyexr](https://github.com/syoyo/tinyexr) | `v3.2.0` | BSD-3-Clause |
@@ -901,6 +902,38 @@ MIT License
 
 Copyright (c) 2021 Patrick
 Copyright (c) 2024 TyomaVader
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## imgui-node-editor
+
+- Version: `021aa0ea`
+- Source: <https://github.com/thedmd/imgui-node-editor>
+- License: MIT
+
+```text
+MIT License
+
+Copyright (c) 2019 Michał Cichoń
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -63,6 +63,8 @@ auto GameManifest::load(std::filesystem::path const &path) -> std::expected<Game
             manifest.version = value;
         } else if (key == "entry") {
             manifest.entry = value;
+        } else if (key == "scene") {
+            manifest.scene = value;
         }
     }
 
@@ -78,6 +80,10 @@ auto GameManifest::to_text() const -> std::string {
 
     if (!entry.empty()) {
         text += std::format("entry = \"{}\"\n", entry);
+    }
+
+    if (!scene.empty()) {
+        text += std::format("scene = \"{}\"\n", scene);
     }
 
     return text;

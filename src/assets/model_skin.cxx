@@ -11,18 +11,28 @@
 #include <format>
 #include <limits>
 #include <numeric>
+#include <ranges>
 #include <unordered_map>
 
 namespace {
     auto fail(ModelLoadErrorType type, std::string message) -> std::unexpected<ModelLoadError> {
         return std::unexpected(ModelLoadError{
                 .type = type,
-                .cause = ErrorCause{ErrorContext{.message = FlyString{message}}},
+                .cause =
+                        ErrorCause{
+                                ErrorContext{
+                                        .message =
+                                                FlyString{
+                                                        std::move(message),
+                                                },
+                                },
+                        },
         });
     }
 
-    constexpr glm::mat4 mirror_matrix{1.0F, 0.0F, 0.0F,  0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
-                                      0.0F, 0.0F, -1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F};
+    constexpr glm::mat4 mirror_matrix{
+            1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, -1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F,
+    };
 
     auto mirror_quat(glm::quat const &q) -> glm::quat { return glm::quat{q.w, -q.x, -q.y, q.z}; }
 
@@ -229,8 +239,8 @@ auto import_gltf_skin(fastgltf::Asset const &asset, bool const mirror_z)
             auto const k = stack.back();
             stack.pop_back();
             order.push_back(k);
-            for (auto it = children[k].rbegin(); it != children[k].rend(); ++it) {
-                stack.push_back(*it);
+            for (unsigned long &it: std::views::reverse(children[k])) {
+                stack.push_back(it);
             }
         }
     }
@@ -254,6 +264,9 @@ auto import_gltf_skin(fastgltf::Asset const &asset, bool const mirror_z)
     std::vector<std::string> names(joint_count);
     std::vector<std::int32_t> parents(joint_count, Animation::no_parent);
     Animation::Pose bind{joint_count};
+    // Static transform of the non-joint ancestors folded into each root joint's bind pose; the root's animation
+    // tracks need the same prefix or they would replace it (e.g. a Z-up to Y-up node above the skeleton).
+    std::vector<glm::mat4> ancestor_prefix(joint_count, glm::mat4{1.0F});
     for (std::size_t i = 0; i < joint_count; ++i) {
         auto const k = order[i];
         auto const &node = asset.nodes[skin.joints[k]];
@@ -266,6 +279,7 @@ auto import_gltf_skin(fastgltf::Asset const &asset, bool const mirror_z)
             for (auto ancestor = node_parent[skin.joints[k]]; ancestor >= 0;
                  ancestor = node_parent[static_cast<std::size_t>(ancestor)]) {
                 local = node_matrix(asset.nodes[static_cast<std::size_t>(ancestor)]) * local;
+                ancestor_prefix[i] = node_matrix(asset.nodes[static_cast<std::size_t>(ancestor)]) * ancestor_prefix[i];
             }
         }
         auto joint = decompose(local);
@@ -326,8 +340,10 @@ auto import_gltf_skin(fastgltf::Asset const &asset, bool const mirror_z)
                     auto values = strip(read_all<glm::vec3>(asset, sampler.outputAccessor));
                     Animation::Vec3Track track{.joint = joint};
                     bool const is_t = channel.path == fastgltf::AnimationPath::Translation;
-                    push_keys<glm::vec3>(track.times, track.values, times, values, step, mirror_z,
-                                         [&](glm::vec3 v) { return is_t ? mirror_t(v) : v; });
+                    auto const &prefix = ancestor_prefix[joint];
+                    push_keys<glm::vec3>(track.times, track.values, times, values, step, mirror_z, [&](glm::vec3 v) {
+                        return is_t ? mirror_t(glm::vec3{prefix * glm::vec4{v, 1.0F}}) : v;
+                    });
                     if (!track.times.empty()) {
                         clip.duration = std::max(clip.duration, track.times.back());
                         (is_t ? clip.translations : clip.scales).push_back(std::move(track));
@@ -342,9 +358,11 @@ auto import_gltf_skin(fastgltf::Asset const &asset, bool const mirror_z)
                         quats.emplace_back(v.w, v.x, v.y, v.z);
                     }
                     Animation::QuatTrack track{.joint = joint};
+                    auto const prefix_rotation = decompose(ancestor_prefix[joint]).rotation;
                     push_keys<glm::quat>(track.times, track.values, times, quats, step, mirror_z, [&](glm::quat q) {
                         auto const norm = glm::length(q);
-                        return mirror_q(norm > 1e-12F ? q / norm : glm::quat{1.0F, 0.0F, 0.0F, 0.0F});
+                        return mirror_q(prefix_rotation *
+                                        (norm > 1e-12F ? q / norm : glm::quat{1.0F, 0.0F, 0.0F, 0.0F}));
                     });
                     if (!track.times.empty()) {
                         clip.duration = std::max(clip.duration, track.times.back());

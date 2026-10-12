@@ -9,6 +9,7 @@
 #include "core/forward.hxx"
 #include "core/transform.hxx"
 #include "physics/capsule_sweep.hxx"
+#include "physics/mesh_collider.hxx"
 #include "physics/debug_lines.hxx"
 #include "physics/physics.hxx"
 #include "physics/physics_components.hxx"
@@ -50,10 +51,18 @@ public:
     PhysicsWorld(PhysicsWorld &&) = delete;
     auto operator=(PhysicsWorld &&) -> PhysicsWorld & = delete;
 
+    // Distinct for every world ever made, unlike its address, which a later world can reuse.
+    [[nodiscard]] auto id() const noexcept -> std::uint64_t { return id_; }
+
     auto populate_from(entt::registry &registry) -> void;
     auto add_body(entt::registry &registry, entt::entity entity, Components::Transform const &transform,
                   Components::RigidBody const &body) -> void;
     auto remove_body(entt::registry &registry, entt::entity entity) -> void;
+
+    // A static body that collides with `mesh`'s triangles, placed by `transform`. Reports `entity` on hits. The world
+    // keeps the mesh alive and removes the body when it is destroyed.
+    auto add_static_mesh(entt::entity entity, Components::Transform const &transform,
+                         std::shared_ptr<MeshCollider const> mesh) -> void;
     auto step(entt::registry &registry, float delta_time) -> void;
 
     auto reserve_terrain_colliders(std::uint32_t count) -> void;
@@ -86,6 +95,8 @@ public:
                                      entt::entity ignore) const -> std::optional<SweepHit> override;
 
 private:
+    std::uint64_t id_;
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

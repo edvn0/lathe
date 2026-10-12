@@ -42,11 +42,11 @@
 #include "gpu/context.hxx"
 #include "implot.h"
 #include "imgui_internal.h"
+#include "app/pass_timeline.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
 #include "rendering/environment_panel.hxx"
-#include "rendering/hiz_occlusion.hxx"
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/imgui_widget.hxx"
 #include "rendering/toast.hxx"
@@ -95,6 +95,36 @@ namespace {
         changed |= ImGui::SliderFloat("Range", &spot_light.range, 0.5F, 100.0F);
         changed |= ImGui::SliderFloat("Inner cone", &spot_light.inner_cone_degrees, 0.0F, 89.0F, "%.1f deg");
         changed |= ImGui::SliderFloat("Outer cone", &spot_light.outer_cone_degrees, 0.0F, 89.0F, "%.1f deg");
+        return changed;
+    };
+
+    constexpr auto draw_particle_emitter = [](Components::ParticleEmitter &emitter) -> bool {
+        bool changed = false;
+
+        auto count = static_cast<int>(emitter.count);
+        if (ImGui::DragInt("Count", &count, 16.0F, 1, static_cast<int>(Components::ParticleEmitter::max_count))) {
+            emitter.count = static_cast<std::uint32_t>(count);
+            changed = true;
+        }
+        changed |= ImGui::Checkbox("Emitting", &emitter.emitting);
+        changed |= ImGui::DragFloat("Rate", &emitter.rate, 1.0F, 0.0F, 1.0e6F, "%.0f / s");
+        changed |= ImGui::DragFloat("Lifetime", &emitter.lifetime, 0.05F, 0.01F, 3600.0F, "%.2f s");
+        changed |= ImGui::DragFloat3("Gravity", &emitter.gravity.x, 0.1F);
+
+        constexpr std::array<char const *, 4> shapes{"Point", "Sphere", "Box", "Cone"};
+        auto shape = static_cast<int>(emitter.shape);
+        if (ImGui::Combo("Shape", &shape, shapes.data(), static_cast<int>(shapes.size()))) {
+            emitter.shape = static_cast<Components::ParticleShape>(shape);
+            changed = true;
+        }
+        changed |= ImGui::DragFloat("Shape size", &emitter.shape_size, 0.01F, 0.0F, 1.0e4F);
+        changed |= ImGui::SliderFloat("Cone", &emitter.cone_degrees, 0.0F, 180.0F, "%.1f deg");
+        changed |= ImGui::DragFloat("Speed", &emitter.speed, 0.05F, -1.0e4F, 1.0e4F);
+        changed |= ImGui::SliderFloat("Speed variance", &emitter.speed_variance, 0.0F, 1.0F);
+        changed |= ImGui::DragFloat("Size start", &emitter.size_start, 0.005F, 0.0F, 1.0e3F);
+        changed |= ImGui::DragFloat("Size end", &emitter.size_end, 0.005F, 0.0F, 1.0e3F);
+        changed |= ImGui::ColorEdit4("Colour start", &emitter.colour_start.x);
+        changed |= ImGui::ColorEdit4("Colour end", &emitter.colour_end.x);
         return changed;
     };
 
@@ -299,94 +329,6 @@ namespace {
         return std::format("material:{}", name);
     }
 
-    auto draw_cluster_grid_settings(Renderer &renderer, std::optional<ClusterGridSettings> &refused) -> void {
-        auto grid = refused.value_or(renderer.cluster_grid());
-        bool changed = false;
-
-        auto const preset = std::ranges::find(cluster_grid_presets, grid, &ClusterGridPreset::grid);
-        std::string const preview =
-                preset == cluster_grid_presets.end() ? std::string{"Custom"} : std::string{preset->name};
-
-        if (ImGui::BeginCombo("Cluster grid", preview.c_str())) {
-            for (auto const &option: cluster_grid_presets) {
-                bool const selected = option.grid == grid;
-                auto const label =
-                        std::format("{} ({}x{}x{}, {} per cluster)", option.name, option.grid.tiles_x,
-                                    option.grid.tiles_y, option.grid.depth_slices, option.grid.light_capacity);
-
-                if (ImGui::Selectable(label.c_str(), selected)) {
-                    grid = option.grid;
-                    changed = true;
-                }
-                if (selected) {
-                    ImGui::SetItemDefaultFocus();
-                }
-            }
-            ImGui::EndCombo();
-        }
-
-        auto const slider = [&](char const *label, std::uint32_t &value, std::uint32_t maximum, char const *tooltip,
-                                ImGuiSliderFlags flags = ImGuiSliderFlags_None) {
-            auto edited = static_cast<int>(value);
-            if (ImGui::SliderInt(label, &edited, 1, static_cast<int>(maximum), "%d",
-                                 flags | ImGuiSliderFlags_AlwaysClamp)) {
-                value = static_cast<std::uint32_t>(edited);
-                changed = true;
-            }
-            ImGui::SetItemTooltip("%s", tooltip);
-        };
-
-        slider("Tiles across", grid.tiles_x, cluster_grid_maximum_tiles,
-               "Screen columns. More gives each pixel fewer lights to shade, at more build work.");
-        slider("Tiles down", grid.tiles_y, cluster_grid_maximum_tiles,
-               "Screen rows. Tiles split the view evenly, so 9 rows to 16 columns keeps them square at 16:9.");
-        slider("Depth slices", grid.depth_slices, cluster_grid_maximum_depth_slices,
-               "Exponential slices between the near and far planes. More separates lights at different depths.");
-        slider("Lights per cluster", grid.light_capacity, cluster_grid_maximum_light_capacity,
-               "List capacity. A cluster touching more lights drops the highest-indexed ones (magenta in the "
-               "heatmap). Costs memory, not shading time.",
-               ImGuiSliderFlags_Logarithmic);
-
-        if (changed) {
-            if (auto applied = renderer.set_cluster_grid(grid); applied) {
-                refused.reset();
-            } else {
-                refused = grid;
-            }
-        }
-
-        auto const mebibytes = static_cast<double>(cluster_buffer_bytes(grid)) / (1024.0 * 1024.0);
-        ImGui::TextDisabled("%u clusters, %.1f MiB per frame in flight", cluster_count(grid), mebibytes);
-
-        if (refused) {
-            auto const reason = validate_cluster_grid(*refused);
-            ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.40F, 1.0F), "Not applied: %s",
-                               reason ? "" : reason.error().c_str());
-            return;
-        }
-
-        auto const &stats = renderer.last_cluster_stats();
-        if (!stats.valid || stats.grid != grid) {
-            return;
-        }
-
-        auto const total = cluster_count(stats.grid);
-        auto const occupied_share = total == 0 ? 0.0 : 100.0 * stats.occupied_clusters / total;
-        auto const average =
-                stats.occupied_clusters == 0 ? 0.0 : static_cast<double>(stats.stored_lights) / stats.occupied_clusters;
-
-        ImGui::Text("Occupied clusters: %u (%.0f%%)", stats.occupied_clusters, occupied_share);
-        ImGui::Text("Lights per occupied cluster: %.1f average, %u most", average, stats.maximum_lights);
-
-        if (stats.overflowing_clusters == 0) {
-            ImGui::Text("Overflowing clusters: 0");
-        } else {
-            ImGui::TextColored(ImVec4(1.0F, 0.3F, 1.0F, 1.0F), "Overflowing clusters: %u", stats.overflowing_clusters);
-            ImGui::SetItemTooltip("These drop lights. Raise Lights per cluster, or refine the grid so each cluster "
-                                  "covers less of the scene.");
-        }
-    }
-
     [[nodiscard]] auto is_material_pending_deletion(std::span<Application::PendingDeletion const> pending_deletions,
                                                     std::string_view name) -> bool {
         auto const label = material_deletion_label(name);
@@ -417,7 +359,9 @@ auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> pass
 
 Application::Application(VulkanContext &ctx) noexcept :
     context(ctx), renderer(std::make_unique<Renderer>(context)),
-    debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)) {}
+    debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)) {
+    stage_registry.bind_debug_renderer(debug_renderer.get());
+}
 
 Application::~Application() {
     if (terrain) {
@@ -425,6 +369,10 @@ Application::~Application() {
     }
 
     shader_watcher_.stop();
+
+    // A Lua game's finalizers release effects through effect_system, which is declared after `game` and so would be
+    // destroyed first.
+    game.reset();
 }
 
 auto Application::on_ui(std::uint32_t frame_index) -> void {
@@ -462,6 +410,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGuiID const bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28F, nullptr, &center);
 
         ImGui::DockBuilderDockWindow("Viewport", center);
+        ImGui::DockBuilderDockWindow("Frame graph", center);
         ImGui::DockBuilderDockWindow("Hierarchy", left);
         ImGui::DockBuilderDockWindow("Inspector", right);
         ImGui::DockBuilderDockWindow("Console", bottom);
@@ -1341,7 +1290,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     copy_components<Components::Transform, Components::Model, Components::InstancedModel,
                                     Components::RigidBody, Components::MaterialOverride, Components::PlayerTag,
                                     Components::Lifetime, Components::PointLight, Components::SpotLight,
-                                    Components::Script, Components::BulletTag>(registry, source, clone);
+                                    Components::ParticleEmitter, Components::Script, Components::BulletTag>(
+                            registry, source, clone);
 
                     if (auto const *model = registry.try_get<Components::Model>(clone);
                         model != nullptr && registry.all_of<Components::StreamedModelTag>(source)) {
@@ -1715,6 +1665,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         section.operator()<Components::Transform>("Transform", draw_transform);
         section.operator()<Components::PointLight>("Point Light", draw_point_light);
         section.operator()<Components::SpotLight>("Spot Light", draw_spot_light);
+        section.operator()<Components::ParticleEmitter>("Particle Emitter", draw_particle_emitter);
         section.operator()<Components::RigidBody>("Rigid Body", draw_rigid_body);
         section.operator()<Components::Lifetime>("Lifetime", draw_lifetime);
 
@@ -1853,6 +1804,10 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 }
                 if (!registry.all_of<Components::SpotLight>(selected_entity) && ImGui::MenuItem("Spot Light")) {
                     registry.emplace<Components::SpotLight>(selected_entity);
+                }
+                if (!registry.all_of<Components::ParticleEmitter>(selected_entity) &&
+                    ImGui::MenuItem("Particle Emitter")) {
+                    registry.emplace<Components::ParticleEmitter>(selected_entity);
                 }
                 if (!registry.all_of<Components::RigidBody>(selected_entity) && ImGui::MenuItem("Rigid Body")) {
                     registry.emplace<Components::RigidBody>(selected_entity);
@@ -2087,163 +2042,37 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
+    widget("Frame graph", [&] {
+        if (ImGui::BeginTabBar("##frame_graph_tabs")) {
+            if (ImGui::BeginTabItem("Graph")) {
+                frame_graph_editor.draw(*renderer, stage_registry);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Timeline")) {
+                gui::draw_pass_timeline(*renderer);
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+    });
+
     widget("Lighting", [&] {
-        ImGui::SeparatorText("Anti-aliasing");
+        auto const draw_stage = [&](char const *id) {
+            auto const *stage = stage_registry.find(FlyString{id});
+            ImGui::SeparatorText(stage->title.data());
+            stage_registry.draw_settings(stage->id, *renderer);
+        };
 
-        {
-            auto const max_samples = static_cast<std::uint32_t>(renderer->max_samples());
-            auto const current = static_cast<std::uint32_t>(renderer->samples());
-            auto const label = [](std::uint32_t count) {
-                return count == 1 ? std::string{"Off"} : std::format("MSAA {}x", count);
-            };
+        draw_stage("msaa");
 
-            if (ImGui::BeginCombo("MSAA", label(current).c_str())) {
-                for (std::uint32_t count = 1; count <= max_samples; count <<= 1U) {
-                    if (ImGui::Selectable(label(count).c_str(), count == current)) {
-                        renderer->set_samples(static_cast<VkSampleCountFlagBits>(count));
-                    }
-                }
+        draw_stage("debug_overlays");
 
-                ImGui::EndCombo();
-            }
-        }
+        draw_stage("occlusion_culling");
+        draw_stage("clustered_lighting");
 
-        ImGui::SeparatorText("Debug");
-        bool draw_light_icons = renderer->debug_draw_light_icons();
-        if (ImGui::Checkbox("Draw light icons", &draw_light_icons)) {
-            renderer->set_debug_draw_light_icons(draw_light_icons);
-        }
-
-        bool draw_physics_debug = debug_renderer->physics_debug_enabled();
-        if (ImGui::Checkbox("Draw physics colliders", &draw_physics_debug)) {
-            debug_renderer->set_physics_debug_enabled(draw_physics_debug);
-        }
-
-        bool draw_model_bounds_debug = debug_renderer->model_bounds_debug_enabled();
-        if (ImGui::Checkbox("Draw model submesh bounds", &draw_model_bounds_debug)) {
-            debug_renderer->set_model_bounds_debug_enabled(draw_model_bounds_debug);
-        }
-
-        bool meshlet_culling = renderer->meshlet_culling();
-        if (ImGui::Checkbox("Meshlet culling (task shader)", &meshlet_culling)) {
-            renderer->set_meshlet_culling(meshlet_culling);
-        }
-
-        bool const occlusion_supported = renderer->occlusion_culling_supported();
-        bool occlusion_culling = renderer->occlusion_culling() && occlusion_supported;
-
-        ImGui::BeginDisabled(!occlusion_supported);
-        if (ImGui::Checkbox("Occlusion culling (Hi-Z, two-phase)", &occlusion_culling)) {
-            renderer->set_occlusion_culling(occlusion_culling);
-        }
-        ImGui::EndDisabled();
-
-        if (!occlusion_supported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            ImGui::SetTooltip("Unavailable: this device has no MIN depth resolve (VK_RESOLVE_MODE_MIN_BIT) for MSAA");
-        }
-
-        if (occlusion_culling) {
-            ImGui::Indent();
-
-            constexpr std::array occlusion_test_names{"Hi-Z", "Stub: never occluded", "Stub: always defer"};
-            auto test_mode = static_cast<int>(renderer->occlusion_test_mode());
-
-            if (ImGui::Combo("Occlusion test", &test_mode, occlusion_test_names.data(),
-                             static_cast<int>(occlusion_test_names.size()))) {
-                renderer->set_occlusion_test_mode(static_cast<OcclusionTestMode>(test_mode));
-            }
-
-            ImGui::SetItemTooltip("The stubs exercise the two-phase draw lists without the Hi-Z test: the frame must "
-                                  "look exactly as with occlusion culling off.");
-
-            bool meshlet_occlusion = renderer->meshlet_occlusion_culling();
-
-            ImGui::BeginDisabled(!meshlet_culling);
-            if (ImGui::Checkbox("Meshlet occlusion (task shader)", &meshlet_occlusion)) {
-                renderer->set_meshlet_occlusion_culling(meshlet_occlusion);
-            }
-            ImGui::EndDisabled();
-
-            if (!meshlet_culling && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                ImGui::SetTooltip("Needs meshlet culling (task shader)");
-            }
-
-            auto const pyramid_levels = renderer->hiz_debug_mip_count();
-
-            if (pyramid_levels > 0) {
-                auto const top_mip = static_cast<int>(pyramid_levels) - 1;
-                hiz_debug_mip = std::clamp(hiz_debug_mip, 0, top_mip);
-                ImGui::SliderInt("Hi-Z mip", &hiz_debug_mip, 0, top_mip);
-
-                auto const mip = static_cast<std::uint32_t>(hiz_debug_mip);
-
-                if (auto const view = renderer->hiz_debug_view(mip); view.valid()) {
-                    auto const depth_extent = renderer->hiz_depth_extent();
-                    HizExtent const depth{.width = depth_extent.width, .height = depth_extent.height};
-                    auto const level = hiz_level_extent(depth, mip);
-                    auto const image = hiz_image_extent(depth);
-
-                    ImVec2 const uv_max{
-                            static_cast<float>(level.width) / static_cast<float>(std::max(image.width >> mip, 1U)),
-                            static_cast<float>(level.height) / static_cast<float>(std::max(image.height >> mip, 1U)),
-                    };
-
-                    auto const width = ImGui::GetContentRegionAvail().x;
-                    auto const height = width * static_cast<float>(depth.height) / static_cast<float>(depth.width);
-
-                    ImGui::Image(gui::linear_source_texture_id(view.index), ImVec2(width, height), ImVec2(0.0F, 0.0F),
-                                 uv_max);
-                    ImGui::TextDisabled("Red: each texel's farthest depth (reverse-Z: brighter is nearer)");
-                }
-            }
-
-            ImGui::Unindent();
-        }
-
-        bool clustered_lighting = renderer->clustered_lighting();
-        if (ImGui::Checkbox("Clustered lighting (GPU)", &clustered_lighting)) {
-            renderer->set_clustered_lighting(clustered_lighting);
-        }
-
-        ImGui::BeginDisabled(!clustered_lighting);
-        bool cluster_heatmap = renderer->cluster_debug_heatmap();
-        if (ImGui::Checkbox("Cluster light-count heatmap", &cluster_heatmap)) {
-            renderer->set_cluster_debug_heatmap(cluster_heatmap);
-        }
-        draw_cluster_grid_settings(*renderer, refused_cluster_grid);
-        ImGui::EndDisabled();
-
-        auto shadows = renderer->shadow_settings();
-        bool dirty = false;
-
-        ImGui::SeparatorText("Shadows");
-        dirty |= ImGui::SliderFloat("Split lambda", &shadows.cascades.split_lambda, 0.0F, 1.0F);
-        dirty |= ImGui::SliderFloat("Shadow distance", &shadows.cascades.shadow_distance, 20.0F, 500.0F);
-        dirty |= ImGui::SliderFloat("PCF radius", &shadows.pcf_radius_texels, 0.5F, 4.0F);
-        dirty |= ImGui::SliderFloat("Normal offset", &shadows.normal_offset_texels, 0.0F, 8.0F);
-        dirty |= ImGui::SliderFloat("Depth bias", &shadows.depth_bias_world, 0.0F, 0.5F);
-        dirty |= ImGui::SliderFloat("Bias slope", &shadows.depth_bias_slope, -8.0F, 0.0F);
-        dirty |= ImGui::Checkbox("Cascade tint", &shadows.debug_cascade_tint);
-
-        if (dirty) {
-            renderer->set_shadow_settings(shadows);
-        }
-
-        ImGui::SeparatorText("Light LOD");
-        auto light_lod = renderer->light_lod_settings();
-        bool light_lod_dirty = false;
-        light_lod_dirty |= ImGui::Checkbox("Screen-size light culling", &light_lod.enabled);
-        ImGui::BeginDisabled(!light_lod.enabled);
-        light_lod_dirty |= ImGui::SliderFloat("Cull below (px)", &light_lod.cull_radius_pixels, 0.0F, 32.0F, "%.1f");
-        ImGui::SetItemTooltip("On-screen radius of a light's range below which it is dropped before clustering.");
-        light_lod_dirty |=
-                ImGui::SliderFloat("Full strength at (px)", &light_lod.fade_radius_pixels, 0.0F, 64.0F, "%.1f");
-        ImGui::SetItemTooltip("Lights fade in between the cull radius and this one.");
-        ImGui::EndDisabled();
-        if (light_lod_dirty) {
-            light_lod.fade_radius_pixels = std::max(light_lod.fade_radius_pixels, light_lod.cull_radius_pixels);
-            renderer->set_light_lod_settings(light_lod);
-        }
+        draw_stage("shadows");
+        draw_stage("ambient_occlusion");
+        draw_stage("bloom");
 
         ImGui::SeparatorText("Punctual lights");
         auto &registry = active_scene()->get_registry();
@@ -2536,8 +2365,16 @@ auto Application::cursor_over_game() const -> CursorPositionEvent {
 auto Application::update(float delta_time) -> void {
     ZoneScopedNC("ApplicationUpdate", tracy::Color::Firebrick);
 
+    last_delta_time = delta_time;
+
     update_model_loads();
     update_scene_jobs();
+    update_package_jobs();
+
+    // Packaging pauses the simulation; rendering and the modal progress popup keep running.
+    if (packaging_active()) {
+        return;
+    }
 
     if (auto *const streaming_terrain = active_terrain(); streaming_terrain != nullptr) {
         auto camera_xz = glm::vec2{camera.position().x, camera.position().z};
@@ -2636,6 +2473,22 @@ auto Application::on_startup() -> void {
 
         engine_models = *models;
 
+        if (auto const created = particle_system.create(renderer->game_gpu()); !created) {
+            warn("Could not set up particles: {}", describe(created.error()));
+        }
+
+        effect_system.create(renderer->game_gpu());
+
+        renderer->set_game_graph_hook([this](GameGraph &graph) {
+            if (auto const *scene = active_scene(); scene != nullptr) {
+                particle_system.declare(graph, scene->get_registry(), &renderer->material_storage(), last_delta_time);
+            }
+            if (game && game_hooks_enabled) {
+                effect_system.declare(graph);
+                game->on_frame_graph(graph, last_delta_time);
+            }
+        });
+
         game->on_populate(*editor_scene, *renderer, engine_models);
         mark_editor_scene_clean();
 
@@ -2663,6 +2516,10 @@ auto Application::request_screenshot() -> void {
 }
 
 auto Application::on_event(KeyPressedEvent ev) -> bool {
+    if (packaging_active()) {
+        return true;
+    }
+
     if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL && !scene_load_job.has_value()) {
         renderer->queue_render_thread_event([this] {
             if (is_playing) {
@@ -2746,11 +2603,19 @@ auto Application::on_event(MouseMovedEvent ev) -> bool {
     return true;
 }
 auto Application::on_event(MouseScrolledEvent ev) -> bool {
+    if (packaging_active()) {
+        return true;
+    }
+
     camera.on_mouse_scrolled(static_cast<float>(ev.delta_y));
 
     return true;
 }
 auto Application::on_event(MouseButtonPressedEvent ev) -> bool {
+    if (packaging_active()) {
+        return true;
+    }
+
     if (ev.button == GLFW_MOUSE_BUTTON_RIGHT) {
         mouse_dragging = true;
     }

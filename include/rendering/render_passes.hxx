@@ -270,6 +270,11 @@ namespace render_pass {
     auto set_overlay_baseline_state(VkCommandBuffer command_buffer, OverlayStage stage,
                                     OverlayScope const &scope) noexcept -> void;
 
+    // Turns alpha blending (source alpha over) on or off for the overlay's first colour attachment, after
+    // set_overlay_baseline_state, which leaves it off. Depth writes stay off in both cases.
+    auto set_overlay_blending(VkCommandBuffer command_buffer, OverlayScope const &scope, bool blending) noexcept
+            -> void;
+
     struct LightIconsInfo {
         VkDeviceAddress lights_address = 0;
         VkDeviceAddress ubo_address = 0;

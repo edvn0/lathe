@@ -203,6 +203,22 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     scene.get_registry().clear();
     engine_models_ = engine_models;
 
+    {
+        // The engine simulates and draws it: the entity only carries the data.
+        auto const fountain = Entity{&scene, "particle_fountain"};
+        fountain.emplace<Components::Transform>(Components::Transform{.position = {0.0F, 2.0F, 0.0F}});
+        fountain.emplace<Components::ParticleEmitter>(Components::ParticleEmitter{
+                .count = 8192,
+                .rate = 4096.0F,
+                .lifetime = 2.0F,
+                .shape = Components::ParticleShape::cone,
+                .cone_degrees = 22.0F,
+                .speed = 6.0F,
+                .size_start = 0.08F,
+                .size_end = 0.03F,
+        });
+    }
+
     if (helmet_model_.valid()) {
         spawn_helmet(scene, renderer);
     } else {
@@ -1021,6 +1037,7 @@ auto BasicGame::on_ui(Scene &scene, Renderer &renderer) -> void {
         }
     });
 }
+
 
 auto BasicGame::on_update(Scene &scene, float delta_time) -> void {
     auto &registry = scene.get_registry();

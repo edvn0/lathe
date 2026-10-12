@@ -3,7 +3,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -17,6 +19,7 @@
 #include "animation/humanoid.hxx"
 #include "app/game.hxx"
 #include "assets/model_skin.hxx"
+#include "net/http.hxx"
 #include "physics/character_body.hxx"
 #include "physics/fixed_stepper.hxx"
 #include "player_camera.hxx"
@@ -48,6 +51,8 @@ private:
     auto update_crowd(float delta_time, glm::vec3 const &camera_position) -> void;
     auto rebuild_batch() -> void;
     auto load_skinned_model(Scene &scene, Renderer &renderer) -> void;
+    auto request_brainstem() -> void;
+    auto poll_brainstem(Scene &scene, Renderer &renderer) -> void;
     [[nodiscard]] auto active_machine() const -> Animation::AnimStateMachine const &;
     auto compose_skinned(Scene &scene, glm::vec3 const &player_position) -> void;
 
@@ -57,6 +62,12 @@ private:
     bool skinned_mode_ = true;
     bool batch_skinned_ = false;
     ModelHandle skinned_model_{};
+    bool use_brainstem_ = false;
+    float skinned_height_ = 5.535F;
+    float skinned_feet_y_ = -0.015F;
+    float skinned_yaw_offset_ = std::numbers::pi_v<float>;
+    HttpClient http_client_;
+    std::future<std::expected<void, HttpError>> brainstem_download_;
     std::shared_ptr<ModelAnimationData const> skin_data_;
     std::vector<std::unique_ptr<Animation::KeyframeClip>> skin_clips_;
     std::unique_ptr<Animation::LocomotionStateTable> skin_table_;

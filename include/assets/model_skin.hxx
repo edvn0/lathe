@@ -26,6 +26,7 @@ struct ImportedClip {
     std::vector<Animation::Vec3Track> scales;
 
     [[nodiscard]] auto make_clip() const -> std::unique_ptr<Animation::KeyframeClip>;
+
 };
 
 struct ModelAnimationData {

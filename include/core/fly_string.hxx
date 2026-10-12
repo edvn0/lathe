@@ -14,6 +14,9 @@ class FlyString {
 public:
     FlyString() noexcept;
     explicit FlyString(std::string_view);
+    explicit FlyString(std::string &&);
+    // Exact match for literals, which would otherwise be ambiguous between string_view and string&&.
+    explicit FlyString(char const *value) : FlyString(std::string_view{value}) {}
 
     [[nodiscard]]
     auto view() const noexcept -> std::string_view;
@@ -42,6 +45,7 @@ private:
     class Pool {
     public:
         auto intern(std::string_view value) -> std::string const &;
+        auto intern(std::string &&value) -> std::string const &;
         [[nodiscard]]
         auto stats() const -> PoolStats;
 
