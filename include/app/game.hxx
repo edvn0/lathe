@@ -24,7 +24,7 @@ template<typename... ExtraComponents>
 auto clone_editor_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
     clone_registry<Components::Transform, Components::Model, Components::InstancedModel, Components::RigidBody,
                    Components::MaterialOverride, Components::PlayerTag, Components::Lifetime, Components::PointLight,
-                   Components::SpotLight, Components::ParticleEmitter, Components::GeneratedMeta, Components::Meta,
+                   Components::SpotLight, Components::Decal, Components::ParticleEmitter, Components::GeneratedMeta, Components::Meta,
                    Components::Parent, ExtraComponents...>(editor_scene.get_registry(), runtime_scene.get_registry());
 }
 

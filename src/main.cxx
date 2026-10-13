@@ -254,6 +254,27 @@ namespace {
             }
         }
 
+        auto decal_view = registry.view<Components::Transform const, Components::Decal const>();
+
+        for (auto [entity, transform, decal]: decal_view.each()) {
+            if (!decal.material.valid()) {
+                continue;
+            }
+
+            auto result = application.renderer->submit_decal(Renderer::Decal{
+                    .transform = systems::get_world_transform(registry, entity, transform),
+                    .material = decal.material,
+                    .opacity = decal.opacity,
+                    .angle_fade_start_degrees = decal.angle_fade_start_degrees,
+                    .angle_fade_end_degrees = decal.angle_fade_end_degrees,
+                    .sort_order = decal.sort_order,
+            });
+
+            if (!result) {
+                error("Could not submit decal: {}", describe(result.error()));
+            }
+        }
+
         auto spot_light_view = registry.view<Components::Transform const, Components::SpotLight const>();
 
         for (auto [entity, transform, light]: spot_light_view.each()) {

@@ -397,6 +397,15 @@ namespace stages {
         });
 
         add(Stage{
+                .id = FlyString{"decals"},
+                .title = "Decals",
+                .passes = passes_of({"decal_cluster"}),
+                .state = [](Renderer const &renderer) { return State{.enabled = renderer.decals_enabled()}; },
+                .set_enabled = [](Renderer &renderer, bool enabled) { renderer.set_decals_enabled(enabled); },
+                .draw_settings = nullptr,
+        });
+
+        add(Stage{
                 .id = FlyString{"debug_overlays"},
                 .title = "Debug overlays",
                 .passes = passes_of({"overlay_prepare"}),

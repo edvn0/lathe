@@ -282,13 +282,18 @@ struct UBO {
     float light_lod_fade_radius_pixels = 0.0F;
 
     std::uint32_t view_mode = 0;
-    std::uint32_t view_mode_padding = 0; // the environment block below is 8-byte aligned
+    std::uint32_t view_mode_padding = 0; // the decal addresses below are 8-byte aligned
+
+    VkDeviceAddress decals_address = 0;
+    VkDeviceAddress decal_clusters_address = 0;
+    std::uint32_t decal_count = 0;
+    std::uint32_t decal_padding = 0;
 
     EnvironmentUboBlock environment{};
 };
 
-static_assert(sizeof(UBO) == 960, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
-static_assert(offsetof(UBO, environment) == 768);
+static_assert(sizeof(UBO) == 984, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(offsetof(UBO, environment) == 792);
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 288);
 static_assert(offsetof(UBO, cascade_atlas_offset_u) == 592);
@@ -489,6 +494,22 @@ struct Renderer final : public IMeshSink, public IModelSink {
         float inner_cone_degrees = 20.0F;
         float outer_cone_degrees = 30.0F;
     };
+
+    // A box projected along its local -Y onto whatever geometry it overlaps. `transform` places and scales the box
+    // (the unit cube centred on the origin); the decal's texture lies in the box's local XZ plane.
+    struct Decal {
+        glm::mat4 transform{1.0F};
+        MaterialHandle material{};
+        float opacity = 1.0F;
+        // Surfaces tilted further than `end` from the decal's up axis get nothing; `start` and nearer get full strength.
+        float angle_fade_start_degrees = 60.0F;
+        float angle_fade_end_degrees = 80.0F;
+        // Decals layer in ascending order, so a higher value draws over a lower one.
+        std::int32_t sort_order = 0;
+    };
+
+    [[nodiscard]]
+    auto submit_decal(Decal const &decal) -> std::expected<void, RendererError>;
 
     [[nodiscard]]
     auto submit_point_light(PointLight const &light) -> std::expected<void, RendererError>;
@@ -698,6 +719,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto clustered_lighting() const noexcept -> bool { return clustered_lighting_; }
     auto set_clustered_lighting(bool enabled) noexcept -> void { clustered_lighting_ = enabled; }
 
+    [[nodiscard]] auto decals_enabled() const noexcept -> bool { return decals_enabled_; }
+    auto set_decals_enabled(bool enabled) noexcept -> void { decals_enabled_ = enabled; }
+
     [[nodiscard]] auto cluster_debug_heatmap() const noexcept -> bool { return cluster_debug_heatmap_; }
     auto set_cluster_debug_heatmap(bool enabled) noexcept -> void { cluster_debug_heatmap_ = enabled; }
 
@@ -835,6 +859,25 @@ private:
 
     static constexpr std::uint32_t maximum_light_count = 65'536;
 
+    // Mirrors GpuDecal in assets/shaders/scene_types.slang.
+    struct GpuDecal {
+        glm::mat4 world_to_decal{1.0F};
+        glm::vec4 bounding_sphere{0.0F};
+        glm::vec4 tangent_fade_scale{1.0F, 0.0F, 0.0F, 0.0F};
+        glm::vec4 bitangent_fade_offset{0.0F, 0.0F, 1.0F, 1.0F};
+        glm::vec4 normal_opacity{0.0F, 1.0F, 0.0F, 1.0F};
+        std::uint32_t material_index = 0;
+        std::uint32_t flags = 0;
+        std::uint32_t _pad0 = 0;
+        std::uint32_t _pad1 = 0;
+    };
+
+    static_assert(std::is_trivially_copyable_v<GpuDecal>);
+    static_assert(sizeof(GpuDecal) == 144);
+
+    static constexpr std::uint32_t maximum_decal_count = 1024;
+    static constexpr std::uint32_t decal_cluster_capacity = 64;
+
     static constexpr std::uint32_t cull_plane_count = 6 * (1 + shadow_cascade_count);
 
     using ShadowCascadeMask = std::uint32_t;
@@ -888,6 +931,11 @@ private:
 
         Buffer cluster_lights_buffer{};
         ClusterGridSettings cluster_grid{};
+
+        Buffer decals_buffer{};
+        Buffer decal_clusters_buffer{};
+        std::uint32_t decal_cluster_cells = 0;
+        std::uint32_t decal_count = 0;
 
         Buffer cluster_stats_readback_buffer{};
         ClusterGridSettings cluster_stats_grid{};
@@ -1228,6 +1276,10 @@ private:
 
     auto record_cluster_stats_clear(render_pass::Context const &pass_context, RendererFrame const &frame) -> void;
     [[nodiscard]]
+    auto record_decal_cluster(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
+
+    [[nodiscard]]
     auto record_light_cull(render_pass::Context const &pass_context, RendererFrame const &frame)
             -> std::expected<void, RendererError>;
     [[nodiscard]]
@@ -1329,6 +1381,7 @@ private:
     PipelineNodeHandle gtao_denoise_pipeline_;
     PipelineNodeHandle light_cull_pipeline_;
     PipelineNodeHandle light_cluster_pipeline_;
+    PipelineNodeHandle decal_cluster_pipeline_;
     PipelineNodeHandle skybox_pipeline_;
     ShaderChangeQueue shader_change_queue_;
 
@@ -1360,6 +1413,7 @@ private:
     bool meshlet_visibility_cap_warned_ = false;
     OcclusionTestMode occlusion_test_mode_ = OcclusionTestMode::hiz;
     bool clustered_lighting_ = true;
+    bool decals_enabled_ = true;
     bool cluster_debug_heatmap_ = false;
     ViewMode view_mode_ = ViewMode::lit;
     ClusterGridSettings cluster_grid_{};
@@ -1392,6 +1446,8 @@ private:
     FogSettings fog_settings_{};
     LightLodSettings light_lod_settings_{};
 
+    std::vector<Decal> decal_submissions_;
+    std::vector<GpuDecal> decal_staging_;
     std::vector<PointLight> point_light_submissions_;
     std::vector<SpotLight> spot_light_submissions_;
 

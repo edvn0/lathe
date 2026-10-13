@@ -133,6 +133,134 @@ float grid_line(float2 cell)
     return line_mask * resolvable;
 }
 
+// What the decals overlapping a fragment contribute, accumulated front to back as premultiplied layers so the result
+// is order-correct without knowing the underlying surface yet.
+struct DecalLayers
+{
+    float3 albedo;
+    float albedo_coverage;
+
+    float3 normal;
+    float normal_coverage;
+
+    float2 metallic_roughness;
+    float metallic_roughness_coverage;
+
+    float occlusion;
+    float occlusion_coverage;
+
+    float3 emissive;
+};
+
+DecalLayers decal_layers_none()
+{
+    DecalLayers layers;
+    layers.albedo = float3(0.0);
+    layers.albedo_coverage = 0.0;
+    layers.normal = float3(0.0);
+    layers.normal_coverage = 0.0;
+    layers.metallic_roughness = float2(0.0);
+    layers.metallic_roughness_coverage = 0.0;
+    layers.occlusion = 0.0;
+    layers.occlusion_coverage = 0.0;
+    layers.emissive = float3(0.0);
+    return layers;
+}
+
+// Clustered forward decals: every decal whose box overlaps this fragment's cluster is projected onto the fragment's own
+// world position, so no depth read is needed and MSAA works as for any other forward shading.
+DecalLayers gather_decals(PC pc, float3 world_position, float3 geometric_normal, float view_z)
+{
+    const var ubo = pc.ubo;
+    DecalLayers layers = decal_layers_none();
+
+    if (ubo.decal_count == 0) {
+        return layers;
+    }
+
+    // Texture gradients come from the world position's screen-space derivatives, taken here in uniform control flow,
+    // so the per-decal samples below can branch freely.
+    const float3 dpdx = ddx(world_position);
+    const float3 dpdy = ddy(world_position);
+
+    const float4 clip = mul(ubo.view_projection, float4(world_position, 1.0));
+    const uint cluster = cluster_index(ubo, clip, view_z);
+    const uint count = min(ubo.decal_clusters[cluster], decal_cluster_capacity);
+    const uint list_base = cluster_count(ubo) + cluster * decal_cluster_capacity;
+
+    for (uint i = 0; i < count; ++i) {
+        const GpuDecal decal = ubo.decals[ubo.decal_clusters[list_base + i]];
+
+        const float3 local = mul(decal.world_to_decal, float4(world_position, 1.0)).xyz;
+        const float3 inside = 0.5 - abs(local);
+
+        if (any(inside <= 0.0)) {
+            continue;
+        }
+
+        const float3 up = decal.normal_opacity.xyz;
+        const float facing = dot(geometric_normal, up);
+        const float angle_fade = saturate(facing * decal.tangent_fade_scale.w + decal.bitangent_fade_offset.w);
+        const float depth_fade = saturate(inside.y * 10.0);
+        const float fade = decal.normal_opacity.w * angle_fade * depth_fade;
+
+        if (fade <= 0.0) {
+            continue;
+        }
+
+        const var material = pc.materials[decal.material_index];
+        const float2 uv = float2(local.x + 0.5, local.z + 0.5);
+
+        const float3x3 to_decal = (float3x3)decal.world_to_decal;
+        const float3 gradient_x = mul(to_decal, dpdx);
+        const float3 gradient_y = mul(to_decal, dpdy);
+        const float2 uv_dx = gradient_x.xz;
+        const float2 uv_dy = gradient_y.xz;
+
+        const var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
+
+        const float4 albedo_sample = sampled_2d[NonUniformResourceIndex(material.base_colour_texture)].SampleGrad(
+                                             sampler, uv, uv_dx, uv_dy) *
+                                     float4(material.colour[0], material.colour[1], material.colour[2], material.colour[3]);
+        const float weight = fade * albedo_sample.a;
+
+        layers.albedo = layers.albedo * (1.0 - weight) + albedo_sample.rgb * weight;
+        layers.albedo_coverage = layers.albedo_coverage * (1.0 - weight) + weight;
+
+        float2 tangent_xy = sampled_2d[NonUniformResourceIndex(material.normal_texture)]
+                                    .SampleGrad(sampler, uv, uv_dx, uv_dy).xy * 2.0 - 1.0;
+        tangent_xy *= material.normal_scale;
+        const float tangent_z = sqrt(saturate(1.0 - dot(tangent_xy, tangent_xy)));
+        const float3 decal_normal = normalize(decal.tangent_fade_scale.xyz * tangent_xy.x +
+                                              decal.bitangent_fade_offset.xyz * tangent_xy.y + up * tangent_z);
+
+        layers.normal = layers.normal * (1.0 - weight) + decal_normal * weight;
+        layers.normal_coverage = layers.normal_coverage * (1.0 - weight) + weight;
+
+        const float2 metallic_roughness =
+                sampled_2d[NonUniformResourceIndex(material.metallic_roughness_texture)]
+                        .SampleGrad(sampler, uv, uv_dx, uv_dy).bg *
+                float2(material.metallic_factor, material.roughness_factor);
+
+        layers.metallic_roughness = layers.metallic_roughness * (1.0 - weight) + metallic_roughness * weight;
+        layers.metallic_roughness_coverage = layers.metallic_roughness_coverage * (1.0 - weight) + weight;
+
+        const float occlusion = lerp(1.0, sampled_2d[NonUniformResourceIndex(material.occlusion_texture)]
+                                                  .SampleGrad(sampler, uv, uv_dx, uv_dy).r,
+                                     material.occlusion_strength);
+
+        layers.occlusion = layers.occlusion * (1.0 - weight) + occlusion * weight;
+        layers.occlusion_coverage = layers.occlusion_coverage * (1.0 - weight) + weight;
+
+        layers.emissive += sampled_2d[NonUniformResourceIndex(material.emissive_texture)]
+                                   .SampleGrad(sampler, uv, uv_dx, uv_dy).rgb *
+                           float3(material.emissive[0], material.emissive[1], material.emissive[2]) *
+                           material.emissive_strength * weight;
+    }
+
+    return layers;
+}
+
 float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float reference)
 {
     const var atlas = sampled_2d_depth[NonUniformResourceIndex(ubo.shadow_atlas_texture)];
@@ -234,9 +362,13 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
 
     float3 shading_normal = normalize(mul(tangent_normal, tbn));
 
-    float ndotl = saturate(dot(shading_normal, light_direction));
-
     float view_z = mul(ubo.view, float4(input.world_position, 1.0)).z;
+
+    const DecalLayers decals = gather_decals(pc, input.world_position, normal, view_z);
+
+    shading_normal = normalize(shading_normal * (1.0 - decals.normal_coverage) + decals.normal);
+
+    float ndotl = saturate(dot(shading_normal, light_direction));
 
     uint cascade = ubo.cascade_count;
     [unroll]
@@ -267,6 +399,7 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
 
     float ambient_occlusion = ambient_occlusion_texture.Sample(sampler, uv).r;
     ambient_occlusion = lerp(1.0, ambient_occlusion, material.occlusion_strength);
+    ambient_occlusion = ambient_occlusion * (1.0 - decals.occlusion_coverage) + decals.occlusion;
 
     float2 screen_uv = input.position.xy / pc.screen_size;
     const var gtao_texture = sampled_2d[NonUniformResourceIndex(pc.ao_texture_index)];
@@ -283,6 +416,8 @@ if (material.alpha_mode == AlphaMode.mask && (material.flags & material_flag_alp
 
 var base_colour = base_sample.xyz *
                   float3(material.colour[0], material.colour[1], material.colour[2]);
+
+    base_colour = base_colour * (1.0 - decals.albedo_coverage) + decals.albedo;
 
     const float3 texture_base_colour = base_colour;
 
@@ -311,6 +446,7 @@ var base_colour = base_sample.xyz *
 
     float2 metallic_roughness = metallic_roughness_texture.Sample(sampler, uv).bg *
                                 float2(material.metallic_factor, material.roughness_factor);
+    metallic_roughness = metallic_roughness * (1.0 - decals.metallic_roughness_coverage) + decals.metallic_roughness;
     float metallic = metallic_roughness.x;
     float roughness = clamp(metallic_roughness.y, 0.045, 1.0);
 
@@ -418,7 +554,7 @@ var base_colour = base_sample.xyz *
 
     float3 emissive = emissive_texture.Sample(sampler, uv).xyz *
                   float3(material.emissive[0], material.emissive[1], material.emissive[2]) *
-                  material.emissive_strength;
+                  material.emissive_strength + decals.emissive;
 
     float3 shaded_colour = ambient + directional_contribution + punctual_contribution + emissive + grid_emission;
 

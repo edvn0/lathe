@@ -185,6 +185,15 @@ namespace {
         return changed;
     };
 
+    constexpr auto draw_decal = [](Components::Decal &decal) -> bool {
+        bool changed = false;
+        changed |= ImGui::SliderFloat("Opacity", &decal.opacity, 0.0F, 1.0F);
+        changed |= ImGui::SliderFloat("Full strength to", &decal.angle_fade_start_degrees, 0.0F, 90.0F, "%.0f deg");
+        changed |= ImGui::SliderFloat("Fades out by", &decal.angle_fade_end_degrees, 0.0F, 90.0F, "%.0f deg");
+        changed |= ImGui::DragInt("Sort order", &decal.sort_order);
+        return changed;
+    };
+
     constexpr auto draw_particle_emitter = [](Components::ParticleEmitter &emitter) -> bool {
         bool changed = false;
 
@@ -1440,7 +1449,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     copy_components<Components::Transform, Components::Model, Components::InstancedModel,
                                     Components::RigidBody, Components::MaterialOverride, Components::PlayerTag,
                                     Components::Lifetime, Components::PointLight, Components::SpotLight,
-                                    Components::ParticleEmitter, Components::Script, Components::BulletTag>(
+                                    Components::Decal, Components::ParticleEmitter, Components::Script,
+                                    Components::BulletTag>(
                             registry, source, clone);
 
                     if (auto const *model = registry.try_get<Components::Model>(clone);
@@ -1815,6 +1825,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         section.operator()<Components::Transform>("Transform", draw_transform);
         section.operator()<Components::PointLight>("Point Light", draw_point_light);
         section.operator()<Components::SpotLight>("Spot Light", draw_spot_light);
+        section.operator()<Components::Decal>("Decal", draw_decal);
         section.operator()<Components::ParticleEmitter>("Particle Emitter", draw_particle_emitter);
         section.operator()<Components::RigidBody>("Rigid Body", draw_rigid_body);
         section.operator()<Components::Lifetime>("Lifetime", draw_lifetime);

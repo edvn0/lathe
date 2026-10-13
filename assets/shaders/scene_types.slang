@@ -116,6 +116,22 @@ public static const uint material_flag_grid = 8u;
 
 public static const uint cluster_grid_maximum_depth_slices = 64;
 
+public static const uint decal_cluster_capacity = 64;
+
+// A projected box. world_to_decal maps the world into the decal's unit box ([-0.5, 0.5] on every axis); the decal
+// projects along its local -Y, so its texture lies in local XZ. The axes are the box's world-space directions.
+public struct GpuDecal {
+    public float4x4 world_to_decal;
+    public float4 bounding_sphere;
+    public float4 tangent_fade_scale;
+    public float4 bitangent_fade_offset;
+    public float4 normal_opacity;
+    public uint material_index;
+    public uint flags;
+    public uint _pad0;
+    public uint _pad1;
+};
+
 public enum class LightType : uint {
     point,
     spot,
@@ -202,6 +218,11 @@ public struct UBO {
 
     public uint view_mode;
     public uint view_mode_padding;
+
+    public Ptr<GpuDecal> decals;
+    public Ptr<uint> decal_clusters;
+    public uint decal_count;
+    public uint decal_padding;
 
     public uint environment_flags;
     public float environment_exposure;
