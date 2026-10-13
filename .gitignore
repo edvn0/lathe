@@ -16,3 +16,5 @@ __pycache__/
 tools/xtask/target
 /perf/
 shaders.lsp
+.claude/
+frame_graph_layout.txt
