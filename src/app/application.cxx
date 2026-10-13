@@ -172,6 +172,7 @@ namespace {
         changed |= ImGui::ColorEdit3("Colour", &point_light.colour.x);
         changed |= ImGui::SliderFloat("Intensity", &point_light.intensity, 0.0F, 200.0F);
         changed |= ImGui::SliderFloat("Range", &point_light.range, 0.5F, 100.0F);
+        changed |= ImGui::Checkbox("Casts shadows", &point_light.casts_shadows);
         return changed;
     };
 
@@ -182,6 +183,7 @@ namespace {
         changed |= ImGui::SliderFloat("Range", &spot_light.range, 0.5F, 100.0F);
         changed |= ImGui::SliderFloat("Inner cone", &spot_light.inner_cone_degrees, 0.0F, 89.0F, "%.1f deg");
         changed |= ImGui::SliderFloat("Outer cone", &spot_light.outer_cone_degrees, 0.0F, 89.0F, "%.1f deg");
+        changed |= ImGui::Checkbox("Casts shadows", &spot_light.casts_shadows);
         return changed;
     };
 

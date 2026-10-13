@@ -526,10 +526,11 @@ namespace {
             write_vec3(writer, component.light.colour);
             writer.write(component.light.intensity);
             writer.write(component.light.range);
+            write_bool(writer, component.light.casts_shadows);
         }
     }
 
-    auto read_point_lights(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_point_lights(ByteReader &reader, std::uint16_t version, SceneDescription &scene) -> void {
         scene.point_lights.resize(read_count(reader, 24));
 
         for (auto &component: scene.point_lights) {
@@ -537,6 +538,10 @@ namespace {
             component.light.colour = read_vec3(reader);
             reader.read(component.light.intensity);
             reader.read(component.light.range);
+
+            if (version >= 2) {
+                component.light.casts_shadows = read_bool(reader);
+            }
         }
     }
 
@@ -550,10 +555,11 @@ namespace {
             writer.write(component.light.range);
             writer.write(component.light.inner_cone_degrees);
             writer.write(component.light.outer_cone_degrees);
+            write_bool(writer, component.light.casts_shadows);
         }
     }
 
-    auto read_spot_lights(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_spot_lights(ByteReader &reader, std::uint16_t version, SceneDescription &scene) -> void {
         scene.spot_lights.resize(read_count(reader, 32));
 
         for (auto &component: scene.spot_lights) {
@@ -563,6 +569,10 @@ namespace {
             reader.read(component.light.range);
             reader.read(component.light.inner_cone_degrees);
             reader.read(component.light.outer_cone_degrees);
+
+            if (version >= 2) {
+                component.light.casts_shadows = read_bool(reader);
+            }
         }
     }
 
@@ -903,14 +913,14 @@ namespace {
             },
             SectionCodec{
                     .type = scene_section::point_lights,
-                    .version = scene_section_version,
+                    .version = point_lights_section_version,
                     .oldest_readable = 1,
                     .write = write_point_lights,
                     .read = read_point_lights,
             },
             SectionCodec{
                     .type = scene_section::spot_lights,
-                    .version = scene_section_version,
+                    .version = spot_lights_section_version,
                     .oldest_readable = 1,
                     .write = write_spot_lights,
                     .read = read_spot_lights,

@@ -16,6 +16,7 @@
 #include "gpu/buffer.hxx"
 #include "gpu/gpu_resource_table.hxx"
 #include "gpu/image_storage.hxx"
+#include "rendering/local_shadows.hxx"
 #include "rendering/overlay.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/shadow_cascades.hxx"
@@ -88,6 +89,33 @@ namespace render_pass {
 
         float depth_bias_constant = -1.0F;
         float depth_bias_slope = -2.5F;
+    };
+
+    // Renders the tiles of the local (point and spot light) shadow atlas. Every tile draws all shadow casters.
+    struct LocalShadowPassInfo {
+        DrawBuffers draws;
+        DrawCounts counts;
+        std::uint32_t opaque_count = 0;
+        std::uint32_t double_sided_count = 0;
+        std::uint32_t mask_count = 0;
+
+        std::span<local_shadows::Tile const> tiles;
+        bool preserve_contents = false;
+        bool meshlet_culling = true;
+
+        VkDeviceAddress tiles_address = 0;
+        VkDeviceAddress cull_planes_address = 0;
+        VkDeviceAddress materials_address = 0;
+        VkDeviceAddress ubo_address = 0;
+        VkDeviceAddress lights_address = 0;
+
+        PipelineNodeHandle opaque_pipeline{};
+        PipelineNodeHandle mask_pipeline{};
+        PipelineNodeHandle opaque_instanced_pipeline{};
+        PipelineNodeHandle mask_instanced_pipeline{};
+
+        float depth_bias_constant = -1.5F;
+        float depth_bias_slope = -2.0F;
     };
 
     enum class DepthPrepassPhase : std::uint8_t {
@@ -246,6 +274,9 @@ namespace render_pass {
     };
 
     auto shadow(Context const &context, ShadowPassInfo const &info) -> std::expected<void, RendererError>;
+
+    [[nodiscard]]
+    auto local_shadow(Context const &context, LocalShadowPassInfo const &info) -> std::expected<void, RendererError>;
 
     auto depth_prepass(Context const &context, DepthPrepassInfo const &info) -> std::expected<void, RendererError>;
 

@@ -187,6 +187,17 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .image = physical_image(*targets->shadow_atlas),
     });
 
+    auto const local_shadows_active = frame.local_shadow_tile_count != 0;
+    auto local_shadow_image = frame_graph::ImageId{};
+    if (local_shadows_active) {
+        local_shadow_image = frame_graph_.import_image({
+                .entry = local_shadow_atlas_initialized_ ? sampled_by_fragment : frame_graph::ResourceState{},
+                .exit = sampled_by_fragment,
+                .debug_name = "local_shadow_atlas",
+                .image = physical_image(*targets->local_shadow_atlas),
+        });
+    }
+
     auto ao_raw_image = frame_graph::ImageId{};
     auto ao_image = frame_graph::ImageId{};
     auto const ao_description = [&](std::string_view name) {
@@ -636,7 +647,45 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                               });
     }
 
-    auto const declare_shadows = [&] {
+    auto const declare_local_shadows = [&] {
+        if (!local_shadows_active) {
+            return;
+        }
+
+        frame_graph_.add_pass(
+                "local_shadow_pass", frame_graph::PassType::raster,
+                {
+                        .name_id = "local_shadow_pass",
+                        .label = "Local light shadows",
+                        .color = static_cast<std::uint32_t>(tracy::Color::Purple),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    [[maybe_unused]] auto const draws =
+                            pass.read(source_draws, frame_graph::Use::shader_read, draw_stages);
+                    [[maybe_unused]] auto const transforms =
+                            pass.read(source_transforms, frame_graph::Use::shader_read, draw_stages);
+                    [[maybe_unused]] auto const commands = pass.read(source_indirect, frame_graph::Use::indirect_read);
+                    read_skinned_vertices(pass, draw_stages);
+
+                    local_shadow_image = pass.write_depth(local_shadow_image, frame_graph::LoadOp::dont_care,
+                                                          frame_graph::StoreOp::store);
+                    pass.render_area({.offset = {0, 0},
+                                      .extent = {local_shadows::atlas_size, local_shadows::atlas_size}});
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        if (!state.result) {
+                            return;
+                        }
+
+                        auto const pass_context = pass_context_of(context);
+                        if (auto const done = record_local_shadow_pass(pass_context, frame); !done) {
+                            state.result = std::unexpected(done.error());
+                        }
+                    }};
+                });
+    };
+
+    auto const declare_cascade_shadows = [&] {
         if (frame.shadow_update_mask == 0) {
             return;
         }
@@ -674,6 +723,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                         }
                     }};
                 });
+    };
+
+    auto const declare_shadows = [&] {
+        declare_cascade_shadows();
+        declare_local_shadows();
     };
 
     auto const shadows_after_early_prepass = async_occlusion_enabled;
@@ -961,6 +1015,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             [&](frame_graph::PassBuilder &pass) {
                 [[maybe_unused]] auto const shadows =
                         pass.read(shadow_image, frame_graph::Use::sampled, fragment_stage);
+                if (local_shadows_active) {
+                    [[maybe_unused]] auto const local_shadows =
+                            pass.read(local_shadow_image, frame_graph::Use::sampled, fragment_stage);
+                }
                 [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
                 if (environment_pending) {
                     [[maybe_unused]] auto const environment =

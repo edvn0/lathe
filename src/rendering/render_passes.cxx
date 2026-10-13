@@ -86,6 +86,37 @@ namespace render_pass {
             vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
         }
 
+        auto set_local_shadow_dynamic_state(VkCommandBuffer command_buffer, local_shadows::Tile tile,
+                                            float depth_bias_constant, float depth_bias_slope) noexcept -> void {
+            VkViewport const viewport{
+                    .x = static_cast<float>(tile.x),
+                    .y = static_cast<float>(tile.y),
+                    .width = static_cast<float>(tile.size),
+                    .height = static_cast<float>(tile.size),
+                    .minDepth = 0.0F,
+                    .maxDepth = 1.0F,
+            };
+
+            VkRect2D const scissor{
+                    .offset = {static_cast<std::int32_t>(tile.x), static_cast<std::int32_t>(tile.y)},
+                    .extent = {tile.size, tile.size},
+            };
+
+            vkCmdSetViewportWithCount(command_buffer, 1, &viewport);
+            vkCmdSetScissorWithCount(command_buffer, 1, &scissor);
+            vkCmdSetPrimitiveTopology(command_buffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+            vkCmdSetPrimitiveRestartEnable(command_buffer, VK_FALSE);
+            vkCmdSetRasterizerDiscardEnable(command_buffer, VK_FALSE);
+            vkCmdSetCullMode(command_buffer, VK_CULL_MODE_NONE);
+            vkCmdSetFrontFace(command_buffer, VK_FRONT_FACE_CLOCKWISE);
+            vkCmdSetDepthTestEnable(command_buffer, VK_TRUE);
+            vkCmdSetDepthWriteEnable(command_buffer, VK_TRUE);
+            vkCmdSetDepthCompareOp(command_buffer, VK_COMPARE_OP_GREATER_OR_EQUAL);
+            vkCmdSetDepthBiasEnable(command_buffer, VK_TRUE);
+            vkCmdSetDepthBias(command_buffer, depth_bias_constant, 0.0F, depth_bias_slope);
+            vkCmdSetStencilTestEnable(command_buffer, VK_FALSE);
+        }
+
         auto set_composite_dynamic_state(VkCommandBuffer command_buffer, VkExtent2D extent) noexcept -> void {
             VkViewport const viewport{
                     .x = 0.0F,
@@ -327,7 +358,7 @@ namespace render_pass {
                     .cull_planes_address = info.cascade_cull_planes_address,
                     .cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U,
                     .cascade_index = 0,
-                    .padding = 0,
+                    .use_shadow_tiles = 0,
             };
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
@@ -362,7 +393,7 @@ namespace render_pass {
                     .cull_planes_address = info.cascade_cull_planes_address,
                     .cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U,
                     .cascade_index = 0,
-                    .padding = 0,
+                    .use_shadow_tiles = 0,
             };
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
@@ -380,6 +411,81 @@ namespace render_pass {
                 pc.cascade_index = cascade;
                 detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.mask_first(),
                                             cascade_draw_count, pc);
+            }
+        }
+
+        return {};
+    }
+
+    auto local_shadow(Context const &context, LocalShadowPassInfo const &info) -> std::expected<void, RendererError> {
+        if (info.tiles.empty()) {
+            return {};
+        }
+
+        auto const opaque_total = info.opaque_count + info.double_sided_count;
+
+        detail::SceneDraw const opaque_draw{
+                .meshlet_pipeline = info.opaque_pipeline,
+                .instanced_pipeline = info.opaque_instanced_pipeline,
+        };
+        detail::SceneDraw const mask_draw{
+                .meshlet_pipeline = info.mask_pipeline,
+                .instanced_pipeline = info.mask_instanced_pipeline,
+        };
+
+        if ((opaque_total != 0 && !detail::scene_layouts_valid(context.pipeline_graph, opaque_draw)) ||
+            (info.mask_count != 0 && !detail::scene_layouts_valid(context.pipeline_graph, mask_draw))) {
+            return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
+        }
+
+        VkClearAttachment const clear_attachment{
+                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                .colorAttachment = 0,
+                .clearValue = {.depthStencil = {.depth = 0.0F, .stencil = 0}},
+        };
+
+        for (auto const &tile: info.tiles) {
+            VkClearRect const clear_rect{
+                    .rect =
+                            VkRect2D{
+                                    .offset = {static_cast<std::int32_t>(tile.x), static_cast<std::int32_t>(tile.y)},
+                                    .extent = {tile.size, tile.size},
+                            },
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+            };
+            vkCmdClearAttachments(context.command_buffer, 1, &clear_attachment, 1, &clear_rect);
+        }
+
+        ShadowPushConstants pc{
+                .draws_address = info.draws.draws.device_address,
+                .transforms_address = info.draws.transforms.device_address,
+                .materials_address = info.materials_address,
+                .ubo_address = info.ubo_address,
+                .lights_address = info.lights_address,
+                .light_count = 0,
+                .sample_count = 1,
+                .cull_planes_address = info.cull_planes_address,
+                .cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U,
+                .cascade_index = 0,
+                .use_shadow_tiles = 1,
+                .shadow_tiles_address = info.tiles_address,
+        };
+
+        for (std::uint32_t index = 0; index < info.tiles.size(); ++index) {
+            detail::set_local_shadow_dynamic_state(context.command_buffer, info.tiles[index],
+                                                   info.depth_bias_constant, info.depth_bias_slope);
+            pc.cascade_index = index;
+
+            if (opaque_total != 0) {
+                detail::draw_scene_commands(context, opaque_draw, info.draws, 0, info.opaque_count, pc);
+                detail::draw_scene_commands(context, opaque_draw, info.draws, info.counts.double_sided_first(),
+                                            info.double_sided_count, pc);
+            }
+
+            if (info.mask_count != 0) {
+                detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.mask_first(),
+                                            info.mask_count, pc);
             }
         }
 
