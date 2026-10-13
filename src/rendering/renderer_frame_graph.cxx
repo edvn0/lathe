@@ -187,12 +187,14 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .image = physical_image(*targets->shadow_atlas),
     });
 
+    // Sampled whenever any light has a tile; drawn only for the tiles that were not still valid from before.
     auto const local_shadows_active = frame.local_shadow_tile_count != 0;
+    auto const local_shadows_rendered = !frame.local_shadow_render_tiles.empty();
     auto local_shadow_image = frame_graph::ImageId{};
     auto local_shadow_survivors = frame_graph::BufferId{};
     auto local_shadow_counts = frame_graph::BufferId{};
     auto local_shadow_indirect = frame_graph::BufferId{};
-    auto const local_shadows_culled = local_shadows_active && frame.local_shadow_culled;
+    auto const local_shadows_culled = local_shadows_rendered && frame.local_shadow_culled;
     if (local_shadows_active) {
         local_shadow_image = frame_graph_.import_image({
                 .entry = local_shadow_atlas_initialized_ ? sampled_by_fragment : frame_graph::ResourceState{},
@@ -660,7 +662,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     }
 
     auto const declare_local_shadows = [&] {
-        if (!local_shadows_active) {
+        if (!local_shadows_rendered) {
             return;
         }
 
@@ -724,7 +726,11 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     }
                     read_skinned_vertices(pass, draw_stages);
 
-                    local_shadow_image = pass.write_depth(local_shadow_image, frame_graph::LoadOp::dont_care,
+                    // Tiles that are not redrawn keep what they held, so the atlas is loaded rather than discarded.
+                    local_shadow_image = pass.write_depth(local_shadow_image,
+                                                          local_shadow_atlas_initialized_
+                                                                  ? frame_graph::LoadOp::load
+                                                                  : frame_graph::LoadOp::dont_care,
                                                           frame_graph::StoreOp::store);
                     pass.render_area({.offset = {0, 0},
                                       .extent = {local_shadows::atlas_size, local_shadows::atlas_size}});

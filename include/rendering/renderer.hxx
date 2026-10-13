@@ -580,12 +580,15 @@ struct Renderer final : public IMeshSink, public IModelSink {
         // Cull each tile's casters against its own frustum on the GPU, so a tile draws only the instances it can see.
         // Off, every tile draws every caster and leaves the rejecting to the task shader.
         bool gpu_culling = true;
+        // Keep a tile's depth between frames while its light and every caster in its range are unchanged.
+        bool caching = true;
     };
 
     struct LocalShadowStats {
         std::uint32_t requested_lights = 0;
         std::uint32_t shadowed_lights = 0;
         std::uint32_t rendered_tiles = 0;
+        std::uint32_t cached_lights = 0;
         std::uint32_t atlas_cells_used = 0;
     };
 
@@ -1496,6 +1499,8 @@ private:
     ImageHolder shadow_atlas_{};
     ImageHolder local_shadow_atlas_{};
     local_shadows::Atlas local_shadow_allocator_{};
+    // What each shadowed light's tiles were last drawn from, keyed by light id.
+    std::unordered_map<std::uint64_t, std::uint64_t> local_shadow_cache_;
     bool local_shadow_atlas_initialized_ = false;
     LocalShadowSettings local_shadow_settings_{};
     LocalShadowStats local_shadow_stats_{};
