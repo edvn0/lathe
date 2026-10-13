@@ -965,6 +965,26 @@ namespace {
             .debug_name = "renderer.decal_cluster_pipeline",
     });
 
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = data_path("assets/shaders/shadow_cull.slang"),
+                                    .entry_point = FlyString{"main_cs"},
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.shadow_cull_pipeline",
+    });
+
         return pipeline_infos;
     }
 }
@@ -1161,6 +1181,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     forward_outline_instanced_pipeline_ = *registered_pipelines[32];
     skin_pipeline_ = *registered_pipelines[33];
     decal_cluster_pipeline_ = *registered_pipelines[34];
+    shadow_cull_pipeline_ = *registered_pipelines[35];
 
     {
         auto initialised = environment_.initialize(EnvironmentSystem::CreateInfo{
@@ -1888,6 +1909,9 @@ auto Renderer::destroy() noexcept -> void {
         frame.cluster_stats_readback_buffer.destroy();
         frame.cluster_lights_buffer.destroy();
         frame.decal_clusters_buffer.destroy();
+        frame.local_shadow_indirect_buffer.destroy();
+        frame.local_shadow_counts_buffer.destroy();
+        frame.local_shadow_survivors_buffer.destroy();
         frame.local_shadow_planes_buffer.destroy();
         frame.local_shadow_tiles_buffer.destroy();
         frame.decals_buffer.destroy();
@@ -4167,6 +4191,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
+    if (auto cull_buffers = prepare_local_shadow_cull_buffers(frame); !cull_buffers) {
+        clear_submissions();
+        return std::unexpected(cull_buffers.error());
+    }
+
     decal_staging_.clear();
     {
         auto sorted = decals_enabled_ ? decal_submissions_ : std::vector<Decal>{};
@@ -5220,6 +5249,146 @@ auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, Rend
     return {};
 }
 
+auto Renderer::prepare_local_shadow_cull_buffers(RendererFrame &frame) -> std::expected<void, RendererError> {
+    frame.local_shadow_culled = false;
+
+    if (!local_shadow_settings_.gpu_culling || frame.local_shadow_tile_count == 0 ||
+        resolve_layout(pipeline_graph_, shadow_cull_pipeline_) == VK_NULL_HANDLE) {
+        return {};
+    }
+
+    auto const batches = batch_counts(frame).blend_first();
+
+    if (batches == 0 || frame.transform_count == 0) {
+        return {};
+    }
+
+    constexpr std::uint64_t maximum_entries = std::uint64_t{1} << 27;
+    auto const survivors_needed = std::uint64_t{frame.local_shadow_tile_count} * frame.transform_count;
+    auto const batches_needed = std::uint64_t{frame.local_shadow_tile_count} * batches;
+
+    if (survivors_needed > maximum_entries || batches_needed > maximum_entries) {
+        return {};
+    }
+
+    auto const grow = [&](Buffer &buffer, std::uint64_t &capacity, std::uint64_t needed, std::uint64_t entry_bytes,
+                          VkBufferUsageFlags extra_usage, char const *name) -> std::expected<void, RendererError> {
+        if (buffer.valid() && capacity >= needed) {
+            return {};
+        }
+
+        auto const entries = std::bit_ceil(std::max<std::uint64_t>(needed, 1024));
+        auto created = create_shared_buffer(context_, BufferCreateInfo{
+                                                              .size = entries * entry_bytes,
+                                                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                                                       extra_usage,
+                                                              .memory = BufferMemory::device,
+                                                              .debug_name = name,
+                                                      });
+
+        if (!created) {
+            return std::unexpected(make_device_error(created.error()));
+        }
+
+        if (buffer.valid()) {
+            frame.retired_buffers.push_back(std::move(buffer));
+        }
+
+        buffer = std::move(*created);
+        capacity = entries;
+        return {};
+    };
+
+    std::uint64_t counts_capacity = frame.local_shadow_batch_capacity;
+
+    if (auto grown = grow(frame.local_shadow_survivors_buffer, frame.local_shadow_survivors_capacity,
+                          survivors_needed, sizeof(std::uint32_t), 0, "renderer.frame_local_shadow_survivors");
+        !grown) {
+        return grown;
+    }
+
+    if (auto grown = grow(frame.local_shadow_counts_buffer, counts_capacity, batches_needed, sizeof(std::uint32_t),
+                          0, "renderer.frame_local_shadow_counts");
+        !grown) {
+        return grown;
+    }
+
+    std::uint64_t indirect_capacity = frame.local_shadow_batch_capacity;
+
+    if (auto grown = grow(frame.local_shadow_indirect_buffer, indirect_capacity, batches_needed,
+                          sizeof(GpuDrawCommand), VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                          "renderer.frame_local_shadow_indirect");
+        !grown) {
+        return grown;
+    }
+
+    frame.local_shadow_batch_capacity = std::min(counts_capacity, indirect_capacity);
+    frame.local_shadow_cull_batches = batches;
+    frame.local_shadow_instance_stride = frame.transform_count;
+    frame.local_shadow_culled = true;
+
+    return {};
+}
+
+auto Renderer::record_local_shadow_cull(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    if (!frame.local_shadow_culled || frame.local_shadow_render_tiles.empty()) {
+        return {};
+    }
+
+    auto const command_buffer = pass_context.command_buffer;
+    auto const layout = resolve_layout(pipeline_graph_, shadow_cull_pipeline_);
+
+    if (layout == VK_NULL_HANDLE) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    bind_compute_node(pipeline_graph_, shadow_cull_pipeline_, command_buffer);
+    gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+    ShadowCullPushConstants pc{
+            .src_transforms_address = frame.transform_buffer.device_address,
+            .batch_bounds_address = frame.batch_bounds_buffer.device_address,
+            .src_indirect_address = frame.indirect_buffer.device_address,
+            .tile_planes_address = frame.local_shadow_planes_buffer.device_address,
+            .survivors_address = frame.local_shadow_survivors_buffer.device_address,
+            .counts_address = frame.local_shadow_counts_buffer.device_address,
+            .dst_indirect_address = frame.local_shadow_indirect_buffer.device_address,
+            .source_batch_count = frame.indirect_command_count,
+            .batch_count = frame.local_shadow_cull_batches,
+            .chunk_count = frame.cull_chunk_count,
+            .instance_capacity = frame.local_shadow_instance_stride,
+            .stage = 0,
+            ._padding = 0,
+    };
+
+    auto const tiles = static_cast<std::uint32_t>(frame.local_shadow_render_tiles.size());
+    auto const batch_groups = (pc.batch_count + 255U) / 256U;
+    auto const chunk_width = std::min(std::max(pc.chunk_count, 1U), cull_dispatch_width);
+    auto const chunk_height = (std::max(pc.chunk_count, 1U) + chunk_width - 1) / chunk_width;
+
+    constexpr std::uint32_t clear_stage = 0;
+    constexpr std::uint32_t cull_stage = 1;
+    constexpr std::uint32_t finalize_stage = 2;
+
+    pc.stage = clear_stage;
+    vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+    vkCmdDispatch(command_buffer, batch_groups, 1, tiles);
+    record_compute_barrier(command_buffer);
+
+    pc.stage = cull_stage;
+    vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+    vkCmdDispatch(command_buffer, chunk_width, chunk_height, tiles);
+    record_compute_barrier(command_buffer);
+
+    pc.stage = finalize_stage;
+    vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+    vkCmdDispatch(command_buffer, batch_groups, 1, tiles);
+
+    return {};
+}
+
 auto Renderer::record_local_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
         -> std::expected<void, RendererError> {
     if (frame.local_shadow_render_tiles.empty()) {
@@ -5243,6 +5412,10 @@ auto Renderer::record_local_shadow_pass(render_pass::Context const &pass_context
                     .double_sided_count = frame.shadow_double_sided_indirect_count[0],
                     .mask_count = frame.shadow_mask_indirect_count[0],
                     .tiles = frame.local_shadow_render_tiles,
+                    .tile_indirect = frame.local_shadow_culled ? &frame.local_shadow_indirect_buffer : nullptr,
+                    .survivors_address = frame.local_shadow_survivors_buffer.device_address,
+                    .cull_batches = frame.local_shadow_cull_batches,
+                    .instance_stride = frame.local_shadow_instance_stride,
                     .meshlet_culling = meshlet_culling_,
                     .tiles_address = frame.local_shadow_tiles_buffer.device_address,
                     .cull_planes_address = frame.local_shadow_planes_buffer.device_address,

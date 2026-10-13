@@ -101,6 +101,13 @@ namespace render_pass {
 
         std::span<local_shadows::Tile const> tiles;
         bool preserve_contents = false;
+
+        // Set when a culling pass has already narrowed each tile's instances: the tile's own indirect commands
+        // (`cull_batches` per tile) and its list of surviving source instances (`instance_stride` entries per tile).
+        Buffer const *tile_indirect = nullptr;
+        VkDeviceAddress survivors_address = 0;
+        std::uint32_t cull_batches = 0;
+        std::uint32_t instance_stride = 0;
         bool meshlet_culling = true;
 
         VkDeviceAddress tiles_address = 0;

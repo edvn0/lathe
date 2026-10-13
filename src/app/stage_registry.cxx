@@ -399,7 +399,7 @@ namespace stages {
         add(Stage{
                 .id = FlyString{"local_shadows"},
                 .title = "Local light shadows",
-                .passes = passes_of({"local_shadow_pass"}),
+                .passes = passes_of({"local_shadow_cull", "local_shadow_pass"}),
                 .state = [](Renderer const &renderer) { return State{.enabled = renderer.local_shadow_settings().enabled}; },
                 .set_enabled =
                         [](Renderer &renderer, bool enabled) {

@@ -189,6 +189,10 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
     auto const local_shadows_active = frame.local_shadow_tile_count != 0;
     auto local_shadow_image = frame_graph::ImageId{};
+    auto local_shadow_survivors = frame_graph::BufferId{};
+    auto local_shadow_counts = frame_graph::BufferId{};
+    auto local_shadow_indirect = frame_graph::BufferId{};
+    auto const local_shadows_culled = local_shadows_active && frame.local_shadow_culled;
     if (local_shadows_active) {
         local_shadow_image = frame_graph_.import_image({
                 .entry = local_shadow_atlas_initialized_ ? sampled_by_fragment : frame_graph::ResourceState{},
@@ -251,6 +255,14 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 .debug_name = "cluster_stats_readback",
                 .buffer = physical_buffer(frame.cluster_stats_readback_buffer),
         });
+    }
+
+    if (local_shadows_culled) {
+        local_shadow_survivors =
+                import_frame_buffer(frame.local_shadow_survivors_buffer, "local_shadow_survivors", false);
+        local_shadow_counts = import_frame_buffer(frame.local_shadow_counts_buffer, "local_shadow_counts", false);
+        local_shadow_indirect =
+                import_frame_buffer(frame.local_shadow_indirect_buffer, "local_shadow_indirect", false);
     }
 
     auto const decals_active = frame.decal_count != 0;
@@ -652,6 +664,43 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             return;
         }
 
+        if (local_shadows_culled) {
+            frame_graph_.add_pass(
+                    "local_shadow_cull", frame_graph::PassType::compute,
+                    {
+                            .name_id = "local_shadow_cull",
+                            .label = "Local shadow cull",
+                            .color = static_cast<std::uint32_t>(tracy::Color::Gold),
+                    },
+                    [&](frame_graph::PassBuilder &pass) {
+                        constexpr auto compute = stages_of(ShaderStage::compute);
+
+                        [[maybe_unused]] auto const transforms =
+                                pass.read(source_transforms, frame_graph::Use::shader_read, compute);
+                        [[maybe_unused]] auto const commands =
+                                pass.read(source_indirect, frame_graph::Use::shader_read, compute);
+                        [[maybe_unused]] auto const bounds =
+                                pass.read(batch_bounds, frame_graph::Use::shader_read, compute);
+                        local_shadow_counts =
+                                pass.write(local_shadow_counts, frame_graph::Use::shader_read_write, compute);
+                        local_shadow_survivors =
+                                pass.write(local_shadow_survivors, frame_graph::Use::shader_write, compute);
+                        local_shadow_indirect =
+                                pass.write(local_shadow_indirect, frame_graph::Use::shader_read_write, compute);
+
+                        return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                            if (!state.result) {
+                                return;
+                            }
+
+                            auto const pass_context = pass_context_of(context);
+                            if (auto const done = record_local_shadow_cull(pass_context, frame); !done) {
+                                state.result = std::unexpected(done.error());
+                            }
+                        }};
+                    });
+        }
+
         frame_graph_.add_pass(
                 "local_shadow_pass", frame_graph::PassType::raster,
                 {
@@ -664,7 +713,15 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             pass.read(source_draws, frame_graph::Use::shader_read, draw_stages);
                     [[maybe_unused]] auto const transforms =
                             pass.read(source_transforms, frame_graph::Use::shader_read, draw_stages);
-                    [[maybe_unused]] auto const commands = pass.read(source_indirect, frame_graph::Use::indirect_read);
+                    if (local_shadows_culled) {
+                        [[maybe_unused]] auto const tile_commands =
+                                pass.read(local_shadow_indirect, frame_graph::Use::indirect_read);
+                        [[maybe_unused]] auto const survivors =
+                                pass.read(local_shadow_survivors, frame_graph::Use::shader_read, draw_stages);
+                    } else {
+                        [[maybe_unused]] auto const commands =
+                                pass.read(source_indirect, frame_graph::Use::indirect_read);
+                    }
                     read_skinned_vertices(pass, draw_stages);
 
                     local_shadow_image = pass.write_depth(local_shadow_image, frame_graph::LoadOp::dont_care,

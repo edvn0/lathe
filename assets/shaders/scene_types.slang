@@ -286,14 +286,18 @@ public struct PC
     public Ptr<OcclusionView> occlusion;
 };
 
+public static const uint shadow_flag_tiles = 1u;
+public static const uint shadow_flag_remap = 2u;
+
 public struct ShadowPC
 {
     public PC base;
-    // A cascade, or a tile of the local shadow atlas when use_shadow_tiles is set. Also selects the six cull
+    // A cascade, or a tile of the local shadow atlas when shadow_flag_tiles is set; shadow_flag_remap enables instance_remap. Also selects the six cull
     // planes of that view.
     public uint cascade_index;
-    public uint use_shadow_tiles;
+    public uint shadow_flags;
     public Ptr<GpuShadowTile> shadow_tiles;
+    public Ptr<uint> instance_remap;
 };
 
 public struct CompressedVertex

@@ -577,6 +577,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
         float normal_offset_texels = 1.5F;
         float depth_bias_constant = -1.5F;
         float depth_bias_slope = -2.0F;
+        // Cull each tile's casters against its own frustum on the GPU, so a tile draws only the instances it can see.
+        // Off, every tile draws every caster and leaves the rejecting to the task shader.
+        bool gpu_culling = true;
     };
 
     struct LocalShadowStats {
@@ -974,6 +977,15 @@ private:
 
         // True while lights_buffer holds shadow tile indices, so they get cleared again once the shadows are gone.
         bool lights_have_shadow_tiles = false;
+        // Per tile survivors, counts and indirect commands of the local shadow culling pass.
+        Buffer local_shadow_survivors_buffer{};
+        Buffer local_shadow_counts_buffer{};
+        Buffer local_shadow_indirect_buffer{};
+        std::uint64_t local_shadow_survivors_capacity = 0;
+        std::uint64_t local_shadow_batch_capacity = 0;
+        std::uint32_t local_shadow_cull_batches = 0;
+        std::uint32_t local_shadow_instance_stride = 0;
+        bool local_shadow_culled = false;
         Buffer local_shadow_tiles_buffer{};
         Buffer local_shadow_planes_buffer{};
         std::uint32_t local_shadow_tile_count = 0;
@@ -1301,6 +1313,13 @@ private:
     auto record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void;
 
     [[nodiscard]]
+    auto record_local_shadow_cull(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
+
+    [[nodiscard]]
+    auto prepare_local_shadow_cull_buffers(RendererFrame &frame) -> std::expected<void, RendererError>;
+
+    [[nodiscard]]
     auto record_local_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
             -> std::expected<void, RendererError>;
 
@@ -1435,6 +1454,7 @@ private:
     PipelineNodeHandle light_cull_pipeline_;
     PipelineNodeHandle light_cluster_pipeline_;
     PipelineNodeHandle decal_cluster_pipeline_;
+    PipelineNodeHandle shadow_cull_pipeline_;
     PipelineNodeHandle skybox_pipeline_;
     ShaderChangeQueue shader_change_queue_;
 

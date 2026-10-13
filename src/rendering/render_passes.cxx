@@ -285,6 +285,9 @@ namespace render_pass {
                                      command_count, sizeof(GpuDrawCommand));
         }
 
+        constexpr std::uint32_t shadow_flag_tiles = 1U;
+        constexpr std::uint32_t shadow_flag_remap = 2U;
+
         constexpr std::uint32_t cull_frustum = 1U;
         constexpr std::uint32_t cull_frustum_and_backface = 1U | 2U;
 
@@ -358,7 +361,7 @@ namespace render_pass {
                     .cull_planes_address = info.cascade_cull_planes_address,
                     .cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U,
                     .cascade_index = 0,
-                    .use_shadow_tiles = 0,
+                    .shadow_flags = 0,
             };
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
@@ -393,7 +396,7 @@ namespace render_pass {
                     .cull_planes_address = info.cascade_cull_planes_address,
                     .cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U,
                     .cascade_index = 0,
-                    .use_shadow_tiles = 0,
+                    .shadow_flags = 0,
             };
 
             for (std::uint32_t cascade = 0; cascade < shadow_cascade_count; ++cascade) {
@@ -468,23 +471,40 @@ namespace render_pass {
                 .cull_planes_address = info.cull_planes_address,
                 .cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U,
                 .cascade_index = 0,
-                .use_shadow_tiles = 1,
+                .shadow_flags = detail::shadow_flag_tiles,
                 .shadow_tiles_address = info.tiles_address,
+                .instance_remap_address = 0,
         };
+
+        DrawBuffers const draws = info.tile_indirect != nullptr
+                                          ? DrawBuffers{.draws = info.draws.draws,
+                                                        .transforms = info.draws.transforms,
+                                                        .indirect = *info.tile_indirect,
+                                                        .index_buffer = info.draws.index_buffer}
+                                          : info.draws;
 
         for (std::uint32_t index = 0; index < info.tiles.size(); ++index) {
             detail::set_local_shadow_dynamic_state(context.command_buffer, info.tiles[index],
                                                    info.depth_bias_constant, info.depth_bias_slope);
             pc.cascade_index = index;
 
+            // A culled tile reads its own indirect commands, so its batches start at that tile's slice.
+            std::uint32_t first = 0;
+            if (info.tile_indirect != nullptr) {
+                first = index * info.cull_batches;
+                pc.shadow_flags = detail::shadow_flag_tiles | detail::shadow_flag_remap;
+                pc.instance_remap_address =
+                        info.survivors_address + (VkDeviceSize{index} * info.instance_stride * sizeof(std::uint32_t));
+            }
+
             if (opaque_total != 0) {
-                detail::draw_scene_commands(context, opaque_draw, info.draws, 0, info.opaque_count, pc);
-                detail::draw_scene_commands(context, opaque_draw, info.draws, info.counts.double_sided_first(),
+                detail::draw_scene_commands(context, opaque_draw, draws, first, info.opaque_count, pc);
+                detail::draw_scene_commands(context, opaque_draw, draws, first + info.counts.double_sided_first(),
                                             info.double_sided_count, pc);
             }
 
             if (info.mask_count != 0) {
-                detail::draw_scene_commands(context, mask_draw, info.draws, info.counts.mask_first(),
+                detail::draw_scene_commands(context, mask_draw, draws, first + info.counts.mask_first(),
                                             info.mask_count, pc);
             }
         }

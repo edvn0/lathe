@@ -443,7 +443,7 @@ auto MaterialWallGame::on_populate(Scene &scene, Renderer &renderer, EngineModel
                 .colour = {1.0F, 0.85F, 0.55F}, .intensity = 110.0F, .range = 14.0F, .casts_shadows = true});
     }
 
-    info("[MaterialWall] Keys: 1-6 shot (5 = decals, 6 = spot shadows), B bloom");
+    info("[MaterialWall] Keys: 1-6 shot (5 = decals, 6 = spot shadows), B bloom, C shadow culling");
 }
 
 auto MaterialWallGame::on_update(Scene &, float delta_time) -> void {
@@ -486,6 +486,14 @@ auto MaterialWallGame::on_update(Scene &, float delta_time) -> void {
 auto MaterialWallGame::on_key_pressed(Scene &, KeyPressedEvent const &event) -> void {
     if (event.key >= GLFW_KEY_1 && event.key < GLFW_KEY_1 + static_cast<std::int32_t>(shot_count)) {
         shot_ = static_cast<std::size_t>(event.key - GLFW_KEY_1);
+        return;
+    }
+
+    if (event.key == GLFW_KEY_C && renderer_ != nullptr) {
+        auto settings = renderer_->local_shadow_settings();
+        settings.gpu_culling = !settings.gpu_culling;
+        renderer_->set_local_shadow_settings(settings);
+        info("[MaterialWall] Local shadow GPU culling {}", settings.gpu_culling ? "on" : "off");
         return;
     }
 
