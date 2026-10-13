@@ -54,6 +54,14 @@ namespace Components {
         ModelHandle model{};
     };
 
+    // Draws every meshlet's normal cone as debug lines. extrude/shrink mirror the material's meshlet extrude/shrink
+    // so the cones follow an exploded model.
+    struct DebugMeshletCones {
+        bool enabled = true;
+        float extrude = 0.0F;
+        float shrink = 0.0F;
+    };
+
     [[nodiscard]] inline auto next_instanced_model_revision() noexcept -> std::uint64_t {
         static std::atomic<std::uint64_t> counter{0};
         return counter.fetch_add(1, std::memory_order_relaxed) + 1;

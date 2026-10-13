@@ -2217,6 +2217,45 @@ auto Renderer::model_submesh_bounds(ModelHandle model) const
     return bounds;
 }
 
+auto Renderer::model_meshlet_cones(ModelHandle model) const -> std::vector<MeshletCone> {
+    std::vector<MeshletCone> result;
+    auto const *slot = model_slot(model);
+
+    if (slot == nullptr) {
+        return result;
+    }
+
+    for (auto const &draw: slot->draws) {
+        auto const *mesh = mesh_slot(draw.mesh);
+
+        if (mesh == nullptr) {
+            continue;
+        }
+
+        auto const axes = glm::mat3{draw.local_transform};
+        auto const scale = std::max({glm::length(axes[0]), glm::length(axes[1]), glm::length(axes[2])});
+
+        for (auto const &submesh: mesh->submeshes) {
+            auto const &cones = submesh.lods[0].meshlets.cones;
+
+            if (!cones) {
+                continue;
+            }
+
+            for (auto const &cone: *cones) {
+                result.push_back(MeshletCone{
+                        .centre = glm::vec3{draw.local_transform * glm::vec4{cone.centre, 1.0F}},
+                        .radius = cone.radius * scale,
+                        .axis = glm::normalize(axes * cone.axis),
+                        .cutoff = cone.cutoff,
+                });
+            }
+        }
+    }
+
+    return result;
+}
+
 auto Renderer::model_lights(ModelHandle model) const -> std::span<ModelCpuLight const> {
     auto const *slot = model_slot(model);
 
@@ -3965,6 +4004,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .light_lod_pixel_scale = light_lod_pixel_scale,
             .light_lod_cull_radius_pixels = light_lod_settings_.enabled ? light_lod_cull : 0.0F,
             .light_lod_fade_radius_pixels = light_lod_settings_.enabled ? light_lod_fade : 0.0F,
+            .view_mode = static_cast<std::uint32_t>(view_mode_),
             .environment = environment_.ubo_block(),
     };
 

@@ -10,6 +10,48 @@ public struct MeshletPayload
     public uint meshlet_offsets[meshlets_per_task];
 };
 
+// Per-material meshlet "exploded view": every meshlet slides out along its normal cone axis by extrude * its
+// bounding radius and shrinks about its own centre by shrink, so the cluster boundaries open up into gaps.
+public struct MeshletDisplace
+{
+    public float extrude;
+    public float shrink;
+    public float3 centre;
+    public float radius;
+    public float3 axis;
+
+    public static MeshletDisplace none()
+    {
+        MeshletDisplace displace;
+        displace.extrude = 0.0;
+        displace.shrink = 0.0;
+        displace.centre = float3(0.0);
+        displace.radius = 0.0;
+        displace.axis = float3(0.0);
+        return displace;
+    }
+
+    public static MeshletDisplace from(Material material, Meshlet meshlet)
+    {
+        MeshletDisplace displace;
+        displace.extrude = material.meshlet_extrude;
+        displace.shrink = material.meshlet_shrink;
+        displace.centre = meshlet.centre;
+        displace.radius = meshlet.radius;
+        displace.axis = meshlet.cone_axis;
+        return displace;
+    }
+
+    public float3 apply(float3 position)
+    {
+        if (extrude == 0.0 && shrink == 0.0) {
+            return position;
+        }
+
+        return centre + (position - centre) * (1.0 - shrink) + axis * (extrude * radius);
+    }
+};
+
 groupshared MeshletPayload s_payload;
 groupshared uint s_visible[meshlets_per_task];
 groupshared uint s_occluded[meshlets_per_task];
@@ -35,7 +77,9 @@ bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet
 
     const float wind_strength = abs(pc.materials[draw.material_index].wind_strength);
 
-    centre = mul(model, float4(meshlet.centre, 1.0)).xyz;
+    const float extrude = pc.materials[draw.material_index].meshlet_extrude;
+
+    centre = mul(model, float4(meshlet.centre + meshlet.cone_axis * (extrude * meshlet.radius), 1.0)).xyz;
     radius = meshlet.radius * max_scale + wind_strength * wind_radius_scale;
 
     if ((pc.cull_flags & cull_frustum_bit) != 0) {

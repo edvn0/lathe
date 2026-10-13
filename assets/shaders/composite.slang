@@ -70,6 +70,24 @@ float3 aces_fitted(float3 colour)
     );
 }
 
+// Interleaved gradient noise (Jimenez), remapped to a triangular distribution in [-1, 1].
+float dither_noise(float2 pixel)
+{
+    float a = frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
+    float b = frac(52.9829189 * frac(dot(pixel + 17.0, float2(0.06711056, 0.00583715))));
+    return a + b - 1.0;
+}
+
+float3 linear_to_srgb(float3 c)
+{
+    return select(c <= 0.0031308, c * 12.92, 1.055 * pow(c, 1.0 / 2.4) - 0.055);
+}
+
+float3 srgb_to_linear(float3 c)
+{
+    return select(c <= 0.04045, c / 12.92, pow((c + 0.055) / 1.055, 2.4));
+}
+
 struct FragmentOutput
 {
     float4 colour : SV_Target0;
@@ -108,6 +126,10 @@ FragmentOutput main_fs(VertexOutput input, uniform CompositePC pc)
 
         mapped = lerp(mapped, float3(pc.outline_r, pc.outline_g, pc.outline_b), edge);
     }
+
+    // The swapchain is 8-bit sRGB: dither by one code value in encoded space so smooth gradients don't band.
+    float3 encoded = linear_to_srgb(saturate(mapped)) + dither_noise(input.position.xy) / 255.0;
+    mapped = srgb_to_linear(saturate(encoded));
 
     FragmentOutput output;
     output.colour = float4(mapped, 1.0);

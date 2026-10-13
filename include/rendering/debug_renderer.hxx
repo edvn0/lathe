@@ -39,6 +39,10 @@ namespace debug_draw {
         [[nodiscard]]
         auto physics_debug_enabled() const noexcept -> bool;
 
+        auto set_meshlet_cones_debug_enabled(bool enabled) noexcept -> void;
+        [[nodiscard]]
+        auto meshlet_cones_debug_enabled() const noexcept -> bool;
+
         auto set_model_bounds_debug_enabled(bool enabled) noexcept -> void;
         [[nodiscard]]
         auto model_bounds_debug_enabled() const noexcept -> bool;

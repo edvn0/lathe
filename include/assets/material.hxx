@@ -41,6 +41,11 @@ struct alignas(16) GpuMaterial {
 
     std::uint32_t flags = 0;
 
+    float meshlet_extrude = 0.0F;
+    float meshlet_shrink = 0.0F;
+    float _pad1 = 0.0F;
+    float _pad2 = 0.0F;
+
     static constexpr std::uint32_t no_shadow_cascade = ~0U;
 
     static constexpr std::uint32_t flag_double_sided = 1U << 0U;
@@ -48,6 +53,9 @@ struct alignas(16) GpuMaterial {
     static constexpr std::uint32_t flag_alpha_to_coverage = 1U << 1U;
 
     static constexpr std::uint32_t flag_outlined = 1U << 2U;
+
+    // Draws a procedural world-space grid over the surface (see grid_line in forward_geom.slang).
+    static constexpr std::uint32_t flag_grid = 1U << 3U;
 };
 
 static_assert(std::is_trivially_copyable_v<GpuMaterial>);

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <expected>
 #include <filesystem>
 #include <fstream>
@@ -73,6 +74,7 @@
 #include "rendering/scene.hxx"
 #include "rendering/screenshot.hxx"
 #include "scene/components.hxx"
+#include "scene/selection_context.hxx"
 #include "scene/editor_camera.hxx"
 #include "vulkan_bootstrap.hxx"
 
@@ -105,6 +107,67 @@ namespace {
         }
     };
 
+    // The same colours the forward shader gives a meshlet in the debug colour view (pcg hash of the meshlet index).
+    [[nodiscard]] auto meshlet_debug_colour(std::uint32_t cluster_id) -> glm::vec3 {
+        auto const state = (cluster_id * 747796405U) + 2891336453U;
+        auto const word = ((state >> ((state >> 28U) + 4U)) ^ state) * 277803737U;
+        auto const hash = (word >> 22U) ^ word;
+
+        auto const hue = static_cast<float>(hash & 0xFFFFU) / 65535.0F;
+        auto const value = 0.75F + (0.25F * (static_cast<float>((hash >> 16U) & 0xFFU) / 255.0F));
+        constexpr float saturation = 0.65F;
+
+        auto const channel = [&](float offset) {
+            auto const fractional = hue + offset - std::floor(hue + offset);
+            return std::clamp(std::abs((fractional * 6.0F) - 3.0F) - 1.0F, 0.0F, 1.0F);
+        };
+
+        return value * glm::mix(glm::vec3{1.0F}, glm::vec3{channel(0.0F), channel(2.0F / 3.0F), channel(1.0F / 3.0F)},
+                                saturation);
+    }
+
+    // Each cone: apex at the meshlet centre (pushed out by extrude like the shader does), opening along the average
+    // normal. meshopt's cutoff is the sine of the cone's half angle; a cutoff of 1 means no usable cone.
+    auto draw_meshlet_cones(debug_draw::DebugRenderer &lines, std::vector<MeshletCone> const &cones,
+                            glm::mat4 const &world, float extrude, float shrink) -> void {
+        constexpr int rim_segments = 12;
+        constexpr float max_cutoff = 0.985F;
+        constexpr float two_pi = 6.2831853F;
+
+        for (std::size_t index = 0; index < cones.size(); ++index) {
+            auto const &cone = cones[index];
+
+            if (cone.cutoff >= max_cutoff) {
+                continue;
+            }
+
+            auto const colour = meshlet_debug_colour(static_cast<std::uint32_t>(index));
+            auto const apex = cone.centre + (cone.axis * (extrude * cone.radius));
+            auto const length = cone.radius * (1.0F - shrink) * 0.9F;
+            auto const half_angle = std::asin(cone.cutoff);
+            auto const rim_radius = length * std::sin(half_angle);
+
+            auto const helper = std::abs(cone.axis.y) < 0.9F ? glm::vec3{0.0F, 1.0F, 0.0F} : glm::vec3{1.0F, 0.0F, 0.0F};
+            auto const side = glm::normalize(glm::cross(cone.axis, helper));
+            auto const up = glm::cross(cone.axis, side);
+            auto const base = apex + (cone.axis * (length * std::cos(half_angle)));
+
+            auto const to_world = [&](glm::vec3 const &point) { return glm::vec3{world * glm::vec4{point, 1.0F}}; };
+
+            auto previous = base + (side * rim_radius);
+            for (int step = 1; step <= rim_segments; ++step) {
+                auto const angle = two_pi * static_cast<float>(step) / static_cast<float>(rim_segments);
+                auto const next = base + (((side * std::cos(angle)) + (up * std::sin(angle))) * rim_radius);
+                lines.add_line(to_world(previous), to_world(next), colour);
+                if (step % 3 == 0) {
+                    lines.add_line(to_world(apex), to_world(next), colour);
+                }
+                previous = next;
+            }
+            lines.add_line(to_world(apex), to_world(base), colour);
+        }
+    }
+
     auto submit_scene(Application &application) -> std::expected<void, RendererError> {
         ZoneScopedNC("SubmitScene", tracy::Color::RoyalBlue);
 
@@ -117,7 +180,13 @@ namespace {
         auto const draw_model_bounds = application.debug_renderer->model_bounds_debug_enabled();
         constexpr auto model_bounds_debug_colour = glm::vec3{0.2F, 1.0F, 0.4F};
 
+        // Editor selection is drawn with the same outline games get from Components::Outlined.
+        auto const &selection = selection_context();
+        auto const show_selection = !application.is_playing;
+
         for (auto [entity, transform, model]: view.each()) {
+            auto const outlined = registry.all_of<Components::Outlined>(entity) ||
+                                  (show_selection && selection.contains(entity));
             auto const *override_component = registry.try_get<Components::MaterialOverride const>(entity);
             auto const material_override =
                     override_component != nullptr ? override_component->material : MaterialHandle{};
@@ -127,11 +196,20 @@ namespace {
 
             auto const world_transform = systems::get_world_transform(registry, entity, transform);
             auto result = application.renderer->submit_model(model.model, world_transform, material_override,
-                                                             slot_overrides, registry.all_of<Components::Outlined>(entity));
+                                                             slot_overrides, outlined);
 
             if (!result) {
                 error("Could not submit scene object (model index {}): {}", model.model.index,
                       describe(result.error()));
+            }
+
+            auto const *cones = registry.try_get<Components::DebugMeshletCones const>(entity);
+            if (cones != nullptr && cones->enabled) {
+                draw_meshlet_cones(*application.debug_renderer, application.renderer->model_meshlet_cones(model.model),
+                                   world_transform, cones->extrude, cones->shrink);
+            } else if (application.debug_renderer->meshlet_cones_debug_enabled()) {
+                draw_meshlet_cones(*application.debug_renderer, application.renderer->model_meshlet_cones(model.model),
+                                   world_transform, 0.0F, 0.0F);
             }
 
             if (draw_model_bounds) {
@@ -674,7 +752,7 @@ namespace {
     struct EngineArguments {
         explicit EngineArguments(CommandLine &cli) {
             auto packaging = cli.group("Packaging");
-            packaging.value("--shader-pack", "FILE.lsp", "Precompiled shaders to use (default: shaders.lsp in the data directory)", shader_pack);
+            packaging.value("--shader-pack", "FILE.lsp", "Precompiled shaders to use (default: shaders.lsp in the data directory, else a cache under $XDG_CACHE_HOME/lathe that is filled automatically)", shader_pack);
             packaging.value("--bake-shaders", "FILE.lsp", "Compile every shader under assets/shaders (plus assets/shaders/variants.txt) into a shader pack, then exit; needs no GPU or window", bake_shaders);
             packaging.value("--record-shaders", "FILE.lsp", "Write every shader this run compiles to a shader pack, then exit", record_shaders);
             packaging.value("--record-resources", "FILE.lbf", "Write the editor font and icons this run loaded to a resource pack, then exit", record_resources);
@@ -813,17 +891,34 @@ auto main(int argc, char **argv) -> int {
         return EXIT_SUCCESS;
     }
 
+    // A packaged pack beside the data wins; otherwise dev runs cache under XDG_CACHE_HOME, keyed by data directory
+    // so separate checkouts don't evict each other.
+    auto const packaged_pack_path = Paths::current().data_root() / "shaders.lsp";
+    auto const default_pack_path = std::filesystem::exists(packaged_pack_path) ? packaged_pack_path : [] {
+        auto const *xdg = std::getenv("XDG_CACHE_HOME");
+        auto const *home = std::getenv("HOME");
+        auto root = xdg != nullptr && *xdg != '\0' ? std::filesystem::path{xdg}
+                    : home != nullptr && *home != '\0' ? std::filesystem::path{home} / ".cache"
+                                                      : std::filesystem::path{"cache"};
+        auto const key = std::hash<std::string>{}(Paths::current().data_root().string());
+
+        return root / "lathe" / std::format("shaders-{:016x}.lsp", key);
+    }();
+    auto cache_shaders = false;
+
     if (!engine.record_shaders.empty()) {
         renderer::start_shader_recording();
     } else {
-        auto const pack_path = engine.shader_pack.empty() ? Paths::current().data_root() / "shaders.lsp"
+        auto const pack_path = engine.shader_pack.empty() ? default_pack_path
                                                           : std::filesystem::path{engine.shader_pack};
+        auto pack_usable = false;
 
         if (std::filesystem::exists(pack_path)) {
             if (auto pack = renderer::ShaderPack::load(pack_path)) {
                 if (pack->matches_sources(Paths::current().data_root() / "assets" / "shaders")) {
                     info("Using {} precompiled shaders from '{}'", pack->size(), pack_path.string());
                     renderer::install_shader_pack(std::make_shared<renderer::ShaderPack const>(std::move(*pack)));
+                    pack_usable = true;
                 } else {
                     warn("Ignoring shader pack '{}': the shader sources changed since it was recorded; "
                          "re-record it with --record-shaders",
@@ -832,6 +927,13 @@ auto main(int argc, char **argv) -> int {
             } else {
                 error("Ignoring shader pack: {}", pack.error());
             }
+        }
+
+        // No usable pack (first run, or the sources changed): record what this run compiles into the default
+        // pack so the next run skips compilation. An explicit --shader-pack is never overwritten.
+        if (!pack_usable && engine.shader_pack.empty()) {
+            renderer::start_shader_recording();
+            cache_shaders = true;
         }
     }
 
@@ -1151,6 +1253,14 @@ auto main(int argc, char **argv) -> int {
         } else {
             error("Could not write the shader pack: {}", saved.error());
             exit_code = EXIT_FAILURE;
+        }
+    }
+
+    if (cache_shaders) {
+        if (auto const saved = renderer::finish_shader_recording(default_pack_path)) {
+            info("Cached {} compiled shaders to '{}'", *saved, default_pack_path.string());
+        } else {
+            warn("Could not cache compiled shaders: {}", saved.error());
         }
     }
 

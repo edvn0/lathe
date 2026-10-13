@@ -100,7 +100,7 @@ auto evaluate_sky_rgb(SkyState const &state, glm::vec3 direction, glm::vec3 sun_
 
 auto evaluate_environment_sky_rgb(SkyState const &state, glm::vec3 direction, glm::vec3 sun_direction,
                                   glm::vec3 ground_albedo) -> glm::vec3 {
-    constexpr float blend_height = 0.0349066F;
+    constexpr float blend_height = 0.35F;
 
     auto const sky = evaluate_sky_rgb(state, direction, sun_direction);
 
@@ -108,7 +108,11 @@ auto evaluate_environment_sky_rgb(SkyState const &state, glm::vec3 direction, gl
         return sky;
     }
 
-    auto const horizon = evaluate_sky_rgb(state, glm::vec3{1.0F, 0.0F, 0.0F}, sun_direction);
+    // Same azimuth as the view ray so the colour is continuous across the horizon.
+    auto const flat = glm::vec2{direction.x, direction.z};
+    auto const horizon_direction =
+        glm::dot(flat, flat) > 1e-8F ? glm::vec3{glm::normalize(flat).x, 0.0F, glm::normalize(flat).y} : glm::vec3{1.0F, 0.0F, 0.0F};
+    auto const horizon = evaluate_sky_rgb(state, horizon_direction, sun_direction);
 
     auto const ground = ground_albedo * horizon;
 

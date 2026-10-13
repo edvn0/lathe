@@ -29,12 +29,13 @@ void main_task(uint3 group_id: SV_GroupID, uint lane: SV_GroupIndex, uint draw_i
     run_meshlet_task(pc, 0, draw_index, group_id, lane);
 }
 
-VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_strength, uint vertex_id)
+VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_strength, MeshletDisplace displace,
+                            uint vertex_id)
 {
     const var ubo = pc.ubo;
     const var vertex = decode_vertex(draw.vertex_address[vertex_id]);
 
-    float4 world_position = mul(model, float4(vertex.position, 1.0));
+    float4 world_position = mul(model, float4(displace.apply(vertex.position), 1.0));
     world_position.xz += wind_offset(vertex.position, world_position.xyz, wind_strength, ubo.time);
 
     float3x3 normal_matrix = (float3x3)model;
@@ -60,7 +61,7 @@ VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_
     const GpuDraw draw = pc.draws[instance_index];
     const float wind_strength = pc.materials[draw.material_index].wind_strength;
 
-    VertexOutput output = forward_vertex(pc, draw, pc.transforms[instance_index], wind_strength, vertex_id);
+    VertexOutput output = forward_vertex(pc, draw, pc.transforms[instance_index], wind_strength, MeshletDisplace.none(), vertex_id);
     output.debug_cluster_id = instance_index ^ debug_instance_salt;
     return output;
 }
@@ -80,9 +81,11 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
 
     const float4x4 model = pc.transforms[payload.instance_index];
     const float wind_strength = pc.materials[draw.material_index].wind_strength;
+    const MeshletDisplace displace = MeshletDisplace.from(pc.materials[draw.material_index], meshlet);
 
     for (uint v = lane; v < meshlet.vertex_count; v += mesh_group_size) {
-        VertexOutput output = forward_vertex(pc, draw, model, wind_strength, meshlet_vertex_index(draw, meshlet, v));
+        VertexOutput output =
+                forward_vertex(pc, draw, model, wind_strength, displace, meshlet_vertex_index(draw, meshlet, v));
         output.debug_cluster_id = meshlet_index;
         verts[v] = output;
     }
@@ -117,6 +120,17 @@ float3 debug_meshlet_colour(uint cluster_id)
 
     const float3 hue_rgb = saturate(abs(frac(hue + float3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0);
     return value * lerp(float3(1.0), hue_rgb, saturation);
+}
+
+// Anti-aliased grid line mask for a coordinate measured in cells: 1 on a line, 0 between, fading out when the cells
+// get too small on screen to resolve (which would otherwise shimmer).
+float grid_line(float2 cell)
+{
+    const float2 width = max(fwidth(cell), float2(1e-5));
+    const float2 to_line = abs(frac(cell - 0.5) - 0.5) / width;
+    const float line_mask = 1.0 - saturate(min(to_line.x, to_line.y) - 0.5);
+    const float resolvable = saturate(1.0 - 2.0 * max(width.x, width.y));
+    return line_mask * resolvable;
 }
 
 float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float reference)
@@ -270,8 +284,29 @@ if (material.alpha_mode == AlphaMode.mask && (material.flags & material_flag_alp
 var base_colour = base_sample.xyz *
                   float3(material.colour[0], material.colour[1], material.colour[2]);
 
-    if (material.debug_meshlet_colours != 0) {
+    const float3 texture_base_colour = base_colour;
+
+    if (material.debug_meshlet_colours != 0 || ubo.view_mode == view_meshlets) {
         base_colour = debug_meshlet_colour(input.debug_cluster_id);
+    } else if (ubo.view_mode == view_lighting_only) {
+        base_colour = float3(0.8);
+    }
+
+    float3 grid_emission = float3(0.0);
+
+    if ((material.flags & material_flag_grid) != 0) {
+        const float2 world_xz = input.world_position.xz;
+        const float minor = grid_line(world_xz);
+        const float major = grid_line(world_xz / 5.0);
+        const float axis_x = saturate(1.0 - abs(world_xz.y) / max(fwidth(world_xz.y), 1e-5));
+        const float axis_z = saturate(1.0 - abs(world_xz.x) / max(fwidth(world_xz.x), 1e-5));
+
+        float3 line_colour = float3(0.16, 0.2, 0.28) * minor;
+        line_colour = max(line_colour, float3(0.45, 0.55, 0.8) * major);
+        line_colour = lerp(line_colour, float3(0.95, 0.3, 0.3), axis_x);
+        line_colour = lerp(line_colour, float3(0.3, 0.5, 1.0), axis_z);
+
+        grid_emission = line_colour;
     }
 
     float2 metallic_roughness = metallic_roughness_texture.Sample(sampler, uv).bg *
@@ -385,7 +420,7 @@ var base_colour = base_sample.xyz *
                   float3(material.emissive[0], material.emissive[1], material.emissive[2]) *
                   material.emissive_strength;
 
-    float3 shaded_colour = ambient + directional_contribution + punctual_contribution + emissive;
+    float3 shaded_colour = ambient + directional_contribution + punctual_contribution + emissive + grid_emission;
 
     if (ubo.cluster_debug_heatmap != 0) {
         shaded_colour = lerp(shaded_colour, cluster_heatmap_colour(cluster_light_count, ubo.cluster_light_capacity), 0.75);
@@ -412,6 +447,19 @@ var base_colour = base_sample.xyz *
     float3 scattered = fog_colour * ubo.fog_inscattering * (1.0 - transmittance);
 
     float3 fogged_colour = shaded_colour * transmittance + scattered;
+
+    // Data views replace the lit result outright (no fog), the way a viewport shading mode does in a DCC tool.
+    if (ubo.view_mode == view_base_colour) {
+        fogged_colour = texture_base_colour;
+    } else if (ubo.view_mode == view_normals) {
+        fogged_colour = shading_normal * 0.5 + 0.5;
+    } else if (ubo.view_mode == view_roughness) {
+        fogged_colour = float3(roughness);
+    } else if (ubo.view_mode == view_metallic) {
+        fogged_colour = float3(metallic);
+    } else if (ubo.view_mode == view_ambient_occlusion) {
+        fogged_colour = float3(ambient_occlusion);
+    }
 
     OutputFS output;
     output.colour = float4(fogged_colour, base_sample.a);

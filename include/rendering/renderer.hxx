@@ -126,6 +126,29 @@ struct FrameTimings {
     std::uint64_t frame_serial = 0;
 };
 
+// What the forward pass writes to the viewport. Mirrors view_* in assets/shaders/scene_types.slang.
+enum class ViewMode : std::uint32_t {
+    lit,
+    base_colour,
+    normals,
+    roughness,
+    metallic,
+    ambient_occlusion,
+    meshlets,
+    lighting_only,
+};
+
+inline constexpr std::array<std::pair<ViewMode, std::string_view>, 8> view_mode_names{{
+        {ViewMode::lit, "Lit"},
+        {ViewMode::base_colour, "Base colour"},
+        {ViewMode::normals, "Normals"},
+        {ViewMode::roughness, "Roughness"},
+        {ViewMode::metallic, "Metallic"},
+        {ViewMode::ambient_occlusion, "Ambient occlusion"},
+        {ViewMode::meshlets, "Meshlets"},
+        {ViewMode::lighting_only, "Lighting only"},
+}};
+
 struct FrameStats {
     std::uint32_t submitted_triangle_count = 0;
     std::uint32_t submitted_instance_count = 0;
@@ -258,11 +281,14 @@ struct UBO {
     float light_lod_cull_radius_pixels = 0.0F;
     float light_lod_fade_radius_pixels = 0.0F;
 
+    std::uint32_t view_mode = 0;
+    std::uint32_t view_mode_padding = 0; // the environment block below is 8-byte aligned
+
     EnvironmentUboBlock environment{};
 };
 
-static_assert(sizeof(UBO) == 952, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
-static_assert(offsetof(UBO, environment) == 760);
+static_assert(sizeof(UBO) == 960, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(offsetof(UBO, environment) == 768);
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 288);
 static_assert(offsetof(UBO, cascade_atlas_offset_u) == 592);
@@ -385,6 +411,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     [[nodiscard]]
     auto model_submesh_bounds(ModelHandle model) const -> std::optional<std::vector<std::pair<glm::vec3, glm::vec3>>>;
+
+    // Normal cones of every meshlet of the model's first LOD, in the model's own space.
+    [[nodiscard]]
+    auto model_meshlet_cones(ModelHandle model) const -> std::vector<MeshletCone>;
 
     [[nodiscard]]
     auto model_lights(ModelHandle model) const -> std::span<ModelCpuLight const>;
@@ -643,6 +673,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
     }
     [[nodiscard]] auto debug_draw_light_icons() const noexcept -> bool { return debug_draw_light_icons_; }
     auto set_debug_draw_light_icons(bool enabled) noexcept -> void { debug_draw_light_icons_ = enabled; }
+
+    [[nodiscard]] auto view_mode() const noexcept -> ViewMode { return view_mode_; }
+    auto set_view_mode(ViewMode mode) noexcept -> void { view_mode_ = mode; }
 
     [[nodiscard]] auto meshlet_culling() const noexcept -> bool { return meshlet_culling_; }
     auto set_meshlet_culling(bool enabled) noexcept -> void { meshlet_culling_ = enabled; }
@@ -1328,6 +1361,7 @@ private:
     OcclusionTestMode occlusion_test_mode_ = OcclusionTestMode::hiz;
     bool clustered_lighting_ = true;
     bool cluster_debug_heatmap_ = false;
+    ViewMode view_mode_ = ViewMode::lit;
     ClusterGridSettings cluster_grid_{};
     ClusterStats last_cluster_stats_{};
     float light_icon_world_size_ = 0.5F;

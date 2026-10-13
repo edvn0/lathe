@@ -90,13 +90,29 @@ public struct Material {
     public uint debug_meshlet_colours = 0;
 
     public uint flags = 0;
+
+    public float meshlet_extrude = 0.0F;
+    public float meshlet_shrink = 0.0F;
+    public float _pad1 = 0.0F;
+    public float _pad2 = 0.0F;
 };
+
+public static const uint view_lit = 0u;
+public static const uint view_base_colour = 1u;
+public static const uint view_normals = 2u;
+public static const uint view_roughness = 3u;
+public static const uint view_metallic = 4u;
+public static const uint view_ambient_occlusion = 5u;
+public static const uint view_meshlets = 6u;
+public static const uint view_lighting_only = 7u;
 
 public static const uint material_flag_double_sided = 1u;
 
 public static const uint material_flag_alpha_to_coverage = 2u;
 
 public static const uint material_flag_outlined = 4u;
+
+public static const uint material_flag_grid = 8u;
 
 public static const uint cluster_grid_maximum_depth_slices = 64;
 
@@ -183,6 +199,9 @@ public struct UBO {
     public float light_lod_pixel_scale;
     public float light_lod_cull_radius_pixels;
     public float light_lod_fade_radius_pixels;
+
+    public uint view_mode;
+    public uint view_mode_padding;
 
     public uint environment_flags;
     public float environment_exposure;

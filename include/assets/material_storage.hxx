@@ -49,11 +49,16 @@ struct MaterialCreateInfo {
 
     bool debug_meshlet_colours = false;
 
+    float meshlet_extrude = 0.0F;
+    float meshlet_shrink = 0.0F;
+
     bool double_sided = false;
 
     bool alpha_to_coverage = false;
 
     bool outlined = false;
+
+    bool grid = false;
 
     MaterialHandle far_material{};
     std::uint32_t far_material_lod = 2;

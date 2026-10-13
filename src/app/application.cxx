@@ -8,6 +8,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <limits>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -66,6 +67,92 @@
 #include "rendering/screenshot.hxx"
 
 namespace {
+
+    // Slab test in the box's local space; returns the ray parameter of the entry point (0 if the origin is inside).
+    auto ray_box_hit(glm::vec3 const &origin, glm::vec3 const &direction, glm::vec3 const &low, glm::vec3 const &high)
+            -> std::optional<float> {
+        auto t_near = 0.0F;
+        auto t_far = std::numeric_limits<float>::max();
+
+        for (auto axis = 0; axis < 3; ++axis) {
+            if (std::abs(direction[axis]) < 1e-8F) {
+                if (origin[axis] < low[axis] || origin[axis] > high[axis]) {
+                    return std::nullopt;
+                }
+                continue;
+            }
+
+            auto t0 = (low[axis] - origin[axis]) / direction[axis];
+            auto t1 = (high[axis] - origin[axis]) / direction[axis];
+            if (t0 > t1) {
+                std::swap(t0, t1);
+            }
+            t_near = std::max(t_near, t0);
+            t_far = std::min(t_far, t1);
+            if (t_near > t_far) {
+                return std::nullopt;
+            }
+        }
+
+        return t_near;
+    }
+
+    auto ray_sphere_hit(glm::vec3 const &origin, glm::vec3 const &direction, glm::vec3 const &centre, float radius)
+            -> std::optional<float> {
+        auto const to_centre = centre - origin;
+        auto const along = glm::dot(to_centre, direction);
+        auto const closest_sq = glm::dot(to_centre, to_centre) - (along * along);
+        if (along < 0.0F || closest_sq > radius * radius) {
+            return std::nullopt;
+        }
+        return along - std::sqrt(radius * radius - closest_sq);
+    }
+
+    // Nearest entity under the ray (world space, unit direction). Models are tested against their submesh bounds,
+    // lights and other model-less transforms against a small sphere so they stay clickable.
+    auto pick_entity(Scene &scene, Renderer &renderer, glm::vec3 const &origin, glm::vec3 const &direction)
+            -> entt::entity {
+        constexpr auto marker_radius = 0.3F;
+
+        auto &registry = scene.get_registry();
+        auto best = entt::entity{entt::null};
+        auto best_distance = std::numeric_limits<float>::max();
+
+        for (auto const [entity, transform]: registry.view<Components::Transform const>().each()) {
+            auto const world = systems::get_world_transform(registry, entity, transform);
+            auto distance = std::optional<float>{};
+
+            auto const *model = registry.try_get<Components::Model const>(entity);
+            auto const bounds = model != nullptr ? renderer.model_submesh_bounds(model->model) : std::nullopt;
+
+            if (bounds && !bounds->empty()) {
+                auto low = bounds->front().first;
+                auto high = bounds->front().second;
+                for (auto const &[lo, hi]: *bounds) {
+                    low = glm::min(low, lo);
+                    high = glm::max(high, hi);
+                }
+
+                auto const to_local = glm::inverse(world);
+                auto const local_origin = glm::vec3{to_local * glm::vec4{origin, 1.0F}};
+                auto const local_direction = glm::vec3{to_local * glm::vec4{direction, 0.0F}};
+
+                if (auto const local_t = ray_box_hit(local_origin, local_direction, low, high)) {
+                    auto const hit = glm::vec3{world * glm::vec4{local_origin + (local_direction * *local_t), 1.0F}};
+                    distance = glm::dot(hit - origin, direction);
+                }
+            } else if (model == nullptr) {
+                distance = ray_sphere_hit(origin, direction, glm::vec3{world[3]}, marker_radius);
+            }
+
+            if (distance && *distance < best_distance) {
+                best_distance = *distance;
+                best = entity;
+            }
+        }
+
+        return best;
+    }
 
     [[nodiscard]] auto entity_display_name(entt::registry const &registry, entt::entity entity) -> std::string {
         char const *raw = nullptr;
@@ -439,6 +526,36 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         bool const has_room = viewport_content_size.x > 0.0F && viewport_content_size.y > 0.0F;
         if (target.valid() && has_room) {
             ImGui::Image(gui::linear_source_texture_id(target.index), viewport_content_size);
+
+            // View mode picker floating over the viewport's top-left corner, like Blender's shading dropdown.
+            ImGui::SetCursorScreenPos(ImVec2{viewport_screen_pos.x + 8.0F, viewport_screen_pos.y + 8.0F});
+            ImGui::SetNextItemWidth(170.0F);
+            auto const current_mode = renderer->view_mode();
+            auto const current_name =
+                    std::ranges::find(view_mode_names, current_mode, &std::pair<ViewMode, std::string_view>::first)
+                            ->second;
+            if (ImGui::BeginCombo("##view_mode", std::string{current_name}.c_str())) {
+                for (auto const &[mode, name]: view_mode_names) {
+                    if (ImGui::Selectable(std::string{name}.c_str(), mode == current_mode)) {
+                        renderer->set_view_mode(mode);
+                    }
+                }
+
+                ImGui::Separator();
+
+                bool cones = debug_renderer->meshlet_cones_debug_enabled();
+                if (ImGui::Checkbox("Meshlet normal cones", &cones)) {
+                    debug_renderer->set_meshlet_cones_debug_enabled(cones);
+                }
+
+                bool bounds = debug_renderer->model_bounds_debug_enabled();
+                if (ImGui::Checkbox("Submesh bounds", &bounds)) {
+                    debug_renderer->set_model_bounds_debug_enabled(bounds);
+                }
+
+                ImGui::EndCombo();
+            }
+            ImGui::SetCursorScreenPos(viewport_screen_pos);
         }
 
         if (!is_playing && has_room) {
@@ -477,6 +594,36 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     }
 
                     renderer->mark_dynamic_shadow_casters_dirty();
+                }
+            }
+
+            // Click (not drag) in the viewport to pick; ctrl toggles, clicking empty space clears.
+            if (viewport_hovered && !ImGui::IsAnyItemHovered() && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
+                ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).x == 0.0F &&
+                ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y == 0.0F) {
+                auto const aspect = viewport_content_size.x / viewport_content_size.y;
+                auto const mouse = ImGui::GetIO().MousePos;
+                auto const ndc_x = (((mouse.x - viewport_screen_pos.x) / viewport_content_size.x) * 2.0F) - 1.0F;
+                auto const ndc_y = 1.0F - (((mouse.y - viewport_screen_pos.y) / viewport_content_size.y) * 2.0F);
+
+                // Camera-space ray through the pixel (LH, +z forward), recovered from the projection's focal terms.
+                auto const projection = camera.projection(aspect);
+                auto const camera_ray = glm::vec3{ndc_x / projection[0][0], ndc_y / projection[1][1], 1.0F};
+                auto const to_world = glm::inverse(camera.view());
+                auto const direction = glm::normalize(glm::vec3{to_world * glm::vec4{camera_ray, 0.0F}});
+
+                auto const hit = pick_entity(*active_scene(), *renderer, camera.position(), direction);
+                auto &selection = selection_context();
+
+                if (hit != entt::null) {
+                    if (ImGui::GetIO().KeyCtrl) {
+                        selection.toggle(hit);
+                    } else {
+                        selection.select(hit);
+                    }
+                } else if (!ImGui::GetIO().KeyCtrl) {
+                    selection.clear();
                 }
             }
         }
@@ -547,6 +694,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
 
         changed |= ImGui::Checkbox("Double-sided", &info.double_sided);
+        changed |= ImGui::Checkbox("Debug grid", &info.grid);
 
         if (info.far_material.valid()) {
             auto const far_name = renderer->assets().materials().name_of(info.far_material);
@@ -561,6 +709,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
 
         changed |= ImGui::Checkbox("Debug meshlet colours", &info.debug_meshlet_colours);
+        changed |= ImGui::SliderFloat("Meshlet extrude", &info.meshlet_extrude, 0.0F, 4.0F);
+        changed |= ImGui::SliderFloat("Meshlet shrink", &info.meshlet_shrink, 0.0F, 0.9F);
 
         auto const texture_picker = [&](char const *label, ImageHandle &slot, ImageHandle default_handle) {
             auto const &textures = renderer->assets().textures();
@@ -2540,6 +2690,9 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
     }
     if (ev.key == GLFW_KEY_F12) {
         request_screenshot();
+    }
+    if (ev.key >= GLFW_KEY_F1 && ev.key < GLFW_KEY_F1 + static_cast<std::int32_t>(view_mode_names.size())) {
+        renderer->set_view_mode(view_mode_names[static_cast<std::size_t>(ev.key - GLFW_KEY_F1)].first);
     }
 
     if (is_playing) {

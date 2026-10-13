@@ -185,7 +185,7 @@ namespace render_pass {
         bool outline_mask = false;
     };
 
-    inline constexpr std::uint32_t bloom_mip_count = 4;
+    inline constexpr std::uint32_t bloom_mip_count = 6;
 
     struct BloomPassInfo {
         bool enabled = true;
