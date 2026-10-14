@@ -959,8 +959,10 @@ auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_s
     }
 
     static thread_local fastgltf::Parser parser{
-            fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_lights_punctual,
+            fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_lights_punctual |
+                    fastgltf::Extensions::KHR_texture_transform,
     };
+    // KHR_texture_transform is accepted so models that require it load, but the UV transform itself is not applied.
     constexpr auto options = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::GenerateMeshIndices;
     auto const base_directory = path.absolute().parent_path();
     auto asset_result = parser.loadGltf(file_data.get(), base_directory, options);
@@ -1546,6 +1548,18 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                     }
 
                     lods[level].meshlets = *meshlets;
+
+                    if (level == 0 && !primitive_skinned) {
+                        auto cones = std::make_shared<std::vector<MeshletCone>>();
+                        cones->reserve(meshlet_build->meshlets.size());
+                        for (auto const &meshlet: meshlet_build->meshlets) {
+                            cones->push_back(MeshletCone{.centre = meshlet.centre,
+                                                         .radius = meshlet.radius,
+                                                         .axis = meshlet.cone_axis,
+                                                         .cutoff = meshlet.cone_cutoff});
+                        }
+                        lods[level].meshlets.cones = std::move(cones);
+                    }
                 }
 
                 geometry_upload_sample.stop();

@@ -242,6 +242,14 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         });
     }
 
+    auto const decals_active = frame.decal_count != 0;
+    auto decals = frame_graph::BufferId{};
+    auto decal_clusters = frame_graph::BufferId{};
+    if (decals_active) {
+        decals = import_frame_buffer(frame.decals_buffer, "decals", true);
+        decal_clusters = import_frame_buffer(frame.decal_clusters_buffer, "decal_clusters", false);
+    }
+
     auto visible_draws = import_frame_buffer(frame.visible_draw_buffer, "visible_draws", false);
     auto visible_transforms = import_frame_buffer(frame.visible_transform_buffer, "visible_transforms", false);
     auto source_draws = import_frame_buffer(frame.draw_buffer, "draws", false);
@@ -596,6 +604,34 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                   return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
                                       auto const pass_context = pass_context_of(context);
                                       record_cluster_stats_readback(pass_context, frame);
+                                  }};
+                              });
+    }
+
+    if (decals_active) {
+        frame_graph_.add_pass("decal_cluster", frame_graph::PassType::compute,
+                              {
+                                      .name_id = "decal_cluster",
+                                      .label = "Decal cluster",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::Gold),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  constexpr auto compute = stages_of(ShaderStage::compute);
+
+                                  [[maybe_unused]] auto const list =
+                                          pass.read(decals, frame_graph::Use::shader_read, compute);
+                                  decal_clusters =
+                                          pass.write(decal_clusters, frame_graph::Use::shader_write, compute);
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      if (!state.result) {
+                                          return;
+                                      }
+
+                                      auto const pass_context = pass_context_of(context);
+                                      if (auto const done = record_decal_cluster(pass_context, frame); !done) {
+                                          state.result = std::unexpected(done.error());
+                                      }
                                   }};
                               });
     }
@@ -955,6 +991,12 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 if (clustered) {
                     [[maybe_unused]] auto const clusters =
                             pass.read(cluster_lights, frame_graph::Use::shader_read, fragment_stage);
+                }
+                if (decals_active) {
+                    [[maybe_unused]] auto const decal_list =
+                            pass.read(decals, frame_graph::Use::shader_read, fragment_stage);
+                    [[maybe_unused]] auto const decal_cells =
+                            pass.read(decal_clusters, frame_graph::Use::shader_read, fragment_stage);
                 }
                 if (ao_enabled) {
                     [[maybe_unused]] auto const ao = pass.read(ao_image, frame_graph::Use::sampled, fragment_stage);

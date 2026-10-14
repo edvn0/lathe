@@ -945,6 +945,26 @@ namespace {
             .debug_name = "renderer.skin_pipeline",
     });
 
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = data_path("assets/shaders/decal_cluster.slang"),
+                                    .entry_point = FlyString{"main_cs"},
+                                    .stage = renderer::ShaderStage::compute,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {},
+            .depth_format = VK_FORMAT_UNDEFINED,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .debug_name = "renderer.decal_cluster_pipeline",
+    });
+
         return pipeline_infos;
     }
 }
@@ -1140,6 +1160,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     forward_outline_pipeline_ = *registered_pipelines[31];
     forward_outline_instanced_pipeline_ = *registered_pipelines[32];
     skin_pipeline_ = *registered_pipelines[33];
+    decal_cluster_pipeline_ = *registered_pipelines[34];
 
     {
         auto initialised = environment_.initialize(EnvironmentSystem::CreateInfo{
@@ -1619,6 +1640,20 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.visible_lights_buffer = std::move(*visible_lights);
 
+        auto decals_buffer = create_shared_buffer(context_, BufferCreateInfo{
+                                                                    .size = sizeof(GpuDecal) * maximum_decal_count,
+                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                    .memory = BufferMemory::upload,
+                                                                    .debug_name = "renderer.frame_decals",
+                                                            });
+
+        if (!decals_buffer) {
+            return std::unexpected(make_device_error(decals_buffer.error()));
+        }
+
+        frame.decals_buffer = std::move(*decals_buffer);
+
         auto targets = create_frame_targets(frame_index, create_info.extent);
 
         if (!targets) {
@@ -1799,6 +1834,8 @@ auto Renderer::destroy() noexcept -> void {
     for (auto &frame: frames_) {
         frame.cluster_stats_readback_buffer.destroy();
         frame.cluster_lights_buffer.destroy();
+        frame.decal_clusters_buffer.destroy();
+        frame.decals_buffer.destroy();
         frame.visible_lights_buffer.destroy();
         frame.lights_buffer.destroy();
         frame.frustum_planes_buffer.destroy();
@@ -2215,6 +2252,45 @@ auto Renderer::model_submesh_bounds(ModelHandle model) const
     }
 
     return bounds;
+}
+
+auto Renderer::model_meshlet_cones(ModelHandle model) const -> std::vector<MeshletCone> {
+    std::vector<MeshletCone> result;
+    auto const *slot = model_slot(model);
+
+    if (slot == nullptr) {
+        return result;
+    }
+
+    for (auto const &draw: slot->draws) {
+        auto const *mesh = mesh_slot(draw.mesh);
+
+        if (mesh == nullptr) {
+            continue;
+        }
+
+        auto const axes = glm::mat3{draw.local_transform};
+        auto const scale = std::max({glm::length(axes[0]), glm::length(axes[1]), glm::length(axes[2])});
+
+        for (auto const &submesh: mesh->submeshes) {
+            auto const &cones = submesh.lods[0].meshlets.cones;
+
+            if (!cones) {
+                continue;
+            }
+
+            for (auto const &cone: *cones) {
+                result.push_back(MeshletCone{
+                        .centre = glm::vec3{draw.local_transform * glm::vec4{cone.centre, 1.0F}},
+                        .radius = cone.radius * scale,
+                        .axis = glm::normalize(axes * cone.axis),
+                        .cutoff = cone.cutoff,
+                });
+            }
+        }
+    }
+
+    return result;
 }
 
 auto Renderer::model_lights(ModelHandle model) const -> std::span<ModelCpuLight const> {
@@ -2999,6 +3075,20 @@ auto Renderer::set_environment(SceneEnvironment const &environment) -> void {
     if (light.direction != light_.direction || light.colour != light_.colour || light.intensity != light_.intensity) {
         light_ = light;
     }
+}
+
+auto Renderer::submit_decal(Decal const &decal) -> std::expected<void, RendererError> {
+    if (decal_submissions_.size() >= maximum_decal_count) {
+        return std::unexpected(make_error(RendererErrorType::capacity_exceeded));
+    }
+
+    if (material_storage_.get(decal.material) == nullptr) {
+        return std::unexpected(make_error(RendererErrorType::invalid_material));
+    }
+
+    decal_submissions_.push_back(decal);
+
+    return {};
 }
 
 auto Renderer::submit_point_light(PointLight const &light) -> std::expected<void, RendererError> {
@@ -3902,6 +3992,42 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     auto const light_lod_cull = std::max(light_lod_settings_.cull_radius_pixels, 0.0F);
     auto const light_lod_fade = std::max(light_lod_settings_.fade_radius_pixels, light_lod_cull + 1e-3F);
 
+    decal_staging_.clear();
+    {
+        auto sorted = decals_enabled_ ? decal_submissions_ : std::vector<Decal>{};
+        std::ranges::stable_sort(sorted, {}, &Decal::sort_order);
+
+        for (auto const &decal: sorted) {
+            auto const inverse = glm::inverse(decal.transform);
+            auto const axis = [&decal](int column) { return glm::vec3{decal.transform[column]}; };
+
+            // A scaled box's bounding sphere reaches its corners: half the diagonal of the scaled unit cube.
+            auto const half_diagonal =
+                    0.5F * glm::length(glm::vec3{glm::length(axis(0)), glm::length(axis(1)), glm::length(axis(2))});
+
+            auto const cos_start = std::cos(glm::radians(std::min(decal.angle_fade_start_degrees, decal.angle_fade_end_degrees)));
+            auto const cos_end = std::cos(glm::radians(std::max(decal.angle_fade_start_degrees, decal.angle_fade_end_degrees)));
+            auto const fade_scale = 1.0F / std::max(cos_start - cos_end, 1e-4F);
+            auto const fade_offset = -cos_end * fade_scale;
+
+            decal_staging_.push_back(GpuDecal{
+                    .world_to_decal = inverse,
+                    .bounding_sphere = glm::vec4{glm::vec3{decal.transform[3]}, half_diagonal},
+                    .tangent_fade_scale = glm::vec4{glm::normalize(axis(0)), fade_scale},
+                    .bitangent_fade_offset = glm::vec4{glm::normalize(axis(2)), fade_offset},
+                    .normal_opacity = glm::vec4{glm::normalize(axis(1)), decal.opacity},
+                    .material_index = material_storage_.gpu_index(decal.material),
+            });
+        }
+    }
+
+    frame.decal_count = static_cast<std::uint32_t>(decal_staging_.size());
+
+    if (!decal_staging_.empty() && !frame.decals_buffer.write(0, std::as_bytes(std::span{decal_staging_}))) {
+        clear_submissions();
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
     UBO const ubo{
             .view_projection = view_projection,
             .view = view,
@@ -3965,6 +4091,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .light_lod_pixel_scale = light_lod_pixel_scale,
             .light_lod_cull_radius_pixels = light_lod_settings_.enabled ? light_lod_cull : 0.0F,
             .light_lod_fade_radius_pixels = light_lod_settings_.enabled ? light_lod_fade : 0.0F,
+            .view_mode = static_cast<std::uint32_t>(view_mode_),
+            .decals_address = frame.decals_buffer.device_address,
+            .decal_clusters_address = frame.decal_clusters_buffer.device_address,
+            .decal_count = frame.decal_count,
             .environment = environment_.ubo_block(),
     };
 
@@ -4441,6 +4571,35 @@ auto Renderer::record_cluster_stats_clear(render_pass::Context const &pass_conte
     vkCmdFillBuffer(pass_context.command_buffer, frame.cluster_lights_buffer.buffer, 0, cluster_stats_bytes, 0);
 }
 
+auto Renderer::record_decal_cluster(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    if (frame.decal_count == 0) {
+        return {};
+    }
+
+    auto const command_buffer = pass_context.command_buffer;
+    auto const layout = resolve_layout(pipeline_graph_, decal_cluster_pipeline_);
+
+    if (layout == VK_NULL_HANDLE) {
+        return std::unexpected(make_error(RendererErrorType::invalid_pipeline));
+    }
+
+    bind_compute_node(pipeline_graph_, decal_cluster_pipeline_, command_buffer);
+    gpu_resource_table_.bind(command_buffer, pass_context.frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
+
+    DecalClusterPushConstants const pc{
+            .ubo_address = ubos_[pass_context.frame_index].device_address,
+            .decals_address = frame.decals_buffer.device_address,
+            .decal_clusters_address = frame.decal_clusters_buffer.device_address,
+            .decal_count = frame.decal_count,
+    };
+
+    vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+
+    vkCmdDispatch(command_buffer, cluster_tile_count(frame.cluster_grid), 1, 1);
+    return {};
+}
+
 auto Renderer::record_light_cull(render_pass::Context const &pass_context, RendererFrame const &frame)
         -> std::expected<void, RendererError> {
     auto const command_buffer = pass_context.command_buffer;
@@ -4715,6 +4874,24 @@ auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<vo
         }
 
         frame.cluster_stats_readback_buffer = std::move(*readback);
+    }
+
+    if (auto const cells = cluster_count(cluster_grid_); !frame.decal_clusters_buffer.valid() || frame.decal_cluster_cells != cells) {
+        auto decal_clusters = create_shared_buffer(
+                context_, BufferCreateInfo{
+                                  .size = sizeof(std::uint32_t) * VkDeviceSize{cells} * (1 + decal_cluster_capacity),
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                  .memory = BufferMemory::device,
+                                  .debug_name = "renderer.frame_decal_clusters",
+                          });
+
+        if (!decal_clusters) {
+            return std::unexpected(make_device_error(decal_clusters.error()));
+        }
+
+        frame.decal_clusters_buffer = std::move(*decal_clusters);
+        frame.decal_cluster_cells = cells;
     }
 
     if (frame.cluster_lights_buffer.valid() && frame.cluster_grid == cluster_grid_) {
@@ -5616,6 +5793,7 @@ auto Renderer::clear_submissions() noexcept -> void {
     skin_palette_.clear();
     resident_slots_this_frame_ = 0;
     resident_jobs_this_frame_ = 0;
+    decal_submissions_.clear();
     point_light_submissions_.clear();
     spot_light_submissions_.clear();
 }

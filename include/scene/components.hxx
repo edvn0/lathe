@@ -30,6 +30,19 @@ namespace Components {
         float outer_cone_degrees = 30.0F;
     };
 
+    // Projects `material` (base colour, normal, metallic/roughness, occlusion and emissive, as on a mesh) onto the
+    // geometry inside this entity's box. The box is the unit cube scaled by the entity's transform; the decal projects
+    // along the entity's local -Y and its texture lies in local XZ.
+    struct Decal {
+        MaterialHandle material{};
+        float opacity = 1.0F;
+        // Surfaces tilted further than `end` from the decal's up axis get nothing; `start` and nearer get full strength.
+        float angle_fade_start_degrees = 60.0F;
+        float angle_fade_end_degrees = 80.0F;
+        // Decals layer in ascending order, so a higher value draws over a lower one.
+        std::int32_t sort_order = 0;
+    };
+
     struct MaterialOverride {
         MaterialHandle material{};
         std::vector<MaterialSlotOverride> slots;
@@ -52,6 +65,14 @@ namespace Components {
 
     struct Model {
         ModelHandle model{};
+    };
+
+    // Draws every meshlet's normal cone as debug lines. extrude/shrink mirror the material's meshlet extrude/shrink
+    // so the cones follow an exploded model.
+    struct DebugMeshletCones {
+        bool enabled = true;
+        float extrude = 0.0F;
+        float shrink = 0.0F;
     };
 
     [[nodiscard]] inline auto next_instanced_model_revision() noexcept -> std::uint64_t {

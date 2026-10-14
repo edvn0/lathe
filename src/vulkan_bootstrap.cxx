@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <ranges>
 #include <string_view>
 #include <vector>
@@ -282,9 +284,19 @@ namespace {
 
             case ScreenType::headless:
             case ScreenType::windowed:
-                constexpr std::int32_t default_width = 1280;
-                constexpr std::int32_t default_height = 720;
-                context.window = glfwCreateWindow(default_width, default_height, "VK", nullptr, nullptr);
+                std::int32_t width = 1280;
+                std::int32_t height = 720;
+                // LATHE_WINDOW_SIZE=WxH sizes the windowed/headless window, e.g. for full-HD screenshots.
+                if (auto const *size = std::getenv("LATHE_WINDOW_SIZE")) {
+                    std::int32_t parsed_width = 0;
+                    std::int32_t parsed_height = 0;
+                    if (std::sscanf(size, "%dx%d", &parsed_width, &parsed_height) == 2 && parsed_width > 0 &&
+                        parsed_height > 0) {
+                        width = parsed_width;
+                        height = parsed_height;
+                    }
+                }
+                context.window = glfwCreateWindow(width, height, "VK", nullptr, nullptr);
                 break;
         }
 

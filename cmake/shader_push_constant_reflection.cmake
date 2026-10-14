@@ -298,6 +298,13 @@ add_shader_push_constant(
 )
 
 add_shader_push_constant(
+    decal_cluster.slang
+    main_cs
+    compute
+    DecalClusterPushConstants
+)
+
+add_shader_push_constant(
     hiz_build.slang
     main_cs
     compute

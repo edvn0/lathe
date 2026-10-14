@@ -396,6 +396,9 @@ auto to_gpu_material(MaterialCreateInfo const &create_info) noexcept -> GpuMater
             .debug_meshlet_colours = create_info.debug_meshlet_colours ? 1U : 0U,
             .flags = (create_info.double_sided ? GpuMaterial::flag_double_sided : 0U) |
                      (create_info.alpha_to_coverage ? GpuMaterial::flag_alpha_to_coverage : 0U) |
-                     (create_info.outlined ? GpuMaterial::flag_outlined : 0U),
+                     (create_info.outlined ? GpuMaterial::flag_outlined : 0U) |
+                     (create_info.grid ? GpuMaterial::flag_grid : 0U),
+            .meshlet_extrude = create_info.meshlet_extrude,
+            .meshlet_shrink = create_info.meshlet_shrink,
     };
 }

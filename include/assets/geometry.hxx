@@ -3,6 +3,10 @@
 #include <volk.h>
 
 #include <cstdint>
+#include <memory>
+#include <vector>
+
+#include <glm/vec3.hpp>
 
 struct GeometrySlice {
     VkDeviceSize offset = 0;
@@ -28,7 +32,17 @@ struct IndexSlice {
     VkIndexType index_type = VK_INDEX_TYPE_UINT32;
 };
 
+// CPU copy of a meshlet's bounds, kept for debug visualisation of the normal cones.
+struct MeshletCone {
+    glm::vec3 centre{0.0F};
+    float radius = 0.0F;
+    glm::vec3 axis{0.0F, 0.0F, 1.0F};
+    float cutoff = 1.0F;
+};
+
 struct MeshletSlice {
+    std::shared_ptr<std::vector<MeshletCone> const> cones;
+
     GeometrySlice descriptors{};
     GeometrySlice data{};
     std::uint32_t meshlet_count = 0;

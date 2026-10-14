@@ -192,10 +192,13 @@ public float3 environment_sky(Ptr<UBO> ubo, float3 direction)
         return sky;
     }
 
-    const float3 horizon = preetham_sky(ubo, float3(1.0, 0.0, 0.0), sun_direction);
+    // Same azimuth as the view ray so the colour is continuous across the horizon.
+    const float2 xz = direction.xz;
+    const float3 horizon_direction = dot(xz, xz) > 1e-8 ? float3(normalize(xz).x, 0.0, normalize(xz).y) : float3(1.0, 0.0, 0.0);
+    const float3 horizon = preetham_sky(ubo, horizon_direction, sun_direction);
     const float3 ground = ubo.sky_ground.xyz * horizon;
 
-    const float blend = clamp(-direction.y / 0.0349066, 0.0, 1.0);
+    const float blend = clamp(-direction.y / 0.35, 0.0, 1.0);
     const float eased = blend * blend * (3.0 - 2.0 * blend);
 
     return lerp(horizon, ground, eased);

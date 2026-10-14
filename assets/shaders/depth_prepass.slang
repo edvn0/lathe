@@ -18,11 +18,12 @@ void main_task(uint3 group_id: SV_GroupID, uint lane: SV_GroupIndex, uint draw_i
     run_meshlet_task(pc, 0, draw_index, group_id, lane);
 }
 
-VertexOutput prepass_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_strength, uint vertex_id)
+VertexOutput prepass_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_strength, MeshletDisplace displace,
+                            uint vertex_id)
 {
     const var ubo = pc.ubo;
     const var vertex = decode_vertex(draw.vertex_address[vertex_id]);
-    var world_position = mul(model, float4(vertex.position, 1.0));
+    var world_position = mul(model, float4(displace.apply(vertex.position), 1.0));
 
     world_position.xz += wind_offset(vertex.position, world_position.xyz, wind_strength, ubo.time);
 
@@ -38,7 +39,7 @@ VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_
 {
     const GpuDraw draw = pc.draws[instance_index];
     const float wind_strength = pc.materials[draw.material_index].wind_strength;
-    return prepass_vertex(pc, draw, pc.transforms[instance_index], wind_strength, vertex_id);
+    return prepass_vertex(pc, draw, pc.transforms[instance_index], wind_strength, MeshletDisplace.none(), vertex_id);
 }
 
 [shader("mesh")]
@@ -55,9 +56,10 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
 
     const float4x4 model = pc.transforms[payload.instance_index];
     const float wind_strength = pc.materials[draw.material_index].wind_strength;
+    const MeshletDisplace displace = MeshletDisplace.from(pc.materials[draw.material_index], meshlet);
 
     for (uint v = lane; v < meshlet.vertex_count; v += mesh_group_size) {
-        verts[v] = prepass_vertex(pc, draw, model, wind_strength, meshlet_vertex_index(draw, meshlet, v));
+        verts[v] = prepass_vertex(pc, draw, model, wind_strength, displace, meshlet_vertex_index(draw, meshlet, v));
     }
 
     for (uint t = lane; t < meshlet.triangle_count; t += mesh_group_size) {

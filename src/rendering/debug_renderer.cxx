@@ -217,6 +217,7 @@ namespace debug_draw {
 
         BulletDebugDraw bullet_debug_draw;
         bool model_bounds_debug_enabled = false;
+        bool meshlet_cones_debug_enabled = false;
     };
 
     DebugRenderer::DebugRenderer(Renderer &renderer) : impl_{std::make_unique<Impl>(renderer)} {}
@@ -341,6 +342,14 @@ namespace debug_draw {
 
     auto DebugRenderer::physics_debug_enabled() const noexcept -> bool {
         return impl_->bullet_debug_draw.getDebugMode() != btIDebugDraw::DBG_NoDebug;
+    }
+
+    auto DebugRenderer::set_meshlet_cones_debug_enabled(bool enabled) noexcept -> void {
+        impl_->meshlet_cones_debug_enabled = enabled;
+    }
+
+    auto DebugRenderer::meshlet_cones_debug_enabled() const noexcept -> bool {
+        return impl_->meshlet_cones_debug_enabled;
     }
 
     auto DebugRenderer::set_model_bounds_debug_enabled(bool enabled) noexcept -> void {
