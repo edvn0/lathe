@@ -40,7 +40,7 @@
 #include "assets/model_sink.hxx"
 #include "assets/model_storage.hxx"
 #include "assets/model_streamer.hxx"
-#include "assets/shader_change_queue.hxx"
+#include "assets/file_change_queue.hxx"
 #include "assets/slang_compiler.hxx"
 #include "assets/texture_streamer.hxx"
 #include "core/config.hxx"
@@ -646,7 +646,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
         return geometry_arena_;
     }
 
-    [[nodiscard]] auto shader_change_queue() noexcept -> ShaderChangeQueue & { return shader_change_queue_; }
+    [[nodiscard]] auto shader_change_queue() noexcept -> FileChangeQueue & { return shader_change_queue_; }
 
     [[nodiscard]] auto aspect(std::uint32_t index) const -> float {
         static_cast<void>(index);
@@ -1461,7 +1461,7 @@ private:
     PipelineNodeHandle decal_cluster_pipeline_;
     PipelineNodeHandle shadow_cull_pipeline_;
     PipelineNodeHandle skybox_pipeline_;
-    ShaderChangeQueue shader_change_queue_;
+    FileChangeQueue shader_change_queue_;
 
     EnvironmentSystem environment_;
     std::uint64_t frame_counter_ = 0;

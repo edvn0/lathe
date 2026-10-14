@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -144,6 +145,24 @@ struct SceneScriptComponent {
     std::string script;
 };
 
+struct SceneEntityRef {
+    std::uint32_t index = scene_no_index;
+};
+
+// Same alternatives, in the same order, as ScriptValue; an entity is an index into the scene's entities.
+using SceneScriptValue = std::variant<bool, std::int64_t, double, std::string, glm::vec3, glm::vec4, SceneEntityRef>;
+
+struct SceneBehaviourValue {
+    std::string name;
+    SceneScriptValue value;
+};
+
+struct SceneBehaviourComponent {
+    std::uint32_t entity = 0;
+    std::string script;
+    std::vector<SceneBehaviourValue> values;
+};
+
 struct SceneLifetimeComponent {
     std::uint32_t entity = 0;
     float remaining_seconds = 0.0F;
@@ -169,6 +188,7 @@ struct SceneDescription {
     std::vector<SceneRigidBodyComponent> rigid_bodies;
     std::vector<SceneScriptComponent> scripts;
     std::vector<SceneLifetimeComponent> lifetimes;
+    std::vector<SceneBehaviourComponent> behaviours;
 };
 
 inline constexpr std::uint16_t scene_chunk_version = 1;
@@ -189,6 +209,7 @@ namespace scene_section {
     inline constexpr std::uint32_t lifetimes = 13;
     inline constexpr std::uint32_t environment = 14;
     inline constexpr std::uint32_t particle_emitters = 15;
+    inline constexpr std::uint32_t behaviours = 16;
 }
 
 inline constexpr std::uint16_t scene_section_version = 1;

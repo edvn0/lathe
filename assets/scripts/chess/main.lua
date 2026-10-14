@@ -412,7 +412,7 @@ end
 
 -- Scene setup ------------------------------------------------------------------------------------------------------
 
----@type LatheGame
+---@type GameScript
 local M = {}
 
 M.wants_cursor = true

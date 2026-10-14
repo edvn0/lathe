@@ -7,6 +7,8 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "assets/material.hxx"
@@ -14,6 +16,7 @@
 #include "core/transform.hxx"
 #include "physics/physics_components.hxx"
 #include "scene/script_handle.hxx"
+#include "scene/script_property.hxx"
 
 namespace Components {
     struct PointLight {
@@ -135,6 +138,39 @@ namespace Components {
 
     struct Script {
         ScriptHandle script{};
+    };
+
+    // A behaviour (assets/scripts/behaviours/<script>.lua) on this entity. `values` are the properties the
+    // entity sets itself; the rest take the script's defaults. LuaGame runs it while the game plays.
+    struct Behaviour {
+        std::string script;
+        std::vector<ScriptPropertyValue> values;
+
+        [[nodiscard]] auto find(std::string_view property) noexcept -> ScriptPropertyValue * {
+            for (auto &entry: values) {
+                if (entry.name == property) {
+                    return &entry;
+                }
+            }
+
+            return nullptr;
+        }
+
+        [[nodiscard]] auto find(std::string_view property) const noexcept -> ScriptPropertyValue const * {
+            return const_cast<Behaviour *>(this)->find(property);
+        }
+
+        auto set(std::string_view property, ScriptValue value) -> void {
+            if (auto *existing = find(property)) {
+                existing->value = std::move(value);
+            } else {
+                values.push_back(ScriptPropertyValue{.name = std::string{property}, .value = std::move(value)});
+            }
+        }
+
+        auto reset(std::string_view property) -> void {
+            std::erase_if(values, [&](ScriptPropertyValue const &entry) { return entry.name == property; });
+        }
     };
 
     struct PlayerTag {};

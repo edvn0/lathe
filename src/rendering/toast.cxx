@@ -13,8 +13,23 @@
 #include <utility>
 #include <vector>
 
+// ImGuiNotify places toasts against the main viewport. A toast anchor stands in for it so they can sit in the editor's
+// viewport panel instead.
+namespace {
+    ImGuiViewport toast_anchor_viewport;
+    bool toast_anchored = false;
+}
+
+namespace ImGui {
+    inline auto ToastAnchorViewport() -> ImGuiViewport * {
+        return toast_anchored ? &toast_anchor_viewport : GetMainViewport();
+    }
+}
+
 #define NOTIFY_RENDER_OUTSIDE_MAIN_WINDOW false
+#define GetMainViewport ToastAnchorViewport
 #include "ImGuiNotify.hpp"
+#undef GetMainViewport
 
 namespace gui {
     namespace {
@@ -69,6 +84,14 @@ namespace gui {
     auto toast_error(std::string_view title, std::string_view message) -> void {
         toast(ToastKind::error, title, message, std::chrono::milliseconds{6000});
     }
+
+    auto set_toast_anchor(float x, float y, float width, float height) -> void {
+        toast_anchor_viewport.Pos = ImVec2{x, y};
+        toast_anchor_viewport.Size = ImVec2{width, height};
+        toast_anchored = true;
+    }
+
+    auto clear_toast_anchor() -> void { toast_anchored = false; }
 
     auto render_toasts() -> void {
         std::vector<PendingToast> ready;

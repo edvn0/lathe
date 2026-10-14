@@ -1,5 +1,7 @@
 #include "serialisation/scene_serialisation.hxx"
 
+#include <type_traits>
+#include <variant>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -451,6 +453,28 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
             }
         }
 
+        if (auto const *script = registry.try_get<Components::Behaviour>(entity)) {
+            SceneBehaviourComponent component{.entity = entity_index, .script = script->script};
+
+            for (auto const &entry: script->values) {
+                SceneScriptValue value = std::visit(
+                        [&](auto const &stored) -> SceneScriptValue {
+                            if constexpr (std::is_same_v<std::decay_t<decltype(stored)>, entt::entity>) {
+                                auto const found = index_of.find(stored);
+
+                                return SceneEntityRef{.index = found != index_of.end() ? found->second : scene_no_index};
+                            } else {
+                                return stored;
+                            }
+                        },
+                        entry.value);
+
+                component.values.push_back(SceneBehaviourValue{.name = entry.name, .value = std::move(value)});
+            }
+
+            description.behaviours.push_back(std::move(component));
+        }
+
         if (auto const *lifetime = registry.try_get<Components::Lifetime>(entity)) {
             description.lifetimes.push_back(
                     SceneLifetimeComponent{.entity = entity_index, .remaining_seconds = lifetime->remaining_seconds});
@@ -889,6 +913,26 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         }
 
         registry.emplace<Components::Script>(entities[component.entity], Components::Script{.script = handle});
+    }
+
+    for (auto const &component: description.behaviours) {
+        Components::Behaviour script{.script = component.script};
+
+        for (auto const &entry: component.values) {
+            ScriptValue value = std::visit(
+                    [&](auto const &stored) -> ScriptValue {
+                        if constexpr (std::is_same_v<std::decay_t<decltype(stored)>, SceneEntityRef>) {
+                            return stored.index != scene_no_index ? entities[stored.index] : entt::entity{entt::null};
+                        } else {
+                            return stored;
+                        }
+                    },
+                    entry.value);
+
+            script.values.push_back(ScriptPropertyValue{.name = entry.name, .value = std::move(value)});
+        }
+
+        registry.emplace<Components::Behaviour>(entities[component.entity], std::move(script));
     }
 
     for (auto const &component: description.lifetimes) {

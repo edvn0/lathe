@@ -57,7 +57,7 @@
 #if LATHE_TRACK_MEMORY
 #include "core/memory_tracking_ui.hxx"
 #endif
-#include "assets/shader_hot_reload_watcher.hxx"
+#include "assets/file_change_watcher.hxx"
 #include "gpu/renderdoc.hxx"
 #include "gpu/swapchain.hxx"
 #include "physics/physics.hxx"
@@ -479,6 +479,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             game->on_ui(*active_scene(), *renderer);
         }
 
+        gui::clear_toast_anchor();
         gui::render_toasts();
         return;
     }
@@ -532,6 +533,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         viewport_hovered = ImGui::IsWindowHovered();
         viewport_screen_pos = ImGui::GetCursorScreenPos();
         viewport_content_size = ImGui::GetContentRegionAvail();
+        viewport_seen_frame = ImGui::GetFrameCount();
 
         auto const target = renderer->viewport_target(frame_index);
         bool const has_room = viewport_content_size.x > 0.0F && viewport_content_size.y > 0.0F;
@@ -1105,7 +1107,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             if (registry.all_of<Components::Model>(entity) || registry.all_of<Components::InstancedModel>(entity)) {
                 return {.icon = gui::EditorIcon::mesh, .tint = ImVec4(0.88F, 0.64F, 0.37F, 1.0F)};
             }
-            if (registry.all_of<Components::Script>(entity)) {
+            if (registry.any_of<Components::Script, Components::Behaviour>(entity)) {
                 return {.icon = gui::EditorIcon::script, .tint = ImVec4(0.42F, 0.70F, 1.00F, 1.0F)};
             }
             return {.icon = gui::EditorIcon::empty, .tint = ImVec4(0.60F, 0.60F, 0.64F, 1.0F)};
@@ -1451,7 +1453,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     copy_components<Components::Transform, Components::Model, Components::InstancedModel,
                                     Components::RigidBody, Components::MaterialOverride, Components::PlayerTag,
                                     Components::Lifetime, Components::PointLight, Components::SpotLight,
-                                    Components::Decal, Components::ParticleEmitter, Components::Script,
+                                    Components::Decal, Components::ParticleEmitter, Components::Script, Components::Behaviour,
                                     Components::BulletTag>(
                             registry, source, clone);
 
@@ -1928,6 +1930,192 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
             return changed;
         });
+        section.operator()<Components::Behaviour>("Behaviour", [&](Components::Behaviour &script) {
+            bool changed = false;
+            auto const names = game->behaviour_names();
+
+            if (ImGui::BeginCombo("Script", script.script.empty() ? "(none)" : script.script.c_str())) {
+                for (auto const &name: names) {
+                    bool const is_selected = name == script.script;
+                    if (ImGui::Selectable(name.c_str(), is_selected) && !is_selected) {
+                        script.script = name;
+                        script.values.clear();
+                        changed = true;
+                    }
+                    if (is_selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reload")) {
+                game->reload_behaviours();
+            }
+
+            auto const *const schema = game->behaviour_schema(script.script);
+
+            if (schema == nullptr) {
+                ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.40F, 1.0F), "No behaviour named '%s'.",
+                                   script.script.c_str());
+                return changed;
+            }
+
+            if (!schema->error.empty()) {
+                ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.40F, 1.0F), "%s", schema->error.c_str());
+                return changed;
+            }
+
+            if (schema->properties.empty()) {
+                ImGui::TextDisabled("This script declares no properties.");
+            }
+
+            auto const asset_combo = [&](char const *label, std::string &current, auto const &table,
+                                         std::vector<std::string> extra) {
+                bool picked = false;
+                if (ImGui::BeginCombo(label, current.empty() ? "(none)" : current.c_str())) {
+                    if (ImGui::Selectable("(none)", current.empty()) && !current.empty()) {
+                        current.clear();
+                        picked = true;
+                    }
+                    for (auto const &name: extra) {
+                        if (ImGui::Selectable(name.c_str(), name == current) && name != current) {
+                            current = name;
+                            picked = true;
+                        }
+                    }
+                    for (auto const &entry: table.entries()) {
+                        if (ImGui::Selectable(entry.name.c_str(), entry.name == current) && entry.name != current) {
+                            current = entry.name;
+                            picked = true;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                return picked;
+            };
+
+            for (auto const &desc: schema->properties) {
+                ImGui::PushID(desc.name.c_str());
+
+                auto const *const stored = script.find(desc.name);
+                auto value = stored != nullptr ? script_value_sanitised(desc, stored->value) : desc.default_value;
+                bool edited = false;
+                auto const label = desc.name.c_str();
+                auto const speed = desc.step > 0.0 ? desc.step
+                                   : desc.has_range ? (desc.max - desc.min) / 200.0
+                                                    : 0.05;
+                auto const low = desc.has_range ? desc.min : -1.0e9;
+                auto const high = desc.has_range ? desc.max : 1.0e9;
+
+                switch (desc.type) {
+                    case ScriptPropertyType::boolean:
+                        edited = ImGui::Checkbox(label, &std::get<bool>(value));
+                        break;
+                    case ScriptPropertyType::integer: {
+                        auto &integer = std::get<std::int64_t>(value);
+                        auto const minimum = static_cast<std::int64_t>(low);
+                        auto const maximum = static_cast<std::int64_t>(high);
+                        edited = ImGui::DragScalar(label, ImGuiDataType_S64, &integer, static_cast<float>(std::max(speed, 0.1)),
+                                                   &minimum, &maximum);
+                        break;
+                    }
+                    case ScriptPropertyType::number:
+                        edited = ImGui::DragScalar(label, ImGuiDataType_Double, &std::get<double>(value),
+                                                   static_cast<float>(speed), &low, &high, "%.3f");
+                        break;
+                    case ScriptPropertyType::string: {
+                        std::array<char, 256> text{};
+                        std::snprintf(text.data(), text.size(), "%s", std::get<std::string>(value).c_str());
+                        if (ImGui::InputText(label, text.data(), text.size())) {
+                            value = std::string{text.data()};
+                            edited = true;
+                        }
+                        break;
+                    }
+                    case ScriptPropertyType::vec3:
+                        edited = ImGui::DragFloat3(label, &std::get<glm::vec3>(value).x, static_cast<float>(speed),
+                                                   static_cast<float>(low), static_cast<float>(high));
+                        break;
+                    case ScriptPropertyType::colour:
+                        edited = ImGui::ColorEdit4(label, &std::get<glm::vec4>(value).x,
+                                                   ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+                        break;
+                    case ScriptPropertyType::choice: {
+                        auto &current = std::get<std::string>(value);
+                        if (ImGui::BeginCombo(label, current.c_str())) {
+                            for (auto const &option: desc.choices) {
+                                if (ImGui::Selectable(option.c_str(), option == current) && option != current) {
+                                    current = option;
+                                    edited = true;
+                                }
+                            }
+                            ImGui::EndCombo();
+                        }
+                        break;
+                    }
+                    case ScriptPropertyType::entity: {
+                        auto &target = std::get<entt::entity>(value);
+                        auto const target_name = [&]() -> std::string {
+                            if (target == entt::null || !registry.valid(target)) {
+                                return "(none)";
+                            }
+                            auto const *const meta = registry.try_get<Components::Meta>(target);
+                            return meta != nullptr ? std::string{meta->name.view()} : "(unnamed)";
+                        }();
+                        if (ImGui::BeginCombo(label, target_name.c_str())) {
+                            if (ImGui::Selectable("(none)", target == entt::null) && target != entt::null) {
+                                target = entt::null;
+                                edited = true;
+                            }
+                            for (auto const other: registry.view<Components::Meta>()) {
+                                auto const name = std::string{registry.get<Components::Meta>(other).name.view()};
+                                ImGui::PushID(static_cast<int>(entt::to_integral(other)));
+                                if (ImGui::Selectable(name.c_str(), other == target) && other != target) {
+                                    target = other;
+                                    edited = true;
+                                }
+                                ImGui::PopID();
+                            }
+                            ImGui::EndCombo();
+                        }
+                        break;
+                    }
+                    case ScriptPropertyType::model:
+                        edited = asset_combo(label, std::get<std::string>(value), renderer->assets().models(), {});
+                        break;
+                    case ScriptPropertyType::material:
+                        edited = asset_combo(label, std::get<std::string>(value), renderer->assets().materials(), {});
+                        break;
+                    case ScriptPropertyType::texture:
+                        edited = asset_combo(label, std::get<std::string>(value), renderer->assets().textures(),
+                                             {"scene_colour", "scene_depth"});
+                        break;
+                }
+
+                if (edited) {
+                    script.set(desc.name, script_value_sanitised(desc, std::move(value)));
+                    changed = true;
+                }
+
+                if (script.find(desc.name) != nullptr) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reset")) {
+                        script.reset(desc.name);
+                        changed = true;
+                    }
+                }
+
+                if (!desc.tooltip.empty() && ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", desc.tooltip.c_str());
+                }
+
+                ImGui::PopID();
+            }
+
+            return changed;
+        });
         auto tag_section = [&]<typename T>(char const *label) {
             if (!registry.all_of<T>(selected_entity)) {
                 return;
@@ -2006,6 +2194,16 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     if (ImGui::MenuItem(entry.name.c_str())) {
                         registry.emplace<Components::Script>(selected_entity,
                                                              Components::Script{.script = entry.handle});
+                    }
+                }
+                ImGui::EndMenu();
+            }
+
+            if (!registry.all_of<Components::Behaviour>(selected_entity) && !game->behaviour_names().empty() &&
+                ImGui::BeginMenu("Behaviour")) {
+                for (auto const &name: game->behaviour_names()) {
+                    if (ImGui::MenuItem(name.c_str())) {
+                        registry.emplace<Components::Behaviour>(selected_entity, Components::Behaviour{.script = name});
                     }
                 }
                 ImGui::EndMenu();
@@ -2337,6 +2535,15 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         model_browse_entity = entt::null;
     }
 
+    // Toasts go in the viewport while it is showing, so they are where the work is.
+    if (viewport_seen_frame == ImGui::GetFrameCount() && viewport_content_size.x > 0.0F &&
+        viewport_content_size.y > 0.0F) {
+        gui::set_toast_anchor(viewport_screen_pos.x, viewport_screen_pos.y, viewport_content_size.x,
+                              viewport_content_size.y);
+    } else {
+        gui::clear_toast_anchor();
+    }
+
     gui::render_toasts();
 }
 
@@ -2465,6 +2672,7 @@ auto Application::stop() -> void {
         terrain->on_physics_world_changed(nullptr);
     }
 
+    game->on_play_stop(*active_scene());
     active_scene()->detach_debug_renderer();
     debug_renderer->clear_lines();
     active_scene()->on_scene_stop();

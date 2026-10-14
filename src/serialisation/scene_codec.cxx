@@ -1,5 +1,7 @@
 #include "serialisation/scene_codec.hxx"
 
+#include <type_traits>
+#include <variant>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -719,6 +721,88 @@ namespace {
         }
     }
 
+    auto write_behaviours(ByteWriter &writer, SceneDescription const &scene) -> void {
+        writer.write(static_cast<std::uint32_t>(scene.behaviours.size()));
+
+        for (auto const &component: scene.behaviours) {
+            writer.write(component.entity);
+            writer.write_string(component.script);
+            writer.write(static_cast<std::uint32_t>(component.values.size()));
+
+            for (auto const &entry: component.values) {
+                writer.write_string(entry.name);
+                writer.write(static_cast<std::uint8_t>(entry.value.index()));
+
+                std::visit(
+                        [&](auto const &value) {
+                            using Value = std::decay_t<decltype(value)>;
+
+                            if constexpr (std::is_same_v<Value, bool>) {
+                                write_bool(writer, value);
+                            } else if constexpr (std::is_same_v<Value, std::string>) {
+                                writer.write_string(value);
+                            } else if constexpr (std::is_same_v<Value, glm::vec3>) {
+                                write_vec3(writer, value);
+                            } else if constexpr (std::is_same_v<Value, glm::vec4>) {
+                                write_vec4(writer, value);
+                            } else if constexpr (std::is_same_v<Value, SceneEntityRef>) {
+                                writer.write(value.index);
+                            } else {
+                                writer.write(value);
+                            }
+                        },
+                        entry.value);
+            }
+        }
+    }
+
+    auto read_behaviour_value(ByteReader &reader) -> std::optional<SceneScriptValue> {
+        switch (reader.read<std::uint8_t>()) {
+            case 0:
+                return reader.read<std::uint8_t>() != 0;
+            case 1:
+                return reader.read<std::int64_t>();
+            case 2:
+                return reader.read<double>();
+            case 3: {
+                std::string text;
+                reader.read_string(text);
+                return text;
+            }
+            case 4:
+                return read_vec3(reader);
+            case 5:
+                return read_vec4(reader);
+            case 6:
+                return SceneEntityRef{.index = reader.read<std::uint32_t>()};
+            default:
+                reader.fail();
+                return std::nullopt;
+        }
+    }
+
+    auto read_behaviours(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+        scene.behaviours.resize(read_count(reader, 12));
+
+        for (auto &component: scene.behaviours) {
+            reader.read(component.entity);
+            reader.read_string(component.script);
+            component.values.resize(read_count(reader, 5));
+
+            for (auto &entry: component.values) {
+                reader.read_string(entry.name);
+
+                auto value = read_behaviour_value(reader);
+
+                if (!value || reader.failed()) {
+                    return;
+                }
+
+                entry.value = std::move(*value);
+            }
+        }
+    }
+
     auto write_lifetimes(ByteWriter &writer, SceneDescription const &scene) -> void {
         writer.write(static_cast<std::uint32_t>(scene.lifetimes.size()));
 
@@ -945,6 +1029,13 @@ namespace {
                     .oldest_readable = 1,
                     .write = write_scripts,
                     .read = read_scripts,
+            },
+            SectionCodec{
+                    .type = scene_section::behaviours,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_behaviours,
+                    .read = read_behaviours,
             },
             SectionCodec{
                     .type = scene_section::lifetimes,
@@ -1218,7 +1309,7 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
 
     if (!entities_valid(scene.point_lights) || !entities_valid(scene.spot_lights) ||
         !entities_valid(scene.particle_emitters) || !entities_valid(scene.rigid_bodies) ||
-        !entities_valid(scene.scripts) || !entities_valid(scene.lifetimes)) {
+        !entities_valid(scene.scripts) || !entities_valid(scene.lifetimes) || !entities_valid(scene.behaviours)) {
         return fail("component entity out of range");
     }
 
@@ -1226,8 +1317,19 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
         !entities_unique(scene, scene.instanced_models) || !entities_unique(scene, scene.point_lights) ||
         !entities_unique(scene, scene.spot_lights) || !entities_unique(scene, scene.particle_emitters) ||
         !entities_unique(scene, scene.rigid_bodies) ||
-        !entities_unique(scene, scene.scripts) || !entities_unique(scene, scene.lifetimes)) {
+        !entities_unique(scene, scene.scripts) || !entities_unique(scene, scene.lifetimes) ||
+        !entities_unique(scene, scene.behaviours)) {
         return fail("entity has the same component more than once");
+    }
+
+    for (auto const &component: scene.behaviours) {
+        for (auto const &entry: component.values) {
+            auto const *const reference = std::get_if<SceneEntityRef>(&entry.value);
+
+            if (reference != nullptr && reference->index != scene_no_index && reference->index >= scene.entities.size()) {
+                return fail("script entity reference out of range");
+            }
+        }
     }
 
     if (!finite(scene.physics_settings.gravity) || !finite(scene.physics_settings.ground_y)) {

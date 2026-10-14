@@ -50,6 +50,12 @@ public:
 
     [[nodiscard]] auto call(char const *name, std::span<double const> numbers = {}, int result_count = 0) -> CallResult;
 
+    // Calls the function on the stack below its `argument_count` arguments under the call budget (`loading` allows
+    // the longer budget of a chunk's top level). On success the results are left on the stack; on a failure the
+    // function and arguments are removed and the message (with a traceback) is returned. Unlike call(), nothing is
+    // disabled or remembered as the runtime's error: the caller decides what a failure means.
+    [[nodiscard]] auto protected_call(int argument_count, int result_count, bool loading = false) -> CallResult;
+
     auto pop(int count) -> void;
 
     [[nodiscard]] auto state() const noexcept -> lua_State *;

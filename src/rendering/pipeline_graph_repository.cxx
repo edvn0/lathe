@@ -1,4 +1,7 @@
+#include <format>
+
 #include "rendering/pipeline_graph_repository.hxx"
+#include "rendering/toast.hxx"
 
 #include <algorithm>
 #include <chrono>
@@ -606,6 +609,8 @@ auto PipelineGraphRepository::process_dirty() -> void {
             if (!compiled) {
                 error("Shader reload failed for {} ({}): {}", stage.request.source_path.logical(),
                       stage.request.entry_point, describe(compiled.error()));
+                gui::toast_error("Shader reload failed", std::format("{} ({})", stage.request.source_path.logical(),
+                                                                       stage.request.entry_point));
 
                 all_stages_clean = false;
                 continue;
@@ -625,6 +630,7 @@ auto PipelineGraphRepository::process_dirty() -> void {
 
         if (!rebuilt) {
             error("Pipeline rebuild failed for {} after successful shader compile(s)", node.register_info.debug_name);
+            gui::toast_error("Shader reload failed", std::format("{}: pipeline rebuild", node.register_info.debug_name));
             continue;
         }
 
@@ -634,6 +640,7 @@ auto PipelineGraphRepository::process_dirty() -> void {
         node.pending_rebuild = false;
 
         debug("Recompiled {}", node.register_info.debug_name);
+        gui::toast_success("Shader reloaded", node.register_info.debug_name);
     }
 }
 

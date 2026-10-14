@@ -13,7 +13,7 @@ local DEBUG = false
 local EYE_HEIGHT = 1.6
 local WALK, RUN = 3.2, 6.5
 
----@type LatheGame
+---@type GameScript
 local M = {}
 
 local city, city_model

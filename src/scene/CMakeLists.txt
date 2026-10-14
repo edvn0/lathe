@@ -7,6 +7,7 @@ add_library(
     engine_scene
     STATIC
         camera_path.cxx
+        script_property.cxx
         editor_camera.cxx
         hierarchy_model.cxx
         selection_context.cxx

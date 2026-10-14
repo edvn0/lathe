@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <expected>
+#include <format>
 #include <new>
 #include <optional>
 #include <string>
@@ -21,6 +22,7 @@
 #include "assets/model.hxx"
 #include "assets/model_streamer.hxx"
 #include "assets/texture_streamer.hxx"
+#include "app/lua_behaviours.hxx"
 #include "core/fly_string.hxx"
 #include "app/lua_animation.hxx"
 #include "core/paths.hxx"
@@ -34,11 +36,13 @@
 #include "scene/components.hxx"
 #include "scripting/lua_particles.hxx"
 #include "scripting/lua_runtime.hxx"
+#include "scripting/lua_script_schema.hxx"
 
 namespace {
     constexpr char const *entity_meta = "lathe.Entity";
     constexpr char const *model_meta = "lathe.Model";
     constexpr char const *material_meta = "lathe.Material";
+    constexpr char const *texture_meta = "lathe.Texture";
     constexpr char const *effect_shader_meta = "lathe.EffectShader";
     constexpr char const *effect_meta = "lathe.Effect";
     constexpr char const *effect_buffer_meta = "lathe.EffectBuffer";
@@ -58,6 +62,26 @@ namespace {
         MaterialHandle handle;
     };
 
+    // A registered image, or one of the frame's own images an effect can sample (see viewport_source).
+    struct LuaTexture {
+        ImageHandle handle;
+        char source[16];
+    };
+
+    // The names that stand for the viewport's images: "scene_colour" and "scene_depth".
+    auto viewport_source(std::string_view name) -> bool { return name == "scene_colour" || name == "scene_depth"; }
+
+    auto new_texture(lua_State *state, ImageHandle handle, std::string_view source) -> void {
+        auto *const texture = static_cast<LuaTexture *>(lua_newuserdatauv(state, sizeof(LuaTexture), 0));
+
+        texture->handle = handle;
+        std::ranges::fill(texture->source, '\0');
+        std::ranges::copy(source.substr(0, sizeof(texture->source) - 1), texture->source);
+
+        luaL_setmetatable(state, texture_meta);
+    }
+
+    static_assert(std::is_trivially_copyable_v<ImageHandle>);
     static_assert(std::is_trivially_copyable_v<ModelHandle>);
     static_assert(std::is_trivially_copyable_v<MaterialHandle>);
 
@@ -773,6 +797,207 @@ namespace {
         return 2;
     }
 
+    // Names an asset a script holds, for storing it in a component: the Model, Material or Texture itself, or its
+    // registered name. Nil is "none" (an empty name).
+    auto asset_name_arg(lua_State *state, LuaGameHost &host, ScriptPropertyType type, int index)
+            -> std::optional<std::string> {
+        if (lua_isnil(state, index)) {
+            return std::string{};
+        }
+
+        if (lua_type(state, index) == LUA_TSTRING) {
+            return std::string{lua_tostring(state, index)};
+        }
+
+        if (host.renderer == nullptr) {
+            return std::nullopt;
+        }
+
+        auto const &assets = host.renderer->assets();
+
+        auto const named = [](auto const &table, auto handle) -> std::optional<std::string> {
+            auto const name = table.name_of(handle);
+
+            if (name.empty()) {
+                return std::nullopt;
+            }
+
+            return std::string{name};
+        };
+
+        switch (type) {
+            case ScriptPropertyType::model:
+                if (auto const *const model = static_cast<LuaModel const *>(luaL_testudata(state, index, model_meta))) {
+                    return named(assets.models(), model->handle);
+                }
+                break;
+            case ScriptPropertyType::material:
+                if (auto const *const material =
+                            static_cast<LuaMaterial const *>(luaL_testudata(state, index, material_meta))) {
+                    return named(assets.materials(), material->handle);
+                }
+                break;
+            case ScriptPropertyType::texture:
+                if (auto const *const texture =
+                            static_cast<LuaTexture const *>(luaL_testudata(state, index, texture_meta))) {
+                    if (texture->source[0] != '\0') {
+                        return std::string{texture->source};
+                    }
+
+                    return named(assets.textures(), texture->handle);
+                }
+                break;
+            default:
+                break;
+        }
+
+        return std::nullopt;
+    }
+
+    // The value at `index` for property `desc`, or nullopt when it is not one.
+    auto script_property_arg(lua_State *state, LuaGameHost &host, ScriptPropertyDesc const &desc, int index)
+            -> std::optional<ScriptValue> {
+        switch (desc.type) {
+            case ScriptPropertyType::entity: {
+                if (lua_isnil(state, index)) {
+                    return entt::entity{entt::null};
+                }
+
+                if (auto const *const entity = static_cast<LuaEntity const *>(luaL_testudata(state, index, entity_meta))) {
+                    return entity->id;
+                }
+
+                return std::nullopt;
+            }
+            case ScriptPropertyType::model:
+            case ScriptPropertyType::material:
+            case ScriptPropertyType::texture: {
+                auto name = asset_name_arg(state, host, desc.type, index);
+
+                if (!name) {
+                    return std::nullopt;
+                }
+
+                return ScriptValue{std::move(*name)};
+            }
+            default: {
+                auto value = read_script_value(state, index, desc.type);
+
+                if (value && desc.type == ScriptPropertyType::choice &&
+                    std::ranges::find(desc.choices, std::get<std::string>(*value)) == desc.choices.end()) {
+                    return std::nullopt;
+                }
+
+                return value;
+            }
+        }
+    }
+
+    // e:add_behaviour(name [, properties]): puts the behaviour on the entity. On a problem the message is left
+    // on the stack and the result is false, so the caller raises it after every C++ object here is gone.
+    auto build_behaviour(lua_State *state, LuaGameHost &host, Components::Behaviour &component) -> bool {
+        auto const top = lua_gettop(state);
+        std::string problem;
+
+        if (host.components == nullptr) {
+            problem = "behaviours are not available";
+        } else if (auto const *const schema = host.components->schema(component.script); schema == nullptr) {
+            problem = std::format("there is no behaviour named '{}'", component.script);
+        } else if (!schema->error.empty()) {
+            problem = std::format("behaviour '{}' failed to load: {}", component.script, schema->error);
+        } else if (lua_istable(state, 3)) {
+            lua_pushnil(state);
+
+            while (problem.empty() && lua_next(state, 3) != 0) {
+                if (lua_type(state, -2) != LUA_TSTRING) {
+                    problem = "property names must be strings";
+                } else {
+                    std::string const key = lua_tostring(state, -2);
+                    auto const *const desc = schema->find(key);
+
+                    if (desc == nullptr) {
+                        problem = std::format("'{}' has no property '{}'", component.script, key);
+                    } else if (auto value = script_property_arg(state, host, *desc, lua_gettop(state))) {
+                        component.set(key, script_value_sanitised(*desc, std::move(*value)));
+                    } else {
+                        problem = std::format("property '{}' expects a {}", key, script_type_name(desc->type));
+                    }
+                }
+
+                if (problem.empty()) {
+                    lua_pop(state, 1);
+                }
+            }
+        }
+
+        lua_settop(state, top);
+
+        if (problem.empty()) {
+            return true;
+        }
+
+        lua_pushlstring(state, problem.data(), problem.size());
+
+        return false;
+    }
+
+    auto entity_add_behaviour(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+        std::string name = luaL_checkstring(state, 2);
+
+        if (!lua_isnoneornil(state, 3)) {
+            luaL_checktype(state, 3, LUA_TTABLE);
+        }
+
+        auto &host = game_host(state);
+        bool ok = false;
+
+        {
+            Components::Behaviour component{.script = std::move(name)};
+
+            ok = build_behaviour(state, host, component);
+
+            if (ok) {
+                auto &registry = registry_of(state);
+                auto const script = component.script;
+
+                registry.emplace_or_replace<Components::Behaviour>(id, std::move(component));
+
+                if (auto const failure = host.components->create_instance(id)) {
+                    lua_pushlstring(state, failure->data(), failure->size());
+                    ok = false;
+                }
+            }
+        }
+
+        if (!ok) {
+            return lua_error(state);
+        }
+
+        return 0;
+    }
+
+    auto entity_behaviour(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+        auto &host = game_host(state);
+
+        if (host.components == nullptr) {
+            lua_pushnil(state);
+
+            return 1;
+        }
+
+        host.components->push_instance(id, luaL_checkstring(state, 2));
+
+        return 1;
+    }
+
+    auto entity_remove_behaviour(lua_State *state) -> int {
+        registry_of(state).remove<Components::Behaviour>(entity_arg(state, 1));
+
+        return 0;
+    }
+
     constexpr std::array entity_methods{
             luaL_Reg{"valid", &entity_valid},
             luaL_Reg{"destroy", &entity_destroy},
@@ -790,6 +1015,9 @@ namespace {
             luaL_Reg{"add_body", &entity_add_body},
             luaL_Reg{"set_velocity", &entity_set_velocity},
             luaL_Reg{"apply_impulse", &entity_apply_impulse},
+            luaL_Reg{"add_behaviour", &entity_add_behaviour},
+            luaL_Reg{"behaviour", &entity_behaviour},
+            luaL_Reg{"remove_behaviour", &entity_remove_behaviour},
             luaL_Reg{nullptr, nullptr},
     };
 
@@ -851,16 +1079,50 @@ namespace {
         }
 
         auto &images = host.renderer->image_storage();
+
+        // Optional 7th argument: textures to use in place of the flat defaults.
+        auto const texture_option = [&](char const *key, ImageHandle fallback) -> ImageHandle {
+            if (!lua_istable(state, 7)) {
+                return fallback;
+            }
+
+            lua_getfield(state, 7, key);
+
+            if (lua_isnil(state, -1)) {
+                lua_pop(state, 1);
+
+                return fallback;
+            }
+
+            auto const *const texture = static_cast<LuaTexture const *>(luaL_testudata(state, -1, texture_meta));
+            auto const handle = texture != nullptr ? texture->handle : ImageHandle{};
+
+            lua_pop(state, 1);
+
+            return handle;
+        };
+
+        auto const base_colour_texture = texture_option("base_colour_texture", images.white());
+        auto const normal_texture = texture_option("normal_texture", images.flat_normal());
+        auto const metallic_roughness_texture = texture_option("metallic_roughness_texture", images.metallic_roughness());
+        auto const occlusion_texture = texture_option("occlusion_texture", images.occlusion());
+        auto const emissive_texture = texture_option("emissive_texture", images.emissive());
+
+        if (!base_colour_texture.valid() || !normal_texture.valid() || !metallic_roughness_texture.valid() ||
+            !occlusion_texture.valid() || !emissive_texture.valid()) {
+            return luaL_error(state, "the material options must be Textures (see assets.texture)");
+        }
+
         auto created = host.renderer->create_material(
                 MaterialCreateInfo{
                         .base_colour_factor = glm::vec4{red, green, blue, 1.0F},
                         .metallic_factor = metallic,
                         .roughness_factor = roughness,
-                        .base_colour_texture = images.white(),
-                        .normal_texture = images.flat_normal(),
-                        .metallic_roughness_texture = images.metallic_roughness(),
-                        .occlusion_texture = images.occlusion(),
-                        .emissive_texture = images.emissive(),
+                        .base_colour_texture = base_colour_texture,
+                        .normal_texture = normal_texture,
+                        .metallic_roughness_texture = metallic_roughness_texture,
+                        .occlusion_texture = occlusion_texture,
+                        .emissive_texture = emissive_texture,
                         .sampler = host.renderer->sampler_storage().linear_repeat(),
                 },
                 name);
@@ -874,6 +1136,31 @@ namespace {
         material->handle = *created;
 
         luaL_setmetatable(state, material_meta);
+
+        return 1;
+    }
+
+    // assets.texture(name): a texture registered under that name, or nil. "scene_colour" and "scene_depth" give the
+    // viewport's images, which effects sample (compute.instance) but materials cannot use.
+    auto assets_texture(lua_State *state) -> int {
+        auto &host = game_host(state);
+        auto const *const name = luaL_checkstring(state, 1);
+
+        if (viewport_source(name)) {
+            new_texture(state, ImageHandle{}, name);
+
+            return 1;
+        }
+
+        auto const handle = host.renderer != nullptr ? host.renderer->assets().textures().find(name) : ImageHandle{};
+
+        if (!handle.valid()) {
+            lua_pushnil(state);
+
+            return 1;
+        }
+
+        new_texture(state, handle, {});
 
         return 1;
     }
@@ -908,6 +1195,7 @@ namespace {
             luaL_Reg{"load_model", &assets_load_model},
             luaL_Reg{"cube", &assets_cube},
             luaL_Reg{"material", &assets_material},
+            luaL_Reg{"texture", &assets_texture},
             luaL_Reg{"release_material", &assets_release_material},
             luaL_Reg{"pending", &assets_pending},
             luaL_Reg{nullptr, nullptr},
@@ -1025,6 +1313,12 @@ namespace {
                 value.text = lua_tostring(state, index);
                 break;
             case LUA_TUSERDATA: {
+                if (auto const *const texture = static_cast<LuaTexture const *>(luaL_testudata(state, index, texture_meta));
+                    texture != nullptr && texture->source[0] != '\0') {
+                    value.text = texture->source;
+                    break;
+                }
+
                 auto const *const buffer = static_cast<LuaEffectBuffer const *>(luaL_testudata(state, index, effect_buffer_meta));
 
                 if (buffer == nullptr) {
@@ -1690,6 +1984,11 @@ auto open_lua_game_api(LuaRuntime &runtime) -> void {
     lua_setfield(state, -2, "__name");
     lua_pop(state, 1);
 
+    luaL_newmetatable(state, texture_meta);
+    lua_pushstring(state, texture_meta);
+    lua_setfield(state, -2, "__name");
+    lua_pop(state, 1);
+
     lua_settop(state, 0);
 }
 
@@ -1710,5 +2009,80 @@ auto update_lua_game_physics(LuaGameHost &host) -> void {
         world.add_static_mesh(pending.entity, registry.get_or_emplace<Components::Transform>(pending.entity),
                               pending.slot->mesh);
         pending.added_to_world = world.id();
+    }
+}
+
+auto push_lua_entity(lua_State *state, entt::entity entity) -> void { push_entity(state, entity); }
+
+auto push_script_property(lua_State *state, LuaGameHost &host, ScriptPropertyDesc const &desc, ScriptValue const &value)
+        -> void {
+    switch (desc.type) {
+        case ScriptPropertyType::entity: {
+            auto const id = std::get<entt::entity>(value);
+
+            if (id != entt::null && host.scene != nullptr && host.scene->get_registry().valid(id)) {
+                push_entity(state, id);
+            } else {
+                lua_pushnil(state);
+            }
+
+            return;
+        }
+        case ScriptPropertyType::model: {
+            auto const handle =
+                    host.renderer != nullptr ? host.renderer->assets().models().find(std::get<std::string>(value))
+                                             : ModelHandle{};
+
+            if (handle.valid()) {
+                push_model(state, handle);
+            } else {
+                lua_pushnil(state);
+            }
+
+            return;
+        }
+        case ScriptPropertyType::material: {
+            auto const handle =
+                    host.renderer != nullptr ? host.renderer->assets().materials().find(std::get<std::string>(value))
+                                             : MaterialHandle{};
+
+            if (!handle.valid()) {
+                lua_pushnil(state);
+
+                return;
+            }
+
+            auto *const material = static_cast<LuaMaterial *>(lua_newuserdatauv(state, sizeof(LuaMaterial), 0));
+
+            material->handle = handle;
+            luaL_setmetatable(state, material_meta);
+
+            return;
+        }
+        case ScriptPropertyType::texture: {
+            auto const &name = std::get<std::string>(value);
+
+            if (viewport_source(name)) {
+                new_texture(state, ImageHandle{}, name);
+
+                return;
+            }
+
+            auto const handle = host.renderer != nullptr ? host.renderer->assets().textures().find(name) : ImageHandle{};
+
+            if (!handle.valid()) {
+                lua_pushnil(state);
+
+                return;
+            }
+
+            new_texture(state, handle, {});
+
+            return;
+        }
+        default:
+            push_script_value(state, value);
+
+            return;
     }
 }

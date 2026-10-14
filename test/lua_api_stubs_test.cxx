@@ -61,7 +61,7 @@ namespace {
     }
 
     // `function owner.name(`, `function Owner:name(` and `owner.NAME = value` lines, as "owner.name". Only owners the
-    // runtime has (libraries and the two classes) count; other stub names (the LatheGame callbacks) are documentation.
+    // runtime has (libraries and the two classes) count; other stub names (the GameScript callbacks) are documentation.
     auto stub_names() -> std::set<std::string> {
         auto owners = std::set<std::string>{libraries.begin(), libraries.end()};
         for (auto const &entry: classes) {
