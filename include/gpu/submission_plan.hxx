@@ -8,16 +8,16 @@
 #include <span>
 #include <vector>
 
-#include "rendering/frame_graph/compiled_graph.hxx"
+#include "gpu/queue_types.hxx"
 
-inline constexpr std::size_t gpu_queue_count = frame_graph::logical_queue_count;
+inline constexpr std::size_t gpu_queue_count = logical_queue_count;
 
 struct SubmitBatch {
-    frame_graph::LogicalQueue queue = frame_graph::LogicalQueue::graphics;
+    LogicalQueue queue = LogicalQueue::graphics;
 
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
 
-    std::span<frame_graph::SemaphoreWait const> waits;
+    std::span<SemaphoreWait const> waits;
     std::uint32_t signal_index = 0;
 
     bool waits_swapchain_acquire = false;

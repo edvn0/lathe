@@ -4,8 +4,6 @@
 
 #include "gpu/submission_plan.hxx"
 
-using frame_graph::LogicalQueue;
-using frame_graph::SemaphoreWait;
 
 namespace {
 

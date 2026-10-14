@@ -2,7 +2,7 @@
 
 namespace {
 
-    constexpr auto queue_index(frame_graph::LogicalQueue queue) noexcept -> std::size_t {
+    constexpr auto queue_index(LogicalQueue queue) noexcept -> std::size_t {
         return static_cast<std::size_t>(queue);
     }
 
