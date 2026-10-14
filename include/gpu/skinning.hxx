@@ -1,6 +1,5 @@
 #pragma once
 
-#include "assets/model_skin.hxx"
 #include "gpu/model_vertex.hxx"
 
 #include <algorithm>

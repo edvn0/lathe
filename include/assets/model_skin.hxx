@@ -2,20 +2,13 @@
 
 #include "animation/clip.hxx"
 #include "animation/skeleton.hxx"
+#include "gpu/model_vertex.hxx"
 
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
-
-struct SkinVertex {
-    std::array<std::uint16_t, 4> joints{};
-    std::array<std::uint16_t, 4> weights{};
-
-    friend auto operator==(SkinVertex const &, SkinVertex const &) -> bool = default;
-};
-static_assert(sizeof(SkinVertex) == 16);
 
 struct ImportedClip {
     std::string name;

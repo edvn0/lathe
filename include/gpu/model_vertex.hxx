@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <utility>
 #include <vector>
@@ -11,6 +12,14 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
+
+struct SkinVertex {
+    std::array<std::uint16_t, 4> joints{};
+    std::array<std::uint16_t, 4> weights{};
+
+    friend auto operator==(SkinVertex const &, SkinVertex const &) -> bool = default;
+};
+static_assert(sizeof(SkinVertex) == 16);
 
 struct ModelVertex {
     glm::vec3 position{};
