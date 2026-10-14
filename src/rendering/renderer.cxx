@@ -4133,8 +4133,17 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
         local_shadow_stats_.requested_lights = static_cast<std::uint32_t>(candidates.size());
 
+        struct SelectedShadow {
+            ShadowCandidate candidate;
+            local_shadows::Allocation allocation;
+            std::uint64_t hash = 0;
+            bool dirty = true;
+        };
+
+        std::vector<SelectedShadow> selected;
+
         for (auto const &candidate: candidates) {
-            if (local_shadow_stats_.shadowed_lights >= local_shadow_settings_.maximum_lights) {
+            if (selected.size() >= local_shadow_settings_.maximum_lights) {
                 break;
             }
 
@@ -4142,46 +4151,208 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             auto const tile_count = candidate.point ? local_shadows::point_face_count : 1U;
             auto const *allocation = local_shadow_allocator_.request(candidate.id, tile_count, resolution);
 
-            if (allocation == nullptr) {
-                continue;
+            if (allocation != nullptr) {
+                selected.push_back(SelectedShadow{.candidate = candidate, .allocation = *allocation});
+            }
+        }
+
+        auto const light_position = [&](ShadowCandidate const &candidate) {
+            return candidate.point ? point_light_submissions_[candidate.index].position
+                                   : spot_light_submissions_[candidate.index].position;
+        };
+        auto const light_range = [&](ShadowCandidate const &candidate) {
+            return candidate.point ? point_light_submissions_[candidate.index].range
+                                   : spot_light_submissions_[candidate.index].range;
+        };
+
+        if (!local_shadow_atlas_initialized_ || !local_shadow_settings_.caching) {
+            local_shadow_cache_.clear();
+        }
+
+        if (local_shadow_settings_.caching && !selected.empty()) {
+            auto const float_bits = [](float value) { return std::uint64_t{std::bit_cast<std::uint32_t>(value)}; };
+            auto const vec3_hash = [&](std::uint64_t seed, glm::vec3 const &value) {
+                seed = shadow_signature_combine(seed, float_bits(value.x));
+                seed = shadow_signature_combine(seed, float_bits(value.y));
+                return shadow_signature_combine(seed, float_bits(value.z));
+            };
+
+            // What is drawn into a tile depends on the light and on every shadow caster inside its range. Both are
+            // folded into one hash per light; a tile whose hash matches last frame's keeps its depth.
+            std::vector<std::uint64_t> caster_hash(selected.size(), 0);
+            // A point light is covered by its range sphere. A spot light is only affected inside its own view
+            // frustum, which is far smaller than the sphere of the same range.
+            std::vector<glm::vec4> volumes;
+            std::vector<std::array<glm::vec4, 6>> spot_planes(selected.size());
+            volumes.reserve(selected.size());
+            for (std::size_t light = 0; light < selected.size(); ++light) {
+                auto const &entry = selected[light];
+                volumes.emplace_back(light_position(entry.candidate), light_range(entry.candidate));
+
+                if (!entry.candidate.point) {
+                    auto const &spot = spot_light_submissions_[entry.candidate.index];
+                    auto const outer = glm::radians(std::max(spot.inner_cone_degrees, spot.outer_cone_degrees));
+                    spot_planes[light] = extract_frustum_planes(local_shadows::spot_view_projection(
+                            spot.position, spot.direction, outer, spot.range, entry.allocation.resolution));
+                }
             }
 
+            bool lod_driven_casters = false;
+
+            for (auto const *batch: active_batches_) {
+                auto const *material = material_storage_.get(batch->material);
+                auto const alpha_mode = material != nullptr ? material->alpha_mode : AlphaMode::opaque;
+
+                if (alpha_mode == AlphaMode::blend || batch_max_shadow_cascade(batch) < 0) {
+                    continue;
+                }
+
+                if (batch->lod_job != BatchEntry::no_lod_job) {
+                    // Instances picked on the GPU by distance: their positions are not known here.
+                    lod_driven_casters = true;
+                    continue;
+                }
+
+                auto const *mesh = mesh_slot(batch->mesh);
+                if (mesh == nullptr) {
+                    continue;
+                }
+
+                auto const &submesh = mesh->submeshes[batch->submesh_index];
+                auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
+                auto const local_extent = (submesh.bounds_max - submesh.bounds_min) * 0.5F;
+                auto const wind_padding = material != nullptr ? material->wind_strength : 0.0F;
+                auto const animated = std::abs(wind_padding) > 1e-6F || batch->skinned;
+
+                auto batch_key = std::uint64_t{0xcbf29ce484222325ULL};
+                batch_key = shadow_signature_combine(batch_key, batch->mesh.index);
+                batch_key = shadow_signature_combine(batch_key, batch->submesh_index);
+                batch_key = shadow_signature_combine(batch_key, material_storage_.gpu_index(batch->material));
+                batch_key = shadow_signature_combine(batch_key, batch->lod_index);
+                if (animated) {
+                    batch_key = shadow_signature_combine(batch_key, shadow_frame_);
+                }
+
+                for (auto const *transform: batch->transforms) {
+                    auto const &model = *transform;
+                    auto const centre = glm::vec3{model * glm::vec4{local_centre, 1.0F}};
+                    auto extent = glm::abs(glm::vec3{model[0]}) * local_extent.x +
+                                  glm::abs(glm::vec3{model[1]}) * local_extent.y +
+                                  glm::abs(glm::vec3{model[2]}) * local_extent.z;
+                    extent.x += std::abs(wind_padding);
+                    extent.z += std::abs(wind_padding);
+
+                    std::uint64_t instance_hash = 0;
+                    bool hashed = false;
+
+                    for (std::size_t light = 0; light < volumes.size(); ++light) {
+                        auto const outside = glm::max(glm::abs(glm::vec3{volumes[light]} - centre) - extent, glm::vec3{0.0F});
+                        if (glm::dot(outside, outside) > volumes[light].w * volumes[light].w) {
+                            continue;
+                        }
+
+                        if (!selected[light].candidate.point) {
+                            bool inside = true;
+                            for (auto const &plane: spot_planes[light]) {
+                                if (glm::dot(glm::vec3{plane}, centre) + plane.w +
+                                            glm::dot(glm::abs(glm::vec3{plane}), extent) < 0.0F) {
+                                    inside = false;
+                                    break;
+                                }
+                            }
+
+                            if (!inside) {
+                                continue;
+                            }
+                        }
+
+                        if (!hashed) {
+                            instance_hash = batch_key;
+                            for (int column = 0; column < 4; ++column) {
+                                instance_hash = vec3_hash(instance_hash, glm::vec3{model[column]});
+                            }
+                            instance_hash = shadow_signature_mix(instance_hash);
+                            hashed = true;
+                        }
+
+                        caster_hash[light] += instance_hash;
+                    }
+                }
+            }
+
+            for (std::size_t light = 0; light < selected.size(); ++light) {
+                auto &entry = selected[light];
+                auto const &candidate = entry.candidate;
+
+                auto state = std::uint64_t{0x84222325cbf29ce4ULL};
+                state = shadow_signature_combine(state, entry.allocation.generation);
+                state = shadow_signature_combine(state, shadow_caster_revision_);
+                state = shadow_signature_combine(state, float_bits(local_shadow_settings_.depth_bias_constant));
+                state = shadow_signature_combine(state, float_bits(local_shadow_settings_.depth_bias_slope));
+                state = shadow_signature_combine(state, float_bits(light_range(candidate)));
+                state = vec3_hash(state, light_position(candidate));
+
+                if (!candidate.point) {
+                    auto const &spot = spot_light_submissions_[candidate.index];
+                    state = vec3_hash(state, spot.direction);
+                    state = shadow_signature_combine(
+                            state, float_bits(std::max(spot.inner_cone_degrees, spot.outer_cone_degrees)));
+                }
+
+                entry.hash = shadow_signature_combine(state, caster_hash[light]);
+
+                auto const cached = local_shadow_cache_.find(candidate.id);
+                entry.dirty = lod_driven_casters || cached == local_shadow_cache_.end() ||
+                              cached->second != entry.hash;
+                local_shadow_cache_[candidate.id] = entry.hash;
+            }
+        }
+
+        // Tiles that must be redrawn come first, so the pass draws a prefix of the tile list.
+        std::ranges::stable_partition(selected, [](SelectedShadow const &entry) { return entry.dirty; });
+
+        for (auto const &entry: selected) {
+            auto const &candidate = entry.candidate;
+            auto const &allocation = entry.allocation;
             auto const first_tile = static_cast<std::uint32_t>(local_shadow_tile_staging_.size());
 
-            for (std::uint32_t face = 0; face < tile_count; ++face) {
+            for (std::uint32_t face = 0; face < allocation.tile_count; ++face) {
                 glm::mat4 face_view_projection{1.0F};
                 float texel_world = 0.0F;
 
                 if (candidate.point) {
                     auto const &light = point_light_submissions_[candidate.index];
                     face_view_projection = local_shadows::point_face_view_projection(light.position, face, light.range,
-                                                                           allocation->resolution);
-                    texel_world = local_shadows::point_texel_world(allocation->resolution);
+                                                                                     allocation.resolution);
+                    texel_world = local_shadows::point_texel_world(allocation.resolution);
                 } else {
                     auto const &light = spot_light_submissions_[candidate.index];
                     auto const outer = glm::radians(std::max(light.inner_cone_degrees, light.outer_cone_degrees));
                     face_view_projection = local_shadows::spot_view_projection(light.position, light.direction, outer,
-                                                                     light.range, allocation->resolution);
-                    texel_world = local_shadows::spot_texel_world(outer, allocation->resolution);
+                                                                               light.range, allocation.resolution);
+                    texel_world = local_shadows::spot_texel_world(outer, allocation.resolution);
                 }
 
                 local_shadow_tile_staging_.push_back(
-                        local_shadows::make_gpu_tile(face_view_projection, allocation->tiles[face], texel_world));
+                        local_shadows::make_gpu_tile(face_view_projection, allocation.tiles[face], texel_world));
 
                 for (auto const &plane: extract_frustum_planes(face_view_projection)) {
                     local_shadow_plane_staging_.push_back(plane);
                 }
 
-                frame.local_shadow_render_tiles.push_back(allocation->tiles[face]);
+                if (entry.dirty) {
+                    frame.local_shadow_render_tiles.push_back(allocation.tiles[face]);
+                }
             }
 
             (candidate.point ? point_light_shadow_tiles_ : spot_light_shadow_tiles_)[candidate.index] = first_tile;
             ++local_shadow_stats_.shadowed_lights;
+            local_shadow_stats_.cached_lights += entry.dirty ? 0U : 1U;
         }
     }
 
     frame.local_shadow_tile_count = static_cast<std::uint32_t>(local_shadow_tile_staging_.size());
-    local_shadow_stats_.rendered_tiles = frame.local_shadow_tile_count;
+    local_shadow_stats_.rendered_tiles = static_cast<std::uint32_t>(frame.local_shadow_render_tiles.size());
     local_shadow_stats_.atlas_cells_used = local_shadow_allocator_.used_cells();
 
     if (frame.local_shadow_tile_count != 0 &&
@@ -5252,7 +5423,9 @@ auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, Rend
 auto Renderer::prepare_local_shadow_cull_buffers(RendererFrame &frame) -> std::expected<void, RendererError> {
     frame.local_shadow_culled = false;
 
-    if (!local_shadow_settings_.gpu_culling || frame.local_shadow_tile_count == 0 ||
+    auto const render_tile_count = static_cast<std::uint32_t>(frame.local_shadow_render_tiles.size());
+
+    if (!local_shadow_settings_.gpu_culling || render_tile_count == 0 ||
         resolve_layout(pipeline_graph_, shadow_cull_pipeline_) == VK_NULL_HANDLE) {
         return {};
     }
@@ -5264,8 +5437,8 @@ auto Renderer::prepare_local_shadow_cull_buffers(RendererFrame &frame) -> std::e
     }
 
     constexpr std::uint64_t maximum_entries = std::uint64_t{1} << 27;
-    auto const survivors_needed = std::uint64_t{frame.local_shadow_tile_count} * frame.transform_count;
-    auto const batches_needed = std::uint64_t{frame.local_shadow_tile_count} * batches;
+    auto const survivors_needed = std::uint64_t{render_tile_count} * frame.transform_count;
+    auto const batches_needed = std::uint64_t{render_tile_count} * batches;
 
     if (survivors_needed > maximum_entries || batches_needed > maximum_entries) {
         return {};

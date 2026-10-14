@@ -435,6 +435,13 @@ auto MaterialWallGame::on_populate(Scene &scene, Renderer &renderer, EngineModel
         });
     }
 
+    {
+        auto const orbiter = Entity{&scene, "orbiter"};
+        orbiter.emplace<Components::Transform>(Components::Transform{.position = orbit_centre_, .scale = glm::vec3{0.5F}});
+        orbiter.emplace<Components::Model>(Components::Model{.model = engine_models.cube});
+        orbiter_ = static_cast<entt::entity>(orbiter);
+    }
+
     // A point light among the pillars: all six cube faces cast.
     {
         auto const lamp = Entity{&scene, "shadow_lamp"};
@@ -443,11 +450,25 @@ auto MaterialWallGame::on_populate(Scene &scene, Renderer &renderer, EngineModel
                 .colour = {1.0F, 0.85F, 0.55F}, .intensity = 110.0F, .range = 14.0F, .casts_shadows = true});
     }
 
-    info("[MaterialWall] Keys: 1-6 shot (5 = decals, 6 = spot shadows), B bloom, C shadow culling");
+    info("[MaterialWall] Keys: 1-6 shot (5 = decals, 6 = spot shadows), B bloom, C shadow culling, V shadow caching, O orbit");
 }
 
-auto MaterialWallGame::on_update(Scene &, float delta_time) -> void {
+auto MaterialWallGame::on_update(Scene &scene, float delta_time) -> void {
     time_ += delta_time;
+
+    if (orbiting_) {
+        orbit_time_ += delta_time;
+    }
+
+    if (auto *transform = scene.get_registry().try_get<Components::Transform>(orbiter_)) {
+        transform->position = orbit_centre_ + glm::vec3{std::cos(orbit_time_ * 1.5F) * 1.2F, 0.0F, std::sin(orbit_time_ * 1.5F) * 1.2F};
+    }
+
+    if (renderer_ != nullptr && ++frames_ % 60 == 0) {
+        auto const &stats = renderer_->local_shadow_stats();
+        info("[MaterialWall] Local shadows: {} lights ({} cached), {} tiles drawn, {}/256 atlas cells", stats.shadowed_lights,
+             stats.cached_lights, stats.rendered_tiles, stats.atlas_cells_used);
+    }
 
     switch (shot_) {
         case 0: // everything
@@ -494,6 +515,20 @@ auto MaterialWallGame::on_key_pressed(Scene &, KeyPressedEvent const &event) -> 
         settings.gpu_culling = !settings.gpu_culling;
         renderer_->set_local_shadow_settings(settings);
         info("[MaterialWall] Local shadow GPU culling {}", settings.gpu_culling ? "on" : "off");
+        return;
+    }
+
+    if (event.key == GLFW_KEY_O) {
+        orbiting_ = !orbiting_;
+        info("[MaterialWall] Orbiting cube {}", orbiting_ ? "moving" : "stopped");
+        return;
+    }
+
+    if (event.key == GLFW_KEY_V && renderer_ != nullptr) {
+        auto settings = renderer_->local_shadow_settings();
+        settings.caching = !settings.caching;
+        renderer_->set_local_shadow_settings(settings);
+        info("[MaterialWall] Local shadow caching {}", settings.caching ? "on" : "off");
         return;
     }
 
