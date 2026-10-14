@@ -916,7 +916,7 @@ add_library(
 target_link_libraries(
     lathe-core
     INTERFACE
-        "$<LINK_GROUP:RESCAN,engine_benchmark,engine_app,engine_luagame,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_gameserver,engine_gameclient,engine_assets,engine_gpu,engine_core>"
+        "$<LINK_GROUP:RESCAN,engine_benchmark,engine_app,engine_luagame,engine_game,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_gameserver,engine_gameclient,engine_assets,engine_gpu,engine_core>"
 )
 
 add_library(
