@@ -49,6 +49,7 @@ struct LuaGame::Impl {
     GameHost host;
     LuaGameHost bindings;
     std::vector<std::pair<std::string, lua_CFunction>> native_modules;
+    std::string default_entry_script;
     std::unique_ptr<LuaRuntime> runtime;
 
     std::string fatal_error;
@@ -72,6 +73,8 @@ LuaGame::~LuaGame() = default;
 auto LuaGame::add_native_module(std::string name, lua_CFunction opener) -> void {
     impl_->native_modules.emplace_back(std::move(name), opener);
 }
+
+auto LuaGame::set_default_entry(std::string entry) -> void { impl_->default_entry_script = std::move(entry); }
 
 auto LuaGame::attach_host(GameHost host) -> void {
     impl_->host = std::move(host);
@@ -122,7 +125,9 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
                 return read_data_file("assets/scripts/behaviours/" + name + ".lua");
             });
 
-    auto const entry = self.host.script_entry.empty() ? std::string{default_entry} : self.host.script_entry;
+    auto const entry = !self.host.script_entry.empty()       ? self.host.script_entry
+                       : !self.default_entry_script.empty() ? self.default_entry_script
+                                                            : std::string{default_entry};
     auto const source = read_data_file(entry);
 
     if (!source) {

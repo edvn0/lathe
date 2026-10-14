@@ -58,6 +58,17 @@ function Entity:set_velocity(x, y, z) end
 ---@param z number
 function Entity:apply_impulse(x, y, z) end
 
+---Adds a light to the entity (it shines from the entity's position; a spot light points along the entity's local -Y,
+---see Entity:aim). Replaces a light of the same type. Raises an error on an unknown type, a negative intensity, a
+---non-positive range or spot cones that are not 0 <= inner_cone < outer_cone <= 89.
+---@param options LightOptions
+function Entity:add_light(options) end
+---Turns the entity so its local -Y axis faces the position. Raises an error if the position is the entity's own.
+---@param x number
+---@param y number
+---@param z number
+function Entity:aim(x, y, z) end
+
 ---Puts a behaviour (assets/scripts/behaviours/<name>.lua) on the entity, with property values that differ from
 ---the script's defaults. It starts running while the game plays. Raises an error for an unknown script, an unknown
 ---property or a value of the wrong type.
@@ -157,3 +168,12 @@ function Behaviour.on_destroy(self) end
 ---| "model" # a Model (by registered name) or nil
 ---| "material" # a Material or nil
 ---| "texture" # a Texture or nil; "scene_colour" and "scene_depth" are the viewport
+
+---@class LightOptions
+---@field type? "point"|"spot" (default "point")
+---@field colour? number[] {r, g, b} (default {1, 1, 1})
+---@field intensity? number (default 1)
+---@field range? number metres (default 10)
+---@field inner_cone? number degrees, spot only (default 20)
+---@field outer_cone? number degrees, spot only (default 30)
+---@field casts_shadows? boolean (default false)
