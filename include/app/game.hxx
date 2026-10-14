@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "scene/camera_path.hxx"
 #include "scene/components.hxx"
 #include "scene/input_events.hxx"
+#include "scene/script_property.hxx"
 #include "terrain/terrain_world.hxx"
 
 class Scene;
@@ -105,6 +107,17 @@ public:
     [[nodiscard]] virtual auto benchmark_camera_path() const -> std::vector<CameraKeyframe> { return {}; }
 
     [[nodiscard]] virtual auto camera(Scene const &scene, float aspect_ratio) const -> CameraParams = 0;
+
+    // Called when the game stops playing, before the runtime scene is destroyed.
+    virtual auto on_play_stop(Scene &scene) -> void { (void) scene; }
+
+    // behaviours the editor can attach to entities (Components::Behaviour), with their declared properties.
+    [[nodiscard]] virtual auto behaviour_names() -> std::span<std::string const> { return {}; }
+    [[nodiscard]] virtual auto behaviour_schema(std::string const &name) -> ScriptSchema const * {
+        (void) name;
+        return nullptr;
+    }
+    virtual auto reload_behaviours() -> void {}
 
     virtual auto clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
         clone_editor_into_runtime<>(editor_scene, runtime_scene);

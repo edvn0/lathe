@@ -3,7 +3,7 @@
 -- runs and the effect reloads.
 --   lathe --game lua --script assets/scripts/effects/main.lua
 
----@type LatheGame
+---@type GameScript
 local M = {}
 
 local tint

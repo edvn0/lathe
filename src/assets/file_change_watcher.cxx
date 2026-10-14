@@ -1,14 +1,14 @@
-#include "assets/shader_hot_reload_watcher.hxx"
+#include "assets/file_change_watcher.hxx"
 
 #include <utility>
 
 #include <efsw/efsw.hpp>
 
-#include "assets/shader_change_queue.hxx"
+#include "assets/file_change_queue.hxx"
 #include "core/logger.hxx"
 
-struct ShaderHotReloadWatcher::Listener final : efsw::FileWatchListener {
-    explicit Listener(ShaderChangeQueue &queue) noexcept : change_queue(&queue) {}
+struct FileChangeWatcher::Listener final : efsw::FileWatchListener {
+    explicit Listener(FileChangeQueue &queue) noexcept : change_queue(&queue) {}
 
     auto handleFileAction(efsw::WatchID , std::string const &directory, std::string const &filename,
                           efsw::Action action, std::string old_filename) -> void override {
@@ -28,16 +28,16 @@ struct ShaderHotReloadWatcher::Listener final : efsw::FileWatchListener {
         }
     }
 
-    ShaderChangeQueue *change_queue = nullptr;
+    FileChangeQueue *change_queue = nullptr;
 };
 
-ShaderHotReloadWatcher::ShaderHotReloadWatcher() = default;
-ShaderHotReloadWatcher::~ShaderHotReloadWatcher() { stop(); }
+FileChangeWatcher::FileChangeWatcher() = default;
+FileChangeWatcher::~FileChangeWatcher() { stop(); }
 
-ShaderHotReloadWatcher::ShaderHotReloadWatcher(ShaderHotReloadWatcher &&other) noexcept :
+FileChangeWatcher::FileChangeWatcher(FileChangeWatcher &&other) noexcept :
     watcher_(std::move(other.watcher_)), listener_(std::move(other.listener_)) {}
 
-auto ShaderHotReloadWatcher::operator=(ShaderHotReloadWatcher &&other) noexcept -> ShaderHotReloadWatcher & {
+auto FileChangeWatcher::operator=(FileChangeWatcher &&other) noexcept -> FileChangeWatcher & {
     if (this == &other) {
         return *this;
     }
@@ -50,7 +50,7 @@ auto ShaderHotReloadWatcher::operator=(ShaderHotReloadWatcher &&other) noexcept 
     return *this;
 }
 
-auto ShaderHotReloadWatcher::start(ShaderChangeQueue &change_queue, std::span<std::filesystem::path const> directories)
+auto FileChangeWatcher::start(FileChangeQueue &change_queue, std::span<std::filesystem::path const> directories)
         -> bool {
     stop();
 
@@ -89,7 +89,7 @@ auto ShaderHotReloadWatcher::start(ShaderChangeQueue &change_queue, std::span<st
     return true;
 }
 
-auto ShaderHotReloadWatcher::stop() noexcept -> void {
+auto FileChangeWatcher::stop() noexcept -> void {
     watcher_.reset();
     listener_.reset();
 }

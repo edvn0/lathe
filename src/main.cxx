@@ -46,7 +46,7 @@
 #include "app/fatal_dialog.hxx"
 #include "app/frame_clock.hxx"
 #include "app/game.hxx"
-#include "assets/shader_hot_reload_watcher.hxx"
+#include "assets/file_change_watcher.hxx"
 #include "assets/shader_bake.hxx"
 #include "assets/shader_pack.hxx"
 #include "core/allocator.hxx"
@@ -783,6 +783,7 @@ namespace {
             packaging.value("--record-resources", "FILE.lbf", "Write the editor font and icons this run loaded to a resource pack, then exit", record_resources);
             packaging.value("--record-assets", "FILE.txt", "Write the data files this run opened to a list, then exit", record_assets);
             packaging.value("--screenshot-frame", "N", "Save a screenshot on frame N (see the screenshots directory)", screenshot_frame);
+            packaging.flag("--screenshot-window", "Screenshots capture the whole editor window, not just the viewport", screenshot_window);
             packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120", inject_keys);
             packaging.value("--exit-after-frames", "N", "Exit after N frames (0: run until closed)", exit_after_frames);
             cli.group("Paths").value("--data-dir", "DIR", "Game data directory (default: an installed game's data/, else the working directory)", data_dir);
@@ -840,6 +841,7 @@ namespace {
         std::string record_resources;
         std::uint32_t exit_after_frames = 0;
         std::uint32_t screenshot_frame = 0;
+        bool screenshot_window = false;
         std::string inject_keys;
         std::optional<std::filesystem::path> open_scene;
         std::optional<std::filesystem::path> save_scene;
@@ -1019,6 +1021,7 @@ auto main(int argc, char **argv) -> int {
 
     Application application{context};
     application.player_mode = player_mode;
+    application.screenshot_viewport_only = !engine.screenshot_window;
     application.game_name = !engine.game.empty() ? engine.game
                             : manifest           ? manifest->game
                                                  : std::string{game_names().front()};

@@ -58,6 +58,20 @@ function Entity:set_velocity(x, y, z) end
 ---@param z number
 function Entity:apply_impulse(x, y, z) end
 
+---Puts a behaviour (assets/scripts/behaviours/<name>.lua) on the entity, with property values that differ from
+---the script's defaults. It starts running while the game plays. Raises an error for an unknown script, an unknown
+---property or a value of the wrong type.
+---@param name string
+---@param properties? table<string, any>
+function Entity:add_behaviour(name, properties) end
+---The running instance of a behaviour on this entity (the `self` its callbacks get), or nil: while the game
+---is not playing, or when the entity has no such script.
+---@param name string
+---@return table?
+function Entity:behaviour(name) end
+---Takes the behaviour off; its on_destroy runs at the next update.
+function Entity:remove_behaviour() end
+
 ---entity.add_particles(e, options) is e:add_particles(options).
 ---@param e Entity
 ---@param options ParticleOptions
@@ -104,3 +118,42 @@ function entity.remove_particles(e) end
 ---@field restitution? number bounciness (default 0.4)
 ---@field static? boolean never moves (default false)
 ---@field lock_rotation? boolean stays upright (default false; true for capsules)
+
+---What a behaviour file returns (assets/scripts/behaviours/<name>.lua). `self` in the callbacks is the instance:
+---`self.entity` and one field per property, plus anything the script stores. All callbacks are optional.
+---@class Behaviour
+---@field properties? BehaviourProperty[]|table<string, BehaviourProperty> editable values; the list form keeps its order
+local Behaviour = {}
+
+---Once, before the first on_update of the instance.
+---@param self table
+function Behaviour.on_start(self) end
+---@param self table
+---@param dt number seconds since the last frame
+function Behaviour.on_update(self, dt) end
+---When the entity or its script goes away, or the game stops.
+---@param self table
+function Behaviour.on_destroy(self) end
+
+---@class BehaviourProperty
+---@field name? string required in the list form
+---@field type BehaviourPropertyType
+---@field default? any boolean, number, string, {x, y, z} or {r, g, b [, a]}; asset types take a registered name
+---@field min? number number, integer and vec3 only
+---@field max? number
+---@field step? number inspector drag speed
+---@field options? string[] required for "choice"
+---@field tooltip? string
+
+---@alias BehaviourPropertyType
+---| "boolean"
+---| "integer"
+---| "number"
+---| "string"
+---| "vec3" # a Vec3: {x, y, z}
+---| "colour" # {r, g, b, a}; also spelled "color"
+---| "choice" # one of `options`, a string
+---| "entity" # an Entity or nil
+---| "model" # a Model (by registered name) or nil
+---| "material" # a Material or nil
+---| "texture" # a Texture or nil; "scene_colour" and "scene_depth" are the viewport

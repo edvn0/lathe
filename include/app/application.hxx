@@ -25,7 +25,7 @@
 #include "app/game_packager.hxx"
 #include "app/stage_registry.hxx"
 #include "assets/material_storage.hxx"
-#include "assets/shader_hot_reload_watcher.hxx"
+#include "assets/file_change_watcher.hxx"
 #include "gpu/context.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "rendering/debug_renderer.hxx"
@@ -79,7 +79,7 @@ struct Application {
     std::unique_ptr<gui::EditorIcons> editor_icons;
 
     std::vector<OverlayRegistration> overlays;
-    ShaderHotReloadWatcher shader_watcher_;
+    FileChangeWatcher shader_watcher_;
 
     std::unique_ptr<Scene> editor_scene = std::make_unique<Scene>(*renderer);
     std::unique_ptr<Scene> runtime_scene;
@@ -154,6 +154,7 @@ struct Application {
     bool viewport_hovered = false;
     ImVec2 viewport_screen_pos{};
     ImVec2 viewport_content_size{};
+    int viewport_seen_frame = -1;
     bool screenshot_viewport_only = true;
 
     std::string hierarchy_search;

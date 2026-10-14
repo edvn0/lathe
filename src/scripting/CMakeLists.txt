@@ -9,6 +9,7 @@ add_library(
         entity_index.cxx
         lua_allocator.cxx
         lua_particles.cxx
+        lua_script_schema.cxx
         lua_runtime.cxx
         script_bindings.cxx
         script_engine.cxx

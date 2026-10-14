@@ -93,6 +93,7 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
     self.have_camera = false;
     self.fatal_error.clear();
 
+    self.bindings.components.reset();
     self.runtime.reset();
 
     auto created = LuaRuntime::create();
@@ -115,6 +116,11 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
     }
 
     open_lua_game_api(*self.runtime);
+
+    self.bindings.components = std::make_unique<BehaviourSystem>(
+            *self.runtime, self.bindings, [](std::string const &name) {
+                return read_data_file("assets/scripts/behaviours/" + name + ".lua");
+            });
 
     auto const entry = self.host.script_entry.empty() ? std::string{default_entry} : self.host.script_entry;
     auto const source = read_data_file(entry);
@@ -154,6 +160,10 @@ auto LuaGame::on_update(Scene &scene, float delta_time) -> void {
 
     self.call("on_update", arguments);
 
+    if (self.bindings.components) {
+        self.bindings.components->update(delta_time);
+    }
+
     if (self.bindings.renderer != nullptr) {
         self.bindings.animation->update(scene, *self.bindings.renderer, delta_time);
     }
@@ -161,6 +171,38 @@ auto LuaGame::on_update(Scene &scene, float delta_time) -> void {
     // A frame's mouse movement is seen by one update.
     self.bindings.mouse_delta_x = 0.0;
     self.bindings.mouse_delta_y = 0.0;
+}
+
+auto LuaGame::on_play_stop(Scene &scene) -> void {
+    auto &self = *impl_;
+
+    self.bindings.scene = &scene;
+
+    if (self.bindings.components) {
+        self.bindings.components->stop();
+    }
+}
+
+auto LuaGame::behaviour_names() -> std::span<std::string const> {
+    auto &self = *impl_;
+
+    return self.bindings.components ? self.bindings.components->script_names() : std::span<std::string const>{};
+}
+
+auto LuaGame::behaviour_schema(std::string const &name) -> ScriptSchema const * {
+    auto &self = *impl_;
+
+    return self.bindings.components ? self.bindings.components->schema(name) : nullptr;
+}
+
+auto LuaGame::reload_behaviours() -> void {
+    if (impl_->bindings.components) {
+        impl_->bindings.components->reload();
+    }
+}
+
+auto LuaGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
+    clone_editor_into_runtime<Components::Behaviour>(editor_scene, runtime_scene);
 }
 
 auto LuaGame::on_key_released(Scene & , KeyReleasedEvent const &event) -> void {
@@ -211,11 +253,19 @@ auto LuaGame::on_ui(Scene &scene, Renderer &renderer) -> void {
     self.bindings.scene = &scene;
     self.bindings.renderer = &renderer;
 
+    if (self.bindings.components) {
+        self.bindings.components->poll();
+    }
+
     self.call("on_ui");
 
-    auto const error_text = !self.fatal_error.empty() ? self.fatal_error
-                            : self.runtime            ? self.runtime->last_error()
-                                                      : std::string{};
+    auto error_text = !self.fatal_error.empty() ? self.fatal_error
+                      : self.runtime            ? self.runtime->last_error()
+                                                : std::string{};
+
+    if (error_text.empty() && self.bindings.components) {
+        error_text = self.bindings.components->last_error();
+    }
 
     if (error_text.empty()) {
         return;

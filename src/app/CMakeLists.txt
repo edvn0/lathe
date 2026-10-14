@@ -17,6 +17,7 @@ add_library(
         benchmark_scenarios.cxx
         shadow_city.cxx
         lua_animation.cxx
+        lua_behaviours.cxx
         lua_game.cxx
         lua_game_api.cxx
         package_ui.cxx

@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -9,6 +10,7 @@
 #include <glm/mat4x4.hpp>
 
 #include "app/game.hxx"
+#include "app/lua_behaviours.hxx"
 #include "app/lua_animation.hxx"
 #include "physics/mesh_collider.hxx"
 #include "scripting/lua_api.hxx"
@@ -39,6 +41,9 @@ struct LuaGameHost {
     };
 
     // Skinned characters scripts have asked for (animation library); advanced after each on_update.
+    // behaviours (assets/scripts/behaviours); made once the Lua state exists.
+    std::unique_ptr<BehaviourSystem> components;
+
     std::unique_ptr<LuaAnimationSystem> animation = std::make_unique<LuaAnimationSystem>();
 
     std::unordered_map<std::uint64_t, std::shared_ptr<MeshColliderSlot>> collider_slots;
@@ -56,6 +61,12 @@ public:
 
     auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void override;
     auto on_update(Scene &scene, float delta_time) -> void override;
+
+    auto on_play_stop(Scene &scene) -> void override;
+    [[nodiscard]] auto behaviour_names() -> std::span<std::string const> override;
+    [[nodiscard]] auto behaviour_schema(std::string const &name) -> ScriptSchema const * override;
+    auto reload_behaviours() -> void override;
+    auto clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void override;
 
     auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void override;
     auto on_key_released(Scene &scene, KeyReleasedEvent const &event) -> void override;

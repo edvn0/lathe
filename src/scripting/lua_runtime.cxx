@@ -426,6 +426,37 @@ auto LuaRuntime::call(char const *name, std::span<double const> numbers, int res
     return {};
 }
 
+auto LuaRuntime::protected_call(int argument_count, int result_count, bool loading) -> CallResult {
+    auto *const state = impl_->state.get();
+
+    lua_pushcfunction(state, &message_handler);
+    lua_insert(state, -(argument_count + 2));
+
+    auto const handler_index = lua_gettop(state) - argument_count - 1;
+
+    int status = LUA_OK;
+
+    {
+        CallGuard const guard{impl_->context, state,
+                              loading ? impl_->settings.call_budget * load_budget_multiplier
+                                      : impl_->settings.call_budget};
+
+        status = lua_pcall(state, argument_count, result_count, handler_index);
+    }
+
+    if (status != LUA_OK) {
+        std::string message = lua_tostring(state, -1) != nullptr ? lua_tostring(state, -1) : "(unknown error)";
+
+        lua_settop(state, handler_index - 1);
+
+        return {.ok = false, .error = std::move(message)};
+    }
+
+    lua_remove(state, handler_index);
+
+    return {};
+}
+
 auto lua_field_number(lua_State *state, int index, char const *key, double fallback) -> double {
     lua_getfield(state, index, key);
 

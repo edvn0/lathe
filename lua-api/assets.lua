@@ -29,7 +29,26 @@ function assets.cube() end
 ---@param roughness? number default 0.6
 ---@param metallic? number default 0.0
 ---@return Material
-function assets.material(name, red, green, blue, roughness, metallic) end
+---@param textures? MaterialTextures textures to use in place of the flat defaults
+function assets.material(name, red, green, blue, roughness, metallic, textures) end
+
+---Textures for assets.material. The viewport textures ("scene_colour", "scene_depth") cannot be used here.
+---@class MaterialTextures
+---@field base_colour_texture? Texture
+---@field normal_texture? Texture
+---@field metallic_roughness_texture? Texture
+---@field occlusion_texture? Texture
+---@field emissive_texture? Texture
+
+---An image: one registered under a name, or one of the viewport's ("scene_colour", "scene_depth"), which compute
+---effects sample.
+---@class Texture
+
+---The texture registered under `name`, or nil. "scene_colour" and "scene_depth" give the viewport's images, which
+---can be given to a compute effect input (compute.instance) but not to a material.
+---@param name string
+---@return Texture?
+function assets.texture(name) end
 
 ---@param material Material
 function assets.release_material(material) end
