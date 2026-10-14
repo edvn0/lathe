@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -88,8 +89,11 @@ namespace chess_lua_test {
     )";
 
     struct Harness {
+        // The default 20 ms call budget is wall-clock time, so a script call that a loaded CI runner (ASan, parallel
+        // tests) deschedules or slows for 20 ms is killed and the test aborts. These tests exercise the chess script,
+        // not the budget (lua_runtime_test does), so they get a budget no healthy call can reach.
         LuaRuntime runtime = [] {
-            auto created = LuaRuntime::create();
+            auto created = LuaRuntime::create(LuaRuntime::Settings{.call_budget = std::chrono::seconds{5}});
 
             REQUIRE(created.has_value());
 
