@@ -5,10 +5,10 @@
 #include <memory>
 #include <utility>
 
+#include "assets/script_handle.hxx"
 #include "core/holder.hxx"
 #include "core/object_pool.hxx"
 #include "rendering/script.hxx"
-#include "scene/script_handle.hxx"
 
 enum class ScriptStorageErrorType : std::uint8_t {
     invalid_argument,
