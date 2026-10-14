@@ -590,6 +590,8 @@ struct Renderer final : public IMeshSink, public IModelSink {
         std::uint32_t rendered_tiles = 0;
         std::uint32_t cached_lights = 0;
         std::uint32_t atlas_cells_used = 0;
+        // The tiles were culled on the GPU this frame (rather than every tile drawing every caster).
+        bool culled = false;
     };
 
     auto set_local_shadow_settings(LocalShadowSettings const &settings) noexcept -> void {
@@ -1499,8 +1501,15 @@ private:
     ImageHolder shadow_atlas_{};
     ImageHolder local_shadow_atlas_{};
     local_shadows::Atlas local_shadow_allocator_{};
-    // What each shadowed light's tiles were last drawn from, keyed by light id.
-    std::unordered_map<std::uint64_t, std::uint64_t> local_shadow_cache_;
+    // What each shadowed light's tiles were last drawn from, keyed by light id: the whole hash, and the part of it that
+    // comes from the casters in the light's range (reused while no caster moves anywhere).
+    struct LocalShadowCacheEntry {
+        std::uint64_t hash = 0;
+        std::uint64_t casters = 0;
+    };
+    std::unordered_map<std::uint64_t, LocalShadowCacheEntry> local_shadow_cache_;
+    std::uint64_t local_shadow_scene_hash_ = 0;
+    bool local_shadow_scene_hash_valid_ = false;
     bool local_shadow_atlas_initialized_ = false;
     LocalShadowSettings local_shadow_settings_{};
     LocalShadowStats local_shadow_stats_{};
