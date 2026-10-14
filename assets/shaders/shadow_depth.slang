@@ -29,7 +29,15 @@ VertexOutput shadow_vertex(ShadowPC pc, GpuDraw draw, float4x4 model, float wind
     world_position.xz += wind_offset(vertex.position, world_position.xyz, wind_strength, ubo.time);
 
     VertexOutput output;
-    output.position = mul(ubo.cascade_view_projection[pc.cascade_index], world_position);
+    float4x4 view_projection;
+
+    if (pc.use_shadow_tiles != 0) {
+        view_projection = pc.shadow_tiles[pc.cascade_index].view_projection;
+    } else {
+        view_projection = ubo.cascade_view_projection[pc.cascade_index];
+    }
+
+    output.position = mul(view_projection, world_position);
     output.material_index = draw.material_index;
     output.texture_coordinate = vertex.uvs;
     return output;

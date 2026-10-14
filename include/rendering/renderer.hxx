@@ -64,6 +64,7 @@
 #include "rendering/frame_graph/view.hxx"
 #include "rendering/game_gpu.hxx"
 #include "rendering/hiz_occlusion.hxx"
+#include "rendering/local_shadows.hxx"
 #include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/render_passes.hxx"
@@ -289,11 +290,17 @@ struct UBO {
     std::uint32_t decal_count = 0;
     std::uint32_t decal_padding = 0;
 
+    VkDeviceAddress local_shadow_tiles_address = 0;
+    std::uint32_t local_shadow_atlas_texture = 0;
+    std::uint32_t local_shadow_tile_count = 0;
+    float local_shadow_normal_offset_texels = 1.5F;
+    float local_shadow_padding = 0.0F;
+
     EnvironmentUboBlock environment{};
 };
 
-static_assert(sizeof(UBO) == 984, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
-static_assert(offsetof(UBO, environment) == 792);
+static_assert(sizeof(UBO) == 1008, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(offsetof(UBO, environment) == 816);
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 288);
 static_assert(offsetof(UBO, cascade_atlas_offset_u) == 592);
@@ -483,6 +490,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
         glm::vec3 colour{1.0F};
         float intensity = 1.0F;
         float range = 10.0F;
+        // Identifies the light between frames so it keeps its shadow tiles. Zero never gets a shadow.
+        std::uint64_t id = 0;
+        bool casts_shadows = false;
     };
 
     struct SpotLight {
@@ -493,6 +503,8 @@ struct Renderer final : public IMeshSink, public IModelSink {
         float range = 10.0F;
         float inner_cone_degrees = 20.0F;
         float outer_cone_degrees = 30.0F;
+        std::uint64_t id = 0;
+        bool casts_shadows = false;
     };
 
     // A box projected along its local -Y onto whatever geometry it overlaps. `transform` places and scales the box
@@ -553,6 +565,34 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto environment_system() noexcept -> EnvironmentSystem & { return environment_; }
     [[nodiscard]] auto environment_system() const noexcept -> EnvironmentSystem const & { return environment_; }
     [[nodiscard]] auto directional_light() const noexcept -> DirectionalLight const & { return light_; }
+
+    // Shadows for point and spot lights that opt in. Lights are ranked by how big they are on screen and the best
+    // ones get tiles of a shared atlas; the rest stay unshadowed.
+    struct LocalShadowSettings {
+        bool enabled = true;
+        // Per frame cap on shadowed lights, whatever the atlas could hold.
+        std::uint32_t maximum_lights = 16;
+        // Lights smaller than this on screen are not worth a shadow.
+        float minimum_screen_radius_pixels = 12.0F;
+        float normal_offset_texels = 1.5F;
+        float depth_bias_constant = -1.5F;
+        float depth_bias_slope = -2.0F;
+    };
+
+    struct LocalShadowStats {
+        std::uint32_t requested_lights = 0;
+        std::uint32_t shadowed_lights = 0;
+        std::uint32_t rendered_tiles = 0;
+        std::uint32_t atlas_cells_used = 0;
+    };
+
+    auto set_local_shadow_settings(LocalShadowSettings const &settings) noexcept -> void {
+        local_shadow_settings_ = settings;
+    }
+    [[nodiscard]] auto local_shadow_settings() const noexcept -> LocalShadowSettings const & {
+        return local_shadow_settings_;
+    }
+    [[nodiscard]] auto local_shadow_stats() const noexcept -> LocalShadowStats const & { return local_shadow_stats_; }
 
     auto set_shadow_settings(ShadowSettings const &settings) noexcept -> void { shadow_settings_ = settings; }
     [[nodiscard]] auto shadow_settings() const noexcept -> ShadowSettings const & { return shadow_settings_; }
@@ -850,7 +890,7 @@ private:
 
         float spot_offset = 0.0F;
         GpuLightType type = GpuLightType::point;
-        float _pad0 = 0.0F;
+        std::uint32_t shadow_tile = local_shadows::no_tile;
         float _pad1 = 0.0F;
     };
 
@@ -931,6 +971,14 @@ private:
 
         Buffer cluster_lights_buffer{};
         ClusterGridSettings cluster_grid{};
+
+        // True while lights_buffer holds shadow tile indices, so they get cleared again once the shadows are gone.
+        bool lights_have_shadow_tiles = false;
+        Buffer local_shadow_tiles_buffer{};
+        Buffer local_shadow_planes_buffer{};
+        std::uint32_t local_shadow_tile_count = 0;
+        // Tiles to draw this frame: index into local_shadow_tiles_buffer and the tile's atlas rectangle.
+        std::vector<local_shadows::Tile> local_shadow_render_tiles;
 
         Buffer decals_buffer{};
         Buffer decal_clusters_buffer{};
@@ -1193,6 +1241,7 @@ private:
 
     struct FrameTargets {
         Image const *shadow_atlas = nullptr;
+        Image const *local_shadow_atlas = nullptr;
         Image const *viewport = nullptr;
 
         VkExtent2D extent{};
@@ -1250,6 +1299,10 @@ private:
     static constexpr VkDeviceSize lod_chunk_bytes = 2 * lod_count * sizeof(std::uint32_t);
 
     auto record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void;
+
+    [[nodiscard]]
+    auto record_local_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
+            -> std::expected<void, RendererError>;
 
     [[nodiscard]]
     auto record_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
@@ -1421,6 +1474,15 @@ private:
     float light_icon_world_size_ = 0.5F;
 
     ImageHolder shadow_atlas_{};
+    ImageHolder local_shadow_atlas_{};
+    local_shadows::Atlas local_shadow_allocator_{};
+    bool local_shadow_atlas_initialized_ = false;
+    LocalShadowSettings local_shadow_settings_{};
+    LocalShadowStats local_shadow_stats_{};
+    std::vector<local_shadows::GpuShadowTile> local_shadow_tile_staging_;
+    std::vector<glm::vec4> local_shadow_plane_staging_;
+    std::vector<std::uint32_t> point_light_shadow_tiles_;
+    std::vector<std::uint32_t> spot_light_shadow_tiles_;
 
     HizPyramid hiz_{};
     glm::mat4 hiz_history_view_projection_{1.0F};

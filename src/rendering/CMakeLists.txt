@@ -15,6 +15,7 @@ add_library(
         environment_panel.cxx
         environment.cxx
         file_browser.cxx
+        local_shadows.cxx
         frame_graph/aliasing.cxx
         frame_graph/compiler.cxx
         frame_graph/describe.cxx

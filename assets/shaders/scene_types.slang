@@ -149,8 +149,22 @@ public struct GpuLight {
 
     public float spot_offset;
     public LightType type;
-    public float _pad0;
+    // First tile of this light's shadow in the local shadow atlas (six consecutive tiles for a point light), or
+    // no_shadow_tile.
+    public uint shadow_tile;
     public float _pad1;
+};
+
+public static const uint no_shadow_tile = 0xFFFFFFFFu;
+
+// One square of the local shadow atlas and the view that rendered it. Mirrors local_shadows::GpuShadowTile.
+public struct GpuShadowTile {
+    public float4x4 view_projection;
+    public float4 atlas_rect;
+    public float texel_world;
+    public float tile_texel;
+    public float depth_bias;
+    public float _pad;
 };
 
 public struct GpuEnvironmentSh
@@ -224,6 +238,12 @@ public struct UBO {
     public uint decal_count;
     public uint decal_padding;
 
+    public Ptr<GpuShadowTile> local_shadow_tiles;
+    public uint local_shadow_atlas_texture;
+    public uint local_shadow_tile_count;
+    public float local_shadow_normal_offset_texels;
+    public float local_shadow_padding;
+
     public uint environment_flags;
     public float environment_exposure;
     public float4 environment_rotation;
@@ -269,8 +289,11 @@ public struct PC
 public struct ShadowPC
 {
     public PC base;
+    // A cascade, or a tile of the local shadow atlas when use_shadow_tiles is set. Also selects the six cull
+    // planes of that view.
     public uint cascade_index;
-    public uint padding;
+    public uint use_shadow_tiles;
+    public Ptr<GpuShadowTile> shadow_tiles;
 };
 
 public struct CompressedVertex

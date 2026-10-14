@@ -12,6 +12,7 @@
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp>
 #include <glm/trigonometric.hpp>
 
 #include "core/error_describe.hxx"
@@ -23,7 +24,7 @@
 #include "scene/components.hxx"
 
 namespace {
-    constexpr std::size_t shot_count = 5;
+    constexpr std::size_t shot_count = 6;
     constexpr float spacing = 2.2F;
     constexpr float sphere_scale = 1.0F;
 
@@ -400,7 +401,49 @@ auto MaterialWallGame::on_populate(Scene &scene, Renderer &renderer, EngineModel
     add_decal("decal_splat_b", {1.8F, 0.0F, 7.2F}, -40.0F, {4.0F, 1.0F, 4.0F}, splat, 2);
     add_decal("decal_ring", {5.5F, 0.4F, 3.5F}, 0.0F, {5.0F, 2.0F, 5.0F}, ring);
 
-    info("[MaterialWall] Keys: 1-5 shot (5 = decals), B bloom");
+    // Shadow-casting spot lights over a few pillars standing on the decals.
+    constexpr std::array<glm::vec3, 4> pillar_positions{{{-2.0F, 1.2F, 9.0F}, {2.2F, 0.8F, 8.2F},
+                                                         {-6.0F, 1.0F, 7.0F}, {5.5F, 1.4F, 10.0F}}};
+    for (std::size_t i = 0; i < pillar_positions.size(); ++i) {
+        add_prop(std::format("pillar_{}", i), engine_models.cube, pillar_positions[i],
+                 {0.35F, pillar_positions[i].y, 0.35F}, make_material({0.8F, 0.8F, 0.82F}, 0.0F, 0.6F));
+    }
+
+    struct SpotSetup {
+        glm::vec3 position;
+        glm::vec3 target;
+        glm::vec3 colour;
+    };
+    constexpr std::array<SpotSetup, 2> spots{{
+            {{-9.0F, 8.0F, 15.0F}, {-1.0F, 0.0F, 7.5F}, {1.0F, 0.45F, 0.35F}},
+            {{9.0F, 8.0F, 15.0F}, {1.5F, 0.0F, 7.5F}, {0.35F, 0.6F, 1.0F}},
+    }};
+    for (std::size_t i = 0; i < spots.size(); ++i) {
+        auto const light = Entity{&scene, "shadow_spot_{}", i};
+        auto const direction = glm::normalize(spots[i].target - spots[i].position);
+        light.emplace<Components::Transform>(Components::Transform{
+                .position = spots[i].position,
+                .rotation = glm::rotation(glm::vec3{0.0F, -1.0F, 0.0F}, direction),
+        });
+        light.emplace<Components::SpotLight>(Components::SpotLight{
+                .colour = spots[i].colour,
+                .intensity = 2200.0F,
+                .range = 40.0F,
+                .inner_cone_degrees = 14.0F,
+                .outer_cone_degrees = 24.0F,
+                .casts_shadows = true,
+        });
+    }
+
+    // A point light among the pillars: all six cube faces cast.
+    {
+        auto const lamp = Entity{&scene, "shadow_lamp"};
+        lamp.emplace<Components::Transform>(Components::Transform{.position = {0.5F, 2.6F, 7.0F}});
+        lamp.emplace<Components::PointLight>(Components::PointLight{
+                .colour = {1.0F, 0.85F, 0.55F}, .intensity = 110.0F, .range = 14.0F, .casts_shadows = true});
+    }
+
+    info("[MaterialWall] Keys: 1-6 shot (5 = decals, 6 = spot shadows), B bloom");
 }
 
 auto MaterialWallGame::on_update(Scene &, float delta_time) -> void {
@@ -425,6 +468,11 @@ auto MaterialWallGame::on_update(Scene &, float delta_time) -> void {
         case 4: // decals
             eye_ = {0.0F, 7.0F, 15.0F};
             look_at_ = {0.5F, 0.0F, 5.5F};
+            fov_degrees_ = 45.0F;
+            break;
+        case 5: // shadow-casting spot lights
+            eye_ = {0.0F, 9.0F, 20.0F};
+            look_at_ = {0.0F, 0.0F, 7.5F};
             fov_degrees_ = 45.0F;
             break;
         default: // emissive

@@ -195,6 +195,10 @@ inline constexpr std::uint16_t scene_section_version = 1;
 
 inline constexpr std::uint16_t instanced_models_section_version = 2;
 
+inline constexpr std::uint16_t point_lights_section_version = 2;
+
+inline constexpr std::uint16_t spot_lights_section_version = 2;
+
 inline constexpr std::uint16_t materials_section_version = 2;
 
 inline constexpr std::uint16_t rigid_bodies_section_version = 2;

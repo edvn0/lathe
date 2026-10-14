@@ -247,6 +247,8 @@ namespace {
                     .colour = light.colour,
                     .intensity = light.intensity,
                     .range = light.range,
+                    .id = std::uint64_t{entt::to_integral(entity)} + 1,
+                    .casts_shadows = light.casts_shadows,
             });
 
             if (!result) {
@@ -289,6 +291,8 @@ namespace {
                     .range = light.range,
                     .inner_cone_degrees = light.inner_cone_degrees,
                     .outer_cone_degrees = light.outer_cone_degrees,
+                    .id = std::uint64_t{entt::to_integral(entity)} + 1,
+                    .casts_shadows = light.casts_shadows,
             });
 
             if (!result) {

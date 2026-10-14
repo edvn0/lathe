@@ -1348,6 +1348,31 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     shadow_atlas_ = std::move(*shadow_atlas);
 
+    auto local_shadow_atlas = create_held_image(
+            image_storage_,
+            ImageCreateInfo{
+                    .extent = VkExtent3D{.width = local_shadows::atlas_size, .height = local_shadows::atlas_size,
+                                         .depth = 1},
+                    .format = VK_FORMAT_D32_SFLOAT,
+                    .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+                    .image_type = VK_IMAGE_TYPE_2D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                    .flags = 0,
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .mip_levels = 1,
+                    .array_layers = 1,
+                    .debug_name = "renderer.local_shadow_atlas",
+            });
+
+    if (!local_shadow_atlas) {
+        return std::unexpected(make_image_error(local_shadow_atlas.error()));
+    }
+
+    local_shadow_atlas_ = std::move(*local_shadow_atlas);
+
     constexpr VkDeviceSize visible_lights_size =
             (sizeof(glm::vec4) + sizeof(std::uint32_t)) * VkDeviceSize{maximum_light_count} + sizeof(std::uint32_t);
 
@@ -1654,6 +1679,34 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
         frame.decals_buffer = std::move(*decals_buffer);
 
+        auto local_shadow_tiles = create_shared_buffer(
+                context_, BufferCreateInfo{
+                                  .size = sizeof(local_shadows::GpuShadowTile) * local_shadows::maximum_tiles,
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                  .memory = BufferMemory::upload,
+                                  .debug_name = "renderer.frame_local_shadow_tiles",
+                          });
+
+        if (!local_shadow_tiles) {
+            return std::unexpected(make_device_error(local_shadow_tiles.error()));
+        }
+
+        frame.local_shadow_tiles_buffer = std::move(*local_shadow_tiles);
+
+        auto local_shadow_planes = create_shared_buffer(
+                context_, BufferCreateInfo{
+                                  .size = sizeof(glm::vec4) * 6 * local_shadows::maximum_tiles,
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                  .memory = BufferMemory::upload,
+                                  .debug_name = "renderer.frame_local_shadow_planes",
+                          });
+
+        if (!local_shadow_planes) {
+            return std::unexpected(make_device_error(local_shadow_planes.error()));
+        }
+
+        frame.local_shadow_planes_buffer = std::move(*local_shadow_planes);
+
         auto targets = create_frame_targets(frame_index, create_info.extent);
 
         if (!targets) {
@@ -1835,6 +1888,8 @@ auto Renderer::destroy() noexcept -> void {
         frame.cluster_stats_readback_buffer.destroy();
         frame.cluster_lights_buffer.destroy();
         frame.decal_clusters_buffer.destroy();
+        frame.local_shadow_planes_buffer.destroy();
+        frame.local_shadow_tiles_buffer.destroy();
         frame.decals_buffer.destroy();
         frame.visible_lights_buffer.destroy();
         frame.lights_buffer.destroy();
@@ -1881,6 +1936,8 @@ auto Renderer::destroy() noexcept -> void {
 
     frames_.clear();
 
+    local_shadow_atlas_.reset();
+    local_shadow_allocator_.clear();
     shadow_atlas_.reset();
 
     hiz_ = HizPyramid{};
@@ -1897,6 +1954,7 @@ auto Renderer::destroy() noexcept -> void {
     shadow_scene_signature_valid_ = false;
     shadow_global_state_valid_ = false;
     shadow_atlas_initialized_ = false;
+    local_shadow_atlas_initialized_ = false;
     dynamic_shadow_casters_dirty_ = false;
 
     model_streamer_.wait_all();
@@ -3992,6 +4050,123 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     auto const light_lod_cull = std::max(light_lod_settings_.cull_radius_pixels, 0.0F);
     auto const light_lod_fade = std::max(light_lod_settings_.fade_radius_pixels, light_lod_cull + 1e-3F);
 
+    local_shadow_tile_staging_.clear();
+    local_shadow_plane_staging_.clear();
+    frame.local_shadow_render_tiles.clear();
+    point_light_shadow_tiles_.assign(point_light_submissions_.size(), local_shadows::no_tile);
+    spot_light_shadow_tiles_.assign(spot_light_submissions_.size(), local_shadows::no_tile);
+    local_shadow_stats_ = {};
+    local_shadow_allocator_.begin_frame();
+
+    if (local_shadow_settings_.enabled) {
+        struct ShadowCandidate {
+            bool point = false;
+            std::size_t index = 0;
+            std::uint64_t id = 0;
+            float radius_pixels = 0.0F;
+        };
+
+        std::vector<ShadowCandidate> candidates;
+        auto const view_planes = extract_frustum_planes(view_projection);
+
+        auto const consider = [&](bool point, std::size_t index, std::uint64_t id, glm::vec3 position, float range) {
+            if (id == 0) {
+                return;
+            }
+
+            for (auto const &plane: view_planes) {
+                if (glm::dot(glm::vec3{plane}, position) + plane.w < -range) {
+                    return;
+                }
+            }
+
+            auto const distance = std::max(glm::length(position - camera_position), 1e-3F);
+            auto const radius_pixels = range * light_lod_pixel_scale / distance;
+
+            if (radius_pixels < local_shadow_settings_.minimum_screen_radius_pixels) {
+                return;
+            }
+
+            candidates.push_back(ShadowCandidate{.point = point, .index = index, .id = id, .radius_pixels = radius_pixels});
+        };
+
+        for (std::size_t i = 0; i < point_light_submissions_.size(); ++i) {
+            auto const &light = point_light_submissions_[i];
+            if (light.casts_shadows) {
+                consider(true, i, light.id, light.position, light.range);
+            }
+        }
+        for (std::size_t i = 0; i < spot_light_submissions_.size(); ++i) {
+            auto const &light = spot_light_submissions_[i];
+            if (light.casts_shadows) {
+                consider(false, i, light.id, light.position, light.range);
+            }
+        }
+
+        std::ranges::sort(candidates, [](ShadowCandidate const &lhs, ShadowCandidate const &rhs) {
+            return lhs.radius_pixels != rhs.radius_pixels ? lhs.radius_pixels > rhs.radius_pixels : lhs.id < rhs.id;
+        });
+
+        local_shadow_stats_.requested_lights = static_cast<std::uint32_t>(candidates.size());
+
+        for (auto const &candidate: candidates) {
+            if (local_shadow_stats_.shadowed_lights >= local_shadow_settings_.maximum_lights) {
+                break;
+            }
+
+            auto const resolution = local_shadows::resolution_for_screen_radius(candidate.radius_pixels);
+            auto const tile_count = candidate.point ? local_shadows::point_face_count : 1U;
+            auto const *allocation = local_shadow_allocator_.request(candidate.id, tile_count, resolution);
+
+            if (allocation == nullptr) {
+                continue;
+            }
+
+            auto const first_tile = static_cast<std::uint32_t>(local_shadow_tile_staging_.size());
+
+            for (std::uint32_t face = 0; face < tile_count; ++face) {
+                glm::mat4 face_view_projection{1.0F};
+                float texel_world = 0.0F;
+
+                if (candidate.point) {
+                    auto const &light = point_light_submissions_[candidate.index];
+                    face_view_projection = local_shadows::point_face_view_projection(light.position, face, light.range,
+                                                                           allocation->resolution);
+                    texel_world = local_shadows::point_texel_world(allocation->resolution);
+                } else {
+                    auto const &light = spot_light_submissions_[candidate.index];
+                    auto const outer = glm::radians(std::max(light.inner_cone_degrees, light.outer_cone_degrees));
+                    face_view_projection = local_shadows::spot_view_projection(light.position, light.direction, outer,
+                                                                     light.range, allocation->resolution);
+                    texel_world = local_shadows::spot_texel_world(outer, allocation->resolution);
+                }
+
+                local_shadow_tile_staging_.push_back(
+                        local_shadows::make_gpu_tile(face_view_projection, allocation->tiles[face], texel_world));
+
+                for (auto const &plane: extract_frustum_planes(face_view_projection)) {
+                    local_shadow_plane_staging_.push_back(plane);
+                }
+
+                frame.local_shadow_render_tiles.push_back(allocation->tiles[face]);
+            }
+
+            (candidate.point ? point_light_shadow_tiles_ : spot_light_shadow_tiles_)[candidate.index] = first_tile;
+            ++local_shadow_stats_.shadowed_lights;
+        }
+    }
+
+    frame.local_shadow_tile_count = static_cast<std::uint32_t>(local_shadow_tile_staging_.size());
+    local_shadow_stats_.rendered_tiles = frame.local_shadow_tile_count;
+    local_shadow_stats_.atlas_cells_used = local_shadow_allocator_.used_cells();
+
+    if (frame.local_shadow_tile_count != 0 &&
+        (!frame.local_shadow_tiles_buffer.write(0, std::as_bytes(std::span{local_shadow_tile_staging_})) ||
+         !frame.local_shadow_planes_buffer.write(0, std::as_bytes(std::span{local_shadow_plane_staging_})))) {
+        clear_submissions();
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
     decal_staging_.clear();
     {
         auto sorted = decals_enabled_ ? decal_submissions_ : std::vector<Decal>{};
@@ -4095,6 +4270,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             .decals_address = frame.decals_buffer.device_address,
             .decal_clusters_address = frame.decal_clusters_buffer.device_address,
             .decal_count = frame.decal_count,
+            .local_shadow_tiles_address = frame.local_shadow_tiles_buffer.device_address,
+            .local_shadow_atlas_texture = local_shadow_atlas_.handle().index,
+            .local_shadow_tile_count = frame.local_shadow_tile_count,
+            .local_shadow_normal_offset_texels = local_shadow_settings_.normal_offset_texels,
             .environment = environment_.ubo_block(),
     };
 
@@ -4192,21 +4371,26 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
     }
 
-    if ((lights_dirty_mask_ & (1u << frame_index)) != 0) {
+    auto const shadow_tiles_in_use = local_shadow_stats_.shadowed_lights != 0;
+
+    if ((lights_dirty_mask_ & (1u << frame_index)) != 0 || shadow_tiles_in_use || frame.lights_have_shadow_tiles) {
         light_staging_.clear();
         light_staging_.reserve(point_light_submissions_.size() + spot_light_submissions_.size());
 
-        for (auto const &point: point_light_submissions_) {
+        for (std::size_t point_index = 0; point_index < point_light_submissions_.size(); ++point_index) {
+            auto const &point = point_light_submissions_[point_index];
             light_staging_.push_back(GpuLight{
                     .position = point.position,
                     .range = point.range,
                     .colour = point.colour,
                     .intensity = point.intensity,
                     .type = GpuLightType::point,
+                    .shadow_tile = point_light_shadow_tiles_[point_index],
             });
         }
 
-        for (auto const &spot: spot_light_submissions_) {
+        for (std::size_t spot_index = 0; spot_index < spot_light_submissions_.size(); ++spot_index) {
+            auto const &spot = spot_light_submissions_[spot_index];
             auto const inner = glm::radians(std::min(spot.inner_cone_degrees, spot.outer_cone_degrees));
             auto const outer = glm::radians(std::max(spot.inner_cone_degrees, spot.outer_cone_degrees));
             auto const cos_inner = std::cos(inner);
@@ -4223,6 +4407,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                     .spot_scale = spot_scale,
                     .spot_offset = spot_offset,
                     .type = GpuLightType::spot,
+                    .shadow_tile = spot_light_shadow_tiles_[spot_index],
             });
         }
 
@@ -4234,6 +4419,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
 
+        frame.lights_have_shadow_tiles = shadow_tiles_in_use;
         lights_dirty_mask_ &= ~(1u << frame_index);
     } else {
         frame.light_count = light_count_;
@@ -4920,6 +5106,7 @@ auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<vo
 auto Renderer::resolve_frame_targets(RendererFrame const &frame) const -> std::expected<FrameTargets, RendererError> {
     FrameTargets const targets{
             .shadow_atlas = shadow_atlas_.get(),
+            .local_shadow_atlas = local_shadow_atlas_.get(),
             .viewport = frame.viewport_target.get(),
             .extent = extent_,
             .multisampled = samples_ != VK_SAMPLE_COUNT_1_BIT,
@@ -4927,7 +5114,7 @@ auto Renderer::resolve_frame_targets(RendererFrame const &frame) const -> std::e
 
     auto const usable = [](Image const *image) { return image != nullptr && image->valid(); };
 
-    if (!usable(targets.shadow_atlas) || !usable(targets.viewport)) {
+    if (!usable(targets.shadow_atlas) || !usable(targets.local_shadow_atlas) || !usable(targets.viewport)) {
         return std::unexpected(make_error(RendererErrorType::image_error));
     }
 
@@ -5030,6 +5217,51 @@ auto Renderer::record_shadow_pass(render_pass::Context const &pass_context, Rend
     shadow_global_state_valid_ = true;
     shadow_atlas_initialized_ = true;
 
+    return {};
+}
+
+auto Renderer::record_local_shadow_pass(render_pass::Context const &pass_context, RendererFrame const &frame)
+        -> std::expected<void, RendererError> {
+    if (frame.local_shadow_render_tiles.empty()) {
+        return {};
+    }
+
+    auto const frame_index = pass_context.frame_index;
+
+    auto const result = render_pass::local_shadow(
+            pass_context,
+            render_pass::LocalShadowPassInfo{
+                    .draws =
+                            {
+                                    .draws = frame.draw_buffer,
+                                    .transforms = frame.transform_buffer,
+                                    .indirect = frame.indirect_buffer,
+                                    .index_buffer = geometry_arena_.bindable_buffer(),
+                            },
+                    .counts = batch_counts(frame),
+                    .opaque_count = frame.shadow_opaque_indirect_count[0],
+                    .double_sided_count = frame.shadow_double_sided_indirect_count[0],
+                    .mask_count = frame.shadow_mask_indirect_count[0],
+                    .tiles = frame.local_shadow_render_tiles,
+                    .meshlet_culling = meshlet_culling_,
+                    .tiles_address = frame.local_shadow_tiles_buffer.device_address,
+                    .cull_planes_address = frame.local_shadow_planes_buffer.device_address,
+                    .materials_address = material_storage_.device_address(),
+                    .ubo_address = ubos_[frame_index].device_address,
+                    .lights_address = frame.lights_buffer.device_address,
+                    .opaque_pipeline = shadow_pipeline_,
+                    .mask_pipeline = shadow_mask_pipeline_,
+                    .opaque_instanced_pipeline = shadow_instanced_pipeline_,
+                    .mask_instanced_pipeline = shadow_mask_instanced_pipeline_,
+                    .depth_bias_constant = local_shadow_settings_.depth_bias_constant,
+                    .depth_bias_slope = local_shadow_settings_.depth_bias_slope,
+            });
+
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+
+    local_shadow_atlas_initialized_ = true;
     return {};
 }
 

@@ -20,6 +20,7 @@ namespace Components {
         glm::vec3 colour{1.0F};
         float intensity = 1.0F;
         float range = 10.0F;
+        bool casts_shadows = false;
     };
 
     struct SpotLight {
@@ -28,6 +29,7 @@ namespace Components {
         float range = 10.0F;
         float inner_cone_degrees = 20.0F;
         float outer_cone_degrees = 30.0F;
+        bool casts_shadows = false;
     };
 
     // Projects `material` (base colour, normal, metallic/roughness, occlusion and emissive, as on a mesh) onto the
