@@ -9,9 +9,9 @@
 
 #include <glm/mat4x4.hpp>
 
-#include "app/game.hxx"
-#include "app/lua_behaviours.hxx"
-#include "app/lua_animation.hxx"
+#include "game/game.hxx"
+#include "luagame/lua_behaviours.hxx"
+#include "luagame/lua_animation.hxx"
 #include "physics/mesh_collider.hxx"
 
 class LuaRuntime;

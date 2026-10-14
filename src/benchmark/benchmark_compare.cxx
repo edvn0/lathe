@@ -1,4 +1,4 @@
-#include "app/benchmark_compare.hxx"
+#include "benchmark/benchmark_compare.hxx"
 
 #include <algorithm>
 #include <array>
@@ -11,7 +11,7 @@
 #include <sstream>
 #include <string_view>
 
-#include "app/benchmark.hxx"
+#include "benchmark/benchmark.hxx"
 #include "core/command_line.hxx"
 #include "core/json.hxx"
 

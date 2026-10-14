@@ -1,4 +1,4 @@
-#include "app/lua_game.hxx"
+#include "luagame/lua_game.hxx"
 
 #include <array>
 #include <fstream>
@@ -12,7 +12,7 @@
 #include <glm/trigonometric.hpp>
 #include <imgui.h>
 
-#include "app/lua_game_api.hxx"
+#include "luagame/lua_game_api.hxx"
 #include "core/logger.hxx"
 #include "core/paths.hxx"
 #include "scripting/lua_runtime.hxx"

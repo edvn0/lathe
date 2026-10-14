@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare two --benchmark result files (see include/app/benchmark.hxx).
+"""Compare two --benchmark result files (see include/benchmark/benchmark.hxx).
 
     compare_benchmarks.py [--base base.json] --head head.json
                           [--threshold 10] [--fail-threshold 20]

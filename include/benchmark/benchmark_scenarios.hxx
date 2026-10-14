@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "app/benchmark.hxx"
+#include "benchmark/benchmark.hxx"
 #include "assets/material.hxx"
 
 class Scene;

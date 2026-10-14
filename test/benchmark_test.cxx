@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "app/benchmark.hxx"
+#include "benchmark/benchmark.hxx"
 #include "core/command_line.hxx"
 #include "core/random.hxx"
 #include "rendering/renderer.hxx"

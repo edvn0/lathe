@@ -6,8 +6,8 @@
 #include <set>
 #include <string>
 
-#include "app/lua_game.hxx"
-#include "app/lua_game_api.hxx"
+#include "luagame/lua_game.hxx"
+#include "luagame/lua_game_api.hxx"
 #include "scripting/lua_runtime.hxx"
 
 // The LuaLS stubs in lua-api/ must name exactly what open_lua_game_api registers.

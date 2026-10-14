@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "app/game.hxx"
+#include "game/game.hxx"
 
 // A dense stress scene for local light shadows: the twenty gallery meshes, fifty copies of each (a thousand shadow
 // casters) packed on a grid, lit by more shadow casting spot and point lights than the atlas can hold, with bloom

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "app/benchmark.hxx"
+#include "benchmark/benchmark.hxx"
 
 auto probe_host_environment(BenchmarkEnvironment &environment) -> void;
 

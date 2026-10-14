@@ -1,4 +1,4 @@
-#include "app/lua_game_api.hxx"
+#include "luagame/lua_game_api.hxx"
 
 #include <algorithm>
 #include <array>
@@ -18,14 +18,14 @@
 #include <glm/vec3.hpp>
 #include <imgui.h>
 
-#include "app/lua_game.hxx"
+#include "luagame/lua_game.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/model.hxx"
 #include "assets/model_streamer.hxx"
 #include "assets/texture_streamer.hxx"
-#include "app/lua_behaviours.hxx"
+#include "luagame/lua_behaviours.hxx"
 #include "core/fly_string.hxx"
-#include "app/lua_animation.hxx"
+#include "luagame/lua_animation.hxx"
 #include "core/paths.hxx"
 #include "physics/character_body.hxx"
 #include "physics/mesh_collider.hxx"

@@ -20,7 +20,7 @@
 #include <vector>
 
 #include "app/frame_graph_editor.hxx"
-#include "app/game.hxx"
+#include "game/game.hxx"
 #include "app/game_packager.hxx"
 #include "app/stage_registry.hxx"
 #include "assets/material_storage.hxx"

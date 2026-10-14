@@ -11,7 +11,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
-#include "app/game.hxx"
+#include "game/game.hxx"
 #include "assets/model.hxx"
 
 #include "chess_engine.hxx"

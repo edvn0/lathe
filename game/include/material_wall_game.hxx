@@ -6,7 +6,7 @@
 #include <entt/entt.hpp>
 #include <glm/vec3.hpp>
 
-#include "app/game.hxx"
+#include "game/game.hxx"
 
 // Walls of sample spheres spanning PBR material parameters, like the glTF material test models: roughness x metallic,
 // tinted dielectrics x roughness, and emissive colours x strength (feeds bloom).

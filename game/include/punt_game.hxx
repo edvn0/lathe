@@ -6,7 +6,7 @@
 #include <entt/entt.hpp>
 #include <glm/vec3.hpp>
 
-#include "app/game.hxx"
+#include "game/game.hxx"
 #include "core/paths.hxx"
 #include "core/transform.hxx"
 #include "player_camera.hxx"

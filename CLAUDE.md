@@ -20,3 +20,17 @@ cargo xtask profile     # run the executable under perf/callgrind on the host
 Configuration is via environment variables (`cargo xtask --help` lists them
 all), e.g. `CMAKE_BUILD_TYPE` (default `Debug`), `LINKER=mold`, `SANITIZE=1`,
 `WERROR=1`. Build output goes to `build/<build_type lowercased>`.
+
+# Module layering
+
+Each `engine_<module>` library is `src/<module>/` plus `include/<module>/`, and may include only modules to its left
+(the order is the one in `CMakeLists.txt`):
+
+```
+core < gpu < assets < animation < physics < scene < terrain < rendering < serialisation < scripting
+     < game < luagame < app < benchmark
+```
+
+`net`, `gameserver` and `gameclient` depend on `core` alone. `game` is the `IGame` interface; `luagame` is the Lua
+implementation of it and the Lua API; `app` is the editor; `benchmark` runs the editor headless. The sample games in
+`game/` are linked into the executable only and may use any module. Do not add an include that points rightwards.

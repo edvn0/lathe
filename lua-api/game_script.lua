@@ -1,6 +1,6 @@
 ---@meta
 
----What a game script returns: a table of callbacks the engine calls (LuaGame in src/app/lua_game.cxx). All are
+---What a game script returns: a table of callbacks the engine calls (LuaGame in src/luagame/lua_game.cxx). All are
 ---optional. A callback that raises an error is reported once and disabled until the script is reloaded.
 ---@class GameScript
 ---@field wants_cursor? boolean true to receive on_cursor events

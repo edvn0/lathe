@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs one --benchmark pass of a built lathe (see
-# include/app/benchmark.hxx) and writes its JSON.
+# include/benchmark/benchmark.hxx) and writes its JSON.
 #
 #   tools/perf/run_benchmark.sh <build_dir> <out.json> [extra app args...]
 #

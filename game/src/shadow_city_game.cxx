@@ -7,7 +7,7 @@
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/trigonometric.hpp>
 
-#include "app/shadow_city.hxx"
+#include "benchmark/shadow_city.hxx"
 #include "core/logger.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"

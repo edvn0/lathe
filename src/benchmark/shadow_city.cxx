@@ -1,4 +1,4 @@
-#include "app/shadow_city.hxx"
+#include "benchmark/shadow_city.hxx"
 
 #include <algorithm>
 #include <array>

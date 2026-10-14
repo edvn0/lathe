@@ -17,7 +17,7 @@
 #include "animation/batch.hxx"
 #include "animation/clip_state_table.hxx"
 #include "animation/humanoid.hxx"
-#include "app/game.hxx"
+#include "game/game.hxx"
 #include "assets/model_skin.hxx"
 #include "net/http.hxx"
 #include "physics/character_body.hxx"

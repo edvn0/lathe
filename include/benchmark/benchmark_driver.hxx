@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "app/benchmark_scenarios.hxx"
+#include "benchmark/benchmark_scenarios.hxx"
 
 struct Application;
 struct VulkanContext;

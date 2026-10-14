@@ -6,7 +6,7 @@
 #include <entt/entt.hpp>
 #include <glm/vec3.hpp>
 
-#include "app/game.hxx"
+#include "game/game.hxx"
 
 // A fixed, deterministic scene for checking local light shadows against every kind of caster: opaque pillars, a
 // thin double-sided panel, an alpha-masked cutout, skinned characters and a cube circling inside the lights. Frames,

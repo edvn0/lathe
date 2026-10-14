@@ -1,5 +1,6 @@
 # ------------------------------------------------------------------------------
-# engine_app: Application (scene lifecycle, editor/play state, overlays).
+# engine_app: Application (scene lifecycle, editor/play state, overlays). The game interface is engine_game, the Lua
+# game is engine_luagame and the benchmark runner is engine_benchmark; none of them is part of the editor.
 # ------------------------------------------------------------------------------
 
 add_library(
@@ -9,30 +10,10 @@ add_library(
         frame_graph_details.cxx
         frame_graph_editor.cxx
         game_packager.cxx
-        benchmark.cxx
-        benchmark_analysis.cxx
-        benchmark_compare.cxx
-        benchmark_driver.cxx
-        benchmark_environment.cxx
-        benchmark_scenarios.cxx
-        shadow_city.cxx
-        lua_animation.cxx
-        lua_behaviours.cxx
-        lua_game.cxx
-        lua_game_api.cxx
         package_ui.cxx
         pass_timeline.cxx
         scene_files.cxx
         stage_registry.cxx
-)
-
-# Recorded in benchmark results (app/benchmark_environment.hxx): the build type, and where to read the source
-# revision from.
-target_compile_definitions(
-    engine_app
-    PRIVATE
-        LATHE_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
-        LATHE_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
 )
 
 target_include_directories(
@@ -44,6 +25,7 @@ target_include_directories(
 target_link_libraries(
     engine_app
     PUBLIC
+        engine_game
         engine_scripting
         engine_deps
         engine_serialisation

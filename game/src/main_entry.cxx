@@ -3,8 +3,8 @@
 #include <span>
 #include <string_view>
 
-#include "app/game.hxx"
-#include "app/lua_game.hxx"
+#include "game/game.hxx"
+#include "luagame/lua_game.hxx"
 #include "basic_game.hxx"
 #include "chess_game.hxx"
 #include "chess_lua.hxx"
