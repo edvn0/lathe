@@ -212,6 +212,85 @@ namespace {
         return orbit_path(glm::vec3{0.0F}, extent * 0.55F + 8.0F, 5.0F, extent * 0.3F + 8.0F, 8);
     }
 
+    // A big field of shadow casters, one entity each, with a number of shadow-casting point and spot lights scattered
+    // through its middle. The casters are entities rather than an InstancedModel on purpose: an InstancedModel is a
+    // resident GPU-LOD set whose instances are picked by camera distance, so its lights are always redrawn and
+    // caching has nothing to show. The three variants differ only in the local shadow optimisations: all of them on,
+    // culling without caching, and neither (every tile draws every caster, every frame).
+    constexpr std::uint32_t shadow_field_objects = 8000;
+    constexpr float shadow_light_area = 60.0F;
+
+    auto populate_shadow_lights(BenchmarkScenarioContext const &context, bool culling, bool caching,
+                                bool spheres = false) -> void {
+        MaterialSet materials{context.renderer};
+
+        auto const side = grid_side(shadow_field_objects);
+        auto const extent = static_cast<float>(side) * instance_spacing;
+        spawn_ground(context, materials, extent + 20.0F);
+
+        auto const box_material = materials.make(glm::vec4{0.75F, 0.55F, 0.3F, 1.0F}, AlphaMode::opaque, 0.6F);
+
+        auto field_engine = make_random_engine(random_stream_base + 2);
+        std::uniform_real_distribution<float> field_unit{0.0F, 1.0F};
+
+        for (std::uint32_t i = 0; i < shadow_field_objects; ++i) {
+            auto const x = static_cast<float>(i % side) * instance_spacing - extent * 0.5F;
+            auto const z = static_cast<float>(i / side) * instance_spacing - extent * 0.5F;
+            auto const scale = 0.5F + 0.5F * field_unit(field_engine);
+            auto const lift = field_unit(field_engine) * 2.0F;
+            auto const yaw = field_unit(field_engine) * 2.0F * std::numbers::pi_v<float>;
+
+            spawn(context.scene, std::format("bench_shadow_caster_{}", i),
+                  spheres ? context.engine_models.sphere : context.engine_models.cube,
+                  Components::Transform{
+                          .position = glm::vec3{x, scale * 0.5F + lift, z},
+                          .rotation = glm::angleAxis(yaw, glm::vec3{0.0F, 1.0F, 0.0F}),
+                          .scale = glm::vec3{scale},
+                  },
+                  box_material);
+        }
+
+        auto settings = context.renderer.local_shadow_settings();
+        settings.maximum_lights = std::max(context.load, 1U);
+        settings.gpu_culling = culling;
+        settings.caching = caching;
+        context.renderer.set_local_shadow_settings(settings);
+
+        auto engine = make_random_engine(random_stream_base + 4);
+        std::uniform_real_distribution<float> unit{0.0F, 1.0F};
+
+        for (std::uint32_t i = 0; i < context.load; ++i) {
+            auto light = GeneratedEntity{&context.scene, "bench_shadow_light_{}", i};
+            auto const position = glm::vec3{(unit(engine) - 0.5F) * shadow_light_area, 3.0F + unit(engine) * 6.0F,
+                                            (unit(engine) - 0.5F) * shadow_light_area};
+            auto const colour = glm::vec3{0.4F + 0.6F * unit(engine), 0.4F + 0.6F * unit(engine),
+                                          0.4F + 0.6F * unit(engine)};
+
+            if (i % 3 == 2) {
+                light.emplace<Components::Transform>(Components::Transform{.position = position});
+                light.emplace<Components::PointLight>(Components::PointLight{
+                        .colour = colour, .intensity = 120.0F, .range = 14.0F, .casts_shadows = true});
+            } else {
+                // Straight down, so the cones overlap the casters below.
+                light.emplace<Components::Transform>(Components::Transform{
+                        .position = position,
+                        .rotation = glm::angleAxis(unit(engine) * 0.4F, glm::vec3{1.0F, 0.0F, 0.0F})});
+                light.emplace<Components::SpotLight>(Components::SpotLight{
+                        .colour = colour,
+                        .intensity = 400.0F,
+                        .range = 18.0F,
+                        .inner_cone_degrees = 25.0F,
+                        .outer_cone_degrees = 45.0F,
+                        .casts_shadows = true,
+                });
+            }
+        }
+    }
+
+    [[nodiscard]] auto shadow_lights_path(std::uint32_t) -> std::vector<CameraKeyframe> {
+        return orbit_path(glm::vec3{0.0F, 1.0F, 0.0F}, 42.0F, 6.0F, 24.0F, 8);
+    }
+
     constexpr float grass_spacing = 0.5F;
 
     auto populate_grass(BenchmarkScenarioContext const &context) -> void {
@@ -396,6 +475,50 @@ auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<Be
                            "passes' share.",
             .populate = populate_instancing_no_shadows,
             .camera_path = instancing_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "shadow_lights", .load_axis = "shadowed_lights", .default_loads = {4, 16, 32}},
+            .description = "A field of 8000 shadow-casting objects with shadow-casting point and spot lights in its "
+                           "middle, GPU culling and caching on: the shipped configuration of local light shadows.",
+            .populate = [](BenchmarkScenarioContext const &context) { populate_shadow_lights(context, true, true); },
+            .camera_path = shadow_lights_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "shadow_lights_cull_only",
+                     .load_axis = "shadowed_lights",
+                     .default_loads = {4, 16, 32}},
+            .description = "shadow_lights with caching off: every shadowed light redraws each frame, but through the GPU "
+                           "culling. Compare with shadow_lights for the cache, with shadow_lights_baseline for culling.",
+            .populate = [](BenchmarkScenarioContext const &context) { populate_shadow_lights(context, true, false); },
+            .camera_path = shadow_lights_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "shadow_lights_spheres", .load_axis = "shadowed_lights", .default_loads = {4, 16, 32}},
+            .description = "shadow_lights with spheres as casters: far more triangles per shadow tile, so redrawing a "
+                           "tile costs real GPU time and caching has something to save.",
+            .populate = [](BenchmarkScenarioContext const &context) {
+                populate_shadow_lights(context, true, true, true);
+            },
+            .camera_path = shadow_lights_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "shadow_lights_spheres_cull_only",
+                     .load_axis = "shadowed_lights",
+                     .default_loads = {4, 16, 32}},
+            .description = "shadow_lights_spheres with caching off, for the cost caching saves on heavy casters.",
+            .populate = [](BenchmarkScenarioContext const &context) {
+                populate_shadow_lights(context, true, false, true);
+            },
+            .camera_path = shadow_lights_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "shadow_lights_baseline",
+                     .load_axis = "shadowed_lights",
+                     .default_loads = {4, 16, 32}},
+            .description = "shadow_lights with culling and caching both off: every tile draws every caster, every "
+                           "frame. The cost the other two scenarios remove.",
+            .populate = [](BenchmarkScenarioContext const &context) { populate_shadow_lights(context, false, false); },
+            .camera_path = shadow_lights_path,
     });
     scenarios.push_back(BenchmarkScenario{
             .info = {.name = "grass", .load_axis = "clumps", .default_loads = {20000, 60000, 180000}},

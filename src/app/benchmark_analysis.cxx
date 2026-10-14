@@ -167,6 +167,9 @@ auto analyse_frames(std::span<BenchmarkFrameSample const> samples, AnalysisOptio
         workload.mesh_submissions += sample.workload.mesh_submissions;
         workload.point_lights += sample.workload.point_lights;
         workload.spot_lights += sample.workload.spot_lights;
+        workload.shadowed_lights += sample.workload.shadowed_lights;
+        workload.shadow_lights_cached += sample.workload.shadow_lights_cached;
+        workload.shadow_tiles_drawn += sample.workload.shadow_tiles_drawn;
 
         analysis.mean_allocations += static_cast<double>(sample.allocations);
         analysis.mean_allocated_bytes += static_cast<double>(sample.allocated_bytes);
@@ -195,6 +198,9 @@ auto analyse_frames(std::span<BenchmarkFrameSample const> samples, AnalysisOptio
     workload.mesh_submissions /= count;
     workload.point_lights /= count;
     workload.spot_lights /= count;
+    workload.shadowed_lights /= count;
+    workload.shadow_lights_cached /= count;
+    workload.shadow_tiles_drawn /= count;
 
     analysis.mean_allocations /= count;
     analysis.mean_allocated_bytes /= count;

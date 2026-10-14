@@ -35,6 +35,10 @@ struct BenchmarkWorkload {
     std::uint32_t mesh_submissions = 0;
     std::uint32_t point_lights = 0;
     std::uint32_t spot_lights = 0;
+    // Local light shadows: lights holding a shadow tile, how many were served from the cache, tiles redrawn.
+    std::uint32_t shadowed_lights = 0;
+    std::uint32_t shadow_lights_cached = 0;
+    std::uint32_t shadow_tiles_drawn = 0;
 };
 
 struct BenchmarkFrameSample {
@@ -120,6 +124,9 @@ struct WorkloadSummary {
     double mesh_submissions = 0.0;
     double point_lights = 0.0;
     double spot_lights = 0.0;
+    double shadowed_lights = 0.0;
+    double shadow_lights_cached = 0.0;
+    double shadow_tiles_drawn = 0.0;
 };
 
 struct FrameAnalysis {

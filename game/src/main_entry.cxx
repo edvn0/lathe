@@ -16,9 +16,10 @@
 #include "moving_game.hxx"
 #include "net_lua.hxx"
 #include "punt_game.hxx"
+#include "shadow_caster_game.hxx"
 
 namespace {
-    constexpr std::array<std::string_view, 9> names{"basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "lights", "materials"};
+    constexpr std::array<std::string_view, 10> names{"basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "lights", "materials", "shadows"};
 }
 
 auto game_names() -> std::span<std::string_view const> { return names; }
@@ -42,6 +43,11 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
     if (name == "materials") {
         info("Starting the 'materials' wall");
         return std::make_unique<MaterialWallGame>();
+    }
+
+    if (name == "shadows") {
+        info("Starting the 'shadows' caster test scene");
+        return std::make_unique<ShadowCasterGame>();
     }
 
     if (name == "gallery") {
