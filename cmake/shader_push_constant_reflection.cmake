@@ -298,6 +298,13 @@ add_shader_push_constant(
 )
 
 add_shader_push_constant(
+    shadow_cull.slang
+    main_cs
+    compute
+    ShadowCullPushConstants
+)
+
+add_shader_push_constant(
     decal_cluster.slang
     main_cs
     compute

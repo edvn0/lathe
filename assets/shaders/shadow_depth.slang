@@ -16,7 +16,8 @@ struct VertexOutput
 void main_task(uint3 group_id: SV_GroupID, uint lane: SV_GroupIndex, uint draw_index: SV_DrawIndex,
                uniform ShadowPC pc)
 {
-    run_meshlet_task(pc.base, pc.cascade_index * 6, draw_index, group_id, lane);
+    run_meshlet_task_remapped(pc.base, pc.cascade_index * 6, pc.instance_remap,
+                              (pc.shadow_flags & shadow_flag_remap) != 0, draw_index, group_id, lane);
 }
 
 VertexOutput shadow_vertex(ShadowPC pc, GpuDraw draw, float4x4 model, float wind_strength, MeshletDisplace displace,
@@ -31,7 +32,7 @@ VertexOutput shadow_vertex(ShadowPC pc, GpuDraw draw, float4x4 model, float wind
     VertexOutput output;
     float4x4 view_projection;
 
-    if (pc.use_shadow_tiles != 0) {
+    if ((pc.shadow_flags & shadow_flag_tiles) != 0) {
         view_projection = pc.shadow_tiles[pc.cascade_index].view_projection;
     } else {
         view_projection = ubo.cascade_view_projection[pc.cascade_index];
@@ -46,6 +47,10 @@ VertexOutput shadow_vertex(ShadowPC pc, GpuDraw draw, float4x4 model, float wind
 [shader("vertex")]
 VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform ShadowPC pc)
 {
+    if ((pc.shadow_flags & shadow_flag_remap) != 0) {
+        instance_index = pc.instance_remap[instance_index];
+    }
+
     const GpuDraw draw = pc.base.draws[instance_index];
     const float wind_strength = pc.base.materials[draw.material_index].wind_strength;
     return shadow_vertex(pc, draw, pc.base.transforms[instance_index], wind_strength, MeshletDisplace.none(), vertex_id);

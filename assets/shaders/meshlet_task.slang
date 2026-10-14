@@ -108,13 +108,26 @@ bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet
 
 public void run_meshlet_task(PC pc, uint plane_offset, uint draw_index, uint3 group_id, uint lane)
 {
+    run_meshlet_task_remapped(pc, plane_offset, Ptr<uint>(nullptr), false, draw_index, group_id, lane);
+}
+
+// With remap set, a command's instance k stands for source instance remap[command.first_instance + k]: how the
+// shadow views draw only the instances their own culling pass kept.
+public void run_meshlet_task_remapped(PC pc, uint plane_offset, Ptr<uint> remap, bool use_remap, uint draw_index,
+                                      uint3 group_id, uint lane)
+{
     const DrawCommand command = pc.task_commands[draw_index];
 
     const uint chunk_count = (command.meshlet_count + meshlets_per_task - 1) / meshlets_per_task;
     const uint linear_group = group_id.x + group_id.y * command.group_count_x;
     const bool group_valid = chunk_count != 0 && linear_group < command.instance_count * chunk_count;
 
-    const uint instance_index = command.first_instance + (group_valid ? linear_group / chunk_count : 0);
+    uint instance_index = command.first_instance + (group_valid ? linear_group / chunk_count : 0);
+
+    if (use_remap && group_valid) {
+        instance_index = remap[instance_index];
+    }
+
     const uint meshlet_base = group_valid ? (linear_group % chunk_count) * meshlets_per_task : 0;
     const uint meshlet_index = meshlet_base + lane;
 
