@@ -15,6 +15,7 @@ add_library(
         benchmark_driver.cxx
         benchmark_environment.cxx
         benchmark_scenarios.cxx
+        shadow_city.cxx
         lua_animation.cxx
         lua_game.cxx
         lua_game_api.cxx

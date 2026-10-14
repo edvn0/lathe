@@ -7,6 +7,7 @@
 #include <numbers>
 #include <random>
 
+#include "app/shadow_city.hxx"
 #include "assets/material_storage.hxx"
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
@@ -291,6 +292,24 @@ namespace {
         return orbit_path(glm::vec3{0.0F, 1.0F, 0.0F}, 42.0F, 6.0F, 24.0F, 8);
     }
 
+    [[nodiscard]] auto shadow_city_path(std::uint32_t) -> std::vector<CameraKeyframe> {
+        return orbit_path(glm::vec3{0.0F, 0.0F, 0.0F}, 60.0F, 12.0F, 28.0F, 8);
+    }
+
+    auto populate_shadow_city_scenario(BenchmarkScenarioContext const &context, bool culling, bool caching) -> void {
+        auto const points = context.load / 3;
+        auto const placed = populate_shadow_city(
+                context.scene, context.renderer, context.engine_models,
+                ShadowCityOptions{.spot_lights = context.load - points,
+                                  .point_lights = points,
+                                  .gpu_culling = culling,
+                                  .caching = caching,
+                                  .owned_materials = &context.owned_materials});
+        if (placed == 0) {
+            warn("[Benchmark] shadow_city placed no casters: run --game=gallery once to fetch the models");
+        }
+    }
+
     constexpr float grass_spacing = 0.5F;
 
     auto populate_grass(BenchmarkScenarioContext const &context) -> void {
@@ -519,6 +538,32 @@ auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<Be
                            "frame. The cost the other two scenarios remove.",
             .populate = [](BenchmarkScenarioContext const &context) { populate_shadow_lights(context, false, false); },
             .camera_path = shadow_lights_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "shadow_city", .load_axis = "shadowed_lights", .default_loads = {8, 24, 32}},
+            .description = "A thousand real meshes (twenty models, fifty copies each, a few million triangles per tile "
+                           "redraw) under shadow-casting spot and point lights, GPU culling and caching on. Needs the "
+                           "gallery downloads (run --game=gallery once).",
+            .populate = [](BenchmarkScenarioContext const &context) {
+                populate_shadow_city_scenario(context, true, true);
+            },
+            .camera_path = shadow_city_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "shadow_city_cull_only", .load_axis = "shadowed_lights", .default_loads = {8, 24, 32}},
+            .description = "shadow_city with caching off: the cost caching saves on heavy casters.",
+            .populate = [](BenchmarkScenarioContext const &context) {
+                populate_shadow_city_scenario(context, true, false);
+            },
+            .camera_path = shadow_city_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "shadow_city_baseline", .load_axis = "shadowed_lights", .default_loads = {8, 24, 32}},
+            .description = "shadow_city with culling and caching both off.",
+            .populate = [](BenchmarkScenarioContext const &context) {
+                populate_shadow_city_scenario(context, false, false);
+            },
+            .camera_path = shadow_city_path,
     });
     scenarios.push_back(BenchmarkScenario{
             .info = {.name = "grass", .load_axis = "clumps", .default_loads = {20000, 60000, 180000}},
