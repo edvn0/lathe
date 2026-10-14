@@ -62,8 +62,15 @@ namespace local_shadows {
 
         // Idempotent within a frame. Callers request in priority order; a request evicts only lights that were not
         // requested this frame. Returns nullptr when the atlas has no room left. `light_id` must not be zero.
+        // A request that cannot be met leaves the light's existing allocation (if any) exactly as it was.
         [[nodiscard]]
         auto request(std::uint64_t light_id, std::uint32_t tile_count, std::uint32_t resolution) -> Allocation const *;
+
+        // The largest resolution up to `resolution` that fits, stepping down a tier at a time, so a crowded atlas
+        // shrinks lights instead of dropping them. Still nullptr when even the smallest tier does not fit.
+        [[nodiscard]]
+        auto request_best_fit(std::uint64_t light_id, std::uint32_t tile_count, std::uint32_t resolution)
+                -> Allocation const *;
 
         auto release(std::uint64_t light_id) -> void;
         auto clear() -> void;
@@ -77,6 +84,7 @@ namespace local_shadows {
         [[nodiscard]] auto place(std::uint64_t light_id, std::uint32_t tile_count, std::uint32_t resolution,
                                  Allocation &out) -> bool;
         auto free_cells(std::uint64_t light_id) -> void;
+        auto mark_owned(std::uint64_t light_id, Tile tile) -> void;
         [[nodiscard]] auto evict_least_recently_used() -> bool;
 
         std::unordered_map<std::uint64_t, Allocation> allocations_;

@@ -619,6 +619,9 @@ auto write_analysis_json(JsonWriter &writer, std::string_view key, FrameAnalysis
             .value("mesh_submissions", workload.mesh_submissions, 1)
             .value("point_lights", workload.point_lights, 1)
             .value("spot_lights", workload.spot_lights, 1)
+            .value("shadowed_lights", workload.shadowed_lights, 1)
+            .value("shadow_lights_cached", workload.shadow_lights_cached, 1)
+            .value("shadow_tiles_drawn", workload.shadow_tiles_drawn, 1)
             .end_object();
 
     writer.begin_object("allocations", true)
@@ -723,7 +726,7 @@ auto BenchmarkRun::to_csv() const -> std::string {
         csv += std::format(",gpu_{}_ms", sanitise_file_name(stage.id));
     }
     csv += ",submitted_triangles,submitted_instances,indirect_commands,model_submissions,mesh_submissions,"
-           "point_lights,spot_lights";
+           "point_lights,spot_lights,shadowed_lights,shadow_lights_cached,shadow_tiles_drawn";
     for (std::size_t event = 0; event < perf_event_count; ++event) {
         csv += std::format(",event_{}", perf_event_name(static_cast<PerfEvent>(event)));
     }
@@ -749,9 +752,10 @@ auto BenchmarkRun::to_csv() const -> std::string {
         }
 
         auto const &workload = sample.workload;
-        csv += std::format(",{},{},{},{},{},{},{}", workload.submitted_triangles, workload.submitted_instances,
-                           workload.indirect_commands, workload.model_submissions, workload.mesh_submissions,
-                           workload.point_lights, workload.spot_lights);
+        csv += std::format(",{},{},{},{},{},{},{},{},{},{}", workload.submitted_triangles,
+                           workload.submitted_instances, workload.indirect_commands, workload.model_submissions,
+                           workload.mesh_submissions, workload.point_lights, workload.spot_lights,
+                           workload.shadowed_lights, workload.shadow_lights_cached, workload.shadow_tiles_drawn);
         for (auto const count: sample.events.values) {
             csv += std::format(",{}", count);
         }

@@ -243,3 +243,63 @@ TEST_CASE("make_gpu_tile places the tile in atlas UV space") {
     CHECK(gpu.tile_texel == doctest::Approx(1.0F / 512.0F));
     CHECK(gpu.texel_world == doctest::Approx(0.01F));
 }
+
+TEST_CASE("A failed resize keeps the light's existing tiles") {
+    Atlas atlas;
+    atlas.begin_frame();
+
+    // Fifteen 1024 tiles fill fifteen of the sixteen 4x4-cell blocks. Two small lights share the last block, so
+    // neither can grow to 1024 while the other is there, and nothing unrequested is left to evict.
+    for (std::uint64_t id = 1; id <= 15; ++id) {
+        REQUIRE(atlas.request(id, 1, 1024) != nullptr);
+    }
+    auto const small = *atlas.request(100, 1, 256);
+    REQUIRE(atlas.request(101, 1, 256) != nullptr);
+
+    CHECK(atlas.request(100, 1, 1024) == nullptr);
+
+    auto const *kept = atlas.find(100);
+    REQUIRE(kept != nullptr);
+    CHECK(kept->resolution == 256);
+    CHECK(kept->tiles[0].x == small.tiles[0].x);
+    CHECK(kept->tiles[0].y == small.tiles[0].y);
+    CHECK(kept->generation == small.generation);
+    CHECK(atlas.used_cells() == (15 * 16) + 2);
+}
+
+TEST_CASE("request_best_fit shrinks a light instead of dropping it") {
+    Atlas atlas;
+    atlas.begin_frame();
+
+    // Fifteen 1024 tiles leave one block of 16 cells. A point light's six faces fit in it only as single cells.
+    for (std::uint64_t id = 1; id <= 15; ++id) {
+        REQUIRE(atlas.request(id, 1, 1024) != nullptr);
+    }
+
+    CHECK(atlas.request(50, point_face_count, 1024) == nullptr);
+    CHECK(atlas.request(50, point_face_count, 512) == nullptr);
+
+    auto const *point = atlas.request_best_fit(50, point_face_count, 1024);
+    REQUIRE(point != nullptr);
+    CHECK(point->resolution == 256);
+    CHECK(point->tile_count == point_face_count);
+    CHECK(atlas.used_cells() == (15 * 16) + point_face_count);
+
+    // Ten cells remain: a single light still gets a (smaller) tile, and once they are gone nothing fits.
+    auto const *spot = atlas.request_best_fit(51, 1, 1024);
+    REQUIRE(spot != nullptr);
+    CHECK(spot->resolution == 512);
+
+    REQUIRE(atlas.request_best_fit(52, point_face_count, 1024) != nullptr);
+    CHECK(atlas.used_cells() == cells_per_side * cells_per_side);
+    CHECK(atlas.request_best_fit(53, 1, 1024) == nullptr);
+}
+
+TEST_CASE("request_best_fit returns the full size when it fits") {
+    Atlas atlas;
+    atlas.begin_frame();
+
+    auto const *allocation = atlas.request_best_fit(1, point_face_count, 1024);
+    REQUIRE(allocation != nullptr);
+    CHECK(allocation->resolution == 1024);
+}

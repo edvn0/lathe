@@ -4088,6 +4088,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             std::size_t index = 0;
             std::uint64_t id = 0;
             float radius_pixels = 0.0F;
+            // radius_pixels with a bonus for lights that already hold tiles, so near-ties do not swap places.
+            float priority = 0.0F;
         };
 
         std::vector<ShadowCandidate> candidates;
@@ -4111,7 +4113,14 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 return;
             }
 
-            candidates.push_back(ShadowCandidate{.point = point, .index = index, .id = id, .radius_pixels = radius_pixels});
+            constexpr float incumbent_bonus = 1.3F;
+            auto const incumbent = local_shadow_allocator_.find(id) != nullptr;
+
+            candidates.push_back(ShadowCandidate{.point = point,
+                                                 .index = index,
+                                                 .id = id,
+                                                 .radius_pixels = radius_pixels,
+                                                 .priority = radius_pixels * (incumbent ? incumbent_bonus : 1.0F)});
         };
 
         for (std::size_t i = 0; i < point_light_submissions_.size(); ++i) {
@@ -4128,7 +4137,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
 
         std::ranges::sort(candidates, [](ShadowCandidate const &lhs, ShadowCandidate const &rhs) {
-            return lhs.radius_pixels != rhs.radius_pixels ? lhs.radius_pixels > rhs.radius_pixels : lhs.id < rhs.id;
+            return lhs.priority != rhs.priority ? lhs.priority > rhs.priority : lhs.id < rhs.id;
         });
 
         local_shadow_stats_.requested_lights = static_cast<std::uint32_t>(candidates.size());
@@ -4147,9 +4156,17 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 break;
             }
 
-            auto const resolution = local_shadows::resolution_for_screen_radius(candidate.radius_pixels);
+            auto resolution = local_shadows::resolution_for_screen_radius(candidate.radius_pixels);
             auto const tile_count = candidate.point ? local_shadows::point_face_count : 1U;
-            auto const *allocation = local_shadow_allocator_.request(candidate.id, tile_count, resolution);
+
+            // A light keeps the tile size it has unless the size it wants is two tiers away: resizing redraws the
+            // tile, so a light hovering at a tier boundary would otherwise redraw every few frames.
+            if (auto const *existing = local_shadow_allocator_.find(candidate.id);
+                existing != nullptr && existing->tile_count == tile_count && existing->resolution * 2 >= resolution &&
+                existing->resolution <= resolution * 2) {
+                resolution = existing->resolution;
+            }
+            auto const *allocation = local_shadow_allocator_.request_best_fit(candidate.id, tile_count, resolution);
 
             if (allocation != nullptr) {
                 selected.push_back(SelectedShadow{.candidate = candidate, .allocation = *allocation});
@@ -4197,7 +4214,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 }
             }
 
+            // First one cheap hash over every caster in the scene. While it matches last frame's, nothing anywhere
+            // moved, so each light's casters are what they were and the per-light pass below is skipped.
             bool lod_driven_casters = false;
+            std::uint64_t scene_hash = 0;
 
             for (auto const *batch: active_batches_) {
                 auto const *material = material_storage_.get(batch->material);
@@ -4213,70 +4233,185 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                     continue;
                 }
 
-                auto const *mesh = mesh_slot(batch->mesh);
-                if (mesh == nullptr) {
-                    continue;
-                }
-
-                auto const &submesh = mesh->submeshes[batch->submesh_index];
-                auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
-                auto const local_extent = (submesh.bounds_max - submesh.bounds_min) * 0.5F;
-                auto const wind_padding = material != nullptr ? material->wind_strength : 0.0F;
-                auto const animated = std::abs(wind_padding) > 1e-6F || batch->skinned;
-
-                auto batch_key = std::uint64_t{0xcbf29ce484222325ULL};
-                batch_key = shadow_signature_combine(batch_key, batch->mesh.index);
-                batch_key = shadow_signature_combine(batch_key, batch->submesh_index);
-                batch_key = shadow_signature_combine(batch_key, material_storage_.gpu_index(batch->material));
-                batch_key = shadow_signature_combine(batch_key, batch->lod_index);
-                if (animated) {
-                    batch_key = shadow_signature_combine(batch_key, shadow_frame_);
+                auto const wind = material != nullptr ? std::abs(material->wind_strength) : 0.0F;
+                auto batch_seed = std::uint64_t{0xcbf29ce484222325ULL};
+                batch_seed = shadow_signature_combine(batch_seed, batch->mesh.index);
+                batch_seed = shadow_signature_combine(batch_seed, batch->submesh_index);
+                batch_seed = shadow_signature_combine(batch_seed, material_storage_.gpu_index(batch->material));
+                batch_seed = shadow_signature_combine(batch_seed, batch->lod_index);
+                if (wind > 1e-6F || batch->skinned) {
+                    batch_seed = shadow_signature_combine(batch_seed, shadow_frame_);
                 }
 
                 for (auto const *transform: batch->transforms) {
-                    auto const &model = *transform;
-                    auto const centre = glm::vec3{model * glm::vec4{local_centre, 1.0F}};
-                    auto extent = glm::abs(glm::vec3{model[0]}) * local_extent.x +
-                                  glm::abs(glm::vec3{model[1]}) * local_extent.y +
-                                  glm::abs(glm::vec3{model[2]}) * local_extent.z;
-                    extent.x += std::abs(wind_padding);
-                    extent.z += std::abs(wind_padding);
+                    std::array<std::uint64_t, 8> words{};
+                    std::memcpy(words.data(), transform, sizeof(words));
 
-                    std::uint64_t instance_hash = 0;
-                    bool hashed = false;
-
-                    for (std::size_t light = 0; light < volumes.size(); ++light) {
-                        auto const outside = glm::max(glm::abs(glm::vec3{volumes[light]} - centre) - extent, glm::vec3{0.0F});
-                        if (glm::dot(outside, outside) > volumes[light].w * volumes[light].w) {
-                            continue;
-                        }
-
-                        if (!selected[light].candidate.point) {
-                            bool inside = true;
-                            for (auto const &plane: spot_planes[light]) {
-                                if (glm::dot(glm::vec3{plane}, centre) + plane.w +
-                                            glm::dot(glm::abs(glm::vec3{plane}), extent) < 0.0F) {
-                                    inside = false;
-                                    break;
-                                }
-                            }
-
-                            if (!inside) {
-                                continue;
-                            }
-                        }
-
-                        if (!hashed) {
-                            instance_hash = batch_key;
-                            for (int column = 0; column < 4; ++column) {
-                                instance_hash = vec3_hash(instance_hash, glm::vec3{model[column]});
-                            }
-                            instance_hash = shadow_signature_mix(instance_hash);
-                            hashed = true;
-                        }
-
-                        caster_hash[light] += instance_hash;
+                    auto word_hash = batch_seed;
+                    for (auto const word: words) {
+                        word_hash = (word_hash ^ word) * 0x9e3779b97f4a7c15ULL;
+                        word_hash ^= word_hash >> 29U;
                     }
+                    scene_hash += word_hash;
+                }
+            }
+
+            auto const casters_unchanged =
+                    !lod_driven_casters && local_shadow_scene_hash_valid_ && scene_hash == local_shadow_scene_hash_ &&
+                    std::ranges::all_of(selected, [this](SelectedShadow const &entry) {
+                        return local_shadow_cache_.contains(entry.candidate.id);
+                    });
+
+            local_shadow_scene_hash_ = scene_hash;
+            local_shadow_scene_hash_valid_ = !lod_driven_casters;
+
+            if (casters_unchanged) {
+                for (std::size_t light = 0; light < selected.size(); ++light) {
+                    caster_hash[light] = local_shadow_cache_.at(selected[light].candidate.id).casters;
+                }
+            }
+
+            if (!casters_unchanged) {
+                // Which casters fall inside which light's volume, summed per light. The sum is order independent, so
+                // the instances are split into blocks that run on the thread pool and add into atomics.
+                struct CasterBatch {
+                    BatchEntry const *batch = nullptr;
+                    glm::vec3 local_centre{0.0F};
+                    glm::vec3 local_extent{0.0F};
+                    float wind_padding = 0.0F;
+                    std::uint64_t key = 0;
+                };
+
+                struct CasterBlock {
+                    std::uint32_t batch = 0;
+                    std::uint32_t begin = 0;
+                    std::uint32_t end = 0;
+                };
+
+                constexpr std::uint32_t instances_per_block = 512;
+
+                std::vector<CasterBatch> caster_batches;
+                std::vector<CasterBlock> blocks;
+
+                for (auto const *batch: active_batches_) {
+                    auto const *material = material_storage_.get(batch->material);
+                    auto const alpha_mode = material != nullptr ? material->alpha_mode : AlphaMode::opaque;
+
+                    if (alpha_mode == AlphaMode::blend || batch_max_shadow_cascade(batch) < 0 ||
+                        batch->lod_job != BatchEntry::no_lod_job) {
+                        continue;
+                    }
+
+                    auto const *mesh = mesh_slot(batch->mesh);
+                    if (mesh == nullptr) {
+                        continue;
+                    }
+
+                    auto const &submesh = mesh->submeshes[batch->submesh_index];
+                    auto const wind_padding = material != nullptr ? material->wind_strength : 0.0F;
+                    auto const animated = std::abs(wind_padding) > 1e-6F || batch->skinned;
+
+                    auto batch_key = std::uint64_t{0xcbf29ce484222325ULL};
+                    batch_key = shadow_signature_combine(batch_key, batch->mesh.index);
+                    batch_key = shadow_signature_combine(batch_key, batch->submesh_index);
+                    batch_key = shadow_signature_combine(batch_key, material_storage_.gpu_index(batch->material));
+                    batch_key = shadow_signature_combine(batch_key, batch->lod_index);
+                    if (animated) {
+                        batch_key = shadow_signature_combine(batch_key, shadow_frame_);
+                    }
+
+                    auto const batch_index = static_cast<std::uint32_t>(caster_batches.size());
+                    caster_batches.push_back(CasterBatch{
+                            .batch = batch,
+                            .local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F,
+                            .local_extent = (submesh.bounds_max - submesh.bounds_min) * 0.5F,
+                            .wind_padding = wind_padding,
+                            .key = batch_key,
+                    });
+
+                    auto const count = static_cast<std::uint32_t>(batch->transforms.size());
+                    for (std::uint32_t begin = 0; begin < count; begin += instances_per_block) {
+                        blocks.push_back(CasterBlock{.batch = batch_index,
+                                                     .begin = begin,
+                                                     .end = std::min(begin + instances_per_block, count)});
+                    }
+                }
+
+                std::vector<std::atomic<std::uint64_t>> totals(selected.size());
+                for (auto &total: totals) {
+                    total.store(0, std::memory_order_relaxed);
+                }
+
+                auto const accumulate = [&](std::size_t first_block, std::size_t last_block) {
+                    std::vector<std::uint64_t> local(selected.size(), 0);
+
+                    for (auto block_index = first_block; block_index < last_block; ++block_index) {
+                        auto const &block = blocks[block_index];
+                        auto const &caster = caster_batches[block.batch];
+
+                        for (auto instance = block.begin; instance < block.end; ++instance) {
+                            auto const &model = *caster.batch->transforms[instance];
+                            auto const centre = glm::vec3{model * glm::vec4{caster.local_centre, 1.0F}};
+                            auto extent = glm::abs(glm::vec3{model[0]}) * caster.local_extent.x +
+                                          glm::abs(glm::vec3{model[1]}) * caster.local_extent.y +
+                                          glm::abs(glm::vec3{model[2]}) * caster.local_extent.z;
+                            extent.x += std::abs(caster.wind_padding);
+                            extent.z += std::abs(caster.wind_padding);
+
+                            std::uint64_t instance_hash = 0;
+                            bool hashed = false;
+
+                            for (std::size_t light = 0; light < volumes.size(); ++light) {
+                                auto const outside =
+                                        glm::max(glm::abs(glm::vec3{volumes[light]} - centre) - extent, glm::vec3{0.0F});
+                                if (glm::dot(outside, outside) > volumes[light].w * volumes[light].w) {
+                                    continue;
+                                }
+
+                                if (!selected[light].candidate.point) {
+                                    bool inside = true;
+                                    for (auto const &plane: spot_planes[light]) {
+                                        if (glm::dot(glm::vec3{plane}, centre) + plane.w +
+                                                    glm::dot(glm::abs(glm::vec3{plane}), extent) < 0.0F) {
+                                            inside = false;
+                                            break;
+                                        }
+                                    }
+
+                                    if (!inside) {
+                                        continue;
+                                    }
+                                }
+
+                                if (!hashed) {
+                                    instance_hash = caster.key;
+                                    for (int column = 0; column < 4; ++column) {
+                                        instance_hash = vec3_hash(instance_hash, glm::vec3{model[column]});
+                                    }
+                                    instance_hash = shadow_signature_mix(instance_hash);
+                                    hashed = true;
+                                }
+
+                                local[light] += instance_hash;
+                            }
+                        }
+                    }
+
+                    for (std::size_t light = 0; light < local.size(); ++light) {
+                        totals[light].fetch_add(local[light], std::memory_order_relaxed);
+                    }
+                };
+
+                constexpr std::size_t serial_block_limit = 4;
+
+                if (blocks.size() <= serial_block_limit) {
+                    accumulate(0, blocks.size());
+                } else {
+                    thread_pool().submit_blocks(std::size_t{0}, blocks.size(), accumulate).wait();
+                }
+
+                for (std::size_t light = 0; light < selected.size(); ++light) {
+                    caster_hash[light] = totals[light].load(std::memory_order_relaxed);
                 }
             }
 
@@ -4303,8 +4438,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
                 auto const cached = local_shadow_cache_.find(candidate.id);
                 entry.dirty = lod_driven_casters || cached == local_shadow_cache_.end() ||
-                              cached->second != entry.hash;
-                local_shadow_cache_[candidate.id] = entry.hash;
+                              cached->second.hash != entry.hash;
+                local_shadow_cache_[candidate.id] = LocalShadowCacheEntry{.hash = entry.hash,
+                                                                          .casters = caster_hash[light]};
             }
         }
 
@@ -5500,6 +5636,7 @@ auto Renderer::prepare_local_shadow_cull_buffers(RendererFrame &frame) -> std::e
     frame.local_shadow_cull_batches = batches;
     frame.local_shadow_instance_stride = frame.transform_count;
     frame.local_shadow_culled = true;
+    local_shadow_stats_.culled = true;
 
     return {};
 }

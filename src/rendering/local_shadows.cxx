@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <optional>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -121,6 +122,33 @@ namespace local_shadows {
         return true;
     }
 
+    auto Atlas::mark_owned(std::uint64_t light_id, Tile tile) -> void {
+        auto const span = cells_for(tile.size);
+        auto const first_x = tile.x / cell_size;
+        auto const first_y = tile.y / cell_size;
+
+        for (std::uint32_t dy = 0; dy < span; ++dy) {
+            for (std::uint32_t dx = 0; dx < span; ++dx) {
+                owner_[((first_y + dy) * cells_per_side) + first_x + dx] = light_id;
+            }
+        }
+    }
+
+    auto Atlas::request_best_fit(std::uint64_t light_id, std::uint32_t tile_count, std::uint32_t resolution)
+            -> Allocation const * {
+        resolution = std::clamp(std::bit_floor(std::max(resolution, 1U)), minimum_resolution, maximum_resolution);
+
+        for (;; resolution /= 2) {
+            if (auto const *allocation = request(light_id, tile_count, resolution); allocation != nullptr) {
+                return allocation;
+            }
+
+            if (resolution <= minimum_resolution) {
+                return nullptr;
+            }
+        }
+    }
+
     auto Atlas::evict_least_recently_used() -> bool {
         auto victim = allocations_.end();
 
@@ -150,18 +178,28 @@ namespace local_shadows {
 
         resolution = std::clamp(std::bit_floor(std::max(resolution, 1U)), minimum_resolution, maximum_resolution);
 
+        std::optional<Allocation> previous;
+
         if (auto const it = allocations_.find(light_id); it != allocations_.end()) {
             if (it->second.tile_count == tile_count && it->second.resolution == resolution) {
                 it->second.last_used_frame = frame_;
                 return &it->second;
             }
 
+            previous = it->second;
             release(light_id);
         }
 
         Allocation placed;
         while (!place(light_id, tile_count, resolution, placed)) {
             if (!evict_least_recently_used()) {
+                if (previous) {
+                    // Nothing else could be freed for the new size: put the old tiles back where they were.
+                    for (std::uint32_t tile = 0; tile < previous->tile_count; ++tile) {
+                        mark_owned(light_id, previous->tiles[tile]);
+                    }
+                    allocations_[light_id] = *previous;
+                }
                 return nullptr;
             }
         }

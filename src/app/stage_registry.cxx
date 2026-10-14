@@ -273,6 +273,36 @@ namespace stages {
             }
         }
 
+        auto draw_local_shadows(Context &context) -> void {
+            auto shadows = context.renderer.local_shadow_settings();
+            bool dirty = false;
+
+            auto lights = static_cast<int>(shadows.maximum_lights);
+            if (ImGui::SliderInt("Maximum lights", &lights, 1, 32)) {
+                shadows.maximum_lights = static_cast<std::uint32_t>(lights);
+                dirty = true;
+            }
+            dirty |= ImGui::SliderFloat("Minimum screen radius", &shadows.minimum_screen_radius_pixels, 0.0F, 128.0F,
+                                        "%.0f px");
+            dirty |= ImGui::SliderFloat("Normal offset", &shadows.normal_offset_texels, 0.0F, 8.0F);
+            dirty |= ImGui::SliderFloat("Depth bias", &shadows.depth_bias_constant, -8.0F, 0.0F);
+            dirty |= ImGui::SliderFloat("Bias slope", &shadows.depth_bias_slope, -8.0F, 0.0F);
+            dirty |= ImGui::Checkbox("GPU culling", &shadows.gpu_culling);
+            dirty |= ImGui::Checkbox("Tile caching", &shadows.caching);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Reuse a light's shadow tile while the light and its casters are unchanged.\n"
+                                  "Costs some CPU hashing per frame; pays off with heavy casters.");
+            }
+
+            if (dirty) {
+                context.renderer.set_local_shadow_settings(shadows);
+            }
+
+            auto const &stats = context.renderer.local_shadow_stats();
+            ImGui::Text("Shadowed %u / %u lights, %u tiles drawn, %u cached, %u atlas cells", stats.shadowed_lights,
+                        stats.requested_lights, stats.rendered_tiles, stats.cached_lights, stats.atlas_cells_used);
+        }
+
         auto draw_ambient_occlusion(Context &context) -> void {
             auto ao = context.renderer.ao_settings();
             bool dirty = false;
@@ -407,7 +437,7 @@ namespace stages {
                             settings.enabled = enabled;
                             renderer.set_local_shadow_settings(settings);
                         },
-                .draw_settings = nullptr,
+                .draw_settings = draw_local_shadows,
         });
 
         add(Stage{
