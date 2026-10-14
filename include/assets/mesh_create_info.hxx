@@ -7,7 +7,6 @@
 
 #include "assets/geometry.hxx"
 #include "assets/material.hxx"
-#include "core/config.hxx"
 
 struct SubmeshCreateInfo {
     std::array<MeshGeometry, lod_count> lods{};

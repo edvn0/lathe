@@ -2,7 +2,6 @@
 
 #include "rendering/environment.hxx"
 #include "rendering/file_browser.hxx"
-#include "scene/environment.hxx"
 
 namespace gui {
     [[nodiscard]]

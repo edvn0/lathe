@@ -3,7 +3,6 @@
 #include <string>
 
 #include "rendering/frame_graph/aliasing.hxx"
-#include "rendering/frame_graph/compiled_graph.hxx"
 #include "rendering/frame_graph/frame_graph.hxx"
 
 namespace frame_graph {

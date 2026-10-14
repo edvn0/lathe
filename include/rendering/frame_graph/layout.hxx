@@ -4,7 +4,6 @@
 #include <span>
 #include <vector>
 
-#include "rendering/frame_graph/types.hxx"
 #include "rendering/frame_graph/view.hxx"
 
 namespace frame_graph {

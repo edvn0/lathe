@@ -13,9 +13,7 @@
 
 #include <glm/mat4x4.hpp>
 
-#include "assets/material.hxx"
 #include "assets/texture_pipeline.hxx"
-#include "core/config.hxx"
 #include "core/transform.hxx"
 #include "gpu/sampler.hxx"
 #include "physics/physics.hxx"

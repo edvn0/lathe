@@ -13,7 +13,6 @@
 #include "app/lua_behaviours.hxx"
 #include "app/lua_animation.hxx"
 #include "physics/mesh_collider.hxx"
-#include "scripting/lua_api.hxx"
 
 class LuaRuntime;
 

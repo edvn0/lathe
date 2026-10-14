@@ -12,7 +12,6 @@
 #include "animation/batch.hxx"
 #include "animation/clip_state_table.hxx"
 #include "assets/model.hxx"
-#include "assets/model_skin.hxx"
 
 class Scene;
 struct Renderer;

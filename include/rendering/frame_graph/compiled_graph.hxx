@@ -5,7 +5,6 @@
 #include <optional>
 #include <vector>
 
-#include "rendering/frame_graph/rendering_desc.hxx"
 #include "rendering/frame_graph/types.hxx"
 
 namespace frame_graph {

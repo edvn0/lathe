@@ -10,12 +10,9 @@
 #include <string>
 #include <vector>
 
-#include "assets/geometry.hxx"
 #include "assets/load_model.hxx"
-#include "assets/material.hxx"
 #include "assets/mesh_sink.hxx"
 #include "assets/meshlet.hxx"
-#include "assets/model.hxx"
 #include "terrain/terrain_chunk.hxx"
 #include "terrain/terrain_quadtree.hxx"
 
