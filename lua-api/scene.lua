@@ -17,6 +17,19 @@ function scene.find(name) end
 ---Destroys every entity in the scene.
 function scene.clear() end
 
+---Changes the scene's lighting environment: the fields given, the rest stay.
+---@param options EnvironmentOptions
+function scene.set_environment(options) end
+
+---@class EnvironmentOptions
+---@field sky? "flat"|"procedural" flat ambient colour or a procedural sky
+---@field skybox? boolean draw the sky behind the scene
+---@field ambient? number flat ambient intensity
+---@field exposure_ev? number exposure in stops
+---@field sun_intensity? number
+---@field sun_elevation? number degrees above the horizon
+---@field specular_intensity? number
+
 ---Adds a compute effect to a point of the frame. An effect can be in one slot at a time. Raises an error if the
 ---effect needs something the slot does not have (scene_colour exists from "after_lighting", scene_depth from
 ---"after_depth"), or lacks a buffer.

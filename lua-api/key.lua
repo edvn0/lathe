@@ -87,3 +87,13 @@ key.LEFT_CONTROL = 341
 ---@param code integer one of the key constants
 ---@return boolean
 function key.down(code) end
+---@type integer
+key.NUM_1 = 49
+---@type integer
+key.NUM_2 = 50
+---@type integer
+key.NUM_3 = 51
+---@type integer
+key.MINUS = 45
+---@type integer
+key.EQUAL = 61

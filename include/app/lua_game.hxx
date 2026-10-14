@@ -57,6 +57,9 @@ public:
 
     auto add_native_module(std::string name, lua_CFunction opener) -> void;
 
+    // The entry script used when the host names none (--script or the game manifest).
+    auto set_default_entry(std::string entry) -> void;
+
     auto attach_host(GameHost host) -> void override;
 
     auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void override;

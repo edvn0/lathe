@@ -21,6 +21,14 @@ function assets.load_model(path, options) end
 ---@return Model
 function assets.cube() end
 
+---The built-in unit sphere model (radius 0.5).
+---@return Model
+function assets.sphere() end
+
+---The built-in capsule model.
+---@return Model
+function assets.capsule() end
+
 ---Creates a material. Only from on_populate and later.
 ---@param name string
 ---@param red number
@@ -29,11 +37,14 @@ function assets.cube() end
 ---@param roughness? number default 0.6
 ---@param metallic? number default 0.0
 ---@return Material
----@param textures? MaterialTextures textures to use in place of the flat defaults
-function assets.material(name, red, green, blue, roughness, metallic, textures) end
+---@param options? MaterialOptions textures to use in place of the flat defaults, and emissive light
+function assets.material(name, red, green, blue, roughness, metallic, options) end
 
----Textures for assets.material. The viewport textures ("scene_colour", "scene_depth") cannot be used here.
----@class MaterialTextures
+---Options for assets.material. The viewport textures ("scene_colour", "scene_depth") cannot be used here.
+---@class MaterialOptions
+---@field emissive? number[] {r, g, b} light the surface gives off (HDR values above 1 feed bloom)
+---@field emissive_strength? number multiplies emissive (default 1)
+---@field double_sided? boolean draw both faces (default false)
 ---@field base_colour_texture? Texture
 ---@field normal_texture? Texture
 ---@field metallic_roughness_texture? Texture

@@ -9,7 +9,6 @@
 #include "chess_game.hxx"
 #include "chess_lua.hxx"
 #include "core/logger.hxx"
-#include "lights_bloom_game.hxx"
 #include "material_wall_game.hxx"
 #include "meshlet_gallery_game.hxx"
 #include "shadow_city_game.hxx"
@@ -38,7 +37,11 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
 
     if (name == "lights") {
         info("Starting the 'lights' bloom demo");
-        return std::make_unique<LightsBloomGame>();
+        auto game = std::make_unique<LuaGame>();
+
+        game->set_default_entry("assets/scripts/lights/main.lua");
+
+        return game;
     }
 
     if (name == "materials") {
