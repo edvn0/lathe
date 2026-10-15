@@ -1,13 +1,13 @@
 # ------------------------------------------------------------------------------
 # engine_runtime: Runtime, everything a running game needs (renderer, scenes, the IGame lifecycle and input, terrain,
-# particles, scene loading) and run_engine, the shared startup and frame loop behind both executables. The editor
+# particles, scene loading) and the declarations of run_engine, the shared startup and frame loop behind both executables (its definition,
+# engine_main.cxx, is compiled into each executable because it needs the executable's game registry). The editor
 # (engine_app) is a Runtime with panels on top; the player is a bare one. Knows nothing of either.
 # ------------------------------------------------------------------------------
 
 add_library(
     engine_runtime
     STATIC
-        engine_main.cxx
         presentation_arguments.cxx
         runtime.cxx
         vulkan_bootstrap.cxx

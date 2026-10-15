@@ -878,8 +878,11 @@ endif()
 
 # Entry points: the editor (src/main.cxx) and the installed-game player (src/player_main.cxx). Both are thin; startup and
 # the frame loop are run_engine in engine_runtime.
-set(lathe_editor_main_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cxx")
-set(lathe_player_main_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/player_main.cxx")
+# run_engine (src/runtime/engine_main.cxx) is compiled into each executable rather than archived in engine_runtime: it
+# needs the executable's game registry (game/src/main_entry.cxx), which headless tools that link the engine do not have.
+set(lathe_engine_main_source "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/engine_main.cxx")
+set(lathe_editor_main_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cxx" "${lathe_engine_main_source}")
+set(lathe_player_main_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/player_main.cxx" "${lathe_engine_main_source}")
 
 foreach(lathe_main_source ${lathe_editor_main_sources} ${lathe_player_main_sources})
   if(NOT EXISTS "${lathe_main_source}")
@@ -1041,7 +1044,7 @@ target_link_libraries(
     lathe-server
     PRIVATE
         engine_gameserver_ix
-        lathe::engine
+        lathe::core
         engine_options
 )
 
