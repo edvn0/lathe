@@ -18,7 +18,7 @@
 #include "imgui.h"
 #include "physics/physics_world.hxx"
 #include "rendering/debug_renderer.hxx"
-#include "rendering/imgui_widget.hxx"
+#include "rendering/file_browser.hxx"
 #include "rendering/screenshot.hxx"
 #include "rendering/toast.hxx"
 #include "scene/components.hxx"

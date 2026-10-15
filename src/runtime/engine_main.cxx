@@ -35,6 +35,7 @@
 
 #include <entt/entt.hpp>
 
+#include "rendering/file_browser.hxx"
 #include "runtime/engine_main.hxx"
 #include "runtime/presentation_arguments.hxx"
 #include "runtime/runtime.hxx"
