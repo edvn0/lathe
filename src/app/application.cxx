@@ -35,6 +35,7 @@
 
 #include <entt/entt.hpp>
 
+#include "assets/model_formats.hxx"
 #include "core/allocator.hxx"
 #include "core/config.hxx"
 #include "core/error_describe.hxx"
@@ -416,7 +417,8 @@ namespace {
 
     [[nodiscard]] auto model_file_filters() -> std::vector<gui::FileBrowser::Filter> {
         return {
-                {.label = "glTF models (*.gltf, *.glb)", .extensions = {".gltf", ".glb"}},
+                {.label = "Models (*.gltf, *.glb, *.fbx, *.obj, *.dae, *.ply, *.stl, *.usd*)",
+                 .extensions = {model_file_extensions.begin(), model_file_extensions.end()}},
                 {.label = "All files", .extensions = {}},
         };
     }
@@ -823,7 +825,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
         };
 
-        static constexpr std::array<std::string_view, 2> model_extensions{".gltf", ".glb"};
+        static constexpr auto const &model_extensions = model_file_extensions;
         draw_file_backed_section(
                 "Models", data_path("assets/models").absolute(), model_extensions, assets.models(),
                 [&](std::filesystem::path const &path, std::string const &name) {

@@ -1,0 +1,14 @@
+--- a/code/AssetLib/USD/USDLoaderImplTinyusdz.cpp
++++ b/code/AssetLib/USD/USDLoaderImplTinyusdz.cpp
+@@ -628,6 +628,11 @@
+     ss.str("");
+     ss << "nodes(): model" << nameWExt << ", numNodes: " << numNodes;
+     TINYUSDZLOGD(TAG, "%s", ss.str().c_str());
++    // lathe: a stage that converts but holds no prims leaves render_scene.nodes empty, and nodes[0] below is then an
++    // out-of-bounds read. Give the scene a bare root instead; with no meshes the importer reports it as incomplete.
++    if (render_scene.nodes.empty()) {
++        return new aiNode();
++    }
+     return nodesRecursive(nullptr, render_scene.nodes[0], meshNodes);
+ }
+ 

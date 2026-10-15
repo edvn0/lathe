@@ -37,6 +37,7 @@ target_link_libraries(
         spdlog::spdlog
         GPUOpen::VulkanMemoryAllocator
         fastgltf::fastgltf
+        assimp::assimp
         glm::glm
         EnTT::EnTT
         slang::headers

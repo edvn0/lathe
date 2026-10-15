@@ -21,17 +21,21 @@
 #include <cstdint>
 #include <execution>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <optional>
 #include <ranges>
+#include <string>
 #include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "assets/assimp_import.hxx"
 #include "assets/material_storage.hxx"
+#include "assets/model_formats.hxx"
 #include "assets/model_skin_import.hxx"
 #include "core/logger.hxx"
 #include "core/thread_pool.hxx"
@@ -431,6 +435,99 @@ auto prepare_primitive_gpu_data(ModelCpuPrimitive &primitive, ModelLoadProfile *
 
 namespace {
 
+    auto malformed_model(std::string message) -> ModelLoadError {
+        return ModelLoadError{
+                .type = ModelLoadErrorType::parse_error,
+                .cause = ErrorCause{ErrorContext{.message = FlyString{std::move(message)}}},
+        };
+    }
+
+    // The recursive walks over the node tree (bounds, lights, the renderer's instancing) need a finite tree: glTF
+    // requires the hierarchy to be a disjoint union of trees, and a file that says otherwise would recurse forever or
+    // run the stack out. The depth limit keeps the same walks from overflowing on a legal but absurd chain.
+    constexpr std::size_t max_node_depth = 2048;
+
+    auto validate_node_graph(ModelCpuData const &cpu_data) -> std::expected<void, ModelLoadError> {
+        constexpr auto no_mesh = std::numeric_limits<std::uint32_t>::max();
+        auto const node_count = cpu_data.nodes.size();
+
+        for (auto const root: cpu_data.scene_roots) {
+            if (root >= node_count) {
+                return std::unexpected(malformed_model(std::format("scene root {} is not a node", root)));
+            }
+        }
+
+        std::vector<std::uint32_t> parent_count(node_count, 0);
+
+        for (std::size_t index = 0; index < node_count; ++index) {
+            auto const &node = cpu_data.nodes[index];
+
+            if (node.mesh_index != no_mesh && node.mesh_index >= cpu_data.meshes.size()) {
+                return std::unexpected(malformed_model(std::format("node {} uses missing mesh {}", index, node.mesh_index)));
+            }
+
+            for (auto const child: node.children) {
+                if (child >= node_count) {
+                    return std::unexpected(malformed_model(std::format("node {} has missing child {}", index, child)));
+                }
+
+                if (++parent_count[child] > 1) {
+                    return std::unexpected(malformed_model(std::format("node {} has more than one parent", child)));
+                }
+            }
+        }
+
+        enum class Mark : std::uint8_t { unvisited, active, done };
+
+        struct Frame {
+            std::uint32_t node;
+            std::size_t next_child;
+        };
+
+        std::vector<Mark> marks(node_count, Mark::unvisited);
+        std::vector<Frame> stack;
+
+        for (std::uint32_t start = 0; start < node_count; ++start) {
+            if (marks[start] != Mark::unvisited) {
+                continue;
+            }
+
+            marks[start] = Mark::active;
+            stack.push_back({start, 0});
+
+            while (!stack.empty()) {
+                auto &frame = stack.back();
+                auto const &children = cpu_data.nodes[frame.node].children;
+
+                if (frame.next_child == children.size()) {
+                    marks[frame.node] = Mark::done;
+                    stack.pop_back();
+                    continue;
+                }
+
+                auto const child = children[frame.next_child++];
+
+                if (marks[child] == Mark::active) {
+                    return std::unexpected(malformed_model(std::format("node {} is its own ancestor", child)));
+                }
+
+                if (marks[child] == Mark::done) {
+                    continue;
+                }
+
+                if (stack.size() >= max_node_depth) {
+                    return std::unexpected(
+                            malformed_model(std::format("node hierarchy is deeper than {} levels", max_node_depth)));
+                }
+
+                marks[child] = Mark::active;
+                stack.push_back({child, 0});
+            }
+        }
+
+        return {};
+    }
+
     auto extract_primitive_cpu(fastgltf::Asset const &asset, fastgltf::Primitive const &primitive,
                                ImportConvention const &convention, ModelLoadProfile *profile,
                                std::span<std::uint32_t const> joint_remap = {})
@@ -519,6 +616,14 @@ namespace {
         }
 
         auto indices = std::move(*indices_result);
+
+        // Everything downstream (tangent generation, meshopt, meshlets) indexes with these unchecked.
+        if (indices.empty() || indices.size() % 3 != 0 ||
+            std::ranges::any_of(indices, [count = vertices.size()](std::uint32_t index) { return index >= count; })) {
+            return std::unexpected(ModelLoadError{
+                    .type = ModelLoadErrorType::invalid_accessor,
+            });
+        }
 
         for (std::size_t triangle = 0; !convention.left_handed && triangle + 2 < indices.size(); triangle += 3) {
             std::swap(indices[triangle + 1], indices[triangle + 2]);
@@ -947,6 +1052,10 @@ auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_s
         -> std::expected<ModelCpuData, ModelLoadError> {
     ZoneScopedNC("LoadModelCpuUnfinalized", tracy::Color::Goldenrod);
 
+    if (is_assimp_model(path.absolute())) {
+        return load_model_cpu_assimp(path, sampler_storage, std::move(profile));
+    }
+
     auto *const profile_ptr = profile.get();
 
     ScopedProfileSample gltf_sample{profile_ptr != nullptr ? &profile_ptr->gltf_parse_ns : nullptr};
@@ -1071,6 +1180,10 @@ auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_s
         for (auto const node_index: scene.nodeIndices) {
             cpu_data.scene_roots.push_back(static_cast<std::uint32_t>(node_index));
         }
+    }
+
+    if (auto const valid = validate_node_graph(cpu_data); !valid) {
+        return std::unexpected(valid.error());
     }
 
     cpu_data.lights.reserve(asset.lights.size());

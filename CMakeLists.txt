@@ -220,6 +220,49 @@ cpmaddpackage(
 )
 
 cpmaddpackage(
+    NAME assimp
+    GITHUB_REPOSITORY assimp/assimp
+    GIT_TAG v5.4.3
+    SYSTEM YES
+    OPTIONS
+        "BUILD_SHARED_LIBS OFF"
+        "ASSIMP_BUILD_TESTS OFF"
+        "ASSIMP_BUILD_ASSIMP_TOOLS OFF"
+        "ASSIMP_BUILD_SAMPLES OFF"
+        "ASSIMP_INSTALL OFF"
+        "ASSIMP_NO_EXPORT ON"
+        "ASSIMP_WARNINGS_AS_ERRORS OFF"
+        "ASSIMP_INJECT_DEBUG_POSTFIX OFF"
+        "ASSIMP_BUILD_ZLIB ON"
+        # glTF stays on fastgltf; only the formats named in assimp_model_extensions are compiled in.
+        "ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF"
+        "ASSIMP_BUILD_FBX_IMPORTER ON"
+        "ASSIMP_BUILD_OBJ_IMPORTER ON"
+        "ASSIMP_BUILD_COLLADA_IMPORTER ON"
+        "ASSIMP_BUILD_PLY_IMPORTER ON"
+        "ASSIMP_BUILD_STL_IMPORTER ON"
+        # Experimental in Assimp; clones tinyusdz (pinned by hash) with FetchContent at configure time.
+        "ASSIMP_BUILD_USD_IMPORTER ON"
+        # tinyusdz builds with -Werror, and GCC 14 -O2 rejects a dangling reference in its GeomSubset code
+        # (scene-access.cc: `const token &tok = x.get_value().value()`). It is third-party code; don't fail on it.
+        "TINYUSDZ_NO_WERROR ON"
+    # The USD importer reads render_scene.nodes[0] unchecked, so a stage with no prims segfaults it.
+    PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/assimp_usd_empty_stage.patch"
+)
+
+# tinyusdz (built into Assimp for USD) compiles its own stb_image_resize2 implementation, which collides with the one in
+# engine_assets/stb.cxx at link time. Leave it out so ours is the only definition.
+foreach(usd_target IN ITEMS assimp tinyusdz_static)
+  if(TARGET ${usd_target})
+    target_compile_definitions(
+            ${usd_target}
+            PRIVATE
+                TINYUSDZ_NO_STB_IMAGE_RESIZE_IMPLEMENTATION
+    )
+  endif()
+endforeach()
+
+cpmaddpackage(
     NAME glm
     GITHUB_REPOSITORY g-truc/glm
     GIT_TAG 1.0.3
@@ -801,6 +844,7 @@ mark_target_includes_system(glfw)
 mark_target_includes_system(spdlog::spdlog)
 mark_target_includes_system(GPUOpen::VulkanMemoryAllocator)
 mark_target_includes_system(fastgltf::fastgltf)
+mark_target_includes_system(assimp::assimp)
 mark_target_includes_system(glm::glm)
 mark_target_includes_system(EnTT::EnTT)
 mark_target_includes_system(lua)
