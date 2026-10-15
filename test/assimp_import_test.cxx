@@ -104,7 +104,9 @@ TEST_SUITE("assimp import") {
             CHECK(glm::dot(glm::cross(b.position - a.position, c.position - a.position), a.normal) > 0.0F);
         }
 
-        auto const &material = model->materials[0];
+        // Assimp's OBJ importer also adds its own grey "default" material, so go through the primitive's index.
+        REQUIRE(*primitive.material_index < model->materials.size());
+        auto const &material = model->materials[*primitive.material_index];
         CHECK(material.base_colour_factor.x == doctest::Approx(1.0F));
         CHECK(material.base_colour_factor.y == doctest::Approx(0.0F));
         CHECK(material.metallic_factor == doctest::Approx(0.0F));
