@@ -1,6 +1,5 @@
 #pragma once
 
-#include "animation/clip.hxx"
 #include "animation/state_machine.hxx"
 
 #include <memory>

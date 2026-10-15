@@ -11,8 +11,8 @@
 
 #include "core/error_context.hxx"
 #include "gpu/queue_selection.hxx"
+#include "gpu/queue_types.hxx"
 #include "gpu/submission_plan.hxx"
-#include "rendering/frame_graph/compiler.hxx"
 
 struct QueueSetError {
     enum class Kind : std::uint8_t {
@@ -56,14 +56,14 @@ public:
     auto begin_slot(std::uint32_t slot) noexcept -> std::expected<void, QueueSetError>;
 
     [[nodiscard]]
-    auto command_buffer(frame_graph::LogicalQueue queue) noexcept -> std::expected<VkCommandBuffer, QueueSetError>;
+    auto command_buffer(LogicalQueue queue) noexcept -> std::expected<VkCommandBuffer, QueueSetError>;
 
     [[nodiscard]]
     auto submit(std::span<SubmitBatch const> batches, VkSemaphore acquire,
                 VkSemaphore render_finished) noexcept -> std::expected<void, QueueSetError>;
 
     [[nodiscard]]
-    auto topology() const noexcept -> frame_graph::QueueTopology;
+    auto topology() const noexcept -> QueueTopology;
 
     [[nodiscard]]
     auto aliased() const noexcept -> bool {

@@ -1,7 +1,7 @@
 # Lua API for editors (LuaLS)
 
 `lua-api/` holds `---@meta` stub files describing everything the engine puts in a game script's environment: the
-libraries `scene`, `assets`, `camera`, `ui`, `game`, `entity`, `compute`, `key` and `mouse`, the `Entity` and `Effect`
+libraries `scene`, `assets`, `camera`, `ui`, `game`, `entity`, `compute`, `render`, `key` and `mouse`, the `Entity` and `Effect`
 handles with their methods, the option tables (`ParticleOptions`, `UiWindowOptions`, `CameraResult`) and `GameScript`,
 the table of callbacks a script returns. They are never loaded by the engine; they only give completion, hover docs
 and type checks. The repo's `.luarc.json` selects Lua 5.4 (what the engine embeds), points `workspace.library` at
@@ -32,6 +32,15 @@ ranges and defaults are written by hand from the C++ (`lua_game_api.cxx`, `lua_p
 and are not checked.
 
 Not covered: the native modules `native.chess` and `native.net` (opened with `require`) have no stubs.
+
+## Lights, environment and bloom
+
+`e:add_light{ type = "point" | "spot", colour, intensity, range, inner_cone, outer_cone, casts_shadows }` puts a light on
+an entity and `e:aim(x, y, z)` turns it (a spot light points along the entity's local -Y). `scene.set_environment{...}`
+changes the sky, ambient light, exposure and sun; `render.bloom()` / `render.set_bloom{...}` read and change bloom.
+`assets.sphere()` and `assets.capsule()` give the built-in models, and `assets.material` takes `emissive`,
+`emissive_strength` and `double_sided` in its options table. `assets/scripts/lights/main.lua` (`--game=lights`) uses
+all of them.
 
 ## Behaviours
 

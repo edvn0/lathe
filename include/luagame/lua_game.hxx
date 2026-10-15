@@ -9,11 +9,10 @@
 
 #include <glm/mat4x4.hpp>
 
-#include "app/game.hxx"
-#include "app/lua_behaviours.hxx"
-#include "app/lua_animation.hxx"
+#include "game/game.hxx"
+#include "luagame/lua_behaviours.hxx"
+#include "luagame/lua_animation.hxx"
 #include "physics/mesh_collider.hxx"
-#include "scripting/lua_api.hxx"
 
 class LuaRuntime;
 
@@ -56,6 +55,9 @@ public:
     ~LuaGame() override;
 
     auto add_native_module(std::string name, lua_CFunction opener) -> void;
+
+    // The entry script used when the host names none (--script or the game manifest).
+    auto set_default_entry(std::string entry) -> void;
 
     auto attach_host(GameHost host) -> void override;
 

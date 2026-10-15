@@ -7,7 +7,6 @@
 #include <volk.h>
 
 #include "assets/load_model.hxx"
-#include "core/paths.hxx"
 #include "assets/model.hxx"
 #include "core/renderer_error.hxx"
 

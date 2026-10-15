@@ -1,4 +1,4 @@
-#include "app/benchmark_driver.hxx"
+#include "benchmark/benchmark_driver.hxx"
 
 #include <volk.h>
 
@@ -7,7 +7,7 @@
 #include <utility>
 
 #include "app/application.hxx"
-#include "app/benchmark_environment.hxx"
+#include "benchmark/benchmark_environment.hxx"
 #include "core/config.hxx"
 #include "core/logger.hxx"
 #include "core/memory_tracker.hxx"

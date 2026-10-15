@@ -7,7 +7,6 @@
 #include <span>
 
 #include "rendering/frame_graph/frame_graph.hxx"
-#include "rendering/frame_graph/types.hxx"
 #include "rendering/frame_graph/vk_translate.hxx"
 
 namespace frame_graph {

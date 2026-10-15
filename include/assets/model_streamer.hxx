@@ -17,9 +17,6 @@
 #include <vector>
 
 #include "assets/load_model.hxx"
-#include "core/paths.hxx"
-#include "assets/model.hxx"
-#include "assets/model_load_profile.hxx"
 #include "assets/model_sink.hxx"
 #include "core/fly_string.hxx"
 

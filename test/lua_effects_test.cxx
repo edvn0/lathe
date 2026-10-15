@@ -3,8 +3,8 @@
 #include <expected>
 #include <string>
 
-#include "app/lua_game.hxx"
-#include "app/lua_game_api.hxx"
+#include "luagame/lua_game.hxx"
+#include "luagame/lua_game_api.hxx"
 #include "rendering/effect_system.hxx"
 #include "scripting/lua_runtime.hxx"
 

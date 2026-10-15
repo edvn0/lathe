@@ -7,10 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "app/benchmark.hxx"
-#include "app/benchmark_scenarios.hxx"
-#include "app/frame_clock.hxx"
-#include "core/perf_events.hxx"
+#include "benchmark/benchmark_scenarios.hxx"
 
 struct Application;
 struct VulkanContext;

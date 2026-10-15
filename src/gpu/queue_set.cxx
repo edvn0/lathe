@@ -8,7 +8,7 @@
 
 namespace {
 
-    constexpr auto queue_index(frame_graph::LogicalQueue queue) noexcept -> std::size_t {
+    constexpr auto queue_index(LogicalQueue queue) noexcept -> std::size_t {
         return static_cast<std::size_t>(queue);
     }
 
@@ -49,16 +49,16 @@ auto QueueSet::initialize(QueueSetCreateInfo const &create_info) noexcept -> std
 
     queues_[0].queue = create_info.graphics_queue;
     queues_[0].family = create_info.graphics_family;
-    physical_of_queue_[queue_index(frame_graph::LogicalQueue::graphics)] = 0;
+    physical_of_queue_[queue_index(LogicalQueue::graphics)] = 0;
 
     if (create_info.compute_queue == create_info.graphics_queue) {
         physical_count_ = 1;
-        physical_of_queue_[queue_index(frame_graph::LogicalQueue::compute)] = 0;
+        physical_of_queue_[queue_index(LogicalQueue::compute)] = 0;
     } else {
         physical_count_ = 2;
         queues_[1].queue = create_info.compute_queue;
         queues_[1].family = create_info.compute_family;
-        physical_of_queue_[queue_index(frame_graph::LogicalQueue::compute)] = 1;
+        physical_of_queue_[queue_index(LogicalQueue::compute)] = 1;
     }
 
     VkSemaphoreTypeCreateInfo const timeline_info{
@@ -173,7 +173,7 @@ auto QueueSet::begin_slot(std::uint32_t slot) noexcept -> std::expected<void, Qu
     return {};
 }
 
-auto QueueSet::command_buffer(frame_graph::LogicalQueue queue) noexcept
+auto QueueSet::command_buffer(LogicalQueue queue) noexcept
         -> std::expected<VkCommandBuffer, QueueSetError> {
     if (device_ == VK_NULL_HANDLE || current_slot_ >= slots_.size()) {
         return std::unexpected(make_error(QueueSetError::Kind::fatal_error, "queue set is not initialized"));
@@ -319,12 +319,12 @@ auto QueueSet::submit(std::span<SubmitBatch const> batches, VkSemaphore acquire,
     return {};
 }
 
-auto QueueSet::topology() const noexcept -> frame_graph::QueueTopology {
-    auto topology = frame_graph::QueueTopology{};
-    topology.family[queue_index(frame_graph::LogicalQueue::graphics)] = queues_[0].family;
-    topology.queue_index[queue_index(frame_graph::LogicalQueue::graphics)] = 0;
-    topology.family[queue_index(frame_graph::LogicalQueue::compute)] =
-            queues_[physical_of_queue_[queue_index(frame_graph::LogicalQueue::compute)]].family;
-    topology.queue_index[queue_index(frame_graph::LogicalQueue::compute)] = aliased() ? 0 : compute_queue_index_;
+auto QueueSet::topology() const noexcept -> QueueTopology {
+    auto topology = QueueTopology{};
+    topology.family[queue_index(LogicalQueue::graphics)] = queues_[0].family;
+    topology.queue_index[queue_index(LogicalQueue::graphics)] = 0;
+    topology.family[queue_index(LogicalQueue::compute)] =
+            queues_[physical_of_queue_[queue_index(LogicalQueue::compute)]].family;
+    topology.queue_index[queue_index(LogicalQueue::compute)] = aliased() ? 0 : compute_queue_index_;
     return topology;
 }

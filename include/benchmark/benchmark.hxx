@@ -11,9 +11,7 @@
 #include <string_view>
 #include <vector>
 
-#include "app/benchmark_analysis.hxx"
-#include "app/frame_clock.hxx"
-#include "core/perf_events.hxx"
+#include "benchmark/benchmark_analysis.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "scene/camera_path.hxx"
 

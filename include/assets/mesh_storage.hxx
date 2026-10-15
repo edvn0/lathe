@@ -13,7 +13,6 @@
 #include "assets/geometry.hxx"
 #include "assets/material.hxx"
 #include "assets/model.hxx"
-#include "core/config.hxx"
 #include "core/object_pool.hxx"
 
 struct Submesh {

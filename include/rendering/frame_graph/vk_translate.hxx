@@ -8,8 +8,6 @@
 
 #include "rendering/frame_graph/compiled_graph.hxx"
 #include "rendering/frame_graph/frame_graph.hxx"
-#include "rendering/frame_graph/physical.hxx"
-#include "rendering/frame_graph/rendering_desc.hxx"
 
 namespace frame_graph {
 

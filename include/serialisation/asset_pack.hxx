@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core/paths.hxx"
 
 #include <cstddef>
 #include <cstdint>
@@ -14,7 +13,6 @@
 #include "assets/load_model.hxx"
 #include "assets/texture_pipeline.hxx"
 #include "gpu/compressed_texture.hxx"
-#include "gpu/sampler.hxx"
 #include "serialisation/asset_id.hxx"
 #include "serialisation/lbf_container.hxx"
 

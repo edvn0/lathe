@@ -5,9 +5,8 @@
 #include <string>
 #include <vector>
 
-#include "app/benchmark.hxx"
+#include "benchmark/benchmark.hxx"
 #include "assets/material.hxx"
-#include "scene/camera_path.hxx"
 
 class Scene;
 struct Renderer;

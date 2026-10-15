@@ -6,14 +6,14 @@
 #include <set>
 #include <string>
 
-#include "app/lua_game.hxx"
-#include "app/lua_game_api.hxx"
+#include "luagame/lua_game.hxx"
+#include "luagame/lua_game_api.hxx"
 #include "scripting/lua_runtime.hxx"
 
 // The LuaLS stubs in lua-api/ must name exactly what open_lua_game_api registers.
 
 namespace {
-    constexpr auto libraries = std::array{"scene", "assets", "camera", "ui", "game", "entity", "compute", "key", "mouse", "physics", "animation"};
+    constexpr auto libraries = std::array{"scene", "assets", "camera", "ui", "game", "entity", "compute", "key", "mouse", "physics", "animation", "render"};
 
     // Methods live in a metatable's __index; the stubs call the classes by these names.
     struct Class {

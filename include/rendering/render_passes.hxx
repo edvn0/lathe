@@ -11,7 +11,6 @@
 
 #include <glm/vec3.hpp>
 
-#include "core/config.hxx"
 #include "core/renderer_error.hxx"
 #include "gpu/buffer.hxx"
 #include "gpu/gpu_resource_table.hxx"

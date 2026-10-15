@@ -14,7 +14,6 @@
 #include "gpu/queue_set.hxx"
 #include "gpu/submission_plan.hxx"
 #include "rendering/frame_graph/aliasing.hxx"
-#include "rendering/frame_graph/compiled_graph.hxx"
 #include "rendering/frame_graph/frame_graph.hxx"
 #include "rendering/frame_graph/pass_profiler.hxx"
 #include "rendering/frame_graph/vk_translate.hxx"

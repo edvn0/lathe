@@ -1,4 +1,4 @@
-#include "app/benchmark_scenarios.hxx"
+#include "benchmark/benchmark_scenarios.hxx"
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -7,7 +7,7 @@
 #include <numbers>
 #include <random>
 
-#include "app/shadow_city.hxx"
+#include "benchmark/shadow_city.hxx"
 #include "assets/material_storage.hxx"
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"

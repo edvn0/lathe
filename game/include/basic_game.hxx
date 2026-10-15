@@ -6,7 +6,7 @@
 #include <glm/vec3.hpp>
 #include <vector>
 
-#include "app/game.hxx"
+#include "game/game.hxx"
 #include "assets/material.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/model.hxx"

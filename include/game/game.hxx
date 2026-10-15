@@ -15,7 +15,6 @@
 #include "scene/camera_path.hxx"
 #include "scene/components.hxx"
 #include "scene/input_events.hxx"
-#include "scene/script_property.hxx"
 #include "terrain/terrain_world.hxx"
 
 class Scene;

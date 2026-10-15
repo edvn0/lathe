@@ -11,20 +11,7 @@
 
 namespace frame_graph {
 
-    struct QueueTopology {
-        std::array<std::uint32_t, logical_queue_count> family{};
-        std::array<std::uint32_t, logical_queue_count> queue_index{};
-
-        [[nodiscard]] constexpr auto same_queue(LogicalQueue a, LogicalQueue b) const noexcept -> bool {
-            auto const i = static_cast<std::size_t>(a);
-            auto const j = static_cast<std::size_t>(b);
-            return family[i] == family[j] && queue_index[i] == queue_index[j];
-        }
-
-        [[nodiscard]] constexpr auto same_family(LogicalQueue a, LogicalQueue b) const noexcept -> bool {
-            return family[static_cast<std::size_t>(a)] == family[static_cast<std::size_t>(b)];
-        }
-    };
+    using ::QueueTopology;
 
     struct CompileOptions {
         bool async_compute = true;

@@ -13,9 +13,9 @@
 
 #include "assets/material.hxx"
 #include "assets/model.hxx"
+#include "assets/script_handle.hxx"
 #include "core/transform.hxx"
 #include "physics/physics_components.hxx"
-#include "scene/script_handle.hxx"
 #include "scene/script_property.hxx"
 
 namespace Components {

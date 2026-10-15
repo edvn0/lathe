@@ -6,11 +6,12 @@
 #include <volk.h>
 
 #include "core/handle.hxx"
+#include "gpu/queue_types.hxx"
 
 namespace frame_graph {
 
-    enum class LogicalQueue : std::uint8_t { graphics, compute };
-    inline constexpr std::size_t logical_queue_count = 2;
+    using ::LogicalQueue;
+    using ::logical_queue_count;
 
     enum class QueueAffinity : std::uint8_t { graphics, compute_preferred, compute_required };
 

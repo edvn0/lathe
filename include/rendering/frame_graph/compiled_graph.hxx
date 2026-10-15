@@ -5,7 +5,6 @@
 #include <optional>
 #include <vector>
 
-#include "rendering/frame_graph/rendering_desc.hxx"
 #include "rendering/frame_graph/types.hxx"
 
 namespace frame_graph {
@@ -65,13 +64,7 @@ namespace frame_graph {
         std::uint32_t timestamp_slot = 0;
     };
 
-    struct SemaphoreWait {
-        LogicalQueue queue = LogicalQueue::graphics;
-        std::uint32_t signal_index = 0;
-        VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_NONE;
-
-        auto operator==(SemaphoreWait const &) const -> bool = default;
-    };
+    using ::SemaphoreWait;
 
     struct Batch {
         LogicalQueue queue = LogicalQueue::graphics;

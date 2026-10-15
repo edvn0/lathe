@@ -5,7 +5,6 @@
 
 #include <glm/glm.hpp>
 
-#include "rendering/cube_map.hxx"
 
 inline constexpr std::uint32_t sh9_coefficient_count = 9;
 

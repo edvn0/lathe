@@ -12,7 +12,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 
-#include "app/game.hxx"
+#include "game/game.hxx"
 #include "assets/material.hxx"
 #include "assets/model.hxx"
 #include "net/http.hxx"

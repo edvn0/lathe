@@ -8,9 +8,9 @@
 
 #include "assets/material.hxx"
 #include "assets/model.hxx"
+#include "assets/script_handle.hxx"
 #include "core/logger.hxx"
 #include "gpu/image.hxx"
-#include "scene/script_handle.hxx"
 
 template<typename HandleT>
 class NamedAssetTable {

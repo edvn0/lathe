@@ -2,7 +2,6 @@
 
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/frame_graph/pass_profiler.hxx"
-#include "rendering/overlay.hxx"
 
 #include <ImGuizmo.h>
 
@@ -21,14 +20,12 @@
 #include <vector>
 
 #include "app/frame_graph_editor.hxx"
-#include "app/game.hxx"
+#include "game/game.hxx"
 #include "app/game_packager.hxx"
 #include "app/stage_registry.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/file_change_watcher.hxx"
 #include "gpu/context.hxx"
-#include "rendering/cluster_grid.hxx"
-#include "rendering/debug_renderer.hxx"
 #include "rendering/effect_system.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/particle_system.hxx"
@@ -36,7 +33,6 @@
 #include "rendering/terminal_widget.hxx"
 #include "scene/editor_camera.hxx"
 #include "scene/hierarchy_model.hxx"
-#include "scene/input_events.hxx"
 #include "scripting/script_widget.hxx"
 #include "serialisation/scene_serialisation.hxx"
 #include "terrain/terrain_world.hxx"

@@ -1,4 +1,4 @@
-#include "app/lua_animation.hxx"
+#include "luagame/lua_animation.hxx"
 
 #include <algorithm>
 #include <array>

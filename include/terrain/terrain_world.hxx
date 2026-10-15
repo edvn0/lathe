@@ -9,7 +9,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "assets/material.hxx"
 #include "assets/mesh_sink.hxx"
 #include "physics/physics_world.hxx"
 #include "terrain/terrain_chunk.hxx"

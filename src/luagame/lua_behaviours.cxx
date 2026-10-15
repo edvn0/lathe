@@ -1,4 +1,4 @@
-#include "app/lua_behaviours.hxx"
+#include "luagame/lua_behaviours.hxx"
 
 #include <algorithm>
 #include <array>
@@ -8,8 +8,8 @@
 
 #include <entt/entt.hpp>
 
-#include "app/lua_game.hxx"
-#include "app/lua_game_api.hxx"
+#include "luagame/lua_game.hxx"
+#include "luagame/lua_game_api.hxx"
 #include "core/logger.hxx"
 #include "core/paths.hxx"
 #include "rendering/toast.hxx"

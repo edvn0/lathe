@@ -1,4 +1,4 @@
-#include "app/lua_game_api.hxx"
+#include "luagame/lua_game_api.hxx"
 
 #include <algorithm>
 #include <array>
@@ -14,17 +14,18 @@
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp>
 #include <glm/vec3.hpp>
 #include <imgui.h>
 
-#include "app/lua_game.hxx"
+#include "luagame/lua_game.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/model.hxx"
 #include "assets/model_streamer.hxx"
 #include "assets/texture_streamer.hxx"
-#include "app/lua_behaviours.hxx"
+#include "luagame/lua_behaviours.hxx"
 #include "core/fly_string.hxx"
-#include "app/lua_animation.hxx"
+#include "luagame/lua_animation.hxx"
 #include "core/paths.hxx"
 #include "physics/character_body.hxx"
 #include "physics/mesh_collider.hxx"
@@ -757,6 +758,85 @@ namespace {
         return 0;
     }
 
+    enum class LightKind : std::uint8_t { point, spot, unknown };
+
+    // e:add_light{ type = "point" | "spot", colour = {r, g, b}, intensity, range, inner_cone, outer_cone (degrees,
+    // spot only), casts_shadows }
+    auto entity_add_light(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+        luaL_checktype(state, 2, LUA_TTABLE);
+        auto &registry = registry_of(state);
+
+        auto kind = LightKind::unknown;
+
+        {
+            auto const type = option_string(state, 2, "type", "point");
+
+            if (type == "point") {
+                kind = LightKind::point;
+            } else if (type == "spot") {
+                kind = LightKind::spot;
+            }
+        }
+
+        if (kind == LightKind::unknown) {
+            return luaL_error(state, "unknown light type (point or spot)");
+        }
+
+        auto const colour = lua_field_vec3(state, 2, "colour", {1.0F, 1.0F, 1.0F});
+        auto const intensity = static_cast<float>(option_number(state, 2, "intensity", 1.0));
+        auto const range = static_cast<float>(option_number(state, 2, "range", 10.0));
+        auto const casts_shadows = option_bool(state, 2, "casts_shadows", false);
+
+        if (!(intensity >= 0.0F) || !std::isfinite(intensity) || !(range > 0.0F) || !std::isfinite(range)) {
+            return luaL_error(state, "intensity must not be negative and range must be positive");
+        }
+
+        auto const rgb = glm::vec3{colour.x, colour.y, colour.z};
+
+        if (kind == LightKind::point) {
+            registry.emplace_or_replace<Components::PointLight>(
+                    id, Components::PointLight{
+                                .colour = rgb, .intensity = intensity, .range = range, .casts_shadows = casts_shadows});
+
+            return 0;
+        }
+
+        auto const inner = static_cast<float>(option_number(state, 2, "inner_cone", 20.0));
+        auto const outer = static_cast<float>(option_number(state, 2, "outer_cone", 30.0));
+
+        if (!(inner >= 0.0F) || !(outer > inner) || !(outer <= 89.0F)) {
+            return luaL_error(state, "spot cones must satisfy 0 <= inner_cone < outer_cone <= 89 degrees");
+        }
+
+        registry.emplace_or_replace<Components::SpotLight>(id, Components::SpotLight{.colour = rgb,
+                                                                                     .intensity = intensity,
+                                                                                     .range = range,
+                                                                                     .inner_cone_degrees = inner,
+                                                                                     .outer_cone_degrees = outer,
+                                                                                     .casts_shadows = casts_shadows});
+
+        return 0;
+    }
+
+    // e:aim(x, y, z): turns the entity so its local -Y axis, the way a spot light points, faces the position.
+    auto entity_aim(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+        auto &transform = registry_of(state).get_or_emplace<Components::Transform>(id);
+        auto const target = glm::vec3{static_cast<float>(luaL_checknumber(state, 2)),
+                                      static_cast<float>(luaL_checknumber(state, 3)),
+                                      static_cast<float>(luaL_checknumber(state, 4))};
+        auto const delta = target - transform.position;
+
+        if (!(glm::dot(delta, delta) > 1e-12F)) {
+            return luaL_error(state, "the target is at the entity's position");
+        }
+
+        transform.rotation = glm::rotation(glm::vec3{0.0F, -1.0F, 0.0F}, glm::normalize(delta));
+
+        return 0;
+    }
+
     auto entity_set_velocity(lua_State *state) -> int {
         auto const id = entity_arg(state, 1);
         auto &world = physics_world_of(state);
@@ -1015,6 +1095,8 @@ namespace {
             luaL_Reg{"add_body", &entity_add_body},
             luaL_Reg{"set_velocity", &entity_set_velocity},
             luaL_Reg{"apply_impulse", &entity_apply_impulse},
+            luaL_Reg{"add_light", &entity_add_light},
+            luaL_Reg{"aim", &entity_aim},
             luaL_Reg{"add_behaviour", &entity_add_behaviour},
             luaL_Reg{"behaviour", &entity_behaviour},
             luaL_Reg{"remove_behaviour", &entity_remove_behaviour},
@@ -1065,6 +1147,30 @@ namespace {
         return 1;
     }
 
+    auto assets_sphere(lua_State *state) -> int {
+        auto &host = game_host(state);
+
+        if (host.engine_models == nullptr) {
+            return luaL_error(state, "assets can only be used from on_populate and later");
+        }
+
+        push_model(state, host.engine_models->sphere);
+
+        return 1;
+    }
+
+    auto assets_capsule(lua_State *state) -> int {
+        auto &host = game_host(state);
+
+        if (host.engine_models == nullptr) {
+            return luaL_error(state, "assets can only be used from on_populate and later");
+        }
+
+        push_model(state, host.engine_models->capsule);
+
+        return 1;
+    }
+
     auto assets_material(lua_State *state) -> int {
         auto &host = game_host(state);
         auto const *const name = luaL_checkstring(state, 1);
@@ -1106,7 +1212,10 @@ namespace {
         auto const normal_texture = texture_option("normal_texture", images.flat_normal());
         auto const metallic_roughness_texture = texture_option("metallic_roughness_texture", images.metallic_roughness());
         auto const occlusion_texture = texture_option("occlusion_texture", images.occlusion());
-        auto const emissive_texture = texture_option("emissive_texture", images.emissive());
+        auto const emissive = lua_istable(state, 7) ? lua_field_vec3(state, 7, "emissive", {}) : LuaVec3{};
+        auto const emissive_strength = static_cast<float>(option_number(state, 7, "emissive_strength", 1.0));
+        auto const emits = emissive.x > 0.0F || emissive.y > 0.0F || emissive.z > 0.0F;
+        auto const emissive_texture = texture_option("emissive_texture", emits ? images.white() : images.emissive());
 
         if (!base_colour_texture.valid() || !normal_texture.valid() || !metallic_roughness_texture.valid() ||
             !occlusion_texture.valid() || !emissive_texture.valid()) {
@@ -1116,6 +1225,8 @@ namespace {
         auto created = host.renderer->create_material(
                 MaterialCreateInfo{
                         .base_colour_factor = glm::vec4{red, green, blue, 1.0F},
+                        .emissive_factor = glm::vec3{emissive.x, emissive.y, emissive.z},
+                        .emissive_strength = emissive_strength,
                         .metallic_factor = metallic,
                         .roughness_factor = roughness,
                         .base_colour_texture = base_colour_texture,
@@ -1124,6 +1235,7 @@ namespace {
                         .occlusion_texture = occlusion_texture,
                         .emissive_texture = emissive_texture,
                         .sampler = host.renderer->sampler_storage().linear_repeat(),
+                        .double_sided = option_bool(state, 7, "double_sided", false),
                 },
                 name);
 
@@ -1194,6 +1306,8 @@ namespace {
     constexpr std::array assets_functions{
             luaL_Reg{"load_model", &assets_load_model},
             luaL_Reg{"cube", &assets_cube},
+            luaL_Reg{"sphere", &assets_sphere},
+            luaL_Reg{"capsule", &assets_capsule},
             luaL_Reg{"material", &assets_material},
             luaL_Reg{"texture", &assets_texture},
             luaL_Reg{"release_material", &assets_release_material},
@@ -1863,6 +1977,9 @@ namespace {
             IntegerConstant{"F2", GLFW_KEY_F2},         IntegerConstant{"F3", GLFW_KEY_F3},
             IntegerConstant{"LEFT_SHIFT", GLFW_KEY_LEFT_SHIFT},
             IntegerConstant{"LEFT_CONTROL", GLFW_KEY_LEFT_CONTROL},
+            IntegerConstant{"NUM_1", GLFW_KEY_1},       IntegerConstant{"NUM_2", GLFW_KEY_2},
+            IntegerConstant{"NUM_3", GLFW_KEY_3},       IntegerConstant{"MINUS", GLFW_KEY_MINUS},
+            IntegerConstant{"EQUAL", GLFW_KEY_EQUAL},
     };
 
     constexpr std::array mouse_constants{
@@ -1883,6 +2000,103 @@ namespace {
         lua_setglobal(state, table_name);
     }
 
+    // scene.set_environment{ sky = "flat" | "procedural", skybox, ambient, exposure_ev, sun_intensity,
+    // sun_elevation, specular_intensity }: changes the fields given and keeps the rest.
+    auto scene_set_environment(lua_State *state) -> int {
+        auto *const scene = game_host(state).scene;
+
+        if (scene == nullptr) {
+            return luaL_error(state, "no scene is active");
+        }
+
+        luaL_checktype(state, 1, LUA_TTABLE);
+
+        auto &environment = scene->environment;
+        auto source = environment.source;
+        auto valid_sky = true;
+
+        {
+            auto const sky = option_string(state, 1, "sky", "");
+
+            if (sky == "flat") {
+                source = EnvironmentSource::flat_ambient;
+            } else if (sky == "procedural") {
+                source = EnvironmentSource::procedural_sky;
+            } else if (!sky.empty()) {
+                valid_sky = false;
+            }
+        }
+
+        if (!valid_sky) {
+            return luaL_error(state, "unknown sky (flat or procedural)");
+        }
+
+        environment.source = source;
+        environment.draw_skybox = option_bool(state, 1, "skybox", environment.draw_skybox);
+        environment.ambient_intensity =
+                static_cast<float>(option_number(state, 1, "ambient", environment.ambient_intensity));
+        environment.exposure_ev = static_cast<float>(option_number(state, 1, "exposure_ev", environment.exposure_ev));
+        environment.sun.intensity =
+                static_cast<float>(option_number(state, 1, "sun_intensity", environment.sun.intensity));
+        environment.sun.elevation_degrees =
+                static_cast<float>(option_number(state, 1, "sun_elevation", environment.sun.elevation_degrees));
+        environment.specular_intensity =
+                static_cast<float>(option_number(state, 1, "specular_intensity", environment.specular_intensity));
+
+        return 0;
+    }
+
+    // render.bloom() -> { enabled, threshold, knee, intensity }
+    auto render_bloom(lua_State *state) -> int {
+        auto &host = game_host(state);
+
+        if (host.renderer == nullptr) {
+            return luaL_error(state, "render settings can only be used from on_populate and later");
+        }
+
+        auto const &bloom = host.renderer->bloom_settings();
+
+        lua_createtable(state, 0, 4);
+        lua_pushboolean(state, bloom.enabled ? 1 : 0);
+        lua_setfield(state, -2, "enabled");
+        lua_pushnumber(state, bloom.threshold);
+        lua_setfield(state, -2, "threshold");
+        lua_pushnumber(state, bloom.knee);
+        lua_setfield(state, -2, "knee");
+        lua_pushnumber(state, bloom.intensity);
+        lua_setfield(state, -2, "intensity");
+
+        return 1;
+    }
+
+    // render.set_bloom{ enabled, threshold, knee, intensity }: changes the fields given and keeps the rest.
+    auto render_set_bloom(lua_State *state) -> int {
+        auto &host = game_host(state);
+
+        if (host.renderer == nullptr) {
+            return luaL_error(state, "render settings can only be used from on_populate and later");
+        }
+
+        luaL_checktype(state, 1, LUA_TTABLE);
+
+        auto bloom = host.renderer->bloom_settings();
+
+        bloom.enabled = option_bool(state, 1, "enabled", bloom.enabled);
+        bloom.threshold = std::max(0.0F, static_cast<float>(option_number(state, 1, "threshold", bloom.threshold)));
+        bloom.knee = std::max(0.0F, static_cast<float>(option_number(state, 1, "knee", bloom.knee)));
+        bloom.intensity = std::clamp(static_cast<float>(option_number(state, 1, "intensity", bloom.intensity)), 0.0F, 1.0F);
+
+        host.renderer->set_bloom_settings(bloom);
+
+        return 0;
+    }
+
+    constexpr std::array render_functions{
+            luaL_Reg{"bloom", &render_bloom},
+            luaL_Reg{"set_bloom", &render_set_bloom},
+            luaL_Reg{nullptr, nullptr},
+    };
+
     template<std::size_t N>
     auto set_library(lua_State *state, char const *table_name, std::array<luaL_Reg, N> const &functions) -> void {
         lua_createtable(state, 0, static_cast<int>(N));
@@ -1897,7 +2111,9 @@ auto open_lua_game_api(LuaRuntime &runtime) -> void {
     set_library(state, "scene",
                 std::array{luaL_Reg{"spawn", &scene_spawn}, luaL_Reg{"find", &scene_find},
                            luaL_Reg{"clear", &scene_clear}, luaL_Reg{"add_effect", &scene_add_effect},
-                           luaL_Reg{"remove_effect", &scene_remove_effect}, luaL_Reg{nullptr, nullptr}});
+                           luaL_Reg{"remove_effect", &scene_remove_effect},
+                           luaL_Reg{"set_environment", &scene_set_environment}, luaL_Reg{nullptr, nullptr}});
+    set_library(state, "render", render_functions);
     set_library(state, "physics", physics_functions);
     set_library(state, "animation", animation_functions);
     set_library(state, "compute", compute_functions);

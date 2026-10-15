@@ -18,7 +18,6 @@
 #include "assets/slang_compiler.hxx"
 #include "core/forward.hxx"
 #include "gpu/shader_object_storage.hxx"
-#include "gpu/shader_stage.hxx"
 
 struct PipelineNodeHandle {
     std::uint32_t index = 0;

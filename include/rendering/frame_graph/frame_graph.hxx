@@ -12,7 +12,6 @@
 #include "rendering/frame_graph/frame_graph_error.hxx"
 #include "rendering/frame_graph/physical.hxx"
 #include "rendering/frame_graph/rendering_desc.hxx"
-#include "rendering/frame_graph/types.hxx"
 #include "rendering/frame_graph/use_table.hxx"
 
 namespace frame_graph {

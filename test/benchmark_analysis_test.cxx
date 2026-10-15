@@ -3,7 +3,7 @@
 #include <array>
 #include <vector>
 
-#include "app/benchmark_analysis.hxx"
+#include "benchmark/benchmark_analysis.hxx"
 
 namespace {
 

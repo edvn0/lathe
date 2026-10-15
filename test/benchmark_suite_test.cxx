@@ -9,8 +9,8 @@
 #include <string>
 #include <vector>
 
-#include "app/benchmark.hxx"
-#include "app/benchmark_compare.hxx"
+#include "benchmark/benchmark.hxx"
+#include "benchmark/benchmark_compare.hxx"
 #include "core/command_line.hxx"
 #include "core/json.hxx"
 #include "rendering/renderer.hxx"
