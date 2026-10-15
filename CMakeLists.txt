@@ -243,6 +243,8 @@ cpmaddpackage(
         "ASSIMP_BUILD_STL_IMPORTER ON"
         # Experimental in Assimp; clones tinyusdz (pinned by hash) with FetchContent at configure time.
         "ASSIMP_BUILD_USD_IMPORTER ON"
+    # The USD importer reads render_scene.nodes[0] unchecked, so a stage with no prims segfaults it.
+    PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/assimp_usd_empty_stage.patch"
 )
 
 # tinyusdz (built into Assimp for USD) compiles its own stb_image_resize2 implementation, which collides with the one in
