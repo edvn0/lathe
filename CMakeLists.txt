@@ -234,6 +234,9 @@ cpmaddpackage(
         "ASSIMP_WARNINGS_AS_ERRORS OFF"
         "ASSIMP_INJECT_DEBUG_POSTFIX OFF"
         "ASSIMP_BUILD_ZLIB ON"
+        # Assimp sets a global RULE_LAUNCH_COMPILE/LINK to ccache, which stacks on Ccache.cmake's launcher above and
+        # makes every compile and link run ccache twice (hence "linker input file unused" warnings).
+        "ASSIMP_BUILD_USE_CCACHE OFF"
         # glTF stays on fastgltf; only the formats named in assimp_model_extensions are compiled in.
         "ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF"
         "ASSIMP_BUILD_FBX_IMPORTER ON"
