@@ -4,9 +4,11 @@
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -27,6 +29,16 @@ namespace {
     }
 
     auto hash_of(std::string const &text) -> std::string { return sha256_hex(bytes_of(text)); }
+
+    // A directory of this harness's own. CTest runs every test case as a process of its own, four at a time, so a
+    // fixed directory would be deleted by one test's cleanup under another's feet.
+    auto unique_cache_directory() -> std::filesystem::path {
+        static std::atomic<unsigned> counter{0};
+        std::random_device device;
+
+        return std::filesystem::temp_directory_path() /
+               std::format("lathe_lua_http_test_{:08x}{:08x}_{}", device(), device(), counter++);
+    }
 
     // Answers requests from a table instead of a network, and counts how often it was asked.
     struct FakeServer {
@@ -70,7 +82,7 @@ namespace {
 
     struct Harness {
         FakeServer server;
-        std::filesystem::path cache = std::filesystem::temp_directory_path() / "lathe_lua_http_test";
+        std::filesystem::path cache = unique_cache_directory();
         LuaRuntime runtime = [] {
             auto created = LuaRuntime::create();
 
@@ -79,7 +91,6 @@ namespace {
             return std::move(*created);
         }();
         LuaHttp http{[this] {
-            std::filesystem::remove_all(cache);
             LuaHttpOptions options;
 
             options.cache_directory = cache;
