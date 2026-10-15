@@ -15,7 +15,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <initializer_list>
@@ -130,18 +129,21 @@ namespace {
             rgba[index * 4 + 3] = texel.a;
         }
 
-        int length = 0;
-        auto *const png = stbi_write_png_to_mem(rgba.data(), static_cast<int>(texture.mWidth * 4),
-                                                static_cast<int>(texture.mWidth), static_cast<int>(texture.mHeight), 4,
-                                                &length);
+        std::vector<std::byte> encoded;
 
-        if (png == nullptr || length <= 0) {
+        auto const append = [](void *context, void *data, int size) {
+            auto &sink = *static_cast<std::vector<std::byte> *>(context);
+            auto const *bytes = static_cast<std::byte const *>(data);
+            sink.insert(sink.end(), bytes, bytes + size);
+        };
+
+        auto const ok = stbi_write_png_to_func(append, &encoded, static_cast<int>(texture.mWidth),
+                                               static_cast<int>(texture.mHeight), 4, rgba.data(),
+                                               static_cast<int>(texture.mWidth * 4));
+
+        if (ok == 0 || encoded.empty()) {
             return std::nullopt;
         }
-
-        auto const *bytes = reinterpret_cast<std::byte const *>(png);
-        std::vector<std::byte> encoded{bytes, bytes + length};
-        std::free(png); // NOLINT(cppcoreguidelines-no-malloc,hicpp-no-malloc)
 
         return encoded;
     }
