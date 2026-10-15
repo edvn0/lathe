@@ -19,7 +19,7 @@
 #include "shadow_caster_game.hxx"
 
 namespace {
-    constexpr std::array<std::string_view, 11> names{"basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "lights", "materials", "shadows", "shadowcity"};
+    constexpr std::array<std::string_view, 12> names{"basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "lights", "materials", "shadows", "shadowcity", "snake"};
 }
 
 auto game_names() -> std::span<std::string_view const> { return names; }
@@ -33,6 +33,15 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
     if (name == "meshlets") {
         info("Starting the 'meshlets' showcase");
         return std::make_unique<MeshletShowcaseGame>();
+    }
+
+    if (name == "snake") {
+        info("Starting 'snake' (all scripts)");
+        auto game = std::make_unique<LuaGame>();
+
+        game->set_default_entry("assets/scripts/snake/main.lua");
+
+        return game;
     }
 
     if (name == "lights") {

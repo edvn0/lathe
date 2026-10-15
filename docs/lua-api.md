@@ -42,6 +42,13 @@ changes the sky, ambient light, exposure and sun; `render.bloom()` / `render.set
 `emissive_strength` and `double_sided` in its options table. `assets/scripts/lights/main.lua` (`--game=lights`) uses
 all of them.
 
+## Cameras
+
+`GameScript.camera(aspect)` returns `eye`, `target`, `fov`, `near` and `far`. Add `ortho_height` for an orthographic
+view that many world units tall (the width follows the aspect ratio), and `up` for a camera that looks along the
+y axis (a top-down view needs `up = {0, 0, 1}`). The renderer's perspective-based fits, such as sun shadow cascades,
+assume a perspective camera, so use an unlit scene with an orthographic view. `assets/scripts/snake/` does.
+
 ## Behaviours
 
 A file in `assets/scripts/behaviours/` that returns a class table is a behaviour. Attach it in the editor

@@ -1,6 +1,8 @@
 #include "luagame/lua_game.hxx"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -299,6 +301,8 @@ auto LuaGame::camera(Scene const & , float aspect_ratio) const -> CameraParams {
     float fov = default_fov_degrees;
     float near_clip = default_near_clip;
     float far_clip = default_far_clip;
+    glm::vec3 up{0.0F, 1.0F, 0.0F};
+    float ortho_height = 0.0F;
 
     if (self.runtime && self.runtime->has_callback("camera")) {
         std::array const arguments{static_cast<double>(aspect_ratio)};
@@ -313,6 +317,10 @@ auto LuaGame::camera(Scene const & , float aspect_ratio) const -> CameraParams {
 
                 eye = {eye_value.x, eye_value.y, eye_value.z};
                 target = {target_value.x, target_value.y, target_value.z};
+                auto const up_value = lua_field_vec3(state, table, "up", {up.x, up.y, up.z});
+
+                up = {up_value.x, up_value.y, up_value.z};
+                ortho_height = static_cast<float>(lua_field_number(state, table, "ortho_height", ortho_height));
                 fov = static_cast<float>(lua_field_number(state, table, "fov", fov));
                 near_clip = static_cast<float>(lua_field_number(state, table, "near", near_clip));
                 far_clip = static_cast<float>(lua_field_number(state, table, "far", far_clip));
@@ -322,12 +330,31 @@ auto LuaGame::camera(Scene const & , float aspect_ratio) const -> CameraParams {
         }
     }
 
+    // A camera looking along `up` has no horizontal axis; a script that does that gets the default up instead of NaNs.
+    auto const forward = target - eye;
+
+    if (!(glm::length(glm::cross(forward, up)) > 1e-6F * std::max(glm::length(forward), 1.0F))) {
+        up = glm::vec3{0.0F, 1.0F, 0.0F};
+
+        if (!(glm::length(glm::cross(forward, up)) > 1e-6F * std::max(glm::length(forward), 1.0F))) {
+            up = glm::vec3{0.0F, 0.0F, 1.0F};
+        }
+    }
+
+    // An orthographic view shows `ortho_height` world units top to bottom; the renderer's fov-based fits (shadow
+    // cascades, light LOD) see a narrow fov, which is harmless for the unlit scenes this is meant for.
+    auto const orthographic = ortho_height > 0.0F && std::isfinite(ortho_height);
+    auto const half_height = ortho_height * 0.5F;
+    auto const half_width = half_height * aspect_ratio;
+    auto const fov_radians = orthographic ? 0.1F : glm::radians(fov);
+
     CameraParams params{
-            .view = glm::lookAtLH(eye, target, glm::vec3{0.0F, 1.0F, 0.0F}),
-            .projection = glm::perspectiveLH_ZO(glm::radians(fov), aspect_ratio, near_clip, far_clip),
+            .view = glm::lookAtLH(eye, target, up),
+            .projection = orthographic ? glm::orthoLH_ZO(-half_width, half_width, -half_height, half_height, near_clip, far_clip)
+                                       : glm::perspectiveLH_ZO(glm::radians(fov), aspect_ratio, near_clip, far_clip),
             .near_clip = near_clip,
             .far_clip = far_clip,
-            .vertical_fov_radians = glm::radians(fov),
+            .vertical_fov_radians = fov_radians,
     };
 
     self.last_camera = params;
