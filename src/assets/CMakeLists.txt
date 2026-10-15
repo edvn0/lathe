@@ -1,6 +1,7 @@
 set(
     engine_assets_sources
     assets_error_describe.cxx
+    assimp_import.cxx
     geometry_allocator.cxx
     geometry_arena.cxx
     hdr_image.cxx

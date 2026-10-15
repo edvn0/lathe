@@ -31,7 +31,9 @@
 #include <utility>
 #include <vector>
 
+#include "assets/assimp_import.hxx"
 #include "assets/material_storage.hxx"
+#include "assets/model_formats.hxx"
 #include "assets/model_skin_import.hxx"
 #include "core/logger.hxx"
 #include "core/thread_pool.hxx"
@@ -946,6 +948,10 @@ auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_s
                                 std::shared_ptr<ModelLoadProfile> profile)
         -> std::expected<ModelCpuData, ModelLoadError> {
     ZoneScopedNC("LoadModelCpuUnfinalized", tracy::Color::Goldenrod);
+
+    if (is_assimp_model(path.absolute())) {
+        return load_model_cpu_assimp(path, sampler_storage, std::move(profile));
+    }
 
     auto *const profile_ptr = profile.get();
 

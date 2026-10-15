@@ -752,8 +752,10 @@ impl Config {
             copy_into(&source, &data.join(relative))?;
             copied += 1;
 
-            // A .gltf references sidecar buffers and textures that no AssetPath names.
-            if source.extension() == Some(OsStr::new("gltf"))
+            // These formats reference sidecar buffers, materials and textures that no AssetPath names.
+            if ["gltf", "obj", "dae", "fbx"]
+                .iter()
+                .any(|extension| source.extension() == Some(OsStr::new(extension)))
                 && let Some(directory) = source.parent()
             {
                 for entry in fs::read_dir(directory)? {

@@ -220,6 +220,30 @@ cpmaddpackage(
 )
 
 cpmaddpackage(
+    NAME assimp
+    GITHUB_REPOSITORY assimp/assimp
+    GIT_TAG v5.4.3
+    SYSTEM YES
+    OPTIONS
+        "BUILD_SHARED_LIBS OFF"
+        "ASSIMP_BUILD_TESTS OFF"
+        "ASSIMP_BUILD_ASSIMP_TOOLS OFF"
+        "ASSIMP_BUILD_SAMPLES OFF"
+        "ASSIMP_INSTALL OFF"
+        "ASSIMP_NO_EXPORT ON"
+        "ASSIMP_WARNINGS_AS_ERRORS OFF"
+        "ASSIMP_INJECT_DEBUG_POSTFIX OFF"
+        "ASSIMP_BUILD_ZLIB ON"
+        # glTF stays on fastgltf; only the formats named in assimp_model_extensions are compiled in.
+        "ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF"
+        "ASSIMP_BUILD_FBX_IMPORTER ON"
+        "ASSIMP_BUILD_OBJ_IMPORTER ON"
+        "ASSIMP_BUILD_COLLADA_IMPORTER ON"
+        "ASSIMP_BUILD_PLY_IMPORTER ON"
+        "ASSIMP_BUILD_STL_IMPORTER ON"
+)
+
+cpmaddpackage(
     NAME glm
     GITHUB_REPOSITORY g-truc/glm
     GIT_TAG 1.0.3
@@ -801,6 +825,7 @@ mark_target_includes_system(glfw)
 mark_target_includes_system(spdlog::spdlog)
 mark_target_includes_system(GPUOpen::VulkanMemoryAllocator)
 mark_target_includes_system(fastgltf::fastgltf)
+mark_target_includes_system(assimp::assimp)
 mark_target_includes_system(glm::glm)
 mark_target_includes_system(EnTT::EnTT)
 mark_target_includes_system(lua)
