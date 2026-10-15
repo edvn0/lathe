@@ -53,6 +53,28 @@ Kd 1 0 0
 Ns 100
 )";
 
+    // The same quad as quad_obj, authored as USD ASCII.
+    constexpr auto quad_usda = R"(#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "Root"
+{
+    def Mesh "Quad"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0, 0, 2), (1, 0, 2), (1, 1, 2), (0, 1, 2)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+    }
+}
+)";
+
 } // namespace
 
 TEST_SUITE("assimp import") {
@@ -64,6 +86,10 @@ TEST_SUITE("assimp import") {
         CHECK(is_assimp_model("a.fbx"));
         CHECK(is_assimp_model("dir/b.OBJ"));
         CHECK(is_assimp_model("c.dae"));
+        CHECK(is_assimp_model("scene.USDZ"));
+        CHECK(is_assimp_model("scene.usda"));
+        CHECK(is_assimp_model("scene.usdc"));
+        CHECK(is_assimp_model("scene.usd"));
         CHECK_FALSE(is_assimp_model("c.glb"));
 
         CHECK(is_supported_model("d.stl"));
@@ -116,6 +142,30 @@ TEST_SUITE("assimp import") {
         CHECK_FALSE(model->nodes.empty());
     }
 
+    TEST_CASE("a USD quad loads as two triangles with Z mirrored") {
+        TemporaryDirectory const directory;
+        write_file(directory.path / "quad.usda", quad_usda);
+
+        SamplerStorage sampler_storage;
+        auto model = load_model_cpu(AssetPath::external(directory.path / "quad.usda").value(), sampler_storage);
+        REQUIRE(model.has_value());
+
+        std::size_t index_count = 0;
+
+        for (auto const &mesh: model->meshes) {
+            for (auto const &primitive: mesh.primitives) {
+                index_count += primitive.indices.size();
+
+                for (auto const &vertex: primitive.vertices) {
+                    CHECK(vertex.position.z == doctest::Approx(-2.0F));
+                }
+            }
+        }
+
+        CHECK(index_count == 6);
+        CHECK_FALSE(model->nodes.empty());
+    }
+
     TEST_CASE("a missing file reports file_not_found") {
         SamplerStorage sampler_storage;
         auto const missing = std::filesystem::temp_directory_path() / "lathe_assimp_import_test_missing.obj";
@@ -131,6 +181,17 @@ TEST_SUITE("assimp import") {
 
         SamplerStorage sampler_storage;
         auto model = load_model_cpu(AssetPath::external(directory.path / "broken.fbx").value(), sampler_storage);
+
+        REQUIRE_FALSE(model.has_value());
+        CHECK(model.error().type == ModelLoadErrorType::parse_error);
+    }
+
+    TEST_CASE("garbage USD content reports parse_error") {
+        TemporaryDirectory const directory;
+        write_file(directory.path / "broken.usda", "#usda 1.0\ndef Mesh {{{ not usd");
+
+        SamplerStorage sampler_storage;
+        auto model = load_model_cpu(AssetPath::external(directory.path / "broken.usda").value(), sampler_storage);
 
         REQUIRE_FALSE(model.has_value());
         CHECK(model.error().type == ModelLoadErrorType::parse_error);

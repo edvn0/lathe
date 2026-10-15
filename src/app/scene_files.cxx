@@ -193,7 +193,7 @@ auto Application::on_files_dropped(std::span<std::filesystem::path const> paths)
         } else if (is_supported_model(path)) {
             spawn_streamed_model(path);
         } else {
-            warn("Dropped '{}': only .lbf scenes and .gltf/.glb/.fbx/.obj/.dae/.ply/.stl models can be dropped", path.string());
+            warn("Dropped '{}': only .lbf scenes and .gltf/.glb/.fbx/.obj/.dae/.ply/.stl/.usd/.usda/.usdc/.usdz models can be dropped", path.string());
         }
     }
 
@@ -240,7 +240,7 @@ auto Application::draw_scene_file_ui() -> void {
         }
 
         ImGui::TextDisabled("Ctrl+S save, Ctrl+Shift+S save as, Ctrl+O open.");
-        ImGui::TextDisabled("Drop a .lbf onto the window to open it, or a model (.gltf, .glb, .fbx, .obj, ...) to add it.");
+        ImGui::TextDisabled("Drop a .lbf onto the window to open it, or a model (.gltf, .glb, .fbx, .obj, .usd, ...) to add it.");
     });
 
     if (auto const picked = scene_browser.draw(editor_icons.get())) {

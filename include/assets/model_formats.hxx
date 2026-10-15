@@ -11,10 +11,12 @@
 // assets/assimp_import.hxx.
 inline constexpr std::array<std::string_view, 2> gltf_model_extensions{".gltf", ".glb"};
 
-inline constexpr std::array<std::string_view, 5> assimp_model_extensions{".fbx", ".obj", ".dae", ".ply", ".stl"};
+inline constexpr std::array<std::string_view, 9> assimp_model_extensions{".fbx", ".obj", ".dae", ".ply", ".stl",
+                                                                          ".usd", ".usda", ".usdc", ".usdz"};
 
-inline constexpr std::array<std::string_view, 7> model_file_extensions{".gltf", ".glb", ".fbx", ".obj",
-                                                                       ".dae",  ".ply", ".stl"};
+inline constexpr std::array<std::string_view, 11> model_file_extensions{".gltf", ".glb", ".fbx", ".obj",
+                                                                        ".dae",  ".ply", ".stl", ".usd",
+                                                                        ".usda", ".usdc", ".usdz"};
 
 [[nodiscard]]
 inline auto model_extension_of(std::filesystem::path const &path) -> std::string {

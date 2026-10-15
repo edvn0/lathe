@@ -753,7 +753,7 @@ impl Config {
             copied += 1;
 
             // These formats reference sidecar buffers, materials and textures that no AssetPath names.
-            if ["gltf", "obj", "dae", "fbx"]
+            if ["gltf", "obj", "dae", "fbx", "usd", "usda", "usdc"]
                 .iter()
                 .any(|extension| source.extension() == Some(OsStr::new(extension)))
                 && let Some(directory) = source.parent()

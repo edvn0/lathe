@@ -417,7 +417,7 @@ namespace {
 
     [[nodiscard]] auto model_file_filters() -> std::vector<gui::FileBrowser::Filter> {
         return {
-                {.label = "Models (*.gltf, *.glb, *.fbx, *.obj, *.dae, *.ply, *.stl)",
+                {.label = "Models (*.gltf, *.glb, *.fbx, *.obj, *.dae, *.ply, *.stl, *.usd*)",
                  .extensions = {model_file_extensions.begin(), model_file_extensions.end()}},
                 {.label = "All files", .extensions = {}},
         };

@@ -241,6 +241,8 @@ cpmaddpackage(
         "ASSIMP_BUILD_COLLADA_IMPORTER ON"
         "ASSIMP_BUILD_PLY_IMPORTER ON"
         "ASSIMP_BUILD_STL_IMPORTER ON"
+        # Experimental in Assimp; clones tinyusdz (pinned by hash) with FetchContent at configure time.
+        "ASSIMP_BUILD_USD_IMPORTER ON"
 )
 
 cpmaddpackage(

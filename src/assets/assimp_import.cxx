@@ -5,6 +5,8 @@
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
+#include <stb_image_write.h>
+
 #include <glm/geometric.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/matrix.hpp>
@@ -13,6 +15,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <initializer_list>
@@ -114,6 +117,35 @@ namespace {
         };
     }
 
+    // aiTexel is BGRA in memory order; PNG wants RGBA.
+    auto encode_raw_texture(aiTexture const &texture) -> std::optional<std::vector<std::byte>> {
+        auto const texel_count = static_cast<std::size_t>(texture.mWidth) * texture.mHeight;
+        std::vector<unsigned char> rgba(texel_count * 4);
+
+        for (std::size_t index = 0; index < texel_count; ++index) {
+            auto const &texel = texture.pcData[index];
+            rgba[index * 4 + 0] = texel.r;
+            rgba[index * 4 + 1] = texel.g;
+            rgba[index * 4 + 2] = texel.b;
+            rgba[index * 4 + 3] = texel.a;
+        }
+
+        int length = 0;
+        auto *const png = stbi_write_png_to_mem(rgba.data(), static_cast<int>(texture.mWidth * 4),
+                                                static_cast<int>(texture.mWidth), static_cast<int>(texture.mHeight), 4,
+                                                &length);
+
+        if (png == nullptr || length <= 0) {
+            return std::nullopt;
+        }
+
+        auto const *bytes = reinterpret_cast<std::byte const *>(png);
+        std::vector<std::byte> encoded{bytes, bytes + length};
+        std::free(png); // NOLINT(cppcoreguidelines-no-malloc,hicpp-no-malloc)
+
+        return encoded;
+    }
+
     struct TextureRequest {
         aiTextureType type;
         ModelTextureSlot slot;
@@ -161,15 +193,23 @@ namespace {
                                                                 : std::format("{}_{}", material_name, slot_name)};
 
             if (auto const *embedded = scene_.GetEmbeddedTexture(reference.c_str())) {
-                // Raw ARGB texels (mHeight != 0) have no encoded form to hand to the texture streamer.
-                if (embedded->mHeight != 0 || embedded->pcData == nullptr) {
-                    warn("[load_model_cpu_assimp]: '{}' has an uncompressed embedded texture; skipped", reference);
+                if (embedded->pcData == nullptr) {
+                    warn("[load_model_cpu_assimp]: '{}' has an empty embedded texture; skipped", reference);
                     return std::nullopt;
                 }
 
-                auto const *bytes = reinterpret_cast<std::byte const *>(embedded->pcData);
-                source.encoded.assign(bytes, bytes + embedded->mWidth);
-                source.cache_key = std::format("{}#assimp:{}#{}", model_path_.key(), reference, embedded->mWidth);
+                if (embedded->mHeight == 0) {
+                    auto const *bytes = reinterpret_cast<std::byte const *>(embedded->pcData);
+                    source.encoded.assign(bytes, bytes + embedded->mWidth);
+                } else if (auto png = encode_raw_texture(*embedded)) {
+                    // USD hands textures over decoded; re-encode them so they take the streamer's usual path.
+                    source.encoded = std::move(*png);
+                } else {
+                    warn("[load_model_cpu_assimp]: '{}' could not be re-encoded; skipped", reference);
+                    return std::nullopt;
+                }
+
+                source.cache_key = std::format("{}#assimp:{}#{}", model_path_.key(), reference, source.encoded.size());
             } else {
                 auto relative = reference;
                 std::ranges::replace(relative, '\\', '/');

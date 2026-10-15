@@ -5,8 +5,8 @@
 
 #include "assets/load_model.hxx"
 
-// Reads a non-glTF model (.fbx, .obj, .dae, .ply, .stl) into the same unfinalized CPU form load_model_cpu_unfinalized
-// returns for glTF, so tangents, LODs, meshlets and the GPU upload are shared.
+// Reads a non-glTF model (.fbx, .obj, .dae, .ply, .stl, .usd/.usda/.usdc/.usdz) into the same unfinalized CPU form
+// load_model_cpu_unfinalized returns for glTF, so tangents, LODs, meshlets and the GPU upload are shared.
 //
 // Static geometry, materials, textures and the node hierarchy only: skeletons, animation and lights are not imported.
 [[nodiscard]]
