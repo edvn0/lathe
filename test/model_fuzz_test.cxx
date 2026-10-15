@@ -572,8 +572,8 @@ TEST_SUITE("model fuzz") {
         write_file(directory.path / "fine.dae", collada(R"(<node id="a"/><node id="b"><instance_node url="#a"/></node>)",
                                                         R"(<instance_node url="#b"/><instance_node url="#b"/>)"));
         auto const control = load_isolated(directory.path / "fine.dae");
-        CHECK_MESSAGE(control != Outcome::crashed && control != Outcome::timed_out, "acyclic instances: ",
-                      describe(control));
+        auto const survived = control != Outcome::crashed && control != Outcome::timed_out;
+        CHECK_MESSAGE(survived, "acyclic instances: ", describe(control));
     }
 
     // Deterministic mutation fuzzing: LATHE_FUZZ_SEED picks the stream and LATHE_FUZZ_ITERATIONS the length, so a
