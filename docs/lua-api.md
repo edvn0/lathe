@@ -1,7 +1,7 @@
 # Lua API for editors (LuaLS)
 
 `lua-api/` holds `---@meta` stub files describing everything the engine puts in a game script's environment: the
-libraries `scene`, `assets`, `camera`, `ui`, `game`, `entity`, `compute`, `render`, `key` and `mouse`, the `Entity` and `Effect`
+libraries `scene`, `assets`, `camera`, `ui`, `game`, `entity`, `compute`, `render`, `http`, `key` and `mouse`, the `Entity` and `Effect`
 handles with their methods, the option tables (`ParticleOptions`, `UiWindowOptions`, `CameraResult`) and `GameScript`,
 the table of callbacks a script returns. They are never loaded by the engine; they only give completion, hover docs
 and type checks. The repo's `.luarc.json` selects Lua 5.4 (what the engine embeds), points `workspace.library` at
@@ -41,6 +41,36 @@ changes the sky, ambient light, exposure and sun; `render.bloom()` / `render.set
 `assets.sphere()` and `assets.capsule()` give the built-in models, and `assets.material` takes `emissive`,
 `emissive_strength` and `double_sided` in its options table. `assets/scripts/lights/main.lua` (`--game=lights`) uses
 all of them.
+
+## Cameras
+
+`GameScript.camera(aspect)` returns `eye`, `target`, `fov`, `near` and `far`. Add `ortho_height` for an orthographic
+view that many world units tall (the width follows the aspect ratio), and `up` for a camera that looks along the
+y axis (a top-down view needs `up = {0, 0, 1}`). The renderer's perspective-based fits, such as sun shadow cascades,
+assume a perspective camera, so use an unlit scene with an orthographic view. `assets/scripts/snake/` does.
+
+## HTTP
+
+`http.get(url [, options])` and `http.download(url, options)` run on worker threads and hand back a request you poll
+(`request:done()`, `:ok()`, `:error()`, `:status()`, `:body()`, `:path()`, `:cancel()`) or finish through an
+`on_done = function(request) ... end` option, which the engine calls from its update, so a script never sees another
+thread. Only https, and only to `raw.githubusercontent.com`, `github.com` and `objects.githubusercontent.com`;
+at most eight requests at once, and a `get` body is capped at 4 MiB.
+
+A download needs a `sha256`. The file is kept under the cache directory (`name` picks where), is reused when it already
+matches, and a file that does not match is an error and is not kept. Pass a finished download to
+`assets.load_model(request)` to load it. `assets/scripts/snake/main.lua` fetches a CC0 avocado this way and plays with
+spheres until it arrives, or if it never does.
+
+```lua
+http.download(URL, {
+    sha256 = "85ae91e6...",
+    name = "snake/avocado.glb",
+    on_done = function(request)
+        if request:ok() then model = assets.load_model(request) end
+    end,
+})
+```
 
 ## Behaviours
 

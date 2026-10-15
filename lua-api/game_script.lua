@@ -34,6 +34,8 @@ function GameScript.camera(aspect) end
 ---@class CameraResult
 ---@field eye? Vec3 default {0, 6, -8}
 ---@field target? Vec3 default {0, 0, 0}
+---@field up? Vec3 default {0, 1, 0}; use another axis for a camera that looks straight down or up
+---@field ortho_height? number if above 0, an orthographic view this many world units tall (width follows the aspect) instead of a perspective one
 ---@field fov? number vertical field of view in degrees (default 60)
 ---@field near? number (default 0.1)
 ---@field far? number (default 1000)

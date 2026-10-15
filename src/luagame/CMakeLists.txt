@@ -9,6 +9,7 @@ add_library(
     STATIC
         lua_animation.cxx
         lua_behaviours.cxx
+        lua_http.cxx
         lua_game.cxx
         lua_game_api.cxx
 )
@@ -24,6 +25,7 @@ target_link_libraries(
     PUBLIC
         engine_game
         engine_scripting
+        engine_net
         engine_deps
         engine_rendering
         engine_scene

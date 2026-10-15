@@ -6,6 +6,6 @@
     "checkThirdParty": false
   },
   "diagnostics": {
-    "globals": ["scene", "assets", "camera", "ui", "game", "entity", "compute", "key", "mouse", "physics", "animation", "render"]
+    "globals": ["scene", "assets", "camera", "ui", "game", "entity", "compute", "key", "mouse", "physics", "animation", "render", "http"]
   }
 }

@@ -8,12 +8,13 @@
 
 #include "luagame/lua_game.hxx"
 #include "luagame/lua_game_api.hxx"
+#include "luagame/lua_http.hxx"
 #include "scripting/lua_runtime.hxx"
 
 // The LuaLS stubs in lua-api/ must name exactly what open_lua_game_api registers.
 
 namespace {
-    constexpr auto libraries = std::array{"scene", "assets", "camera", "ui", "game", "entity", "compute", "key", "mouse", "physics", "animation", "render"};
+    constexpr auto libraries = std::array{"scene", "assets", "camera", "ui", "game", "entity", "compute", "key", "mouse", "physics", "animation", "render", "http"};
 
     // Methods live in a metatable's __index; the stubs call the classes by these names.
     struct Class {
@@ -22,7 +23,8 @@ namespace {
     };
     constexpr auto classes = std::array{Class{"lathe.Entity", "Entity"}, Class{"lathe.Effect", "Effect"},
                                   Class{"lathe.Character", "Character"},
-                                  Class{"lathe.Rig", "Rig"}, Class{"lathe.Actor", "Actor"}};
+                                  Class{"lathe.Rig", "Rig"}, Class{"lathe.Actor", "Actor"},
+                                  Class{"lathe.HttpRequest", "HttpRequest"}};
 
     void collect_keys(lua_State *state, int table, std::string const &owner, std::set<std::string> &into) {
         table = lua_absindex(state, table);
@@ -41,6 +43,8 @@ namespace {
         auto host = LuaGameHost{};
         created->set_host(&host);
         open_lua_game_api(*created);
+        LuaHttp http;
+        http.open(*created);
 
         auto *const state = created->state();
         auto names = std::set<std::string>{};

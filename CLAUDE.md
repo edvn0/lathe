@@ -31,6 +31,6 @@ core < gpu < assets < animation < physics < scene < terrain < rendering < serial
      < game < luagame < app < benchmark
 ```
 
-`net`, `gameserver` and `gameclient` depend on `core` alone. `game` is the `IGame` interface; `luagame` is the Lua
+`net`, `gameserver` and `gameclient` depend on `core` alone (`luagame` uses `net` for the scripts' `http` library). `game` is the `IGame` interface; `luagame` is the Lua
 implementation of it and the Lua API; `app` is the editor; `benchmark` runs the editor headless. The sample games in
 `game/` are linked into the executable only and may use any module. Do not add an include that points rightwards.
