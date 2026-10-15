@@ -902,8 +902,7 @@ if(lathe_track_memory)
   )
 endif()
 
-# Game sources are linked only into the executables (as the lathe_games object library below), keeping the engine
-# libraries game-agnostic.
+# Game sources are linked only into the executables (compiled into each), keeping the engine libraries game-agnostic.
 file(
     GLOB_RECURSE lathe_game_sources
     CONFIGURE_DEPENDS
@@ -989,52 +988,6 @@ add_library(
     lathe-engine
 )
 
-# The sample games and the game registry (game/src/main_entry.cxx), shared by the editor and the player.
-add_library(
-    lathe_games
-    OBJECT
-        ${lathe_game_sources}
-)
-
-target_include_directories(
-    lathe_games
-    PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/game/include"
-)
-
-# Compile-time usage requirements only (an object library is never linked); the executables link lathe::core.
-target_link_libraries(
-    lathe_games
-    PRIVATE
-        engine_benchmark
-        engine_app
-        engine_runtime
-        engine_luagame
-        engine_game
-        engine_scripting
-        engine_serialisation
-        engine_rendering
-        engine_terrain
-        engine_scene
-        engine_physics
-        engine_animation
-        engine_net
-        engine_gameserver
-        engine_gameclient
-        engine_assets
-        engine_gpu
-        engine_core
-        engine_gameclient_ix
-        engine_options
-)
-
-target_precompile_headers(
-    lathe_games
-    PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/core/pch.hxx"
-)
-
 # ------------------------------------------------------------------------------
 # Application
 # ------------------------------------------------------------------------------
@@ -1042,12 +995,12 @@ target_precompile_headers(
 add_executable(
     lathe
     ${lathe_editor_main_sources}
+    ${lathe_game_sources}
 )
 
 target_link_libraries(
     lathe
     PRIVATE
-        lathe_games
         lathe::core
         engine_gameclient_ix
         engine_options
@@ -1057,12 +1010,12 @@ target_link_libraries(
 add_executable(
     lathe-player
     ${lathe_player_main_sources}
+    ${lathe_game_sources}
 )
 
 target_link_libraries(
     lathe-player
     PRIVATE
-        lathe_games
         lathe::core
         engine_gameclient_ix
         engine_options
