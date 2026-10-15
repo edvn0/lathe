@@ -15,15 +15,20 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cctype>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
+#include "assets/model_formats.hxx"
 #include "core/logger.hxx"
 #include "gpu/sampler_storage.hxx"
 
@@ -40,6 +45,192 @@ namespace {
         // aiMatrix4x4 is row-major, glm column-major.
         auto const column_major = glm::transpose(glm::make_mat4(&matrix.a1));
         return mirror_z * column_major * mirror_z;
+    }
+
+    auto xml_attribute(std::string_view tag, std::string_view name) -> std::optional<std::string_view> {
+        for (std::size_t from = 0;;) {
+            auto const at = tag.find(name, from);
+
+            if (at == std::string_view::npos) {
+                return std::nullopt;
+            }
+
+            from = at + name.size();
+
+            if (at == 0 || std::isspace(static_cast<unsigned char>(tag[at - 1])) == 0) {
+                continue;
+            }
+
+            auto cursor = from;
+            auto const skip_space = [&] {
+                while (cursor < tag.size() && std::isspace(static_cast<unsigned char>(tag[cursor])) != 0) {
+                    ++cursor;
+                }
+            };
+
+            skip_space();
+
+            if (cursor >= tag.size() || tag[cursor] != '=') {
+                continue;
+            }
+
+            ++cursor;
+            skip_space();
+
+            if (cursor >= tag.size() || (tag[cursor] != '"' && tag[cursor] != '\'')) {
+                continue;
+            }
+
+            auto const quote = tag[cursor++];
+            auto const end = tag.find(quote, cursor);
+
+            if (end == std::string_view::npos) {
+                return std::nullopt;
+            }
+
+            return tag.substr(cursor, end - cursor);
+        }
+    }
+
+    // Assimp resolves a Collada <instance_node> by recursing into the node it names, with no guard against a node that
+    // (directly or through others) instances itself, so such a file runs the stack out. Build the "contains or
+    // instances" graph from the XML and reject cycles, and chains too deep to recurse safely, before Assimp sees it.
+    constexpr std::size_t max_collada_instance_depth = 256;
+
+    auto find_collada_instance_problem(std::string_view xml) -> std::optional<std::string> {
+        std::map<std::string, std::vector<std::string>> edges;
+
+        struct OpenElement {
+            bool has_id = false;
+        };
+
+        std::vector<OpenElement> open;
+        std::vector<std::string> ids;
+
+        auto const add_edge = [&](std::string_view target) {
+            edges[ids.empty() ? std::string{} : ids.back()].emplace_back(target);
+        };
+
+        for (std::size_t position = 0;;) {
+            auto const lt = xml.find('<', position);
+
+            if (lt == std::string_view::npos) {
+                break;
+            }
+
+            if (xml.substr(lt).starts_with("<!--")) {
+                auto const end = xml.find("-->", lt + 4);
+                position = end == std::string_view::npos ? xml.size() : end + 3;
+                continue;
+            }
+
+            if (xml.substr(lt).starts_with("<![CDATA[")) {
+                auto const end = xml.find("]]>", lt + 9);
+                position = end == std::string_view::npos ? xml.size() : end + 3;
+                continue;
+            }
+
+            auto const gt = xml.find('>', lt);
+
+            if (gt == std::string_view::npos) {
+                break;
+            }
+
+            auto const tag = xml.substr(lt + 1, gt - lt - 1);
+            position = gt + 1;
+
+            if (tag.empty() || tag.front() == '?' || tag.front() == '!') {
+                continue;
+            }
+
+            if (tag.front() == '/') {
+                if (!open.empty()) {
+                    if (open.back().has_id) {
+                        ids.pop_back();
+                    }
+
+                    open.pop_back();
+                }
+
+                continue;
+            }
+
+            auto const name = tag.substr(0, tag.find_first_of(" \t\r\n/"));
+            auto const self_closing = tag.back() == '/';
+            std::optional<std::string> node_id;
+
+            if (name == "node") {
+                if (auto const id = xml_attribute(tag, "id"); id.has_value() && !id->empty()) {
+                    node_id = std::string{*id};
+
+                    if (!ids.empty()) {
+                        add_edge(*id); // an instance of the parent includes its children
+                    }
+                }
+            } else if (name == "instance_node") {
+                if (auto const url = xml_attribute(tag, "url"); url.has_value() && url->starts_with('#')) {
+                    add_edge(url->substr(1));
+                }
+            }
+
+            if (!self_closing) {
+                open.push_back({.has_id = node_id.has_value()});
+
+                if (node_id.has_value()) {
+                    ids.push_back(*node_id);
+                }
+            }
+        }
+
+        enum class Mark : std::uint8_t { active, done };
+
+        struct Frame {
+            std::string id;
+            std::size_t next = 0;
+        };
+
+        std::map<std::string, Mark> marks;
+
+        for (auto const &[start, ignored]: edges) {
+            if (marks.contains(start)) {
+                continue;
+            }
+
+            std::vector<Frame> stack;
+            marks[start] = Mark::active;
+            stack.push_back({.id = start});
+
+            while (!stack.empty()) {
+                auto &frame = stack.back();
+                auto const found = edges.find(frame.id);
+
+                if (found == edges.end() || frame.next == found->second.size()) {
+                    marks[frame.id] = Mark::done;
+                    stack.pop_back();
+                    continue;
+                }
+
+                auto const target = found->second[frame.next++];
+
+                if (auto const mark = marks.find(target); mark != marks.end()) {
+                    if (mark->second == Mark::active) {
+                        return std::format("Collada node '{}' instances itself", target);
+                    }
+
+                    continue;
+                }
+
+                if (stack.size() >= max_collada_instance_depth) {
+                    return std::format("Collada nodes are instanced more than {} levels deep",
+                                       max_collada_instance_depth);
+                }
+
+                marks[target] = Mark::active;
+                stack.push_back({.id = target});
+            }
+        }
+
+        return std::nullopt;
     }
 
     auto import_error(std::string message) -> ModelLoadError {
@@ -359,6 +550,15 @@ auto load_model_cpu_assimp(AssetPath const &path, SamplerStorage &sampler_storag
 
     if (!std::filesystem::exists(path.absolute())) {
         return std::unexpected(ModelLoadError{.type = ModelLoadErrorType::file_not_found});
+    }
+
+    if (model_extension_of(path.absolute()) == ".dae") {
+        std::ifstream file{path.absolute(), std::ios::binary};
+        std::string xml{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+
+        if (auto const problem = find_collada_instance_problem(xml)) {
+            return std::unexpected(import_error(*problem));
+        }
     }
 
     auto *const profile_ptr = profile.get();

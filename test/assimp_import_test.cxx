@@ -3,8 +3,11 @@
 #include <glm/glm.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <random>
 #include <string>
 
 #include "assets/load_model.hxx"
@@ -14,8 +17,11 @@
 namespace {
 
     struct TemporaryDirectory {
-        TemporaryDirectory() : path{std::filesystem::temp_directory_path() / "lathe_assimp_import_test"} {
-            std::filesystem::remove_all(path);
+        // ctest runs test cases as parallel processes, so the name must be unique per instance.
+        TemporaryDirectory()
+            : path{std::filesystem::temp_directory_path() /
+                   std::format("lathe_assimp_import_{:x}_{:x}", std::random_device{}(),
+                               std::chrono::steady_clock::now().time_since_epoch().count())} {
             std::filesystem::create_directories(path);
         }
 

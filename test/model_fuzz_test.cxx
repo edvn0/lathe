@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -105,8 +106,11 @@ namespace {
     }
 
     struct TemporaryDirectory {
-        TemporaryDirectory() : path{std::filesystem::temp_directory_path() / "lathe_model_fuzz_test"} {
-            std::filesystem::remove_all(path);
+        // ctest runs test cases as parallel processes, so the name must be unique per instance.
+        TemporaryDirectory()
+            : path{std::filesystem::temp_directory_path() /
+                   std::format("lathe_model_fuzz_{:x}_{:x}", std::random_device{}(),
+                               std::chrono::steady_clock::now().time_since_epoch().count())} {
             std::filesystem::create_directories(path);
         }
 
@@ -321,6 +325,28 @@ endsolid t
         return bytes;
     }
 
+    // C-escaped, so a crash found in CI can be reproduced from the log alone.
+    auto escape(std::span<std::byte const> bytes, std::size_t limit = 4096) -> std::string {
+        std::string out;
+
+        for (auto const byte: bytes.first(std::min(bytes.size(), limit))) {
+            auto const c = std::to_integer<unsigned char>(byte);
+
+            if (c == '\n') {
+                out += "\\n\n";
+            } else if (c == '\\' || c == '"') {
+                out += '\\';
+                out += static_cast<char>(c);
+            } else if (c >= 0x20 && c < 0x7F) {
+                out += static_cast<char>(c);
+            } else {
+                out += std::format("\\x{:02x}", c);
+            }
+        }
+
+        return bytes.size() > limit ? out + std::format("\n... ({} more bytes)", bytes.size() - limit) : out;
+    }
+
     auto env_unsigned(char const *name, std::uint64_t fallback) -> std::uint64_t {
         if (auto const *value = std::getenv(name); value != nullptr && *value != '\0') {
             return std::strtoull(value, nullptr, 10);
@@ -471,31 +497,8 @@ TEST_SUITE("model fuzz") {
             std::string contents;
         };
 
-        std::array<Case, 6> const cases{{
+        std::array<Case, 4> const cases{{
                 {"self_mtl.obj", self_referencing_obj()},
-                {"instance_loop.dae", R"(<?xml version="1.0"?>
-<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
-  <asset><up_axis>Y_UP</up_axis></asset>
-  <library_nodes>
-    <node id="a"><instance_node url="#b"/></node>
-    <node id="b"><instance_node url="#a"/></node>
-  </library_nodes>
-  <library_visual_scenes>
-    <visual_scene id="s"><node id="n"><instance_node url="#a"/></node></visual_scene>
-  </library_visual_scenes>
-  <scene><instance_visual_scene url="#s"/></scene>
-</COLLADA>
-)"},
-                {"self_instance.dae", R"(<?xml version="1.0"?>
-<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
-  <asset><up_axis>Y_UP</up_axis></asset>
-  <library_nodes><node id="a"><instance_node url="#a"/></node></library_nodes>
-  <library_visual_scenes>
-    <visual_scene id="s"><node id="n"><instance_node url="#a"/></node></visual_scene>
-  </library_visual_scenes>
-  <scene><instance_visual_scene url="#s"/></scene>
-</COLLADA>
-)"},
                 {"self_sublayer.usda", "#usda 1.0\n(\n    defaultPrim = \"A\"\n    subLayers = [@./self_sublayer.usda@]\n)\n"
                                        "def Xform \"A\"\n{\n}\n"},
                 {"ref_a.usda", "#usda 1.0\n(\n    defaultPrim = \"A\"\n)\n"
@@ -513,6 +516,64 @@ TEST_SUITE("model fuzz") {
             CHECK_MESSAGE((outcome == Outcome::loaded || outcome == Outcome::rejected), test.file, ": ",
                           describe(outcome));
         }
+    }
+
+    // Assimp would recurse into these until the stack ran out, so the loader refuses them up front.
+    TEST_CASE("Collada nodes that instance themselves are rejected") {
+        TemporaryDirectory const directory;
+
+        struct Case {
+            std::string file;
+            std::string contents;
+        };
+
+        auto const collada = [](std::string const &library_nodes, std::string const &scene_node) {
+            return R"(<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Y_UP</up_axis></asset>
+  <library_nodes>)" + library_nodes + R"(</library_nodes>
+  <library_visual_scenes>
+    <visual_scene id="s"><node id="n">)" + scene_node + R"(</node></visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#s"/></scene>
+</COLLADA>
+)";
+        };
+
+        std::string deep_chain;
+        for (int i = 0; i < 400; ++i) {
+            deep_chain += std::format(R"(<node id="c{}"><instance_node url="#c{}"/></node>)", i, i + 1);
+        }
+        deep_chain += R"(<node id="c400"/>)";
+
+        std::array<Case, 5> const cases{{
+                {"self.dae", collada(R"(<node id="a"><instance_node url="#a"/></node>)", R"(<instance_node url="#a"/>)")},
+                {"pair.dae", collada(R"(<node id="a"><instance_node url="#b"/></node>)"
+                                     R"(<node id="b"><instance_node url="#a"/></node>)",
+                                     R"(<instance_node url="#a"/>)")},
+                {"triple.dae", collada(R"(<node id="a"><instance_node url="#b"/></node>)"
+                                       R"(<node id="b"><instance_node url="#c"/></node>)"
+                                       R"(<node id="c"><instance_node url="#a"/></node>)",
+                                       R"(<instance_node url="#a"/>)")},
+                {"through_child.dae", collada(R"(<node id="a"><node id="inner"><instance_node url="#a"/></node></node>)",
+                                              R"(<instance_node url="#a"/>)")},
+                {"too_deep.dae", collada(deep_chain, R"(<instance_node url="#c0"/>)")},
+        }};
+
+        for (auto const &test: cases) {
+            auto const file = directory.path / test.file;
+            write_file(file, test.contents);
+
+            auto const outcome = load_isolated(file);
+            CHECK_MESSAGE(describe(outcome) == describe(Outcome::rejected), test.file, ": ", describe(outcome));
+        }
+
+        // An acyclic instance must still load: library_nodes holding a triangle node that the scene instances twice.
+        write_file(directory.path / "fine.dae", collada(R"(<node id="a"/><node id="b"><instance_node url="#a"/></node>)",
+                                                        R"(<instance_node url="#b"/><instance_node url="#b"/>)"));
+        auto const control = load_isolated(directory.path / "fine.dae");
+        CHECK_MESSAGE(control != Outcome::crashed && control != Outcome::timed_out, "acyclic instances: ",
+                      describe(control));
     }
 
     // Deterministic mutation fuzzing: LATHE_FUZZ_SEED picks the stream and LATHE_FUZZ_ITERATIONS the length, so a
@@ -562,7 +623,8 @@ TEST_SUITE("model fuzz") {
                     write_file(saved, mutated);
 
                     FAIL_CHECK(seed.name, " iteration ", iteration, " (LATHE_FUZZ_SEED=", base_seed, "): ",
-                               describe(outcome), "; input kept at ", saved.string());
+                               describe(outcome), "; input kept at ", saved.string(), "\n--- input ---\n",
+                               escape(mutated), "\n--- end ---");
                 }
             }
         }
