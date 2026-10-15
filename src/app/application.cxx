@@ -457,32 +457,15 @@ auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> pass
     }
 }
 
-Application::Application(VulkanContext &ctx) noexcept :
-    context(ctx), renderer(std::make_unique<Renderer>(context)),
-    debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)) {
+Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
     stage_registry.bind_debug_renderer(debug_renderer.get());
 }
 
-Application::~Application() {
-    if (terrain) {
-        terrain->wait_all();
-    }
-
-    shader_watcher_.stop();
-
-    // A Lua game's finalizers release effects through effect_system, which is declared after `game` and so would be
-    // destroyed first.
-    game.reset();
-}
+Application::~Application() = default;
 
 auto Application::on_ui(std::uint32_t frame_index) -> void {
     if (is_playing && play_fullscreen) {
-        if (player_mode && game && game_hooks_enabled) {
-            game->on_ui(*active_scene(), *renderer);
-        }
-
-        gui::clear_toast_anchor();
-        gui::render_toasts();
+        Runtime::on_ui(frame_index);
         return;
     }
 
@@ -656,8 +639,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     widget("Script", [&] {
         auto const world = is_playing ? std::optional<ScriptWorld>{}
                                       : std::optional<ScriptWorld>{ScriptWorld{
-                                                .registry = &editor_scene->get_registry(),
-                                                .hierarchy_revision = editor_scene->hierarchy_revision(),
+                                                .registry = &source_scene->get_registry(),
+                                                .hierarchy_revision = source_scene->hierarchy_revision(),
                                         }};
         if (script_widget.draw(world).transforms_written > 0) {
             renderer->mark_dynamic_shadow_casters_dirty();
@@ -2637,103 +2620,46 @@ auto Application::set_entity_model(entt::registry &registry, entt::entity entity
     renderer->mark_dynamic_shadow_casters_dirty();
 }
 
-auto Application::play() -> void {
+auto Application::on_play_starting() -> void {
     selection_context().clear();
     renaming_entity = entt::null;
     inspector_name_dirty = false;
-
-    runtime_scene = std::make_unique<Scene>(*renderer);
-    runtime_scene->physics_settings = editor_scene->physics_settings;
-    runtime_scene->environment = editor_scene->environment;
-    game->clone_into_runtime(*editor_scene, *runtime_scene);
-
-    is_playing = true;
-    active_scene()->on_scene_start();
-    active_scene()->attach_debug_renderer(*debug_renderer);
-
-    if (terrain) {
-        terrain->on_physics_world_changed(active_scene()->physics_world.get());
-    }
-
-    game_mouse_captured = false;
-
-    if (play_fullscreen) {
-        if (!game->wants_cursor()) {
-            capture_mouse();
-        }
-        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoKeyboard;
-    }
 }
 
-auto Application::stop() -> void {
+auto Application::on_play_stopping() -> void {
     selection_context().clear();
     renaming_entity = entt::null;
     inspector_name_dirty = false;
-
-    if (terrain) {
-        terrain->on_physics_world_changed(nullptr);
-    }
-
-    game->on_play_stop(*active_scene());
-    active_scene()->detach_debug_renderer();
-    debug_renderer->clear_lines();
-    active_scene()->on_scene_stop();
-    is_playing = false;
-    game_mouse_captured = false;
 
     std::erase_if(model_loads, [&](StreamedModelLoad const &load) { return load.scene == runtime_scene.get(); });
-    runtime_scene.reset();
-
-    release_mouse();
-    ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoKeyboard;
 }
 
-auto Application::capture_mouse() -> void {
-    glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    has_last_mouse_position = false;
+auto Application::create_ui_resources() -> void { editor_icons = std::make_unique<gui::EditorIcons>(*renderer); }
 
-    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;
+auto Application::on_source_scene_replaced() -> void { mark_source_scene_clean(); }
+
+auto Application::on_scene_opening() -> void {
+    selection_context().clear();
+    model_loads.clear();
 }
 
-auto Application::release_mouse() -> void {
-    glfwSetInputMode(context.window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-    has_last_mouse_position = false;
+auto Application::on_shutdown() -> void {
+    scene_save_job.reset();
 
-    auto &io = ImGui::GetIO();
-    io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
-
-    double x = 0.0;
-    double y = 0.0;
-    glfwGetCursorPos(context.window, &x, &y);
-    io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+    Runtime::on_shutdown();
 }
 
-auto Application::cursor_over_game() const -> CursorPositionEvent {
-    glm::dvec2 uv{-1.0};
-
-    if (play_fullscreen) {
-        double x = 0.0;
-        double y = 0.0;
-        int width = 0;
-        int height = 0;
-        glfwGetCursorPos(context.window, &x, &y);
-        glfwGetWindowSize(context.window, &width, &height);
-
-        if (width > 0 && height > 0) {
-            uv = glm::dvec2{x / width, y / height};
-        }
-    } else if (viewport_content_size.x > 0.0F && viewport_content_size.y > 0.0F) {
-        auto const mouse = ImGui::GetIO().MousePos;
-        uv = glm::dvec2{(mouse.x - viewport_screen_pos.x) / viewport_content_size.x,
-                        (mouse.y - viewport_screen_pos.y) / viewport_content_size.y};
-    }
-
-    return CursorPositionEvent{
-            .ndc_x = (uv.x * 2.0) - 1.0,
-            .ndc_y = 1.0 - (uv.y * 2.0),
-            .inside = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0,
+auto Application::editing_camera(float aspect_ratio) const -> CameraParams {
+    return CameraParams{
+            .view = camera.view(),
+            .projection = camera.projection(aspect_ratio),
+            .near_clip = camera.near_clip(),
+            .far_clip = camera.far_clip(),
+            .vertical_fov_radians = glm::radians(camera.field_of_view_degrees()),
     };
 }
+
+auto Application::pre_update(float delta_time) -> void { camera.update(std::min(delta_time, 0.1F)); }
 
 auto Application::update(float delta_time) -> void {
     ZoneScopedNC("ApplicationUpdate", tracy::Color::Firebrick);
@@ -2741,28 +2667,13 @@ auto Application::update(float delta_time) -> void {
     last_delta_time = delta_time;
 
     update_model_loads();
-    update_scene_jobs();
+    update_scene_save();
     update_package_jobs();
 
     // Packaging pauses the simulation; rendering and the modal progress popup keep running.
     if (packaging_active()) {
+        update_scene_load();
         return;
-    }
-
-    if (auto *const streaming_terrain = active_terrain(); streaming_terrain != nullptr) {
-        auto camera_xz = glm::vec2{camera.position().x, camera.position().z};
-
-        if (is_playing) {
-            auto &registry = active_scene()->get_registry();
-            auto view = registry.view<Components::Transform const, Components::PlayerTag const>();
-
-            for (auto &&[entity, transform]: view.each()) {
-                camera_xz = glm::vec2{transform.position.x, transform.position.z};
-                break;
-            }
-        }
-
-        streaming_terrain->update(camera_xz);
     }
 
     std::erase_if(pending_deletions, [this](PendingDeletion &pending) {
@@ -2773,119 +2684,7 @@ auto Application::update(float delta_time) -> void {
         return true;
     });
 
-    if (!is_playing) {
-        return;
-    }
-
-    active_scene()->step(delta_time);
-
-    if (game->wants_cursor()) {
-        game->on_cursor_position(*active_scene(), cursor_over_game());
-    }
-
-    game->on_update(*active_scene(), delta_time);
-    systems::lifetime(active_scene()->get_registry(), *active_scene()->physics_world, delta_time);
-}
-auto Application::register_overlays() -> void {
-    auto add = [this](OverlayDesc desc) {
-        auto const name = desc.name;
-
-        if (auto registration = renderer->register_overlay(std::move(desc)); registration) {
-            overlays.push_back(std::move(*registration));
-        } else {
-            error("Could not register the '{}' overlay: {}", name, describe(registration.error()));
-        }
-    };
-
-    add(OverlayDesc{
-            .name = "Debug lines",
-            .stage = OverlayStage::scene,
-            .order = 0,
-            .prepare = {},
-            .record = [this](OverlayRecordContext const &overlay_context) { debug_renderer->record(overlay_context); },
-    });
-
-    add(OverlayDesc{
-            .name = "ImGui",
-            .stage = OverlayStage::ui,
-            .order = 0,
-            .prepare = {},
-            .record =
-                    [this](OverlayRecordContext const &overlay_context) {
-                        imgui_renderer->render(overlay_context.command_buffer, overlay_context.frame_index);
-                    },
-    });
-}
-
-auto Application::on_startup() -> void {
-
-    std::array const shader_directories{
-            data_path("assets/shaders").absolute(),
-    };
-    if (!player_mode && !shader_watcher_.start(renderer->shader_change_queue(), shader_directories)) {
-        error("Shader hot-reload watcher failed to start -- shaders will not live-reload this run");
-    }
-    imgui_renderer = std::make_unique<gui::ImGuiRenderer>(
-            *renderer, gui::FontChoice{
-                               .font_path = "assets/fonts/GoogleSansCode-Regular.ttf",
-                               .size = 12,
-                       });
-    editor_icons = std::make_unique<gui::EditorIcons>(*renderer);
-    register_overlays();
-    renderer->queue_render_thread_event([this] {
-        auto models = create_engine_models(*renderer);
-
-        if (!models) {
-            error("Fatal: could not create built-in engine models: {}", describe(models.error()));
-
-            context.running.store(false, std::memory_order_release);
-            glfwPostEmptyEvent();
-
-            return;
-        }
-
-        engine_models = *models;
-
-        if (auto const created = particle_system.create(renderer->game_gpu()); !created) {
-            warn("Could not set up particles: {}", describe(created.error()));
-        }
-
-        effect_system.create(renderer->game_gpu());
-
-        renderer->set_game_graph_hook([this](GameGraph &graph) {
-            if (auto const *scene = active_scene(); scene != nullptr) {
-                particle_system.declare(graph, scene->get_registry(), &renderer->material_storage(), last_delta_time);
-            }
-            if (game && game_hooks_enabled) {
-                effect_system.declare(graph);
-                game->on_frame_graph(graph, last_delta_time);
-            }
-        });
-
-        game->on_populate(*editor_scene, *renderer, engine_models);
-        mark_editor_scene_clean();
-
-        if (auto terrain_info = game->terrain_create_info(*renderer)) {
-            renderer->context().one_time_submit([this, info = *terrain_info](VkCommandBuffer command_buffer) {
-                auto world = TerrainWorld::create(*renderer, command_buffer, info);
-
-                if (!world) {
-                    error("Fatal: could not create TerrainWorld: {}", world.error().message);
-
-                    context.running.store(false, std::memory_order_release);
-                    glfwPostEmptyEvent();
-
-                    return;
-                }
-
-                terrain = std::make_unique<TerrainWorld>(std::move(*world));
-            });
-        }
-    });
-}
-
-auto Application::request_screenshot() -> void {
-    renderer->request_screenshot(screenshot_viewport_only ? ScreenshotSource::viewport : ScreenshotSource::window);
+    Runtime::update(delta_time);
 }
 
 auto Application::on_event(KeyPressedEvent ev) -> bool {
@@ -2899,10 +2698,10 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
                 stop();
             }
 
-            game->on_populate(*editor_scene, *renderer, engine_models);
+            game->on_populate(*source_scene, *renderer, engine_models);
             scene_path.clear();
             scene_pack.reset();
-            mark_editor_scene_clean();
+            mark_source_scene_clean();
         });
     }
     if (ev.key == GLFW_KEY_S && (ev.modifiers & GLFW_MOD_CONTROL) != 0) {
@@ -2911,29 +2710,8 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
     if (ev.key == GLFW_KEY_O && ev.modifiers == GLFW_MOD_CONTROL && !scene_browser.is_open()) {
         scene_browser.open("Open Scene", {{.label = "Lathe scenes (*.lbf)", .extensions = {".lbf"}}});
     }
-    if (ev.key == GLFW_KEY_F12) {
-        request_screenshot();
-    }
-    if (ev.key >= GLFW_KEY_F1 && ev.key < GLFW_KEY_F1 + static_cast<std::int32_t>(view_mode_names.size())) {
-        renderer->set_view_mode(view_mode_names[static_cast<std::size_t>(ev.key - GLFW_KEY_F1)].first);
-    }
 
-    if (is_playing) {
-        if (ev.key == GLFW_KEY_ESCAPE) {
-            if (game_mouse_captured) {
-                game_mouse_captured = false;
-                release_mouse();
-                return true;
-            }
-
-            if (!player_mode) {
-                stop();
-                return true;
-            }
-        }
-
-        game->on_key_pressed(*active_scene(), ev);
-    } else {
+    if (!is_playing) {
         if (!ImGui::GetIO().WantCaptureKeyboard) {
             switch (ev.key) {
                 case GLFW_KEY_1:
@@ -2956,28 +2734,25 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
         camera.on_key_pressed(ev.key);
     }
 
-    return true;
+    return Runtime::on_event(ev);
 }
+
 auto Application::on_event(KeyReleasedEvent ev) -> bool {
-    if (is_playing) {
-        game->on_key_released(*active_scene(), ev);
-    } else {
+    if (!is_playing) {
         camera.on_key_released(ev.key);
     }
 
-    return true;
+    return Runtime::on_event(ev);
 }
+
 auto Application::on_event(MouseMovedEvent ev) -> bool {
-    if (is_playing) {
-        if (play_fullscreen || game_mouse_captured) {
-            game->on_mouse_moved(*active_scene(), ev);
-        }
-    } else {
+    if (!is_playing) {
         camera.on_mouse_moved(static_cast<float>(ev.delta_x), static_cast<float>(ev.delta_y), mouse_dragging);
     }
 
-    return true;
+    return Runtime::on_event(ev);
 }
+
 auto Application::on_event(MouseScrolledEvent ev) -> bool {
     if (packaging_active()) {
         return true;
@@ -2985,31 +2760,15 @@ auto Application::on_event(MouseScrolledEvent ev) -> bool {
 
     camera.on_mouse_scrolled(static_cast<float>(ev.delta_y));
 
-    return true;
+    return Runtime::on_event(ev);
 }
+
 auto Application::on_event(MouseButtonPressedEvent ev) -> bool {
     if (packaging_active()) {
         return true;
     }
 
-    if (ev.button == GLFW_MOUSE_BUTTON_RIGHT) {
-        mouse_dragging = true;
-    }
-
-    if (is_playing) {
-        game->on_mouse_button_pressed(*active_scene(), ev);
-    }
-
-    return true;
+    return Runtime::on_event(ev);
 }
-auto Application::on_event(MouseButtonReleasedEvent ev) -> bool {
-    if (ev.button == GLFW_MOUSE_BUTTON_RIGHT) {
-        mouse_dragging = false;
-    }
 
-    if (is_playing) {
-        game->on_mouse_button_released(*active_scene(), ev);
-    }
-
-    return true;
-}
+auto Application::on_event(MouseButtonReleasedEvent ev) -> bool { return Runtime::on_event(ev); }

@@ -49,13 +49,13 @@ namespace {
 
 }
 
-auto Application::editor_scene_fingerprint() -> std::uint64_t {
-    return scene_fingerprint(capture_scene(*editor_scene, *renderer, engine_models));
+auto Application::source_scene_fingerprint() -> std::uint64_t {
+    return scene_fingerprint(capture_scene(*source_scene, *renderer, engine_models));
 }
 
-auto Application::editor_scene_dirty() -> bool { return editor_scene_fingerprint() != scene_clean_fingerprint; }
+auto Application::source_scene_dirty() -> bool { return source_scene_fingerprint() != scene_clean_fingerprint; }
 
-auto Application::mark_editor_scene_clean() -> void { scene_clean_fingerprint = editor_scene_fingerprint(); }
+auto Application::mark_source_scene_clean() -> void { scene_clean_fingerprint = source_scene_fingerprint(); }
 
 auto Application::request_open_scene(std::filesystem::path path) -> void {
     if (scene_load_job.has_value()) {
@@ -63,25 +63,13 @@ auto Application::request_open_scene(std::filesystem::path path) -> void {
         return;
     }
 
-    if (editor_scene_dirty()) {
+    if (source_scene_dirty()) {
         pending_scene_open = std::move(path);
         unsaved_changes_popup_requested = true;
         return;
     }
 
-    start_open_scene(std::move(path));
-}
-
-auto Application::start_open_scene(std::filesystem::path path) -> void {
-    if (is_playing) {
-        stop();
-    }
-
-    selection_context().clear();
-    model_loads.clear();
-
-    scene_status = std::format("Opening '{}'...", gui::path_to_utf8(path.filename()));
-    scene_load_job = SceneLoadJob::start(std::move(path));
+    open_scene(std::move(path));
 }
 
 auto Application::start_save_scene(std::filesystem::path path) -> void {
@@ -105,10 +93,10 @@ auto Application::start_save_scene(std::filesystem::path path) -> void {
     }
 
     scene_status = std::format("Saving '{}'...", gui::path_to_utf8(path.filename()));
-    scene_save_job = SceneSaveJob::start(*editor_scene, *renderer, engine_models, std::move(path), std::move(options));
+    scene_save_job = SceneSaveJob::start(*source_scene, *renderer, engine_models, std::move(path), std::move(options));
 }
 
-auto Application::update_scene_jobs() -> void {
+auto Application::update_scene_save() -> void {
     if (scene_save_job.has_value() && scene_save_job->ready()) {
         auto const path = scene_save_job->path();
         auto const fingerprint = scene_save_job->fingerprint();
@@ -133,47 +121,13 @@ auto Application::update_scene_jobs() -> void {
             if (open_after_save.has_value()) {
                 auto next = std::move(*open_after_save);
                 open_after_save.reset();
-                start_open_scene(std::move(next));
+                open_scene(std::move(next));
             }
         } else {
             error("Saving '{}' failed: {}", path.string(), describe(saved.error()));
             scene_status = std::format("Saving '{}' failed; see the console. Nothing was opened.",
                                        gui::path_to_utf8(path.filename()));
             open_after_save.reset();
-        }
-    }
-
-    if (scene_load_job.has_value()) {
-        auto const path = scene_load_job->path();
-        auto finished = scene_load_job->step(*editor_scene, *renderer, engine_models);
-
-        if (!finished.has_value()) {
-            if (scene_load_job->phase() == SceneLoadJob::Phase::streaming) {
-                auto const total = scene_load_job->models_total();
-                scene_status = std::format("Opening '{}': streaming models {}/{}", gui::path_to_utf8(path.filename()),
-                                           total - scene_load_job->models_remaining(*renderer), total);
-            }
-            return;
-        }
-
-        scene_load_job.reset();
-
-        if (*finished) {
-            scene_path = path;
-            scene_pack = std::move((*finished)->pack);
-            mark_editor_scene_clean();
-            if (play_when_loaded) {
-                play_when_loaded = false;
-                play_fullscreen = true;
-                play();
-            }
-
-            scene_status =
-                    std::format("Opened '{}' in {:.2f}s{}", gui::path_to_utf8(path.filename()), (*finished)->seconds,
-                                (*finished)->instantiate.warnings.empty() ? "" : " with warnings; see the console");
-        } else {
-            error("Opening '{}' failed: {}", path.string(), describe(finished->error()));
-            scene_status = std::format("Opening '{}' failed; see the console.", gui::path_to_utf8(path.filename()));
         }
     }
 }
@@ -289,7 +243,7 @@ auto Application::draw_scene_file_ui() -> void {
         ImGui::SameLine();
         if (ImGui::Button("Discard changes and open")) {
             if (pending_scene_open.has_value()) {
-                start_open_scene(*pending_scene_open);
+                open_scene(*pending_scene_open);
             }
             close();
         }

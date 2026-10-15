@@ -6,7 +6,7 @@
 #include <string>
 #include <thread>
 
-#include "app/fatal_dialog.hxx"
+#include "runtime/fatal_dialog.hxx"
 #include "gpu/device_wait.hxx"
 
 namespace {

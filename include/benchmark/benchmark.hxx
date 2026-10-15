@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "benchmark/benchmark_analysis.hxx"
+#include "runtime/presentation_arguments.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "scene/camera_path.hxx"
 
@@ -59,24 +60,6 @@ struct BenchmarkOptions {
 
 inline constexpr BenchmarkRenderSize benchmark_default_suite_render_size{.width = 1920, .height = 1080};
 inline constexpr std::uint32_t benchmark_default_suite_repeats = 3;
-
-enum class PresentModeChoice : std::uint8_t {
-    immediate,
-    mailbox,
-    fifo,
-    fifo_relaxed,
-};
-
-struct PresentationArguments {
-    explicit PresentationArguments(CommandLine &cli);
-
-    PresentationArguments(PresentationArguments const &) = delete;
-    auto operator=(PresentationArguments const &) -> PresentationArguments & = delete;
-
-    std::optional<bool> vsync;
-    std::optional<PresentModeChoice> present_mode;
-    std::optional<std::uint32_t> swapchain_images;
-};
 
 class BenchmarkArguments {
 public:
