@@ -12,7 +12,7 @@ assets = {}
 ---Starts loading a model asset (streamed; the cube stands in until it is ready). Only from on_populate and later.
 ---With `collider = true` the model's triangles also become collision geometry once it has loaded (see
 ---physics.add_mesh_collider). `min_extent` leaves out parts smaller than that many metres, such as wires and clutter.
----@param path string An asset path such as "assets/models/x.glb".
+---@param path string|HttpRequest An asset path such as "assets/models/x.glb", or a finished http.download request.
 ---@param options? { collider?: boolean, min_extent?: number }
 ---@return Model
 function assets.load_model(path, options) end

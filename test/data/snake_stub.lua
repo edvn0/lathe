@@ -16,6 +16,8 @@ local function entity(name)
     function e:valid() return true end
     function e:set_position(x, y, z) self.position = { x, y, z } end
     function e:set_scale(x, y, z) self.scale = { x, y or x, z or x } end
+    function e:set_euler(x, y, z) self.euler = { x, y, z } end
+    function e:destroy() self.destroyed = true end
     function e:set_model(model) self.model = model end
     function e:set_material(material) self.material = material end
     return e
@@ -30,6 +32,11 @@ scene = {
 assets = {
     cube = function() return { path = "cube" } end,
     sphere = function() return { path = "sphere" } end,
+    load_model = function(source)
+        if type(source) == "string" then return { path = source } end
+        assert(source:ok(), "load_model needs a finished download")
+        return { path = "downloaded:" .. source.url }
+    end,
     material = function(name, r, g, b, roughness, metallic, options)
         assert(type(options) == "table" and options.emissive, "materials are emissive")
         return { name = name }
@@ -50,6 +57,38 @@ ui = {
     same_line = function() end,
 }
 
+-- Downloads wait until a test finishes them with FINISH_DOWNLOADS.
+HTTP_PENDING = {}
+http = {
+    download = function(url, options)
+        assert(url:find("^https://raw.githubusercontent.com/"), "only an allowed host")
+        assert(type(options.sha256) == "string" and #options.sha256 == 64, "downloads carry a sha256")
+
+        local request = { url = url, options = options, finished = false, success = false, failure = nil }
+        function request:done() return self.finished end
+        function request:ok() return self.finished and self.success end
+        function request:error() return self.failure end
+        function request:path() return self.success and "/cache/" .. options.name or nil end
+        function request:cancel() end
+        HTTP_PENDING[#HTTP_PENDING + 1] = request
+
+        return request
+    end,
+    get = function() error("snake does not use http.get") end,
+    pending = function() return #HTTP_PENDING end,
+}
+
+function FINISH_DOWNLOADS(success)
+    local pending = HTTP_PENDING
+    HTTP_PENDING = {}
+
+    for _, request in ipairs(pending) do
+        request.finished, request.success = true, success
+        request.failure = success and nil or "timeout"
+        request.options.on_done(request)
+    end
+end
+
 local HIDDEN = -1000
 
 -- Where the pieces are, as lists of {x, z}.
@@ -60,13 +99,33 @@ function VISIBLE()
         if e.position[2] > HIDDEN / 2 then
             if e.name:find("_seg_", 1, true) then
                 segs[#segs + 1] = { e.position[1], e.position[3] }
-            elseif e.name:find("_food_", 1, true) then
+            elseif e.name:find("_food_", 1, true) or e.name:find("_avocado_", 1, true) then
                 foods[#foods + 1] = { e.position[1], e.position[3] }
             end
         end
     end
 
     return segs, foods
+end
+
+-- "avocado" when the food on the board is the downloaded model, else "sphere".
+function FOOD_KIND()
+    for _, e in ipairs(ENTITIES) do
+        if e.position[2] > HIDDEN / 2 and e.name:find("_avocado_", 1, true) then return "avocado" end
+    end
+    return "sphere"
+end
+
+-- How many pieces wear the head model and how many eyes are showing.
+function HEADS()
+    local heads, eyes = 0, 0
+    for _, e in ipairs(ENTITIES) do
+        if e.position[2] > HIDDEN / 2 then
+            if e.name:find("_seg_", 1, true) and e.model and e.model.path:find("head", 1, true) then heads = heads + 1 end
+            if e.name:find("_eye_", 1, true) then eyes = eyes + 1 end
+        end
+    end
+    return heads, eyes
 end
 
 function COUNT(pattern)
@@ -110,6 +169,10 @@ function CHECK_BOARD()
         if not c then return "food is off the board" end
         if taken[c] then return "food is on the snake" end
     end
+
+    local heads, eyes = HEADS()
+    if heads ~= 1 then return "expected one head, found " .. heads end
+    if eyes ~= 2 then return "expected two eyes, found " .. eyes end
 
     return ""
 end

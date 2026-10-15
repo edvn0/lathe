@@ -24,6 +24,7 @@
 #include "assets/model_streamer.hxx"
 #include "assets/texture_streamer.hxx"
 #include "luagame/lua_behaviours.hxx"
+#include "luagame/lua_http.hxx"
 #include "core/fly_string.hxx"
 #include "luagame/lua_animation.hxx"
 #include "core/paths.hxx"
@@ -1103,15 +1104,23 @@ namespace {
             luaL_Reg{nullptr, nullptr},
     };
 
+    // assets.load_model(path | download [, options]): `path` is an asset path; a `download` is a finished
+    // http.download request, whose file is loaded from the cache.
     auto assets_load_model(lua_State *state) -> int {
         auto &host = game_host(state);
-        auto const *const text = luaL_checkstring(state, 1);
+        auto const downloaded = lua_isuserdata(state, 1) ? lua_http_downloaded_path(state, 1) : std::nullopt;
+
+        if (lua_isuserdata(state, 1) && !downloaded) {
+            return luaL_error(state, "the download has not finished successfully");
+        }
+
+        auto const *const text = downloaded ? "" : luaL_checkstring(state, 1);
 
         if (host.renderer == nullptr || host.engine_models == nullptr) {
             return luaL_error(state, "assets can only be loaded from on_populate and later");
         }
 
-        auto const path = AssetPath::from_serialised(text);
+        auto const path = downloaded ? AssetPath::external(*downloaded) : AssetPath::from_serialised(text);
 
         if (!path) {
             return luaL_error(state, "'%s' is not a valid asset path", text);
@@ -1123,7 +1132,8 @@ namespace {
         auto observer = wants_collider ? std::optional{make_collider_observer(min_extent)} : std::nullopt;
 
         auto const handle = host.renderer->model_streamer().request(
-                *host.renderer, *path, host.engine_models->cube, FlyString{std::string_view{text}},
+                *host.renderer, *path, host.engine_models->cube,
+                FlyString{downloaded ? std::string_view{path->key()} : std::string_view{text}},
                 observer ? std::move(observer->observer) : std::function<void(ModelCpuData const &)>{});
 
         if (observer) {

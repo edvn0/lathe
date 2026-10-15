@@ -1,6 +1,8 @@
 -- Snake, entirely in Lua. The rules are snake/logic.lua and the menu's choices are snake/config.lua; this file puts
 -- them on screen: one board per map size, all built when the game starts, with a top-down orthographic camera that
--- glides to whichever board is chosen. Started with --game=snake.
+-- glides to whichever board is chosen. The snake's head and body are small models in assets/models/snake (made by
+-- tools/gen_snake_models.py); the food is a CC0 avocado fetched over http with a pinned hash, and plain spheres
+-- until it arrives (or if it never does). Started with --game=snake.
 -- Keys: arrows or WASD steer, Space/P pause, R restart, Enter starts, Esc pauses (or quits from the menu).
 
 local Config = require("snake.config")
@@ -8,6 +10,14 @@ local Logic = require("snake.logic")
 
 ---@type GameScript
 local M = {}
+
+-- The food model: Khronos glTF-Sample-Assets (CC0), pinned to a commit and a hash. It is about 0.06 units tall, so
+-- it is scaled up to fit a cell.
+local FOOD_URL = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/"
+    .. "5bad5aaa0bbb5d0f9cdc934e626f27d0df1e79b8/Models/Avocado/glTF-Binary/Avocado.glb"
+local FOOD_SHA256 = "85ae91e60ed519f53a7e2096508837fedd446dcc450f8e05678b7a204679bd12"
+local AVOCADO_SCALE = 12
+local MAX_FOOD = 8 -- the most food any spawn setting allows; set from the config below
 
 local PITCH = 100 -- distance between boards along x, so only one is ever in view
 local HIDDEN_Y = -1000 -- where unused pieces wait; far below the camera's far plane
@@ -26,6 +36,10 @@ local ents, free = {}, {}
 local food_ents, food_free = {}, {}
 local best = {}
 local over_time = 0
+local models = {}
+local is_head = {} -- entity -> whether it currently wears the head model
+local food_download = "idle" -- idle, fetching, ready, failed
+local food_error = nil
 
 -- The camera glides here; the numbers are cells.
 local cam = { x = 0, z = 0, w = 12 + 2 * MARGIN, h = 12 + 2 * MARGIN }
@@ -77,7 +91,7 @@ local function build_map(index, size)
     m.cube = cube
 
     for i = 1, math.min(POOL, w * h) do
-        m.segs[i] = prop(name .. "_seg_" .. i, cube, m.ox, HIDDEN_Y, 0, 0.42, 0.42, 0.42, materials.body)
+        m.segs[i] = prop(name .. "_seg_" .. i, models.body, m.ox, HIDDEN_Y, 0, 1, 1, 1, materials.body)
     end
 
     local max_food = 0
@@ -85,8 +99,20 @@ local function build_map(index, size)
         max_food = math.max(max_food, spawn.max_food)
     end
 
+    MAX_FOOD = max_food
+    m.sphere_foods = {}
+
     for i = 1, max_food do
-        m.foods[i] = prop(name .. "_food_" .. i, sphere, m.ox, HIDDEN_Y, 0, 0.32, 0.32, 0.32, materials.food)
+        m.sphere_foods[i] = prop(name .. "_food_" .. i, sphere, m.ox, HIDDEN_Y, 0, 0.32, 0.32, 0.32, materials.food)
+    end
+
+    m.foods = m.sphere_foods
+
+    -- Two eyes that sit on the head wherever it points.
+    m.eyes = {}
+
+    for i = 1, 2 do
+        m.eyes[i] = prop(name .. "_eye_" .. i, sphere, m.ox, HIDDEN_Y, 0, 0.1, 0.1, 0.1, materials.eye)
     end
 
     return m
@@ -98,6 +124,38 @@ local function place_segment(entity, cell, material)
     entity:set_material(material)
 end
 
+-- Makes `entity` the head (its model, colour and facing) or an ordinary body piece. The model is only set when the
+-- role changes, so a step costs a handful of calls.
+local function set_role(entity, head, material)
+    if is_head[entity] ~= head then
+        entity:set_model(head and models.head or models.body)
+        is_head[entity] = head
+    end
+
+    if not head then
+        entity:set_euler(0, 0, 0)
+    end
+
+    entity:set_material(material)
+end
+
+-- Turns the head to face the way the snake is going and puts the eyes on it. The head model looks along +x.
+local function face_head()
+    local head = ents[1]
+    local direction = round.direction
+    local x, z = cell_position(map, round.snake[1])
+
+    head:set_euler(0, math.atan(-direction[2], direction[1]), 0)
+
+    local side = { -direction[2], direction[1] }
+
+    for i, eye in ipairs(map.eyes) do
+        local sign = i == 1 and 1 or -1
+        eye:set_position(x + direction[1] * 0.3 + side[1] * 0.22 * sign, PIECE_Y + 0.17,
+            z + direction[2] * 0.3 + side[2] * 0.22 * sign)
+    end
+end
+
 -- A segment from the pool, or a new one when a long snake has used them all.
 local function take_segment()
     local entity = table.remove(free)
@@ -106,8 +164,7 @@ local function take_segment()
         return entity
     end
 
-    entity = prop(map.name .. "_seg_" .. (#map.segs + 1), map.cube, map.ox, HIDDEN_Y, 0, 0.42, 0.42, 0.42,
-        materials.body)
+    entity = prop(map.name .. "_seg_" .. (#map.segs + 1), models.body, map.ox, HIDDEN_Y, 0, 1, 1, 1, materials.body)
     map.segs[#map.segs + 1] = entity
 
     return entity
@@ -124,7 +181,8 @@ local function sync_food()
 
             if entity then
                 local x, z = cell_position(map, cell)
-                entity:set_position(x, PIECE_Y, z)
+                entity:set_position(x, map.food_y, z)
+                entity:set_euler(0, (cell.x * 7 + cell.y * 13) % 6, 0)
                 food_ents[cell] = entity
             end
         end
@@ -154,6 +212,10 @@ local function clear_board()
         food_ents[cell] = nil
     end
 
+    for _, eye in ipairs(map.eyes) do
+        hide(eye, map)
+    end
+
     ents, free, food_free = {}, {}, {}
 end
 
@@ -162,19 +224,74 @@ local function on_step(_, result)
 
     if result == "moved" then
         local entity = table.remove(ents)
-        ents[1]:set_material(materials.body)
+        set_role(ents[1], false, materials.body)
         place_segment(entity, head, materials.head)
+        set_role(entity, true, materials.head)
         table.insert(ents, 1, entity)
     elseif result == "ate" then
-        ents[1]:set_material(materials.body)
+        set_role(ents[1], false, materials.body)
         local entity = take_segment()
         place_segment(entity, head, materials.head)
+        set_role(entity, true, materials.head)
         table.insert(ents, 1, entity)
     elseif result == "dead" then
         ents[1]:set_material(materials.dead)
     end
 
+    face_head()
     sync_food()
+end
+
+-- Food is the avocado once it has arrived (a pool of them per board, made the first time a board needs one), and
+-- spheres before that or if it never does.
+local function use_best_food(m)
+    if food_download == "ready" and not m.avocados then
+        m.avocados = {}
+
+        for i = 1, MAX_FOOD do
+            local entity = scene.spawn(m.name .. "_avocado_" .. i)
+
+            entity:set_position(m.ox, HIDDEN_Y, 0)
+            entity:set_scale(AVOCADO_SCALE, AVOCADO_SCALE, AVOCADO_SCALE)
+            entity:set_model(models.avocado)
+            m.avocados[i] = entity
+        end
+
+        for _, entity in ipairs(m.sphere_foods) do
+            hide(entity, m)
+        end
+    end
+
+    if m.avocados then
+        m.foods, m.food_y = m.avocados, 0.02
+    else
+        m.foods, m.food_y = m.sphere_foods, PIECE_Y
+    end
+end
+
+-- Starts fetching the avocado. The game plays with spheres until it is there.
+local function fetch_food()
+    if not http or food_download ~= "idle" then
+        return
+    end
+
+    food_download = "fetching"
+
+    http.download(FOOD_URL, {
+        sha256 = FOOD_SHA256,
+        name = "snake/avocado.glb",
+        on_done = function(request)
+            if request:ok() then
+                models.avocado = assets.load_model(request)
+                food_download = "ready"
+                print("[snake] avocado ready")
+            else
+                food_download = "failed"
+                food_error = request:error()
+                print("[snake] no avocado, using spheres: " .. tostring(food_error))
+            end
+        end,
+    })
 end
 
 -- A fresh round on the board the menu has selected. The round is only shown until Start is pressed.
@@ -198,16 +315,22 @@ local function new_round()
         free[#free + 1] = map.segs[i]
     end
 
+    use_best_food(map)
+
     for i = #map.foods, 1, -1 do
         food_free[#food_free + 1] = map.foods[i]
     end
 
     for _, cell in ipairs(round.snake) do
         local entity = take_segment()
-        place_segment(entity, cell, #ents == 0 and materials.head or materials.body)
+        local head = #ents == 0
+
+        place_segment(entity, cell, head and materials.head or materials.body)
+        set_role(entity, head, head and materials.head or materials.body)
         ents[#ents + 1] = entity
     end
 
+    face_head()
     sync_food()
     over_time = 0
 end
@@ -235,11 +358,16 @@ function M.on_populate()
     materials.head = make_material("snake_head", 0.35, 1.0, 0.45, 1.4)
     materials.dead = make_material("snake_dead", 0.9, 0.2, 0.15, 1.2)
     materials.food = make_material("snake_food", 1.0, 0.2, 0.15, 4.0)
+    materials.eye = make_material("snake_eye", 0.02, 0.02, 0.03, 0.3)
+
+    models.head = assets.load_model("assets/models/snake/head.glb")
+    models.body = assets.load_model("assets/models/snake/body.glb")
 
     for i, size in ipairs(Config.sizes) do
         maps[i] = build_map(i, size)
     end
 
+    fetch_food()
     new_round()
     cam.x, cam.z = map.ox + map.width / 2, map.oz + map.height / 2
     cam.w, cam.h = map.width + 2 * MARGIN, map.height + 2 * MARGIN
@@ -365,6 +493,12 @@ local function menu_window()
 
         if record then
             ui.text_disabled("Best on these settings: " .. record)
+        end
+
+        if food_download == "fetching" then
+            ui.text_disabled("Fetching the food model...")
+        elseif food_download == "failed" then
+            ui.text_disabled("Food model unavailable (" .. tostring(food_error) .. "); using spheres")
         end
 
         if ui.button("Start", 260, 48, 1.4) then

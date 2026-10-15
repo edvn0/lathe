@@ -15,6 +15,7 @@
 #include <imgui.h>
 
 #include "luagame/lua_game_api.hxx"
+#include "luagame/lua_http.hxx"
 #include "core/logger.hxx"
 #include "core/paths.hxx"
 #include "scripting/lua_runtime.hxx"
@@ -52,6 +53,9 @@ struct LuaGame::Impl {
     LuaGameHost bindings;
     std::vector<std::pair<std::string, lua_CFunction>> native_modules;
     std::string default_entry_script;
+
+    // The `http` library scripts get; requests belong to one Lua state, so it is reset when the state is replaced.
+    LuaHttp http;
     std::unique_ptr<LuaRuntime> runtime;
 
     std::string fatal_error;
@@ -99,6 +103,7 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
     self.fatal_error.clear();
 
     self.bindings.components.reset();
+    self.http.reset();
     self.runtime.reset();
 
     auto created = LuaRuntime::create();
@@ -121,6 +126,7 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
     }
 
     open_lua_game_api(*self.runtime);
+    self.http.open(*self.runtime);
 
     self.bindings.components = std::make_unique<BehaviourSystem>(
             *self.runtime, self.bindings, [](std::string const &name) {
@@ -162,6 +168,11 @@ auto LuaGame::on_update(Scene &scene, float delta_time) -> void {
     }
 
     update_lua_game_physics(self.bindings);
+
+    // Finished http requests call their on_done before the frame's on_update sees the results.
+    if (self.runtime) {
+        self.http.update(*self.runtime);
+    }
 
     std::array const arguments{static_cast<double>(delta_time)};
 

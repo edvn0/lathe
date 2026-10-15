@@ -207,6 +207,55 @@ TEST_CASE("snake: the menu's choices change the round that starts") {
     CHECK(snake.board_problem().empty());
 }
 
+TEST_CASE("snake: the food is an avocado once it has downloaded, and spheres before that") {
+    SnakeHarness snake;
+
+    snake.call("on_populate");
+    snake.frame();
+
+    // The download is asked for when the game starts; until it finishes the menu says so and the food is a sphere.
+    CHECK(snake.string_result("#HTTP_PENDING") == "1");
+    CHECK(snake.string_result("HAS_TEXT('Fetching')") == "true");
+    CHECK(snake.string_result("FOOD_KIND()") == "sphere");
+
+    snake.run("FINISH_DOWNLOADS(true)");
+    snake.frame();
+    CHECK(snake.string_result("HAS_TEXT('Fetching')") == "false");
+
+    // The next round (here, choosing a map) uses the avocado.
+    snake.press("  Medium  ");
+    CHECK(snake.string_result("FOOD_KIND()") == "avocado");
+    CHECK(snake.board_problem().empty());
+
+    snake.press("Start");
+
+    for (int index = 0; index < 60; ++index) {
+        snake.frame();
+        REQUIRE(snake.board_problem().empty());
+    }
+}
+
+TEST_CASE("snake: a failed download leaves the game playable with spheres and says so") {
+    SnakeHarness snake;
+
+    snake.call("on_populate");
+    snake.frame();
+
+    snake.run("FINISH_DOWNLOADS(false)");
+    snake.frame();
+
+    CHECK(snake.string_result("HAS_TEXT('unavailable')") == "true");
+
+    snake.press("Start");
+
+    for (int index = 0; index < 60; ++index) {
+        snake.frame();
+        REQUIRE(snake.board_problem().empty());
+    }
+
+    CHECK(snake.string_result("FOOD_KIND()") == "sphere");
+}
+
 TEST_CASE("snake: the rules hold, including under random play") {
     auto created = LuaRuntime::create(LuaRuntime::Settings{.call_budget = std::chrono::seconds{20}});
 
