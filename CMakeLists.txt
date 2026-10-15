@@ -245,6 +245,18 @@ cpmaddpackage(
         "ASSIMP_BUILD_USD_IMPORTER ON"
 )
 
+# tinyusdz (built into Assimp for USD) compiles its own stb_image_resize2 implementation, which collides with the one in
+# engine_assets/stb.cxx at link time. Leave it out so ours is the only definition.
+foreach(usd_target IN ITEMS assimp tinyusdz_static)
+  if(TARGET ${usd_target})
+    target_compile_definitions(
+            ${usd_target}
+            PRIVATE
+                TINYUSDZ_NO_STB_IMAGE_RESIZE_IMPLEMENTATION
+    )
+  endif()
+endforeach()
+
 cpmaddpackage(
     NAME glm
     GITHUB_REPOSITORY g-truc/glm
