@@ -1019,7 +1019,7 @@ add_executable(
 target_link_libraries(
     lathe-player
     PRIVATE
-        lathe::core
+        lathe::engine
         engine_gameclient_ix
         engine_options
 )

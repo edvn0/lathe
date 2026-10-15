@@ -47,3 +47,9 @@ Games are looked up through `game_names()` / `create_game()`, which the executab
 
 The editor's *Package* action ships `lathe-player` (found beside the editor executable) rather than the editor itself;
 it falls back to copying the editor when there is no player beside it.
+
+## What `lathe-player` links
+
+`lathe-player` links `lathe::engine` only: neither `engine_app` nor `engine_benchmark` is on its link line. Scene content
+shared by a sample game and the benchmark runner (the shadow city) lives in `engine_game`, so no game depends on a module
+to its right.
