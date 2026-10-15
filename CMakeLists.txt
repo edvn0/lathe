@@ -243,6 +243,9 @@ cpmaddpackage(
         "ASSIMP_BUILD_STL_IMPORTER ON"
         # Experimental in Assimp; clones tinyusdz (pinned by hash) with FetchContent at configure time.
         "ASSIMP_BUILD_USD_IMPORTER ON"
+        # tinyusdz builds with -Werror, and GCC 14 -O2 rejects a dangling reference in its GeomSubset code
+        # (scene-access.cc: `const token &tok = x.get_value().value()`). It is third-party code; don't fail on it.
+        "TINYUSDZ_NO_WERROR ON"
     # The USD importer reads render_scene.nodes[0] unchecked, so a stage with no prims segfaults it.
     PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/assimp_usd_empty_stage.patch"
 )
