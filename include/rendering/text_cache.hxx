@@ -76,6 +76,9 @@ namespace text {
         [[nodiscard]] auto font(FontId id) const noexcept -> Font const *;
         [[nodiscard]] auto font_count() const noexcept -> std::size_t { return fonts_.size(); }
 
+        // Fonts tried, in order, for a character the font a draw names does not have: an emoji font, say.
+        auto set_fallback_fonts(std::vector<FontId> fonts) -> void { fallbacks_ = std::move(fonts); }
+
         // The size, in pixels, `utf8` takes drawn at `size`.
         [[nodiscard]] auto measure(FontId id, std::string_view utf8, float size) const -> glm::vec2;
 
@@ -112,7 +115,16 @@ namespace text {
                                      bool already_evicted, bool &needs_eviction) -> Entry const *;
         auto clear() -> void;
 
+        // The fonts a draw's text is laid out with: the one it names, then the fallbacks.
+        struct FontChain {
+            std::vector<Font const *> fonts;
+            std::vector<FontId> ids;
+        };
+
+        [[nodiscard]] auto chain_for(FontId id) const -> FontChain;
+
         std::vector<std::unique_ptr<Font>> fonts_;
+        std::vector<FontId> fallbacks_;
         std::unordered_map<std::uint64_t, Entry> glyphs_;
         ShelfPlanner planner_;
         std::uint32_t next_slot_ = 0;

@@ -371,3 +371,80 @@ TEST_SUITE("unit") {
         CHECK(cache.measure(id, "ABC", 20.0F).x == doctest::Approx(2.0F * cache.measure(id, "ABC", 10.0F).x));
     }
 }
+
+namespace {
+    auto emoji_font() -> Font {
+        auto font = Font::load(std::filesystem::path{TEST_ASSETS_DIR} / "assets" / "fonts" / "NotoEmoji-Regular.ttf");
+        REQUIRE(font.has_value());
+        return std::move(*font);
+    }
+}
+
+TEST_CASE("an emoji the font lacks comes from the fallback font as a real outline") {
+    auto const primary = load_font();
+    auto const emoji = emoji_font();
+    // U+1F600 GRINNING FACE.
+    auto const face = utf8({0xF0, 0x9F, 0x98, 0x80});
+
+    REQUIRE(primary.glyph_index(U'\x1F600') == Font::missing_glyph);
+    REQUIRE(emoji.glyph_index(U'\x1F600') != Font::missing_glyph);
+
+    std::array<Font const *, 1> const fallbacks{&emoji};
+    auto const placed = text::layout(primary, fallbacks, "a" + face);
+
+    REQUIRE(placed.glyphs.size() == 2);
+    CHECK(placed.glyphs[0].font_slot == 0);
+    CHECK(placed.glyphs[1].font_slot == 1);
+    CHECK(placed.glyphs[1].glyph == emoji.glyph_index(U'\x1F600'));
+    // It is placed after the first glyph, by that glyph's advance.
+    CHECK(placed.glyphs[1].pen.x == doctest::Approx(primary.advance(primary.glyph_index(U'a'))));
+
+    auto const outline = emoji.outline(placed.glyphs[1].glyph);
+    REQUIRE(outline.has_value());
+    CHECK_FALSE(outline->empty());
+
+    // Without the fallback it is the primary's missing-glyph box, as before.
+    auto const alone = text::layout(primary, "a" + face);
+    REQUIRE(alone.glyphs.size() == 2);
+    CHECK(alone.glyphs[1].glyph == Font::missing_glyph);
+    CHECK(alone.glyphs[1].font_slot == 0);
+}
+
+TEST_CASE("joiners and variation selectors take no room and draw nothing") {
+    auto const primary = load_font();
+    auto const emoji = emoji_font();
+    std::array<Font const *, 1> const fallbacks{&emoji};
+
+    // U+2764 HEAVY BLACK HEART, U+FE0F VARIATION SELECTOR-16, U+200D ZERO WIDTH JOINER, U+2764 again.
+    auto const text = utf8({0xE2, 0x9D, 0xA4, 0xEF, 0xB8, 0x8F, 0xE2, 0x80, 0x8D, 0xE2, 0x9D, 0xA4});
+    auto const placed = text::layout(primary, fallbacks, text);
+
+    CHECK(placed.glyphs.size() == 2);
+    CHECK(text::is_invisible(U'\xFE0F'));
+    CHECK(text::is_invisible(U'\x200D'));
+    CHECK_FALSE(text::is_invisible(U'a'));
+}
+
+TEST_CASE("the cache lays out, measures and plans an emoji with its fallback font") {
+    text::Cache cache;
+    auto const primary = cache.add_font(load_font());
+    auto const emoji = cache.add_font(emoji_font());
+    cache.set_fallback_fonts({emoji});
+
+    auto const face = utf8({0xF0, 0x9F, 0x98, 0x80});
+
+    auto const with = cache.measure(primary, face, 1.0F);
+    CHECK(with.x > 0.0F);
+
+    auto const batch = cache.build(std::array{text::Draw{.font = primary, .text = face, .size = 32.0F}});
+    // The glyph is a real outline from the emoji font: it gets a job and a quad, not a blank.
+    CHECK(batch.jobs.size() == 1);
+    CHECK(batch.instances.size() == 1);
+
+    text::Cache without;
+    auto const bare = without.add_font(load_font());
+    auto const missing = without.build(std::array{text::Draw{.font = bare, .text = face, .size = 32.0F}});
+    // The primary's missing-glyph box is also an outline, but from a different font: the two do not share a tile.
+    CHECK(missing.jobs.size() == 1);
+    CHECK(missing.jobs[0].segment_count != batch.jobs[0].segment_count);
+}

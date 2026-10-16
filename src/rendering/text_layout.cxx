@@ -54,13 +54,19 @@ namespace text {
         return result;
     }
 
-    auto layout(Font const &font, std::string_view utf8) -> Layout {
+    auto is_invisible(char32_t code_point) noexcept -> bool {
+        return (code_point >= 0x200B && code_point <= 0x200D) || code_point == 0x2060 ||
+               (code_point >= 0xFE00 && code_point <= 0xFE0F) || (code_point >= 0xE0100 && code_point <= 0xE01EF);
+    }
+
+    auto layout(Font const &font, std::span<Font const *const> fallbacks, std::string_view utf8) -> Layout {
         auto result = Layout{};
         auto const &metrics = font.metrics();
 
         auto pen_x = 0.0F;
         auto line = 0;
         auto previous = Font::missing_glyph;
+        auto previous_slot = std::uint32_t{0};
         auto widest = 0.0F;
 
         auto const space = font.glyph_index(U' ');
@@ -83,19 +89,36 @@ namespace text {
                 continue;
             }
 
-            auto const glyph = font.glyph_index(code_point);
+            if (is_invisible(code_point)) {
+                continue;
+            }
 
-            if (previous != Font::missing_glyph) {
-                pen_x += font.kerning(previous, glyph);
+            auto source = &font;
+            auto slot = std::uint32_t{0};
+            auto glyph = font.glyph_index(code_point);
+
+            for (auto i = std::size_t{0}; glyph == Font::missing_glyph && i < fallbacks.size(); ++i) {
+                if (auto const found = fallbacks[i]->glyph_index(code_point); found != Font::missing_glyph) {
+                    source = fallbacks[i];
+                    slot = static_cast<std::uint32_t>(i + 1);
+                    glyph = found;
+                }
+            }
+
+            // Kerning is a property of one font's pairs.
+            if (previous != Font::missing_glyph && previous_slot == slot) {
+                pen_x += source->kerning(previous, glyph);
             }
 
             result.glyphs.push_back(PlacedGlyph{
                     .glyph = glyph,
                     .pen = {pen_x, metrics.ascent + static_cast<float>(line) * metrics.line_height},
+                    .font_slot = slot,
             });
 
-            pen_x += font.advance(glyph);
+            pen_x += source->advance(glyph);
             previous = glyph;
+            previous_slot = slot;
         }
 
         widest = std::max(widest, pen_x);
