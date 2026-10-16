@@ -112,15 +112,19 @@ namespace {
 
 }
 
-auto ModelPickGeometry::build(ModelCpuData const &model) -> std::shared_ptr<ModelPickGeometry const> {
-    std::vector<glm::vec3> positions;
-    std::vector<std::uint32_t> indices;
+auto ModelPickGeometry::collect(ModelCpuData const &model) -> Triangles {
+    Triangles triangles;
 
     for (auto const root: model.scene_roots) {
-        collect_node(model, root, glm::mat4{1.0F}, positions, indices, 0);
+        collect_node(model, root, glm::mat4{1.0F}, triangles.positions, triangles.indices, 0);
     }
 
-    return build(std::move(positions), std::move(indices));
+    return triangles;
+}
+
+auto ModelPickGeometry::build(ModelCpuData const &model) -> std::shared_ptr<ModelPickGeometry const> {
+    auto triangles = collect(model);
+    return build(std::move(triangles.positions), std::move(triangles.indices));
 }
 
 auto ModelPickGeometry::build(std::vector<glm::vec3> positions, std::vector<std::uint32_t> indices)

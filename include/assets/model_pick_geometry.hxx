@@ -26,6 +26,14 @@ struct ModelPickHit {
 // parsed model; build it off the main thread.
 class ModelPickGeometry {
 public:
+    // A model's triangles, node transforms applied. Cheap and linear; `build` of the result is the expensive part, so a
+    // caller that must not wait can do this where the model is at hand and the building elsewhere.
+    struct Triangles {
+        std::vector<glm::vec3> positions;
+        std::vector<std::uint32_t> indices;
+    };
+
+    [[nodiscard]] static auto collect(ModelCpuData const &model) -> Triangles;
     [[nodiscard]] static auto build(ModelCpuData const &model) -> std::shared_ptr<ModelPickGeometry const>;
     [[nodiscard]] static auto build(std::vector<glm::vec3> positions, std::vector<std::uint32_t> indices)
             -> std::shared_ptr<ModelPickGeometry const>;

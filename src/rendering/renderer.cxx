@@ -2073,9 +2073,18 @@ auto Renderer::create_model_from_cpu_data(ModelCpuData const &cpu_data) -> std::
 
     auto created = create_model(*imported_model, default_material_handle_);
 
-    // Models loaded here, not through the streamer, need their triangles kept too when the editor asked for them.
+    // Models loaded here, not through the streamer, need their triangles kept too when the editor asked for them. The
+    // triangles are copied now, while the parsed model is at hand, and the hierarchy over them is built on another
+    // thread and installed by a later frame.
     if (created && model_streamer_.collecting_pick_geometry()) {
-        register_model_pick_geometry(*created, ModelPickGeometry::build(cpu_data));
+        pending_pick_geometry_.push_back(PendingPickGeometry{
+                .model = *created,
+                .geometry = std::async(std::launch::async,
+                                       [triangles = ModelPickGeometry::collect(cpu_data)]() mutable {
+                                           return ModelPickGeometry::build(std::move(triangles.positions),
+                                                                           std::move(triangles.indices));
+                                       }),
+        });
     }
 
     return created;
@@ -3288,6 +3297,16 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     texture_streamer_.process_ready(image_storage_, command_buffer, frame_index);
     model_streamer_.process_ready(*this, command_buffer);
+
+    std::erase_if(pending_pick_geometry_, [&](PendingPickGeometry &pending) {
+        if (pending.geometry.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+            return false;
+        }
+
+        // A model destroyed in the meantime has no slot, and the geometry is dropped.
+        register_model_pick_geometry(pending.model, pending.geometry.get());
+        return true;
+    });
 
     if (auto environment = environment_.prepare(command_buffer, ++frame_counter_); !environment) {
         clear_submissions();

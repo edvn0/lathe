@@ -1421,6 +1421,13 @@ private:
     SamplerStorage sampler_storage_{};
     TextureStreamer texture_streamer_{};
     ModelStreamer model_streamer_{};
+
+    // Pick geometry being built on another thread for models loaded through create_model_from_cpu_data.
+    struct PendingPickGeometry {
+        ModelHandle model;
+        std::future<std::shared_ptr<ModelPickGeometry const>> geometry;
+    };
+    std::vector<PendingPickGeometry> pending_pick_geometry_;
     AssetRegistry assets_{};
     GpuResourceTable gpu_resource_table_{};
 
