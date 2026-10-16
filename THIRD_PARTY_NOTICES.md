@@ -239,7 +239,8 @@ THE SOFTWARE.
 
 ## Assimp
 
-- Version: `v5.4.3`
+- Version: `v5.4.3` when built from source; a system-installed shared Assimp (>= 5.3) is linked instead when CMake
+  finds one (`LATHE_SYSTEM_ASSIMP`, on by default)
 - Source: <https://github.com/assimp/assimp>
 - License: BSD-3-Clause (modified)
 

@@ -219,51 +219,77 @@ cpmaddpackage(
         "FASTGLTF_ENABLE_DOCS OFF"
 )
 
-cpmaddpackage(
-    NAME assimp
-    GITHUB_REPOSITORY assimp/assimp
-    GIT_TAG v5.4.3
-    SYSTEM YES
-    OPTIONS
-        "BUILD_SHARED_LIBS OFF"
-        "ASSIMP_BUILD_TESTS OFF"
-        "ASSIMP_BUILD_ASSIMP_TOOLS OFF"
-        "ASSIMP_BUILD_SAMPLES OFF"
-        "ASSIMP_INSTALL OFF"
-        "ASSIMP_NO_EXPORT ON"
-        "ASSIMP_WARNINGS_AS_ERRORS OFF"
-        "ASSIMP_INJECT_DEBUG_POSTFIX OFF"
-        "ASSIMP_BUILD_ZLIB ON"
-        # Assimp sets a global RULE_LAUNCH_COMPILE/LINK to ccache, which stacks on Ccache.cmake's launcher above and
-        # makes every compile and link run ccache twice (hence "linker input file unused" warnings).
-        "ASSIMP_BUILD_USE_CCACHE OFF"
-        # glTF stays on fastgltf; only the formats named in assimp_model_extensions are compiled in.
-        "ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF"
-        "ASSIMP_BUILD_FBX_IMPORTER ON"
-        "ASSIMP_BUILD_OBJ_IMPORTER ON"
-        "ASSIMP_BUILD_COLLADA_IMPORTER ON"
-        "ASSIMP_BUILD_PLY_IMPORTER ON"
-        "ASSIMP_BUILD_STL_IMPORTER ON"
-        # Experimental in Assimp; clones tinyusdz (pinned by hash) with FetchContent at configure time.
-        "ASSIMP_BUILD_USD_IMPORTER ON"
-        # tinyusdz builds with -Werror, and GCC 14 -O2 rejects a dangling reference in its GeomSubset code
-        # (scene-access.cc: `const token &tok = x.get_value().value()`). It is third-party code; don't fail on it.
-        "TINYUSDZ_NO_WERROR ON"
-    # The USD importer reads render_scene.nodes[0] unchecked, so a stage with no prims segfaults it.
-    PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/assimp_usd_empty_stage.patch"
-)
+# Assimp is linked as a shared library from the system when one is installed; otherwise the pinned source build below is
+# used. Not finding it is not an error. Set LATHE_SYSTEM_ASSIMP=OFF to always build from source.
+#
+# A system build decides which importers exist and whether it carries the empty-stage USD fix patched in below, so USD
+# may be unavailable there (the import then fails at runtime with an unsupported-format error).
+option(LATHE_SYSTEM_ASSIMP "Prefer a system-installed shared Assimp over building it from source" ON)
+set(LATHE_ASSIMP_MIN_VERSION 5.3 CACHE STRING "Oldest system Assimp accepted")
 
-# tinyusdz (built into Assimp for USD) compiles its own stb_image_resize2 implementation, which collides with the one in
-# engine_assets/stb.cxx at link time. Leave it out so ours is the only definition.
-foreach(usd_target IN ITEMS assimp tinyusdz_static)
-  if(TARGET ${usd_target})
-    target_compile_definitions(
-            ${usd_target}
-            PRIVATE
-                TINYUSDZ_NO_STB_IMAGE_RESIZE_IMPLEMENTATION
+set(lathe_assimp_from_system OFF)
+if(LATHE_SYSTEM_ASSIMP)
+  find_package(assimp ${LATHE_ASSIMP_MIN_VERSION} CONFIG QUIET)
+  if(assimp_FOUND AND TARGET assimp::assimp)
+    set(lathe_assimp_from_system ON)
+    message(STATUS "Assimp: using system library ${assimp_VERSION} (shared, found at ${assimp_DIR})")
+  else()
+    message(
+            STATUS
+            "Assimp: no system library >= ${LATHE_ASSIMP_MIN_VERSION} found, building the pinned version from source"
     )
   endif()
-endforeach()
+else()
+  message(STATUS "Assimp: LATHE_SYSTEM_ASSIMP=OFF, building from source")
+endif()
+
+if(NOT lathe_assimp_from_system)
+  cpmaddpackage(
+      NAME assimp
+      GITHUB_REPOSITORY assimp/assimp
+      GIT_TAG v5.4.3
+      SYSTEM YES
+      OPTIONS
+          "BUILD_SHARED_LIBS OFF"
+          "ASSIMP_BUILD_TESTS OFF"
+          "ASSIMP_BUILD_ASSIMP_TOOLS OFF"
+          "ASSIMP_BUILD_SAMPLES OFF"
+          "ASSIMP_INSTALL OFF"
+          "ASSIMP_NO_EXPORT ON"
+          "ASSIMP_WARNINGS_AS_ERRORS OFF"
+          "ASSIMP_INJECT_DEBUG_POSTFIX OFF"
+          "ASSIMP_BUILD_ZLIB ON"
+          # Assimp sets a global RULE_LAUNCH_COMPILE/LINK to ccache, which stacks on Ccache.cmake's launcher above and
+          # makes every compile and link run ccache twice (hence "linker input file unused" warnings).
+          "ASSIMP_BUILD_USE_CCACHE OFF"
+          # glTF stays on fastgltf; only the formats named in assimp_model_extensions are compiled in.
+          "ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF"
+          "ASSIMP_BUILD_FBX_IMPORTER ON"
+          "ASSIMP_BUILD_OBJ_IMPORTER ON"
+          "ASSIMP_BUILD_COLLADA_IMPORTER ON"
+          "ASSIMP_BUILD_PLY_IMPORTER ON"
+          "ASSIMP_BUILD_STL_IMPORTER ON"
+          # Experimental in Assimp; clones tinyusdz (pinned by hash) with FetchContent at configure time.
+          "ASSIMP_BUILD_USD_IMPORTER ON"
+          # tinyusdz builds with -Werror, and GCC 14 -O2 rejects a dangling reference in its GeomSubset code
+          # (scene-access.cc: `const token &tok = x.get_value().value()`). It is third-party code; don't fail on it.
+          "TINYUSDZ_NO_WERROR ON"
+      # The USD importer reads render_scene.nodes[0] unchecked, so a stage with no prims segfaults it.
+      PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/assimp_usd_empty_stage.patch"
+  )
+
+  # tinyusdz (built into Assimp for USD) compiles its own stb_image_resize2 implementation, which collides with the one in
+  # engine_assets/stb.cxx at link time. Leave it out so ours is the only definition.
+  foreach(usd_target IN ITEMS assimp tinyusdz_static)
+    if(TARGET ${usd_target})
+      target_compile_definitions(
+              ${usd_target}
+              PRIVATE
+                  TINYUSDZ_NO_STB_IMAGE_RESIZE_IMPLEMENTATION
+      )
+    endif()
+  endforeach()
+endif()
 
 cpmaddpackage(
     NAME glm
@@ -826,6 +852,9 @@ else()
 endif()
 
 validate_slang_root("${slang_root}")
+
+# Read back by CI (cmake -L) to run the shader check with the same slangc the build uses.
+set(LATHE_SLANG_ROOT "${slang_root}" CACHE INTERNAL "The Slang installation in use")
 
 set(slang_include_dir "${slang_root}/include")
 set(slang_bin_dir "${slang_root}/bin")
