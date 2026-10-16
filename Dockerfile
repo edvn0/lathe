@@ -59,4 +59,44 @@ RUN git clone --branch "${SPIRV_TOOLS_TAG}" --depth 1 \
     && cmake --install /tmp/spirv-tools/build --prefix /usr/local \
     && rm -rf /tmp/spirv-tools
 
+# Assimp, built the way CMakeLists.txt builds it from source (same tag, importers, patch and flags), but shared and
+# installed to /usr/local, so the project's find_package(assimp) finds it and CI and local builds link it instead of
+# compiling it every time. Keep ASSIMP_TAG, the importer list and the TINYUSDZ define in step with the cpmaddpackage(assimp)
+# call there. The tag only changes with this file, so bump ASSIMP_PATCH_REV when cmake/patches/assimp_usd_empty_stage.patch
+# changes to publish a new image.
+ARG ASSIMP_TAG=v5.4.3
+ARG ASSIMP_PATCH_REV=1
+
+COPY cmake/patches/assimp_usd_empty_stage.patch /tmp/assimp_usd_empty_stage.patch
+
+RUN git clone --branch "${ASSIMP_TAG}" --depth 1 https://github.com/assimp/assimp.git /tmp/assimp \
+    && git -C /tmp/assimp apply /tmp/assimp_usd_empty_stage.patch \
+    && cmake -S /tmp/assimp -B /tmp/assimp/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        "-DCMAKE_C_FLAGS=-DTINYUSDZ_NO_STB_IMAGE_RESIZE_IMPLEMENTATION" \
+        "-DCMAKE_CXX_FLAGS=-DTINYUSDZ_NO_STB_IMAGE_RESIZE_IMPLEMENTATION" \
+        -DASSIMP_INSTALL=ON \
+        -DASSIMP_BUILD_TESTS=OFF \
+        -DASSIMP_BUILD_ASSIMP_TOOLS=OFF \
+        -DASSIMP_BUILD_SAMPLES=OFF \
+        -DASSIMP_NO_EXPORT=ON \
+        -DASSIMP_WARNINGS_AS_ERRORS=OFF \
+        -DASSIMP_INJECT_DEBUG_POSTFIX=OFF \
+        -DASSIMP_BUILD_ZLIB=ON \
+        -DASSIMP_BUILD_USE_CCACHE=OFF \
+        -DASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=OFF \
+        -DASSIMP_BUILD_FBX_IMPORTER=ON \
+        -DASSIMP_BUILD_OBJ_IMPORTER=ON \
+        -DASSIMP_BUILD_COLLADA_IMPORTER=ON \
+        -DASSIMP_BUILD_PLY_IMPORTER=ON \
+        -DASSIMP_BUILD_STL_IMPORTER=ON \
+        -DASSIMP_BUILD_USD_IMPORTER=ON \
+        -DTINYUSDZ_NO_WERROR=ON \
+    && cmake --build /tmp/assimp/build -j"$(nproc)" \
+    && cmake --install /tmp/assimp/build --prefix /usr/local \
+    && ldconfig \
+    && rm -rf /tmp/assimp /tmp/assimp_usd_empty_stage.patch
+
 WORKDIR /workspace
