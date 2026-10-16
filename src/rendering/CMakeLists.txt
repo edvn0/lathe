@@ -28,11 +28,13 @@ add_library(
         frame_graph/scheduler.cxx
         frame_graph/transient_allocator.cxx
         frame_graph/vk_translate.cxx
+        font.cxx
         forward_target.cxx
         game_graph.cxx
         game_gpu.cxx
         imgui_renderer.cxx
         overlay.cxx
+        overlay_shader.cxx
         particle_system.cxx
         pipeline_graph_repository.cxx
         renderer.cxx
@@ -45,6 +47,9 @@ add_library(
         script_storage.cxx
         shadow_cascades.cxx
         terminal_widget.cxx
+        text_cache.cxx
+        text_layout.cxx
+        text_renderer.cxx
         toast.cxx
 )
 
@@ -66,6 +71,7 @@ target_link_libraries(
         engine_core
     PRIVATE
         engine_options
+        freetype
         # Kept private so the scripting and app modules can only reach toasts through gui::toast_*.
         imgui_notify
 )

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <expected>
+#include <filesystem>
 #include <format>
 #include <new>
 #include <optional>
@@ -14,8 +15,11 @@
 
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
+#include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 #include <imgui.h>
 
 #include "luagame/lua_game.hxx"
@@ -35,10 +39,12 @@
 #include "rendering/entity.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
+#include "rendering/text_renderer.hxx"
 #include "scene/components.hxx"
 #include "scripting/lua_particles.hxx"
 #include "scripting/lua_runtime.hxx"
 #include "scripting/lua_script_schema.hxx"
+#include "scripting/lua_text.hxx"
 
 namespace {
     constexpr char const *entity_meta = "lathe.Entity";
@@ -394,6 +400,54 @@ namespace {
         auto const id = entity_arg(state, 1);
 
         registry_of(state).remove<Components::ParticleEmitter>(id);
+
+        return 0;
+    }
+
+    // ---- text ------------------------------------------------------------------------------------------------
+
+    // Applies the options table at argument 2 to `text`, or raises the problem as an error and changes nothing.
+    auto apply_text(lua_State *state, Components::Text &text) -> void {
+        if (auto const problem = read_text_table(state, 2, text)) {
+            luaL_error(state, "%s", problem->c_str());
+        }
+    }
+
+    // entity:add_text{ text = "OPEN", size = 1, color = {1, 0.2, 0.6}, emissive = 6, centred = true }: text in the world at
+    // the entity's transform. A ParticleEmitter with shape "text" on the same entity sheds particles from the letters.
+    auto entity_add_text(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+        auto &registry = registry_of(state);
+
+        if (registry.all_of<Components::Text>(id)) {
+            return luaL_error(state, "the entity already has text; use set_text to change it");
+        }
+
+        auto text = Components::Text{};
+        apply_text(state, text);
+        registry.emplace<Components::Text>(id, std::move(text));
+
+        return 0;
+    }
+
+    // entity:set_text{ emissive = 10 }: changes the fields that are given and keeps the rest.
+    auto entity_set_text(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+        auto *const current = registry_of(state).try_get<Components::Text>(id);
+
+        if (current == nullptr) {
+            return luaL_error(state, "the entity has no text; use add_text first");
+        }
+
+        apply_text(state, *current);
+
+        return 0;
+    }
+
+    auto entity_remove_text(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+
+        registry_of(state).remove<Components::Text>(id);
 
         return 0;
     }
@@ -1093,6 +1147,9 @@ namespace {
             luaL_Reg{"add_particles", &entity_add_particles},
             luaL_Reg{"set_particles", &entity_set_particles},
             luaL_Reg{"remove_particles", &entity_remove_particles},
+            luaL_Reg{"add_text", &entity_add_text},
+            luaL_Reg{"set_text", &entity_set_text},
+            luaL_Reg{"remove_text", &entity_remove_text},
             luaL_Reg{"add_body", &entity_add_body},
             luaL_Reg{"set_velocity", &entity_set_velocity},
             luaL_Reg{"apply_impulse", &entity_apply_impulse},
@@ -1711,6 +1768,9 @@ namespace {
             luaL_Reg{"add_particles", &entity_add_particles},
             luaL_Reg{"set_particles", &entity_set_particles},
             luaL_Reg{"remove_particles", &entity_remove_particles},
+            luaL_Reg{"add_text", &entity_add_text},
+            luaL_Reg{"set_text", &entity_set_text},
+            luaL_Reg{"remove_text", &entity_remove_text},
             luaL_Reg{nullptr, nullptr},
     };
 
@@ -2101,6 +2161,131 @@ namespace {
         return 0;
     }
 
+    auto text_renderer(lua_State *state) -> TextRenderer & {
+        auto *const renderer = game_host(state).host.text;
+
+        if (renderer == nullptr) {
+            luaL_error(state, "text rendering is not available here");
+        }
+
+        return *renderer;
+    }
+
+    // A colour field: {r, g, b, a} or {1, 2, 3, 4}, linear. Missing parts keep the fallback's.
+    auto field_colour(lua_State *state, int index, char const *key, glm::vec4 fallback) -> glm::vec4 {
+        lua_getfield(state, index, key);
+
+        auto result = fallback;
+
+        if (lua_istable(state, -1)) {
+            auto const table = lua_gettop(state);
+            auto const names = std::array{"r", "g", "b", "a"};
+
+            for (auto channel = 0; channel < 4; ++channel) {
+                lua_getfield(state, table, names[static_cast<std::size_t>(channel)]);
+
+                if (lua_isnil(state, -1)) {
+                    lua_pop(state, 1);
+                    lua_geti(state, table, channel + 1);
+                }
+
+                if (lua_isnumber(state, -1) != 0) {
+                    result[channel] = static_cast<float>(lua_tonumber(state, -1));
+                }
+
+                lua_pop(state, 1);
+            }
+        }
+
+        lua_pop(state, 1);
+
+        return result;
+    }
+
+    // text.load_font(path): the font's id for the `font` option of the other functions, or nil and a message. The path
+    // is relative to the data directory.
+    auto text_load_font(lua_State *state) -> int {
+        auto &renderer = text_renderer(state);
+        auto const font = renderer.load_font(std::filesystem::path{luaL_checkstring(state, 1)});
+
+        if (!font) {
+            lua_pushnil(state);
+            lua_pushstring(state, font.error().c_str());
+
+            return 2;
+        }
+
+        lua_pushinteger(state, static_cast<lua_Integer>(*font));
+
+        return 1;
+    }
+
+    // text.draw{ text, x, y, size, font, color }: shows text for this frame, its top-left at pixel (x, y) of the scene.
+    auto text_draw(lua_State *state) -> int {
+        auto &renderer = text_renderer(state);
+
+        luaL_checktype(state, 1, LUA_TTABLE);
+
+        renderer.draw(text::Draw{
+                .font = static_cast<text::FontId>(option_number(state, 1, "font", TextRenderer::default_font)),
+                .text = option_string(state, 1, "text", ""),
+                .position = {static_cast<float>(option_number(state, 1, "x", 0.0)),
+                             static_cast<float>(option_number(state, 1, "y", 0.0))},
+                .size = static_cast<float>(option_number(state, 1, "size", 24.0)),
+                .colour = field_colour(state, 1, "color", glm::vec4{1.0F}),
+        });
+
+        return 0;
+    }
+
+    // text.draw_world{ text, position, rotation, size, font, color }: shows text placed in the world for this frame. Before
+    // `rotation` (degrees: about x first, then y, then z, all about the world's axes) turns it, it reads left to right
+    // along +x with its up on +y, for a viewer looking along +z. `position` is where its first baseline starts; `size`
+    // is the em size in world units.
+    auto text_draw_world(lua_State *state) -> int {
+        auto &renderer = text_renderer(state);
+
+        luaL_checktype(state, 1, LUA_TTABLE);
+
+        auto const position = lua_field_vec3(state, 1, "position", {});
+        auto const rotation = lua_field_vec3(state, 1, "rotation", {});
+
+        renderer.draw_world(text::WorldDraw{
+                .font = static_cast<text::FontId>(option_number(state, 1, "font", TextRenderer::default_font)),
+                .text = option_string(state, 1, "text", ""),
+                .transform = glm::translate(glm::mat4{1.0F}, glm::vec3{position.x, position.y, position.z}) *
+                             glm::rotate(glm::mat4{1.0F}, glm::radians(rotation.z), glm::vec3{0.0F, 0.0F, 1.0F}) *
+                             glm::rotate(glm::mat4{1.0F}, glm::radians(rotation.y), glm::vec3{0.0F, 1.0F, 0.0F}) *
+                             glm::rotate(glm::mat4{1.0F}, glm::radians(rotation.x), glm::vec3{1.0F, 0.0F, 0.0F}),
+                .size = static_cast<float>(option_number(state, 1, "size", 1.0)),
+                .colour = field_colour(state, 1, "color", glm::vec4{1.0F}),
+        });
+
+        return 0;
+    }
+
+    // text.measure(text, size, font?): the width and height, in pixels, the text takes at that size.
+    auto text_measure(lua_State *state) -> int {
+        auto &renderer = text_renderer(state);
+
+        auto const size = renderer.measure(
+                static_cast<text::FontId>(luaL_optinteger(state, 3, TextRenderer::default_font)),
+                luaL_checkstring(state, 1), static_cast<float>(luaL_checknumber(state, 2)));
+
+        lua_pushnumber(state, static_cast<lua_Number>(size.x));
+        lua_pushnumber(state, static_cast<lua_Number>(size.y));
+
+        return 2;
+    }
+
+    constexpr std::array text_functions{
+            luaL_Reg{"load_font", &text_load_font},
+            luaL_Reg{"draw", &text_draw},
+            luaL_Reg{"draw_world", &text_draw_world},
+            luaL_Reg{"measure", &text_measure},
+            luaL_Reg{nullptr, nullptr},
+    };
+
     constexpr std::array render_functions{
             luaL_Reg{"bloom", &render_bloom},
             luaL_Reg{"set_bloom", &render_set_bloom},
@@ -2124,6 +2309,7 @@ auto open_lua_game_api(LuaRuntime &runtime) -> void {
                            luaL_Reg{"remove_effect", &scene_remove_effect},
                            luaL_Reg{"set_environment", &scene_set_environment}, luaL_Reg{nullptr, nullptr}});
     set_library(state, "render", render_functions);
+    set_library(state, "text", text_functions);
     set_library(state, "physics", physics_functions);
     set_library(state, "animation", animation_functions);
     set_library(state, "compute", compute_functions);

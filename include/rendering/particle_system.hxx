@@ -14,6 +14,7 @@
 #include "scene/components.hxx"
 
 struct MaterialStorage;
+class TextRenderer;
 
 // Simulates and draws every entity's Components::ParticleEmitter. It is built on the same GameGraph a game uses: per
 // emitter a compute pass advances the particles in a persistent buffer, and a scene draw renders them inside the
@@ -36,6 +37,9 @@ public:
     auto declare(GameGraph &graph, entt::registry const &registry, MaterialStorage const *materials, float delta_time)
             -> void;
 
+    // Where emitters with ParticleShape::text get the outline of their entity's text from. Optional.
+    auto set_text_source(TextRenderer *text) noexcept -> void { text_ = text; }
+
     [[nodiscard]] auto emitter_count() const noexcept -> std::size_t { return states_.size(); }
 
     // The emitter with its numbers brought into the range the shaders and buffers support.
@@ -53,6 +57,7 @@ private:
     };
 
     GameGpu *gpu_ = nullptr;
+    TextRenderer *text_ = nullptr;
     GameComputeShader simulate_{};
     GameGraphicsShader draw_{};
     bool ready_ = false;

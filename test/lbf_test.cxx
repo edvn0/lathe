@@ -154,6 +154,7 @@ namespace {
         scene.point_lights.push_back(ScenePointLightComponent{.entity = 0});
         scene.spot_lights.push_back(SceneSpotLightComponent{.entity = 0});
         scene.particle_emitters.push_back(SceneParticleEmitterComponent{.entity = 0});
+        scene.texts.push_back(SceneTextComponent{.entity = 0, .text = {.text = "x"}});
         scene.rigid_bodies.push_back(SceneRigidBodyComponent{.entity = 0});
         scene.lifetimes.push_back(SceneLifetimeComponent{.entity = 0, .remaining_seconds = 1.0F});
         return scene;
@@ -497,6 +498,17 @@ TEST_SUITE("unit") {
                 .entity = 2, .body = Components::RigidBody::from_submesh_boxes({{glm::vec3{0.0F}, glm::vec3{1.0F}}})});
         scene.rigid_bodies.push_back(SceneRigidBodyComponent{
                 .entity = 1, .body = Components::RigidBody::make_sphere(0.35F, 0.45F)});
+        scene.particle_emitters.push_back(SceneParticleEmitterComponent{
+                .entity = 0, .emitter = {.shape = Components::ParticleShape::text}});
+        scene.texts.push_back(SceneTextComponent{
+                .entity = 0,
+                .text = {.text = "NEON\n\xC3\x85",
+                         .font = 3,
+                         .size = 0.5F,
+                         .colour = {1.0F, 0.25F, 0.5F, 0.75F},
+                         .emissive = 9.0F,
+                         .centred = false,
+                         .visible = false}});
         scene.scripts.push_back(SceneScriptComponent{.entity = 2, .script = "player_controller"});
         scene.lifetimes.push_back(SceneLifetimeComponent{.entity = 1, .remaining_seconds = 2.5F});
 
@@ -526,13 +538,25 @@ TEST_SUITE("unit") {
         CHECK(decoded->instanced_models[0].transforms[1][0][0] == doctest::Approx(2.0F));
         CHECK(decoded->point_lights[0].light.intensity == doctest::Approx(4.0F));
         CHECK(decoded->spot_lights[0].light.outer_cone_degrees == doctest::Approx(45.0F));
-        REQUIRE(decoded->particle_emitters.size() == 1);
+        REQUIRE(decoded->particle_emitters.size() == 2);
         CHECK(decoded->particle_emitters[0].emitter.count == 77);
         CHECK(decoded->particle_emitters[0].emitter.rate == doctest::Approx(12.5F));
         CHECK(decoded->particle_emitters[0].emitter.shape == Components::ParticleShape::box);
         CHECK(decoded->particle_emitters[0].emitter.colour_end.w == doctest::Approx(0.125F));
         CHECK_FALSE(decoded->particle_emitters[0].emitter.emitting);
         CHECK(decoded->particle_emitters[0].material == 1);
+        CHECK(decoded->particle_emitters[1].emitter.shape == Components::ParticleShape::text);
+
+        REQUIRE(decoded->texts.size() == 1);
+        CHECK(decoded->texts[0].entity == 0);
+        CHECK(decoded->texts[0].text.text == "NEON\n\xC3\x85");
+        CHECK(decoded->texts[0].text.font == 3);
+        CHECK(decoded->texts[0].text.size == doctest::Approx(0.5F));
+        CHECK(decoded->texts[0].text.colour.y == doctest::Approx(0.25F));
+        CHECK(decoded->texts[0].text.colour.w == doctest::Approx(0.75F));
+        CHECK(decoded->texts[0].text.emissive == doctest::Approx(9.0F));
+        CHECK_FALSE(decoded->texts[0].text.centred);
+        CHECK_FALSE(decoded->texts[0].text.visible);
         CHECK(decoded->rigid_bodies[0].body.shape == Components::BodyShape::compound);
         REQUIRE(decoded->rigid_bodies[0].body.compound_boxes != nullptr);
         CHECK(decoded->rigid_bodies[0].body.compound_boxes->size() == 1);
@@ -1073,6 +1097,16 @@ TEST_SUITE("unit") {
             rejected([&](SceneDescription &scene) { scene.point_lights[0].light.intensity = nan; });
             rejected([&](SceneDescription &scene) { scene.point_lights[0].light.range = -1.0F; });
             rejected([&](SceneDescription &scene) { scene.spot_lights[0].light.outer_cone_degrees = inf; });
+        }
+
+        SUBCASE("texts") {
+            rejected([&](SceneDescription &scene) { scene.texts[0].entity = 99; });
+            rejected([&](SceneDescription &scene) { scene.texts[0].text.size = 0.0F; });
+            rejected([&](SceneDescription &scene) { scene.texts[0].text.size = nan; });
+            rejected([&](SceneDescription &scene) { scene.texts[0].text.colour.x = inf; });
+            rejected([&](SceneDescription &scene) { scene.texts[0].text.emissive = -1.0F; });
+            rejected([&](SceneDescription &scene) { scene.texts[0].text.text.assign(64 * 1024 + 1, 'x'); });
+            rejected([&](SceneDescription &scene) { scene.texts.push_back(scene.texts[0]); });
         }
 
         SUBCASE("particle emitters") {

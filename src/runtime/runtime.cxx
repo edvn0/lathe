@@ -25,7 +25,8 @@
 
 Runtime::Runtime(VulkanContext &ctx) noexcept :
     context(ctx), renderer(std::make_unique<Renderer>(context)),
-    debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)) {}
+    debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)),
+    text_renderer(std::make_unique<TextRenderer>()) {}
 
 Runtime::~Runtime() {
     if (terrain) {
@@ -266,7 +267,7 @@ auto Runtime::register_overlays() -> void {
             .prepare = {},
             .record =
                     [this](OverlayRecordContext const &overlay_context) {
-                        imgui_renderer->render(overlay_context.command_buffer, overlay_context.frame_index);
+                        imgui_renderer->record(overlay_context);
                     },
     });
 }
@@ -305,7 +306,15 @@ auto Runtime::on_startup() -> void {
 
         effect_system.create(renderer->game_gpu());
 
+        particle_system.set_text_source(text_renderer.get());
+
+        if (auto const created = text_renderer->create(*renderer, renderer->game_gpu()); !created) {
+            warn("Could not set up text rendering: {}", describe(created.error()));
+        }
+
         renderer->set_game_graph_hook([this](GameGraph &graph) {
+            // The text renderer goes first: it opens the frame's upload buffers, and emitters on text add to them.
+            text_renderer->declare(graph, active_scene() != nullptr ? &active_scene()->get_registry() : nullptr);
             if (auto const *scene = active_scene(); scene != nullptr) {
                 particle_system.declare(graph, scene->get_registry(), &renderer->material_storage(), last_delta_time);
             }

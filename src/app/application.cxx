@@ -210,7 +210,7 @@ namespace {
         changed |= ImGui::DragFloat("Lifetime", &emitter.lifetime, 0.05F, 0.01F, 3600.0F, "%.2f s");
         changed |= ImGui::DragFloat3("Gravity", &emitter.gravity.x, 0.1F);
 
-        constexpr std::array<char const *, 4> shapes{"Point", "Sphere", "Box", "Cone"};
+        constexpr std::array<char const *, 5> shapes{"Point", "Sphere", "Box", "Cone", "Text outline"};
         auto shape = static_cast<int>(emitter.shape);
         if (ImGui::Combo("Shape", &shape, shapes.data(), static_cast<int>(shapes.size()))) {
             emitter.shape = static_cast<Components::ParticleShape>(shape);
@@ -224,6 +224,36 @@ namespace {
         changed |= ImGui::DragFloat("Size end", &emitter.size_end, 0.005F, 0.0F, 1.0e3F);
         changed |= ImGui::ColorEdit4("Colour start", &emitter.colour_start.x);
         changed |= ImGui::ColorEdit4("Colour end", &emitter.colour_end.x);
+        return changed;
+    };
+
+    constexpr auto draw_text = [](Components::Text &text) -> bool {
+        bool changed = false;
+
+        // A std::string edited in place: ImGui asks for a bigger buffer through the callback as the text grows.
+        changed |= ImGui::InputTextMultiline(
+                "Text", text.text.data(), text.text.capacity() + 1, ImVec2{-FLT_MIN, 3.0F * ImGui::GetTextLineHeightWithSpacing()},
+                ImGuiInputTextFlags_CallbackResize,
+                [](ImGuiInputTextCallbackData *data) -> int {
+                    if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+                        auto *const value = static_cast<std::string *>(data->UserData);
+                        value->resize(static_cast<std::size_t>(data->BufTextLen));
+                        data->Buf = value->data();
+                    }
+                    return 0;
+                },
+                &text.text);
+
+        auto font = static_cast<int>(text.font);
+        if (ImGui::DragInt("Font", &font, 0.1F, 0, 1000)) {
+            text.font = static_cast<std::uint32_t>(std::max(font, 0));
+            changed = true;
+        }
+        changed |= ImGui::DragFloat("Size", &text.size, 0.01F, 0.001F, 1.0e4F, "%.3f m");
+        changed |= ImGui::ColorEdit4("Colour", &text.colour.x, ImGuiColorEditFlags_Float);
+        changed |= ImGui::DragFloat("Emissive", &text.emissive, 0.05F, 0.0F, 1.0e3F, "%.2f x");
+        changed |= ImGui::Checkbox("Centred", &text.centred);
+        changed |= ImGui::Checkbox("Visible", &text.visible);
         return changed;
     };
 
@@ -1438,7 +1468,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     copy_components<Components::Transform, Components::Model, Components::InstancedModel,
                                     Components::RigidBody, Components::MaterialOverride, Components::PlayerTag,
                                     Components::Lifetime, Components::PointLight, Components::SpotLight,
-                                    Components::Decal, Components::ParticleEmitter, Components::Script, Components::Behaviour,
+                                    Components::Decal, Components::ParticleEmitter, Components::Text, Components::Script, Components::Behaviour,
                                     Components::BulletTag>(
                             registry, source, clone);
 
@@ -1816,6 +1846,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         section.operator()<Components::SpotLight>("Spot Light", draw_spot_light);
         section.operator()<Components::Decal>("Decal", draw_decal);
         section.operator()<Components::ParticleEmitter>("Particle Emitter", draw_particle_emitter);
+        section.operator()<Components::Text>("Text", draw_text);
         section.operator()<Components::RigidBody>("Rigid Body", draw_rigid_body);
         section.operator()<Components::Lifetime>("Lifetime", draw_lifetime);
 
@@ -2144,6 +2175,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 if (!registry.all_of<Components::ParticleEmitter>(selected_entity) &&
                     ImGui::MenuItem("Particle Emitter")) {
                     registry.emplace<Components::ParticleEmitter>(selected_entity);
+                }
+                if (!registry.all_of<Components::Text>(selected_entity) && ImGui::MenuItem("Text")) {
+                    registry.emplace<Components::Text>(selected_entity, Components::Text{.text = "Text"});
                 }
                 if (!registry.all_of<Components::RigidBody>(selected_entity) && ImGui::MenuItem("Rigid Body")) {
                     registry.emplace<Components::RigidBody>(selected_entity);

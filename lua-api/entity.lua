@@ -43,6 +43,15 @@ function Entity:add_particles(options) end
 ---@param options ParticleOptions
 function Entity:set_particles(options) end
 function Entity:remove_particles() end
+---Adds text in the world at the entity's transform (see TextOptions). Raises an error if the entity has text (use
+---set_text) or an option is invalid. A particle emitter with shape "text" on the same entity sheds particles from the
+---letters.
+---@param options TextOptions
+function Entity:add_text(options) end
+---Changes the fields given and keeps the rest. Raises an error if there is no text or an option is invalid.
+---@param options TextOptions
+function Entity:set_text(options) end
+function Entity:remove_text() end
 ---Gives the entity a physics body, simulated while the game plays. Raises an error on an unknown shape or a
 ---non-positive size.
 ---@param options? BodyOptions
@@ -92,6 +101,26 @@ function entity.add_particles(e, options) end
 function entity.set_particles(e, options) end
 ---@param e Entity
 function entity.remove_particles(e) end
+---@param e Entity
+---@param options TextOptions
+function entity.add_text(e, options) end
+---@param e Entity
+---@param options TextOptions
+function entity.set_text(e, options) end
+---@param e Entity
+function entity.remove_text(e) end
+
+---Text component fields (src/luagame/lua_game_api.cxx). Unknown fields, wrong types and out-of-range numbers raise an
+---error and change nothing. The text reads left to right along the entity's +x with its up on +y, for a viewer looking
+---along +z, and is drawn depth-tested and alpha-blended with the scene.
+---@class TextOptions
+---@field text? string UTF-8, up to 64 KiB; `\n` starts a new line
+---@field font? integer a font id from text.load_font (default 0, the engine's own)
+---@field size? number the em size in world units, above 0 (default 1)
+---@field color? number[] {r, g, b [, a]}, linear, components 0 .. 1000, alpha 0 .. 1 (default white)
+---@field emissive? number multiplies the colour into HDR, 0 .. 1000 (default 1); above 1 it blooms like a neon sign
+---@field centred? boolean the entity's origin is the middle of the text, not the start of its first baseline (default true)
+---@field visible? boolean (default true)
 
 ---Particle emitter fields (src/scripting/lua_particles.cxx). Out-of-range or non-finite numbers, unknown fields and
 ---wrong types raise an error and change nothing.
@@ -116,6 +145,7 @@ function entity.remove_particles(e) end
 ---| "point" # every particle starts at the entity and flies off in a random direction
 ---| "sphere" # starts inside a ball of shape_size and flies outwards
 ---| "box" # starts inside a cube of half extent shape_size and flies along +Y within cone_degrees
+---| "text" # starts on the outline of the entity's text (see Entity:add_text) and flies off in a random direction
 ---| "cone" # starts at the entity and flies along +Y within cone_degrees
 
 ---@alias BodyShape "box"|"sphere"|"capsule"

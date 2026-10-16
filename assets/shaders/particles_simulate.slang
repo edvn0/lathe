@@ -33,6 +33,9 @@ struct SimulatePushConstants
     float rotation_y;
     float rotation_z;
     float rotation_w;
+    // The outline of a Text component, for shape_text: float2 points in the text's local space.
+    Ptr<float2> text_points;
+    uint text_count;
 };
 
 [vk::push_constant] SimulatePushConstants pc;
@@ -41,6 +44,7 @@ static const uint shape_point = 0u;
 static const uint shape_sphere = 1u;
 static const uint shape_box = 2u;
 static const uint shape_cone = 3u;
+static const uint shape_text = 4u;
 
 uint hash(uint x)
 {
@@ -107,6 +111,12 @@ void main_cs(uint3 dispatch_id: SV_DispatchThreadID)
         } else if (pc.shape == shape_box) {
             offset = (float3(unit(seed + 2u), unit(seed + 3u), unit(seed + 4u)) * 2.0 - 1.0) * pc.shape_size;
             direction = cone_direction(seed + 5u);
+        } else if (pc.shape == shape_text) {
+            // On the text's outline, flying off in any direction. Without an outline it is a point.
+            if (pc.text_count > 0u) {
+                offset = float3(pc.text_points[hash(seed + 2u) % pc.text_count], 0.0);
+            }
+            direction = sphere_direction(seed + 3u);
         } else {
             direction = cone_direction(seed + 2u);
         }

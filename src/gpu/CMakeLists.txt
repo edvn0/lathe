@@ -21,6 +21,7 @@ add_library(
         shader_object_storage.cxx
         submission_plan.cxx
         swapchain.cxx
+        upload_ring.cxx
         vk_barrier.cxx
         vma.cxx
 )

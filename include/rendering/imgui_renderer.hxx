@@ -8,10 +8,11 @@
 #include <tuple>
 #include <vector>
 
-#include "gpu/buffer.hxx"
 #include "gpu/image.hxx"
 #include "gpu/sampler.hxx"
-#include "rendering/pipeline_graph_repository.hxx"
+#include "gpu/upload_ring.hxx"
+#include "rendering/overlay.hxx"
+#include "rendering/overlay_shader.hxx"
 
 #include <imgui.h>
 
@@ -28,8 +29,6 @@ namespace gui {
         std::string font_path;
         float size{20.0F};
     };
-
-    using ImGuiFramebuffer = std::tuple<VkExtent2D, VkFormat>;
 
     inline constexpr std::uint64_t linear_source_texture_bit = std::uint64_t{1} << 32;
 
@@ -55,26 +54,20 @@ namespace gui {
         auto update_font(FontChoice const &) -> void;
         auto set_app_name(std::string_view) -> void;
 
-        auto begin_frame(ImGuiFramebuffer main_fb) -> void;
-
-        auto render(VkCommandBuffer cmd, std::uint32_t frame_index) -> void;
+        // The same three steps as every immediate-mode renderer: build the frame, record it into an overlay's
+        // command buffer, finish it. `framebuffer` is the size of the target the UI is drawn into.
+        auto begin_frame(VkExtent2D framebuffer) -> void;
+        auto record(OverlayRecordContext const &context) -> void;
         auto end_frame() -> void;
 
-        auto set_should_recompile() -> void { force_recompile_primary = true; }
-
     private:
-        ImGuiRenderer(GLFWwindow *main_window, std::uint32_t initial_slot_count, Renderer &, FontChoice const &);
-
-        struct DrawableData {
-            std::unique_ptr<Buffer> vertex;
-            std::unique_ptr<Buffer> index;
-            std::uint32_t index_count{0};
-            std::uint32_t vertex_count{0};
-        };
+        ImGuiRenderer(GLFWwindow *main_window, Renderer &, FontChoice const &);
 
         std::vector<std::byte> font_data;
 
-        PipelineNodeHandle main_pipeline{};
+        OverlayShader shader;
+        UploadRing vertices;
+        UploadRing indices;
         SamplerHandle sampler{};
         ImageHandle font_texture{};
 
@@ -85,16 +78,7 @@ namespace gui {
 
         float display_scale{1.0F};
 
-        std::vector<DrawableData> drawables{};
-        std::uint32_t slots_per_frame{0};
-        std::uint32_t slot_cursor{0};
-        std::uint32_t frame_cursor{0};
-
-        bool force_recompile_primary{false};
-
-        auto render_draw_data(VkCommandBuffer cmd, ImDrawData *dd, ShaderObjectSet const &pipeline,
-                              std::uint32_t frame_index) -> void;
-        auto acquire_draw_slot() -> DrawableData &;
+        auto draw(OverlayRecordContext const &context, BoundOverlayShader const &bound, ImDrawData const &data) -> void;
     };
 
 }

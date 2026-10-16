@@ -12,7 +12,7 @@
 // stack is as it was on return. `material` is accepted but not read: the caller owns the userdata type.
 //
 //   count (1 .. ParticleEmitter::max_count)   rate, lifetime, speed, speed_variance, shape_size, cone_degrees,
-//   size_start, size_end                      shape ("point", "sphere", "box" or "cone")
+//   size_start, size_end                      shape ("point", "sphere", "box", "cone" or "text")
 //   gravity = {x, y, z}                       colour_start, colour_end = {r, g, b [, a]}
 //   emitting (boolean)                        material
 [[nodiscard]] auto read_particle_table(lua_State *state, int table, Components::ParticleEmitter &emitter)

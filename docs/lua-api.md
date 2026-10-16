@@ -1,7 +1,7 @@
 # Lua API for editors (LuaLS)
 
 `lua-api/` holds `---@meta` stub files describing everything the engine puts in a game script's environment: the
-libraries `scene`, `assets`, `camera`, `ui`, `game`, `entity`, `compute`, `render`, `http`, `key` and `mouse`, the `Entity` and `Effect`
+libraries `scene`, `assets`, `camera`, `ui`, `game`, `entity`, `compute`, `render`, `text`, `http`, `key` and `mouse`, the `Entity` and `Effect`
 handles with their methods, the option tables (`ParticleOptions`, `UiWindowOptions`, `CameraResult`) and `GameScript`,
 the table of callbacks a script returns. They are never loaded by the engine; they only give completion, hover docs
 and type checks. The repo's `.luarc.json` selects Lua 5.4 (what the engine embeds), points `workspace.library` at
@@ -32,6 +32,16 @@ ranges and defaults are written by hand from the C++ (`lua_game_api.cxx`, `lua_p
 and are not checked.
 
 Not covered: the native modules `native.chess` and `native.net` (opened with `require`) have no stubs.
+
+## Text
+
+`text.draw{ text, x, y, size, color }` shows text over the scene for the current frame (call it every frame), and
+`text.draw_world{ text, position, rotation, size, color }` places it in the world, depth-tested with the scene.
+`e:add_text{ text, size, color, emissive, centred }` puts text on an entity so it follows the entity's transform;
+`emissive` multiplies the colour into HDR, so a value well above 1 blooms like a neon sign, and a particle emitter on
+the same entity with `shape = "text"` sheds particles from the letters. `text.load_font(path)` loads another font and
+`text.measure(str, size)` sizes a string. `assets/scripts/text_demo/main.lua` and `assets/scripts/neon_sign/main.lua`
+use all of it; `docs/text-rendering.md` explains how it is drawn.
 
 ## Lights, environment and bloom
 

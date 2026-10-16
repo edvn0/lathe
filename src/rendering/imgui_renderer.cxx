@@ -29,19 +29,6 @@
 namespace gui {
 
     namespace {
-        [[nodiscard]] constexpr auto next_power_of_two(std::size_t value) noexcept -> std::size_t {
-            if (value <= 1) {
-                return 1;
-            }
-
-            --value;
-            for (std::size_t shift = 1; shift < sizeof(std::size_t) * 8; shift <<= 1) {
-                value |= value >> shift;
-            }
-
-            return value + 1;
-        }
-
         struct PC {
             std::array<float, 4> lrtb{};
             VkDeviceAddress vb;
@@ -135,38 +122,17 @@ namespace gui {
             c[ImGuiCol_NavWindowingDimBg] = {0.80F, 0.80F, 0.80F, 0.20F};
             c[ImGuiCol_ModalWindowDimBg] = {0.10F, 0.10F, 0.10F, 0.45F};
         }
-
-        auto create_pipeline(Renderer &r, VkFormat fb) -> std::expected<PipelineNodeHandle, RendererError> {
-            return r.register_pipeline(PipelineRegisterInfo{
-                    .stages =
-                            {
-                                    renderer::ShaderCompileRequest{
-                                            .source_path = data_path("assets/shaders/gui.slang"),
-                                            .entry_point = FlyString{"main_vs"},
-                                            .stage = renderer::ShaderStage::vertex,
-                                    },
-                                    renderer::ShaderCompileRequest{
-                                            .source_path = data_path("assets/shaders/gui.slang"),
-                                            .entry_point = FlyString{"main_fs"},
-                                            .stage = renderer::ShaderStage::fragment,
-                                    },
-                            },
-                    .push_constant_ranges = {global_push_constant_range},
-                    .colour_formats = {fb},
-                    .dynamic_states = {},
-                    .depth_format = VK_FORMAT_UNDEFINED,
-                    .stencil_format = VK_FORMAT_UNDEFINED,
-                    .samples = VK_SAMPLE_COUNT_1_BIT,
-                    .blending = true,
-                    .debug_name = "gui.pipeline",
-            });
-        }
     }
 
     ImGuiRenderer::ImGuiRenderer(Renderer &r, FontChoice const &font) :
-        ImGuiRenderer(r.context().window, r.context().swapchain.frame_count(), r, font) {}
+        ImGuiRenderer(r.context().window, r, font) {}
 
-    ImGuiRenderer::ImGuiRenderer(GLFWwindow *w, std::uint32_t initial_slot_count, Renderer &r, FontChoice const &font) :
+    ImGuiRenderer::ImGuiRenderer(GLFWwindow *w, Renderer &r, FontChoice const &font) :
+        shader{r, OverlayShaderInfo{.source = "assets/shaders/gui.slang",
+                                    .blending = true,
+                                    .debug_name = "gui.pipeline"}},
+        vertices{UploadRing::Info{.name = "imgui.vertices"}},
+        indices{UploadRing::Info{.name = "imgui.indices", .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT}},
         renderer(r) {
 
         std::ignore = ImGui::CreateContext();
@@ -192,8 +158,6 @@ namespace gui {
 
         update_font(font);
         ImGui_ImplGlfw_InitForVulkan(w, true);
-        slots_per_frame = std::max(1u, initial_slot_count);
-        drawables.resize(static_cast<std::size_t>(frames_in_flight) * slots_per_frame);
     }
 
     ImGuiRenderer::~ImGuiRenderer() {
@@ -208,51 +172,15 @@ namespace gui {
         ImGui::DestroyContext();
     }
 
-    auto ImGuiRenderer::begin_frame(ImGuiFramebuffer fb) -> void {
-        auto const &dim = std::get<VkExtent2D>(fb);
-
+    auto ImGuiRenderer::begin_frame(VkExtent2D const framebuffer) -> void {
         ImGuiIO &io = ImGui::GetIO();
-        io.DisplaySize =
-                ImVec2(static_cast<float>(dim.width) / display_scale, static_cast<float>(dim.height) / display_scale);
+        io.DisplaySize = ImVec2(static_cast<float>(framebuffer.width) / display_scale,
+                                static_cast<float>(framebuffer.height) / display_scale);
         io.DisplayFramebufferScale = ImVec2(display_scale, display_scale);
-
-        if (force_recompile_primary || !main_pipeline.valid()) {
-            auto created = create_pipeline(renderer, std::get<1>(fb));
-
-            if (!created) {
-                error("[ImGui] Failed to create UI pipeline");
-            } else {
-                main_pipeline = *created;
-                force_recompile_primary = false;
-            }
-        }
-
-        slot_cursor = 0;
-        frame_cursor = (frame_cursor + 1) % frames_in_flight;
 
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         ImGuizmo::BeginFrame();
-    }
-
-    auto ImGuiRenderer::acquire_draw_slot() -> DrawableData & {
-        if (slot_cursor >= slots_per_frame) {
-            std::uint32_t new_slots_per_frame = std::max(slots_per_frame * 2u, slot_cursor + 1u);
-            std::vector<DrawableData> new_drawables(static_cast<std::size_t>(frames_in_flight) * new_slots_per_frame);
-
-            for (std::uint32_t f = 0; f < frames_in_flight; ++f) {
-                for (std::uint32_t s = 0; s < slots_per_frame; ++s) {
-                    new_drawables[f * new_slots_per_frame + s] = std::move(drawables[f * slots_per_frame + s]);
-                }
-            }
-
-            drawables = std::move(new_drawables);
-            slots_per_frame = new_slots_per_frame;
-        }
-
-        DrawableData &out = drawables[frame_cursor * slots_per_frame + slot_cursor];
-        slot_cursor++;
-        return out;
     }
 
     auto ImGuiRenderer::end_frame() -> void {
@@ -264,145 +192,73 @@ namespace gui {
         }
     }
 
-    auto ImGuiRenderer::render(VkCommandBuffer cmd, std::uint32_t frame_index) -> void {
-        if (auto const *pipeline = renderer.resolve_pipeline(main_pipeline)) {
-            render_draw_data(cmd, ImGui::GetDrawData(), *pipeline, frame_index);
-        }
-    }
+    auto ImGuiRenderer::record(OverlayRecordContext const &context) -> void {
+        auto const *const data = ImGui::GetDrawData();
 
-    auto ImGuiRenderer::render_draw_data(VkCommandBuffer cmd, ImDrawData *dd, ShaderObjectSet const &pipeline,
-                                         std::uint32_t frame_index) -> void {
-        if (!dd || dd->TotalIdxCount == 0) {
+        if (data == nullptr || data->TotalIdxCount == 0) {
             return;
         }
 
-        const float fb_width = dd->DisplaySize.x * dd->FramebufferScale.x;
-        const float fb_height = dd->DisplaySize.y * dd->FramebufferScale.y;
+        auto const bound = shader.bind(context);
+        if (!bound) {
+            return;
+        }
 
-        VkViewport vp{
+        draw(context, *bound, *data);
+    }
+
+    auto ImGuiRenderer::draw(OverlayRecordContext const &context, BoundOverlayShader const &bound,
+                             ImDrawData const &data) -> void {
+        auto &gpu = renderer.context();
+        auto const frame = context.frame_index;
+
+        for (auto *ring: {&vertices, &indices}) {
+            if (auto const begun = ring->begin_frame(gpu, frame); !begun) {
+                error("[ImGui] Could not prepare an upload buffer: {}", begun.error().message);
+                return;
+            }
+        }
+
+        auto const fb_width = data.DisplaySize.x * data.FramebufferScale.x;
+        auto const fb_height = data.DisplaySize.y * data.FramebufferScale.y;
+
+        bound.set_viewport(VkViewport{
                 .x = 0,
                 .y = fb_height,
                 .width = fb_width,
                 .height = -fb_height,
                 .minDepth = 0.0F,
                 .maxDepth = 1.0F,
-        };
-        vkCmdSetDepthCompareOp(cmd, VK_COMPARE_OP_ALWAYS);
-        vkCmdSetDepthBounds(cmd, 0.0F, 1.0F);
-        vkCmdSetDepthTestEnable(cmd, VK_FALSE);
-        vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
-        vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-        vkCmdSetViewportWithCount(cmd, 1, &vp);
+        });
+        bound.set_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+        bound.disable_depth();
+        bound.enable_alpha_blend();
 
-        VkBool32 const blend_enable = VK_TRUE;
-        VkColorBlendEquationEXT const blend_equation{
-                .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-                .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                .colorBlendOp = VK_BLEND_OP_ADD,
-                .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-                .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                .alphaBlendOp = VK_BLEND_OP_ADD,
-        };
-        VkColorComponentFlags const write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        vkCmdSetColorBlendEnableEXT(cmd, 0, 1, &blend_enable);
-        vkCmdSetColorBlendEquationEXT(cmd, 0, 1, &blend_equation);
-        vkCmdSetColorWriteMaskEXT(cmd, 0, 1, &write_mask);
+        auto const left = data.DisplayPos.x;
+        auto const right = data.DisplayPos.x + data.DisplaySize.x;
+        auto const top = data.DisplayPos.y;
+        auto const bottom = data.DisplayPos.y + data.DisplaySize.y;
 
-        const float L = dd->DisplayPos.x;
-        const float R = dd->DisplayPos.x + dd->DisplaySize.x;
-        const float T = dd->DisplayPos.y;
-        const float B = dd->DisplayPos.y + dd->DisplaySize.y;
-        const ImVec2 clip_offset = dd->DisplayPos;
-        const ImVec2 clip_scale = dd->FramebufferScale;
+        // Each command list goes into the rings as it is, with its own vertex address and index buffer, instead of
+        // being gathered into one big vector first.
+        for (auto const *list: std::span{data.CmdLists.Data, static_cast<std::size_t>(data.CmdListsCount)}) {
+            auto const vertex_slice = vertices.write(
+                    gpu, frame, std::span<ImDrawVert const>{list->VtxBuffer.Data, static_cast<std::size_t>(list->VtxBuffer.Size)});
+            auto const index_slice = indices.write(
+                    gpu, frame, std::span<ImDrawIdx const>{list->IdxBuffer.Data, static_cast<std::size_t>(list->IdxBuffer.Size)}, 4);
 
-        DrawableData &drawable = acquire_draw_slot();
-
-        if (std::cmp_less(drawable.index_count, dd->TotalIdxCount)) {
-            auto const size = static_cast<std::size_t>(dd->TotalIdxCount * 4) * sizeof(ImDrawIdx);
-            auto const actual_size = next_power_of_two(size);
-            info("[ImGui] Reallocating index buffer to {}", human_readable_bytes(actual_size));
-
-            auto created = Buffer::create(renderer.context(), BufferCreateInfo{
-                                                                      .size = actual_size,
-                                                                      .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                                                                      .memory = BufferMemory::upload,
-                                                                      .debug_name = "imgui_index_buffer",
-                                                              });
-
-            if (!created) {
-                error("[ImGui] Failed to allocate index buffer");
+            if (!vertex_slice || !index_slice) {
+                error("[ImGui] Could not write the draw lists: {}", (!vertex_slice ? vertex_slice : index_slice).error().message);
                 return;
             }
 
-            drawable.index = std::make_unique<Buffer>(std::move(*created));
-            drawable.index_count = static_cast<std::uint32_t>(actual_size / sizeof(ImDrawIdx));
-        }
+            bound.bind_index_buffer(*index_slice, VK_INDEX_TYPE_UINT16);
 
-        if (static_cast<std::int32_t>(drawable.vertex_count) < dd->TotalVtxCount) {
-            auto const size = static_cast<std::size_t>(dd->TotalVtxCount * 4) * sizeof(ImDrawVert);
-            auto const actual_size = next_power_of_two(size);
-            info("[ImGui] Reallocating vertex buffer to {}", human_readable_bytes(actual_size));
-
-            auto created =
-                    Buffer::create(renderer.context(), BufferCreateInfo{
-                                                               .size = actual_size,
-                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                               .memory = BufferMemory::upload,
-                                                               .debug_name = "imgui_vertex_buffer",
-                                                       });
-
-            if (!created) {
-                error("[ImGui] Failed to allocate vertex buffer");
-                return;
-            }
-
-            drawable.vertex = std::make_unique<Buffer>(std::move(*created));
-            drawable.vertex_count = static_cast<std::uint32_t>(actual_size / sizeof(ImDrawVert));
-        }
-
-        {
-            std::vector<ImDrawVert> all_vtx;
-            std::vector<ImDrawIdx> all_itx;
-
-            all_vtx.reserve(static_cast<std::size_t>(dd->TotalVtxCount));
-            all_itx.reserve(static_cast<std::size_t>(dd->TotalIdxCount));
-
-            for (int n = 0; n < dd->CmdListsCount; n++) {
-                auto const *imgui_cmd = dd->CmdLists[n];
-                all_vtx.insert(all_vtx.end(), imgui_cmd->VtxBuffer.Data,
-                               imgui_cmd->VtxBuffer.Data + imgui_cmd->VtxBuffer.Size);
-                all_itx.insert(all_itx.end(), imgui_cmd->IdxBuffer.Data,
-                               imgui_cmd->IdxBuffer.Data + imgui_cmd->IdxBuffer.Size);
-            }
-
-            if (!drawable.vertex->write(0, std::span<const ImDrawVert>(all_vtx))) {
-                error("[ImGui] Failed to write vertex buffer");
-            }
-            if (!drawable.index->write(0, std::span<const ImDrawIdx>(all_itx))) {
-                error("[ImGui] Failed to write index buffer");
-            }
-        }
-
-        vkCmdBindIndexBuffer(cmd, drawable.index->buffer, 0, VK_INDEX_TYPE_UINT16);
-        pipeline.bind(cmd);
-
-        renderer.resource_table().bind(cmd, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout());
-
-        std::uint32_t index_offset = 0;
-        std::uint32_t vertex_offset = 0;
-
-        for (int n = 0; n < dd->CmdListsCount; n++) {
-            auto const *command_list = dd->CmdLists[n];
-
-            for (int cmd_i = 0; cmd_i < command_list->CmdBuffer.Size; cmd_i++) {
-                auto const &imgui_cmd = command_list->CmdBuffer[cmd_i];
-
-                ImVec2 clip_min((imgui_cmd.ClipRect.x - clip_offset.x) * clip_scale.x,
-                                (imgui_cmd.ClipRect.y - clip_offset.y) * clip_scale.y);
-                ImVec2 clip_max((imgui_cmd.ClipRect.z - clip_offset.x) * clip_scale.x,
-                                (imgui_cmd.ClipRect.w - clip_offset.y) * clip_scale.y);
+            for (auto const &imgui_cmd: std::span{list->CmdBuffer.Data, static_cast<std::size_t>(list->CmdBuffer.Size)}) {
+                auto clip_min = ImVec2{(imgui_cmd.ClipRect.x - data.DisplayPos.x) * data.FramebufferScale.x,
+                                       (imgui_cmd.ClipRect.y - data.DisplayPos.y) * data.FramebufferScale.y};
+                auto clip_max = ImVec2{(imgui_cmd.ClipRect.z - data.DisplayPos.x) * data.FramebufferScale.x,
+                                       (imgui_cmd.ClipRect.w - data.DisplayPos.y) * data.FramebufferScale.y};
 
                 clip_min.x = std::max(clip_min.x, 0.0F);
                 clip_min.y = std::max(clip_min.y, 0.0F);
@@ -414,40 +270,32 @@ namespace gui {
                 }
 
                 auto const raw_tex_id = static_cast<std::uint64_t>(imgui_cmd.GetTexID());
-                bool const is_preview = (raw_tex_id & preview_texture_bit) != 0;
-                bool const already_linear = is_preview || (raw_tex_id & linear_source_texture_bit) != 0;
+                auto const is_preview = (raw_tex_id & preview_texture_bit) != 0;
+                auto const already_linear = is_preview || (raw_tex_id & linear_source_texture_bit) != 0;
 
-                PC pc{
-                        .lrtb = {L, R, T, B},
-                        .vb = drawable.vertex->device_address,
-                        .base_vertex = vertex_offset + imgui_cmd.VtxOffset,
+                bound.push(PC{
+                        .lrtb = {left, right, top, bottom},
+                        .vb = vertex_slice->address,
+                        .base_vertex = imgui_cmd.VtxOffset,
                         .texture_id = is_preview ? renderer.preview_texture_index()
                                                  : static_cast<std::uint32_t>(raw_tex_id & 0xFFFFFFFFULL),
                         .sampler_id = sampler.index,
                         .already_linear = already_linear ? 1U : 0U,
-                };
+                });
 
-                vkCmdPushConstants(cmd, pipeline.layout(), VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
-
-                VkRect2D scissor{
-                        .offset =
-                                {
-                                        .x = static_cast<std::int32_t>(clip_min.x),
-                                        .y = static_cast<std::int32_t>(clip_min.y),
-                                },
-                        .extent =
-                                {
-                                        .width = static_cast<std::uint32_t>(clip_max.x - clip_min.x),
-                                        .height = static_cast<std::uint32_t>(clip_max.y - clip_min.y),
-                                },
-                };
-                vkCmdSetScissorWithCount(cmd, 1, &scissor);
-
-                vkCmdDrawIndexed(cmd, imgui_cmd.ElemCount, 1, index_offset + imgui_cmd.IdxOffset, 0, 0);
+                bound.set_scissor(VkRect2D{
+                        .offset = {static_cast<std::int32_t>(clip_min.x), static_cast<std::int32_t>(clip_min.y)},
+                        .extent = {static_cast<std::uint32_t>(clip_max.x - clip_min.x),
+                                   static_cast<std::uint32_t>(clip_max.y - clip_min.y)},
+                });
+                bound.draw_indexed(imgui_cmd.ElemCount, 1, imgui_cmd.IdxOffset);
             }
+        }
 
-            index_offset += static_cast<std::uint32_t>(command_list->IdxBuffer.Size);
-            vertex_offset += static_cast<std::uint32_t>(command_list->VtxBuffer.Size);
+        for (auto *ring: {&vertices, &indices}) {
+            if (auto const flushed = ring->flush(frame); !flushed) {
+                error("[ImGui] Could not flush an upload buffer: {}", flushed.error().message);
+            }
         }
     }
 

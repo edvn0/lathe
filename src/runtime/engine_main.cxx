@@ -452,7 +452,7 @@ namespace {
         if (frame_ok) {
             {
                 auto const ui = clock.scope(CpuPhase::ui);
-                runtime.imgui_renderer->begin_frame(gui::ImGuiFramebuffer{frame->extent, frame->format});
+                runtime.imgui_renderer->begin_frame(frame->extent);
                 runtime.on_ui(frame->frame_index);
                 runtime.imgui_renderer->end_frame();
             }
@@ -737,6 +737,7 @@ namespace {
 
         runtime.debug_renderer.reset();
         runtime.imgui_renderer.reset();
+        runtime.text_renderer.reset();
         runtime.renderer->destroy();
 
         context.destroy();
@@ -1020,6 +1021,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
             .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
             .script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{},
             .effects = &runtime.effect_system,
+            .text = runtime.text_renderer.get(),
     });
 
     if (manifest && !manifest->title.empty()) {

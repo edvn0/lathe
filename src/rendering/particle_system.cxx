@@ -12,6 +12,7 @@
 
 #include "assets/material_storage.hxx"
 #include "rendering/scene.hxx"
+#include "rendering/text_renderer.hxx"
 
 namespace {
     constexpr auto simulate_group_size = std::uint32_t{64};
@@ -34,12 +35,15 @@ namespace {
         float cone_radians = 0.0F;
         glm::vec3 position{0.0F};
         glm::quat rotation{1.0F, 0.0F, 0.0F, 0.0F};
+        VkDeviceAddress text_points = 0;
+        std::uint32_t text_count = 0;
 
         using Layout = PushLayout<&SimulateParams::particles, &SimulateParams::count, &SimulateParams::head,
                                   &SimulateParams::spawn_count, &SimulateParams::seed, &SimulateParams::delta_time,
                                   &SimulateParams::lifetime, &SimulateParams::gravity, &SimulateParams::shape,
                                   &SimulateParams::shape_size, &SimulateParams::speed, &SimulateParams::speed_variance,
-                                  &SimulateParams::cone_radians, &SimulateParams::position, &SimulateParams::rotation>;
+                                  &SimulateParams::cone_radians, &SimulateParams::position, &SimulateParams::rotation,
+                                  &SimulateParams::text_points, &SimulateParams::text_count>;
     };
 
     // Mirrors DrawPushConstants in particles_draw.slang.
@@ -52,7 +56,7 @@ namespace {
         glm::vec4 colour_end{1.0F};
     };
 
-    static_assert(GameGraph::push_size<SimulateParams>(SimulateParams::Layout{}) == 92);
+    static_assert(GameGraph::push_size<SimulateParams>(SimulateParams::Layout{}) == 108);
     static_assert(sizeof(DrawPush) == 112);
 
     auto finite_or(float value, float fallback) -> float { return std::isfinite(value) ? value : fallback; }
@@ -173,6 +177,14 @@ auto ParticleSystem::declare(GameGraph &graph, entt::registry const &registry, M
             }
         }
 
+        // A text-shaped emitter spawns on the outline of the Text on its entity.
+        auto text_points = TextRenderer::EmissionPoints{};
+        if (emitter.shape == Components::ParticleShape::text && text_ != nullptr) {
+            if (auto const *const text = registry.try_get<Components::Text>(entity)) {
+                text_points = text_->emission_points(*text).value_or(TextRenderer::EmissionPoints{});
+            }
+        }
+
         // One emitter that cannot be declared is dropped alone.
         graph.isolated(std::format("particles {}", entt::to_integral(entity)), [&] {
             auto particles = graph.persistent_buffer(state.buffer, {.size = emitter.count * particle_bytes});
@@ -193,6 +205,8 @@ auto ParticleSystem::declare(GameGraph &graph, entt::registry const &registry, M
                     .cone_radians = glm::radians(emitter.cone_degrees),
                     .position = position,
                     .rotation = rotation,
+                    .text_points = text_points.address,
+                    .text_count = text_points.count,
             };
             graph.add_compute(std::format("particles_simulate.{}", entt::to_integral(entity)), simulate, simulate_,
                               Threads{.x = emitter.count, .group_x = simulate_group_size},
