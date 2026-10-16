@@ -360,6 +360,11 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto register_model_name(ModelHandle handle, std::string_view name) -> void override;
 
     auto register_model_source(ModelHandle handle, AssetPath const &source) -> void override;
+    auto register_model_pick_geometry(ModelHandle handle, std::shared_ptr<ModelPickGeometry const> geometry)
+            -> void override;
+
+    // The model's triangles for ray queries, or null when none were collected (see ModelStreamer::collect_pick_geometry).
+    [[nodiscard]] auto model_pick_geometry(ModelHandle handle) const -> std::shared_ptr<ModelPickGeometry const>;
 
     [[nodiscard]]
     auto cached_model(AssetPath const &source) const -> ModelHandle;
@@ -1416,6 +1421,13 @@ private:
     SamplerStorage sampler_storage_{};
     TextureStreamer texture_streamer_{};
     ModelStreamer model_streamer_{};
+
+    // Pick geometry being built on another thread for models loaded through create_model_from_cpu_data.
+    struct PendingPickGeometry {
+        ModelHandle model;
+        std::future<std::shared_ptr<ModelPickGeometry const>> geometry;
+    };
+    std::vector<PendingPickGeometry> pending_pick_geometry_;
     AssetRegistry assets_{};
     GpuResourceTable gpu_resource_table_{};
 

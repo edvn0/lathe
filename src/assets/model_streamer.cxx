@@ -47,13 +47,26 @@ auto ModelStreamer::request(IModelSink &sink, AssetPath source_path, ModelHandle
     auto profile = std::make_shared<ModelLoadProfile>();
     auto future = load_model_cpu_async(source_path, sink.sampler_storage(), profile);
 
-    if (on_loaded) {
+    std::shared_ptr<std::shared_ptr<ModelPickGeometry const>> pick_geometry;
+
+    if (collect_pick_geometry_) {
+        pick_geometry = std::make_shared<std::shared_ptr<ModelPickGeometry const>>();
+    }
+
+    if (on_loaded || pick_geometry) {
         // A thread of its own rather than a pool worker, so waiting on the load cannot starve it.
-        future = std::async(std::launch::async, [loading = std::move(future), on_loaded = std::move(on_loaded)]() mutable {
+        future = std::async(std::launch::async, [loading = std::move(future), on_loaded = std::move(on_loaded),
+                                                 pick_geometry]() mutable {
             auto result = loading.get();
 
             if (result) {
-                on_loaded(*result);
+                if (on_loaded) {
+                    on_loaded(*result);
+                }
+
+                if (pick_geometry) {
+                    *pick_geometry = ModelPickGeometry::build(*result);
+                }
             }
 
             return result;
@@ -68,6 +81,7 @@ auto ModelStreamer::request(IModelSink &sink, AssetPath source_path, ModelHandle
             .requested_at = std::chrono::steady_clock::now(),
             .path_hash = reservation.path_hash,
             .source_path = std::move(source_path),
+            .pick_geometry = std::move(pick_geometry),
     });
 
     return reservation.handle;
@@ -83,6 +97,21 @@ auto ModelStreamer::request_prepared(IModelSink &sink,
         return reservation.handle;
     }
 
+    std::shared_ptr<std::shared_ptr<ModelPickGeometry const>> pick_geometry;
+
+    if (collect_pick_geometry_) {
+        pick_geometry = std::make_shared<std::shared_ptr<ModelPickGeometry const>>();
+        cpu_data = std::async(std::launch::async, [loading = std::move(cpu_data), pick_geometry]() mutable {
+            auto result = loading.get();
+
+            if (result) {
+                *pick_geometry = ModelPickGeometry::build(*result);
+            }
+
+            return result;
+        });
+    }
+
     pending_.push_back(PendingRequest{
             .handle = reservation.handle,
             .debug_name = debug_name,
@@ -91,6 +120,7 @@ auto ModelStreamer::request_prepared(IModelSink &sink,
             .path_hash = reservation.path_hash,
             .source_path = std::move(source_path),
             .prepared = true,
+            .pick_geometry = std::move(pick_geometry),
     });
 
     return reservation.handle;
@@ -172,6 +202,10 @@ auto ModelStreamer::process_ready(IModelSink &sink, VkCommandBuffer command_buff
             path_cache_[request.path_hash] = request.handle;
             sink.register_model_name(request.handle, request.debug_name.view());
             sink.register_model_source(request.handle, request.source_path);
+
+            if (request.pick_geometry != nullptr && *request.pick_geometry != nullptr) {
+                sink.register_model_pick_geometry(request.handle, std::move(*request.pick_geometry));
+            }
 
             sink.release_model(request.handle);
         }

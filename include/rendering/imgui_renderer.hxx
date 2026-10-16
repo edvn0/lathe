@@ -64,6 +64,7 @@ namespace gui {
         ImGuiRenderer(GLFWwindow *main_window, Renderer &, FontChoice const &);
 
         std::vector<std::byte> font_data;
+        std::vector<std::byte> emoji_font_data;
 
         OverlayShader shader;
         UploadRing vertices;

@@ -11,6 +11,7 @@
 
 #include "assets/load_model.hxx"
 #include "assets/model.hxx"
+#include "assets/model_pick_geometry.hxx"
 #include "core/object_pool.hxx"
 
 struct ModelDraw {
@@ -27,6 +28,9 @@ struct ModelSlotData {
     std::vector<ModelCpuLight> lights;
 
     std::shared_ptr<ModelAnimationData const> animation;
+
+    // The model's triangles for ray queries, when the streamer was asked to collect them (the editor does).
+    std::shared_ptr<ModelPickGeometry const> pick_geometry;
     float skin_inflate = 0.0F;
 
     std::uint32_t ref_count = 1;

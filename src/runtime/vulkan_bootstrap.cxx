@@ -186,7 +186,15 @@ namespace {
     }
 
     auto glfw_error_callback(int error_code, char const *description) noexcept -> void {
-        error("GLFW error {}: {}", error_code, description != nullptr ? description : "<no description>");
+        auto const text = description != nullptr ? description : "<no description>";
+
+        // Reading a clipboard that holds nothing, or nothing as text, is a normal state of affairs, not a fault.
+        if (error_code == GLFW_FORMAT_UNAVAILABLE) {
+            warn("[GLFW] {} (code {})", text, error_code);
+            return;
+        }
+
+        error("[GLFW] {} (code {})", text, error_code);
     }
 
     // Headless normally means GLFW's null platform and VK_EXT_headless_surface, but NVIDIA's driver supports neither

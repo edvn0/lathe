@@ -42,6 +42,12 @@ public:
     auto request_prepared(IModelSink &sink, std::future<std::expected<ModelCpuData, ModelLoadError>> cpu_data,
                           AssetPath source_path, ModelHandle fallback, FlyString debug_name) -> ModelHandle;
 
+    // Keep a ModelPickGeometry of each model requested from now on, built on the loading thread and handed to the sink
+    // when the model installs. It costs a CPU copy of every triangle, so it is for the editor only.
+    auto collect_pick_geometry(bool enabled) noexcept -> void { collect_pick_geometry_ = enabled; }
+
+    [[nodiscard]] auto collecting_pick_geometry() const noexcept -> bool { return collect_pick_geometry_; }
+
     auto forget(ModelHandle handle) -> void;
 
     [[nodiscard]]
@@ -75,6 +81,9 @@ private:
         AssetPath source_path;
 
         bool prepared = false;
+
+        // Written by the loading thread before the future is ready, read after it.
+        std::shared_ptr<std::shared_ptr<ModelPickGeometry const>> pick_geometry;
     };
 
     struct Reservation {
@@ -98,4 +107,5 @@ private:
     std::vector<FailedRequest> failed_;
 
     std::unordered_map<std::size_t, ModelHandle> path_cache_;
+    bool collect_pick_geometry_ = false;
 };

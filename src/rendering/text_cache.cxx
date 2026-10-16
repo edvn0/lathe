@@ -43,9 +43,32 @@ namespace text {
         return id < fonts_.size() ? fonts_[id].get() : nullptr;
     }
 
+    auto Cache::chain_for(FontId id) const -> FontChain {
+        auto chain = FontChain{};
+
+        if (auto const *const primary = font(id)) {
+            chain.fonts.push_back(primary);
+            chain.ids.push_back(id);
+        }
+
+        for (auto const fallback: fallbacks_) {
+            if (fallback != id) {
+                if (auto const *const found = font(fallback)) {
+                    chain.fonts.push_back(found);
+                    chain.ids.push_back(fallback);
+                }
+            }
+        }
+
+        return chain;
+    }
+
     auto Cache::measure(FontId id, std::string_view utf8, float size) const -> glm::vec2 {
-        auto const *const f = font(id);
-        return f != nullptr ? layout(*f, utf8).size * size : glm::vec2{0.0F};
+        auto const chain = chain_for(id);
+        if (chain.fonts.empty()) {
+            return glm::vec2{0.0F};
+        }
+        return layout(*chain.fonts.front(), std::span{chain.fonts}.subspan(1), utf8).size * size;
     }
 
     auto Cache::outline_points(FontId id, std::string_view utf8, bool centred, std::uint32_t count) const
@@ -62,7 +85,8 @@ namespace text {
             float end = 0.0F;
         };
 
-        auto const placed = layout(*font, utf8);
+        auto const chain = chain_for(id);
+        auto const placed = layout(*font, std::span{chain.fonts}.subspan(1), utf8);
         auto const shift = centred ? text_centre(*font, placed) : glm::vec2{0.0F};
 
         auto pieces = std::vector<Piece>{};
@@ -70,7 +94,7 @@ namespace text {
 
         for (auto const &glyph: placed.glyphs) {
             // Points do not need the rasteriser's fine curves.
-            auto const outline = font->outline(glyph.glyph, 1.0F / 512.0F);
+            auto const outline = chain.fonts[glyph.font_slot]->outline(glyph.glyph, 1.0F / 512.0F);
             if (!outline) {
                 continue;
             }
@@ -197,9 +221,11 @@ namespace text {
                 continue;
             }
 
-            for (auto const &glyph: layout(*font, draw.text).glyphs) {
-                auto const *const entry =
-                        entry_for(*font, draw.font, glyph.glyph, batch, already_evicted, needs_eviction);
+            auto const chain = chain_for(draw.font);
+
+            for (auto const &glyph: layout(*font, std::span{chain.fonts}.subspan(1), draw.text).glyphs) {
+                auto const *const entry = entry_for(*chain.fonts[glyph.font_slot], chain.ids[glyph.font_slot],
+                                                    glyph.glyph, batch, already_evicted, needs_eviction);
 
                 if (needs_eviction) {
                     return batch;
@@ -233,12 +259,13 @@ namespace text {
             auto const transform_index = static_cast<std::uint32_t>(batch.world_transforms.size());
             auto used = false;
 
-            auto const placed = layout(*font, draw.text);
+            auto const chain = chain_for(draw.font);
+            auto const placed = layout(*font, std::span{chain.fonts}.subspan(1), draw.text);
             auto const shift = draw.centred ? text_centre(*font, placed) : glm::vec2{0.0F};
 
             for (auto const &glyph: placed.glyphs) {
-                auto const *const entry =
-                        entry_for(*font, draw.font, glyph.glyph, batch, already_evicted, needs_eviction);
+                auto const *const entry = entry_for(*chain.fonts[glyph.font_slot], chain.ids[glyph.font_slot],
+                                                    glyph.glyph, batch, already_evicted, needs_eviction);
 
                 if (needs_eviction) {
                     return batch;

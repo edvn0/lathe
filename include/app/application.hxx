@@ -25,6 +25,7 @@
 #include "app/game_packager.hxx"
 #include "app/scene_inspector.hxx"
 #include "app/stage_registry.hxx"
+#include "app/text_placement.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/file_change_watcher.hxx"
 #include "gpu/context.hxx"
@@ -102,6 +103,7 @@ struct Application : Runtime {
     std::array<char, 512> save_as_buffer{};
     ImGuizmo::OPERATION gizmo_operation = ImGuizmo::TRANSLATE;
     ImGuizmo::MODE gizmo_mode = ImGuizmo::WORLD;
+    TextPlacement text_placement;
 
     std::string hierarchy_search;
 

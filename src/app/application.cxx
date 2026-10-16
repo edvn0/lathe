@@ -66,94 +66,10 @@
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/screenshot.hxx"
+#include "app/surface_pick.hxx"
+#include "app/text_placement.hxx"
 
 namespace {
-
-    // Slab test in the box's local space; returns the ray parameter of the entry point (0 if the origin is inside).
-    auto ray_box_hit(glm::vec3 const &origin, glm::vec3 const &direction, glm::vec3 const &low, glm::vec3 const &high)
-            -> std::optional<float> {
-        auto t_near = 0.0F;
-        auto t_far = std::numeric_limits<float>::max();
-
-        for (auto axis = 0; axis < 3; ++axis) {
-            if (std::abs(direction[axis]) < 1e-8F) {
-                if (origin[axis] < low[axis] || origin[axis] > high[axis]) {
-                    return std::nullopt;
-                }
-                continue;
-            }
-
-            auto t0 = (low[axis] - origin[axis]) / direction[axis];
-            auto t1 = (high[axis] - origin[axis]) / direction[axis];
-            if (t0 > t1) {
-                std::swap(t0, t1);
-            }
-            t_near = std::max(t_near, t0);
-            t_far = std::min(t_far, t1);
-            if (t_near > t_far) {
-                return std::nullopt;
-            }
-        }
-
-        return t_near;
-    }
-
-    auto ray_sphere_hit(glm::vec3 const &origin, glm::vec3 const &direction, glm::vec3 const &centre, float radius)
-            -> std::optional<float> {
-        auto const to_centre = centre - origin;
-        auto const along = glm::dot(to_centre, direction);
-        auto const closest_sq = glm::dot(to_centre, to_centre) - (along * along);
-        if (along < 0.0F || closest_sq > radius * radius) {
-            return std::nullopt;
-        }
-        return along - std::sqrt(radius * radius - closest_sq);
-    }
-
-    // Nearest entity under the ray (world space, unit direction). Models are tested against their submesh bounds,
-    // lights and other model-less transforms against a small sphere so they stay clickable.
-    auto pick_entity(Scene &scene, Renderer &renderer, glm::vec3 const &origin, glm::vec3 const &direction)
-            -> entt::entity {
-        constexpr auto marker_radius = 0.3F;
-
-        auto &registry = scene.get_registry();
-        auto best = entt::entity{entt::null};
-        auto best_distance = std::numeric_limits<float>::max();
-
-        for (auto const [entity, transform]: registry.view<Components::Transform const>().each()) {
-            auto const world = systems::get_world_transform(registry, entity, transform);
-            auto distance = std::optional<float>{};
-
-            auto const *model = registry.try_get<Components::Model const>(entity);
-            auto const bounds = model != nullptr ? renderer.model_submesh_bounds(model->model) : std::nullopt;
-
-            if (bounds && !bounds->empty()) {
-                auto low = bounds->front().first;
-                auto high = bounds->front().second;
-                for (auto const &[lo, hi]: *bounds) {
-                    low = glm::min(low, lo);
-                    high = glm::max(high, hi);
-                }
-
-                auto const to_local = glm::inverse(world);
-                auto const local_origin = glm::vec3{to_local * glm::vec4{origin, 1.0F}};
-                auto const local_direction = glm::vec3{to_local * glm::vec4{direction, 0.0F}};
-
-                if (auto const local_t = ray_box_hit(local_origin, local_direction, low, high)) {
-                    auto const hit = glm::vec3{world * glm::vec4{local_origin + (local_direction * *local_t), 1.0F}};
-                    distance = glm::dot(hit - origin, direction);
-                }
-            } else if (model == nullptr) {
-                distance = ray_sphere_hit(origin, direction, glm::vec3{world[3]}, marker_radius);
-            }
-
-            if (distance && *distance < best_distance) {
-                best_distance = *distance;
-                best = entity;
-            }
-        }
-
-        return best;
-    }
 
     [[nodiscard]] auto entity_display_name(entt::registry const &registry, entt::entity entity) -> std::string {
         char const *raw = nullptr;
@@ -489,6 +405,8 @@ auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> pass
 
 Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
     stage_registry.bind_debug_renderer(debug_renderer.get());
+    // The editor ray-casts against models' triangles to pick and to place things on surfaces.
+    renderer->model_streamer().collect_pick_geometry(true);
 }
 
 Application::~Application() = default;
@@ -625,11 +543,15 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 }
             }
 
-            // Click (not drag) in the viewport to pick; ctrl toggles, clicking empty space clears.
-            if (viewport_hovered && !ImGui::IsAnyItemHovered() && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
-                ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
-                ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).x == 0.0F &&
-                ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y == 0.0F) {
+            // Click (not drag) in the viewport to pick; ctrl toggles, clicking empty space clears. With the text tool
+            // active the mouse previews and places text on a surface instead.
+            auto const pointer_on_scene = viewport_hovered && !ImGui::IsAnyItemHovered() && !ImGuizmo::IsOver() &&
+                                          !ImGuizmo::IsUsing();
+            auto const clicked = pointer_on_scene && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                                 ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).x == 0.0F &&
+                                 ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y == 0.0F;
+
+            if (clicked || (pointer_on_scene && text_placement.active())) {
                 auto const aspect = viewport_content_size.x / viewport_content_size.y;
                 auto const mouse = ImGui::GetIO().MousePos;
                 auto const ndc_x = (((mouse.x - viewport_screen_pos.x) / viewport_content_size.x) * 2.0F) - 1.0F;
@@ -640,18 +562,43 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 auto const camera_ray = glm::vec3{ndc_x / projection[0][0], ndc_y / projection[1][1], 1.0F};
                 auto const to_world = glm::inverse(camera.view());
                 auto const direction = glm::normalize(glm::vec3{to_world * glm::vec4{camera_ray, 0.0F}});
-
-                auto const hit = pick_entity(*active_scene(), *renderer, camera.position(), direction);
                 auto &selection = selection_context();
 
-                if (hit != entt::null) {
-                    if (ImGui::GetIO().KeyCtrl) {
-                        selection.toggle(hit);
-                    } else {
-                        selection.select(hit);
+                if (text_placement.active()) {
+                    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_R, false) &&
+                        !ImGui::GetIO().KeyCtrl) {
+                        text_placement.step_roll(ImGui::GetIO().KeyShift);
                     }
-                } else if (!ImGui::GetIO().KeyCtrl) {
-                    selection.clear();
+
+                    auto const placed = text_placement.update(
+                            *active_scene(), *renderer, *debug_renderer,
+                            {.origin = camera.position(),
+                             .direction = direction,
+                             .camera_forward = glm::normalize(glm::vec3{to_world * glm::vec4{0.0F, 0.0F, 1.0F, 0.0F}}),
+                             .projector = {.view = camera.view(),
+                                           .focal = {projection[0][0], projection[1][1]},
+                                           .origin = {viewport_screen_pos.x, viewport_screen_pos.y},
+                                           .size = {viewport_content_size.x, viewport_content_size.y}},
+                             .cursor = {mouse.x, mouse.y},
+                             .click = clicked,
+                             .snap_to_grid = ImGui::GetIO().KeyCtrl,
+                             .bypass_snap = ImGui::GetIO().KeyAlt});
+
+                    if (placed != entt::null) {
+                        selection.select(placed);
+                    }
+                } else {
+                    auto const hit = pick_entity(*active_scene(), *renderer, camera.position(), direction);
+
+                    if (hit != entt::null) {
+                        if (ImGui::GetIO().KeyCtrl) {
+                            selection.toggle(hit);
+                        } else {
+                            selection.select(hit);
+                        }
+                    } else if (!ImGui::GetIO().KeyCtrl) {
+                        selection.clear();
+                    }
                 }
             }
         }
@@ -1036,6 +983,33 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
     widget("Hierarchy", [&] {
         auto const &style = ImGui::GetStyle();
+
+        ImGui::SeparatorText("Text");
+        {
+            bool placing = text_placement.active();
+            if (ImGui::Checkbox("Place text on surfaces (T)", &placing)) {
+                text_placement.set_active(placing);
+            }
+
+            if (placing) {
+                auto &settings = text_placement.settings;
+                std::array<char, 256> buffer{};
+                copy_to_buffer(buffer, settings.text);
+                if (ImGui::InputText("Text##placement", buffer.data(), buffer.size())) {
+                    settings.text = buffer.data();
+                }
+                ImGui::DragFloat("Size##placement", &settings.size, 0.01F, 0.05F, 10.0F);
+                ImGui::SliderFloat("Roll", &settings.roll_degrees, -180.0F, 180.0F, "%.0f deg");
+                ImGui::Checkbox("Align to nearest edge", &settings.align_to_edges);
+                ImGui::Checkbox("Snap to vertices, edges and centres", &settings.snap_to_geometry);
+                ImGui::DragFloat("Grid (Ctrl)", &settings.grid_step, 0.01F, 0.01F, 10.0F, "%.2f m");
+                ImGui::DragFloat("Angle step", &settings.angle_step, 0.5F, 1.0F, 90.0F, "%.0f deg");
+                if (settings.snap_to_geometry) {
+                    ImGui::DragFloat("Snap radius (px)", &settings.snap_radius, 0.5F, 4.0F, 64.0F);
+                }
+                ImGui::TextDisabled("Click a model to place it. R turns it (Shift+R back). Ctrl snaps to the grid, Alt skips snapping. Esc to stop.");
+            }
+        }
 
         ImGui::SeparatorText("Gizmo");
 
@@ -2759,6 +2733,12 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
                     break;
                 case GLFW_KEY_4:
                     gizmo_mode = gizmo_mode == ImGuizmo::WORLD ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
+                    break;
+                case GLFW_KEY_T:
+                    text_placement.set_active(!text_placement.active());
+                    break;
+                case GLFW_KEY_ESCAPE:
+                    text_placement.set_active(false);
                     break;
                 default:
                     break;

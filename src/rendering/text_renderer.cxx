@@ -158,6 +158,14 @@ auto TextRenderer::create(Renderer &renderer, GameGpu &gpu) -> std::expected<voi
         warn("[Text] The built-in font could not be loaded: {}", font.error());
     }
 
+    // Emoji and other symbols the built-in font lacks, as outlines, so they are drawn in the text's colour.
+    if (auto const emoji = load_font(data_path("assets/fonts/NotoEmoji-Regular.ttf").absolute()); emoji) {
+        auto const lock = std::scoped_lock{mutex_};
+        cache_.set_fallback_fonts({*emoji});
+    } else {
+        warn("[Text] The emoji font could not be loaded: {}", emoji.error());
+    }
+
     ready_ = true;
     return {};
 }
