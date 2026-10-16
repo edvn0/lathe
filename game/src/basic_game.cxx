@@ -539,6 +539,52 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
                        {0.3F, 0.4F, 0.3F}, roof_material, house_entity);
     }
 
+    // Plain surfaces close to the spawn, to point the editor's tools at (placing text on a wall, snapping to a corner).
+    {
+        auto const ground_at = [&](float x, float z) {
+            return scene.physics_settings.ground_y + sample_terrain_height(terrain_params_, x, z);
+        };
+
+        auto const group = GeneratedEntity{&scene, "placement_test"};
+        group.emplace<Components::Transform>();
+
+        auto const stone = flat_material(glm::vec3{0.62F, 0.6F, 0.58F});
+        auto const brick = flat_material(glm::vec3{0.7F, 0.32F, 0.25F});
+        auto const paint = flat_material(glm::vec3{0.3F, 0.5F, 0.75F});
+
+        add_static_box("placement_wall", {0.0F, ground_at(0.0F, -3.5F) + 1.5F, -3.5F}, {3.0F, 1.5F, 0.15F}, stone, group);
+        add_static_box("placement_pillar", {-4.5F, ground_at(-4.5F, -1.0F) + 1.5F, -1.0F}, {0.4F, 1.5F, 0.4F}, brick,
+                       group);
+        add_static_box("placement_block", {4.5F, ground_at(4.5F, -1.0F) + 0.75F, -1.0F}, {1.0F, 0.75F, 1.0F}, paint,
+                       group);
+
+        constexpr auto ramp_half_extents = glm::vec3{1.5F, 0.1F, 2.0F};
+        auto const ramp = GeneratedEntity{&scene, "placement_ramp"};
+        ramp.emplace<Components::Transform>(Components::Transform{
+                .position = {0.0F, ground_at(0.0F, 3.5F) + 0.45F, 3.5F},
+                .rotation = glm::angleAxis(glm::radians(-18.0F), glm::vec3{1.0F, 0.0F, 0.0F}),
+                .scale = ramp_half_extents / cube_half_extents_,
+        });
+        ramp.emplace<Components::Model>(Components::Model{.model = cube_model_});
+        ramp.emplace<Components::RigidBody>(Components::RigidBody{.half_extents = ramp_half_extents, .is_static = true});
+        ramp.emplace<Components::MaterialOverride>(Components::MaterialOverride{.material = stone});
+        ramp.emplace<Components::Parent>(Components::Parent{.entity = group});
+
+        constexpr float sphere_radius = 1.0F;
+        constexpr float sphere_base_radius = 0.5F;
+        auto const ball = GeneratedEntity{&scene, "placement_sphere"};
+        ball.emplace<Components::Transform>(Components::Transform{
+                .position = {-2.5F, ground_at(-2.5F, 1.5F) + sphere_radius, 1.5F},
+                .scale = glm::vec3{sphere_radius / sphere_base_radius},
+        });
+        ball.emplace<Components::Model>(Components::Model{.model = engine_models.sphere});
+        auto ball_body = Components::RigidBody::make_sphere(sphere_radius);
+        ball_body.is_static = true;
+        ball.emplace<Components::RigidBody>(std::move(ball_body));
+        ball.emplace<Components::MaterialOverride>(Components::MaterialOverride{.material = paint});
+        ball.emplace<Components::Parent>(Components::Parent{.entity = group});
+    }
+
     {
         auto const trunk_material = flat_material(glm::vec3{0.35F, 0.24F, 0.15F});
         auto const canopy_material = flat_material(glm::vec3{0.22F, 0.45F, 0.2F});
