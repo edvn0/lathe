@@ -79,13 +79,13 @@ local function build_map(index, size)
     local w, h = size.width, size.height
     local name = "snake_" .. size.name
 
-    prop(name .. "_floor", cube, m.ox + w / 2, -0.25, m.oz + h / 2, w / 2, 0.25, h / 2, materials.floor)
+    prop(name .. "_floor", cube, m.ox + w / 2, -0.25, m.oz + h / 2, w, 0.5, h, materials.floor)
 
-    local t = 0.25 -- half thickness of a wall
-    prop(name .. "_wall_s", cube, m.ox + w / 2, 0.25, m.oz - t, w / 2 + 2 * t, 0.5, t, materials.wall)
-    prop(name .. "_wall_n", cube, m.ox + w / 2, 0.25, m.oz + h + t, w / 2 + 2 * t, 0.5, t, materials.wall)
-    prop(name .. "_wall_w", cube, m.ox - t, 0.25, m.oz + h / 2, t, 0.5, h / 2, materials.wall)
-    prop(name .. "_wall_e", cube, m.ox + w + t, 0.25, m.oz + h / 2, t, 0.5, h / 2, materials.wall)
+    local t = 0.25 -- half thickness of a wall (a unit cube's scale is its full size)
+    prop(name .. "_wall_s", cube, m.ox + w / 2, 0.25, m.oz - t, w + 2 * t, 0.5, 2 * t, materials.wall)
+    prop(name .. "_wall_n", cube, m.ox + w / 2, 0.25, m.oz + h + t, w + 2 * t, 0.5, 2 * t, materials.wall)
+    prop(name .. "_wall_w", cube, m.ox - t, 0.25, m.oz + h / 2, 2 * t, 0.5, h, materials.wall)
+    prop(name .. "_wall_e", cube, m.ox + w + t, 0.25, m.oz + h / 2, 2 * t, 0.5, h, materials.wall)
 
     m.name = name
     m.cube = cube
@@ -344,6 +344,9 @@ local function to_menu()
     screen = "menu"
     new_round()
 end
+
+-- The menus are clicked with the mouse, so leave the cursor free instead of capturing it.
+M.wants_cursor = true
 
 function M.on_populate()
     scene.clear()

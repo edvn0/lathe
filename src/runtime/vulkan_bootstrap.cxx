@@ -189,6 +189,23 @@ namespace {
         error("GLFW error {}: {}", error_code, description != nullptr ? description : "<no description>");
     }
 
+    // Headless normally means GLFW's null platform and VK_EXT_headless_surface, but NVIDIA's driver supports neither
+    // presenting to that surface nor querying its capabilities, which leaves only a software rasteriser to render on.
+    // With an X server around, an invisible X11 window gives a real surface on the real GPU instead.
+    auto headless_uses_hidden_window() noexcept -> bool {
+#if defined(__linux__)
+        auto const *display = std::getenv("DISPLAY");
+
+        return display != nullptr && display[0] != '\0';
+#else
+        return false;
+#endif
+    }
+
+    auto uses_headless_surface(ScreenType screen_type) noexcept -> bool {
+        return screen_type == ScreenType::headless && !headless_uses_hidden_window();
+    }
+
     auto initialize_glfw(VulkanContext &context, ScreenType screen_type) noexcept -> bool {
         glfwSetErrorCallback(glfw_error_callback);
 
@@ -196,9 +213,12 @@ namespace {
 
         info("Was created via renderdoc: {}", renderdoc.is_active());
 
-        if (screen_type == ScreenType::headless) {
+        if (uses_headless_surface(screen_type)) {
             glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_NULL);
             info("Headless: using GLFW's null platform.");
+        } else if (screen_type == ScreenType::headless) {
+            glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+            info("Headless: using a hidden X11 window.");
         } else {
 #if defined(__linux__)
             glfwInitHint(GLFW_PLATFORM, renderdoc.is_active() ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM);
@@ -235,6 +255,7 @@ namespace {
         // taken the window out of fullscreen. Alt-Tabbing or clicking another window should not hide the game.
         glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
         glfwWindowHint(GLFW_DECORATED, screen_type == ScreenType::borderless ? GLFW_FALSE : GLFW_TRUE);
+        glfwWindowHint(GLFW_VISIBLE, screen_type == ScreenType::headless ? GLFW_FALSE : GLFW_TRUE);
 
         std::int32_t monitor_count{};
         glfwGetMonitors(&monitor_count);
@@ -335,7 +356,7 @@ namespace {
 
         std::vector<char const *> instance_extensions;
 
-        if (screen_type == ScreenType::headless) {
+        if (uses_headless_surface(screen_type)) {
             instance_extensions = {VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME};
         } else {
             std::uint32_t extension_count = 0;
@@ -467,7 +488,7 @@ namespace {
     }
 
     auto create_surface(VulkanContext &context, ScreenType screen_type) noexcept -> bool {
-        if (screen_type == ScreenType::headless) {
+        if (uses_headless_surface(screen_type)) {
             VkHeadlessSurfaceCreateInfoEXT const create_info{
                     .sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT,
                     .pNext = nullptr,
