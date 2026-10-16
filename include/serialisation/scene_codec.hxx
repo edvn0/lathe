@@ -215,6 +215,7 @@ namespace scene_section {
     inline constexpr std::uint32_t particle_emitters = 15;
     inline constexpr std::uint32_t behaviours = 16;
     inline constexpr std::uint32_t texts = 17;
+    inline constexpr std::uint32_t strings = 18;
 }
 
 inline constexpr std::uint16_t scene_section_version = 1;
@@ -225,14 +226,21 @@ inline constexpr std::uint16_t point_lights_section_version = 2;
 
 inline constexpr std::uint16_t spot_lights_section_version = 2;
 
-inline constexpr std::uint16_t materials_section_version = 2;
+// Sections whose strings are offsets into the `strings` section from this version on; older versions hold them inline.
+inline constexpr std::uint16_t strings_section_version = 1;
+
+inline constexpr std::uint16_t materials_section_version = 3;
+
+inline constexpr std::uint16_t string_ref_section_version = 2;
 
 inline constexpr std::uint16_t rigid_bodies_section_version = 2;
 
-inline constexpr std::uint16_t environment_section_version = 1;
+inline constexpr std::uint16_t environment_section_version = 2;
 
+// Fails with `malformed_payload` when a string holds a NUL byte, which the NUL-terminated `strings` section cannot
+// store; the message names the field.
 [[nodiscard]]
-auto encode_scene(SceneDescription const &scene) -> std::vector<std::byte>;
+auto encode_scene(SceneDescription const &scene) -> std::expected<std::vector<std::byte>, LbfError>;
 
 struct SceneDecodeReport {
     std::uint32_t skipped_sections = 0;

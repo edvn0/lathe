@@ -1067,10 +1067,16 @@ namespace {
 
         LbfWriter writer{LbfFileKind::scene};
 
+        auto scene_payload = encode_scene(description);
+
+        if (!scene_payload) {
+            return std::unexpected(scene_payload.error());
+        }
+
         writer.add_chunk(LbfChunkInput{
                 .type = lbf_chunk::scene,
                 .version = scene_chunk_version,
-                .payload = encode_scene(description),
+                .payload = std::move(*scene_payload),
         });
 
         {
@@ -1409,11 +1415,12 @@ auto scene_fingerprint(SceneDescription const &description) -> std::uint64_t {
     add_plain(description.scripts, &SceneDescription::scripts);
     add_plain(description.lifetimes, &SceneDescription::lifetimes);
 
+    // A scene with an unencodable string (a NUL byte) hashes as empty; saving it fails with the real error anyway.
     std::vector<std::uint64_t> hashes;
     hashes.reserve(entity_count + 1);
 
     for (auto const &single: singles) {
-        hashes.push_back(xxh64(encode_scene(single)));
+        hashes.push_back(xxh64(encode_scene(single).value_or(std::vector<std::byte>{})));
     }
 
     std::ranges::sort(hashes);
@@ -1422,7 +1429,7 @@ auto scene_fingerprint(SceneDescription const &description) -> std::uint64_t {
     settings_only.physics_settings = description.physics_settings;
     settings_only.environment = description.environment;
     settings_only.environment_id = description.environment_id;
-    hashes.push_back(xxh64(encode_scene(settings_only)));
+    hashes.push_back(xxh64(encode_scene(settings_only).value_or(std::vector<std::byte>{})));
 
     return xxh64(std::as_bytes(std::span<std::uint64_t const>{hashes}));
 }

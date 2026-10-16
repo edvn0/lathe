@@ -145,6 +145,55 @@ namespace {
         };
     }
 
+    auto encoded(SceneDescription const &scene) -> std::vector<std::byte> {
+        auto result = encode_scene(scene);
+        REQUIRE(result.has_value());
+        return std::move(*result);
+    }
+
+    auto framed_section(std::uint32_t type, std::uint16_t version, ByteWriter const &body) -> std::vector<std::byte> {
+        ByteWriter framed;
+        framed.write(type);
+        framed.write(version);
+        framed.write(std::uint16_t{0});
+        framed.write(static_cast<std::uint64_t>(body.size()));
+        framed.write_span(body.bytes());
+        return framed.take();
+    }
+
+    auto strings_section(std::string_view blob) -> std::vector<std::byte> {
+        ByteWriter body;
+        body.write_span(std::as_bytes(std::span{blob.data(), blob.size()}));
+        return framed_section(scene_section::strings, strings_section_version, body);
+    }
+
+    // One entity (version 2: name is an offset into the strings section).
+    auto entity_section_by_offset(std::uint32_t offset) -> std::vector<std::byte> {
+        ByteWriter body;
+        body.write(std::uint32_t{1});
+        body.write(offset);
+        body.write(scene_no_index);
+        body.write(std::uint32_t{0});
+        body.write(std::uint8_t{0});
+        return framed_section(scene_section::entities, string_ref_section_version, body);
+    }
+
+    auto concat(std::vector<std::byte> first, std::vector<std::byte> const &second) -> std::vector<std::byte> {
+        first.insert(first.end(), second.begin(), second.end());
+        return first;
+    }
+
+    auto count_occurrences(std::span<std::byte const> haystack, std::string_view needle) -> std::size_t {
+        std::string_view const text{reinterpret_cast<char const *>(haystack.data()), haystack.size()};
+        std::size_t count = 0;
+
+        for (auto at = text.find(needle); at != std::string_view::npos; at = text.find(needle, at + 1)) {
+            ++count;
+        }
+
+        return count;
+    }
+
     auto populated_scene() -> SceneDescription {
         SceneDescription scene;
         scene.models.push_back(SceneAssetRef{.source = "engine://cube"});
@@ -512,7 +561,7 @@ TEST_SUITE("unit") {
         scene.scripts.push_back(SceneScriptComponent{.entity = 2, .script = "player_controller"});
         scene.lifetimes.push_back(SceneLifetimeComponent{.entity = 1, .remaining_seconds = 2.5F});
 
-        auto const payload = encode_scene(scene);
+        auto const payload = encoded(scene);
         auto decoded = decode_scene(payload);
         REQUIRE(decoded.has_value());
 
@@ -566,7 +615,175 @@ TEST_SUITE("unit") {
         CHECK(decoded->scripts[0].script == "player_controller");
         CHECK(decoded->lifetimes[0].remaining_seconds == doctest::Approx(2.5F));
 
-        CHECK(encode_scene(*decoded) == payload);
+        CHECK(encoded(*decoded) == payload);
+    }
+
+    TEST_CASE("The strings section comes first and stores a repeated string once") {
+        constexpr std::string_view name = "a_rather_long_entity_name_used_many_times";
+
+        SceneDescription scene;
+        scene.entities.resize(50);
+        for (auto &entity: scene.entities) {
+            entity.name = std::string{name};
+        }
+
+        auto const payload = encoded(scene);
+
+        ByteReader reader{payload};
+        CHECK(reader.read<std::uint32_t>() == scene_section::strings);
+
+        auto const strings = find_section(payload, scene_section::strings);
+        CHECK(strings.version == strings_section_version);
+        CHECK(count_occurrences(payload, name) == 1);
+        CHECK(count_occurrences(strings.payload, name) == 1);
+
+        // Inline, the 50 copies alone would have been 50 * (4 + name.size()) bytes.
+        CHECK(payload.size() < 50 * name.size());
+
+        auto const decoded = decode_scene(payload);
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->entities.size() == 50);
+        CHECK(decoded->entities[49].name == name);
+        CHECK(encoded(*decoded) == payload);
+    }
+
+    TEST_CASE("The empty string is offset 0 and costs no table space") {
+        SceneDescription scene;
+        scene.entities.push_back(SceneEntity{.name = ""});
+
+        auto const payload = encoded(scene);
+        auto const entities = find_section(payload, scene_section::entities);
+
+        ByteReader reader{entities.payload};
+        CHECK(reader.read<std::uint32_t>() == 1);
+        CHECK(reader.read<std::uint32_t>() == 0);
+
+        auto const strings = find_section(payload, scene_section::strings);
+        REQUIRE(strings.payload.size() >= 1);
+        CHECK(strings.payload.front() == std::byte{0});
+
+        auto const decoded = decode_scene(payload);
+        REQUIRE(decoded.has_value());
+        CHECK(decoded->entities[0].name.empty());
+    }
+
+    TEST_CASE("The string table is a pure function of the scene") {
+        SceneDescription scene;
+        scene.entities.push_back(SceneEntity{.name = "b"});
+        scene.entities.push_back(SceneEntity{.name = "a"});
+        scene.materials.push_back(SceneMaterial{.name = "a"});
+
+        CHECK(encoded(scene) == encoded(scene));
+
+        auto const strings = find_section(encoded(scene), scene_section::strings);
+        // The material's "a" is interned first (section order) and the entity's "a" reuses it.
+        CHECK(count_occurrences(strings.payload, "a") == 1);
+    }
+
+    TEST_CASE("A scene with inline strings and no strings section still loads") {
+        ByteWriter body;
+        body.write(std::uint32_t{1});
+        body.write_string("legacy");
+        body.write(scene_no_index);
+        body.write(std::uint32_t{0});
+        body.write(std::uint8_t{0});
+
+        auto const decoded = decode_scene(framed_section(scene_section::entities, 1, body));
+        REQUIRE(decoded.has_value());
+        REQUIRE(decoded->entities.size() == 1);
+        CHECK(decoded->entities[0].name == "legacy");
+    }
+
+    TEST_CASE("Offsets into the strings section are bounds-checked") {
+        auto const decode_offset = [](std::string_view blob, std::uint32_t offset) {
+            return decode_scene(concat(strings_section(blob), entity_section_by_offset(offset)));
+        };
+
+        std::string_view const blob{"\0abc\0de\0", 8};
+
+        SUBCASE("valid offsets, including the middle of a string") {
+            REQUIRE(decode_offset(blob, 1).has_value());
+            CHECK(decode_offset(blob, 1)->entities[0].name == "abc");
+            CHECK(decode_offset(blob, 2)->entities[0].name == "bc");
+            CHECK(decode_offset(blob, 5)->entities[0].name == "de");
+            CHECK(decode_offset(blob, 0)->entities[0].name.empty());
+        }
+
+        SUBCASE("out of range") {
+            CHECK_FALSE(decode_offset(blob, 8).has_value());
+            CHECK_FALSE(decode_offset(blob, 9).has_value());
+            CHECK_FALSE(decode_offset(blob, 0xFFFFFFFFU).has_value());
+        }
+
+        SUBCASE("a blob that is not NUL-terminated, or empty, or does not start with a NUL") {
+            CHECK_FALSE(decode_offset(std::string_view{"\0abc", 4}, 1).has_value());
+            CHECK_FALSE(decode_offset(std::string_view{}, 0).has_value());
+            CHECK_FALSE(decode_offset(std::string_view{"abc\0", 4}, 0).has_value());
+        }
+
+        SUBCASE("a strings section whose size runs past the payload") {
+            auto payload = concat(strings_section(blob), entity_section_by_offset(1));
+            payload.resize(20);
+            CHECK_FALSE(decode_scene(payload).has_value());
+        }
+
+        SUBCASE("a section that needs the table when there is none") {
+            CHECK_FALSE(decode_scene(entity_section_by_offset(0)).has_value());
+        }
+
+        SUBCASE("the table coming after the section that uses it") {
+            CHECK_FALSE(decode_scene(concat(entity_section_by_offset(1), strings_section(blob))).has_value());
+        }
+
+        SUBCASE("two strings sections") {
+            CHECK_FALSE(decode_scene(concat(concat(strings_section(blob), strings_section(blob)),
+                                            entity_section_by_offset(1)))
+                                .has_value());
+        }
+
+        SUBCASE("a strings section from a newer engine is skipped, so users of it fail rather than misread") {
+            ByteWriter body;
+            body.write_span(std::as_bytes(std::span{blob.data(), blob.size()}));
+            auto const newer = framed_section(scene_section::strings, strings_section_version + 1, body);
+            CHECK_FALSE(decode_scene(concat(newer, entity_section_by_offset(1))).has_value());
+        }
+    }
+
+    TEST_CASE("Random offsets never read outside the strings section") {
+        constexpr std::string_view blob{"\0hello\0w\0", 9};
+        std::uint32_t state = 12345;
+
+        for (int round = 0; round < 2000; ++round) {
+            state = (state * 1664525U) + 1013904223U;
+            auto const offset = round % 3 == 0 ? state : state % 16;
+
+            auto const decoded = decode_scene(concat(strings_section(blob), entity_section_by_offset(offset)));
+
+            if (offset < blob.size()) {
+                REQUIRE(decoded.has_value());
+                CHECK(decoded->entities[0].name == std::string{blob.substr(offset, blob.find('\0', offset) - offset)});
+            } else {
+                CHECK_FALSE(decoded.has_value());
+            }
+        }
+    }
+
+    TEST_CASE("A string with an embedded NUL is refused when encoding, naming the field") {
+        using namespace std::string_literals;
+
+        SceneDescription scene;
+        scene.entities.push_back(SceneEntity{.name = "fine"});
+        scene.texts.push_back(SceneTextComponent{.entity = 0, .text = {.text = "a\0b"s}});
+
+        auto const result = encode_scene(scene);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().type == LbfErrorType::malformed_payload);
+
+        scene.texts[0].text.text = "ab";
+        CHECK(encode_scene(scene).has_value());
+
+        scene.entities[0].name = "a\0b"s;
+        CHECK_FALSE(encode_scene(scene).has_value());
     }
 
     TEST_CASE("Instance transforms that decompose are stored as TRS columns") {
@@ -585,7 +802,7 @@ TEST_SUITE("unit") {
         scene.instanced_models.push_back(
                 SceneInstancedModelComponent{.entity = 1, .model = 0, .transforms = mirrored});
 
-        auto const payload = encode_scene(scene);
+        auto const payload = encoded(scene);
 
         auto const section = find_section(payload, scene_section::instanced_models);
         CHECK(section.version == instanced_models_section_version);
@@ -617,7 +834,7 @@ TEST_SUITE("unit") {
         scene.instanced_models.push_back(
                 SceneInstancedModelComponent{.entity = 0, .model = 0, .transforms = transforms});
 
-        auto const payload = encode_scene(scene);
+        auto const payload = encoded(scene);
         auto const section = find_section(payload, scene_section::instanced_models);
         CHECK(section.payload.size() == 4 + 17 + (64 * transforms.size()));
 
@@ -631,7 +848,7 @@ TEST_SUITE("unit") {
         scene.models.push_back(SceneAssetRef{.id = asset_id_from_key("model:a.gltf"), .source = "a.gltf"});
         scene.entities.push_back(SceneEntity{.name = "old"});
 
-        auto payload = encode_scene(scene);
+        auto payload = encoded(scene);
 
         auto const transforms = grass_like_transforms(3);
         ByteWriter section;
@@ -660,7 +877,7 @@ TEST_SUITE("unit") {
 
     TEST_CASE("Version 1 material sections still decode, single-sided and without a far material") {
         SceneDescription scene;
-        auto payload = encode_scene(scene);
+        auto payload = encoded(scene);
 
         ByteWriter section;
         section.write(std::uint32_t{1});
@@ -702,7 +919,7 @@ TEST_SUITE("unit") {
         SceneDescription scene;
         scene.entities.push_back(SceneEntity{.name = "old"});
 
-        auto payload = encode_scene(scene);
+        auto payload = encoded(scene);
 
         ByteWriter section;
         section.write(std::uint32_t{1});
@@ -744,7 +961,7 @@ TEST_SUITE("unit") {
         SceneDescription scene;
         scene.entities.push_back(SceneEntity{.name = "old"});
 
-        auto payload = encode_scene(scene);
+        auto payload = encoded(scene);
 
         ByteWriter section;
         section.write(std::uint32_t{1});
@@ -776,7 +993,7 @@ TEST_SUITE("unit") {
         SceneDescription scene;
         scene.entities.push_back(SceneEntity{.name = "only"});
 
-        auto payload = encode_scene(scene);
+        auto payload = encoded(scene);
 
         ByteWriter extra;
         extra.write(std::uint32_t{999});
@@ -1081,7 +1298,7 @@ TEST_SUITE("unit") {
             spoil(scene);
 
             CHECK_FALSE(validate_scene(scene).has_value());
-            CHECK_FALSE(decode_scene(encode_scene(scene)).has_value());
+            CHECK_FALSE(decode_scene(encoded(scene)).has_value());
         };
 
         constexpr auto nan = std::numeric_limits<float>::quiet_NaN();

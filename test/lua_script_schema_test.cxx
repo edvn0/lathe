@@ -103,7 +103,9 @@ TEST_SUITE("unit") {
 
         REQUIRE(validate_scene(scene).has_value());
 
-        auto const bytes = encode_scene(scene);
+        auto const encoded_scene = encode_scene(scene);
+        REQUIRE(encoded_scene.has_value());
+        auto const &bytes = *encoded_scene;
         auto const decoded = decode_scene(bytes);
 
         REQUIRE(decoded.has_value());
