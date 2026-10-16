@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -249,6 +250,19 @@ struct SceneDecodeReport {
 [[nodiscard]]
 auto decode_scene(std::span<std::byte const> payload, std::uint16_t chunk_version = scene_chunk_version,
                   SceneDecodeReport *report = nullptr) -> std::expected<SceneDescription, LbfError>;
+
+struct SceneSectionInfo {
+    std::string_view name;
+    std::uint16_t current_version = 0;
+    std::uint16_t oldest_readable = 0;
+
+    // The version from which this section's strings are offsets into the strings section; 0 if it holds none.
+    std::uint16_t string_offsets_from = 0;
+};
+
+// What this build knows of a SCEN section type, or nothing for a type it would skip.
+[[nodiscard]]
+auto scene_section_info(std::uint32_t type) -> std::optional<SceneSectionInfo>;
 
 [[nodiscard]]
 auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfError>;

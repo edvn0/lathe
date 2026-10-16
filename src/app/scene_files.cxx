@@ -197,6 +197,8 @@ auto Application::draw_scene_file_ui() -> void {
         ImGui::TextDisabled("Drop a .lbf onto the window to open it, or a model (.gltf, .glb, .fbx, .obj, .usd, ...) to add it.");
     });
 
+    scene_inspector.draw(editor_icons.get(), scene_path);
+
     if (auto const picked = scene_browser.draw(editor_icons.get())) {
         request_open_scene(*picked);
     }

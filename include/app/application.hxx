@@ -23,6 +23,7 @@
 #include "app/frame_graph_editor.hxx"
 #include "game/game.hxx"
 #include "app/game_packager.hxx"
+#include "app/scene_inspector.hxx"
 #include "app/stage_registry.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/file_change_watcher.hxx"
@@ -121,6 +122,8 @@ struct Application : Runtime {
     gui::ScriptWidget script_widget;
 
     gui::FileBrowser model_browser;
+
+    gui::SceneInspector scene_inspector;
 
     bool browsing_environment = false;
     std::optional<std::filesystem::path> pending_model_pick;

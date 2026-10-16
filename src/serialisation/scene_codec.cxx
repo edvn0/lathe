@@ -20,6 +20,8 @@
 #include "serialisation/byte_stream.hxx"
 #include "serialisation/string_table.hxx"
 
+using namespace std::string_view_literals;
+
 namespace {
 
     auto make_error(LbfErrorType type, std::string_view message,
@@ -1376,6 +1378,53 @@ auto decode_scene(std::span<std::byte const> payload, std::uint16_t chunk_versio
     }
 
     return scene;
+}
+
+auto scene_section_info(std::uint32_t type) -> std::optional<SceneSectionInfo> {
+    constexpr std::array names{
+            std::pair{scene_section::settings, "settings"sv},
+            std::pair{scene_section::models, "models"sv},
+            std::pair{scene_section::textures, "textures"sv},
+            std::pair{scene_section::materials, "materials"sv},
+            std::pair{scene_section::entities, "entities"sv},
+            std::pair{scene_section::model_components, "model_components"sv},
+            std::pair{scene_section::material_overrides, "material_overrides"sv},
+            std::pair{scene_section::instanced_models, "instanced_models"sv},
+            std::pair{scene_section::point_lights, "point_lights"sv},
+            std::pair{scene_section::spot_lights, "spot_lights"sv},
+            std::pair{scene_section::rigid_bodies, "rigid_bodies"sv},
+            std::pair{scene_section::scripts, "scripts"sv},
+            std::pair{scene_section::lifetimes, "lifetimes"sv},
+            std::pair{scene_section::environment, "environment"sv},
+            std::pair{scene_section::particle_emitters, "particle_emitters"sv},
+            std::pair{scene_section::behaviours, "behaviours"sv},
+            std::pair{scene_section::texts, "texts"sv},
+    };
+
+    if (type == scene_section::strings) {
+        return SceneSectionInfo{.name = "strings", .current_version = strings_section_version, .oldest_readable = 1};
+    }
+
+    auto const *codec = find_codec(type);
+
+    if (codec == nullptr) {
+        return std::nullopt;
+    }
+
+    auto const name = std::ranges::find(names, type, &std::pair<std::uint32_t, std::string_view>::first);
+    auto const uses_strings = type == scene_section::models || type == scene_section::textures ||
+                              type == scene_section::entities || type == scene_section::texts ||
+                              type == scene_section::scripts || type == scene_section::behaviours ||
+                              type == scene_section::environment;
+
+    return SceneSectionInfo{
+            .name = name != names.end() ? name->second : "?",
+            .current_version = codec->version,
+            .oldest_readable = codec->oldest_readable,
+            .string_offsets_from = type == scene_section::materials ? materials_section_version
+                                   : uses_strings                   ? string_ref_section_version
+                                                                    : std::uint16_t{0},
+    };
 }
 
 auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfError> {

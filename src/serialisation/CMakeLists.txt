@@ -17,6 +17,7 @@ add_library(
         lbf_container.cxx
         resource_pack.cxx
         scene_codec.cxx
+        scene_inspect.cxx
         scene_serialisation.cxx
         serialisation_error_describe.cxx
 )

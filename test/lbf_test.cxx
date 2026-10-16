@@ -17,6 +17,7 @@
 #include "serialisation/cooked_texture.hxx"
 #include "serialisation/lbf_container.hxx"
 #include "serialisation/scene_codec.hxx"
+#include "serialisation/scene_inspect.hxx"
 #include "serialisation/scene_serialisation.hxx"
 
 #ifndef TEST_ASSETS_DIR
@@ -784,6 +785,46 @@ TEST_SUITE("unit") {
 
         scene.entities[0].name = "a\0b"s;
         CHECK_FALSE(encode_scene(scene).has_value());
+    }
+
+    TEST_CASE("The inspector reports versions, the string table and what is skipped") {
+        SceneDescription scene;
+        scene.entities.push_back(SceneEntity{.name = "hero"});
+
+        auto const current = inspect_scene_payload(encoded(scene), scene_chunk_version);
+        CHECK_FALSE(current.decode_error.has_value());
+        CHECK(current.layout_problem.empty());
+        REQUIRE(current.strings.has_value());
+        CHECK(std::ranges::find(*current.strings, "hero") != current.strings->end());
+        CHECK(std::ranges::none_of(current.sections, [](auto const &s) { return s.inline_strings; }));
+        CHECK(current.sections.front().name == "strings");
+
+        ByteWriter body;
+        body.write(std::uint32_t{1});
+        body.write_string("legacy");
+        body.write(scene_no_index);
+        body.write(std::uint32_t{0});
+        body.write(std::uint8_t{0});
+
+        auto legacy_payload = framed_section(scene_section::entities, 1, body);
+        auto const unknown = framed_section(999, 1, ByteWriter{});
+        legacy_payload.insert(legacy_payload.end(), unknown.begin(), unknown.end());
+
+        auto const legacy = inspect_scene_payload(legacy_payload, scene_chunk_version);
+        CHECK_FALSE(legacy.decode_error.has_value());
+        CHECK_FALSE(legacy.strings.has_value());
+        REQUIRE(legacy.sections.size() == 2);
+        CHECK(legacy.sections[0].status == InspectedSectionStatus::older);
+        CHECK(legacy.sections[0].inline_strings);
+        CHECK(legacy.sections[1].status == InspectedSectionStatus::unknown);
+
+        auto broken = concat(strings_section(std::string_view{"\0abc", 4}), entity_section_by_offset(1));
+        auto const bad = inspect_scene_payload(broken, scene_chunk_version);
+        CHECK(bad.decode_error.has_value());
+        CHECK_FALSE(bad.layout_problem.empty());
+
+        broken.resize(broken.size() - 3);
+        CHECK_FALSE(inspect_scene_payload(broken, scene_chunk_version).layout_problem.empty());
     }
 
     TEST_CASE("Instance transforms that decompose are stored as TRS columns") {
