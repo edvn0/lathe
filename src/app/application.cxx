@@ -109,19 +109,42 @@ namespace {
         return along - std::sqrt(radius * radius - closest_sq);
     }
 
-    // Nearest entity under the ray (world space, unit direction). Models are tested against their submesh bounds,
-    // lights and other model-less transforms against a small sphere so they stay clickable.
-    auto pick_entity(Scene &scene, Renderer &renderer, glm::vec3 const &origin, glm::vec3 const &direction)
-            -> entt::entity {
+    // Where a ray first meets an entity's surface, in world space.
+    struct SurfaceHit {
+        entt::entity entity = entt::null;
+        float distance = std::numeric_limits<float>::max();
+        glm::vec3 position{0.0F};
+        // Unit, facing the ray's origin. For a model without triangles on the CPU it is the bounding box's face.
+        glm::vec3 normal{0.0F, 1.0F, 0.0F};
+        // The hit triangle's corners in world space, when the model has triangles on the CPU.
+        std::optional<std::array<glm::vec3, 3>> triangle;
+    };
+
+    auto box_face_normal(glm::vec3 const &point, glm::vec3 const &low, glm::vec3 const &high) -> glm::vec3 {
+        auto const centre = (low + high) * 0.5F;
+        auto const half = glm::max((high - low) * 0.5F, glm::vec3{1e-6F});
+        auto const scaled = (point - centre) / half;
+        auto const axis = std::abs(scaled.x) >= std::abs(scaled.y) && std::abs(scaled.x) >= std::abs(scaled.z)
+                                  ? 0
+                                  : (std::abs(scaled.y) >= std::abs(scaled.z) ? 1 : 2);
+        auto normal = glm::vec3{0.0F};
+        normal[axis] = scaled[axis] >= 0.0F ? 1.0F : -1.0F;
+        return normal;
+    }
+
+    // Nearest surface under the ray (world space, unit direction). Models are tested against their submesh bounds and,
+    // when their triangles are on the CPU, against those; lights and other model-less transforms against a small sphere
+    // so they stay clickable.
+    auto pick_surface(Scene &scene, Renderer &renderer, glm::vec3 const &origin, glm::vec3 const &direction)
+            -> std::optional<SurfaceHit> {
         constexpr auto marker_radius = 0.3F;
 
         auto &registry = scene.get_registry();
-        auto best = entt::entity{entt::null};
-        auto best_distance = std::numeric_limits<float>::max();
+        std::optional<SurfaceHit> best;
 
         for (auto const [entity, transform]: registry.view<Components::Transform const>().each()) {
             auto const world = systems::get_world_transform(registry, entity, transform);
-            auto distance = std::optional<float>{};
+            std::optional<SurfaceHit> candidate;
 
             auto const *model = registry.try_get<Components::Model const>(entity);
             auto const bounds = model != nullptr ? renderer.model_submesh_bounds(model->model) : std::nullopt;
@@ -137,22 +160,61 @@ namespace {
                 auto const to_local = glm::inverse(world);
                 auto const local_origin = glm::vec3{to_local * glm::vec4{origin, 1.0F}};
                 auto const local_direction = glm::vec3{to_local * glm::vec4{direction, 0.0F}};
+                auto const normal_matrix = glm::transpose(glm::mat3{to_local});
 
-                if (auto const local_t = ray_box_hit(local_origin, local_direction, low, high)) {
-                    auto const hit = glm::vec3{world * glm::vec4{local_origin + (local_direction * *local_t), 1.0F}};
-                    distance = glm::dot(hit - origin, direction);
+                auto const to_world_normal = [&](glm::vec3 const &local_normal) {
+                    auto normal = glm::normalize(normal_matrix * local_normal);
+                    return glm::dot(normal, direction) > 0.0F ? -normal : normal;
+                };
+
+                if (auto const box_t = ray_box_hit(local_origin, local_direction, low, high)) {
+                    auto const geometry = renderer.model_pick_geometry(model->model);
+                    auto const surface = geometry ? geometry->raycast(local_origin, local_direction,
+                                                                      std::numeric_limits<float>::max())
+                                                  : std::nullopt;
+
+                    if (surface) {
+                        auto const position = glm::vec3{world * glm::vec4{surface->position, 1.0F}};
+                        auto world_corners = std::array<glm::vec3, 3>{};
+                        for (auto corner = 0U; corner < 3; ++corner) {
+                            world_corners[corner] = glm::vec3{world * glm::vec4{surface->corners[corner], 1.0F}};
+                        }
+                        candidate = SurfaceHit{.entity = entity,
+                                               .distance = glm::dot(position - origin, direction),
+                                               .position = position,
+                                               .normal = to_world_normal(surface->normal),
+                                               .triangle = world_corners};
+                    } else if (!geometry) {
+                        auto const local_hit = local_origin + (local_direction * *box_t);
+                        auto const position = glm::vec3{world * glm::vec4{local_hit, 1.0F}};
+                        candidate = SurfaceHit{.entity = entity,
+                                               .distance = glm::dot(position - origin, direction),
+                                               .position = position,
+                                               .normal = to_world_normal(box_face_normal(local_hit, low, high))};
+                    }
                 }
             } else if (model == nullptr) {
-                distance = ray_sphere_hit(origin, direction, glm::vec3{world[3]}, marker_radius);
+                if (auto const distance = ray_sphere_hit(origin, direction, glm::vec3{world[3]}, marker_radius)) {
+                    auto const position = origin + (direction * *distance);
+                    candidate = SurfaceHit{.entity = entity,
+                                           .distance = *distance,
+                                           .position = position,
+                                           .normal = -direction};
+                }
             }
 
-            if (distance && *distance < best_distance) {
-                best_distance = *distance;
-                best = entity;
+            if (candidate && (!best || candidate->distance < best->distance)) {
+                best = candidate;
             }
         }
 
         return best;
+    }
+
+    auto pick_entity(Scene &scene, Renderer &renderer, glm::vec3 const &origin, glm::vec3 const &direction)
+            -> entt::entity {
+        auto const hit = pick_surface(scene, renderer, origin, direction);
+        return hit ? hit->entity : entt::entity{entt::null};
     }
 
     [[nodiscard]] auto entity_display_name(entt::registry const &registry, entt::entity entity) -> std::string {
@@ -489,6 +551,8 @@ auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> pass
 
 Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
     stage_registry.bind_debug_renderer(debug_renderer.get());
+    // The editor ray-casts against models' triangles to pick and to place things on surfaces.
+    renderer->model_streamer().collect_pick_geometry(true);
 }
 
 Application::~Application() = default;

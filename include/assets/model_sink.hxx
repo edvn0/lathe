@@ -2,12 +2,14 @@
 
 #include <expected>
 #include <filesystem>
+#include <memory>
 #include <string_view>
 
 #include <volk.h>
 
 #include "assets/load_model.hxx"
 #include "assets/model.hxx"
+#include "assets/model_pick_geometry.hxx"
 #include "core/renderer_error.hxx"
 
 class SamplerStorage;
@@ -29,6 +31,9 @@ struct IModelSink {
     virtual auto register_model_name(ModelHandle handle, std::string_view name) -> void = 0;
 
     virtual auto register_model_source(ModelHandle handle, AssetPath const &source) -> void = 0;
+
+    virtual auto register_model_pick_geometry(ModelHandle handle, std::shared_ptr<ModelPickGeometry const> geometry)
+            -> void = 0;
 
     [[nodiscard]]
     virtual auto sampler_storage() noexcept -> SamplerStorage & = 0;

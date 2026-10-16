@@ -360,6 +360,11 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto register_model_name(ModelHandle handle, std::string_view name) -> void override;
 
     auto register_model_source(ModelHandle handle, AssetPath const &source) -> void override;
+    auto register_model_pick_geometry(ModelHandle handle, std::shared_ptr<ModelPickGeometry const> geometry)
+            -> void override;
+
+    // The model's triangles for ray queries, or null when none were collected (see ModelStreamer::collect_pick_geometry).
+    [[nodiscard]] auto model_pick_geometry(ModelHandle handle) const -> std::shared_ptr<ModelPickGeometry const>;
 
     [[nodiscard]]
     auto cached_model(AssetPath const &source) const -> ModelHandle;

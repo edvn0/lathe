@@ -10,6 +10,7 @@ set(
     material_storage.cxx
     mesh_storage.cxx
     model_load_profile.cxx
+    model_pick_geometry.cxx
     model_skin.cxx
     model_storage.cxx
     model_streamer.cxx

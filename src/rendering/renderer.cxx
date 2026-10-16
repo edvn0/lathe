@@ -3068,6 +3068,18 @@ auto Renderer::register_model_source(ModelHandle handle, AssetPath const &source
     model_sources_.insert_or_assign(model_source_key(handle), source);
 }
 
+auto Renderer::register_model_pick_geometry(ModelHandle handle, std::shared_ptr<ModelPickGeometry const> geometry)
+        -> void {
+    if (auto *slot = model_slot(handle)) {
+        slot->pick_geometry = std::move(geometry);
+    }
+}
+
+auto Renderer::model_pick_geometry(ModelHandle handle) const -> std::shared_ptr<ModelPickGeometry const> {
+    auto const *slot = model_slot(handle);
+    return slot != nullptr ? slot->pick_geometry : nullptr;
+}
+
 auto Renderer::cached_model(AssetPath const &source) const -> ModelHandle {
     auto const it = model_cache_.find(std::hash<std::string>{}(source.key()));
     return it != model_cache_.end() && model_storage_.get(it->second) != nullptr ? it->second : ModelHandle{};
