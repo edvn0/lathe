@@ -266,7 +266,7 @@ auto Runtime::register_overlays() -> void {
             .prepare = {},
             .record =
                     [this](OverlayRecordContext const &overlay_context) {
-                        imgui_renderer->render(overlay_context.command_buffer, overlay_context.frame_index);
+                        imgui_renderer->record(overlay_context);
                     },
     });
 }

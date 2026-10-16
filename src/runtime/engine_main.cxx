@@ -452,7 +452,7 @@ namespace {
         if (frame_ok) {
             {
                 auto const ui = clock.scope(CpuPhase::ui);
-                runtime.imgui_renderer->begin_frame(gui::ImGuiFramebuffer{frame->extent, frame->format});
+                runtime.imgui_renderer->begin_frame(frame->extent);
                 runtime.on_ui(frame->frame_index);
                 runtime.imgui_renderer->end_frame();
             }

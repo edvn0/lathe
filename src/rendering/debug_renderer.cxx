@@ -1,11 +1,11 @@
 #include "rendering/debug_renderer.hxx"
-#include "core/paths.hxx"
+#include "gpu/upload_ring.hxx"
+#include "rendering/overlay_shader.hxx"
 
 #include <btBulletDynamicsCommon.h>
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -18,31 +18,13 @@
 #include <glm/ext/matrix_float4x4.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#include "core/human_readable_bytes.hxx"
 #include "core/logger.hxx"
-#include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
-#include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/renderer.hxx"
 
 namespace debug_draw {
 
     namespace {
-
-        [[nodiscard]]
-        constexpr auto next_power_of_two(std::size_t value) noexcept -> std::size_t {
-            if (value <= 1) {
-                return 1;
-            }
-
-            --value;
-
-            for (std::size_t shift = 1; shift < sizeof(std::size_t) * 8; shift <<= 1) {
-                value |= value >> shift;
-            }
-
-            return value + 1;
-        }
 
         [[nodiscard]]
         constexpr auto to_byte(float value) noexcept -> std::uint32_t {
@@ -71,33 +53,6 @@ namespace debug_draw {
             glm::mat4 view_proj;
             VkDeviceAddress vertices;
         };
-
-        auto create_pipeline(Renderer &renderer, OverlayScope const &scope)
-                -> std::expected<PipelineNodeHandle, RendererError> {
-            return renderer.register_pipeline(PipelineRegisterInfo{
-                    .stages =
-                            {
-                                    renderer::ShaderCompileRequest{
-                                            .source_path = data_path("assets/shaders/debug_draw.slang"),
-                                            .entry_point = FlyString{"main_vs"},
-                                            .stage = renderer::ShaderStage::vertex,
-                                    },
-                                    renderer::ShaderCompileRequest{
-                                            .source_path = data_path("assets/shaders/debug_draw.slang"),
-                                            .entry_point = FlyString{"main_fs"},
-                                            .stage = renderer::ShaderStage::fragment,
-                                    },
-                            },
-                    .push_constant_ranges = {global_push_constant_range},
-                    .colour_formats = {scope.colour_format},
-                    .dynamic_states = {},
-                    .depth_format = scope.depth_format,
-                    .stencil_format = VK_FORMAT_UNDEFINED,
-                    .samples = scope.samples,
-                    .blending = false,
-                    .debug_name = "debug_draw.pipeline",
-            });
-        }
 
         class BulletDebugDraw final : public btIDebugDraw {
         public:
@@ -158,52 +113,12 @@ namespace debug_draw {
     }
 
     struct DebugRenderer::Impl {
-        struct FrameBuffer {
-            std::unique_ptr<Buffer> vertex;
-            std::uint32_t capacity = 0;
-        };
-
-        explicit Impl(Renderer &r) : renderer{r}, bullet_debug_draw{pending_lines} {
-            frame_buffers.resize(renderer.context().swapchain.frame_count());
-        }
-
-        [[nodiscard]]
-        auto ensure_capacity(std::uint32_t frame_index, std::uint32_t vertex_count) -> bool {
-            if (frame_index >= frame_buffers.size()) {
-                error("[DebugDraw] Invalid frame index {} for {} frame buffers", frame_index, frame_buffers.size());
-                return false;
-            }
-
-            auto &frame_buffer = frame_buffers[frame_index];
-
-            if (frame_buffer.vertex != nullptr && frame_buffer.capacity >= vertex_count) {
-                return true;
-            }
-
-            auto const size = next_power_of_two(static_cast<std::size_t>(vertex_count) * sizeof(Vertex));
-
-            info("[DebugDraw] Reallocating line buffer to {}", human_readable_bytes(size));
-
-            auto created =
-                    Buffer::create(renderer.context(), BufferCreateInfo{
-                                                               .size = size,
-                                                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                               .memory = BufferMemory::upload,
-                                                               .debug_name = "debug_draw_vertex_buffer",
-                                                       });
-
-            if (!created) {
-                error("[DebugDraw] Failed to allocate line buffer");
-                return false;
-            }
-
-            frame_buffer.vertex = std::make_unique<Buffer>(std::move(*created));
-
-            frame_buffer.capacity = static_cast<std::uint32_t>(size / sizeof(Vertex));
-
-            return true;
-        }
+        explicit Impl(Renderer &r)
+            : renderer{r},
+              vertices{UploadRing::Info{.name = "debug_draw.vertices"}},
+              shader{r, OverlayShaderInfo{.source = "assets/shaders/debug_draw.slang",
+                                          .debug_name = "debug_draw.pipeline"}},
+              bullet_debug_draw{pending_lines} {}
 
         Renderer &renderer;
 
@@ -211,9 +126,8 @@ namespace debug_draw {
 
         std::vector<Vertex> extra_lines;
 
-        std::vector<FrameBuffer> frame_buffers;
-
-        PipelineNodeHandle pipeline;
+        UploadRing vertices;
+        OverlayShader shader;
 
         BulletDebugDraw bullet_debug_draw;
         bool model_bounds_debug_enabled = false;
@@ -237,62 +151,45 @@ namespace debug_draw {
             return;
         }
 
-        auto const cmd = context.command_buffer;
-        auto const frame_index = context.frame_index;
+        auto &gpu = impl_->renderer.context();
+        auto &ring = impl_->vertices;
 
-        if (!impl_->pipeline.valid()) {
-            auto created = create_pipeline(impl_->renderer, context.scope);
-
-            if (!created) {
-                error("[DebugDraw] Failed to create pipeline");
-                return;
-            }
-
-            impl_->pipeline = *created;
-        }
-
-        auto const vertex_count = static_cast<std::uint32_t>(impl_->pending_lines.size() + impl_->extra_lines.size());
-
-        if (!impl_->ensure_capacity(frame_index, vertex_count)) {
+        if (auto const begun = ring.begin_frame(gpu, context.frame_index); !begun) {
+            error("[DebugDraw] Could not prepare the line buffer: {}", begun.error().message);
             return;
         }
 
-        auto &frame_buffer = impl_->frame_buffers[frame_index];
-
-        if (!frame_buffer.vertex->write(0, std::span<const Vertex>{impl_->pending_lines}).has_value()) {
-            error("[DebugDraw] Failed to write line buffer");
-            return;
-        }
-
-        if (!impl_->extra_lines.empty() &&
-            !frame_buffer.vertex
-                     ->write(impl_->pending_lines.size() * sizeof(Vertex), std::span<const Vertex>{impl_->extra_lines})
-                     .has_value()) {
-            error("[DebugDraw] Failed to write line buffer");
-            return;
-        }
-
+        auto const lines = ring.write(gpu, context.frame_index, std::span<Vertex const>{impl_->pending_lines});
+        auto const extra = ring.write(gpu, context.frame_index, std::span<Vertex const>{impl_->extra_lines});
         impl_->extra_lines.clear();
 
-        auto const *pipeline = impl_->renderer.resolve_pipeline(impl_->pipeline);
-
-        if (pipeline == nullptr) {
+        if (!lines || !extra) {
+            error("[DebugDraw] Could not write the line buffer: {}", (!lines ? lines : extra).error().message);
             return;
         }
 
-        pipeline->bind(cmd);
+        if (auto const flushed = ring.flush(context.frame_index); !flushed) {
+            error("[DebugDraw] Could not flush the line buffer: {}", flushed.error().message);
+            return;
+        }
 
-        vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
-        vkCmdSetLineWidth(cmd, 1.0F);
+        auto const bound = impl_->shader.bind(context);
+        if (!bound) {
+            return;
+        }
 
-        impl_->renderer.resource_table().bind(cmd, frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout());
+        bound->set_topology(VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
+        bound->set_line_width(1.0F);
 
-        auto push_constants = PC{
-                .view_proj = context.view_projection,
-                .vertices = frame_buffer.vertex->device_address,
+        auto const draw = [&](UploadSlice const &slice) {
+            if (slice.empty()) {
+                return;
+            }
+            bound->push(PC{.view_proj = context.view_projection, .vertices = slice.address});
+            bound->draw(static_cast<std::uint32_t>(slice.size / sizeof(Vertex)));
         };
-        vkCmdPushConstants(cmd, pipeline->layout(), VK_SHADER_STAGE_ALL, 0, sizeof(push_constants), &push_constants);
-        vkCmdDraw(cmd, vertex_count, 1, 0, 0);
+        draw(*lines);
+        draw(*extra);
     }
 
     auto DebugRenderer::clear_lines() -> void { impl_->bullet_debug_draw.clearLines(); }

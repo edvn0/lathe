@@ -33,6 +33,7 @@ add_library(
         game_gpu.cxx
         imgui_renderer.cxx
         overlay.cxx
+        overlay_shader.cxx
         particle_system.cxx
         pipeline_graph_repository.cxx
         renderer.cxx
