@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 
+#include <assimp/Importer.hpp>
+
 #include <glm/glm.hpp>
 
 #include <algorithm>
@@ -149,6 +151,12 @@ TEST_SUITE("assimp import") {
     }
 
     TEST_CASE("a USD quad loads as two triangles with Z mirrored") {
+        // A system Assimp is often built without the (experimental) USD importer; there the format is unsupported.
+        if (!Assimp::Importer{}.IsExtensionSupported(".usda")) {
+            MESSAGE("the linked Assimp has no USD importer; skipped");
+            return;
+        }
+
         TemporaryDirectory const directory;
         write_file(directory.path / "quad.usda", quad_usda);
 
