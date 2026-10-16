@@ -16,6 +16,8 @@ add_library(
         scene_files.cxx
         scene_inspector.cxx
         stage_registry.cxx
+        surface_pick.cxx
+        text_placement.cxx
 )
 
 target_include_directories(
