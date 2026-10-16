@@ -35,6 +35,12 @@ Environment variables:
 
       Default: ~/.cache/renderdoc-include, if `cargo xtask setup-renderdoc` has been run.
 
+  ASSIMP_PREFIX
+      Host install prefix of a shared Assimp. Mounted read-only into the container at the same path and
+      added to CMAKE_PREFIX_PATH ahead of the image's own.
+
+      Default: unset (the image's Assimp, or the source build).
+
   PROFILE_BUILD=1
       Adds -fno-omit-frame-pointer.
 
@@ -252,6 +258,7 @@ struct Config {
     project_dir: PathBuf,
     build_type: String,
     renderdoc_include_path: Option<PathBuf>,
+    assimp_prefix: Option<PathBuf>,
     cpm_cache_dir: PathBuf,
     container_home: PathBuf,
     linker: Linker,
@@ -288,10 +295,15 @@ impl Config {
                 default.join("renderdoc_app.h").is_file().then_some(default)
             });
 
+        let assimp_prefix = env::var_os("ASSIMP_PREFIX")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+
         Ok(Self {
             project_dir,
             build_type,
             renderdoc_include_path,
+            assimp_prefix,
             cpm_cache_dir: home.join(".cache/CPM"),
             container_home: home.join(".cache/cross-build-container-home"),
             linker: Linker::from_env()?,
@@ -320,6 +332,10 @@ impl Config {
 
         if self.werror {
             println!("  werror:     enabled");
+        }
+
+        if let Some(assimp_prefix) = &self.assimp_prefix {
+            println!("  assimp:     {}", assimp_prefix.display());
         }
 
         if let Some(renderdoc_include_path) = &self.renderdoc_include_path {
@@ -401,6 +417,12 @@ impl Config {
             ));
         }
 
+        if let Some(assimp_prefix) = &self.assimp_prefix {
+            command
+                .arg("--mount")
+                .arg(bind_mount(assimp_prefix, assimp_prefix, true));
+        }
+
         command.arg(IMAGE);
 
         Ok(command)
@@ -457,6 +479,13 @@ impl Config {
             args.push(OsString::from(format!(
                 "-DRENDERDOC_INCLUDE_PATH={}",
                 renderdoc_include_path.display()
+            )));
+        }
+
+        if let Some(assimp_prefix) = &self.assimp_prefix {
+            args.push(OsString::from(format!(
+                "-DCMAKE_PREFIX_PATH={}",
+                assimp_prefix.display()
             )));
         }
 
