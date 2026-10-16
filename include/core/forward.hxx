@@ -12,6 +12,7 @@ namespace debug_draw {
     class DebugRenderer;
 }
 
+struct Runtime;
 struct Application;
 
 struct Renderer;

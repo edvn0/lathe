@@ -66,11 +66,16 @@ auto Application::start_package() -> void {
         return;
     }
 
-    auto const executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
 
     if (error) {
         package_status = "Could not locate the running executable.";
         return;
+    }
+
+    // Ship the player when it was built beside the editor, so the game carries none of the editor.
+    if (auto const player = executable.parent_path() / "lathe-player"; std::filesystem::exists(player)) {
+        executable = player;
     }
 
     PackageOptions options;
@@ -97,7 +102,7 @@ auto Application::start_package() -> void {
 
     package_pending = std::move(options);
     package_status = "Cooking the scene...";
-    package_scene_job = SceneSaveJob::start(*editor_scene, *renderer, engine_models, package_staged_scene,
+    package_scene_job = SceneSaveJob::start(*source_scene, *renderer, engine_models, package_staged_scene,
                                             std::move(save_options));
     info("Packaging '{}' into '{}'", name, output_dir.string());
 }
@@ -149,7 +154,7 @@ auto Application::draw_package_ui() -> void {
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2{0.5F, 0.5F});
 
     if (ImGui::BeginPopupModal(package_dialog, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextWrapped("Builds a self-contained game folder: this executable, the cooked scene, assets and "
+        ImGui::TextWrapped("Builds a self-contained game folder: the game player (or this executable if there is none beside it), the cooked scene, assets and "
                            "precompiled shaders. The C++ game code is the one already built into this editor.");
         ImGui::Separator();
 

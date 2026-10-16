@@ -7,7 +7,7 @@
 #include <numbers>
 #include <random>
 
-#include "benchmark/shadow_city.hxx"
+#include "game/shadow_city.hxx"
 #include "assets/material_storage.hxx"
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"

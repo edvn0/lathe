@@ -1,6 +1,7 @@
 # ------------------------------------------------------------------------------
-# engine_app: Application (scene lifecycle, editor/play state, overlays). The game interface is engine_game, the Lua
-# game is engine_luagame and the benchmark runner is engine_benchmark; none of them is part of the editor.
+# engine_app: Application, the editor -- a Runtime (engine_runtime) with panels, gizmos, scene files and packaging on
+# top. The game interface is engine_game, the Lua game is engine_luagame and the benchmark runner is engine_benchmark;
+# none of them is part of the editor.
 # ------------------------------------------------------------------------------
 
 add_library(
@@ -25,6 +26,7 @@ target_include_directories(
 target_link_libraries(
     engine_app
     PUBLIC
+        engine_runtime
         engine_game
         engine_scripting
         engine_deps

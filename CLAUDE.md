@@ -28,9 +28,14 @@ Each `engine_<module>` library is `src/<module>/` plus `include/<module>/`, and 
 
 ```
 core < gpu < assets < animation < physics < scene < terrain < rendering < serialisation < scripting
-     < game < luagame < app < benchmark
+     < game < luagame < runtime < app < benchmark
 ```
 
 `net`, `gameserver` and `gameclient` depend on `core` alone (`luagame` uses `net` for the scripts' `http` library). `game` is the `IGame` interface; `luagame` is the Lua
-implementation of it and the Lua API; `app` is the editor; `benchmark` runs the editor headless. The sample games in
+implementation of it and the Lua API; `runtime` is `Runtime` (everything a running game needs: renderer, scenes, the
+`IGame` lifecycle and input, scene loading) plus `run_engine`, the startup and frame loop both executables share; `app` is
+the editor, a `Runtime` subclass (`Application`) with panels, gizmos and scene files on top; `benchmark` runs the editor
+headless. `lathe` is the editor and `lathe-player` is the installed game, a bare `Runtime` with no editor; each is a thin
+`EngineProfile` passed to `run_engine`. `lathe::engine` links the framework without `app` and `benchmark`, `lathe::core`
+links everything. The sample games in
 `game/` are linked into the executable only and may use any module. Do not add an include that points rightwards.

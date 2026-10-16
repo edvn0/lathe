@@ -876,14 +876,15 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
   set(lathe_track_memory OFF)
 endif()
 
-# Entry point and one-time Vulkan bring-up; nothing else links them.
-set(
-    lathe_main_sources
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cxx"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan_bootstrap.cxx"
-)
+# Entry points: the editor (src/main.cxx) and the installed-game player (src/player_main.cxx). Both are thin; startup and
+# the frame loop are run_engine in engine_runtime.
+# run_engine (src/runtime/engine_main.cxx) is compiled into each executable rather than archived in engine_runtime: it
+# needs the executable's game registry (game/src/main_entry.cxx), which headless tools that link the engine do not have.
+set(lathe_engine_main_source "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/engine_main.cxx")
+set(lathe_editor_main_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cxx" "${lathe_engine_main_source}")
+set(lathe_player_main_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/player_main.cxx" "${lathe_engine_main_source}")
 
-foreach(lathe_main_source ${lathe_main_sources})
+foreach(lathe_main_source ${lathe_editor_main_sources} ${lathe_player_main_sources})
   if(NOT EXISTS "${lathe_main_source}")
     message(
         FATAL_ERROR
@@ -895,22 +896,20 @@ endforeach()
 
 if(lathe_track_memory)
   list(
-      APPEND lathe_main_sources
+      APPEND lathe_editor_main_sources
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/global_new_delete.cxx"
+  )
+  list(
+      APPEND lathe_player_main_sources
       "${CMAKE_CURRENT_SOURCE_DIR}/src/global_new_delete.cxx"
   )
 endif()
 
-# Game sources are linked only into the executable, keeping the engine
-# libraries game-agnostic.
+# Game sources are linked only into the executables (compiled into each), keeping the engine libraries game-agnostic.
 file(
     GLOB_RECURSE lathe_game_sources
     CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/game/src/*.cxx"
-)
-
-list(
-    APPEND lathe_main_sources
-    ${lathe_game_sources}
 )
 
 # Needs stb_SOURCE_DIR, bullet3_SOURCE_DIR, shader_reflect_generated_dir and
@@ -923,7 +922,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/renderdoc_config.cmake")
 # ------------------------------------------------------------------------------
 # Module libraries, in dependency order:
 # core < gpu < assets < net < gameserver < gameclient < physics < scene < terrain < rendering < serialisation < scripting
-#      < game < luagame < app < benchmark
+#      < game < luagame < runtime < app < benchmark
 # ------------------------------------------------------------------------------
 
 add_subdirectory(src/core)
@@ -941,6 +940,7 @@ add_subdirectory(src/serialisation)
 add_subdirectory(src/scripting)
 add_subdirectory(src/game)
 add_subdirectory(src/luagame)
+add_subdirectory(src/runtime)
 add_subdirectory(src/app)
 add_subdirectory(src/benchmark)
 
@@ -963,7 +963,7 @@ add_library(
 target_link_libraries(
     lathe-core
     INTERFACE
-        "$<LINK_GROUP:RESCAN,engine_benchmark,engine_app,engine_luagame,engine_game,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_gameserver,engine_gameclient,engine_assets,engine_gpu,engine_core>"
+        "$<LINK_GROUP:RESCAN,engine_benchmark,engine_app,engine_runtime,engine_luagame,engine_game,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_gameserver,engine_gameclient,engine_assets,engine_gpu,engine_core>"
 )
 
 add_library(
@@ -972,19 +972,54 @@ add_library(
     lathe-core
 )
 
+# The framework without the editor: everything a game, a headless tool or a custom main (run_engine in engine_runtime)
+# needs. lathe::core adds engine_app (the editor) and engine_benchmark on top.
+add_library(
+    lathe-engine
+    INTERFACE
+)
+
+target_link_libraries(
+    lathe-engine
+    INTERFACE
+        "$<LINK_GROUP:RESCAN,engine_runtime,engine_luagame,engine_game,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_gameserver,engine_gameclient,engine_assets,engine_gpu,engine_core>"
+)
+
+add_library(
+    lathe::engine
+    ALIAS
+    lathe-engine
+)
+
 # ------------------------------------------------------------------------------
 # Application
 # ------------------------------------------------------------------------------
 
 add_executable(
     lathe
-    ${lathe_main_sources}
+    ${lathe_editor_main_sources}
+    ${lathe_game_sources}
 )
 
 target_link_libraries(
     lathe
     PRIVATE
         lathe::core
+        engine_gameclient_ix
+        engine_options
+)
+
+# The installed game: a bare Runtime, no editor. Packaged games ship this rather than the editor.
+add_executable(
+    lathe-player
+    ${lathe_player_main_sources}
+    ${lathe_game_sources}
+)
+
+target_link_libraries(
+    lathe-player
+    PRIVATE
+        lathe::engine
         engine_gameclient_ix
         engine_options
 )
@@ -1038,8 +1073,20 @@ target_include_directories(
         "${CMAKE_CURRENT_SOURCE_DIR}/game/include"
 )
 
+target_include_directories(
+    lathe-player
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/game/include"
+)
+
 target_precompile_headers(
     lathe
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/core/pch.hxx"
+)
+
+target_precompile_headers(
+    lathe-player
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/core/pch.hxx"
 )
@@ -1055,6 +1102,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
   configure_linux_target(
       lathe
+      "${slang_lib_dir}"
+      "${slang_bin_dir}"
+  )
+
+  configure_linux_target(
+      lathe-player
       "${slang_lib_dir}"
       "${slang_bin_dir}"
   )
@@ -1081,6 +1134,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "Release")
   if(LATHE_JEMALLOC_LIBRARY)
     target_link_libraries(
         lathe
+        PRIVATE
+            "${LATHE_JEMALLOC_LIBRARY}"
+    )
+
+    target_link_libraries(
+        lathe-player
         PRIVATE
             "${LATHE_JEMALLOC_LIBRARY}"
     )
@@ -1120,7 +1179,7 @@ foreach(asset_directory IN LISTS project_asset_directories)
   endif()
 endforeach()
 
-add_dependencies(lathe_assets lathe)
+add_dependencies(lathe_assets lathe lathe-player)
 
 # ------------------------------------------------------------------------------
 # Tests

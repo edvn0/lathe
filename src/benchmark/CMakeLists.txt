@@ -12,7 +12,6 @@ add_library(
         benchmark_driver.cxx
         benchmark_environment.cxx
         benchmark_scenarios.cxx
-        shadow_city.cxx
 )
 
 # Recorded in benchmark results (benchmark/benchmark_environment.hxx): the build type, and where to read the source
