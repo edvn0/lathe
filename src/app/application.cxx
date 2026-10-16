@@ -565,6 +565,11 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 auto &selection = selection_context();
 
                 if (text_placement.active()) {
+                    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_R, false) &&
+                        !ImGui::GetIO().KeyCtrl) {
+                        text_placement.step_roll(ImGui::GetIO().KeyShift);
+                    }
+
                     auto const placed = text_placement.update(
                             *active_scene(), *renderer, *debug_renderer,
                             {.origin = camera.position(),
@@ -576,6 +581,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                            .size = {viewport_content_size.x, viewport_content_size.y}},
                              .cursor = {mouse.x, mouse.y},
                              .click = clicked,
+                             .snap_to_grid = ImGui::GetIO().KeyCtrl,
                              .bypass_snap = ImGui::GetIO().KeyAlt});
 
                     if (placed != entt::null) {
@@ -993,11 +999,14 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     settings.text = buffer.data();
                 }
                 ImGui::DragFloat("Size##placement", &settings.size, 0.01F, 0.05F, 10.0F);
+                ImGui::SliderFloat("Roll", &settings.roll_degrees, -180.0F, 180.0F, "%.0f deg");
                 ImGui::Checkbox("Snap to vertices, edges and centres", &settings.snap_to_geometry);
+                ImGui::DragFloat("Grid (Ctrl)", &settings.grid_step, 0.01F, 0.01F, 10.0F, "%.2f m");
+                ImGui::DragFloat("Angle step", &settings.angle_step, 0.5F, 1.0F, 90.0F, "%.0f deg");
                 if (settings.snap_to_geometry) {
                     ImGui::DragFloat("Snap radius (px)", &settings.snap_radius, 0.5F, 4.0F, 64.0F);
                 }
-                ImGui::TextDisabled("Click a model to place it. Hold Alt to skip snapping. Esc to stop.");
+                ImGui::TextDisabled("Click a model to place it. R turns it (Shift+R back). Ctrl snaps to the grid, Alt skips snapping. Esc to stop.");
             }
         }
 

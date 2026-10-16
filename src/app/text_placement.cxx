@@ -15,7 +15,7 @@
 namespace text_placement {
 
     auto surface_frame(glm::vec3 const &position, glm::vec3 const &normal, glm::vec3 const &up,
-                       glm::vec3 const &fallback_up, float lift) -> Frame {
+                       glm::vec3 const &fallback_up, float lift, float roll_radians) -> Frame {
         auto const n = glm::normalize(normal);
 
         // Text faces a viewer looking along its +z, so its back goes to the surface.
@@ -37,7 +37,34 @@ namespace text_placement {
         y = glm::normalize(y);
         auto const x = glm::cross(y, z);
 
-        return {.position = position + (n * lift), .rotation = glm::normalize(glm::quat_cast(glm::mat3{x, y, z}))};
+        auto const base = glm::normalize(glm::quat_cast(glm::mat3{x, y, z}));
+
+        return {.position = position + (n * lift),
+                .rotation = glm::normalize(base * glm::angleAxis(roll_radians, glm::vec3{0.0F, 0.0F, 1.0F}))};
+    }
+
+    auto snap_to_grid(glm::vec3 const &on_surface, glm::vec3 const &normal, float step) -> glm::vec3 {
+        if (step <= 0.0F) {
+            return on_surface;
+        }
+
+        auto const n = glm::normalize(normal);
+        auto const grid_point = glm::round(on_surface / step) * step;
+
+        return grid_point - (n * glm::dot(grid_point - on_surface, n));
+    }
+
+    auto snap_angle(float degrees, float step) -> float {
+        auto const snapped = step > 0.0F ? std::round(degrees / step) * step : degrees;
+        auto wrapped = std::fmod(snapped, 360.0F);
+
+        if (wrapped > 180.0F) {
+            wrapped -= 360.0F;
+        } else if (wrapped <= -180.0F) {
+            wrapped += 360.0F;
+        }
+
+        return wrapped;
     }
 
     auto ScreenProjector::project(glm::vec3 const &world) const -> std::optional<glm::vec2> {
@@ -108,6 +135,11 @@ namespace text_placement {
 
 }
 
+auto TextPlacement::step_roll(bool reverse) noexcept -> void {
+    settings.roll_degrees = text_placement::snap_angle(
+            settings.roll_degrees + (reverse ? -settings.angle_step : settings.angle_step), settings.angle_step);
+}
+
 auto TextPlacement::update(Scene &scene, Renderer &renderer, debug_draw::DebugRenderer &lines,
                            Pointer const &pointer) -> entt::entity {
     if (!active_) {
@@ -123,7 +155,11 @@ auto TextPlacement::update(Scene &scene, Renderer &renderer, debug_draw::DebugRe
     auto position = hit->position;
     std::optional<text_placement::Snap> snap;
 
-    if (settings.snap_to_geometry && !pointer.bypass_snap && hit->triangle) {
+    auto const grid_snapped = pointer.snap_to_grid && !pointer.bypass_snap;
+
+    if (grid_snapped) {
+        position = text_placement::snap_to_grid(position, hit->normal, settings.grid_step);
+    } else if (settings.snap_to_geometry && !pointer.bypass_snap && hit->triangle) {
         snap = text_placement::snap_to_triangle(*hit->triangle, pointer.projector, pointer.cursor,
                                                 settings.snap_radius);
 
@@ -132,8 +168,10 @@ auto TextPlacement::update(Scene &scene, Renderer &renderer, debug_draw::DebugRe
         }
     }
 
+    auto const roll = grid_snapped ? text_placement::snap_angle(settings.roll_degrees, settings.angle_step)
+                                   : settings.roll_degrees;
     auto const frame = text_placement::surface_frame(position, hit->normal, glm::vec3{0.0F, 1.0F, 0.0F},
-                                                     pointer.camera_forward, settings.lift);
+                                                     pointer.camera_forward, settings.lift, glm::radians(roll));
 
     // The preview: the hit triangle, the normal, and the text's box.
     constexpr glm::vec3 triangle_colour{1.0F, 0.85F, 0.2F};
@@ -173,9 +211,10 @@ auto TextPlacement::update(Scene &scene, Renderer &renderer, debug_draw::DebugRe
     lines.add_line(corner(-1, 1), corner(-1, -1), box_colour);
     lines.add_line(position, position + (hit->normal * 0.3F), box_colour);
 
-    if (snap) {
+    if (snap || grid_snapped) {
         // A small cross in the surface plane, in the colour of what it snapped to, sized to stay the same on screen.
-        auto const colour = snap->kind == text_placement::SnapKind::vertex          ? glm::vec3{0.3F, 1.0F, 0.4F}
+        auto const colour = !snap                                                    ? glm::vec3{0.9F, 0.9F, 0.9F}
+                            : snap->kind == text_placement::SnapKind::vertex          ? glm::vec3{0.3F, 1.0F, 0.4F}
                             : snap->kind == text_placement::SnapKind::edge_midpoint ? glm::vec3{1.0F, 0.6F, 0.2F}
                                                                                     : glm::vec3{1.0F, 0.3F, 0.9F};
         auto const arm = 0.012F * glm::length(position - pointer.origin);

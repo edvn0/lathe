@@ -130,3 +130,40 @@ TEST_CASE("a finer target wins over a nearer coarse one when both are in reach")
     REQUIRE(snap.has_value());
     CHECK(snap->kind == text_placement::SnapKind::edge_midpoint);
 }
+
+TEST_CASE("grid snap rounds along a wall and keeps the point on the wall") {
+    // A wall facing -z at z = 3.1: rounding happens in x and y, and z stays on the wall.
+    auto const snapped = text_placement::snap_to_grid({1.13F, 2.4F, 3.1F}, {0.0F, 0.0F, -1.0F}, 0.25F);
+    check_vec(snapped, {1.25F, 2.5F, 3.1F});
+
+    // A floor at y = 0.07: rounding happens in x and z.
+    check_vec(text_placement::snap_to_grid({0.9F, 0.07F, -1.6F}, {0.0F, 1.0F, 0.0F}, 0.5F), {1.0F, 0.07F, -1.5F});
+}
+
+TEST_CASE("grid snap on a slope stays on the plane and a non-positive step does nothing") {
+    auto const normal = glm::normalize(glm::vec3{0.0F, 1.0F, -1.0F});
+    auto const on_surface = glm::vec3{0.3F, 1.0F, 1.0F};
+    auto const snapped = text_placement::snap_to_grid(on_surface, normal, 0.5F);
+
+    CHECK(glm::dot(snapped - on_surface, normal) == doctest::Approx(0.0F).epsilon(1e-4));
+    check_vec(text_placement::snap_to_grid(on_surface, normal, 0.0F), on_surface);
+}
+
+TEST_CASE("angles round to the step and wrap to half a turn either way") {
+    CHECK(text_placement::snap_angle(22.0F, 15.0F) == doctest::Approx(15.0F));
+    CHECK(text_placement::snap_angle(23.0F, 15.0F) == doctest::Approx(30.0F));
+    CHECK(text_placement::snap_angle(-100.0F, 45.0F) == doctest::Approx(-90.0F));
+    CHECK(text_placement::snap_angle(190.0F, 15.0F) == doctest::Approx(-165.0F));
+    CHECK(text_placement::snap_angle(180.0F, 15.0F) == doctest::Approx(180.0F));
+    CHECK(text_placement::snap_angle(33.3F, 0.0F) == doctest::Approx(33.3F));
+}
+
+TEST_CASE("roll turns the text about the normal and leaves it facing the same way") {
+    auto const flat = text_placement::surface_frame(glm::vec3{0.0F}, {0.0F, 0.0F, -1.0F}, world_up, {0.0F, 0.0F, 1.0F}, 0.0F);
+    auto const rolled = text_placement::surface_frame(glm::vec3{0.0F}, {0.0F, 0.0F, -1.0F}, world_up, {0.0F, 0.0F, 1.0F}, 0.0F,
+                                                      glm::radians(90.0F));
+
+    check_vec(rolled.rotation * glm::vec3{0.0F, 0.0F, 1.0F}, flat.rotation * glm::vec3{0.0F, 0.0F, 1.0F});
+    // Its right now points where its up used to.
+    check_vec(rolled.rotation * glm::vec3{1.0F, 0.0F, 0.0F}, flat.rotation * glm::vec3{0.0F, 1.0F, 0.0F});
+}

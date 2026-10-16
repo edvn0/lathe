@@ -27,8 +27,16 @@ namespace text_placement {
         glm::quat rotation{1.0F, 0.0F, 0.0F, 0.0F};
     };
 
+    // `roll_radians` turns the text about the surface normal, its right toward its up for a positive angle.
     [[nodiscard]] auto surface_frame(glm::vec3 const &position, glm::vec3 const &normal, glm::vec3 const &up,
-                                     glm::vec3 const &fallback_up, float lift) -> Frame;
+                                     glm::vec3 const &fallback_up, float lift, float roll_radians = 0.0F) -> Frame;
+
+    // The point on the surface (the plane through `on_surface` with `normal`) nearest the world-grid point nearest
+    // `on_surface`: on a wall facing along an axis, the position rounded in the wall's own two directions.
+    [[nodiscard]] auto snap_to_grid(glm::vec3 const &on_surface, glm::vec3 const &normal, float step) -> glm::vec3;
+
+    // `degrees` rounded to a multiple of `step`, in (-180, 180].
+    [[nodiscard]] auto snap_angle(float degrees, float step) -> float;
 
     // The local transform that puts an entity at `frame` in the world when it is a child of something at
     // `parent_world` (the identity for an entity with no parent).
@@ -72,6 +80,11 @@ public:
         // Snap to the hit triangle's vertices, edge midpoints and centre when the cursor is this close, in pixels.
         bool snap_to_geometry = true;
         float snap_radius = 16.0F;
+        // The grid for snapping to it, in world units, and the step of the roll and of angle snapping, in degrees.
+        float grid_step = 0.25F;
+        float angle_step = 15.0F;
+        // The text's turn about the surface normal, in degrees.
+        float roll_degrees = 0.0F;
     };
 
     // What the tool needs to know about the mouse and camera this frame.
@@ -83,11 +96,16 @@ public:
         text_placement::ScreenProjector projector;
         glm::vec2 cursor{0.0F};
         bool click = false;
+        // Held to snap to the grid and the roll to the angle step, instead of to the triangle's points.
+        bool snap_to_grid = false;
         // Held to place without snapping.
         bool bypass_snap = false;
     };
 
     Settings settings;
+
+    // Turns the roll by one angle step.
+    auto step_roll(bool reverse) noexcept -> void;
 
     [[nodiscard]] auto active() const noexcept -> bool { return active_; }
     auto set_active(bool active) noexcept -> void { active_ = active; }
