@@ -672,6 +672,9 @@ if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR AND ImGuiNodeE
           GLFW_INCLUDE_NONE
           IMGUI_IMPL_VULKAN_USE_VOLK
           IMGUI_ENABLE_FREETYPE
+          # Code points past U+FFFF (emoji) become U+FFFD with the default 16-bit characters, so typing one into a field
+          # stored a replacement character. Public: ImWchar is part of imgui.h, so every user has to agree on it.
+          IMGUI_USE_WCHAR32
   )
 
   find_package(X11 REQUIRED)

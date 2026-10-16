@@ -323,6 +323,17 @@ namespace gui {
             font = io.Fonts->AddFontFromMemoryTTF(font_data.data(), static_cast<int>(font_data.size()), cfg.SizePixels,
                                                   &cfg);
 
+            // Emoji, as outlines in the text's colour: the same font the world text falls back to. A merged font is
+            // only rasterised for the characters that are drawn.
+            if (auto loaded_emoji = read_resource(data_path("assets/fonts/NotoEmoji-Regular.ttf"))) {
+                emoji_font_data = std::move(*loaded_emoji);
+                ImFontConfig emoji_cfg = cfg;
+                emoji_cfg.MergeMode = true;
+                static_cast<void>(io.Fonts->AddFontFromMemoryTTF(emoji_font_data.data(),
+                                                                 static_cast<int>(emoji_font_data.size()),
+                                                                 cfg.SizePixels, &emoji_cfg));
+            }
+
             static constexpr std::array<ImWchar, 3> icon_ranges{ICON_MIN_FA, ICON_MAX_16_FA, 0};
             ImFontConfig icon_cfg{};
             icon_cfg.MergeMode = true;
