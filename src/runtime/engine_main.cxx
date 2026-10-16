@@ -737,6 +737,7 @@ namespace {
 
         runtime.debug_renderer.reset();
         runtime.imgui_renderer.reset();
+        runtime.text_renderer.reset();
         runtime.renderer->destroy();
 
         context.destroy();
@@ -1020,6 +1021,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
             .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
             .script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{},
             .effects = &runtime.effect_system,
+            .text = runtime.text_renderer.get(),
     });
 
     if (manifest && !manifest->title.empty()) {

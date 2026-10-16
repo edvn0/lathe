@@ -431,6 +431,10 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
             });
         }
 
+        if (auto const *text = registry.try_get<Components::Text>(entity)) {
+            description.texts.push_back(SceneTextComponent{.entity = entity_index, .text = *text});
+        }
+
         if (auto const *body = registry.try_get<Components::RigidBody>(entity)) {
             if (body->shape == Components::BodyShape::heightfield) {
                 capture.warn_once("heightfield colliders come from terrain generation and aren't saved");
@@ -897,6 +901,10 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         auto emitter = component.emitter;
         emitter.material = material_at(component.material);
         registry.emplace<Components::ParticleEmitter>(entities[component.entity], emitter);
+    }
+
+    for (auto const &component: description.texts) {
+        registry.emplace<Components::Text>(entities[component.entity], component.text);
     }
 
     for (auto const &component: description.rigid_bodies) {

@@ -74,6 +74,9 @@ namespace {
         if (name == "cone") {
             return ParticleShape::cone;
         }
+        if (name == "text") {
+            return ParticleShape::text;
+        }
 
         return std::nullopt;
     }

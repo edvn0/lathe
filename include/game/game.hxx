@@ -19,13 +19,14 @@
 
 class Scene;
 class EffectSystem;
+class TextRenderer;
 struct Renderer;
 
 template<typename... ExtraComponents>
 auto clone_editor_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
     clone_registry<Components::Transform, Components::Model, Components::InstancedModel, Components::RigidBody,
                    Components::MaterialOverride, Components::PlayerTag, Components::Lifetime, Components::PointLight,
-                   Components::SpotLight, Components::Decal, Components::ParticleEmitter, Components::GeneratedMeta, Components::Meta,
+                   Components::SpotLight, Components::Decal, Components::ParticleEmitter, Components::Text, Components::GeneratedMeta, Components::Meta,
                    Components::Parent, ExtraComponents...>(editor_scene.get_registry(), runtime_scene.get_registry());
 }
 
@@ -46,6 +47,9 @@ struct GameHost {
 
     // What scripts attach compute effects through (rendering/effect_system.hxx); null where there are none.
     EffectSystem *effects = nullptr;
+
+    // What scripts draw text through (rendering/text_renderer.hxx); null where there is none.
+    TextRenderer *text = nullptr;
 };
 
 class IGame {

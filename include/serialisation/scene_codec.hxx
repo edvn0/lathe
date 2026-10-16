@@ -133,6 +133,11 @@ struct SceneParticleEmitterComponent {
     std::uint32_t material = scene_no_index;
 };
 
+struct SceneTextComponent {
+    std::uint32_t entity = 0;
+    Components::Text text;
+};
+
 struct SceneRigidBodyComponent {
     std::uint32_t entity = 0;
     Components::RigidBody body;
@@ -183,6 +188,7 @@ struct SceneDescription {
     std::vector<ScenePointLightComponent> point_lights;
     std::vector<SceneSpotLightComponent> spot_lights;
     std::vector<SceneParticleEmitterComponent> particle_emitters;
+    std::vector<SceneTextComponent> texts;
     std::vector<SceneRigidBodyComponent> rigid_bodies;
     std::vector<SceneScriptComponent> scripts;
     std::vector<SceneLifetimeComponent> lifetimes;
@@ -208,6 +214,7 @@ namespace scene_section {
     inline constexpr std::uint32_t environment = 14;
     inline constexpr std::uint32_t particle_emitters = 15;
     inline constexpr std::uint32_t behaviours = 16;
+    inline constexpr std::uint32_t texts = 17;
 }
 
 inline constexpr std::uint16_t scene_section_version = 1;

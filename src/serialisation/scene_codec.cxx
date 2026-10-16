@@ -628,6 +628,40 @@ namespace {
         }
     }
 
+    auto write_texts(ByteWriter &writer, SceneDescription const &scene) -> void {
+        writer.write(static_cast<std::uint32_t>(scene.texts.size()));
+
+        for (auto const &component: scene.texts) {
+            auto const &text = component.text;
+
+            writer.write(component.entity);
+            writer.write_string(text.text);
+            writer.write(text.font);
+            writer.write(text.size);
+            write_vec4(writer, text.colour);
+            writer.write(text.emissive);
+            write_bool(writer, text.centred);
+            write_bool(writer, text.visible);
+        }
+    }
+
+    auto read_texts(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+        scene.texts.resize(read_count(reader, 30));
+
+        for (auto &component: scene.texts) {
+            auto &text = component.text;
+
+            reader.read(component.entity);
+            reader.read_string(text.text);
+            reader.read(text.font);
+            reader.read(text.size);
+            text.colour = read_vec4(reader);
+            reader.read(text.emissive);
+            text.centred = read_bool(reader);
+            text.visible = read_bool(reader);
+        }
+    }
+
     auto write_rigid_bodies(ByteWriter &writer, SceneDescription const &scene) -> void {
         writer.write(static_cast<std::uint32_t>(scene.rigid_bodies.size()));
 
@@ -1031,6 +1065,13 @@ namespace {
                     .read = read_scripts,
             },
             SectionCodec{
+                    .type = scene_section::texts,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_texts,
+                    .read = read_texts,
+            },
+            SectionCodec{
                     .type = scene_section::behaviours,
                     .version = scene_section_version,
                     .oldest_readable = 1,
@@ -1089,6 +1130,9 @@ namespace {
     }
 
     [[nodiscard]] auto non_negative(float value) noexcept -> bool { return std::isfinite(value) && value >= 0.0F; }
+
+    // A text component longer than this is not text a scene would hold.
+    inline constexpr std::size_t max_scene_text_bytes = 64 * 1024;
 
     [[nodiscard]] auto environment_problem(SceneEnvironment const &environment) -> std::optional<std::string_view> {
         auto const &sun = environment.sun;
@@ -1309,7 +1353,8 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
 
     if (!entities_valid(scene.point_lights) || !entities_valid(scene.spot_lights) ||
         !entities_valid(scene.particle_emitters) || !entities_valid(scene.rigid_bodies) ||
-        !entities_valid(scene.scripts) || !entities_valid(scene.lifetimes) || !entities_valid(scene.behaviours)) {
+        !entities_valid(scene.scripts) || !entities_valid(scene.lifetimes) || !entities_valid(scene.behaviours) ||
+        !entities_valid(scene.texts)) {
         return fail("component entity out of range");
     }
 
@@ -1318,7 +1363,7 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
         !entities_unique(scene, scene.spot_lights) || !entities_unique(scene, scene.particle_emitters) ||
         !entities_unique(scene, scene.rigid_bodies) ||
         !entities_unique(scene, scene.scripts) || !entities_unique(scene, scene.lifetimes) ||
-        !entities_unique(scene, scene.behaviours)) {
+        !entities_unique(scene, scene.behaviours) || !entities_unique(scene, scene.texts)) {
         return fail("entity has the same component more than once");
     }
 
@@ -1399,12 +1444,21 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
         }
 
         if (emitter.count == 0 || emitter.count > Components::ParticleEmitter::max_count ||
-            std::to_underlying(emitter.shape) > std::to_underlying(Components::ParticleShape::cone) ||
+            std::to_underlying(emitter.shape) > std::to_underlying(Components::ParticleShape::text) ||
             !non_negative(emitter.rate) || !finite(emitter.lifetime) || emitter.lifetime <= 0.0F ||
             !finite(emitter.gravity) || !non_negative(emitter.shape_size) || !non_negative(emitter.cone_degrees) ||
             !finite(emitter.speed) || !non_negative(emitter.speed_variance) || !non_negative(emitter.size_start) ||
             !non_negative(emitter.size_end) || !finite(emitter.colour_start) || !finite(emitter.colour_end)) {
             return fail("particle emitter has an invalid value");
+        }
+    }
+
+    for (auto const &component: scene.texts) {
+        auto const &text = component.text;
+
+        if (text.text.size() > max_scene_text_bytes || !finite(text.size) || text.size <= 0.0F ||
+            !finite(text.colour) || !non_negative(text.emissive)) {
+            return fail("text has an invalid value");
         }
     }
 

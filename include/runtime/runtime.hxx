@@ -21,6 +21,7 @@
 #include "rendering/particle_system.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
+#include "rendering/text_renderer.hxx"
 #include "serialisation/scene_serialisation.hxx"
 #include "terrain/terrain_world.hxx"
 
@@ -42,6 +43,7 @@ struct Runtime {
     std::unique_ptr<Renderer> renderer;
     std::unique_ptr<debug_draw::DebugRenderer> debug_renderer;
     std::unique_ptr<gui::ImGuiRenderer> imgui_renderer;
+    std::unique_ptr<TextRenderer> text_renderer;
 
     std::vector<OverlayRegistration> overlays;
     FileChangeWatcher shader_watcher_;

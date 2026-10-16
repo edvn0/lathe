@@ -106,6 +106,9 @@ namespace Components {
         box,
         // Starts at the entity and flies along its +Y axis, spread within `cone_degrees`.
         cone,
+        // Starts on the outline of the entity's Text component, in the text's own space, and flies off in a random
+        // direction. Without a Text component it behaves as `point`.
+        text,
     };
 
     // A GPU particle emitter, simulated and drawn by the engine (rendering/particle_system.hxx). All data: the
@@ -134,6 +137,24 @@ namespace Components {
         // Tints the particles (base colour times, emissive plus). Not reference counted: a released material is white.
         MaterialHandle material{};
         bool emitting = true;
+    };
+
+    // Text drawn in the world (rendering/text_renderer.hxx): the entity's transform places it and it is depth-tested and
+    // alpha-blended like any other transparent object. Before the transform, it reads left to right along +x with its
+    // up on +y, for a viewer looking along +z. `emissive` multiplies the colour into HDR, so a value above 1 blooms like a
+    // neon sign. A ParticleEmitter on the same entity with ParticleShape::text sheds particles from the letters.
+    struct Text {
+        std::string text;
+        // The font to draw with: 0 is the engine's own, others are what the text renderer loaded.
+        std::uint32_t font = 0;
+        // The em size, in world units.
+        float size = 1.0F;
+        // Linear RGBA.
+        glm::vec4 colour{1.0F};
+        float emissive = 1.0F;
+        // The entity's origin is the middle of the text, instead of the start of its first baseline.
+        bool centred = true;
+        bool visible = true;
     };
 
     struct Script {
