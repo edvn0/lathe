@@ -18,6 +18,9 @@
 #include <glm/vector_relational.hpp>
 
 #include "serialisation/byte_stream.hxx"
+#include "serialisation/string_table.hxx"
+
+using namespace std::string_view_literals;
 
 namespace {
 
@@ -104,50 +107,65 @@ namespace {
         return count;
     }
 
-    auto write_settings(ByteWriter &writer, SceneDescription const &scene) -> void {
+    // A string field: an offset into the `strings` section from `by_offset` versions on, inline before that.
+    auto read_text(ByteReader &reader, StringBlob const *strings, bool by_offset, std::string &text) -> void {
+        if (!by_offset) {
+            reader.read_string(text);
+            return;
+        }
+
+        auto const offset = reader.read<std::uint32_t>();
+
+        if (reader.failed() || strings == nullptr || !strings->lookup(offset, text)) {
+            text.clear();
+            reader.fail();
+        }
+    }
+
+    auto write_settings(ByteWriter &writer, SceneDescription const &scene, StringTable &) -> void {
         write_vec3(writer, scene.physics_settings.gravity);
         writer.write(scene.physics_settings.ground_y);
     }
 
-    auto read_settings(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_settings(ByteReader &reader, std::uint16_t, SceneDescription &scene, StringBlob const *) -> void {
         scene.physics_settings.gravity = read_vec3(reader);
         reader.read(scene.physics_settings.ground_y);
     }
 
-    auto write_models(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_models(ByteWriter &writer, SceneDescription const &scene, StringTable &strings) -> void {
         writer.write(static_cast<std::uint32_t>(scene.models.size()));
 
         for (auto const &model: scene.models) {
             writer.write(model.id.value);
-            writer.write_string(model.source);
+            writer.write(strings.intern(model.source));
         }
     }
 
-    auto read_models(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_models(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *strings) -> void {
         scene.models.resize(read_count(reader, 12));
 
         for (auto &model: scene.models) {
             model.id.value = reader.read<std::uint64_t>();
-            reader.read_string(model.source);
+            read_text(reader, strings, version >= string_ref_section_version, model.source);
         }
     }
 
-    auto write_textures(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_textures(ByteWriter &writer, SceneDescription const &scene, StringTable &strings) -> void {
         writer.write(static_cast<std::uint32_t>(scene.textures.size()));
 
         for (auto const &texture: scene.textures) {
             writer.write(texture.id.value);
-            writer.write_string(texture.source);
+            writer.write(strings.intern(texture.source));
             writer.write(std::to_underlying(texture.role));
         }
     }
 
-    auto read_textures(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_textures(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *strings) -> void {
         scene.textures.resize(read_count(reader, 13));
 
         for (auto &texture: scene.textures) {
             texture.id.value = reader.read<std::uint64_t>();
-            reader.read_string(texture.source);
+            read_text(reader, strings, version >= string_ref_section_version, texture.source);
 
             auto const role = reader.read<std::uint8_t>();
 
@@ -159,11 +177,11 @@ namespace {
         }
     }
 
-    auto write_materials(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_materials(ByteWriter &writer, SceneDescription const &scene, StringTable &strings) -> void {
         writer.write(static_cast<std::uint32_t>(scene.materials.size()));
 
         for (auto const &material: scene.materials) {
-            writer.write_string(material.name);
+            writer.write(strings.intern(material.name));
             write_vec4(writer, material.base_colour_factor);
             write_vec3(writer, material.emissive_factor);
             writer.write(material.emissive_strength);
@@ -189,11 +207,11 @@ namespace {
         }
     }
 
-    auto read_materials(ByteReader &reader, std::uint16_t version, SceneDescription &scene) -> void {
+    auto read_materials(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *strings) -> void {
         scene.materials.resize(read_count(reader, 64));
 
         for (auto &material: scene.materials) {
-            reader.read_string(material.name);
+            read_text(reader, strings, version >= materials_section_version, material.name);
             material.base_colour_factor = read_vec4(reader);
             material.emissive_factor = read_vec3(reader);
             reader.read(material.emissive_strength);
@@ -230,11 +248,11 @@ namespace {
         }
     }
 
-    auto write_entities(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_entities(ByteWriter &writer, SceneDescription const &scene, StringTable &strings) -> void {
         writer.write(static_cast<std::uint32_t>(scene.entities.size()));
 
         for (auto const &entity: scene.entities) {
-            writer.write_string(entity.name);
+            writer.write(strings.intern(entity.name));
             writer.write(entity.parent);
             writer.write(static_cast<std::uint32_t>(entity.flags));
             write_bool(writer, entity.transform.has_value());
@@ -245,11 +263,11 @@ namespace {
         }
     }
 
-    auto read_entities(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_entities(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *strings) -> void {
         scene.entities.resize(read_count(reader, 13));
 
         for (auto &entity: scene.entities) {
-            reader.read_string(entity.name);
+            read_text(reader, strings, version >= string_ref_section_version, entity.name);
             reader.read(entity.parent);
             entity.flags = static_cast<SceneEntityFlags>(reader.read<std::uint32_t>());
 
@@ -259,7 +277,7 @@ namespace {
         }
     }
 
-    auto write_model_components(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_model_components(ByteWriter &writer, SceneDescription const &scene, StringTable &) -> void {
         writer.write(static_cast<std::uint32_t>(scene.model_components.size()));
 
         for (auto const &component: scene.model_components) {
@@ -268,7 +286,7 @@ namespace {
         }
     }
 
-    auto read_model_components(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_model_components(ByteReader &reader, std::uint16_t, SceneDescription &scene, StringBlob const *) -> void {
         scene.model_components.resize(read_count(reader, 8));
 
         for (auto &component: scene.model_components) {
@@ -277,7 +295,7 @@ namespace {
         }
     }
 
-    auto write_material_overrides(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_material_overrides(ByteWriter &writer, SceneDescription const &scene, StringTable &) -> void {
         writer.write(static_cast<std::uint32_t>(scene.material_overrides.size()));
 
         for (auto const &component: scene.material_overrides) {
@@ -292,7 +310,7 @@ namespace {
         }
     }
 
-    auto read_material_overrides(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_material_overrides(ByteReader &reader, std::uint16_t, SceneDescription &scene, StringBlob const *) -> void {
         scene.material_overrides.resize(read_count(reader, 12));
 
         for (auto &component: scene.material_overrides) {
@@ -487,7 +505,7 @@ namespace {
         }
     }
 
-    auto write_instanced_models(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_instanced_models(ByteWriter &writer, SceneDescription const &scene, StringTable &) -> void {
         writer.write(static_cast<std::uint32_t>(scene.instanced_models.size()));
 
         for (auto const &component: scene.instanced_models) {
@@ -499,7 +517,7 @@ namespace {
         }
     }
 
-    auto read_instanced_models(ByteReader &reader, std::uint16_t version, SceneDescription &scene) -> void {
+    auto read_instanced_models(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *) -> void {
         scene.instanced_models.resize(read_count(reader, 16));
 
         for (auto &component: scene.instanced_models) {
@@ -520,7 +538,7 @@ namespace {
         }
     }
 
-    auto write_point_lights(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_point_lights(ByteWriter &writer, SceneDescription const &scene, StringTable &) -> void {
         writer.write(static_cast<std::uint32_t>(scene.point_lights.size()));
 
         for (auto const &component: scene.point_lights) {
@@ -532,7 +550,7 @@ namespace {
         }
     }
 
-    auto read_point_lights(ByteReader &reader, std::uint16_t version, SceneDescription &scene) -> void {
+    auto read_point_lights(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *) -> void {
         scene.point_lights.resize(read_count(reader, 24));
 
         for (auto &component: scene.point_lights) {
@@ -547,7 +565,7 @@ namespace {
         }
     }
 
-    auto write_spot_lights(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_spot_lights(ByteWriter &writer, SceneDescription const &scene, StringTable &) -> void {
         writer.write(static_cast<std::uint32_t>(scene.spot_lights.size()));
 
         for (auto const &component: scene.spot_lights) {
@@ -561,7 +579,7 @@ namespace {
         }
     }
 
-    auto read_spot_lights(ByteReader &reader, std::uint16_t version, SceneDescription &scene) -> void {
+    auto read_spot_lights(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *) -> void {
         scene.spot_lights.resize(read_count(reader, 32));
 
         for (auto &component: scene.spot_lights) {
@@ -578,7 +596,7 @@ namespace {
         }
     }
 
-    auto write_particle_emitters(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_particle_emitters(ByteWriter &writer, SceneDescription const &scene, StringTable &) -> void {
         writer.write(static_cast<std::uint32_t>(scene.particle_emitters.size()));
 
         for (auto const &component: scene.particle_emitters) {
@@ -603,7 +621,7 @@ namespace {
         }
     }
 
-    auto read_particle_emitters(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_particle_emitters(ByteReader &reader, std::uint16_t, SceneDescription &scene, StringBlob const *) -> void {
         scene.particle_emitters.resize(read_count(reader, 90));
 
         for (auto &component: scene.particle_emitters) {
@@ -628,14 +646,14 @@ namespace {
         }
     }
 
-    auto write_texts(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_texts(ByteWriter &writer, SceneDescription const &scene, StringTable &strings) -> void {
         writer.write(static_cast<std::uint32_t>(scene.texts.size()));
 
         for (auto const &component: scene.texts) {
             auto const &text = component.text;
 
             writer.write(component.entity);
-            writer.write_string(text.text);
+            writer.write(strings.intern(text.text));
             writer.write(text.font);
             writer.write(text.size);
             write_vec4(writer, text.colour);
@@ -645,14 +663,14 @@ namespace {
         }
     }
 
-    auto read_texts(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_texts(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *strings) -> void {
         scene.texts.resize(read_count(reader, 30));
 
         for (auto &component: scene.texts) {
             auto &text = component.text;
 
             reader.read(component.entity);
-            reader.read_string(text.text);
+            read_text(reader, strings, version >= string_ref_section_version, text.text);
             reader.read(text.font);
             reader.read(text.size);
             text.colour = read_vec4(reader);
@@ -662,7 +680,7 @@ namespace {
         }
     }
 
-    auto write_rigid_bodies(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_rigid_bodies(ByteWriter &writer, SceneDescription const &scene, StringTable &) -> void {
         writer.write(static_cast<std::uint32_t>(scene.rigid_bodies.size()));
 
         for (auto const &component: scene.rigid_bodies) {
@@ -690,7 +708,7 @@ namespace {
         }
     }
 
-    auto read_rigid_bodies(ByteReader &reader, std::uint16_t version, SceneDescription &scene) -> void {
+    auto read_rigid_bodies(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *) -> void {
         scene.rigid_bodies.resize(read_count(reader, 48));
 
         for (auto &component: scene.rigid_bodies) {
@@ -737,34 +755,34 @@ namespace {
         }
     }
 
-    auto write_scripts(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_scripts(ByteWriter &writer, SceneDescription const &scene, StringTable &strings) -> void {
         writer.write(static_cast<std::uint32_t>(scene.scripts.size()));
 
         for (auto const &component: scene.scripts) {
             writer.write(component.entity);
-            writer.write_string(component.script);
+            writer.write(strings.intern(component.script));
         }
     }
 
-    auto read_scripts(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_scripts(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *strings) -> void {
         scene.scripts.resize(read_count(reader, 8));
 
         for (auto &component: scene.scripts) {
             reader.read(component.entity);
-            reader.read_string(component.script);
+            read_text(reader, strings, version >= string_ref_section_version, component.script);
         }
     }
 
-    auto write_behaviours(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_behaviours(ByteWriter &writer, SceneDescription const &scene, StringTable &strings) -> void {
         writer.write(static_cast<std::uint32_t>(scene.behaviours.size()));
 
         for (auto const &component: scene.behaviours) {
             writer.write(component.entity);
-            writer.write_string(component.script);
+            writer.write(strings.intern(component.script));
             writer.write(static_cast<std::uint32_t>(component.values.size()));
 
             for (auto const &entry: component.values) {
-                writer.write_string(entry.name);
+                writer.write(strings.intern(entry.name));
                 writer.write(static_cast<std::uint8_t>(entry.value.index()));
 
                 std::visit(
@@ -774,7 +792,7 @@ namespace {
                             if constexpr (std::is_same_v<Value, bool>) {
                                 write_bool(writer, value);
                             } else if constexpr (std::is_same_v<Value, std::string>) {
-                                writer.write_string(value);
+                                writer.write(strings.intern(value));
                             } else if constexpr (std::is_same_v<Value, glm::vec3>) {
                                 write_vec3(writer, value);
                             } else if constexpr (std::is_same_v<Value, glm::vec4>) {
@@ -790,7 +808,7 @@ namespace {
         }
     }
 
-    auto read_behaviour_value(ByteReader &reader) -> std::optional<SceneScriptValue> {
+    auto read_behaviour_value(ByteReader &reader, StringBlob const *strings, std::uint16_t version) -> std::optional<SceneScriptValue> {
         switch (reader.read<std::uint8_t>()) {
             case 0:
                 return reader.read<std::uint8_t>() != 0;
@@ -800,7 +818,7 @@ namespace {
                 return reader.read<double>();
             case 3: {
                 std::string text;
-                reader.read_string(text);
+                read_text(reader, strings, version >= string_ref_section_version, text);
                 return text;
             }
             case 4:
@@ -815,18 +833,18 @@ namespace {
         }
     }
 
-    auto read_behaviours(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_behaviours(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *strings) -> void {
         scene.behaviours.resize(read_count(reader, 12));
 
         for (auto &component: scene.behaviours) {
             reader.read(component.entity);
-            reader.read_string(component.script);
+            read_text(reader, strings, version >= string_ref_section_version, component.script);
             component.values.resize(read_count(reader, 5));
 
             for (auto &entry: component.values) {
-                reader.read_string(entry.name);
+                read_text(reader, strings, version >= string_ref_section_version, entry.name);
 
-                auto value = read_behaviour_value(reader);
+                auto value = read_behaviour_value(reader, strings, version);
 
                 if (!value || reader.failed()) {
                     return;
@@ -837,7 +855,7 @@ namespace {
         }
     }
 
-    auto write_lifetimes(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_lifetimes(ByteWriter &writer, SceneDescription const &scene, StringTable &) -> void {
         writer.write(static_cast<std::uint32_t>(scene.lifetimes.size()));
 
         for (auto const &component: scene.lifetimes) {
@@ -846,7 +864,7 @@ namespace {
         }
     }
 
-    auto read_lifetimes(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_lifetimes(ByteReader &reader, std::uint16_t, SceneDescription &scene, StringBlob const *) -> void {
         scene.lifetimes.resize(read_count(reader, 8));
 
         for (auto &component: scene.lifetimes) {
@@ -865,7 +883,7 @@ namespace {
         constexpr std::uint8_t fog_from_environment = 1U << 6U;
     }
 
-    auto write_environment(ByteWriter &writer, SceneDescription const &scene) -> void {
+    auto write_environment(ByteWriter &writer, SceneDescription const &scene, StringTable &strings) -> void {
         namespace bits = environment_flag_bits;
 
         auto const &environment = scene.environment;
@@ -893,7 +911,7 @@ namespace {
         writer.write(environment.hdr_cube_size);
 
         writer.write(scene.environment_id.value);
-        writer.write_string(environment.hdr_source);
+        writer.write(strings.intern(environment.hdr_source));
 
         auto const &sun = environment.sun;
 
@@ -910,7 +928,7 @@ namespace {
         writer.write(environment.fog.inscattering);
     }
 
-    auto read_environment(ByteReader &reader, std::uint16_t, SceneDescription &scene) -> void {
+    auto read_environment(ByteReader &reader, std::uint16_t version, SceneDescription &scene, StringBlob const *strings) -> void {
         namespace bits = environment_flag_bits;
 
         auto &environment = scene.environment;
@@ -944,7 +962,7 @@ namespace {
         reader.read(environment.hdr_cube_size);
 
         scene.environment_id.value = reader.read<std::uint64_t>();
-        reader.read_string(environment.hdr_source);
+        read_text(reader, strings, version >= string_ref_section_version, environment.hdr_source);
 
         auto &sun = environment.sun;
 
@@ -961,8 +979,8 @@ namespace {
         reader.read(environment.fog.inscattering);
     }
 
-    using SectionWriter = void (*)(ByteWriter &, SceneDescription const &);
-    using SectionReader = void (*)(ByteReader &, std::uint16_t, SceneDescription &);
+    using SectionWriter = void (*)(ByteWriter &, SceneDescription const &, StringTable &);
+    using SectionReader = void (*)(ByteReader &, std::uint16_t, SceneDescription &, StringBlob const *);
 
     struct SectionCodec {
         std::uint32_t type;
@@ -982,14 +1000,14 @@ namespace {
             },
             SectionCodec{
                     .type = scene_section::models,
-                    .version = scene_section_version,
+                    .version = string_ref_section_version,
                     .oldest_readable = 1,
                     .write = write_models,
                     .read = read_models,
             },
             SectionCodec{
                     .type = scene_section::textures,
-                    .version = scene_section_version,
+                    .version = string_ref_section_version,
                     .oldest_readable = 1,
                     .write = write_textures,
                     .read = read_textures,
@@ -1003,7 +1021,7 @@ namespace {
             },
             SectionCodec{
                     .type = scene_section::entities,
-                    .version = scene_section_version,
+                    .version = string_ref_section_version,
                     .oldest_readable = 1,
                     .write = write_entities,
                     .read = read_entities,
@@ -1059,21 +1077,21 @@ namespace {
             },
             SectionCodec{
                     .type = scene_section::scripts,
-                    .version = scene_section_version,
+                    .version = string_ref_section_version,
                     .oldest_readable = 1,
                     .write = write_scripts,
                     .read = read_scripts,
             },
             SectionCodec{
                     .type = scene_section::texts,
-                    .version = scene_section_version,
+                    .version = string_ref_section_version,
                     .oldest_readable = 1,
                     .write = write_texts,
                     .read = read_texts,
             },
             SectionCodec{
                     .type = scene_section::behaviours,
-                    .version = scene_section_version,
+                    .version = string_ref_section_version,
                     .oldest_readable = 1,
                     .write = write_behaviours,
                     .read = read_behaviours,
@@ -1214,21 +1232,77 @@ namespace {
 
 }
 
-auto encode_scene(SceneDescription const &scene) -> std::vector<std::byte> {
+namespace {
+
+    // The strings section is NUL-terminated, so a string with a NUL in it cannot be stored. Names the first offender.
+    [[nodiscard]] auto embedded_nul(SceneDescription const &scene) -> std::optional<std::string> {
+        std::optional<std::string> where;
+
+        auto const check = [&](std::string_view text, std::string_view what, std::size_t index) {
+            if (!where.has_value() && text.find('\0') != std::string_view::npos) {
+                where = std::format("{} {} contains a NUL byte", what, index);
+            }
+        };
+
+        for (std::size_t i = 0; i < scene.models.size(); ++i) check(scene.models[i].source, "model source", i);
+        for (std::size_t i = 0; i < scene.textures.size(); ++i) check(scene.textures[i].source, "texture source", i);
+        for (std::size_t i = 0; i < scene.materials.size(); ++i) check(scene.materials[i].name, "material name", i);
+        for (std::size_t i = 0; i < scene.entities.size(); ++i) check(scene.entities[i].name, "entity name", i);
+        for (auto const &c: scene.texts) check(c.text.text, "text of entity", c.entity);
+        for (auto const &c: scene.scripts) check(c.script, "script name of entity", c.entity);
+
+        for (auto const &c: scene.behaviours) {
+            check(c.script, "behaviour script name of entity", c.entity);
+
+            for (auto const &entry: c.values) {
+                check(entry.name, "behaviour value name on entity", c.entity);
+
+                if (auto const *const text = std::get_if<std::string>(&entry.value)) {
+                    check(*text, "behaviour string value on entity", c.entity);
+                }
+            }
+        }
+
+        check(scene.environment.hdr_source, "environment image source", 0);
+        return where;
+    }
+
+    void write_section(ByteWriter &writer, std::uint32_t type, std::uint16_t version, ByteWriter &&body) {
+        writer.write(type);
+        writer.write(version);
+        writer.write(std::uint16_t{0});
+        writer.write(static_cast<std::uint64_t>(body.size()));
+        writer.write(std::move(body));
+    }
+
+}
+
+auto encode_scene(SceneDescription const &scene) -> std::expected<std::vector<std::byte>, LbfError> {
     ZoneScopedNC("encode_scene", tracy::Color::Goldenrod);
 
-    ByteWriter writer;
+    if (auto where = embedded_nul(scene); where.has_value()) {
+        return std::unexpected(make_error(LbfErrorType::malformed_payload, *where));
+    }
+
+    // Interning follows the fixed section order, so the table is a pure function of the scene.
+    StringTable strings;
+    std::vector<std::pair<SectionCodec const *, ByteWriter>> bodies;
+    bodies.reserve(section_codecs.size());
 
     for (auto const &codec: section_codecs) {
-        ByteWriter section;
-        codec.write(section, scene);
+        ByteWriter body;
+        codec.write(body, scene, strings);
+        bodies.emplace_back(&codec, std::move(body));
+    }
 
-        writer.write(codec.type);
-        writer.write(codec.version);
-        writer.write(std::uint16_t{0});
-        writer.write(static_cast<std::uint64_t>(section.size()));
+    // The table is complete only now, but goes first so a reader has it before any section that uses it.
+    ByteWriter writer;
+    ByteWriter table;
+    table.write_span(strings.bytes());
+    write_section(writer, scene_section::strings, strings_section_version, std::move(table));
 
-        writer.write(std::move(section));
+    for (auto &[codec, body]: bodies) {
+        write_section(writer, codec->type, codec->version, std::move(body));
     }
 
     return writer.take();
@@ -1246,6 +1320,7 @@ auto decode_scene(std::span<std::byte const> payload, std::uint16_t chunk_versio
 
     SceneDescription scene;
     ByteReader reader{payload};
+    std::optional<StringBlob> strings;
 
     while (reader.remaining() > 0) {
         auto const type = reader.read<std::uint32_t>();
@@ -1256,6 +1331,23 @@ auto decode_scene(std::span<std::byte const> payload, std::uint16_t chunk_versio
 
         if (reader.failed()) {
             return std::unexpected(make_error(LbfErrorType::malformed_payload, "truncated SCEN section header"));
+        }
+
+        if (type == scene_section::strings) {
+            if (version > strings_section_version) {
+                if (report != nullptr) {
+                    ++report->skipped_sections;
+                }
+                continue;
+            }
+
+            if (strings.has_value() || !StringBlob::parse(bytes)) {
+                return std::unexpected(make_error(LbfErrorType::malformed_payload,
+                                                  "SCEN strings section is duplicated or not NUL-terminated"));
+            }
+
+            strings.emplace(bytes);
+            continue;
         }
 
         auto const *codec = find_codec(type);
@@ -1273,7 +1365,7 @@ auto decode_scene(std::span<std::byte const> payload, std::uint16_t chunk_versio
         }
 
         ByteReader section{bytes};
-        codec->read(section, version, scene);
+        codec->read(section, version, scene, strings.has_value() ? &*strings : nullptr);
 
         if (section.failed()) {
             return std::unexpected(
@@ -1286,6 +1378,53 @@ auto decode_scene(std::span<std::byte const> payload, std::uint16_t chunk_versio
     }
 
     return scene;
+}
+
+auto scene_section_info(std::uint32_t type) -> std::optional<SceneSectionInfo> {
+    constexpr std::array names{
+            std::pair{scene_section::settings, "settings"sv},
+            std::pair{scene_section::models, "models"sv},
+            std::pair{scene_section::textures, "textures"sv},
+            std::pair{scene_section::materials, "materials"sv},
+            std::pair{scene_section::entities, "entities"sv},
+            std::pair{scene_section::model_components, "model_components"sv},
+            std::pair{scene_section::material_overrides, "material_overrides"sv},
+            std::pair{scene_section::instanced_models, "instanced_models"sv},
+            std::pair{scene_section::point_lights, "point_lights"sv},
+            std::pair{scene_section::spot_lights, "spot_lights"sv},
+            std::pair{scene_section::rigid_bodies, "rigid_bodies"sv},
+            std::pair{scene_section::scripts, "scripts"sv},
+            std::pair{scene_section::lifetimes, "lifetimes"sv},
+            std::pair{scene_section::environment, "environment"sv},
+            std::pair{scene_section::particle_emitters, "particle_emitters"sv},
+            std::pair{scene_section::behaviours, "behaviours"sv},
+            std::pair{scene_section::texts, "texts"sv},
+    };
+
+    if (type == scene_section::strings) {
+        return SceneSectionInfo{.name = "strings", .current_version = strings_section_version, .oldest_readable = 1};
+    }
+
+    auto const *codec = find_codec(type);
+
+    if (codec == nullptr) {
+        return std::nullopt;
+    }
+
+    auto const name = std::ranges::find(names, type, &std::pair<std::uint32_t, std::string_view>::first);
+    auto const uses_strings = type == scene_section::models || type == scene_section::textures ||
+                              type == scene_section::entities || type == scene_section::texts ||
+                              type == scene_section::scripts || type == scene_section::behaviours ||
+                              type == scene_section::environment;
+
+    return SceneSectionInfo{
+            .name = name != names.end() ? name->second : "?",
+            .current_version = codec->version,
+            .oldest_readable = codec->oldest_readable,
+            .string_offsets_from = type == scene_section::materials ? materials_section_version
+                                   : uses_strings                   ? string_ref_section_version
+                                                                    : std::uint16_t{0},
+    };
 }
 
 auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfError> {

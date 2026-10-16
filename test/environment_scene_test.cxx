@@ -20,6 +20,12 @@
 
 namespace {
 
+    auto encoded(SceneDescription const &scene) -> std::vector<std::byte> {
+        auto result = encode_scene(scene);
+        REQUIRE(result.has_value());
+        return std::move(*result);
+    }
+
     auto custom_environment() -> SceneEnvironment {
         SceneEnvironment environment;
         environment.source = EnvironmentSource::hdr_image;
@@ -87,21 +93,37 @@ TEST_CASE("Environment section round-trips every field") {
     scene.environment = custom_environment();
     scene.environment_id = asset_id_from_key(environment_asset_key(AssetPath::from_serialised(scene.environment.hdr_source).value()));
 
-    auto const payload = encode_scene(scene);
+    auto const payload = encoded(scene);
     auto const decoded = decode_scene(payload);
 
     REQUIRE(decoded.has_value());
     CHECK(decoded->environment == scene.environment);
     CHECK(decoded->environment_id == scene.environment_id);
 
-    CHECK(encode_scene(*decoded) == payload);
+    CHECK(encoded(*decoded) == payload);
+}
+
+TEST_CASE("The environment image path is stored once in the strings section") {
+    SceneDescription scene;
+    scene.environment = custom_environment();
+
+    auto const payload = encoded(scene);
+    auto const source = std::string_view{scene.environment.hdr_source};
+
+    std::string_view const text{reinterpret_cast<char const *>(payload.data()), payload.size()};
+    CHECK(text.find(source) != std::string_view::npos);
+    CHECK(text.find(source, text.find(source) + 1) == std::string_view::npos);
+
+    auto const decoded = decode_scene(payload);
+    REQUIRE(decoded.has_value());
+    CHECK(decoded->environment.hdr_source == scene.environment.hdr_source);
 }
 
 TEST_CASE("A scene without an environment section loads as flat ambient, as scenes always looked") {
     SceneDescription scene;
     scene.environment = custom_environment();
 
-    auto const stripped = without_section(encode_scene(scene), scene_section::environment);
+    auto const stripped = without_section(encoded(scene), scene_section::environment);
 
     SceneDecodeReport report;
     auto const decoded = decode_scene(stripped, scene_chunk_version, &report);
@@ -122,7 +144,7 @@ TEST_CASE("An environment from a newer section version is skipped, not misread")
     SceneDescription scene;
     scene.environment = custom_environment();
 
-    auto payload = without_section(encode_scene(scene), scene_section::environment);
+    auto payload = without_section(encoded(scene), scene_section::environment);
 
     ByteWriter newer;
     newer.write(scene_section::environment);
@@ -149,7 +171,7 @@ TEST_CASE("Environment values that would poison the renderer are refused") {
         spoil(scene.environment);
 
         CHECK_FALSE(validate_scene(scene).has_value());
-        CHECK_FALSE(decode_scene(encode_scene(scene)).has_value());
+        CHECK_FALSE(decode_scene(encoded(scene)).has_value());
     };
 
     {
