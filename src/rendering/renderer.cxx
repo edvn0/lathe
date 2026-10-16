@@ -2071,7 +2071,14 @@ auto Renderer::create_model_from_cpu_data(ModelCpuData const &cpu_data) -> std::
 
     image_storage_.release_completed_uploads();
 
-    return create_model(*imported_model, default_material_handle_);
+    auto created = create_model(*imported_model, default_material_handle_);
+
+    // Models loaded here, not through the streamer, need their triangles kept too when the editor asked for them.
+    if (created && model_streamer_.collecting_pick_geometry()) {
+        register_model_pick_geometry(*created, ModelPickGeometry::build(cpu_data));
+    }
+
+    return created;
 }
 
 auto Renderer::create_model(Model const &model) -> std::expected<ModelHandle, RendererError> {

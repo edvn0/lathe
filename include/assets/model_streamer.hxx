@@ -46,6 +46,8 @@ public:
     // when the model installs. It costs a CPU copy of every triangle, so it is for the editor only.
     auto collect_pick_geometry(bool enabled) noexcept -> void { collect_pick_geometry_ = enabled; }
 
+    [[nodiscard]] auto collecting_pick_geometry() const noexcept -> bool { return collect_pick_geometry_; }
+
     auto forget(ModelHandle handle) -> void;
 
     [[nodiscard]]

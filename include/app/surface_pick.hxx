@@ -24,7 +24,8 @@ struct SurfaceHit {
 
 enum class PickTargets : std::uint8_t {
     everything,
-    // Only entities with a model, so lights and other markers are not surfaces.
+    // Only models whose triangles are known, so lights, markers and a model's bounding box are not surfaces: what the
+    // ray finds is what is drawn.
     models,
 };
 

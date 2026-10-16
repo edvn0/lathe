@@ -23,7 +23,15 @@ namespace {
             return std::unexpected(to_renderer_error(mesh.error()));
         }
 
-        return renderer.create_model_from_cpu_data(to_model_cpu_data(std::move(*mesh)));
+        // The primitives are small, so their triangles are always kept: a bounding box is a poor stand-in for a sphere.
+        auto const cpu_data = to_model_cpu_data(std::move(*mesh));
+        auto created = renderer.create_model_from_cpu_data(cpu_data);
+
+        if (created) {
+            renderer.register_model_pick_geometry(*created, ModelPickGeometry::build(cpu_data));
+        }
+
+        return created;
     }
 
     constexpr float grass_card_alpha_cutoff = 0.5F;
