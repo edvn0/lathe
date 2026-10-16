@@ -44,6 +44,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     && rustc --version \
     && chmod -R a+rwX "${CARGO_HOME}" "${RUSTUP_HOME}"
 
+# Installed with its executables (spirv-opt, spirv-val): tools/check_shaders.py runs them in the ci build job.
 ARG SPIRV_TOOLS_TAG=vulkan-sdk-1.4.357.0
 
 RUN git clone --branch "${SPIRV_TOOLS_TAG}" --depth 1 \
@@ -53,7 +54,6 @@ RUN git clone --branch "${SPIRV_TOOLS_TAG}" --depth 1 \
     && cmake -S /tmp/spirv-tools -B /tmp/spirv-tools/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DSPIRV_SKIP_TESTS=ON \
-        -DSPIRV_SKIP_EXECUTABLES=ON \
         -DSPIRV_WERROR=OFF \
     && cmake --build /tmp/spirv-tools/build -j"$(nproc)" \
     && cmake --install /tmp/spirv-tools/build --prefix /usr/local \

@@ -18,8 +18,6 @@ on:
       - "Dockerfile"
       - "docker/**"
       - "tools/**"
-      # The shader check has its own workflow (shaders.yml) and runs without a build.
-      - "!tools/check_shaders.py"
       - ".github/workflows/build.yml"
       - ".github/workflows/toolchain-image.yml"
   pull_request:
@@ -161,6 +159,20 @@ jobs:
             --output-on-failure \
             --parallel 4 \
             --no-tests=error
+
+      # Every shader entry point through the pipeline the engine runs at startup (Slang -O3, spirv-opt, spirv-val), with
+      # the build's own Slang. The build only compiles a few shaders for push-constant reflection, so an optimizer crash
+      # on a shader was first seen as a segfault at startup. See tools/check_shaders.py. Once is enough: the shaders and
+      # tools don't depend on the build type.
+      - name: Check shaders
+        if: matrix.build_type == 'Debug'
+        run: |
+          set -euo pipefail
+
+          build_dir="build/${{ matrix.target }}-debug"
+          slang_root="$(sed -n 's/^LATHE_SLANG_ROOT:INTERNAL=//p' "${build_dir}/CMakeCache.txt")"
+
+          python3 tools/check_shaders.py --slangc "${slang_root}/bin/slangc"
 
       - name: ccache statistics
         if: always()

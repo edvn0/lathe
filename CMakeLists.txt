@@ -853,6 +853,9 @@ endif()
 
 validate_slang_root("${slang_root}")
 
+# Read back by CI (cmake -L) to run the shader check with the same slangc the build uses.
+set(LATHE_SLANG_ROOT "${slang_root}" CACHE INTERNAL "The Slang installation in use")
+
 set(slang_include_dir "${slang_root}/include")
 set(slang_bin_dir "${slang_root}/bin")
 set(slang_lib_dir "${slang_root}/lib")
