@@ -88,7 +88,7 @@ function Logic.spawn_food(state)
     return false
 end
 
--- Queues a turn. Up to two are kept, so quick key presses between steps are not lost, and a turn straight back
+-- Queues a turn. Up to four are kept, so quick key presses between steps are not lost, and a turn straight back
 -- into the snake is ignored.
 function Logic.turn(state, name)
     local wanted = DIRECTIONS[name]
@@ -107,7 +107,7 @@ function Logic.turn(state, name)
         return false
     end
 
-    if #state.queued >= 2 then
+    if #state.queued >= 4 then
         return false
     end
 

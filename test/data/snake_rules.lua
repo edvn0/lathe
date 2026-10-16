@@ -9,7 +9,8 @@ check(#s.snake == 3 and s.snake[1].x == 3 and s.snake[3].x == 1, "start layout")
 check(#s.food == 1, "one food at start")
 -- no reversal, queue limit
 check(not Logic.turn(s, "left"), "reverse refused")
-check(Logic.turn(s, "up") and Logic.turn(s, "left") and not Logic.turn(s, "down"), "queue of two")
+check(Logic.turn(s, "up") and Logic.turn(s, "left") and Logic.turn(s, "down") and Logic.turn(s, "right"), "queue of four")
+check(not Logic.turn(s, "up"), "fifth turn refused")
 -- step uses queued turn
 Logic.step(s); check(s.direction[2] == 1 and s.snake[1].y == 6, "turned up")
 -- wall death
