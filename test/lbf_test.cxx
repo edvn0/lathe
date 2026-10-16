@@ -674,9 +674,10 @@ TEST_SUITE("unit") {
         scene.entities.push_back(SceneEntity{.name = "a"});
         scene.materials.push_back(SceneMaterial{.name = "a"});
 
-        CHECK(encoded(scene) == encoded(scene));
+        auto const payload = encoded(scene);
+        CHECK(payload == encoded(scene));
 
-        auto const strings = find_section(encoded(scene), scene_section::strings);
+        auto const strings = find_section(payload, scene_section::strings);
         // The material's "a" is interned first (section order) and the entity's "a" reuses it.
         CHECK(count_occurrences(strings.payload, "a") == 1);
     }
