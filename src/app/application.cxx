@@ -1000,6 +1000,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 }
                 ImGui::DragFloat("Size##placement", &settings.size, 0.01F, 0.05F, 10.0F);
                 ImGui::SliderFloat("Roll", &settings.roll_degrees, -180.0F, 180.0F, "%.0f deg");
+                ImGui::Checkbox("Align to nearest edge", &settings.align_to_edges);
                 ImGui::Checkbox("Snap to vertices, edges and centres", &settings.snap_to_geometry);
                 ImGui::DragFloat("Grid (Ctrl)", &settings.grid_step, 0.01F, 0.01F, 10.0F, "%.2f m");
                 ImGui::DragFloat("Angle step", &settings.angle_step, 0.5F, 1.0F, 90.0F, "%.0f deg");

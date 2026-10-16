@@ -31,6 +31,22 @@ namespace text_placement {
     [[nodiscard]] auto surface_frame(glm::vec3 const &position, glm::vec3 const &normal, glm::vec3 const &up,
                                      glm::vec3 const &fallback_up, float lift, float roll_radians = 0.0F) -> Frame;
 
+    // As surface_frame, but with the text reading along `right` (a direction across the surface) instead of the one its
+    // up hint gives. The sign of `right` is taken as given.
+    [[nodiscard]] auto aligned_frame(glm::vec3 const &position, glm::vec3 const &normal, glm::vec3 const &right,
+                                     float lift, float roll_radians = 0.0F) -> Frame;
+
+    // The unit direction of the triangle's edge nearest `point`, and the two ends of that edge. Nothing for a triangle
+    // with no usable edge.
+    struct Edge {
+        glm::vec3 from{0.0F};
+        glm::vec3 to{0.0F};
+        glm::vec3 direction{1.0F, 0.0F, 0.0F};
+    };
+
+    [[nodiscard]] auto nearest_edge(std::array<glm::vec3, 3> const &triangle, glm::vec3 const &point)
+            -> std::optional<Edge>;
+
     // The point on the surface (the plane through `on_surface` with `normal`) nearest the world-grid point nearest
     // `on_surface`: on a wall facing along an axis, the position rounded in the wall's own two directions.
     [[nodiscard]] auto snap_to_grid(glm::vec3 const &on_surface, glm::vec3 const &normal, float step) -> glm::vec3;
@@ -85,6 +101,8 @@ public:
         float angle_step = 15.0F;
         // The text's turn about the surface normal, in degrees.
         float roll_degrees = 0.0F;
+        // Read along the hit triangle's edge nearest the cursor, instead of along the surface's horizontal.
+        bool align_to_edges = false;
     };
 
     // What the tool needs to know about the mouse and camera this frame.

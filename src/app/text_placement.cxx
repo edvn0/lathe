@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <glm/geometric.hpp>
 
@@ -41,6 +42,50 @@ namespace text_placement {
 
         return {.position = position + (n * lift),
                 .rotation = glm::normalize(base * glm::angleAxis(roll_radians, glm::vec3{0.0F, 0.0F, 1.0F}))};
+    }
+
+    auto aligned_frame(glm::vec3 const &position, glm::vec3 const &normal, glm::vec3 const &right, float lift,
+                       float roll_radians) -> Frame {
+        auto const n = glm::normalize(normal);
+        auto const z = -n;
+        auto x = right - (n * glm::dot(right, n));
+
+        if (glm::length(x) < 1e-6F) {
+            return surface_frame(position, normal, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, lift, roll_radians);
+        }
+
+        x = glm::normalize(x);
+        auto const y = glm::cross(z, x);
+        auto const base = glm::normalize(glm::quat_cast(glm::mat3{x, y, z}));
+
+        return {.position = position + (n * lift),
+                .rotation = glm::normalize(base * glm::angleAxis(roll_radians, glm::vec3{0.0F, 0.0F, 1.0F}))};
+    }
+
+    auto nearest_edge(std::array<glm::vec3, 3> const &triangle, glm::vec3 const &point) -> std::optional<Edge> {
+        std::optional<Edge> best;
+        auto best_distance = std::numeric_limits<float>::max();
+
+        for (auto corner = 0U; corner < 3; ++corner) {
+            auto const from = triangle[corner];
+            auto const to = triangle[(corner + 1) % 3];
+            auto const along = to - from;
+            auto const length_squared = glm::dot(along, along);
+
+            if (length_squared < 1e-12F) {
+                continue;
+            }
+
+            auto const t = std::clamp(glm::dot(point - from, along) / length_squared, 0.0F, 1.0F);
+            auto const distance = glm::length(point - (from + (along * t)));
+
+            if (distance < best_distance) {
+                best_distance = distance;
+                best = Edge{.from = from, .to = to, .direction = along / std::sqrt(length_squared)};
+            }
+        }
+
+        return best;
     }
 
     auto snap_to_grid(glm::vec3 const &on_surface, glm::vec3 const &normal, float step) -> glm::vec3 {
@@ -170,8 +215,25 @@ auto TextPlacement::update(Scene &scene, Renderer &renderer, debug_draw::DebugRe
 
     auto const roll = grid_snapped ? text_placement::snap_angle(settings.roll_degrees, settings.angle_step)
                                    : settings.roll_degrees;
-    auto const frame = text_placement::surface_frame(position, hit->normal, glm::vec3{0.0F, 1.0F, 0.0F},
-                                                     pointer.camera_forward, settings.lift, glm::radians(roll));
+    auto frame = text_placement::surface_frame(position, hit->normal, glm::vec3{0.0F, 1.0F, 0.0F},
+                                               pointer.camera_forward, settings.lift, glm::radians(roll));
+
+    std::optional<text_placement::Edge> edge;
+
+    if (settings.align_to_edges && hit->triangle) {
+        edge = text_placement::nearest_edge(*hit->triangle, hit->position);
+
+        if (edge) {
+            // An edge has two directions; read along the one nearer to the way the text would read anyway, so it is
+            // not upside down.
+            auto const default_right = text_placement::surface_frame(position, hit->normal, glm::vec3{0.0F, 1.0F, 0.0F},
+                                                                     pointer.camera_forward, 0.0F).rotation *
+                                       glm::vec3{1.0F, 0.0F, 0.0F};
+            auto const right = glm::dot(edge->direction, default_right) >= 0.0F ? edge->direction : -edge->direction;
+
+            frame = text_placement::aligned_frame(position, hit->normal, right, settings.lift, glm::radians(roll));
+        }
+    }
 
     // The preview: the hit triangle, the normal, and the text's box.
     constexpr glm::vec3 triangle_colour{1.0F, 0.85F, 0.2F};
@@ -182,6 +244,11 @@ auto TextPlacement::update(Scene &scene, Renderer &renderer, debug_draw::DebugRe
         lines.add_line(corners[0], corners[1], triangle_colour);
         lines.add_line(corners[1], corners[2], triangle_colour);
         lines.add_line(corners[2], corners[0], triangle_colour);
+    }
+
+    if (edge) {
+        constexpr glm::vec3 edge_colour{1.0F, 0.35F, 0.25F};
+        lines.add_line(edge->from, edge->to, edge_colour);
     }
 
     auto const right = frame.rotation * glm::vec3{1.0F, 0.0F, 0.0F};

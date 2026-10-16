@@ -167,3 +167,43 @@ TEST_CASE("roll turns the text about the normal and leaves it facing the same wa
     // Its right now points where its up used to.
     check_vec(rolled.rotation * glm::vec3{1.0F, 0.0F, 0.0F}, flat.rotation * glm::vec3{0.0F, 1.0F, 0.0F});
 }
+
+TEST_CASE("the nearest edge of a triangle is the one the point is closest to, and degenerate edges are skipped") {
+    constexpr std::array<glm::vec3, 3> triangle{{{0.0F, 0.0F, 0.0F}, {4.0F, 0.0F, 0.0F}, {0.0F, 3.0F, 0.0F}}};
+
+    auto const bottom = text_placement::nearest_edge(triangle, {2.0F, 0.2F, 0.0F});
+    REQUIRE(bottom.has_value());
+    check_vec(bottom->direction, {1.0F, 0.0F, 0.0F});
+
+    auto const left = text_placement::nearest_edge(triangle, {0.1F, 1.5F, 0.0F});
+    REQUIRE(left.has_value());
+    CHECK(std::abs(left->direction.y) == doctest::Approx(1.0F));
+
+    auto const hypotenuse = text_placement::nearest_edge(triangle, {2.1F, 1.6F, 0.0F});
+    REQUIRE(hypotenuse.has_value());
+    CHECK(std::abs(hypotenuse->direction.x) == doctest::Approx(0.8F));
+
+    constexpr std::array<glm::vec3, 3> sliver{{glm::vec3{0.0F}, glm::vec3{0.0F}, glm::vec3{0.0F}}};
+    CHECK_FALSE(text_placement::nearest_edge(sliver, {1.0F, 0.0F, 0.0F}).has_value());
+}
+
+TEST_CASE("text aligned to an edge reads along it and still faces out of the surface") {
+    auto const edge = glm::normalize(glm::vec3{1.0F, 1.0F, 0.0F});
+    auto const frame = text_placement::aligned_frame(glm::vec3{0.0F}, {0.0F, 0.0F, -1.0F}, edge, 0.0F);
+
+    check_vec(frame.rotation * glm::vec3{1.0F, 0.0F, 0.0F}, edge);
+    check_vec(frame.rotation * glm::vec3{0.0F, 0.0F, 1.0F}, {0.0F, 0.0F, 1.0F});
+    // A proper rotation: up is across the edge, to its left.
+    check_vec(frame.rotation * glm::vec3{0.0F, 1.0F, 0.0F}, glm::normalize(glm::vec3{-1.0F, 1.0F, 0.0F}));
+}
+
+TEST_CASE("an edge direction out of the surface is flattened into it, and one along the normal falls back") {
+    auto const tilted = text_placement::aligned_frame(glm::vec3{0.0F}, {0.0F, 0.0F, -1.0F},
+                                                      glm::normalize(glm::vec3{1.0F, 0.0F, 1.0F}), 0.0F);
+    check_vec(tilted.rotation * glm::vec3{1.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F});
+
+    auto const along_normal =
+            text_placement::aligned_frame(glm::vec3{0.0F}, {0.0F, 0.0F, -1.0F}, {0.0F, 0.0F, 1.0F}, 0.0F);
+    CHECK(glm::length(along_normal.rotation) == doctest::Approx(1.0F));
+    check_vec(along_normal.rotation * glm::vec3{0.0F, 0.0F, 1.0F}, {0.0F, 0.0F, 1.0F});
+}
