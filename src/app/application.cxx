@@ -565,11 +565,18 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 auto &selection = selection_context();
 
                 if (text_placement.active()) {
-                    auto const camera_forward = glm::normalize(glm::vec3{to_world * glm::vec4{0.0F, 0.0F, 1.0F, 0.0F}});
-                    auto const placed =
-                            text_placement.update(*active_scene(), *renderer, *debug_renderer,
-                                                  {.origin = camera.position(), .direction = direction},
-                                                  camera_forward, clicked);
+                    auto const placed = text_placement.update(
+                            *active_scene(), *renderer, *debug_renderer,
+                            {.origin = camera.position(),
+                             .direction = direction,
+                             .camera_forward = glm::normalize(glm::vec3{to_world * glm::vec4{0.0F, 0.0F, 1.0F, 0.0F}}),
+                             .projector = {.view = camera.view(),
+                                           .focal = {projection[0][0], projection[1][1]},
+                                           .origin = {viewport_screen_pos.x, viewport_screen_pos.y},
+                                           .size = {viewport_content_size.x, viewport_content_size.y}},
+                             .cursor = {mouse.x, mouse.y},
+                             .click = clicked,
+                             .bypass_snap = ImGui::GetIO().KeyAlt});
 
                     if (placed != entt::null) {
                         selection.select(placed);
@@ -986,7 +993,11 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     settings.text = buffer.data();
                 }
                 ImGui::DragFloat("Size##placement", &settings.size, 0.01F, 0.05F, 10.0F);
-                ImGui::TextDisabled("Click a model to place it. Esc to stop.");
+                ImGui::Checkbox("Snap to vertices, edges and centres", &settings.snap_to_geometry);
+                if (settings.snap_to_geometry) {
+                    ImGui::DragFloat("Snap radius (px)", &settings.snap_radius, 0.5F, 4.0F, 64.0F);
+                }
+                ImGui::TextDisabled("Click a model to place it. Hold Alt to skip snapping. Esc to stop.");
             }
         }
 

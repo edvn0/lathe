@@ -1,5 +1,8 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
+#include <optional>
 #include <string>
 
 #include <entt/entt.hpp>
@@ -31,6 +34,31 @@ namespace text_placement {
     // `parent_world` (the identity for an entity with no parent).
     [[nodiscard]] auto local_transform(glm::mat4 const &parent_world, Frame const &frame) -> Components::Transform;
 
+    enum class SnapKind : std::uint8_t { vertex, edge_midpoint, face_centre };
+
+    struct Snap {
+        glm::vec3 position{0.0F};
+        SnapKind kind = SnapKind::face_centre;
+    };
+
+    // Maps a world point to a pixel, as the editor camera draws it (left-handed, +z forward, y up on screen).
+    struct ScreenProjector {
+        glm::mat4 view{1.0F};
+        // The projection's focal terms: projection[0][0] and projection[1][1].
+        glm::vec2 focal{1.0F};
+        glm::vec2 origin{0.0F};
+        glm::vec2 size{1.0F};
+
+        // Nothing for a point behind the camera.
+        [[nodiscard]] auto project(glm::vec3 const &world) const -> std::optional<glm::vec2>;
+    };
+
+    // The vertex, edge midpoint or face centre of `triangle` nearest `cursor` in pixels, when one is within `radius`
+    // pixels. A vertex beats an edge midpoint and an edge midpoint beats the centre when they are both in reach, so the
+    // finer targets stay reachable on a coarse triangle.
+    [[nodiscard]] auto snap_to_triangle(std::array<glm::vec3, 3> const &triangle, ScreenProjector const &projector,
+                                        glm::vec2 const &cursor, float radius) -> std::optional<Snap>;
+
 }
 
 // The editor's tool for placing text on the surface under the mouse. While it is active, hovering a model previews the
@@ -41,12 +69,22 @@ public:
         std::string text = "Text";
         float size = 0.5F;
         float lift = 0.01F;
+        // Snap to the hit triangle's vertices, edge midpoints and centre when the cursor is this close, in pixels.
+        bool snap_to_geometry = true;
+        float snap_radius = 16.0F;
     };
 
-    struct Ray {
+    // What the tool needs to know about the mouse and camera this frame.
+    struct Pointer {
+        // The ray under the mouse; the direction is unit.
         glm::vec3 origin{0.0F};
-        // Unit.
         glm::vec3 direction{0.0F, 0.0F, 1.0F};
+        glm::vec3 camera_forward{0.0F, 0.0F, 1.0F};
+        text_placement::ScreenProjector projector;
+        glm::vec2 cursor{0.0F};
+        bool click = false;
+        // Held to place without snapping.
+        bool bypass_snap = false;
     };
 
     Settings settings;
@@ -54,10 +92,9 @@ public:
     [[nodiscard]] auto active() const noexcept -> bool { return active_; }
     auto set_active(bool active) noexcept -> void { active_ = active; }
 
-    // Previews the placement under `ray` and, when `click` is set, places the text. Returns the new entity, if one.
-    // `camera_forward` orients text on floors and ceilings.
-    auto update(Scene &scene, Renderer &renderer, debug_draw::DebugRenderer &lines, Ray const &ray,
-                glm::vec3 const &camera_forward, bool click) -> entt::entity;
+    // Previews the placement under the pointer and, when it clicked, places the text. Returns the new entity, if one.
+    auto update(Scene &scene, Renderer &renderer, debug_draw::DebugRenderer &lines, Pointer const &pointer)
+            -> entt::entity;
 
 private:
     bool active_ = false;
