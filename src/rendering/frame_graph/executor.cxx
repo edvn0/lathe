@@ -144,6 +144,9 @@ namespace frame_graph {
                 }
                 auto storage = translate(desc, info.resources);
                 if (!storage) {
+                    if (info.debug_labels) {
+                        vkCmdEndDebugUtilsLabelEXT(command_buffer);
+                    }
                     return std::unexpected(ExecuteError{describe(storage.error(), info.graph)});
                 }
                 rendering = std::move(*storage);

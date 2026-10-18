@@ -97,9 +97,17 @@ namespace {
 
         VkPhysicalDeviceMemoryProperties const *properties = nullptr;
         vmaGetMemoryProperties(allocator, &properties);
-        warn("Shader-read buffer '{}' ({} bytes) is not device-local: memory type {} (heap {}, flags {:#x})",
-             create_info.debug_name, create_info.size, allocation_info.memoryType,
-             properties->memoryTypes[allocation_info.memoryType].heapIndex, flags);
+        // A device-mode buffer that missed VRAM means the heap is full and VMA fell back: worth a warning. Buffers that
+        // are host-written on purpose (upload) land in host memory by design and only get a debug line.
+        if (create_info.memory == BufferMemory::device) {
+            warn("Shader-read buffer '{}' ({} bytes) fell back to host memory: memory type {} (heap {}, flags {:#x})",
+                 create_info.debug_name, create_info.size, allocation_info.memoryType,
+                 properties->memoryTypes[allocation_info.memoryType].heapIndex, flags);
+        } else {
+            debug("Shader-read buffer '{}' ({} bytes) is in host memory: memory type {} (heap {}, flags {:#x})",
+                  create_info.debug_name, create_info.size, allocation_info.memoryType,
+                  properties->memoryTypes[allocation_info.memoryType].heapIndex, flags);
+        }
     }
 
     [[nodiscard]]

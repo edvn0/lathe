@@ -1624,6 +1624,7 @@ private:
     bool async_gtao_auto_on_ = false;
     float async_gtao_frame_ms_ = 0.0F;
     std::uint64_t async_gtao_seen_serial_ = 0;
+    std::uint32_t async_gtao_frames_seen_ = 0;
     std::uint32_t async_gtao_hold_frames_ = 0;
     std::uint64_t logged_plan_misses_ = 0;
     std::uint64_t logged_transient_bytes_ = 0;

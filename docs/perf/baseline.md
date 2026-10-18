@@ -89,3 +89,21 @@ Validation: a Debug build with `VK_LAYER_KHRONOS_validation` and sync validation
 - `rt_poc` reads the lit HDR image, so it cannot overlap the lit pass; the graphics queue idles around it.
 - The brief's rt-poc target (<= 1.6 ms) was stated for a 1533x1015 render at base clocks; these runs are 2560x1440 at 2610
   MHz and are not comparable to it.
+
+### Corrections after independent verification (docs/perf/results.md)
+
+- The "+-0.01 ms" spread holds for every default-configuration run but not for the original behaviour on shadowcity
+  (`--bench-pipeline-stats`), which spread by 0.70 ms across 3 runs: the statistics query makes that frame slow and uneven.
+- The first version of the automatic async-GTAO switch averaged frame time from the very first frame, so shader
+  compilation and first-use allocations switched it on for light scenes: meshlets came out 0.015 ms (1.6%) slower than
+  `--async-passes=none`. It now ignores the first 90 frames. Re-measured (3 runs, medians): meshlets 0.960 vs 0.959 ms,
+  lights 2.012 vs 2.017, gallery 0.945 vs 0.946, materials 1.800 vs 1.799, shadowcity 3.785 vs 3.992 (none), rt-poc 2.455
+  vs 2.514 (none).
+- The `shadow_city@24` p99 and p99.9 improvements were measured by the author (two interleaved repeats each) and not
+  repeated by the verifier.
+- The brief's async-overlap targets (Nsight timeline) were not checked: no Nsight capture was taken. Per-pass start times
+  show GTAO on the compute queue overlapping `shadow_pass` in shadowcity.
+- The placement warning now fires only for device-mode buffers that fell back to host memory; intentional host buffers
+  get a debug line.
+- The branch history was reorganised after verification: the user's unrelated ray-query and editor work is its own commit
+  below the perf commits, and every commit builds on its own.

@@ -115,11 +115,20 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
         constexpr auto turn_off_ms = 1.9F;
         constexpr auto smoothing = 0.03F;
         constexpr auto hold_frames = std::uint32_t{240};
+        // The first frames pay for shader compilation, streaming and first-use allocations; judging the scene by them
+        // switched async GTAO on for light scenes.
+        constexpr auto startup_frames = std::uint32_t{90};
         async_gtao_seen_serial_ = last_frame_timings_.frame_serial;
-        async_gtao_frame_ms_ = async_gtao_frame_ms_ == 0.0F ? last_frame_timings_.full_frame_ms
-                                                          : async_gtao_frame_ms_ + smoothing * (last_frame_timings_.full_frame_ms -
-                                                                                                async_gtao_frame_ms_);
-        if (async_gtao_hold_frames_ != 0) {
+        if (async_gtao_frames_seen_ < startup_frames) {
+            ++async_gtao_frames_seen_;
+        } else if (async_gtao_frame_ms_ == 0.0F) {
+            async_gtao_frame_ms_ = last_frame_timings_.full_frame_ms;
+        } else {
+            async_gtao_frame_ms_ += smoothing * (last_frame_timings_.full_frame_ms - async_gtao_frame_ms_);
+        }
+        if (async_gtao_frames_seen_ < startup_frames) {
+            // still warming up
+        } else if (async_gtao_hold_frames_ != 0) {
             --async_gtao_hold_frames_;
         } else if (!async_gtao_auto_on_ && async_gtao_frame_ms_ > turn_on_ms) {
             async_gtao_auto_on_ = true;
