@@ -107,6 +107,38 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     pass_profiler_.begin_slot(info.frame_index);
     last_frame_timings_.passes.assign(pass_profiler_.timings().begin(), pass_profiler_.timings().end());
 
+    if (last_frame_timings_.valid && last_frame_timings_.frame_serial != async_gtao_seen_serial_) {
+        // Measured with whichever mode is on, so the thresholds sit apart by more than async GTAO saves: it turns on above
+        // ~2.4 ms, and only turns off again once the frame is under ~1.9 ms with it on. Changing mode recompiles the
+        // plan, hence the hold.
+        constexpr auto turn_on_ms = 2.4F;
+        constexpr auto turn_off_ms = 1.9F;
+        constexpr auto smoothing = 0.03F;
+        constexpr auto hold_frames = std::uint32_t{240};
+        // The first frames pay for shader compilation, streaming and first-use allocations; judging the scene by them
+        // switched async GTAO on for light scenes.
+        constexpr auto startup_frames = std::uint32_t{90};
+        async_gtao_seen_serial_ = last_frame_timings_.frame_serial;
+        if (async_gtao_frames_seen_ < startup_frames) {
+            ++async_gtao_frames_seen_;
+        } else if (async_gtao_frame_ms_ == 0.0F) {
+            async_gtao_frame_ms_ = last_frame_timings_.full_frame_ms;
+        } else {
+            async_gtao_frame_ms_ += smoothing * (last_frame_timings_.full_frame_ms - async_gtao_frame_ms_);
+        }
+        if (async_gtao_frames_seen_ < startup_frames) {
+            // still warming up
+        } else if (async_gtao_hold_frames_ != 0) {
+            --async_gtao_hold_frames_;
+        } else if (!async_gtao_auto_on_ && async_gtao_frame_ms_ > turn_on_ms) {
+            async_gtao_auto_on_ = true;
+            async_gtao_hold_frames_ = hold_frames;
+        } else if (async_gtao_auto_on_ && async_gtao_frame_ms_ < turn_off_ms) {
+            async_gtao_auto_on_ = false;
+            async_gtao_hold_frames_ = hold_frames;
+        }
+    }
+
     screenshot_->try_resolve(info.frame_index);
 
     auto &frame = frames_[info.frame_index];
@@ -161,7 +193,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     auto const environment_pending = environment_.has_pending_record();
 
     auto const async_occlusion_enabled = (async_candidates_ & async_occlusion) != 0;
-    auto const async_gtao_enabled = (async_candidates_ & async_gtao) != 0;
+    auto const async_gtao_enabled = (async_candidates_ & async_gtao) != 0 && async_gtao_active();
     auto const async_light_enabled = (async_candidates_ & async_light_clustering) != 0;
 
     auto hdr_image = frame_graph::ImageId{};
@@ -189,12 +221,16 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
 
     // Sampled whenever any light has a tile; drawn only for the tiles that were not still valid from before.
     auto const local_shadows_active = frame.local_shadow_tile_count != 0;
-    auto const local_shadows_rendered = !frame.local_shadow_render_tiles.empty();
     auto local_shadow_image = frame_graph::ImageId{};
     auto local_shadow_survivors = frame_graph::BufferId{};
     auto local_shadow_counts = frame_graph::BufferId{};
     auto local_shadow_indirect = frame_graph::BufferId{};
-    auto const local_shadows_culled = local_shadows_rendered && frame.local_shadow_culled;
+    // The local shadow passes are declared every frame the feature is on, and do nothing on frames with no tile to
+    // redraw. Declaring them only when tiles are dirty flipped the graph between two shapes frame to frame, which
+    // recompiled the plan and reallocated every transient on each flip. The cull passes join once their buffers exist.
+    auto const local_shadows_culled = local_shadows_active && frame.local_shadow_survivors_buffer.valid() &&
+                                      frame.local_shadow_counts_buffer.valid() &&
+                                      frame.local_shadow_indirect_buffer.valid();
     if (local_shadows_active) {
         local_shadow_image = frame_graph_.import_image({
                 .entry = local_shadow_atlas_initialized_ ? sampled_by_fragment : frame_graph::ResourceState{},
@@ -662,7 +698,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
     }
 
     auto const declare_local_shadows = [&] {
-        if (!local_shadows_rendered) {
+        if (!local_shadows_active) {
             return;
         }
 
@@ -720,10 +756,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                 pass.read(local_shadow_indirect, frame_graph::Use::indirect_read);
                         [[maybe_unused]] auto const survivors =
                                 pass.read(local_shadow_survivors, frame_graph::Use::shader_read, draw_stages);
-                    } else {
-                        [[maybe_unused]] auto const commands =
-                                pass.read(source_indirect, frame_graph::Use::indirect_read);
                     }
+                    // The uncullable fallback draws straight from the source commands.
+                    [[maybe_unused]] auto const commands = pass.read(source_indirect, frame_graph::Use::indirect_read);
                     read_skinned_vertices(pass, draw_stages);
 
                     // Tiles that are not redrawn keep what they held, so the atlas is loaded rather than discarded.
@@ -1533,6 +1568,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .tracy_contexts = {graphics_tracy, compute_tracy},
             .prologue = info.command_buffer,
             .frame_index = info.frame_index,
+            .debug_labels = context_.debug_utils_enabled,
     });
     if (!batches) {
         error("Could not record the frame graph: {}", batches.error().message);

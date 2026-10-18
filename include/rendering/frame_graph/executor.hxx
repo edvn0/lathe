@@ -42,6 +42,8 @@ namespace frame_graph {
         VkCommandBuffer prologue = VK_NULL_HANDLE;
 
         std::uint32_t frame_index = 0;
+
+        bool debug_labels = false;
     };
 
     [[nodiscard]] auto record(ExecuteInfo const &info) -> std::expected<std::vector<SubmitBatch>, ExecuteError>;

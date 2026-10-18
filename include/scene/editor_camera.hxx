@@ -34,6 +34,13 @@ public:
 
     auto set_sprinting(bool sprinting) noexcept -> void;
 
+    // Turns the view around `pivot`, keeping the distance to it.
+    auto orbit(float delta_x, float delta_y, glm::vec3 const &pivot) noexcept -> void;
+    // Slides the camera in its own right/up plane; `reference_distance` scales pixels to world units.
+    auto pan(float delta_x, float delta_y, float reference_distance) noexcept -> void;
+    // Moves along the view direction; positive is forward.
+    auto dolly(float distance) noexcept -> void { position_ += forward_ * distance; }
+
     auto update(float delta_time_seconds) noexcept -> void;
 
     [[nodiscard]] auto view() const noexcept -> glm::mat4;

@@ -83,7 +83,10 @@ struct Application : Runtime {
         std::string id;
         std::string label;
         ScrollingBuffer buffer;
+        float smoothed = 0.0F;
+        bool primed = false;
     };
+    static constexpr float timing_smoothing = 0.08F;
     std::vector<TimingSeries> timing_series;
 
     auto add_pass_timings(std::span<frame_graph::PassTiming const> passes) -> void;
@@ -91,6 +94,13 @@ struct Application : Runtime {
     float timing_x = 0.0F;
 
     EditorCamera camera;
+
+    enum class CameraDrag : std::uint8_t { none, orbit, pan };
+    CameraDrag camera_drag = CameraDrag::none;
+    float camera_pivot_distance = 10.0F;
+
+    [[nodiscard]] auto camera_pivot() const -> glm::vec3;
+    auto focus_selection() -> void;
 
     entt::entity model_browse_entity = entt::null;
 
@@ -169,6 +179,11 @@ struct Application : Runtime {
     auto on_files_dropped(std::span<std::filesystem::path const> paths) -> void override;
 
     auto draw_scene_file_ui() -> void;
+
+    std::string game_choice;
+    std::optional<std::string> pending_game_switch;
+    bool game_switch_popup_requested = false;
+    auto request_switch_game(std::string name) -> void;
 
     // Packaging (package_ui.cxx): the editor cooks the scene, then GamePackageJob builds the game on a worker thread
     // while a modal progress popup dims the editor and update() stops stepping the simulation.

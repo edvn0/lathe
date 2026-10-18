@@ -78,6 +78,38 @@ namespace {
         return create_info;
     }
 
+    // Shader-read buffers that miss device-local memory make every shader load cross PCIe, so say where they landed.
+    // ReBAR placements (device-local and host-visible) are fine and stay quiet.
+    [[maybe_unused]] auto log_shader_read_placement(VmaAllocator allocator, BufferCreateInfo const &create_info,
+                                   VmaAllocationInfo const &allocation_info) -> void {
+        constexpr VkBufferUsageFlags shader_read_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        if ((create_info.usage & shader_read_usage) == 0 || create_info.memory == BufferMemory::readback) {
+            return;
+        }
+
+        VkMemoryPropertyFlags flags = 0;
+        vmaGetMemoryTypeProperties(allocator, allocation_info.memoryType, &flags);
+        if ((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
+            return;
+        }
+
+        VkPhysicalDeviceMemoryProperties const *properties = nullptr;
+        vmaGetMemoryProperties(allocator, &properties);
+        // A device-mode buffer that missed VRAM means the heap is full and VMA fell back: worth a warning. Buffers that
+        // are host-written on purpose (upload) land in host memory by design and only get a debug line.
+        if (create_info.memory == BufferMemory::device) {
+            warn("Shader-read buffer '{}' ({} bytes) fell back to host memory: memory type {} (heap {}, flags {:#x})",
+                 create_info.debug_name, create_info.size, allocation_info.memoryType,
+                 properties->memoryTypes[allocation_info.memoryType].heapIndex, flags);
+        } else {
+            debug("Shader-read buffer '{}' ({} bytes) is in host memory: memory type {} (heap {}, flags {:#x})",
+                  create_info.debug_name, create_info.size, allocation_info.memoryType,
+                  properties->memoryTypes[allocation_info.memoryType].heapIndex, flags);
+        }
+    }
+
     [[nodiscard]]
     auto make_buffer_error(std::string_view message, VkResult result) -> DeviceError {
 
@@ -287,6 +319,10 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
         return std::unexpected{make_buffer_error("VMA returned an unmapped host-visible buffer allocation",
                                                  VK_ERROR_MEMORY_MAP_FAILED)};
     }
+
+#ifndef NDEBUG
+    log_shader_read_placement(ctx.allocator, create_info, result.allocation_info);
+#endif
 
     assert(!create_info.debug_name.empty() && "Creating a buffer requires a name");
 

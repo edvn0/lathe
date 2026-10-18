@@ -160,6 +160,68 @@ TEST_SUITE("unit") {
         }
     }
 
+    TEST_CASE("a wait a queue has already made is not made again") {
+        constexpr auto fragment = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        constexpr auto task = VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT;
+
+        auto const wait_for = [](std::uint32_t signal_index, VkPipelineStageFlags2 stages) {
+            return std::array{SemaphoreWait{.queue = LogicalQueue::compute, .signal_index = signal_index, .stages = stages}};
+        };
+
+        SUBCASE("the same value for the same stages is dropped") {
+            auto const first = wait_for(0, fragment);
+            auto const second = wait_for(0, fragment);
+            auto const batches = std::array{compute_batch(0), graphics_batch(0, first), graphics_batch(1, second)};
+            auto const plan = plan_submissions(batches, no_values, separate_timelines);
+            REQUIRE(plan.has_value());
+            CHECK(plan->submits[1].waits.size() == 1);
+            CHECK(plan->submits[2].waits.empty());
+        }
+        SUBCASE("a lower value is covered by an earlier higher one") {
+            auto const first = wait_for(1, fragment);
+            auto const second = wait_for(0, fragment);
+            auto const batches = std::array{compute_batch(0), compute_batch(1), graphics_batch(0, first),
+                                            graphics_batch(1, second)};
+            auto const plan = plan_submissions(batches, no_values, separate_timelines);
+            REQUIRE(plan.has_value());
+            CHECK(plan->submits[3].waits.empty());
+        }
+        SUBCASE("a higher value is still waited for") {
+            auto const first = wait_for(0, fragment);
+            auto const second = wait_for(1, fragment);
+            auto const batches = std::array{compute_batch(0), compute_batch(1), graphics_batch(0, first),
+                                            graphics_batch(1, second)};
+            auto const plan = plan_submissions(batches, no_values, separate_timelines);
+            REQUIRE(plan.has_value());
+            REQUIRE(plan->submits[3].waits.size() == 1);
+            CHECK(plan->submits[3].waits.front().value == 2);
+        }
+        SUBCASE("stages the earlier wait did not cover are still waited for") {
+            auto const first = wait_for(0, fragment);
+            auto const second = wait_for(0, task);
+            auto const batches = std::array{compute_batch(0), graphics_batch(0, first), graphics_batch(1, second)};
+            auto const plan = plan_submissions(batches, no_values, separate_timelines);
+            REQUIRE(plan.has_value());
+            CHECK(plan->submits[2].waits.size() == 1);
+        }
+        SUBCASE("an earlier wait on all commands covers any stages") {
+            auto const first = wait_for(0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+            auto const second = wait_for(0, task);
+            auto const batches = std::array{compute_batch(0), graphics_batch(0, first), graphics_batch(1, second)};
+            auto const plan = plan_submissions(batches, no_values, separate_timelines);
+            REQUIRE(plan.has_value());
+            CHECK(plan->submits[2].waits.empty());
+        }
+        SUBCASE("each queue keeps its own record") {
+            auto const first = wait_for(0, fragment);
+            auto const compute_waits = std::array{SemaphoreWait{.queue = LogicalQueue::graphics, .signal_index = 0, .stages = fragment}};
+            auto const more = std::array{compute_batch(0), graphics_batch(0, first), compute_batch(1, compute_waits)};
+            auto const plan = plan_submissions(more, no_values, separate_timelines);
+            REQUIRE(plan.has_value());
+            CHECK(plan->submits[2].waits.size() == 1);
+        }
+    }
+
     TEST_CASE("an empty frame plans nothing and leaves the timelines alone") {
         auto const plan = plan_submissions({}, {3, 2}, separate_timelines);
         REQUIRE(plan.has_value());

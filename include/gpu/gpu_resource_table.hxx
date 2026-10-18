@@ -23,6 +23,8 @@ enum class GpuResourceBinding : std::uint8_t {
     sampled_2d_depth = 3,
     storage_2d = 4,
     sampled_cube = 5,
+    // One VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; only in the layout when VulkanContext::ray_query_supported.
+    acceleration_structure = 6,
 };
 
 enum class GpuResourceTableErrorType : std::uint8_t {
@@ -92,6 +94,10 @@ public:
     [[nodiscard]]
     auto prepare_frame(std::uint32_t frame_index, ImageStorage const &images, SamplerStorage const &samplers)
             -> std::expected<void, GpuResourceTableError>;
+
+    // Points the acceleration_structure binding of every frame's set at `structure`. The binding is not updated after
+    // bind, so call it before the first frame that uses the table; a no-op without ray query support.
+    auto set_acceleration_structure(VkAccelerationStructureKHR structure) noexcept -> void;
 
     auto bind(VkCommandBuffer command_buffer, std::uint32_t frame_index, VkPipelineBindPoint bind_point,
               VkPipelineLayout pipeline_layout) const noexcept -> void;

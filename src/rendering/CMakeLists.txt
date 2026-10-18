@@ -37,6 +37,7 @@ add_library(
         overlay_shader.cxx
         particle_system.cxx
         pipeline_graph_repository.cxx
+        ray_tracing_poc.cxx
         renderer.cxx
         renderer_frame_graph.cxx
         rendering_error_describe.cxx

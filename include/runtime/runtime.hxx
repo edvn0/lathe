@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <string_view>
 #include <memory>
 #include <optional>
 #include <span>
@@ -19,6 +21,7 @@
 #include "rendering/frame_graph/pass_profiler.hxx"
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/particle_system.hxx"
+#include "rendering/ray_tracing_poc.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/text_renderer.hxx"
@@ -84,6 +87,15 @@ struct Runtime {
     auto open_scene(std::filesystem::path path) -> void;
     auto update_scene_load() -> void;
 
+    // Replaces the running game with the named one (see game_names()): stops play, rebuilds the source scene from the
+    // new game's on_populate and recreates terrain. Runs on the render thread.
+    auto switch_game(std::string name) -> void;
+
+    // What switch_game can load; set by run_engine from the executable's game_names()/create_game().
+    std::function<std::unique_ptr<IGame>(std::string_view)> game_factory;
+    std::span<std::string_view const> available_games;
+    auto create_terrain() -> void;
+
     auto capture_mouse() -> void;
     auto release_mouse() -> void;
 
@@ -96,6 +108,13 @@ struct Runtime {
     float last_delta_time = 0.0F;
     ParticleSystem particle_system;
     EffectSystem effect_system;
+
+    // The ray query proof of concept (docs/ray-tracing.md). Off unless run_engine was given --rt-poc.
+    RayTracingPoc ray_tracing_poc;
+    bool ray_tracing_poc_enabled = false;
+    // The camera of the frame being recorded, for passes that need its matrices. Set by run_engine every frame.
+    glm::mat4 frame_view{1.0F};
+    glm::mat4 frame_projection{1.0F};
 
     [[nodiscard]] auto active_terrain() const noexcept -> TerrainWorld * {
         return terrain_enabled ? terrain.get() : nullptr;

@@ -306,6 +306,14 @@ auto Runtime::on_startup() -> void {
 
         effect_system.create(renderer->game_gpu());
 
+        if (ray_tracing_poc_enabled) {
+            if (!context.ray_query_supported) {
+                warn("--rt-poc needs VK_KHR_ray_query, which this device does not support");
+            } else if (auto const created = ray_tracing_poc.create(*renderer); !created) {
+                warn("Could not set up the ray tracing PoC: {}", describe(created.error()));
+            }
+        }
+
         particle_system.set_text_source(text_renderer.get());
 
         if (auto const created = text_renderer->create(*renderer, renderer->game_gpu()); !created) {
@@ -318,6 +326,7 @@ auto Runtime::on_startup() -> void {
             if (auto const *scene = active_scene(); scene != nullptr) {
                 particle_system.declare(graph, scene->get_registry(), &renderer->material_storage(), last_delta_time);
             }
+            ray_tracing_poc.declare(graph, frame_view, frame_projection, renderer->directional_light().direction);
             if (game && game_hooks_enabled) {
                 effect_system.declare(graph);
                 game->on_frame_graph(graph, last_delta_time);
@@ -327,22 +336,82 @@ auto Runtime::on_startup() -> void {
         game->on_populate(*source_scene, *renderer, engine_models);
         on_source_scene_replaced();
 
-        if (auto terrain_info = game->terrain_create_info(*renderer)) {
-            renderer->context().one_time_submit([this, info = *terrain_info](VkCommandBuffer command_buffer) {
-                auto world = TerrainWorld::create(*renderer, command_buffer, info);
+        create_terrain();
+    });
+}
 
-                if (!world) {
-                    error("Fatal: could not create TerrainWorld: {}", world.error().message);
+auto Runtime::create_terrain() -> void {
+    auto terrain_info = game->terrain_create_info(*renderer);
 
-                    context.running.store(false, std::memory_order_release);
-                    glfwPostEmptyEvent();
+    if (!terrain_info) {
+        return;
+    }
 
-                    return;
-                }
+    renderer->context().one_time_submit([this, info = *terrain_info](VkCommandBuffer command_buffer) {
+        auto world = TerrainWorld::create(*renderer, command_buffer, info);
 
-                terrain = std::make_unique<TerrainWorld>(std::move(*world));
-            });
+        if (!world) {
+            error("Fatal: could not create TerrainWorld: {}", world.error().message);
+
+            context.running.store(false, std::memory_order_release);
+            glfwPostEmptyEvent();
+
+            return;
         }
+
+        terrain = std::make_unique<TerrainWorld>(std::move(*world));
+    });
+}
+
+auto Runtime::switch_game(std::string name) -> void {
+    renderer->queue_render_thread_event([this, name = std::move(name)] {
+        if (scene_load_job.has_value()) {
+            scene_status = "A scene is opening; wait for it to finish before loading a game.";
+            return;
+        }
+
+        auto next = game_factory ? game_factory(name) : nullptr;
+
+        if (next == nullptr) {
+            scene_status = std::format("Unknown game '{}'.", name);
+            return;
+        }
+
+        if (is_playing) {
+            stop();
+        }
+
+        on_scene_opening();
+
+        if (auto const idle = renderer->wait_idle(); !idle.has_value()) {
+            warn("{}", describe(idle.error()));
+        }
+
+        if (terrain) {
+            terrain->wait_all();
+            terrain.reset();
+        }
+
+        // The old game's finalizers release effects through effect_system, so it goes before anything new binds.
+        game.reset();
+        game = std::move(next);
+        game_name = name;
+
+        game->attach_host(GameHost{
+                .player_mode = player_mode,
+                .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
+                .script_entry = script_entry,
+                .effects = &effect_system,
+                .text = text_renderer.get(),
+        });
+
+        scene_path.clear();
+        scene_pack.reset();
+        game->on_populate(*source_scene, *renderer, engine_models);
+        on_source_scene_replaced();
+        create_terrain();
+
+        scene_status = std::format("Loaded game '{}'.", name);
     });
 }
 

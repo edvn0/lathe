@@ -44,7 +44,7 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     table.sampler_capacity_ = create_info.sampler_capacity;
     table.debug_name_ = FlyString{create_info.debug_name};
 
-    std::array<VkDescriptorSetLayoutBinding, 6> bindings{
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings{
             VkDescriptorSetLayoutBinding{
                     .binding = binding_index(GpuResourceBinding::sampled_2d),
                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
@@ -89,13 +89,21 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
                     .stageFlags = VK_SHADER_STAGE_ALL,
                     .pImmutableSamplers = nullptr,
             },
+            VkDescriptorSetLayoutBinding{
+                    .binding = binding_index(GpuResourceBinding::acceleration_structure),
+                    .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_ALL,
+                    .pImmutableSamplers = nullptr,
+            },
     };
+    auto const ray_query = context.ray_query_supported;
 
     VkDescriptorSetLayoutCreateInfo const layout_info{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
-            .bindingCount = static_cast<std::uint32_t>(bindings.size()),
+            .bindingCount = static_cast<std::uint32_t>(ray_query ? bindings.size() : bindings.size() - 1),
             .pBindings = bindings.data(),
     };
 
@@ -110,7 +118,7 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
 
     auto const frame_count = create_info.frames_in_flight;
 
-    std::array<VkDescriptorPoolSize, 3> pool_sizes{
+    std::array<VkDescriptorPoolSize, 4> pool_sizes{
             VkDescriptorPoolSize{
                     .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                     .descriptorCount = table.image_capacity_ * 4 * frame_count,
@@ -123,6 +131,10 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
                     .type = VK_DESCRIPTOR_TYPE_SAMPLER,
                     .descriptorCount = table.sampler_capacity_ * 2 * frame_count,
             },
+            VkDescriptorPoolSize{
+                    .type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                    .descriptorCount = frame_count,
+            },
     };
 
     VkDescriptorPoolCreateInfo const pool_info{
@@ -130,7 +142,7 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
             .pNext = nullptr,
             .flags = 0,
             .maxSets = frame_count,
-            .poolSizeCount = static_cast<std::uint32_t>(pool_sizes.size()),
+            .poolSizeCount = static_cast<std::uint32_t>(ray_query ? pool_sizes.size() : pool_sizes.size() - 1),
             .pPoolSizes = pool_sizes.data(),
     };
 
@@ -175,6 +187,32 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     }
 
     return table;
+}
+
+auto GpuResourceTable::set_acceleration_structure(VkAccelerationStructureKHR structure) noexcept -> void {
+    if (context_ == nullptr || !context_->ray_query_supported) {
+        return;
+    }
+
+    VkWriteDescriptorSetAccelerationStructureKHR const acceleration{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+            .pNext = nullptr,
+            .accelerationStructureCount = 1,
+            .pAccelerationStructures = &structure,
+    };
+
+    for (auto const &frame: frames_) {
+        VkWriteDescriptorSet const write{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = &acceleration,
+                .dstSet = frame.descriptor_set,
+                .dstBinding = binding_index(GpuResourceBinding::acceleration_structure),
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+        };
+        vkUpdateDescriptorSets(context_->device, 1, &write, 0, nullptr);
+    }
 }
 
 auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage const &images,

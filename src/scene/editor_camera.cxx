@@ -92,6 +92,24 @@ auto EditorCamera::on_mouse_moved(float delta_x, float delta_y, bool dragging) n
     rebuild_basis();
 }
 
+auto EditorCamera::orbit(float delta_x, float delta_y, glm::vec3 const &pivot) noexcept -> void {
+    auto const distance = glm::length(pivot - position_);
+
+    yaw_degrees_ -= delta_x * look_sensitivity_;
+    pitch_degrees_ =
+            std::clamp(pitch_degrees_ - (delta_y * look_sensitivity_), -pitch_limit_degrees, pitch_limit_degrees);
+
+    rebuild_basis();
+    position_ = pivot - (forward_ * distance);
+}
+
+auto EditorCamera::pan(float delta_x, float delta_y, float reference_distance) noexcept -> void {
+    auto const world_per_pixel =
+            2.0F * reference_distance * std::tan(glm::radians(field_of_view_degrees_) * 0.5F) / 1000.0F;
+
+    position_ += ((up_ * delta_y) - (right_ * delta_x)) * world_per_pixel;
+}
+
 auto EditorCamera::on_mouse_scrolled(float delta_y) noexcept -> void {
     move_speed_ = std::clamp(move_speed_ * (1.0F + delta_y * 0.1F), min_move_speed_, max_move_speed_);
 }
