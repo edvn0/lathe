@@ -745,6 +745,30 @@ namespace {
 
         context.mesh_shader_queries_supported = mesh_shader_query_features.meshShaderQueries == VK_TRUE;
 
+        VkPhysicalDeviceRayQueryFeaturesKHR ray_query_features{};
+        ray_query_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features{};
+        acceleration_structure_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+        acceleration_structure_features.pNext = &ray_query_features;
+
+        VkPhysicalDeviceFeatures2 ray_query_query{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                .pNext = &acceleration_structure_features,
+                .features = {},
+        };
+
+        vkGetPhysicalDeviceFeatures2(context.physical_device, &ray_query_query);
+
+        context.ray_query_supported =
+                ray_query_features.rayQuery == VK_TRUE &&
+                acceleration_structure_features.accelerationStructure == VK_TRUE &&
+                supports_device_extension(context.physical_device, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+                supports_device_extension(context.physical_device, VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+                supports_device_extension(context.physical_device, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+
+        info("VK_KHR_ray_query support: {}", context.ray_query_supported ? "yes" : "no");
+
         VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve_properties{};
         depth_stencil_resolve_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES;
         depth_stencil_resolve_properties.pNext = nullptr;
@@ -815,6 +839,12 @@ namespace {
             device_extensions.push_back(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
         }
 
+        if (context.ray_query_supported) {
+            device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+            device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+            device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        }
+
         VkPhysicalDeviceVulkan11Features vulkan11_features{};
         vulkan11_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
         vulkan11_features.pNext = nullptr;
@@ -879,6 +909,22 @@ namespace {
         void const *feature_chain = context.shader_objects_supported
                                             ? static_cast<void const *>(&shader_object_features)
                                             : static_cast<void const *>(&mesh_shader_features);
+
+        // Ray query only: traversal runs inline in compute shaders, so there is no ray tracing pipeline feature (and
+        // no VkPipeline), which keeps every shader a shader object. See docs/ray-tracing.md.
+        VkPhysicalDeviceRayQueryFeaturesKHR ray_query_features{};
+        ray_query_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+        ray_query_features.pNext = const_cast<void *>(feature_chain);
+        ray_query_features.rayQuery = VK_TRUE;
+
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features{};
+        acceleration_structure_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+        acceleration_structure_features.pNext = &ray_query_features;
+        acceleration_structure_features.accelerationStructure = VK_TRUE;
+
+        if (context.ray_query_supported) {
+            feature_chain = &acceleration_structure_features;
+        }
 
         VkPhysicalDeviceFeatures enabled_features{};
         enabled_features.multiDrawIndirect = VK_TRUE;

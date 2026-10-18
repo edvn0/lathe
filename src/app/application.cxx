@@ -398,7 +398,11 @@ auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> pass
     for (auto &series: timing_series) {
         auto const found = std::ranges::find_if(
                 passes, [&](frame_graph::PassTiming const &pass) { return pass.name_id == series.id; });
-        running_total += found != passes.end() ? found->milliseconds.value_or(0.0F) : 0.0F;
+        auto const sample = found != passes.end() ? found->milliseconds.value_or(0.0F) : 0.0F;
+        // Smooth each pass before stacking, so one slow frame nudges the graph instead of spiking it.
+        series.smoothed = series.primed ? series.smoothed + (timing_smoothing * (sample - series.smoothed)) : sample;
+        series.primed = true;
+        running_total += series.smoothed;
         series.buffer.add_point(timing_x, running_total);
     }
 }
@@ -2667,6 +2671,32 @@ auto Application::editing_camera(float aspect_ratio) const -> CameraParams {
     };
 }
 
+auto Application::camera_pivot() const -> glm::vec3 {
+    auto const &registry = active_scene()->get_registry();
+    auto const selected = selection_context().primary();
+
+    if (selected != entt::null && registry.valid(selected) && registry.all_of<Components::Transform>(selected)) {
+        return registry.get<Components::Transform>(selected).position;
+    }
+
+    return camera.position() + (camera.forward() * camera_pivot_distance);
+}
+
+auto Application::focus_selection() -> void {
+    auto const &registry = active_scene()->get_registry();
+    auto const selected = selection_context().primary();
+
+    if (selected == entt::null || !registry.valid(selected) || !registry.all_of<Components::Transform>(selected)) {
+        return;
+    }
+
+    auto const &transform = registry.get<Components::Transform>(selected);
+    auto const extent = std::max({std::abs(transform.scale.x), std::abs(transform.scale.y), std::abs(transform.scale.z)});
+
+    camera_pivot_distance = std::max(3.0F, extent * 3.0F);
+    camera.look_at(transform.position - (camera.forward() * camera_pivot_distance), transform.position);
+}
+
 auto Application::pre_update(float delta_time) -> void { camera.update(std::min(delta_time, 0.1F)); }
 
 auto Application::update(float delta_time) -> void {
@@ -2734,6 +2764,11 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
                 case GLFW_KEY_4:
                     gizmo_mode = gizmo_mode == ImGuizmo::WORLD ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
                     break;
+                case GLFW_KEY_F:
+                    if (ev.modifiers == 0) {
+                        focus_selection();
+                    }
+                    break;
                 case GLFW_KEY_T:
                     text_placement.set_active(!text_placement.active());
                     break;
@@ -2761,7 +2796,16 @@ auto Application::on_event(KeyReleasedEvent ev) -> bool {
 
 auto Application::on_event(MouseMovedEvent ev) -> bool {
     if (!is_playing) {
-        camera.on_mouse_moved(static_cast<float>(ev.delta_x), static_cast<float>(ev.delta_y), mouse_dragging);
+        auto const dx = static_cast<float>(ev.delta_x);
+        auto const dy = static_cast<float>(ev.delta_y);
+
+        if (camera_drag == CameraDrag::orbit) {
+            camera.orbit(dx, dy, camera_pivot());
+        } else if (camera_drag == CameraDrag::pan) {
+            camera.pan(dx, dy, glm::length(camera_pivot() - camera.position()));
+        } else {
+            camera.on_mouse_moved(dx, dy, mouse_dragging);
+        }
     }
 
     return Runtime::on_event(ev);
@@ -2772,7 +2816,13 @@ auto Application::on_event(MouseScrolledEvent ev) -> bool {
         return true;
     }
 
-    camera.on_mouse_scrolled(static_cast<float>(ev.delta_y));
+    if (!is_playing && ImGui::GetIO().KeyCtrl) {
+        auto const distance = glm::length(camera_pivot() - camera.position());
+
+        camera.dolly(static_cast<float>(ev.delta_y) * std::max(distance, 1.0F) * 0.1F);
+    } else {
+        camera.on_mouse_scrolled(static_cast<float>(ev.delta_y));
+    }
 
     return Runtime::on_event(ev);
 }
@@ -2782,7 +2832,22 @@ auto Application::on_event(MouseButtonPressedEvent ev) -> bool {
         return true;
     }
 
+    if (!is_playing && ev.button == GLFW_MOUSE_BUTTON_LEFT && viewport_hovered && !ImGuizmo::IsOver() &&
+        !ImGuizmo::IsUsing()) {
+        if ((ev.modifiers & GLFW_MOD_ALT) != 0) {
+            camera_drag = CameraDrag::orbit;
+        } else if ((ev.modifiers & GLFW_MOD_CONTROL) != 0) {
+            camera_drag = CameraDrag::pan;
+        }
+    }
+
     return Runtime::on_event(ev);
 }
 
-auto Application::on_event(MouseButtonReleasedEvent ev) -> bool { return Runtime::on_event(ev); }
+auto Application::on_event(MouseButtonReleasedEvent ev) -> bool {
+    if (ev.button == GLFW_MOUSE_BUTTON_LEFT) {
+        camera_drag = CameraDrag::none;
+    }
+
+    return Runtime::on_event(ev);
+}

@@ -17,6 +17,7 @@ namespace {
 
     constexpr auto unsaved_changes_popup = "Unsaved changes";
     constexpr auto save_as_popup = "Save scene as";
+    constexpr auto game_switch_popup = "Load game";
     constexpr std::string_view default_scene_path = "scenes/untitled.lbf";
 
     [[nodiscard]] auto lowercase_extension(std::filesystem::path const &path) -> std::string {
@@ -70,6 +71,21 @@ auto Application::request_open_scene(std::filesystem::path path) -> void {
     }
 
     open_scene(std::move(path));
+}
+
+auto Application::request_switch_game(std::string name) -> void {
+    if (scene_load_job.has_value() || scene_save_job.has_value()) {
+        scene_status = "A scene is loading or saving; wait for it to finish.";
+        return;
+    }
+
+    if (source_scene_dirty()) {
+        pending_game_switch = std::move(name);
+        game_switch_popup_requested = true;
+        return;
+    }
+
+    switch_game(std::move(name));
 }
 
 auto Application::start_save_scene(std::filesystem::path path) -> void {
@@ -179,7 +195,27 @@ auto Application::draw_scene_file_ui() -> void {
         }
         ImGui::EndDisabled();
 
+        if (game_choice.empty()) {
+            game_choice = game_name;
+        }
+
         ImGui::BeginDisabled(busy || packaging_active());
+        ImGui::SetNextItemWidth(160.0F);
+        if (ImGui::BeginCombo("##game", game_choice.c_str())) {
+            for (auto const name: available_games) {
+                if (ImGui::Selectable(std::string{name}.c_str(), name == game_choice)) {
+                    game_choice = std::string{name};
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load Game")) {
+            request_switch_game(game_choice);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(current: %s)", game_name.c_str());
+
         if (ImGui::Button("Package Game...")) {
             request_package_dialog();
         }
@@ -253,6 +289,34 @@ auto Application::draw_scene_file_ui() -> void {
         ImGui::SameLine();
         if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
             close();
+        }
+
+        ImGui::EndPopup();
+    }
+
+    if (game_switch_popup_requested) {
+        ImGui::OpenPopup(game_switch_popup);
+        game_switch_popup_requested = false;
+    }
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2{0.5F, 0.5F});
+
+    if (ImGui::BeginPopupModal(game_switch_popup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("The scene has unsaved changes. Loading '%s' replaces it.",
+                    pending_game_switch.value_or("").c_str());
+
+        if (ImGui::Button("Discard changes and load")) {
+            if (pending_game_switch.has_value()) {
+                switch_game(std::move(*pending_game_switch));
+            }
+            pending_game_switch.reset();
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            pending_game_switch.reset();
+            ImGui::CloseCurrentPopup();
         }
 
         ImGui::EndPopup();

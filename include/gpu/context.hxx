@@ -39,6 +39,9 @@ struct VulkanContext {
 
     bool mesh_shader_queries_supported = false;
 
+    // VK_KHR_ray_query and VK_KHR_acceleration_structure are enabled (ray tracing from compute shaders, no pipeline).
+    bool ray_query_supported = false;
+
     bool depth_resolve_min_supported = false;
 
     // Sample counts usable for both colour and depth/stencil framebuffer attachments.

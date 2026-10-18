@@ -449,6 +449,9 @@ namespace {
         auto const active_camera = runtime.is_playing ? runtime.game->camera(*runtime.active_scene(), active_aspect)
                                                       : runtime.editing_camera(active_aspect);
 
+        runtime.frame_view = active_camera.view;
+        runtime.frame_projection = active_camera.projection;
+
         if (frame_ok) {
             {
                 auto const ui = clock.scope(CpuPhase::ui);
@@ -738,6 +741,7 @@ namespace {
         runtime.debug_renderer.reset();
         runtime.imgui_renderer.reset();
         runtime.text_renderer.reset();
+        runtime.ray_tracing_poc.destroy();
         runtime.renderer->destroy();
 
         context.destroy();
@@ -786,6 +790,13 @@ namespace {
                               "Write the compiled frame graph as Graphviz whenever it changes (render with `dot "
                               "-Tsvg`).",
                               frame_graph_dot);
+            diagnostics.flag("--rt-poc",
+                             "Trace a sphere into the scene with VK_KHR_ray_query (docs/ray-tracing.md)",
+                             ray_tracing_poc);
+            diagnostics.value("--rt-poc-view", "NAME",
+                              "Debug view of --rt-poc: beauty, normals, distance, shadow-mask, triangle, barycentrics, "
+                              "depth-test",
+                              ray_tracing_poc_view);
 
             auto game_group = cli.group("Game");
             game_group.value("--script", "FILE.lua", "Entry script of a Lua game (--game lua), relative to the data directory", script);
@@ -817,6 +828,8 @@ namespace {
 
         std::optional<ScreenType> screen_type;
         bool dump_frame_graph = false;
+        bool ray_tracing_poc = false;
+        std::string ray_tracing_poc_view = "beauty";
         std::string frame_graph_dot;
         std::string game;
         std::string data_dir;
@@ -1014,6 +1027,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
                             : manifest           ? manifest->game
                                                  : std::string{game_names().front()};
     runtime.script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{};
+    runtime.game_factory = [](std::string_view name) { return create_game(name); };
+    runtime.available_games = game_names();
     runtime.game = create_game(runtime.game_name);
 
     runtime.game->attach_host(GameHost{
@@ -1037,6 +1052,16 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     runtime.renderer->set_async_candidates(Renderer::async_light_clustering | Renderer::async_occlusion |
                                                Renderer::async_gtao);
     runtime.renderer->set_frame_graph_dump(dump_frame_graph);
+    runtime.ray_tracing_poc_enabled = engine.ray_tracing_poc;
+    {
+        auto const names = RayTracingPoc::view_names;
+        auto const found = std::ranges::find(names, std::string_view{engine.ray_tracing_poc_view});
+        if (found == names.end()) {
+            warn("--rt-poc-view '{}' is not a view; using beauty", engine.ray_tracing_poc_view);
+        } else {
+            runtime.ray_tracing_poc.set_view(static_cast<std::uint32_t>(found - names.begin()));
+        }
+    }
     runtime.renderer->set_frame_graph_dot(engine.frame_graph_dot);
 
     runtime.on_startup();
