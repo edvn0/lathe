@@ -37,7 +37,7 @@ auto ModelStreamer::request(IModelSink &sink, AssetPath source_path, ModelHandle
 }
 
 auto ModelStreamer::request(IModelSink &sink, AssetPath source_path, ModelHandle fallback, FlyString debug_name,
-                            std::function<void(ModelCpuData const &)> on_loaded) -> ModelHandle {
+                            std::function<void(ModelCpuData &)> on_loaded) -> ModelHandle {
     auto const reservation = reserve(sink, source_path, fallback, debug_name.view());
 
     if (reservation.final) {

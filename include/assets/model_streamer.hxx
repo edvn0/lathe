@@ -33,10 +33,10 @@ public:
                  FlyString debug_name) -> ModelHandle;
 
     // As above, and `on_loaded` is called with the parsed model on a background thread once it has loaded, before it is
-    // uploaded (never, if the path was already loaded or the load fails).
+    // uploaded, and may edit it (never, if the path was already loaded or the load fails).
     [[nodiscard]]
     auto request(IModelSink &sink, AssetPath source_path, ModelHandle fallback, FlyString debug_name,
-                 std::function<void(ModelCpuData const &)> on_loaded) -> ModelHandle;
+                 std::function<void(ModelCpuData &)> on_loaded) -> ModelHandle;
 
     [[nodiscard]]
     auto request_prepared(IModelSink &sink, std::future<std::expected<ModelCpuData, ModelLoadError>> cpu_data,

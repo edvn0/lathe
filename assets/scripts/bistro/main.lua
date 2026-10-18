@@ -99,7 +99,7 @@ end
 
 function M.on_populate()
     city = scene.spawn("bistro")
-    city_model = assets.load_model(MODEL, { collider = true, min_extent = 0.35 })
+    city_model = assets.load_model(MODEL, { collider = true, min_extent = 0.35, double_sided = true })
     city:set_model(city_model)
     physics.add_mesh_collider(city, city_model)
 
