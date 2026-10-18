@@ -133,6 +133,7 @@ struct LuaHttp::Impl {
 
             client_options.worker_count = 2;
             client_options.timeout = std::chrono::seconds{60};
+            client_options.max_response_bytes = options.max_download_bytes;
             client = std::make_unique<HttpClient>(std::move(client_options),
                                                   options.make_handler ? options.make_handler() : nullptr);
         }

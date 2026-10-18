@@ -8,13 +8,27 @@
 #include <glm/trigonometric.hpp>
 
 #include "game/shadow_city.hxx"
+#include "core/error_describe.hxx"
 #include "core/logger.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 
 auto ShadowCityGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void {
     renderer_ = &renderer;
-    populate_shadow_city(scene, renderer, engine_models, ShadowCityOptions{});
+
+    // Ctrl-R populates the same scene again: drop the last city and the materials it made first.
+    scene.get_registry().clear();
+    if (!owned_materials_.empty()) {
+        if (auto const idle = renderer.wait_idle(); !idle) {
+            warn("{}", describe(idle.error()));
+        }
+        for (auto const material: owned_materials_) {
+            renderer.release_material(material);
+        }
+        owned_materials_.clear();
+    }
+
+    populate_shadow_city(scene, renderer, engine_models, ShadowCityOptions{.owned_materials = &owned_materials_});
     info("[ShadowCity] Keys: 1-3 shots, P pause orbit, C GPU culling, V caching, B bloom");
 }
 

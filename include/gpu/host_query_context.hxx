@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <string_view>
 
-#include <tracy/TracyVulkan.hpp>
+#include "core/tracy_vulkan.hxx"
 
 struct VulkanContext;
 

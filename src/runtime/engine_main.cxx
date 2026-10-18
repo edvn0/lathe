@@ -783,7 +783,7 @@ namespace {
             packaging.value("--record-assets", "FILE.txt", "Write the data files this run opened to a list, then exit", record_assets);
             packaging.value("--screenshot-frame", "N", "Save a screenshot on frame N (see the screenshots directory)", screenshot_frame);
             packaging.flag("--screenshot-window", "Screenshots capture the whole editor window, not just the viewport", screenshot_window);
-            packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120", inject_keys);
+            packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120; prefix ctrl+, shift+ or alt+ for modifiers, e.g. 120:ctrl+82 is Ctrl+R", inject_keys);
             packaging.value("--exit-after-frames", "N", "Exit after N frames (0: run until closed)", exit_after_frames);
             packaging.value("--bench-frames", "N", "Average per-pass GPU time over N frames after warm-up, print it, then exit", bench_frames);
             packaging.flag("--bench-pipeline-stats", "Keep the task/mesh/fragment invocation query on while benchmarking (it is slow: measures the old behaviour)", bench_pipeline_stats);
@@ -800,6 +800,7 @@ namespace {
                                              async_compute_choices, async_compute);
 
             auto diagnostics = cli.group("Diagnostics");
+            display.flag("--max-quality", "Turn every rendering feature on and up: 4x MSAA, fog, up to 64 shadowed local lights, heavier AO, all culling and clustered lighting", max_quality);
             diagnostics.flag("--frame-graph-dump",
                              "Log the compiled frame graph whenever it changes", dump_frame_graph);
             diagnostics.value("--frame-graph-dot", "FILE.dot",
@@ -845,6 +846,7 @@ namespace {
         std::optional<ScreenType> screen_type;
         std::optional<AsyncComputeMode> async_compute;
         std::string async_passes;
+        bool max_quality = false;
         bool dump_frame_graph = false;
         bool ray_tracing_poc = false;
         std::string ray_tracing_poc_view = "beauty";
@@ -1091,6 +1093,40 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         runtime.renderer->set_async_gtao_automatic(automatic);
     }
     runtime.renderer->set_frame_graph_dump(dump_frame_graph);
+    if (engine.max_quality) {
+        auto &renderer = *runtime.renderer;
+        renderer.set_samples(VK_SAMPLE_COUNT_4_BIT);
+        renderer.set_meshlet_culling(true);
+        renderer.set_occlusion_culling(true);
+        renderer.set_meshlet_occlusion_culling(true);
+        renderer.set_clustered_lighting(true);
+        renderer.set_decals_enabled(true);
+
+        auto bloom = renderer.bloom_settings();
+        bloom.enabled = true;
+        renderer.set_bloom_settings(bloom);
+
+        auto fog = renderer.fog_settings();
+        fog.enabled = true;
+        renderer.set_fog_settings(fog);
+
+        auto ao = renderer.ao_settings();
+        ao.enabled = true;
+        ao.slice_count = 4;
+        ao.step_count = 12;
+        renderer.set_ao_settings(ao);
+
+        auto local_shadows = renderer.local_shadow_settings();
+        local_shadows.enabled = true;
+        local_shadows.maximum_lights = 64;
+        local_shadows.minimum_screen_radius_pixels = 4.0F;
+        local_shadows.gpu_culling = true;
+        local_shadows.caching = true;
+        renderer.set_local_shadow_settings(local_shadows);
+
+        info("--max-quality: MSAA up to 4x ({}x supported), fog, AO {}x{}, up to 64 shadowed local lights",
+             static_cast<std::uint32_t>(renderer.max_samples()), ao.slice_count, ao.step_count);
+    }
     runtime.ray_tracing_poc_enabled = engine.ray_tracing_poc;
     {
         auto const names = RayTracingPoc::view_names;
@@ -1150,7 +1186,12 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     std::uint32_t frames_run = 0;
 
-    std::vector<std::pair<std::uint32_t, int>> injected_keys;
+    struct InjectedKey {
+        std::uint32_t frame = 0;
+        int key = 0;
+        int modifiers = 0;
+    };
+    std::vector<InjectedKey> injected_keys;
 
     for (auto const item: CommandLine::split(engine.inject_keys, ',')) {
         auto const colon = item.find(':');
@@ -1161,11 +1202,24 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         std::uint32_t frame = 0;
         int key = 0;
+        int modifiers = 0;
 
         std::from_chars(item.data(), item.data() + colon, frame);
-        std::from_chars(item.data() + colon + 1, item.data() + item.size(), key);
 
-        injected_keys.emplace_back(frame, key);
+        auto spec = item.substr(colon + 1);
+
+        for (auto const &[name, bit]: {std::pair{std::string_view{"ctrl+"}, GLFW_MOD_CONTROL},
+                                       std::pair{std::string_view{"shift+"}, GLFW_MOD_SHIFT},
+                                       std::pair{std::string_view{"alt+"}, GLFW_MOD_ALT}}) {
+            if (spec.starts_with(name)) {
+                modifiers |= bit;
+                spec.remove_prefix(name.size());
+            }
+        }
+
+        std::from_chars(spec.data(), spec.data() + spec.size(), key);
+
+        injected_keys.push_back(InjectedKey{.frame = frame, .key = key, .modifiers = modifiers});
     }
 
     struct BenchPass {
@@ -1192,9 +1246,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
             runtime.request_screenshot();
         }
 
-        for (auto const &[frame, key]: injected_keys) {
-            if (frame == frame_number) {
-                runtime.on_event(KeyPressedEvent{.key = key, .modifiers = 0});
+        for (auto const &injected: injected_keys) {
+            if (injected.frame == frame_number) {
+                runtime.on_event(KeyPressedEvent{.key = injected.key, .modifiers = injected.modifiers});
             }
         }
 

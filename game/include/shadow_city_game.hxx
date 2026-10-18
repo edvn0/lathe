@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include "game/game.hxx"
 
@@ -18,6 +19,7 @@ public:
 
 private:
     Renderer *renderer_ = nullptr;
+    std::vector<MaterialHandle> owned_materials_;
 
     std::uint32_t frame_ = 0;
     std::uint32_t updates_ = 0;

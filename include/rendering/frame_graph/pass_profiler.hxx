@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-#include <tracy/TracyVulkan.hpp>
+#include "core/tracy_vulkan.hxx"
 
 #include "rendering/frame_graph/types.hxx"
 

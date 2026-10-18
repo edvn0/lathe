@@ -1186,12 +1186,33 @@ namespace {
         auto const wants_collider = option_bool(state, 2, "collider", false);
         auto const min_extent = static_cast<float>(option_number(state, 2, "min_extent", 0.0));
 
+        // Some exports lose the double-sided flag (Bistro's glass, for one), so its panes are culled from the side the
+        // visitor sees them from.
+        auto const wants_double_sided = option_bool(state, 2, "double_sided", false);
+
         auto observer = wants_collider ? std::optional{make_collider_observer(min_extent)} : std::nullopt;
+        std::function<void(ModelCpuData &)> on_loaded;
+
+        if (wants_double_sided || observer) {
+            on_loaded = [wants_double_sided, collide = observer ? std::move(observer->observer)
+                                                                : std::function<void(ModelCpuData const &)>{}](
+                                ModelCpuData &model) {
+                if (wants_double_sided) {
+                    for (auto &material: model.materials) {
+                        material.double_sided = true;
+                    }
+                }
+
+                if (collide) {
+                    collide(model);
+                }
+            };
+        }
 
         auto const handle = host.renderer->model_streamer().request(
                 *host.renderer, *path, host.engine_models->cube,
                 FlyString{downloaded ? std::string_view{path->key()} : std::string_view{text}},
-                observer ? std::move(observer->observer) : std::function<void(ModelCpuData const &)>{});
+                std::move(on_loaded));
 
         if (observer) {
             host.collider_slots[model_key(handle)] = observer->slot;

@@ -24,6 +24,10 @@ struct LuaHttpOptions {
     std::size_t max_in_flight = 8;
     std::size_t max_body_bytes = std::size_t{4} * 1024U * 1024U;
 
+    // The most one download may be, a whole scene's geometry buffer included. A `get` body is still capped by
+    // max_body_bytes.
+    std::size_t max_download_bytes = std::size_t{256} * 1024U * 1024U;
+
     // Replaces the libcurl handler; tests use it to answer without a network.
     std::function<std::unique_ptr<IHttpMessageHandler>()> make_handler;
 };
