@@ -800,6 +800,7 @@ namespace {
                                              async_compute_choices, async_compute);
 
             auto diagnostics = cli.group("Diagnostics");
+            display.flag("--max-quality", "Turn every rendering feature on and up: 4x MSAA, fog, up to 64 shadowed local lights, heavier AO, all culling and clustered lighting", max_quality);
             diagnostics.flag("--frame-graph-dump",
                              "Log the compiled frame graph whenever it changes", dump_frame_graph);
             diagnostics.value("--frame-graph-dot", "FILE.dot",
@@ -845,6 +846,7 @@ namespace {
         std::optional<ScreenType> screen_type;
         std::optional<AsyncComputeMode> async_compute;
         std::string async_passes;
+        bool max_quality = false;
         bool dump_frame_graph = false;
         bool ray_tracing_poc = false;
         std::string ray_tracing_poc_view = "beauty";
@@ -1091,6 +1093,40 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         runtime.renderer->set_async_gtao_automatic(automatic);
     }
     runtime.renderer->set_frame_graph_dump(dump_frame_graph);
+    if (engine.max_quality) {
+        auto &renderer = *runtime.renderer;
+        renderer.set_samples(VK_SAMPLE_COUNT_4_BIT);
+        renderer.set_meshlet_culling(true);
+        renderer.set_occlusion_culling(true);
+        renderer.set_meshlet_occlusion_culling(true);
+        renderer.set_clustered_lighting(true);
+        renderer.set_decals_enabled(true);
+
+        auto bloom = renderer.bloom_settings();
+        bloom.enabled = true;
+        renderer.set_bloom_settings(bloom);
+
+        auto fog = renderer.fog_settings();
+        fog.enabled = true;
+        renderer.set_fog_settings(fog);
+
+        auto ao = renderer.ao_settings();
+        ao.enabled = true;
+        ao.slice_count = 4;
+        ao.step_count = 12;
+        renderer.set_ao_settings(ao);
+
+        auto local_shadows = renderer.local_shadow_settings();
+        local_shadows.enabled = true;
+        local_shadows.maximum_lights = 64;
+        local_shadows.minimum_screen_radius_pixels = 4.0F;
+        local_shadows.gpu_culling = true;
+        local_shadows.caching = true;
+        renderer.set_local_shadow_settings(local_shadows);
+
+        info("--max-quality: MSAA up to 4x ({}x supported), fog, AO {}x{}, up to 64 shadowed local lights",
+             static_cast<std::uint32_t>(renderer.max_samples()), ao.slice_count, ao.step_count);
+    }
     runtime.ray_tracing_poc_enabled = engine.ray_tracing_poc;
     {
         auto const names = RayTracingPoc::view_names;
