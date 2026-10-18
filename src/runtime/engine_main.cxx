@@ -1,6 +1,7 @@
 #include <fstream>
 #include <charconv>
 #include <csignal>
+#include <map>
 #include <memory>
 #include <print>
 #include <random>
@@ -778,6 +779,8 @@ namespace {
             packaging.flag("--screenshot-window", "Screenshots capture the whole editor window, not just the viewport", screenshot_window);
             packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120", inject_keys);
             packaging.value("--exit-after-frames", "N", "Exit after N frames (0: run until closed)", exit_after_frames);
+            packaging.value("--bench-frames", "N", "Average per-pass GPU time over N frames after warm-up, print it, then exit", bench_frames);
+            packaging.value("--bench-warmup", "N", "Frames to run before --bench-frames starts sampling (default 120)", bench_warmup);
             cli.group("Paths").value("--data-dir", "DIR", "Game data directory (default: an installed game's data/, else the working directory)", data_dir);
             auto display = cli.group("Display");
             display.choice<ScreenType>("--screen-type", "Window mode (default fullscreen)", screen_type_choices,
@@ -841,6 +844,8 @@ namespace {
         std::string record_assets;
         std::string record_resources;
         std::uint32_t exit_after_frames = 0;
+        std::uint32_t bench_frames = 0;
+        std::uint32_t bench_warmup = 120;
         std::uint32_t screenshot_frame = 0;
         bool screenshot_window = false;
         std::string inject_keys;
@@ -1129,6 +1134,15 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         injected_keys.emplace_back(frame, key);
     }
 
+    struct BenchPass {
+        frame_graph::LogicalQueue queue = frame_graph::LogicalQueue::graphics;
+        double total_ms = 0.0;
+    };
+    std::map<std::string, BenchPass> bench_passes;
+    double bench_full_frame_ms = 0.0;
+    std::uint32_t bench_samples = 0;
+    std::uint64_t bench_last_serial = ~std::uint64_t{0};
+
     while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire) &&
            glfwWindowShouldClose(context.window) != GLFW_TRUE) {
         ZoneScopedNC("MainLoop", tracy::Color::Gray);
@@ -1209,6 +1223,32 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         if (auto const &timings = runtime.renderer->last_frame_timings();
             timings.valid && runtime.can_start_recording_statistics()) {
             runtime.on_frame_timings(timings.passes);
+
+            if (engine.bench_frames != 0 && frame_number >= engine.bench_warmup &&
+                timings.frame_serial != bench_last_serial) {
+                bench_last_serial = timings.frame_serial;
+                bench_full_frame_ms += timings.full_frame_ms;
+                ++bench_samples;
+                for (auto const &pass: timings.passes) {
+                    auto &entry = bench_passes[pass.name_id];
+                    entry.queue = pass.queue;
+                    entry.total_ms += pass.milliseconds.value_or(0.0F);
+                }
+                if (bench_samples >= engine.bench_frames) {
+                    std::println("[bench] {} frames after {} warm-up, mean GPU ms per frame:", bench_samples,
+                                 engine.bench_warmup);
+                    auto pass_sum = 0.0;
+                    for (auto const &[name, entry]: bench_passes) {
+                        auto const mean = entry.total_ms / static_cast<double>(bench_samples);
+                        pass_sum += mean;
+                        std::println("[bench]   {:<32} {:>8.4f} ms  ({})", name, mean,
+                                     entry.queue == frame_graph::LogicalQueue::graphics ? "graphics" : "compute");
+                    }
+                    std::println("[bench] sum of passes {:.4f} ms, full frame {:.4f} ms", pass_sum,
+                                 bench_full_frame_ms / static_cast<double>(bench_samples));
+                    break;
+                }
+            }
         }
 
         {

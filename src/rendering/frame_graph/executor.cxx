@@ -117,6 +117,16 @@ namespace frame_graph {
             }
 #endif
 
+            if (info.debug_labels) {
+                auto const label_name = std::string{label};
+                auto const debug_label = VkDebugUtilsLabelEXT{
+                        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+                        .pLabelName = label_name.c_str(),
+                        .color = {0.2F, 0.6F, 1.0F, 1.0F},
+                };
+                vkCmdBeginDebugUtilsLabelEXT(command_buffer, &debug_label);
+            }
+
             info.profiler.write_begin(command_buffer, batch.queue, info.frame_index, compiled_pass.timestamp_slot,
                                       name_id, label);
 
@@ -157,6 +167,9 @@ namespace frame_graph {
             }
 
             info.profiler.write_end(command_buffer, batch.queue, info.frame_index, compiled_pass.timestamp_slot);
+            if (info.debug_labels) {
+                vkCmdEndDebugUtilsLabelEXT(command_buffer);
+            }
             return {};
         }
 

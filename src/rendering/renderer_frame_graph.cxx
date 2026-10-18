@@ -1533,6 +1533,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
             .tracy_contexts = {graphics_tracy, compute_tracy},
             .prologue = info.command_buffer,
             .frame_index = info.frame_index,
+            .debug_labels = context_.debug_utils_enabled,
     });
     if (!batches) {
         error("Could not record the frame graph: {}", batches.error().message);

@@ -392,8 +392,10 @@ namespace {
             validation_enabled = false;
         }
 
-        if (validation_enabled) {
+        // Always request debug utils when present so captures (Nsight, RenderDoc) show pass labels.
+        if (validation_enabled || instance_extension_available(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
             instance_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            context.debug_utils_enabled = true;
         }
 
         auto sync_validation_enabled = false;
