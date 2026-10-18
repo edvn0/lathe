@@ -65,7 +65,7 @@ assume a perspective camera, so use an unlit scene with an orthographic view. `a
 (`request:done()`, `:ok()`, `:error()`, `:status()`, `:body()`, `:path()`, `:cancel()`) or finish through an
 `on_done = function(request) ... end` option, which the engine calls from its update, so a script never sees another
 thread. Only https, and only to `raw.githubusercontent.com`, `github.com` and `objects.githubusercontent.com`;
-at most eight requests at once, and a `get` body is capped at 4 MiB.
+at most eight requests at once, a `get` body is capped at 4 MiB and a download at 256 MiB.
 
 A download needs a `sha256`. The file is kept under the cache directory (`name` picks where), is reused when it already
 matches, and a file that does not match is an error and is not kept. Pass a finished download to
