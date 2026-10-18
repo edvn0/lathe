@@ -1,5 +1,5 @@
 #include <tracy/Tracy.hpp>
-#include <tracy/TracyVulkan.hpp>
+#include "core/tracy_vulkan.hxx"
 
 #include <array>
 #include <expected>

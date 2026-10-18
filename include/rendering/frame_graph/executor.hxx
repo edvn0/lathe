@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include <tracy/TracyVulkan.hpp>
+#include "core/tracy_vulkan.hxx"
 
 #include "gpu/queue_set.hxx"
 #include "gpu/submission_plan.hxx"
