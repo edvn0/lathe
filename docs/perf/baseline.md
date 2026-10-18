@@ -49,3 +49,43 @@ while that panel requests it (`Renderer::request_pipeline_stats`).
 
 Note on `shaders.lsp`: the shader pack is keyed by source path, not content, so a stale pack silently ignores shader
 edits. Experiments here used `--shader-pack=<fresh path>` to force live compilation.
+
+## Round 2 (P1/P2), measured reproducibly
+
+Conditions for every number below: RTX 4070 Ti SUPER with the SM clock locked at 2610 MHz (`nvidia-smi -lgc 2610,2610`),
+CPU governor `performance`, Release build, `--screen-type=fullscreen --present-mode=immediate` on a 2560x1440@144 display
+(render size 2560x1440), `--bench-frames=300` after the default 120 warm-up frames. `--bench-frames` advances the scene
+by a fixed 1/60 s per frame, so every run times the same frames (before this, the game animated by wall-clock time and
+runs differed by 2x depending on where the camera orbit was). Run-to-run spread is about +-0.01 ms. "Before" means the
+original behaviour reproduced on the same binary with `--bench-pipeline-stats --async-passes=light,occlusion,gtao`.
+
+| Scene | before | after |
+|---|---|---|
+| shadowcity (`--game=shadowcity`) | 41.70 ms | 3.78 ms |
+| rt-poc (`--rt-poc`) | 3.89 ms | 2.46 ms |
+
+### What each change was worth
+
+| Change | Result |
+|---|---|
+| Pipeline-statistics query gated behind the stats panel | the whole 40 ms (see above) |
+| Async queue per pass (`--async-passes`), shadowcity | all 4.054, none 4.000, **gtao only 3.784**, occlusion only 4.069, light only 4.053 ms |
+| Async queue per pass, rt-poc | all 2.500, none 2.512, **gtao only 2.457**, occlusion only 2.508, light only 2.516 ms |
+| Async queue per pass, light scenes (lights / meshlets / gallery) | none is best: 1.995 / 0.950 / 0.941 ms vs gtao-only 2.082 / 0.997 / 0.976 ms |
+| Async queue per pass, heavy suite cases (GPU p50) | gtao-only best: `draw_calls@16000` 4.10 vs 4.24 (none) vs 4.31 (all), `instancing@200000` 2.63 vs 2.82 vs 2.79 ms |
+| Async GTAO chosen automatically (default) | matches the best fixed choice in every scene above to within ~0.015 ms |
+| Local shadow passes declared every frame | median frame unchanged (3.35 ms); `shadow_city@24` suite p99 5.9-6.1 -> 4.0-4.2 ms, p99.9 9.0 -> 6.8-7.0 ms; the plan now recompiles only during startup |
+| Redundant timeline waits dropped | no measurable change (unit tested, validation clean) |
+| Narrow semaphore wait stages | **not kept**: no faster (rt-poc 2.20-2.34 vs 2.32-2.35 ms) and sync validation reports layout-transition WRITE_AFTER_WRITE hazards |
+| Removing the lit pass's global token barrier outright | no measurable change (shadowcity 3.785 vs 3.790 ms, rt-poc 2.454 vs 2.455 ms), so it was left alone |
+
+Validation: a Debug build with `VK_LAYER_KHRONOS_validation` and sync validation reports no messages for `--rt-poc` or
+`--game=shadowcity` over 500 frames.
+
+### Remaining gaps and notes
+
+- Async occlusion culling and async light clustering never paid off in these scenes, so they are off by default
+  (`--async-passes=light,occlusion,gtao` forces the old behaviour).
+- `rt_poc` reads the lit HDR image, so it cannot overlap the lit pass; the graphics queue idles around it.
+- The brief's rt-poc target (<= 1.6 ms) was stated for a 1533x1015 render at base clocks; these runs are 2560x1440 at 2610
+  MHz and are not comparable to it.

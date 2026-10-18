@@ -758,6 +758,12 @@ namespace {
             {"headless", ScreenType::headless},
     }};
 
+    constexpr std::array<std::pair<std::string_view, AsyncComputeMode>, 3> async_compute_choices{{
+            {"auto", AsyncComputeMode::automatic},
+            {"off", AsyncComputeMode::off},
+            {"same_family", AsyncComputeMode::same_family},
+    }};
+
     [[nodiscard]] auto game_help() -> std::string {
         std::string names;
         for (auto const name: game_names()) {
@@ -780,11 +786,18 @@ namespace {
             packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120", inject_keys);
             packaging.value("--exit-after-frames", "N", "Exit after N frames (0: run until closed)", exit_after_frames);
             packaging.value("--bench-frames", "N", "Average per-pass GPU time over N frames after warm-up, print it, then exit", bench_frames);
+            packaging.flag("--bench-pipeline-stats", "Keep the task/mesh/fragment invocation query on while benchmarking (it is slow: measures the old behaviour)", bench_pipeline_stats);
             packaging.value("--bench-warmup", "N", "Frames to run before --bench-frames starts sampling (default 120)", bench_warmup);
             cli.group("Paths").value("--data-dir", "DIR", "Game data directory (default: an installed game's data/, else the working directory)", data_dir);
             auto display = cli.group("Display");
             display.choice<ScreenType>("--screen-type", "Window mode (default fullscreen)", screen_type_choices,
                                        screen_type);
+
+            display.value("--async-passes", "LIST", "Passes that run on the async compute queue when it exists: light, occlusion, gtao (comma separated, always on), none, or auto (default: GTAO only while frames are heavy enough to overlap it)", async_passes);
+            display.choice<AsyncComputeMode>("--async-compute",
+                                             "Run compute passes on a separate queue family (auto), on the graphics queue "
+                                             "(off), or on a second queue of the graphics family (same_family)",
+                                             async_compute_choices, async_compute);
 
             auto diagnostics = cli.group("Diagnostics");
             diagnostics.flag("--frame-graph-dump",
@@ -830,6 +843,8 @@ namespace {
         auto operator=(EngineArguments const &) -> EngineArguments & = delete;
 
         std::optional<ScreenType> screen_type;
+        std::optional<AsyncComputeMode> async_compute;
+        std::string async_passes;
         bool dump_frame_graph = false;
         bool ray_tracing_poc = false;
         std::string ray_tracing_poc_view = "beauty";
@@ -846,6 +861,7 @@ namespace {
         std::uint32_t exit_after_frames = 0;
         std::uint32_t bench_frames = 0;
         std::uint32_t bench_warmup = 120;
+        bool bench_pipeline_stats = false;
         std::uint32_t screenshot_frame = 0;
         bool screenshot_window = false;
         std::string inject_keys;
@@ -991,6 +1007,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     VulkanContext context{};
     context.vsync = presentation.vsync.value_or(!profile.deterministic());
+    context.async_compute_mode = engine.async_compute.value_or(AsyncComputeMode::automatic);
     context.swapchain_image_count = presentation.swapchain_images.value_or(0U);
 
     auto const chosen_present_mode = presentation.present_mode.has_value() ? presentation.present_mode
@@ -1054,8 +1071,25 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         return EXIT_FAILURE;
     }
 
-    runtime.renderer->set_async_candidates(Renderer::async_light_clustering | Renderer::async_occlusion |
-                                               Renderer::async_gtao);
+    {
+        auto mask = std::uint32_t{0};
+        auto const automatic = engine.async_passes.empty() || engine.async_passes == "auto";
+        auto const names = automatic ? std::string{"gtao"} : engine.async_passes;
+        for (auto const name: std::views::split(names, ',')) {
+            auto const token = std::string_view{name.begin(), name.end()};
+            if (token == "light") {
+                mask |= Renderer::async_light_clustering;
+            } else if (token == "occlusion") {
+                mask |= Renderer::async_occlusion;
+            } else if (token == "gtao") {
+                mask |= Renderer::async_gtao;
+            } else if (token != "none" && token != "auto") {
+                warn("--async-passes: unknown pass '{}' (expected light, occlusion, gtao or none)", token);
+            }
+        }
+        runtime.renderer->set_async_candidates(mask);
+        runtime.renderer->set_async_gtao_automatic(automatic);
+    }
     runtime.renderer->set_frame_graph_dump(dump_frame_graph);
     runtime.ray_tracing_poc_enabled = engine.ray_tracing_poc;
     {
@@ -1137,6 +1171,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     struct BenchPass {
         frame_graph::LogicalQueue queue = frame_graph::LogicalQueue::graphics;
         double total_ms = 0.0;
+        double total_start_ms = 0.0;
     };
     std::map<std::string, BenchPass> bench_passes;
     double bench_full_frame_ms = 0.0;
@@ -1196,8 +1231,10 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
 
         auto const now = std::chrono::steady_clock::now();
-        auto const delta_time =
-                profile.fixed_timestep().value_or(std::chrono::duration<float>(now - last_frame_time).count());
+        // A benchmark advances the scene by frame, not by wall-clock time, so every run times the same frames.
+        auto const measured_step = engine.bench_frames != 0 ? 1.0F / 60.0F
+                                                            : std::chrono::duration<float>(now - last_frame_time).count();
+        auto const delta_time = profile.fixed_timestep().value_or(measured_step);
         last_frame_time = now;
 
         {
@@ -1220,6 +1257,10 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         FrameMark;
 
+        if (engine.bench_pipeline_stats) {
+            runtime.renderer->request_pipeline_stats();
+        }
+
         if (auto const &timings = runtime.renderer->last_frame_timings();
             timings.valid && runtime.can_start_recording_statistics()) {
             runtime.on_frame_timings(timings.passes);
@@ -1233,6 +1274,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
                     auto &entry = bench_passes[pass.name_id];
                     entry.queue = pass.queue;
                     entry.total_ms += pass.milliseconds.value_or(0.0F);
+                    entry.total_start_ms += pass.start_milliseconds.value_or(0.0F);
                 }
                 if (bench_samples >= engine.bench_frames) {
                     std::println("[bench] {} frames after {} warm-up, mean GPU ms per frame:", bench_samples,
@@ -1241,7 +1283,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
                     for (auto const &[name, entry]: bench_passes) {
                         auto const mean = entry.total_ms / static_cast<double>(bench_samples);
                         pass_sum += mean;
-                        std::println("[bench]   {:<32} {:>8.4f} ms  ({})", name, mean,
+                        auto const start = entry.total_start_ms / static_cast<double>(bench_samples);
+                        std::println("[bench]   {:<32} {:>8.4f} ms  start {:>8.4f}  ({})", name, mean, start,
                                      entry.queue == frame_graph::LogicalQueue::graphics ? "graphics" : "compute");
                     }
                     std::println("[bench] sum of passes {:.4f} ms, full frame {:.4f} ms", pass_sum,

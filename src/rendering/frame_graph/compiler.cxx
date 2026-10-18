@@ -721,6 +721,10 @@ namespace frame_graph {
             }
         }
 
+        // Waits stay on ALL_COMMANDS. Narrowing them to the consumer's stage (and to the stages of the batch's barriers)
+        // measured no faster on NVIDIA and reports layout-transition WRITE_AFTER_WRITE hazards under sync validation: a
+        // wait only orders the stages it names, and every later batch's barriers and accesses used to be ordered
+        // transitively through it.
         for (auto &batch: result.batches) {
             for (auto &wait: batch.waits) {
                 wait.stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;

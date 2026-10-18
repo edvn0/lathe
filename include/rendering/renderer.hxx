@@ -716,6 +716,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     };
     [[nodiscard]] auto async_candidates() const noexcept -> std::uint32_t { return async_candidates_; }
     auto set_async_candidates(std::uint32_t mask) noexcept -> void { async_candidates_ = mask; }
+    // Let GTAO use the async queue only while frames are heavy enough to have graphics work to overlap it with: a light
+    // frame loses more to the queue hops than it gains. Off, async_candidates alone decides.
+    auto set_async_gtao_automatic(bool automatic) noexcept -> void { async_gtao_automatic_ = automatic; }
+    [[nodiscard]] auto async_gtao_active() const noexcept -> bool { return !async_gtao_automatic_ || async_gtao_auto_on_; }
 
     [[nodiscard]] auto transient_aliasing() const noexcept -> bool { return transient_aliasing_; }
     auto set_transient_aliasing(bool enabled) noexcept -> void { transient_aliasing_ = enabled; }
@@ -1615,7 +1619,12 @@ private:
 
     frame_graph::TransientAllocator transient_allocator_;
     bool transient_aliasing_ = true;
-    std::uint32_t async_candidates_ = async_light_clustering | async_occlusion | async_gtao;
+    std::uint32_t async_candidates_ = async_gtao;
+    bool async_gtao_automatic_ = true;
+    bool async_gtao_auto_on_ = false;
+    float async_gtao_frame_ms_ = 0.0F;
+    std::uint64_t async_gtao_seen_serial_ = 0;
+    std::uint32_t async_gtao_hold_frames_ = 0;
     std::uint64_t logged_plan_misses_ = 0;
     std::uint64_t logged_transient_bytes_ = 0;
     bool dump_frame_graph_ = false;
