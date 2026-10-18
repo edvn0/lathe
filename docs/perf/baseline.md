@@ -26,3 +26,26 @@ Command: `build/release/bin/lathe --game=shadowcity|--rt-poc --player --screen-t
 
 Note: rt-poc here is a different resolution/clock state than the Nsight capture (1533x1015, base clocks, 2.1 ms), so
 compare only against runs with the same flags.
+
+## Phase 2 finding: the cost was the pipeline-statistics query, not the shaders
+
+The brief's hypotheses (per-light work in `main_mesh`, host-memory buffers, atomics) did not hold up:
+
+- `main_mesh` has no light loops or atomics (lights are shaded in `main_fs`).
+- Moving the per-frame shader-read buffers (UBO, lights, decals, shadow tiles) from host RAM into ReBAR VRAM changed
+  `forward_pass` from 39.3 to 39.7 ms, so it was reverted (the debug-build placement warning stays).
+- An empty `main_mesh` (`SetMeshOutputCounts(0,0); return;`) still cost ~40 ms, and the cost was linear in the number of
+  mesh groups launched (all 41.0 ms, half 21.6, quarter 11.9, none 1.76).
+- Moving the renderer's `VK_QUERY_TYPE_PIPELINE_STATISTICS` query (task + mesh + fragment invocation counts) from the
+  forward pass to the early depth prepass moved the whole ~39 ms with it (depth_prepass 39.0 ms, forward_pass 0.81 ms).
+
+The statistics query only feeds the editor's "Scene stats" panel, but it ran every frame in every build. It now runs only
+while that panel requests it (`Renderer::request_pipeline_stats`).
+
+| Scene (same conditions as above) | full frame before | full frame after | forward_pass before | forward_pass after |
+|---|---|---|---|---|
+| shadowcity | 40.88 ms | 4.28 ms | 39.28 ms | 1.44 ms |
+| rt-poc | 4.27 ms | 3.44 ms | 2.60 ms | 0.99 ms |
+
+Note on `shaders.lsp`: the shader pack is keyed by source path, not content, so a stale pack silently ignores shader
+edits. Experiments here used `--shader-pack=<fresh path>` to force live compilation.

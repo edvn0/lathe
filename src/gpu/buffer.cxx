@@ -80,7 +80,7 @@ namespace {
 
     // Shader-read buffers that miss device-local memory make every shader load cross PCIe, so say where they landed.
     // ReBAR placements (device-local and host-visible) are fine and stay quiet.
-    auto log_shader_read_placement(VmaAllocator allocator, BufferCreateInfo const &create_info,
+    [[maybe_unused]] auto log_shader_read_placement(VmaAllocator allocator, BufferCreateInfo const &create_info,
                                    VmaAllocationInfo const &allocation_info) -> void {
         constexpr VkBufferUsageFlags shader_read_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
@@ -312,7 +312,9 @@ auto Buffer::create(VulkanContext &ctx, BufferCreateInfo const &create_info) -> 
                                                  VK_ERROR_MEMORY_MAP_FAILED)};
     }
 
+#ifndef NDEBUG
     log_shader_read_placement(ctx.allocator, create_info, result.allocation_info);
+#endif
 
     assert(!create_info.debug_name.empty() && "Creating a buffer requires a name");
 

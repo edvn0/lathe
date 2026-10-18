@@ -714,7 +714,9 @@ namespace render_pass {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        vkCmdBeginQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0, 0);
+        if (info.pipeline_statistics_query_pool != VK_NULL_HANDLE) {
+            vkCmdBeginQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0, 0);
+        }
 
         ForwardPushConstants const pc{
                 .draws_address = info.draws.draws.device_address,
@@ -792,7 +794,9 @@ namespace render_pass {
                                         unculled_backface_pc);
         }
 
-        vkCmdEndQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0);
+        if (info.pipeline_statistics_query_pool != VK_NULL_HANDLE) {
+            vkCmdEndQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0);
+        }
 
         scene_overlays();
 

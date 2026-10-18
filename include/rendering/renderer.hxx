@@ -737,6 +737,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto last_frame_pipeline_stats() const noexcept -> PipelineStats const & {
         return last_frame_pipeline_stats_;
     }
+    // Pipeline-statistics queries that count mesh and task invocations make the driver run the pass on a slow path (the
+    // forward pass went from ~1 ms to ~40 ms in shadow_city), so they only run while something is showing them. Call
+    // this every frame the stats are on screen.
+    auto request_pipeline_stats() noexcept -> void { pipeline_stats_hold_frames_ = pipeline_stats_hold_frame_count; }
     [[nodiscard]] auto debug_draw_light_icons() const noexcept -> bool { return debug_draw_light_icons_; }
     auto set_debug_draw_light_icons(bool enabled) noexcept -> void { debug_draw_light_icons_ = enabled; }
 
@@ -1625,6 +1629,8 @@ private:
     };
     std::vector<FramePipelineQuery> pipeline_stat_queries_;
     PipelineStats last_frame_pipeline_stats_{};
+    static constexpr std::uint32_t pipeline_stats_hold_frame_count = 4;
+    std::uint32_t pipeline_stats_hold_frames_ = 0;
 
     std::unique_ptr<ScreenshotCapture> screenshot_;
 

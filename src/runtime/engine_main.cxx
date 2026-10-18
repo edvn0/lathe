@@ -1140,9 +1140,6 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     };
     std::map<std::string, BenchPass> bench_passes;
     double bench_full_frame_ms = 0.0;
-    double bench_task_invocations = 0.0;
-    double bench_mesh_invocations = 0.0;
-    double bench_fragment_invocations = 0.0;
     std::uint32_t bench_samples = 0;
     std::uint64_t bench_last_serial = ~std::uint64_t{0};
 
@@ -1231,11 +1228,6 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
                 timings.frame_serial != bench_last_serial) {
                 bench_last_serial = timings.frame_serial;
                 bench_full_frame_ms += timings.full_frame_ms;
-                if (auto const &stats = runtime.renderer->last_frame_pipeline_stats(); stats.valid) {
-                    bench_task_invocations += static_cast<double>(stats.task_shader_invocation_count);
-                    bench_mesh_invocations += static_cast<double>(stats.mesh_shader_invocation_count);
-                    bench_fragment_invocations += static_cast<double>(stats.fragment_shader_invocation_count);
-                }
                 ++bench_samples;
                 for (auto const &pass: timings.passes) {
                     auto &entry = bench_passes[pass.name_id];
@@ -1254,11 +1246,6 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
                     }
                     std::println("[bench] sum of passes {:.4f} ms, full frame {:.4f} ms", pass_sum,
                                  bench_full_frame_ms / static_cast<double>(bench_samples));
-                    auto const frames = static_cast<double>(bench_samples);
-                    std::println("[bench] per frame: {:.0f} task invocations, {:.0f} mesh invocations, {:.0f} fragment "
-                                 "invocations",
-                                 bench_task_invocations / frames, bench_mesh_invocations / frames,
-                                 bench_fragment_invocations / frames);
                     break;
                 }
             }

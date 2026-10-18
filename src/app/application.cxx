@@ -2234,6 +2234,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
     widget("Scene stats", [&] {
         auto const &stats = renderer->last_frame_stats();
+        renderer->request_pipeline_stats();
         auto const &pipeline_stats = renderer->last_frame_pipeline_stats();
 
         constexpr auto fmt = [](std::uint64_t count) {

@@ -5975,7 +5975,9 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                                     ? frame.occlusion_views_buffer.device_address + sizeof(GpuOcclusionView)
                                     : VkDeviceAddress{0},
                     .extra_cull_flags = frame.meshlet_occlusion_active ? render_pass::cull_replay : 0U,
-                    .pipeline_statistics_query_pool = pipeline_stat_queries_[frame_index].query_pool,
+                    .pipeline_statistics_query_pool = pipeline_stats_hold_frames_ != 0
+                                                              ? pipeline_stat_queries_[frame_index].query_pool
+                                                              : VkQueryPool{VK_NULL_HANDLE},
                     .meshlet_culling = meshlet_culling_,
                     .opaque_pipeline = forward_outline_pipeline_,
                     .blend_pipeline = forward_blend_pipeline_,
@@ -6016,7 +6018,10 @@ auto Renderer::record_frame_end(VkCommandBuffer command_buffer, std::uint32_t fr
 
     frame_query.has_results = true;
     frame_query.serial = ++recorded_frame_count_;
-    pipeline_stat_queries_[frame_index].has_results = true;
+    pipeline_stat_queries_[frame_index].has_results = pipeline_stats_hold_frames_ != 0;
+    if (pipeline_stats_hold_frames_ != 0) {
+        --pipeline_stats_hold_frames_;
+    }
 }
 
 auto Renderer::make_pass_context(VkCommandBuffer command_buffer, std::uint32_t frame_index, bool compute_only)
