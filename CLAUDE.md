@@ -1,3 +1,9 @@
+# Git
+
+Branch names are `<type>/<name>`, where type is one of `feat`, `chore`, `fix`, `docs`, `refactor`, `test` (e.g.
+`feat/native-model-importers`, `fix/shadow-cascade-flicker`). This applies to every branch, including ones created by
+Claude Code sessions: use a name like this instead of the session's default `claude/...` branch.
+
 # Building
 
 Build via `cargo xtask` (alias in `.cargo/config.toml`, source in
