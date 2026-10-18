@@ -214,7 +214,6 @@ TEST_SUITE("unit") {
         }
         SUBCASE("each queue keeps its own record") {
             auto const first = wait_for(0, fragment);
-            auto const batches = std::array{compute_batch(0), graphics_batch(0, first)};
             auto const compute_waits = std::array{SemaphoreWait{.queue = LogicalQueue::graphics, .signal_index = 0, .stages = fragment}};
             auto const more = std::array{compute_batch(0), graphics_batch(0, first), compute_batch(1, compute_waits)};
             auto const plan = plan_submissions(more, no_values, separate_timelines);
