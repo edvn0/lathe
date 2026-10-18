@@ -783,7 +783,7 @@ namespace {
             packaging.value("--record-assets", "FILE.txt", "Write the data files this run opened to a list, then exit", record_assets);
             packaging.value("--screenshot-frame", "N", "Save a screenshot on frame N (see the screenshots directory)", screenshot_frame);
             packaging.flag("--screenshot-window", "Screenshots capture the whole editor window, not just the viewport", screenshot_window);
-            packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120", inject_keys);
+            packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120; prefix ctrl+, shift+ or alt+ for modifiers, e.g. 120:ctrl+82 is Ctrl+R", inject_keys);
             packaging.value("--exit-after-frames", "N", "Exit after N frames (0: run until closed)", exit_after_frames);
             packaging.value("--bench-frames", "N", "Average per-pass GPU time over N frames after warm-up, print it, then exit", bench_frames);
             packaging.flag("--bench-pipeline-stats", "Keep the task/mesh/fragment invocation query on while benchmarking (it is slow: measures the old behaviour)", bench_pipeline_stats);
@@ -1186,7 +1186,12 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     std::uint32_t frames_run = 0;
 
-    std::vector<std::pair<std::uint32_t, int>> injected_keys;
+    struct InjectedKey {
+        std::uint32_t frame = 0;
+        int key = 0;
+        int modifiers = 0;
+    };
+    std::vector<InjectedKey> injected_keys;
 
     for (auto const item: CommandLine::split(engine.inject_keys, ',')) {
         auto const colon = item.find(':');
@@ -1197,11 +1202,24 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         std::uint32_t frame = 0;
         int key = 0;
+        int modifiers = 0;
 
         std::from_chars(item.data(), item.data() + colon, frame);
-        std::from_chars(item.data() + colon + 1, item.data() + item.size(), key);
 
-        injected_keys.emplace_back(frame, key);
+        auto spec = item.substr(colon + 1);
+
+        for (auto const &[name, bit]: {std::pair{std::string_view{"ctrl+"}, GLFW_MOD_CONTROL},
+                                       std::pair{std::string_view{"shift+"}, GLFW_MOD_SHIFT},
+                                       std::pair{std::string_view{"alt+"}, GLFW_MOD_ALT}}) {
+            if (spec.starts_with(name)) {
+                modifiers |= bit;
+                spec.remove_prefix(name.size());
+            }
+        }
+
+        std::from_chars(spec.data(), spec.data() + spec.size(), key);
+
+        injected_keys.push_back(InjectedKey{.frame = frame, .key = key, .modifiers = modifiers});
     }
 
     struct BenchPass {
@@ -1228,9 +1246,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
             runtime.request_screenshot();
         }
 
-        for (auto const &[frame, key]: injected_keys) {
-            if (frame == frame_number) {
-                runtime.on_event(KeyPressedEvent{.key = key, .modifiers = 0});
+        for (auto const &injected: injected_keys) {
+            if (injected.frame == frame_number) {
+                runtime.on_event(KeyPressedEvent{.key = injected.key, .modifiers = injected.modifiers});
             }
         }
 
