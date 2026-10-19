@@ -2492,6 +2492,7 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, Mater
             .slot_override_count = static_cast<std::uint32_t>(slot_overrides.size()),
             .outlined = outlined,
     });
+    outlined_submission_count_ += outlined ? 1U : 0U;
 
     return {};
 }
@@ -2518,6 +2519,7 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
             .slot_override_count = static_cast<std::uint32_t>(slot_overrides.size()),
             .outlined = outlined,
     });
+    outlined_submission_count_ += outlined ? 1U : 0U;
 
     return {};
 }
@@ -2540,7 +2542,10 @@ auto Renderer::set_model_submission_slot_overrides(ModelSubmission &submission,
     slot_override_submissions_.insert(slot_override_submissions_.end(), overrides.begin(), overrides.end());
 }
 
-auto Renderer::end_model_submissions(std::size_t skipped) -> std::expected<void, RendererError> {
+auto Renderer::end_model_submissions(std::size_t skipped, std::size_t outlined)
+        -> std::expected<void, RendererError> {
+    outlined_submission_count_ += outlined;
+
     if (skipped == 0) {
         return {};
     }
@@ -3481,12 +3486,18 @@ public:
         batch.submesh_index = submesh_index;
         batch.material = material;
         batch.lod_index = lod_index;
+        batch.transforms.reserve(instance_reserve);
         auto const *batch_mesh = renderer.mesh_slot(mesh);
         batch.skinned = batch_mesh != nullptr && submesh_index < batch_mesh->submeshes.size() &&
                         batch_mesh->submeshes[submesh_index].lods[lod_index].skinned();
         lookup.emplace(key, &batch);
         return batch;
     }
+
+    // How many instances each batch of the chunk gets room for when it is made, so that the lists do not grow by
+    // repeated doubling (which costs more than the batching in a big chunk). A guess from the size of the chunk: a
+    // batch holds a fraction of it, and an over-estimate only costs memory that is released with the chunk.
+    std::size_t instance_reserve = 0;
 
     // In the order the chunk first needed them.
     std::deque<LocalBatch> batches;
@@ -3501,6 +3512,9 @@ public:
 // Batches model submissions [first, last) into `chunk`.
 auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t last, glm::vec3 const &camera_position)
         -> void {
+    constexpr auto max_instance_reserve = std::size_t{4096};
+    chunk.instance_reserve = std::min((last - first) / 8, max_instance_reserve);
+
     auto const push = [](LocalBatch &batch, glm::mat4 const *transform) {
         batch.transforms.push_back(transform);
         if (batch.skinned) {
@@ -3801,7 +3815,7 @@ auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_posit
     // single thread may do: with any submission outlined, the whole frame goes through one chunk.
     constexpr auto parallel_batching_threshold = std::size_t{4096};
     auto const model_count = model_submissions_.size();
-    auto const any_outlined = std::ranges::any_of(model_submissions_, &ModelSubmission::outlined);
+    auto const any_outlined = outlined_submission_count_ != 0;
 
     auto const batch_models = [&](std::size_t first, std::size_t last) -> std::expected<void, RendererError> {
         auto chunks = std::vector<std::unique_ptr<BatchChunk>>{};
@@ -7121,6 +7135,7 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
 auto Renderer::clear_submissions() noexcept -> void {
     submissions_.clear();
     model_submissions_.clear();
+    outlined_submission_count_ = 0;
     slot_override_submissions_.clear();
     instanced_submissions_.clear();
     instance_transforms_.clear();
