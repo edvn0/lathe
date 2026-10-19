@@ -73,4 +73,8 @@ namespace stages {
         debug_draw::DebugRenderer *debug_renderer_ = nullptr;
     };
 
+    // Draws the list of the combo a stage's settings opened inside a frame graph editor node. Call it inside the
+    // editor (between ed::Begin and ed::End), after the nodes.
+    auto draw_pending_combo() -> void;
+
 }

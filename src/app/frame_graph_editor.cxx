@@ -554,6 +554,8 @@ namespace gui {
             }
         }
 
+        stages::draw_pending_combo();
+
         ed::End();
         ed::SetCurrentEditor(nullptr);
 
