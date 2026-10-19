@@ -90,6 +90,28 @@ namespace frame_graph {
             }
         }
 
+        // A last pass with no accesses (the frame end marker) has no producer to hang an edge on, so it would float
+        // unconnected. It runs after everything by declaration order: link it from every pass that feeds nothing.
+        if (!graph.passes.empty() && graph.passes.back().accesses.empty()) {
+            auto const last = unit_of_pass[graph.passes.size() - 1];
+            auto feeds_something = std::vector<bool>(result.nodes.size(), false);
+            for (auto const &edge: result.edges) {
+                feeds_something[edge.from] = true;
+            }
+
+            for (auto unit = std::uint32_t{0}; unit < last; ++unit) {
+                if (feeds_something[unit] || result.nodes[unit].culled) {
+                    continue;
+                }
+                result.edges.push_back(LayoutEdge{
+                        .from = unit,
+                        .to = last,
+                        .cross_queue = result.nodes[unit].queue != result.nodes[last].queue,
+                        .ordering = true,
+                });
+            }
+        }
+
         for (auto unit = std::uint32_t{0}; unit < result.nodes.size(); ++unit) {
             for (auto const &edge: result.edges) {
                 if (edge.to == unit && edge.from < unit) {

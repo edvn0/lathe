@@ -6,7 +6,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
+#include <span>
 #include <string>
 
 #include <imgui.h>
@@ -29,6 +31,8 @@ namespace gui {
         constexpr auto details_height = 230.0F;
         constexpr auto preview_column_width = 340.0F;
         constexpr auto layout_file_name = "frame_graph_layout.txt";
+        // Below this zoom the node text is unreadable, so the automatic fit frames only the leading columns.
+        constexpr auto min_readable_zoom = 0.6F;
 
         auto node_id_of(std::uintptr_t key) -> ed::NodeId { return ed::NodeId{key * 4}; }
         auto input_pin_of(std::uintptr_t key) -> ed::PinId { return ed::PinId{(key * 4) + 1}; }
@@ -102,6 +106,53 @@ namespace gui {
             HeatScope(HeatScope &&) = delete;
             auto operator=(HeatScope &&) -> HeatScope & = delete;
         };
+
+        // Fits the view to the nodes. A graph too wide to read at once gets its leading columns framed instead, unless
+        // `everything` asks for the whole graph (the Fit button).
+        auto fit_view(std::span<std::uintptr_t const> keys, ImVec2 canvas, bool everything) -> void {
+            if (keys.empty()) {
+                return;
+            }
+
+            auto left = std::numeric_limits<float>::max();
+            auto top = std::numeric_limits<float>::max();
+            auto right = std::numeric_limits<float>::lowest();
+            auto bottom = std::numeric_limits<float>::lowest();
+            for (auto const key: keys) {
+                auto const position = ed::GetNodePosition(node_id_of(key));
+                auto const size = ed::GetNodeSize(node_id_of(key));
+                left = std::min(left, position.x);
+                top = std::min(top, position.y);
+                right = std::max(right, position.x + size.x);
+                bottom = std::max(bottom, position.y + size.y);
+            }
+
+            auto const fit_zoom =
+                    std::min(canvas.x / std::max(right - left, 1.0F), canvas.y / std::max(bottom - top, 1.0F));
+            if (everything || fit_zoom >= min_readable_zoom) {
+                ed::NavigateToContent();
+                return;
+            }
+
+            auto const window_end = left + canvas.x / min_readable_zoom;
+            auto chosen = false;
+            ed::ClearSelection();
+            for (auto const key: keys) {
+                auto const position = ed::GetNodePosition(node_id_of(key));
+                if (position.x + ed::GetNodeSize(node_id_of(key)).x <= window_end) {
+                    ed::SelectNode(node_id_of(key), true);
+                    chosen = true;
+                }
+            }
+
+            if (!chosen) {
+                ed::NavigateToContent();
+                return;
+            }
+
+            ed::NavigateToSelection(true);
+            ed::ClearSelection();
+        }
 
         auto draw_pins(std::uintptr_t key) -> void {
             ed::BeginPin(input_pin_of(key), ed::PinKind::Input);
@@ -283,6 +334,7 @@ namespace gui {
 
         if (ImGui::Button("Fit")) {
             fit_countdown_ = 1;
+            fit_everything_ = true;
         }
         ImGui::SameLine();
         if (ImGui::Button("Reset layout")) {
@@ -310,11 +362,13 @@ namespace gui {
         auto const stage_list = registry.stages();
 
         ed::SetCurrentEditor(context_->editor);
+        auto const available = ImGui::GetContentRegionAvail();
         auto const editor_height = has_selection_ ? std::max(ImGui::GetContentRegionAvail().y - details_height -
                                                                      ImGui::GetStyle().ItemSpacing.y,
                                                              120.0F)
                                                   : 0.0F;
         ed::Begin("frame_graph", ImVec2{0.0F, editor_height});
+        auto const canvas = ImVec2{available.x, editor_height > 0.0F ? editor_height : available.y};
 
         for (auto index = std::size_t{0}; index < layout_.nodes.size(); ++index) {
             auto const &node = layout_.nodes[index];
@@ -432,7 +486,9 @@ namespace gui {
 
         for (auto index = std::size_t{0}; index < layout_.edges.size(); ++index) {
             auto const &edge = layout_.edges[index];
-            auto const colour = edge.cross_queue ? ImVec4{1.0F, 0.66F, 0.25F, 0.65F} : ImVec4{0.62F, 0.68F, 0.78F, 0.45F};
+            auto const colour = edge.ordering      ? ImVec4{0.62F, 0.68F, 0.78F, 0.2F}
+                                : edge.cross_queue ? ImVec4{1.0F, 0.66F, 0.25F, 0.65F}
+                                                   : ImVec4{0.62F, 0.68F, 0.78F, 0.45F};
             ed::Link(ed::LinkId{link_id_tag | index}, output_pin_of(node_keys_[edge.from]),
                      input_pin_of(node_keys_[edge.to]), colour, edge.cross_queue ? 2.5F : 1.5F);
         }
@@ -442,6 +498,9 @@ namespace gui {
             if (index < layout_.edges.size()) {
                 auto const &edge = layout_.edges[index];
                 auto text = std::string{};
+                if (edge.ordering) {
+                    text = "(frame order: runs after everything above)";
+                }
                 for (auto const resource: edge.resources) {
                     text += text.empty() ? "" : "\n";
                     text += view.graph.resources[resource].name;
@@ -456,7 +515,12 @@ namespace gui {
         }
 
         if (fit_countdown_ > 0 && --fit_countdown_ == 0) {
-            ed::NavigateToContent();
+            auto fit_keys = node_keys_;
+            for (auto const &ghost: ghosts_) {
+                fit_keys.push_back(ghost.key);
+            }
+            fit_view(fit_keys, canvas, fit_everything_);
+            fit_everything_ = false;
         }
 
         selected_passes_.clear();
