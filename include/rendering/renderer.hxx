@@ -402,6 +402,32 @@ struct Renderer final : public IMeshSink, public IModelSink {
                       std::span<MaterialSlotOverride const> slot_overrides = {}, bool outlined = false)
             -> std::expected<void, RendererError>;
 
+    struct ModelSubmission {
+        ModelHandle model{};
+        glm::mat4 transform{1.0F};
+        MaterialHandle material_override{};
+
+        std::uint32_t slot_override_first = 0;
+        std::uint32_t slot_override_count = 0;
+
+        bool outlined = false;
+        // Left out when the submissions are closed (see begin_model_submissions).
+        bool skip = false;
+    };
+
+    // Submitting many models at once, with the caller filling the submissions (from several threads, if it likes)
+    // instead of going through submit_model one at a time. begin_model_submissions opens room for up to `count`
+    // models and returns it (shorter than asked if the renderer is full); the caller sets every field of each
+    // (an entry it does not want is marked `skip`), then end_model_submissions removes the skipped ones and the
+    // ones whose model does not exist. Slot overrides go through set_model_submission_slot_overrides, which is not
+    // thread safe. Nothing else may be submitted in between.
+    [[nodiscard]] auto begin_model_submissions(std::size_t count) -> std::span<ModelSubmission>;
+    auto set_model_submission_slot_overrides(ModelSubmission &submission,
+                                             std::span<MaterialSlotOverride const> overrides) -> void;
+    // `skipped` is how many entries were marked skip: with none, there is nothing to look through.
+    [[nodiscard]] auto end_model_submissions(std::size_t skipped) -> std::expected<void, RendererError>;
+    [[nodiscard]] auto has_model(ModelHandle handle) const noexcept -> bool { return model_slot(handle) != nullptr; }
+
     [[nodiscard]] auto outline_settings() noexcept -> OutlineSettings & { return outline_settings_; }
     [[nodiscard]] auto outline_settings() const noexcept -> OutlineSettings const & { return outline_settings_; }
 
@@ -1128,17 +1154,6 @@ private:
         ImageHolder viewport_target{};
     };
 
-    struct ModelSubmission {
-        ModelHandle model{};
-        glm::mat4 transform{1.0F};
-        MaterialHandle material_override{};
-
-        std::uint32_t slot_override_first = 0;
-        std::uint32_t slot_override_count = 0;
-
-        bool outlined = false;
-    };
-
     struct InstancedSubmission {
         ModelHandle model{};
         MaterialHandle material_override{};
@@ -1604,6 +1619,7 @@ private:
 
     std::vector<Submission> submissions_;
     std::vector<ModelSubmission> model_submissions_;
+    std::size_t opened_submissions_first_ = 0;
     std::vector<MaterialSlotOverride> slot_override_submissions_;
     std::vector<InstancedSubmission> instanced_submissions_;
     std::vector<glm::mat4> instance_transforms_;

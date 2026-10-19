@@ -11,6 +11,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <mutex>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -55,6 +56,7 @@
 #include "core/command_line.hxx"
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
+#include "core/thread_pool.hxx"
 #include "core/random.hxx"
 #include "glm/gtc/type_ptr.hpp"
 #include "gpu/context.hxx"
@@ -178,48 +180,164 @@ namespace {
 
         auto view = registry.view<Components::Transform const, Components::Model const>();
 
+        // Entities under shared parents share the walk up them (see systems::WorldTransformCache).
+        static thread_local auto world_transforms = systems::WorldTransformCache{};
+        world_transforms.begin_frame();
+
         auto const draw_model_bounds = runtime.debug_renderer->model_bounds_debug_enabled();
         constexpr auto model_bounds_debug_colour = glm::vec3{0.2F, 1.0F, 0.4F};
 
-        // Editor selection is drawn with the same outline games get from Components::Outlined.
-        auto const &selection = selection_context();
-        auto const show_selection = !runtime.is_playing;
+        // Editor selection is drawn with the same outline games get from Components::Outlined. The selection is read
+        // once: asking it per entity locks it every time.
+        auto selected = std::vector<entt::entity>{};
+        if (!runtime.is_playing) {
+            selected = selection_context().snapshot().entities;
+            std::ranges::sort(selected);
+        }
+        auto const is_selected = [&selected](entt::entity entity) {
+            return !selected.empty() && std::ranges::binary_search(selected, entity);
+        };
 
-        for (auto [entity, transform, model]: view.each()) {
-            auto const outlined = registry.all_of<Components::Outlined>(entity) ||
-                                  (show_selection && selection.contains(entity));
-            auto const *override_component = registry.try_get<Components::MaterialOverride const>(entity);
-            auto const material_override =
-                    override_component != nullptr ? override_component->material : MaterialHandle{};
-            auto const slot_overrides = override_component != nullptr
-                                                ? std::span<MaterialSlotOverride const>{override_component->slots}
-                                                : std::span<MaterialSlotOverride const>{};
+        // Looked up once for all entities, not once per entity by type. Through a const registry, a component nobody
+        // has used gets no storage made (a null pointer here).
+        auto const &read_only = std::as_const(registry);
+        auto const *const outlines = read_only.storage<Components::Outlined>();
+        auto const *const overrides = read_only.storage<Components::MaterialOverride>();
+        auto const *const parents = read_only.storage<Components::Parent>();
+        auto const *const cones_storage = read_only.storage<Components::DebugMeshletCones>();
 
-            auto const world_transform = systems::get_world_transform(registry, entity, transform);
-            auto result = runtime.renderer->submit_model(model.model, world_transform, material_override,
+        // The debug drawing below is not safe to run on several threads (and is rare): with it on, the loop is serial.
+        auto const debug_draw = draw_model_bounds || runtime.debug_renderer->meshlet_cones_debug_enabled() ||
+                                (cones_storage != nullptr && !cones_storage->empty());
+
+        if (!debug_draw) {
+            // Entities are looked at in the pool's order, as view.each() does, so what is submitted does not change.
+            // The renderer's submissions are opened, filled straight from several threads (each entity is independent
+            // of the others) and closed. Slot overrides, which are appended to one shared list, are left for after. A
+            // thread keeps its own cache of parent chains (see WorldTransformCache).
+            struct Fixup {
+                std::size_t index = 0;
+                entt::entity entity = entt::null;
+            };
+
+            auto const &pool = *view.handle();
+            auto const submissions = runtime.renderer->begin_model_submissions(pool.size());
+            auto const count = submissions.size();
+            if (count < pool.size()) {
+                error("Could not submit all scene objects: the renderer holds {} models", count);
+            }
+
+            auto fixups = std::vector<Fixup>{};
+            auto fixups_mutex = std::mutex{};
+            auto skipped = std::atomic<std::size_t>{0};
+            auto const renderer = runtime.renderer.get();
+
+            auto const fill = [&](std::size_t first, std::size_t last) {
+                auto local_fixups = std::vector<Fixup>{};
+                auto local_skipped = std::size_t{0};
+                auto local_transforms = systems::WorldTransformCache{};
+
+                auto entities = pool.begin() + static_cast<std::ptrdiff_t>(first);
+                for (auto index = first; index < last; ++index, ++entities) {
+                    auto const entity = *entities;
+                    auto &submission = submissions[index];
+
+                    if (!view.contains(entity)) {
+                        submission.skip = true;
+                        ++local_skipped;
+                        continue;
+                    }
+
+                    auto const &transform = view.get<Components::Transform const>(entity);
+                    auto const &model = view.get<Components::Model const>(entity);
+
+                    if (!renderer->has_model(model.model)) {
+                        submission.skip = true;
+                        ++local_skipped;
+                        continue;
+                    }
+
+                    auto const parented = parents != nullptr && parents->contains(entity);
+                    auto const has_slots = overrides != nullptr && overrides->contains(entity) &&
+                                           !overrides->get(entity).slots.empty();
+
+                    submission.model = model.model;
+                    submission.transform = parented ? local_transforms.get_with_parent(registry, entity, transform)
+                                                    : transform.matrix();
+                    submission.material_override =
+                            overrides != nullptr && overrides->contains(entity) ? overrides->get(entity).material
+                                                                                 : MaterialHandle{};
+                    submission.slot_override_first = 0;
+                    submission.slot_override_count = 0;
+                    submission.outlined = (outlines != nullptr && outlines->contains(entity)) || is_selected(entity);
+                    submission.skip = false;
+
+                    if (has_slots) {
+                        local_fixups.push_back(Fixup{.index = index, .entity = entity});
+                    }
+                }
+
+                skipped += local_skipped;
+                if (!local_fixups.empty()) {
+                    auto const lock = std::scoped_lock{fixups_mutex};
+                    fixups.insert(fixups.end(), local_fixups.begin(), local_fixups.end());
+                }
+            };
+
+            constexpr auto parallel_threshold = std::size_t{4096};
+            if (count < parallel_threshold) {
+                fill(0, count);
+            } else {
+                thread_pool().submit_blocks(std::size_t{0}, count, fill).wait();
+            }
+
+            // Blocks finish in any order; the overrides list is filled in the pool's order.
+            std::ranges::sort(fixups, {}, &Fixup::index);
+            for (auto const &fixup: fixups) {
+                runtime.renderer->set_model_submission_slot_overrides(
+                        submissions[fixup.index],
+                        std::span<MaterialSlotOverride const>{overrides->get(fixup.entity).slots});
+            }
+
+            if (auto result = runtime.renderer->end_model_submissions(skipped.load()); !result) {
+                error("Some scene objects have a model that does not exist: {}", describe(result.error()));
+            }
+        } else {
+            for (auto [entity, transform, model]: view.each()) {
+                auto const outlined = registry.all_of<Components::Outlined>(entity) || is_selected(entity);
+                auto const *override_component = registry.try_get<Components::MaterialOverride const>(entity);
+                auto const material_override =
+                        override_component != nullptr ? override_component->material : MaterialHandle{};
+                auto const slot_overrides = override_component != nullptr
+                                                    ? std::span<MaterialSlotOverride const>{override_component->slots}
+                                                    : std::span<MaterialSlotOverride const>{};
+
+                auto const world_transform = world_transforms.get(registry, entity, transform);
+                auto result = runtime.renderer->submit_model(model.model, world_transform, material_override,
                                                              slot_overrides, outlined);
 
-            if (!result) {
-                error("Could not submit scene object (model index {}): {}", model.model.index,
-                      describe(result.error()));
-            }
+                if (!result) {
+                    error("Could not submit scene object (model index {}): {}", model.model.index,
+                          describe(result.error()));
+                }
 
-            auto const *cones = registry.try_get<Components::DebugMeshletCones const>(entity);
-            if (cones != nullptr && cones->enabled) {
-                draw_meshlet_cones(*runtime.debug_renderer, runtime.renderer->model_meshlet_cones(model.model),
-                                   world_transform, cones->extrude, cones->shrink);
-            } else if (runtime.debug_renderer->meshlet_cones_debug_enabled()) {
-                draw_meshlet_cones(*runtime.debug_renderer, runtime.renderer->model_meshlet_cones(model.model),
-                                   world_transform, 0.0F, 0.0F);
-            }
+                auto const *cones = registry.try_get<Components::DebugMeshletCones const>(entity);
+                if (cones != nullptr && cones->enabled) {
+                    draw_meshlet_cones(*runtime.debug_renderer, runtime.renderer->model_meshlet_cones(model.model),
+                                       world_transform, cones->extrude, cones->shrink);
+                } else if (runtime.debug_renderer->meshlet_cones_debug_enabled()) {
+                    draw_meshlet_cones(*runtime.debug_renderer, runtime.renderer->model_meshlet_cones(model.model),
+                                       world_transform, 0.0F, 0.0F);
+                }
 
-            if (draw_model_bounds) {
-                auto const submesh_bounds = runtime.renderer->model_submesh_bounds(model.model);
+                if (draw_model_bounds) {
+                    auto const submesh_bounds = runtime.renderer->model_submesh_bounds(model.model);
 
-                if (submesh_bounds) {
-                    for (auto const &[min, max]: *submesh_bounds) {
-                        auto const [world_min, world_max] = maths::transform_aabb(world_transform, min, max);
-                        runtime.debug_renderer->add_aabb(world_min, world_max, model_bounds_debug_colour);
+                    if (submesh_bounds) {
+                        for (auto const &[min, max]: *submesh_bounds) {
+                            auto const [world_min, world_max] = maths::transform_aabb(world_transform, min, max);
+                            runtime.debug_renderer->add_aabb(world_min, world_max, model_bounds_debug_colour);
+                        }
                     }
                 }
             }

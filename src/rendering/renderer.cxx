@@ -2488,6 +2488,53 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
     return {};
 }
 
+auto Renderer::begin_model_submissions(std::size_t count) -> std::span<ModelSubmission> {
+    auto const used = submitted_model_count();
+    auto const room = used < maximum_submission_count_ ? static_cast<std::size_t>(maximum_submission_count_) - used
+                                                       : std::size_t{0};
+    count = std::min(count, room);
+
+    opened_submissions_first_ = model_submissions_.size();
+    model_submissions_.resize(opened_submissions_first_ + count);
+    return std::span{model_submissions_}.subspan(opened_submissions_first_);
+}
+
+auto Renderer::set_model_submission_slot_overrides(ModelSubmission &submission,
+                                                   std::span<MaterialSlotOverride const> overrides) -> void {
+    submission.slot_override_first = static_cast<std::uint32_t>(slot_override_submissions_.size());
+    submission.slot_override_count = static_cast<std::uint32_t>(overrides.size());
+    slot_override_submissions_.insert(slot_override_submissions_.end(), overrides.begin(), overrides.end());
+}
+
+auto Renderer::end_model_submissions(std::size_t skipped) -> std::expected<void, RendererError> {
+    if (skipped == 0) {
+        return {};
+    }
+
+    auto first_error = std::optional<RendererError>{};
+    auto kept = opened_submissions_first_;
+    for (auto index = opened_submissions_first_; index < model_submissions_.size(); ++index) {
+        auto &submission = model_submissions_[index];
+        if (submission.skip) {
+            continue;
+        }
+        if (model_slot(submission.model) == nullptr) {
+            first_error = first_error.value_or(make_error(RendererErrorType::invalid_model));
+            continue;
+        }
+        if (kept != index) {
+            model_submissions_[kept] = submission;
+        }
+        ++kept;
+    }
+    model_submissions_.resize(kept);
+
+    if (first_error) {
+        return std::unexpected(*first_error);
+    }
+    return {};
+}
+
 auto Renderer::resident_lod_groups(Submesh const &submesh, MaterialHandle base_material) const noexcept
         -> ResidentLodGroups {
     ResidentLodGroups result;
