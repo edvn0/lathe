@@ -151,6 +151,10 @@ inline constexpr std::array<std::pair<ViewMode, std::string_view>, 8> view_mode_
 }};
 
 struct FrameStats {
+    // A hash of what prepare_frame wrote for the GPU this frame (see Renderer::set_frame_checksum_enabled); 0 when it
+    // is off.
+    std::uint64_t frame_checksum = 0;
+
     std::uint32_t submitted_triangle_count = 0;
     std::uint32_t submitted_instance_count = 0;
 
@@ -755,6 +759,11 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto recorded_frame_count() const noexcept -> std::uint64_t { return recorded_frame_count_; }
     [[nodiscard]] auto last_frame_stats() const noexcept -> FrameStats const & { return last_frame_stats_; }
 
+    // Hashes the transforms, draw records, indirect commands and cull bounds prepare_frame produces, into
+    // FrameStats::frame_checksum. For checking that a change to how they are built leaves them exactly as they were;
+    // it reads the whole upload every frame, so it is off by default.
+    auto set_frame_checksum_enabled(bool enabled) noexcept -> void { frame_checksum_enabled_ = enabled; }
+
     [[nodiscard]] auto transient_bytes() const noexcept -> std::uint64_t { return transient_allocator_.total_bytes(); }
     [[nodiscard]] auto transient_unaliased_bytes() const noexcept -> std::uint64_t {
         return transient_allocator_.unaliased_bytes();
@@ -1285,6 +1294,21 @@ private:
     [[nodiscard]]
     auto upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &frame) -> std::expected<void, RendererError>;
 
+    // The stages of prepare_frame that turn the frame's submissions into batches and write them out, in the order they
+    // run. BatchBuild carries what they hand on.
+    struct BatchBuild;
+    class BatchRecipes;
+    struct LocalBatch;
+    class BatchChunk;
+    auto build_chunk(BatchChunk &chunk, std::size_t first, std::size_t last, glm::vec3 const &camera_position) -> void;
+    [[nodiscard]] auto build_batches(RendererFrame &frame, glm::vec3 const &camera_position, BatchBuild &build)
+            -> std::expected<void, RendererError>;
+    [[nodiscard]] auto classify_batches(glm::vec3 const &camera_position, BatchBuild &build)
+            -> std::expected<void, RendererError>;
+    [[nodiscard]] auto batch_max_shadow_cascade(BatchEntry const *batch) const noexcept -> std::int32_t;
+    auto plan_shadow_batches(RendererFrame &frame, BatchBuild &build) -> void;
+    [[nodiscard]] auto emit_batches(RendererFrame &frame, BatchBuild &build) -> std::expected<void, RendererError>;
+
     auto clear_submissions() noexcept -> void;
 
     struct RecordedOverlay {
@@ -1646,6 +1670,7 @@ private:
 
     FrameTimings last_frame_timings_{};
     FrameStats last_frame_stats_{};
+    bool frame_checksum_enabled_ = false;
     std::uint64_t recorded_frame_count_ = 0;
 
     std::vector<GpuLight> light_staging_;

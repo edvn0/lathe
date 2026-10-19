@@ -111,6 +111,10 @@ BenchmarkArguments::BenchmarkArguments(CommandLine &cli) {
                  });
     group.flag("--benchmark-screenshots", "Screenshot the first frame at or past each keyframe (single run only)",
                options_.keyframe_screenshots);
+    group.flag("--benchmark-frame-checksum",
+               "Hash the data prepare_frame writes for every frame into the results, to check that a change leaves it "
+               "exactly as it was (slow: the timings are not comparable)",
+               options_.frame_checksum);
     group.option("--benchmark-scenarios", "a,b", "Suite: which scenarios to run (default: all)",
                  [this](std::string_view text) -> std::expected<void, std::string> {
                      options_.scenarios.clear();
@@ -600,6 +604,7 @@ auto write_analysis_json(JsonWriter &writer, std::string_view key, FrameAnalysis
             .value("shadowed_lights", workload.shadowed_lights, 1)
             .value("shadow_lights_cached", workload.shadow_lights_cached, 1)
             .value("shadow_tiles_drawn", workload.shadow_tiles_drawn, 1)
+            .value("frame_checksum", std::format("{:016x}", workload.frame_checksum))
             .end_object();
 
     writer.begin_object("allocations", true)

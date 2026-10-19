@@ -47,6 +47,9 @@ struct BenchmarkOptions {
     std::uint32_t max_warmup_frame_count = 1200;
     std::uint32_t seed = 1337;
     bool keyframe_screenshots = false;
+    // Hash what prepare_frame writes for each frame (FrameStats::frame_checksum). It reads the whole upload every
+    // frame, so the timings of a run with it on are not comparable to one without.
+    bool frame_checksum = false;
 
     float target_hz = 144.0F;
     std::optional<BenchmarkRenderSize> render_size;

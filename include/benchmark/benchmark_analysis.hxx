@@ -39,6 +39,8 @@ struct BenchmarkWorkload {
     std::uint32_t shadowed_lights = 0;
     std::uint32_t shadow_lights_cached = 0;
     std::uint32_t shadow_tiles_drawn = 0;
+    // FrameStats::frame_checksum of the frame (0 when it was not computed).
+    std::uint64_t frame_checksum = 0;
 };
 
 struct BenchmarkFrameSample {
@@ -127,6 +129,8 @@ struct WorkloadSummary {
     double shadowed_lights = 0.0;
     double shadow_lights_cached = 0.0;
     double shadow_tiles_drawn = 0.0;
+    // The frames' checksums chained in order: equal across two runs when every frame's data was.
+    std::uint64_t frame_checksum = 0;
 };
 
 struct FrameAnalysis {

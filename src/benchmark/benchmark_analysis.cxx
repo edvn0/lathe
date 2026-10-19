@@ -170,6 +170,7 @@ auto analyse_frames(std::span<BenchmarkFrameSample const> samples, AnalysisOptio
         workload.shadowed_lights += sample.workload.shadowed_lights;
         workload.shadow_lights_cached += sample.workload.shadow_lights_cached;
         workload.shadow_tiles_drawn += sample.workload.shadow_tiles_drawn;
+        workload.frame_checksum = (workload.frame_checksum ^ sample.workload.frame_checksum) * 0x100000001B3ULL;
 
         analysis.mean_allocations += static_cast<double>(sample.allocations);
         analysis.mean_allocated_bytes += static_cast<double>(sample.allocated_bytes);
