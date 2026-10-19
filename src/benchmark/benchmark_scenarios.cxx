@@ -6,6 +6,7 @@
 #include <cmath>
 #include <numbers>
 #include <random>
+#include <tuple>
 
 #include "game/shadow_city.hxx"
 #include "assets/material_storage.hxx"
@@ -108,7 +109,9 @@ namespace {
               materials.make(glm::vec4{0.45F, 0.45F, 0.47F, 1.0F}, AlphaMode::opaque, 0.9F));
     }
 
-    [[nodiscard]] auto palette(MaterialSet &materials, std::uint32_t count) -> std::vector<MaterialHandle> {
+    [[nodiscard]] auto palette(MaterialSet &materials, std::uint32_t count,
+                               std::uint32_t max_shadow_cascade = shadow_cascade_count - 1)
+            -> std::vector<MaterialHandle> {
         std::vector<MaterialHandle> result;
         result.reserve(count);
         for (std::uint32_t i = 0; i < count; ++i) {
@@ -116,7 +119,8 @@ namespace {
             auto const colour = glm::vec3{0.5F + 0.5F * std::cos(6.2831853F * (hue + 0.00F)),
                                           0.5F + 0.5F * std::cos(6.2831853F * (hue + 0.33F)),
                                           0.5F + 0.5F * std::cos(6.2831853F * (hue + 0.67F))};
-            result.push_back(materials.make(glm::vec4{colour * 0.8F + 0.1F, 1.0F}));
+            result.push_back(materials.make(glm::vec4{colour * 0.8F + 0.1F, 1.0F}, AlphaMode::opaque, 0.6F,
+                                            max_shadow_cascade));
         }
         return result;
     }
@@ -450,6 +454,87 @@ namespace {
         };
     }
 
+    // The camera looks straight up at an empty sky, so the GPU has nothing to draw and what a frame costs is the
+    // CPU's work for the entities in the scene.
+    [[nodiscard]] auto sky_path(std::uint32_t /*load*/) -> std::vector<CameraKeyframe> {
+        return {
+                {.position = {0.0F, 2.0F, 0.0F}, .target = {0.0F, 200.0F, 0.1F}},
+                {.position = {1.0F, 2.0F, 0.0F}, .target = {1.0F, 200.0F, 0.1F}},
+                {.position = {0.0F, 2.0F, 1.0F}, .target = {0.0F, 200.0F, 1.1F}},
+        };
+    }
+
+    // Entities made straight in the registry: a scenario of hundreds of thousands should cost the setup of the
+    // components it measures and nothing else.
+    auto populate_cpu_submit(BenchmarkScenarioContext const &context) -> void {
+        MaterialSet materials{context.renderer};
+        // No shadow casting: the shadow pass draws casters whether or not the camera sees them, and would hide what
+        // the CPU costs behind a GPU-bound frame.
+        auto const colours = palette(materials, 16, GpuMaterial::no_shadow_cascade);
+        for (auto const colour: colours) {
+            std::ignore = materials.keep(colour, context.owned_materials);
+        }
+
+        auto &registry = context.scene.get_registry();
+
+        auto const side = grid_side(context.load);
+        auto const extent = static_cast<float>(side) * draw_call_spacing;
+        for (std::uint32_t i = 0; i < context.load; ++i) {
+            auto const entity = registry.create();
+            registry.emplace<Components::Transform>(
+                    entity, Components::Transform{.position = glm::vec3{static_cast<float>(i % side) * draw_call_spacing -
+                                                                                extent * 0.5F,
+                                                                        0.5F,
+                                                                        static_cast<float>(i / side) * draw_call_spacing -
+                                                                                extent * 0.5F},
+                                                  .rotation = glm::angleAxis(static_cast<float>(i) * 0.1F,
+                                                                             glm::vec3{0.0F, 1.0F, 0.0F})});
+            registry.emplace<Components::Model>(
+                    entity, Components::Model{.model = i % 2 == 0 ? context.engine_models.cube
+                                                                  : context.engine_models.sphere});
+            registry.emplace<Components::MaterialOverride>(
+                    entity, Components::MaterialOverride{.material = colours[i % colours.size()]});
+        }
+    }
+
+    // A fixed crowd of entities under a chain of parents: each one walks the chain for its world matrix every frame.
+    constexpr std::uint32_t hierarchy_entities = 20'000;
+
+    auto populate_cpu_hierarchy(BenchmarkScenarioContext const &context) -> void {
+        MaterialSet materials{context.renderer};
+        auto const colour = materials.keep(materials.make(glm::vec4{0.7F, 0.5F, 0.3F, 1.0F}, AlphaMode::opaque, 0.6F,
+                                                          GpuMaterial::no_shadow_cascade),
+                                           context.owned_materials);
+
+        auto &registry = context.scene.get_registry();
+
+        auto parent = entt::entity{entt::null};
+        for (std::uint32_t level = 0; level < context.load; ++level) {
+            auto const link = registry.create();
+            registry.emplace<Components::Transform>(
+                    link, Components::Transform{.position = glm::vec3{0.1F, 0.0F, 0.0F},
+                                                .rotation = glm::angleAxis(0.05F, glm::vec3{0.0F, 1.0F, 0.0F})});
+            if (parent != entt::null) {
+                registry.emplace<Components::Parent>(link, Components::Parent{.entity = parent});
+            }
+            parent = link;
+        }
+
+        auto const side = grid_side(hierarchy_entities);
+        for (std::uint32_t i = 0; i < hierarchy_entities; ++i) {
+            auto const entity = registry.create();
+            registry.emplace<Components::Transform>(
+                    entity, Components::Transform{.position = glm::vec3{static_cast<float>(i % side) * 2.0F,
+                                                                        0.5F,
+                                                                        static_cast<float>(i / side) * 2.0F}});
+            registry.emplace<Components::Model>(entity, Components::Model{.model = context.engine_models.cube});
+            registry.emplace<Components::MaterialOverride>(entity, Components::MaterialOverride{.material = colour});
+            if (parent != entt::null) {
+                registry.emplace<Components::Parent>(entity, Components::Parent{.entity = parent});
+            }
+        }
+    }
+
 }
 
 auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<BenchmarkScenario> {
@@ -584,6 +669,21 @@ auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<Be
             .description = "Full-screen alpha-blended layers in front of the camera: fill rate and blending.",
             .populate = populate_overdraw,
             .camera_path = overdraw_path,
+    });
+
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "cpu_submit", .load_axis = "objects", .default_loads = {25000, 100000, 400000}},
+            .description = "Many entities, none in view (the camera looks at an empty sky): per-entity scene "
+                           "submission and culling input without GPU work. Run it at a tiny --benchmark-render-size.",
+            .populate = populate_cpu_submit,
+            .camera_path = sky_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "cpu_hierarchy", .load_axis = "parent_depth", .default_loads = {1, 8, 32}},
+            .description = "20000 entities under a chain of parents, none in view: the cost of a world transform "
+                           "that has to walk the hierarchy, per entity and frame.",
+            .populate = populate_cpu_hierarchy,
+            .camera_path = sky_path,
     });
 
     return scenarios;
