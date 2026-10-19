@@ -61,7 +61,7 @@ namespace gui {
 
         // The same three steps as every immediate-mode renderer: build the frame, record it into an overlay's
         // command buffer, finish it. `framebuffer` is the size of the target the UI is drawn into.
-        auto begin_frame(VkExtent2D framebuffer) -> void;
+        auto begin_frame(VkExtent2D framebuffer, std::uint32_t frame_index) -> void;
         auto record(OverlayRecordContext const &context) -> void;
         auto end_frame() -> void;
 
@@ -72,6 +72,9 @@ namespace gui {
         std::vector<std::byte> emoji_font_data;
 
         OverlayShader shader;
+        // For the windows ImGui detaches from the main one (see imgui_viewports.cxx): a target of their own, so the
+        // pipeline is not registered again each time the formats differ from the main UI's.
+        OverlayShader viewport_shader;
         UploadRing vertices;
         UploadRing indices;
         SamplerHandle sampler{};
@@ -80,7 +83,12 @@ namespace gui {
             ImageHandle image;
             std::uint32_t frames;
         };
-        std::unordered_map<ImTextureData *, ImageHandle> textures;
+        struct AtlasImage {
+            ImageHandle image;
+            int width;
+            int height;
+        };
+        std::unordered_map<ImTextureData *, AtlasImage> textures;
         std::vector<RetiredTexture> retired_textures;
 
         std::string config_name{"imgui.ini"};
@@ -90,8 +98,29 @@ namespace gui {
 
         float display_scale{1.0F};
 
+        // Where a draw list's geometry goes: the rings it is written to (and the slot of them), and what a preview
+        // image stands for.
+        struct DrawTarget {
+            UploadRing &vertices;
+            UploadRing &indices;
+            std::uint32_t ring_slot;
+            std::uint32_t preview_index;
+        };
+
         auto update_textures(ImDrawData const &data) -> void;
-        auto draw(OverlayRecordContext const &context, BoundOverlayShader const &bound, ImDrawData const &data) -> void;
+        auto retire_textures() -> void;
+        auto upload_texture_region(ImageHandle handle, ImTextureData &texture) -> bool;
+        auto draw(BoundOverlayShader const &bound, ImDrawData const &data, DrawTarget const &target) -> void;
+
+        // The multi-viewport backend (imgui_viewports.cxx).
+        auto init_viewports() -> void;
+        auto shutdown_viewports() -> void;
+        auto wait_for_viewports(std::uint32_t frame_index) -> void;
+        friend struct ViewportBackend;
+
+        // The frame the UI is being built for: the descriptor table the detached windows bind.
+        std::uint32_t current_frame_index = 0;
+        bool viewports_enabled = false;
     };
 
 }

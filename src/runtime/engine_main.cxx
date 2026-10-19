@@ -456,7 +456,7 @@ namespace {
         if (frame_ok) {
             {
                 auto const ui = clock.scope(CpuPhase::ui);
-                runtime.imgui_renderer->begin_frame(frame->extent);
+                runtime.imgui_renderer->begin_frame(frame->extent, frame->frame_index);
                 runtime.on_ui(frame->frame_index);
                 runtime.imgui_renderer->end_frame();
             }
@@ -803,6 +803,9 @@ namespace {
             display.flag("--max-quality", "Turn every rendering feature on and up: 4x MSAA, fog, up to 64 shadowed local lights, heavier AO, all culling and clustered lighting", max_quality);
             diagnostics.flag("--frame-graph-dump",
                              "Log the compiled frame graph whenever it changes", dump_frame_graph);
+            diagnostics.toggle("--validation",
+                               "Load the Vulkan validation layer (on by default in Debug builds, off in Release)",
+                               validation);
             diagnostics.value("--frame-graph-dot", "FILE.dot",
                               "Write the compiled frame graph as Graphviz whenever it changes (render with `dot "
                               "-Tsvg`).",
@@ -845,6 +848,7 @@ namespace {
 
         std::optional<ScreenType> screen_type;
         std::optional<AsyncComputeMode> async_compute;
+        std::optional<bool> validation;
         std::string async_passes;
         bool max_quality = false;
         bool dump_frame_graph = false;
@@ -1033,6 +1037,12 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
     }
 
+#ifndef NDEBUG
+    constexpr auto validation_by_default = true;
+#else
+    constexpr auto validation_by_default = false;
+#endif
+    context.validation = engine.validation.value_or(validation_by_default);
     context.sync_validation = true;
 
     if (!initialize_vulkan(context, screen_type)) {
