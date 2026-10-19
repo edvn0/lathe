@@ -41,9 +41,64 @@ namespace {
         return FrameGraphView{.graph = graph.description(), .compiled = *compiled, .revision = 1};
     }
 
+
+    // produce -> consume, an unrelated writer, then a final pass that touches nothing (the frame end marker).
+    auto make_view_with_frame_end() -> FrameGraphView {
+        auto graph = FrameGraph{};
+        auto data = graph.import_buffer({.debug_name = "data"});
+        auto other = graph.import_buffer({.debug_name = "other"});
+        graph.add_pass("produce", PassType::compute, {}, [&](PassBuilder &p) {
+            data = p.write(data, Use::shader_write, compute_stage);
+            return RecordFn{};
+        });
+        graph.add_pass("consume", PassType::compute, {}, [&](PassBuilder &p) {
+            [[maybe_unused]] auto const r = p.read(data, Use::shader_read, compute_stage);
+            p.side_effect();
+            return RecordFn{};
+        });
+        graph.add_pass("independent", PassType::compute, {}, [&](PassBuilder &p) {
+            other = p.write(other, Use::shader_write, compute_stage);
+            p.side_effect();
+            return RecordFn{};
+        });
+        graph.add_pass("frame_end", PassType::transfer, {}, [&](PassBuilder &p) {
+            p.side_effect();
+            return RecordFn{};
+        });
+
+        auto compiled = compile(graph, dedicated());
+        REQUIRE(compiled.has_value());
+        return FrameGraphView{.graph = graph.description(), .compiled = *compiled, .revision = 1};
+    }
+
 }
 
 TEST_SUITE("unit") {
+    TEST_CASE("an access-free final pass is linked from every pass that feeds nothing") {
+        auto const result = layout(make_view_with_frame_end());
+
+        auto ordering_sources = std::vector<std::uint32_t>{};
+        for (auto const &edge: result.edges) {
+            if (edge.ordering) {
+                CHECK(edge.to == 3);
+                CHECK(edge.resources.empty());
+                ordering_sources.push_back(edge.from);
+            }
+        }
+
+        // produce feeds consume, so only consume and independent are sinks.
+        CHECK(ordering_sources == std::vector<std::uint32_t>{1, 2});
+        CHECK(result.nodes[3].depth == result.nodes[1].depth + 1);
+    }
+
+    TEST_CASE("a graph whose last pass has accesses gets no ordering edges") {
+        auto const result = layout(make_view());
+
+        for (auto const &edge: result.edges) {
+            CHECK_FALSE(edge.ordering);
+        }
+    }
+
     TEST_CASE("layout derives an edge from the pass that produced the accessed version") {
         auto const result = layout(make_view());
 

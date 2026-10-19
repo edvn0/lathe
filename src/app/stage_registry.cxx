@@ -527,8 +527,8 @@ namespace stages {
 
         add(Stage{
                 .id = FlyString{"colour_grade"},
-                .title = "Colour grading",
-                .passes = {},
+                .title = "Composition / colour grading",
+                .passes = passes_of({"composition"}),
                 .state =
                         [](Renderer const &renderer) {
                             return State{.enabled = renderer.colour_grade_settings().lut >= 0};

@@ -40,6 +40,8 @@ namespace frame_graph {
         std::uint32_t to = 0;
         std::vector<std::uint32_t> resources;
         bool cross_queue = false;
+        // No resource links the two: `to` is a final pass that touches nothing and only runs last by declaration order.
+        bool ordering = false;
     };
 
     struct GraphLayout {

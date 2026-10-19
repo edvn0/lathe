@@ -67,6 +67,7 @@ namespace gui {
         bool has_selection_ = false;
         int settle_countdown_ = 0;
         int fit_countdown_ = 0;
+        bool fit_everything_ = false;
     };
 
 }
