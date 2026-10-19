@@ -32,6 +32,7 @@ enum class ImageDescriptorView : std::uint8_t {
     sampled_2d_array,
     storage_2d,
     storage_2d_array,
+    sampled_3d,
     count,
 };
 

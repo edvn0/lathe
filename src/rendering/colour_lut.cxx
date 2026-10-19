@@ -137,21 +137,15 @@ auto ColourLut::sample(glm::vec3 colour) const noexcept -> glm::vec3 {
     return glm::mix(lerp_green(base.z), lerp_green(base.z + 1), t.z);
 }
 
-auto ColourLut::to_strip_rgba8() const -> std::vector<std::byte> {
+auto ColourLut::to_volume_rgba8() const -> std::vector<std::byte> {
     auto pixels = std::vector<std::byte>{};
-    pixels.reserve(static_cast<std::size_t>(size) * size * size * 4);
+    pixels.reserve(entries.size() * 4);
 
-    for (std::uint32_t g = 0; g < size; ++g) {
-        for (std::uint32_t b = 0; b < size; ++b) {
-            for (std::uint32_t r = 0; r < size; ++r) {
-                auto const &colour = at(r, g, b);
-
-                pixels.push_back(to_byte(colour.r));
-                pixels.push_back(to_byte(colour.g));
-                pixels.push_back(to_byte(colour.b));
-                pixels.push_back(std::byte{255});
-            }
-        }
+    for (auto const &colour: entries) {
+        pixels.push_back(to_byte(colour.r));
+        pixels.push_back(to_byte(colour.g));
+        pixels.push_back(to_byte(colour.b));
+        pixels.push_back(std::byte{255});
     }
 
     return pixels;

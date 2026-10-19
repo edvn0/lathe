@@ -29,8 +29,11 @@ data directory and registers it under that path. Supported: `LUT_3D_SIZE` 2 .. 6
 
 ## How it is stored
 
-Vulkan 3D textures are not part of the bindless set, so a LUT is a 2D strip, `size * size` texels wide and `size`
-tall (`ColourLut::to_strip_rgba8`): blue slices run along x, green down y, red along x inside a slice. `composite.slang`
-filters inside a slice with the sampler (texel centres keep it from touching the next slice) and blends the two
-neighbouring blue slices itself, which makes it a full trilinear lookup. Texture index 0 (the white default image)
-means "no LUT".
+A LUT is a real 3D texture: a `size`^3 `R8G8B8A8_UNORM` volume with red along x, green along y and blue along z
+(`ColourLut::to_volume_rgba8`), bound in the bindless set as `sampled_3d` (binding 7, `Texture3D<float4>` in
+`bindless.slang`). `composite.slang` maps colour onto texel centres and takes one `SampleLevel`, so the hardware does the
+trilinear blend. Texture index 0 (the white default image) means "no LUT".
+
+Any other system can use the same binding: create an `Image` with `image_type = VK_IMAGE_TYPE_3D`, `view_type =
+VK_IMAGE_VIEW_TYPE_3D` and the `ImageDescriptorView::sampled_3d` descriptor view. Volumes are single-level for now (the
+upload path does not generate mips for 3D images), and slots with no volume read a 1x1x1 black fallback.

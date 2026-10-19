@@ -5297,19 +5297,19 @@ auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
 }
 
 auto Renderer::add_colour_lut(std::string name, ColourLut const &lut) -> std::expected<std::int32_t, RendererError> {
-    auto const pixels = lut.to_strip_rgba8();
+    auto const pixels = lut.to_volume_rgba8();
     auto const debug_name = std::string{"renderer.colour_lut."} + name;
 
     // Graded colour is data, not a picture: UNORM so the sampler returns the stored values untouched.
     auto image = image_storage_.create_image(
             ImageCreateInfo{
-                    .extent = VkExtent3D{.width = lut.size * lut.size, .height = lut.size, .depth = 1},
+                    .extent = VkExtent3D{.width = lut.size, .height = lut.size, .depth = lut.size},
                     .format = VK_FORMAT_R8G8B8A8_UNORM,
                     .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .image_type = VK_IMAGE_TYPE_2D,
-                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                    .image_type = VK_IMAGE_TYPE_3D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_3D,
+                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_3d),
                     .samples = VK_SAMPLE_COUNT_1_BIT,
                     .tiling = VK_IMAGE_TILING_OPTIMAL,
                     .mip_levels = 1,

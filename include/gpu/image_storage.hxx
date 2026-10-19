@@ -26,6 +26,7 @@ enum class ImageDescriptorClass : std::uint8_t {
     sampled_2d_array,
     storage_2d,
     storage_2d_array,
+    sampled_3d,
 };
 
 struct ImageDescriptorRecord {
@@ -34,6 +35,7 @@ struct ImageDescriptorRecord {
     VkImageView sampled_2d_array = VK_NULL_HANDLE;
     VkImageView storage_2d = VK_NULL_HANDLE;
     VkImageView storage_2d_array = VK_NULL_HANDLE;
+    VkImageView sampled_3d = VK_NULL_HANDLE;
 
     std::uint64_t revision = 0;
     bool occupied = false;
@@ -207,6 +209,12 @@ public:
         return black_cube_.descriptor_view(ImageDescriptorView::sampled_cube);
     }
 
+    // Stands in for every 3D descriptor slot that holds no volume, so the whole binding is always valid.
+    [[nodiscard]]
+    auto black_3d_view() const noexcept -> VkImageView {
+        return black_3d_.descriptor_view(ImageDescriptorView::sampled_3d);
+    }
+
     [[nodiscard]]
     auto size() const noexcept -> std::uint32_t {
         return slots_.size();
@@ -243,7 +251,10 @@ private:
     [[nodiscard]]
     auto create_black_cube() -> std::expected<void, ImageStorageError>;
 
-    auto record_black_cube_clear(VkCommandBuffer command_buffer) const noexcept -> void;
+    [[nodiscard]]
+    auto create_black_3d() -> std::expected<void, ImageStorageError>;
+
+    auto record_black_fallback_clears(VkCommandBuffer command_buffer) const noexcept -> void;
 
     VulkanContext *context_ = nullptr;
 
@@ -252,6 +263,7 @@ private:
     Buffer default_upload_buffer_{};
 
     Image black_cube_{};
+    Image black_3d_{};
 
     bool defaults_uploaded_ = false;
 

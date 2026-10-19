@@ -25,6 +25,7 @@ enum class GpuResourceBinding : std::uint8_t {
     sampled_cube = 5,
     // One VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; only in the layout when VulkanContext::ray_query_supported.
     acceleration_structure = 6,
+    sampled_3d = 7,
 };
 
 enum class GpuResourceTableErrorType : std::uint8_t {

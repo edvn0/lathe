@@ -26,19 +26,19 @@ TEST_CASE("lookups clamp to the table") {
     CHECK(near(lut.sample(glm::vec3{-1.0F, 2.0F, 0.5F}), glm::vec3{0.0F, 1.0F, 0.5F}));
 }
 
-TEST_CASE("the strip puts blue slices along x, green down y and red inside a slice") {
+TEST_CASE("the volume puts red along x, green along y and blue along z") {
     constexpr std::uint32_t size = 4;
     auto lut = make_identity_colour_lut(size);
     lut.entries[1 + size * (2 + size * 3)] = glm::vec3{1.0F, 0.0F, 0.0F};
 
-    auto const strip = lut.to_strip_rgba8();
-    REQUIRE(strip.size() == static_cast<std::size_t>(size) * size * size * 4);
+    auto const volume = lut.to_volume_rgba8();
+    REQUIRE(volume.size() == static_cast<std::size_t>(size) * size * size * 4);
 
-    auto const texel = (static_cast<std::size_t>(2) * size * size + (3 * size + 1)) * 4;
-    CHECK(std::to_integer<int>(strip[texel]) == 255);
-    CHECK(std::to_integer<int>(strip[texel + 1]) == 0);
-    CHECK(std::to_integer<int>(strip[texel + 2]) == 0);
-    CHECK(std::to_integer<int>(strip[texel + 3]) == 255);
+    auto const texel = (static_cast<std::size_t>(3) * size * size + 2 * size + 1) * 4;
+    CHECK(std::to_integer<int>(volume[texel]) == 255);
+    CHECK(std::to_integer<int>(volume[texel + 1]) == 0);
+    CHECK(std::to_integer<int>(volume[texel + 2]) == 0);
+    CHECK(std::to_integer<int>(volume[texel + 3]) == 255);
 }
 
 TEST_CASE("the default LUTs are distinct, in range and keep black and white sensible") {

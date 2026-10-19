@@ -24,9 +24,9 @@ struct ColourLut {
     // Trilinear lookup; `colour` is clamped to 0 .. 1.
     [[nodiscard]] auto sample(glm::vec3 colour) const noexcept -> glm::vec3;
 
-    // The GPU layout: a strip `size * size` texels wide and `size` tall, one blue slice after another along x with
-    // green running down y, as RGBA8. The shader filters inside a slice with the hardware and blends slices itself.
-    [[nodiscard]] auto to_strip_rgba8() const -> std::vector<std::byte>;
+    // The GPU layout: a `size`^3 RGBA8 volume with red along x, green along y and blue along z, which is the order of
+    // `entries`.
+    [[nodiscard]] auto to_volume_rgba8() const -> std::vector<std::byte>;
 };
 
 enum class DefaultColourLut : std::uint8_t {

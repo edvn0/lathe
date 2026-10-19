@@ -36,6 +36,9 @@ namespace {
             case ImageDescriptorView::sampled_cube:
                 return VK_IMAGE_VIEW_TYPE_CUBE;
 
+            case ImageDescriptorView::sampled_3d:
+                return VK_IMAGE_VIEW_TYPE_3D;
+
             case ImageDescriptorView::sampled_2d_array:
             case ImageDescriptorView::storage_2d_array:
                 return VK_IMAGE_VIEW_TYPE_2D_ARRAY;
@@ -52,12 +55,17 @@ namespace {
         switch (type) {
             case ImageDescriptorView::sampled_2d:
                 return (create_info.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0 &&
-                       create_info.samples == VK_SAMPLE_COUNT_1_BIT;
+                       create_info.image_type != VK_IMAGE_TYPE_3D && create_info.samples == VK_SAMPLE_COUNT_1_BIT;
 
             case ImageDescriptorView::sampled_cube:
                 return (create_info.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0 &&
                        (create_info.flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) != 0 &&
                        create_info.array_layers >= 6 && create_info.samples == VK_SAMPLE_COUNT_1_BIT;
+
+            case ImageDescriptorView::sampled_3d:
+                return (create_info.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0 &&
+                       create_info.image_type == VK_IMAGE_TYPE_3D && create_info.array_layers == 1 &&
+                       create_info.samples == VK_SAMPLE_COUNT_1_BIT;
 
             case ImageDescriptorView::sampled_2d_array:
                 return (create_info.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0 && create_info.array_layers >= 1 &&
@@ -386,6 +394,11 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info) -
 
 auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, std::span<const std::byte> pixels,
                    ImageMipSource mip_source) -> std::expected<Image, ImageError> {
+    // The mip generation and provided-chain paths below are 2D; a volume is uploaded as its single level.
+    if (create_info.image_type == VK_IMAGE_TYPE_3D && create_info.mip_levels != 1) {
+        return std::unexpected(make_error(ImageErrorType::invalid_argument));
+    }
+
     std::uint32_t chain_texel_bytes = 0;
     if (mip_source == ImageMipSource::provided) {
         auto const texels =
@@ -464,7 +477,7 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
                         .imageOffset = {},
                         .imageExtent = {.width = std::max(create_info.extent.width >> level, 1U),
                                         .height = std::max(create_info.extent.height >> level, 1U),
-                                        .depth = 1},
+                                        .depth = std::max(create_info.extent.depth >> level, 1U)},
                 });
             }
             vkCmdCopyBufferToImage(buf, staging.buffer, image->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -485,7 +498,9 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
         VkBufferImageCopy copy{};
         copy.imageSubresource = {
                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1};
-        copy.imageExtent = {.width = create_info.extent.width, .height = create_info.extent.height, .depth = 1};
+        copy.imageExtent = {.width = create_info.extent.width,
+                            .height = create_info.extent.height,
+                            .depth = create_info.extent.depth};
         vkCmdCopyBufferToImage(buf, staging.buffer, image->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
         auto mip_width = static_cast<std::int32_t>(create_info.extent.width);

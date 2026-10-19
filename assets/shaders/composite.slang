@@ -92,27 +92,14 @@ float3 srgb_to_linear(float3 c)
     return select(c <= 0.04045, c / 12.92, pow((c + 0.055) / 1.055, 2.4));
 }
 
-// Colour grading LUT stored as a strip: lut_size * lut_size texels wide, lut_size tall, one blue slice after another
-// along x with green down y. The hardware filters inside a slice; the two neighbouring blue slices are blended here.
-// `encoded` is display-referred (sRGB-encoded) colour.
+// Colour grading through a lut_size^3 volume (x = red, y = green, z = blue). `encoded` is display-referred
+// (sRGB-encoded) colour. Colour 0 .. 1 maps onto the texel centres, so the ends of the range hit the first and last
+// entries exactly and the hardware does the trilinear blend.
 float3 sample_lut(float3 encoded, uint lut_index, float lut_size, SamplerState lut_sampler)
 {
-    const var lut = sampled_2d[NonUniformResourceIndex(lut_index)];
+    const float3 coordinate = saturate(encoded) * ((lut_size - 1.0) / lut_size) + 0.5 / lut_size;
 
-    const float3 scaled = saturate(encoded) * (lut_size - 1.0);
-    const float slice = scaled.b;
-    const float slice_low = floor(slice);
-    const float slice_high = min(slice_low + 1.0, lut_size - 1.0);
-
-    // Texel centres: red runs 0.5 .. size - 0.5 inside a slice, so filtering never reaches the neighbouring slice.
-    const float strip_width = lut_size * lut_size;
-    const float u_in_slice = scaled.r + 0.5;
-    const float v = (scaled.g + 0.5) / lut_size;
-
-    const float3 low = lut.Sample(lut_sampler, float2((slice_low * lut_size + u_in_slice) / strip_width, v)).rgb;
-    const float3 high = lut.Sample(lut_sampler, float2((slice_high * lut_size + u_in_slice) / strip_width, v)).rgb;
-
-    return lerp(low, high, slice - slice_low);
+    return sampled_3d[NonUniformResourceIndex(lut_index)].SampleLevel(lut_sampler, coordinate, 0).rgb;
 }
 
 struct FragmentOutput
