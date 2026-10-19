@@ -66,10 +66,23 @@
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/screenshot.hxx"
+#include "app/asset_picker.hxx"
 #include "app/surface_pick.hxx"
 #include "app/text_placement.hxx"
 
 namespace {
+
+    // The models the scene uses, for the pickers to list first.
+    auto models_in_use(entt::registry &registry) -> std::vector<ModelHandle> {
+        auto used = std::vector<ModelHandle>{};
+        for (auto const &&[entity, model]: registry.view<Components::Model>().each()) {
+            if (model.model.valid() && std::ranges::find(used, model.model) == used.end()) {
+                used.push_back(model.model);
+            }
+        }
+        return used;
+    }
+
 
     [[nodiscard]] auto entity_display_name(entt::registry const &registry, entt::entity entity) -> std::string {
         char const *raw = nullptr;
@@ -707,6 +720,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 changed = true;
             }
             for (auto const &entry: textures.entries()) {
+                if (entry.name.empty()) {
+                    continue; // ImGui rejects an item without a label
+                }
                 bool const is_selected = entry.handle == slot;
                 if (ImGui::Selectable(entry.name.c_str(), is_selected)) {
                     slot = entry.handle;
@@ -1629,7 +1645,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
             for (auto const &entry: materials.entries()) {
                 bool const is_selected = entry.handle == current;
-                if (!entry.handle.valid() ||
+                if (!entry.handle.valid() || entry.name.empty() ||
                     (!is_selected && is_material_pending_deletion(pending_deletions, entry.name))) {
                     continue;
                 }
@@ -1861,15 +1877,11 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             auto const current_name = models.name_of(model.model);
 
             if (ImGui::BeginCombo("Asset", current_name.empty() ? "(unnamed)" : std::string(current_name).c_str())) {
-                for (auto const &entry: models.entries()) {
-                    bool const is_selected = entry.handle == model.model;
-                    if (ImGui::Selectable(entry.name.c_str(), is_selected) && !is_selected && entry.handle.valid()) {
-                        renderer->retain_model(entry.handle);
-                        set_entity_model(registry, selected_entity, entry.handle);
-                    }
-                    if (is_selected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
+                auto const used = models_in_use(registry);
+                if (auto const picked = ui::draw_asset_choices(models.entries(), std::span{used}, model.model);
+                    picked && *picked != model.model) {
+                    renderer->retain_model(*picked);
+                    set_entity_model(registry, selected_entity, *picked);
                 }
                 ImGui::EndCombo();
             }
@@ -1911,6 +1923,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             auto const current_name = scripts.name_of(script.script);
             if (ImGui::BeginCombo("Asset", current_name.empty() ? "(unnamed)" : std::string(current_name).c_str())) {
                 for (auto const &entry: scripts.entries()) {
+                    if (entry.name.empty()) {
+                        continue; // ImGui rejects an item without a label
+                    }
                     bool const is_selected = entry.handle == script.script;
                     if (ImGui::Selectable(entry.name.c_str(), is_selected) && entry.handle != script.script) {
                         script.script = entry.handle;
@@ -1980,6 +1995,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                         }
                     }
                     for (auto const &entry: table.entries()) {
+                        if (entry.name.empty()) {
+                            continue; // ImGui rejects an item without a label
+                        }
                         if (ImGui::Selectable(entry.name.c_str(), entry.name == current) && entry.name != current) {
                             current = entry.name;
                             picked = true;
@@ -2163,13 +2181,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
                 if (!registry.all_of<Components::Model>(selected_entity) &&
                     !renderer->assets().models().entries().empty() && ImGui::BeginMenu("Model")) {
-                    for (auto const &entry: renderer->assets().models().entries()) {
-                        if (ImGui::MenuItem(entry.name.c_str())) {
-                            renderer->retain_model(entry.handle);
-                            registry.emplace<Components::Model>(selected_entity,
-                                                                Components::Model{.model = entry.handle});
-                            registry.emplace<Components::StreamedModelTag>(selected_entity);
-                        }
+                    auto const used = models_in_use(registry);
+                    if (auto const picked = ui::draw_asset_choices(renderer->assets().models().entries(),
+                                                                   std::span{used}, ModelHandle{})) {
+                        renderer->retain_model(*picked);
+                        registry.emplace<Components::Model>(selected_entity, Components::Model{.model = *picked});
+                        registry.emplace<Components::StreamedModelTag>(selected_entity);
                     }
                     ImGui::EndMenu();
                 }
@@ -2188,6 +2205,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             if (!registry.all_of<Components::Script>(selected_entity) &&
                 !renderer->assets().scripts().entries().empty() && ImGui::BeginMenu("Script")) {
                 for (auto const &entry: renderer->assets().scripts().entries()) {
+                    if (entry.name.empty()) {
+                        continue; // ImGui rejects an item without a label
+                    }
                     if (ImGui::MenuItem(entry.name.c_str())) {
                         registry.emplace<Components::Script>(selected_entity,
                                                              Components::Script{.script = entry.handle});
