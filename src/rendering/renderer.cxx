@@ -1238,6 +1238,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         light_icon_texture_ = *light_icon_texture;
     }
 
+    for (auto const lut: {DefaultColourLut::cinematic, DefaultColourLut::vintage, DefaultColourLut::noir}) {
+        auto const added = add_colour_lut(std::string{default_colour_lut_name(lut)}, make_default_colour_lut(lut));
+        if (!added) {
+            return std::unexpected(added.error());
+        }
+    }
+
     auto const white = image_storage_.white();
     auto const flat_normal = image_storage_.flat_normal();
     auto const metallic_roughness = image_storage_.metallic_roughness();
@@ -5287,6 +5294,72 @@ auto Renderer::consume_culled_readback(RendererFrame &frame) -> void {
     last_frame_stats_.deferred_meshlet_count = stats[occlusion_stat_deferred_meshlets];
     last_frame_stats_.occluded_meshlet_count = stats[occlusion_stat_occluded_meshlets];
     last_frame_stats_.meshlet_occlusion_stats_valid = frame.meshlet_occlusion_stats_active;
+}
+
+auto Renderer::add_colour_lut(std::string name, ColourLut const &lut) -> std::expected<std::int32_t, RendererError> {
+    auto const pixels = lut.to_strip_rgba8();
+    auto const debug_name = std::string{"renderer.colour_lut."} + name;
+
+    // Graded colour is data, not a picture: UNORM so the sampler returns the stored values untouched.
+    auto image = image_storage_.create_image(
+            ImageCreateInfo{
+                    .extent = VkExtent3D{.width = lut.size * lut.size, .height = lut.size, .depth = 1},
+                    .format = VK_FORMAT_R8G8B8A8_UNORM,
+                    .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .image_type = VK_IMAGE_TYPE_2D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .mip_levels = 1,
+                    .array_layers = 1,
+                    .debug_name = debug_name,
+            },
+            pixels);
+
+    if (!image) {
+        return std::unexpected(make_image_error(image.error()));
+    }
+
+    colour_luts_.push_back(ColourLutEntry{.name = std::move(name), .image = *image, .size = lut.size});
+
+    return static_cast<std::int32_t>(colour_luts_.size() - 1);
+}
+
+auto Renderer::colour_lut_name(std::int32_t lut) const noexcept -> std::string_view {
+    if (lut < 0 || static_cast<std::size_t>(lut) >= colour_luts_.size()) {
+        return {};
+    }
+
+    return colour_luts_[static_cast<std::size_t>(lut)].name;
+}
+
+auto Renderer::find_colour_lut(std::string_view name) const noexcept -> std::optional<std::int32_t> {
+    auto const found = std::ranges::find(colour_luts_, name, &ColourLutEntry::name);
+    if (found == colour_luts_.end()) {
+        return std::nullopt;
+    }
+
+    return static_cast<std::int32_t>(found - colour_luts_.begin());
+}
+
+auto Renderer::load_colour_lut(std::string_view path) -> std::expected<std::int32_t, RendererError> {
+    if (auto const existing = find_colour_lut(path)) {
+        return *existing;
+    }
+
+    auto const bytes = read_resource(data_path(path));
+    if (!bytes) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    auto const lut = parse_cube_lut(std::string_view{reinterpret_cast<char const *>(bytes->data()), bytes->size()});
+    if (!lut) {
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    return add_colour_lut(std::string{path}, *lut);
 }
 
 auto Renderer::set_occlusion_culling(bool enabled) noexcept -> void {

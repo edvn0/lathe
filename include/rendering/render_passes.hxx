@@ -256,6 +256,11 @@ namespace render_pass {
         std::uint32_t outline_texture_index = 0;
         float outline_thickness_pixels = 0.0F;
         glm::vec3 outline_colour{0.0F};
+
+        // Colour grading: texture index 0 means none. See ColourLut for the strip layout.
+        std::uint32_t lut_texture_index = 0;
+        std::uint32_t lut_size = 0;
+        float lut_intensity = 0.0F;
     };
 
     struct Callback {

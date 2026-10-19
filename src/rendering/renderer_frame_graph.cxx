@@ -1332,6 +1332,12 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                     };
                     auto const ui_callback = render_pass::Callback::bind(ui_overlays);
 
+                    auto const *const grade_lut =
+                            colour_grade_settings_.lut >= 0 &&
+                                            static_cast<std::size_t>(colour_grade_settings_.lut) < colour_luts_.size()
+                                    ? &colour_luts_[static_cast<std::size_t>(colour_grade_settings_.lut)]
+                                    : nullptr;
+
                     auto const composited = render_pass::composite(
                             pass_context,
                             render_pass::CompositePassInfo{
@@ -1348,6 +1354,9 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                                     .outline_texture_index = transient_index(outline_image),
                                     .outline_thickness_pixels = outline_settings_.thickness_pixels,
                                     .outline_colour = outline_settings_.colour,
+                                    .lut_texture_index = grade_lut != nullptr ? grade_lut->image.index : 0,
+                                    .lut_size = grade_lut != nullptr ? grade_lut->size : 0,
+                                    .lut_intensity = grade_lut != nullptr ? colour_grade_settings_.intensity : 0.0F,
                             },
                             fullscreen ? ui_callback : render_pass::Callback{});
                     if (!composited) {

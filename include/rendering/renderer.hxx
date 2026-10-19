@@ -52,6 +52,7 @@
 #include "rendering/cluster_grid.hxx"
 #include "rendering/environment.hxx"
 #include "rendering/forward_target.hxx"
+#include "rendering/colour_lut.hxx"
 #include "rendering/frame_graph/compiler.hxx"
 #include "rendering/frame_graph/frame_graph.hxx"
 #include "rendering/frame_graph/pass_profiler.hxx"
@@ -78,6 +79,13 @@ struct OutlineSettings {
     glm::vec3 colour{1.0F, 0.78F, 0.15F};
 
     float thickness_pixels = 3.0F;
+};
+
+// Colour grading applied in composition after tone mapping. `lut` indexes Renderer::colour_lut_name(); -1 is off.
+struct ColourGradeSettings {
+    std::int32_t lut = -1;
+
+    float intensity = 1.0F;
 };
 
 struct AoSettings {
@@ -537,6 +545,22 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     auto set_bloom_settings(BloomSettings const &settings) noexcept -> void { bloom_settings_ = settings; }
     [[nodiscard]] auto bloom_settings() const noexcept -> BloomSettings const & { return bloom_settings_; }
+
+    auto set_colour_grade_settings(ColourGradeSettings const &settings) noexcept -> void {
+        colour_grade_settings_ = settings;
+    }
+    [[nodiscard]] auto colour_grade_settings() const noexcept -> ColourGradeSettings const & {
+        return colour_grade_settings_;
+    }
+
+    // The engine registers the DefaultColourLut set first, in enum order; loaded .cube files follow.
+    [[nodiscard]] auto colour_lut_count() const noexcept -> std::size_t { return colour_luts_.size(); }
+    [[nodiscard]] auto colour_lut_name(std::int32_t lut) const noexcept -> std::string_view;
+    [[nodiscard]] auto find_colour_lut(std::string_view name) const noexcept -> std::optional<std::int32_t>;
+
+    // Loads a .cube file (a data path) and returns its index; the same path twice returns the first load.
+    [[nodiscard]]
+    auto load_colour_lut(std::string_view path) -> std::expected<std::int32_t, RendererError>;
 
     auto set_light_lod_settings(LightLodSettings const &settings) noexcept -> void { light_lod_settings_ = settings; }
     [[nodiscard]] auto light_lod_settings() const noexcept -> LightLodSettings const & { return light_lod_settings_; }
@@ -1426,6 +1450,9 @@ private:
     GeometryArena geometry_arena_{};
     MaterialStorage material_storage_{};
     ImageStorage image_storage_{};
+
+    [[nodiscard]]
+    auto add_colour_lut(std::string name, ColourLut const &lut) -> std::expected<std::int32_t, RendererError>;
     SamplerStorage sampler_storage_{};
     TextureStreamer texture_streamer_{};
     ModelStreamer model_streamer_{};
@@ -1480,6 +1507,14 @@ private:
 
     BloomSettings bloom_settings_;
     OutlineSettings outline_settings_;
+
+    struct ColourLutEntry {
+        std::string name;
+        ImageHandle image{};
+        std::uint32_t size = 0;
+    };
+    std::vector<ColourLutEntry> colour_luts_;
+    ColourGradeSettings colour_grade_settings_;
 
     struct OutlineVariant {
         MaterialHandle source{};

@@ -1005,6 +1005,9 @@ namespace render_pass {
                 .outline_r = info.outline_colour.r,
                 .outline_g = info.outline_colour.g,
                 .outline_b = info.outline_colour.b,
+                .lut_texture_index = info.lut_texture_index,
+                .lut_size = static_cast<float>(info.lut_size),
+                .lut_intensity = info.lut_intensity,
         };
 
         vkCmdPushConstants(context.command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
