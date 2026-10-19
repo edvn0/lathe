@@ -2233,9 +2233,11 @@ auto Renderer::create_model_common(
 
             // A skinned mesh ignores its node's transform (glTF 2.0): the joint matrices already carry every
             // ancestor, so applying it again would double-rotate e.g. a Z-up to Y-up parent node.
+            auto const draw_transform = model.animation != nullptr ? glm::mat4{1.0F} : local_to_model;
             flattened_draws.push_back(ModelDraw{
                     .mesh = imported_meshes[node.mesh_index],
-                    .local_transform = model.animation != nullptr ? glm::mat4{1.0F} : local_to_model,
+                    .local_transform = draw_transform,
+                    .identity_local = draw_transform == glm::mat4{1.0F},
             });
         }
 

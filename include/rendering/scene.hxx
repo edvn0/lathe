@@ -11,6 +11,7 @@
 #include <any>
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -130,6 +131,37 @@ auto clone_registry(entt::registry const &src, entt::registry &dst) -> void {
 namespace systems {
     [[nodiscard]] auto get_world_transform(entt::registry const &registry, entt::entity, Components::Transform const &)
             -> glm::mat4;
+
+    // World transforms for many entities in one frame. get_world_transform walks the whole chain of parents for every
+    // entity it is asked about; this remembers the product of each parent chain, so entities under the same parents
+    // share one walk. It is not thread safe: threads that split the entities use one each (a parent chain is short, so
+    // they repeat little). Call begin_frame when the registry's transforms may have changed.
+    class WorldTransformCache {
+    public:
+        auto begin_frame() -> void { ancestors_.clear(); }
+
+        // The same matrix get_world_transform returns for `entity`.
+        [[nodiscard]] auto get(entt::registry const &registry, entt::entity entity,
+                               Components::Transform const &transform) -> glm::mat4;
+
+        // The same, for an entity the caller knows has a Parent.
+        [[nodiscard]] auto get_with_parent(entt::registry const &registry, entt::entity entity,
+                                           Components::Transform const &transform) -> glm::mat4;
+
+    private:
+        enum class State : std::uint8_t { computing, known };
+
+        struct Ancestors {
+            glm::mat4 matrix{1.0F};
+            State state = State::computing;
+        };
+
+        // The product of the transforms above `entity`, from the cache or computed (and kept) on the way up.
+        [[nodiscard]] auto ancestors_of(entt::registry const &registry, entt::entity entity, int depth) -> glm::mat4;
+
+        std::unordered_map<entt::entity, Ancestors> ancestors_;
+    };
+
     auto lifetime(entt::registry &registry, PhysicsWorld &physics, float dt) -> void;
     auto script_update(entt::registry &registry, Scene &scene, float dt) -> void;
 }
