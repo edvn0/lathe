@@ -353,6 +353,36 @@ namespace stages {
             }
         }
 
+        auto draw_colour_grade(Context &context) -> void {
+            auto grade = context.renderer.colour_grade_settings();
+            bool dirty = false;
+
+            auto const current = context.renderer.colour_lut_name(grade.lut);
+            if (ImGui::BeginCombo("LUT", grade.lut < 0 ? "None" : std::string{current}.c_str())) {
+                if (ImGui::Selectable("None", grade.lut < 0)) {
+                    grade.lut = -1;
+                    dirty = true;
+                }
+
+                for (auto lut = std::int32_t{0}; std::cmp_less(lut, context.renderer.colour_lut_count()); ++lut) {
+                    auto const name = std::string{context.renderer.colour_lut_name(lut)};
+                    if (ImGui::Selectable(name.c_str(), grade.lut == lut)) {
+                        grade.lut = lut;
+                        dirty = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+
+            ImGui::BeginDisabled(grade.lut < 0);
+            dirty |= ImGui::SliderFloat("Intensity", &grade.intensity, 0.0F, 1.0F);
+            ImGui::EndDisabled();
+
+            if (dirty) {
+                context.renderer.set_colour_grade_settings(grade);
+            }
+        }
+
         auto draw_debug_overlays(Context &context) -> void {
             bool draw_light_icons = context.renderer.debug_draw_light_icons();
             if (ImGui::Checkbox("Draw light icons", &draw_light_icons)) {
@@ -493,6 +523,27 @@ namespace stages {
                             renderer.set_bloom_settings(bloom);
                         },
                 .draw_settings = draw_bloom,
+        });
+
+        add(Stage{
+                .id = FlyString{"colour_grade"},
+                .title = "Colour grading",
+                .passes = {},
+                .state =
+                        [](Renderer const &renderer) {
+                            return State{.enabled = renderer.colour_grade_settings().lut >= 0};
+                        },
+                .set_enabled =
+                        [](Renderer &renderer, bool enabled) {
+                            auto grade = renderer.colour_grade_settings();
+                            if (enabled && grade.lut < 0 && renderer.colour_lut_count() > 0) {
+                                grade.lut = 0;
+                            } else if (!enabled) {
+                                grade.lut = -1;
+                            }
+                            renderer.set_colour_grade_settings(grade);
+                        },
+                .draw_settings = draw_colour_grade,
         });
     }
 

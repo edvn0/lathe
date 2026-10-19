@@ -16,6 +16,10 @@ struct CompositePC {
     float outline_r;
     float outline_g;
     float outline_b;
+
+    uint lut_texture_index;
+    float lut_size;
+    float lut_intensity;
 };
 
 struct VertexOutput
@@ -88,6 +92,16 @@ float3 srgb_to_linear(float3 c)
     return select(c <= 0.04045, c / 12.92, pow((c + 0.055) / 1.055, 2.4));
 }
 
+// Colour grading through a lut_size^3 volume (x = red, y = green, z = blue). `encoded` is display-referred
+// (sRGB-encoded) colour. Colour 0 .. 1 maps onto the texel centres, so the ends of the range hit the first and last
+// entries exactly and the hardware does the trilinear blend.
+float3 sample_lut(float3 encoded, uint lut_index, float lut_size, SamplerState lut_sampler)
+{
+    const float3 coordinate = saturate(encoded) * ((lut_size - 1.0) / lut_size) + 0.5 / lut_size;
+
+    return sampled_3d[NonUniformResourceIndex(lut_index)].SampleLevel(lut_sampler, coordinate, 0).rgb;
+}
+
 struct FragmentOutput
 {
     float4 colour : SV_Target0;
@@ -106,6 +120,12 @@ FragmentOutput main_fs(VertexOutput input, uniform CompositePC pc)
     float3 combined_hdr = hdr_colour + bloom_colour * pc.bloom_intensity;
 
     float3 mapped = aces_fitted(combined_hdr * pc.exposure);
+
+    if (pc.lut_texture_index != 0 && pc.lut_intensity > 0.0) {
+        const float3 encoded_in = linear_to_srgb(saturate(mapped));
+        const float3 graded = sample_lut(encoded_in, pc.lut_texture_index, pc.lut_size, samplers[sampler_index]);
+        mapped = srgb_to_linear(lerp(encoded_in, graded, saturate(pc.lut_intensity)));
+    }
 
     if (pc.outline_texture_index != 0) {
         const var mask = sampled_2d[NonUniformResourceIndex(pc.outline_texture_index)];

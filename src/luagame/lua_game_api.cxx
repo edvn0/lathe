@@ -10,6 +10,7 @@
 #include <new>
 #include <optional>
 #include <string>
+#include <utility>
 #include <string_view>
 #include <type_traits>
 
@@ -2182,6 +2183,87 @@ namespace {
         return 0;
     }
 
+    // render.grade() -> { lut = name or nil, intensity, luts = { names } }
+    auto render_grade(lua_State *state) -> int {
+        auto &host = game_host(state);
+
+        if (host.renderer == nullptr) {
+            return luaL_error(state, "render settings can only be used from on_populate and later");
+        }
+
+        auto const &renderer = *host.renderer;
+        auto const &grade = renderer.colour_grade_settings();
+
+        lua_createtable(state, 0, 3);
+        if (grade.lut >= 0) {
+            auto const name = renderer.colour_lut_name(grade.lut);
+            lua_pushlstring(state, name.data(), name.size());
+            lua_setfield(state, -2, "lut");
+        }
+        lua_pushnumber(state, grade.intensity);
+        lua_setfield(state, -2, "intensity");
+
+        lua_createtable(state, static_cast<int>(renderer.colour_lut_count()), 0);
+        for (auto lut = std::int32_t{0}; std::cmp_less(lut, renderer.colour_lut_count()); ++lut) {
+            auto const name = renderer.colour_lut_name(lut);
+            lua_pushlstring(state, name.data(), name.size());
+            lua_rawseti(state, -2, lut + 1);
+        }
+        lua_setfield(state, -2, "luts");
+
+        return 1;
+    }
+
+    // render.set_grade{ lut, intensity }: `lut` is a built-in name, the data path of a .cube file, or false for none.
+    // Changes the fields given and keeps the rest. Returns nothing, or nil and a message when the LUT cannot be found
+    // or loaded.
+    auto render_set_grade(lua_State *state) -> int {
+        auto &host = game_host(state);
+
+        if (host.renderer == nullptr) {
+            return luaL_error(state, "render settings can only be used from on_populate and later");
+        }
+
+        luaL_checktype(state, 1, LUA_TTABLE);
+
+        auto &renderer = *host.renderer;
+        auto grade = renderer.colour_grade_settings();
+
+        lua_getfield(state, 1, "lut");
+        if (lua_isstring(state, -1) != 0) {
+            auto const name = std::string{lua_tostring(state, -1)};
+            lua_pop(state, 1);
+
+            auto lut = renderer.find_colour_lut(name);
+            if (!lut) {
+                auto const loaded = renderer.load_colour_lut(name);
+                if (!loaded) {
+                    lua_pushnil(state);
+                    lua_pushfstring(state, "no colour LUT named '%s' and no usable .cube file at that path",
+                                    name.c_str());
+                    return 2;
+                }
+                lut = *loaded;
+            }
+
+            grade.lut = *lut;
+        } else {
+            auto const off = lua_isboolean(state, -1) != 0 && lua_toboolean(state, -1) == 0;
+            lua_pop(state, 1);
+
+            if (off) {
+                grade.lut = -1;
+            }
+        }
+
+        grade.intensity =
+                std::clamp(static_cast<float>(option_number(state, 1, "intensity", grade.intensity)), 0.0F, 1.0F);
+
+        renderer.set_colour_grade_settings(grade);
+
+        return 0;
+    }
+
     auto text_renderer(lua_State *state) -> TextRenderer & {
         auto *const renderer = game_host(state).host.text;
 
@@ -2310,6 +2392,8 @@ namespace {
     constexpr std::array render_functions{
             luaL_Reg{"bloom", &render_bloom},
             luaL_Reg{"set_bloom", &render_set_bloom},
+            luaL_Reg{"grade", &render_grade},
+            luaL_Reg{"set_grade", &render_set_grade},
             luaL_Reg{nullptr, nullptr},
     };
 

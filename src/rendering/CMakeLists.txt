@@ -7,6 +7,7 @@ add_library(
     engine_rendering
     STATIC
         cluster_grid.cxx
+        colour_lut.cxx
         debug_renderer.cxx
         editor_icons.cxx
         effect_manifest.cxx

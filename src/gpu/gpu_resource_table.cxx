@@ -44,7 +44,7 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
     table.sampler_capacity_ = create_info.sampler_capacity;
     table.debug_name_ = FlyString{create_info.debug_name};
 
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings{
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings{
             VkDescriptorSetLayoutBinding{
                     .binding = binding_index(GpuResourceBinding::sampled_2d),
                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
@@ -84,6 +84,13 @@ auto GpuResourceTable::create(VulkanContext &context, GpuResourceTableCreateInfo
             },
             VkDescriptorSetLayoutBinding{
                     .binding = binding_index(GpuResourceBinding::sampled_cube),
+                    .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                    .descriptorCount = table.image_capacity_,
+                    .stageFlags = VK_SHADER_STAGE_ALL,
+                    .pImmutableSamplers = nullptr,
+            },
+            VkDescriptorSetLayoutBinding{
+                    .binding = binding_index(GpuResourceBinding::sampled_3d),
                     .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                     .descriptorCount = table.image_capacity_,
                     .stageFlags = VK_SHADER_STAGE_ALL,
@@ -228,8 +235,8 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
     auto image_infos = std::vector<VkDescriptorImageInfo>{};
     auto writes = std::vector<VkWriteDescriptorSet>{};
 
-    image_infos.reserve(images.capacity() * 5 + samplers.capacity() * 2);
-    writes.reserve(images.capacity() * 5 + samplers.capacity() * 2);
+    image_infos.reserve(images.capacity() * 6 + samplers.capacity() * 2);
+    writes.reserve(images.capacity() * 6 + samplers.capacity() * 2);
 
     auto append_image_write = [&](std::uint32_t binding, std::uint32_t array_index, VkDescriptorType descriptor_type,
                                   VkImageView view, VkImageLayout layout) {
@@ -272,6 +279,10 @@ auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage con
 
         append_image_write(binding_index(GpuResourceBinding::sampled_cube), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                            record.sampled_cube != VK_NULL_HANDLE ? record.sampled_cube : images.black_cube_view(),
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        append_image_write(binding_index(GpuResourceBinding::sampled_3d), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                           record.sampled_3d != VK_NULL_HANDLE ? record.sampled_3d : images.black_3d_view(),
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         if (record.storage_2d != VK_NULL_HANDLE) {

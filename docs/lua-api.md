@@ -47,7 +47,8 @@ use all of it; `docs/text-rendering.md` explains how it is drawn.
 
 `e:add_light{ type = "point" | "spot", colour, intensity, range, inner_cone, outer_cone, casts_shadows }` puts a light on
 an entity and `e:aim(x, y, z)` turns it (a spot light points along the entity's local -Y). `scene.set_environment{...}`
-changes the sky, ambient light, exposure and sun; `render.bloom()` / `render.set_bloom{...}` read and change bloom.
+changes the sky, ambient light, exposure and sun; `render.bloom()` / `render.set_bloom{...}` read and change bloom, and `render.grade()` / `render.set_grade{ lut, intensity }`
+read and change colour grading (see `docs/colour-grading.md`).
 `assets.sphere()` and `assets.capsule()` give the built-in models, and `assets.material` takes `emissive`,
 `emissive_strength` and `double_sided` in its options table. `assets/scripts/lights/main.lua` (`--game=lights`) uses
 all of them.
