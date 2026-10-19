@@ -15,6 +15,7 @@ struct PC
     uint texture_id;
     uint sampler_id;
     uint already_linear;
+    uint sdf_text;
 }
 
 struct VertexOutput
@@ -57,6 +58,13 @@ float4 main_fs(VertexOutput input, uniform PC pc) : SV_Target0
                           .Sample(samplers[NonUniformResourceIndex(pc.sampler_id)], input.uv);
 
     float4 colour = sampled * input.colour;
+    if (pc.sdf_text != 0)
+    {
+        // The glyph atlas holds distance fields: 0.5 is the outline, and one screen pixel spans fwidth() of it.
+        float distance = sampled.a;
+        float width = max(fwidth(distance) * 0.75, 1.0 / 255.0);
+        colour = float4(input.colour.rgb, input.colour.a * smoothstep(0.5 - width, 0.5 + width, distance));
+    }
     if (pc.already_linear == 0)
     {
         colour.rgb = srgb_to_linear(colour.rgb);

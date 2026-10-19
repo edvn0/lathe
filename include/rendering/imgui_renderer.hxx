@@ -6,6 +6,7 @@
 #include <volk.h>
 
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include "gpu/image.hxx"
@@ -35,6 +36,10 @@ namespace gui {
     [[nodiscard]] constexpr auto linear_source_texture_id(std::uint32_t bindless_index) noexcept -> ImTextureID {
         return ImTextureID{static_cast<std::uint64_t>(bindless_index) | linear_source_texture_bit};
     }
+
+    // Marks ImGui's own textures, which hold glyph distance fields (see imgui_sdf_font.hxx): the shader turns the
+    // field into coverage instead of using it as colour.
+    inline constexpr std::uint64_t font_texture_bit = std::uint64_t{1} << 34;
 
     // Stands for the image Renderer::set_preview_resource names. The bindless index of a transient is only known
     // once the frame graph has allocated it, which is after the UI is built, so the ImGui renderer resolves this
@@ -70,7 +75,13 @@ namespace gui {
         UploadRing vertices;
         UploadRing indices;
         SamplerHandle sampler{};
-        ImageHandle font_texture{};
+
+        struct RetiredTexture {
+            ImageHandle image;
+            std::uint32_t frames;
+        };
+        std::unordered_map<ImTextureData *, ImageHandle> textures;
+        std::vector<RetiredTexture> retired_textures;
 
         std::string config_name{"imgui.ini"};
         std::unique_ptr<std::filesystem::path> config_path;
@@ -79,6 +90,7 @@ namespace gui {
 
         float display_scale{1.0F};
 
+        auto update_textures(ImDrawData const &data) -> void;
         auto draw(OverlayRecordContext const &context, BoundOverlayShader const &bound, ImDrawData const &data) -> void;
     };
 

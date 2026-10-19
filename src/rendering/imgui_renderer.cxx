@@ -5,7 +5,6 @@
 #include "core/resources.hxx"
 
 #include <backends/imgui_impl_glfw.h>
-#include <misc/freetype/imgui_freetype.h>
 
 #include <imgui.h>
 
@@ -24,6 +23,7 @@
 #include "core/human_readable_bytes.hxx"
 #include "core/logger.hxx"
 #include "gpu/context.hxx"
+#include "rendering/imgui_sdf_font.hxx"
 #include "rendering/renderer.hxx"
 
 namespace gui {
@@ -36,7 +36,11 @@ namespace gui {
             std::uint32_t texture_id;
             std::uint32_t sampler_id{0};
             std::uint32_t already_linear{0};
+            std::uint32_t sdf_text{0};
         };
+
+        // Frames a replaced atlas image is kept for, so the frames still in flight can finish sampling it.
+        constexpr std::uint32_t retired_texture_frames = 4;
 
         auto apply_dark_theme() -> void {
             ImGui::StyleColorsDark();
@@ -143,7 +147,9 @@ namespace gui {
         config_name = state_path("imgui.ini").absolute().string();
         io.IniFilename = config_name.c_str();
         io.BackendRendererName = "imgui-custom-vulkan";
-        io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures;
+        // Lines drawn from atlas texels would read the glyph field's alpha as a distance.
+        ImGui::GetStyle().AntiAliasedLinesUseTex = false;
 
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
@@ -162,8 +168,6 @@ namespace gui {
 
     ImGuiRenderer::~ImGuiRenderer() {
         ImGuiIO &io = ImGui::GetIO();
-        io.Fonts->TexID = ImTextureID{0};
-
         ImGui_ImplGlfw_Shutdown();
 
         ImGui::DestroyPlatformWindows();
@@ -211,6 +215,8 @@ namespace gui {
                              ImDrawData const &data) -> void {
         auto &gpu = renderer.context();
         auto const frame = context.frame_index;
+
+        update_textures(data);
 
         for (auto *ring: {&vertices, &indices}) {
             if (auto const begun = ring->begin_frame(gpu, frame); !begun) {
@@ -281,6 +287,7 @@ namespace gui {
                                                  : static_cast<std::uint32_t>(raw_tex_id & 0xFFFFFFFFULL),
                         .sampler_id = sampler.index,
                         .already_linear = already_linear ? 1U : 0U,
+                        .sdf_text = (raw_tex_id & font_texture_bit) != 0 ? 1U : 0U,
                 });
 
                 bound.set_scissor(VkRect2D{
@@ -308,12 +315,9 @@ namespace gui {
         ImGuiIO &io = ImGui::GetIO();
         ImFontConfig cfg{};
         cfg.FontDataOwnedByAtlas = false;
-        cfg.RasterizerMultiply = 1.5F;
         cfg.SizePixels = std::ceil(f.size);
         cfg.PixelSnapH = true;
-        cfg.OversampleH = 4;
-        cfg.OversampleV = 4;
-        cfg.FontLoaderFlags = ImGuiFreeTypeLoaderFlags_ForceAutoHint | ImGuiFreeTypeLoaderFlags_LightHinting;
+        cfg.FontLoader = sdf_font_loader();
 
         ImFont *font = nullptr;
         auto loaded_font = read_resource(data_path(f.font_path));
@@ -323,9 +327,7 @@ namespace gui {
             font = io.Fonts->AddFontFromMemoryTTF(font_data.data(), static_cast<int>(font_data.size()), cfg.SizePixels,
                                                   &cfg);
 
-            // Emoji, as outlines in the text's colour: the same font the world text falls back to. The atlas is
-            // uploaded once, so the ranges are given up front and baked with it; glyphs ImGui would bake on first use
-            // never reach the texture.
+            // Emoji, as outlines in the text's colour: the same font the world text falls back to.
             if (auto loaded_emoji = read_resource(data_path("assets/fonts/NotoEmoji-Regular.ttf"))) {
                 emoji_font_data = std::move(*loaded_emoji);
                 // Symbols and arrows, the joiners and variation selectors that ride along with emoji, and the emoji.
@@ -342,6 +344,7 @@ namespace gui {
             ImFontConfig icon_cfg{};
             icon_cfg.MergeMode = true;
             icon_cfg.PixelSnapH = true;
+            icon_cfg.FontLoader = sdf_font_loader();
             icon_cfg.GlyphMinAdvanceX = cfg.SizePixels * 2.0F / 3.0F;
             static_cast<void>(io.Fonts->AddFontFromMemoryCompressedTTF(
                     fa_solid_900_compressed_data, static_cast<int>(fa_solid_900_compressed_size),
@@ -350,37 +353,6 @@ namespace gui {
 
         io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
 
-        unsigned char *pixels;
-        int width;
-        int height;
-        io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
-
-        auto const *as_bytes = std::bit_cast<std::byte const *>(pixels);
-
-        info("Font atlas size: {} x {}", width, height);
-
-        auto created_image = renderer.image_storage().create_image(
-                ImageCreateInfo{
-                        .extent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 1},
-                        .format = VK_FORMAT_R8G8B8A8_UNORM,
-                        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                        .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                        .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                        .mip_levels = 1,
-                        .array_layers = 1,
-                        .debug_name = "imgui_fonts",
-                },
-                std::span<const std::byte>(as_bytes,
-                                           static_cast<std::size_t>(height) * static_cast<std::size_t>(width) * 4));
-
-        if (!created_image) {
-            error("[ImGui] Failed to create font atlas image: {}", describe(created_image.error()));
-            return;
-        }
-
-        font_texture = *created_image;
-        io.Fonts->TexID = font_texture.index;
         io.FontDefault = font;
 
         auto created_sampler = renderer.sampler_storage().create_sampler(SamplerCreateInfo{
@@ -402,6 +374,80 @@ namespace gui {
         }
 
         sampler = *created_sampler;
+    }
+
+    // Creates, refreshes and releases the images behind ImGui's textures (the glyph atlas grows as text with new
+    // glyphs or sizes appears). An update uploads the whole atlas into a new image: the atlas is small and changes
+    // rarely, and there is no partial upload.
+    auto ImGuiRenderer::update_textures(ImDrawData const &data) -> void {
+        auto &images = renderer.image_storage();
+
+        for (auto &retired: retired_textures) {
+            if (--retired.frames == 0) {
+                static_cast<void>(images.destroy_image(retired.image));
+            }
+        }
+        std::erase_if(retired_textures, [](RetiredTexture const &retired) { return retired.frames == 0; });
+
+        if (data.Textures == nullptr) {
+            return;
+        }
+
+        for (auto *const texture: *data.Textures) {
+            if (texture->Status == ImTextureStatus_OK) {
+                continue;
+            }
+
+            auto const existing = textures.find(texture);
+
+            if (texture->Status == ImTextureStatus_WantDestroy && texture->UnusedFrames >= retired_texture_frames) {
+                if (existing != textures.end()) {
+                    retired_textures.push_back({existing->second, retired_texture_frames});
+                    textures.erase(existing);
+                }
+                texture->SetTexID(ImTextureID_Invalid);
+                texture->SetStatus(ImTextureStatus_Destroyed);
+                continue;
+            }
+
+            if (texture->Status != ImTextureStatus_WantCreate && texture->Status != ImTextureStatus_WantUpdates) {
+                continue;
+            }
+
+            auto const bytes_per_pixel = static_cast<std::size_t>(texture->BytesPerPixel);
+            auto created = images.create_image(
+                    ImageCreateInfo{
+                            .extent = {static_cast<std::uint32_t>(texture->Width),
+                                       static_cast<std::uint32_t>(texture->Height), 1},
+                            .format = texture->Format == ImTextureFormat_Alpha8 ? VK_FORMAT_R8_UNORM
+                                                                                 : VK_FORMAT_R8G8B8A8_UNORM,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                            .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                            .mip_levels = 1,
+                            .array_layers = 1,
+                            .debug_name = "imgui_fonts",
+                    },
+                    std::span<std::byte const>(std::bit_cast<std::byte const *>(texture->GetPixels()),
+                                               static_cast<std::size_t>(texture->Width) *
+                                                       static_cast<std::size_t>(texture->Height) * bytes_per_pixel));
+
+            if (!created) {
+                error("[ImGui] Failed to upload a texture: {}", describe(created.error()));
+                continue;
+            }
+
+            if (existing != textures.end()) {
+                retired_textures.push_back({existing->second, retired_texture_frames});
+                existing->second = *created;
+            } else {
+                textures.emplace(texture, *created);
+            }
+
+            texture->SetTexID(ImTextureID{static_cast<std::uint64_t>(created->index) | font_texture_bit});
+            texture->SetStatus(ImTextureStatus_OK);
+        }
     }
 
 }
