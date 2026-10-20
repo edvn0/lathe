@@ -19,17 +19,9 @@
 
 namespace {
 
-#ifndef NDEBUG
-    constexpr bool enable_validation = true;
-
     constexpr std::array validation_layers{
             "VK_LAYER_KHRONOS_validation",
     };
-#else
-    constexpr bool enable_validation = false;
-
-    constexpr std::array<char const *, 0> validation_layers{};
-#endif
 
     auto vk_result_name(VkResult result) noexcept -> std::string_view {
         switch (result) {
@@ -229,8 +221,12 @@ namespace {
             info("Headless: using a hidden X11 window.");
         } else {
 #if defined(__linux__)
-            glfwInitHint(GLFW_PLATFORM, renderdoc.is_active() ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM);
-            warn("Chosing: {} as platform.", renderdoc.is_active() ? "X11" : "auto-detected");
+            // Wayland does not let a client place its own windows, so ImGui windows cannot be dragged out of the main
+            // one there. LATHE_PLATFORM=x11 runs through XWayland instead.
+            auto const *const requested = std::getenv("LATHE_PLATFORM");
+            auto const x11 = renderdoc.is_active() || (requested != nullptr && std::string_view{requested} == "x11");
+            glfwInitHint(GLFW_PLATFORM, x11 ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM);
+            warn("Chosing: {} as platform.", x11 ? "X11" : "auto-detected");
 #endif
         }
 
@@ -381,7 +377,7 @@ namespace {
             instance_extensions.assign(required_extensions, required_extensions + extension_count);
         }
 
-        auto validation_enabled = enable_validation;
+        auto validation_enabled = context.validation;
         info("Validation is {}", validation_enabled ? "on" : "off");
 
         if (validation_enabled && !validation_layer_available()) {
@@ -401,7 +397,7 @@ namespace {
         auto sync_validation_enabled = false;
         if (context.sync_validation) {
             if (!validation_enabled) {
-                debug("Sync validation needs the validation layer (Debug builds); skipping it");
+                debug("Sync validation needs the validation layer (--validation); skipping it");
             } else if (!instance_extension_available(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) &&
                        !instance_extension_available(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME, validation_layers.front())) {
                 warn("{} is unavailable; skipping sync validation", VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);

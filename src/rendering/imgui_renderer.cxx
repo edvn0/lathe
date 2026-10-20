@@ -5,12 +5,18 @@
 #include "core/resources.hxx"
 
 #include <backends/imgui_impl_glfw.h>
+#include <GLFW/glfw3.h>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <ImGuizmo.h>
 #include <array>
 #include <bit>
+#include <execinfo.h>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 #include <filesystem>
 #include <implot.h>
 #include <unordered_map>
@@ -22,6 +28,7 @@
 #include "core/error_describe.hxx"
 #include "core/human_readable_bytes.hxx"
 #include "core/logger.hxx"
+#include "gpu/buffer.hxx"
 #include "gpu/context.hxx"
 #include "rendering/imgui_sdf_font.hxx"
 #include "rendering/renderer.hxx"
@@ -41,6 +48,35 @@ namespace gui {
 
         // Frames a replaced atlas image is kept for, so the frames still in flight can finish sampling it.
         constexpr std::uint32_t retired_texture_frames = 4;
+
+        // Called for every mismatched Begin/End or Push/Pop ImGui recovers from (the red tooltip). It repeats every
+        // frame while the mismatch lasts, so a message is logged when it changes and then now and then.
+        // Raw frames: `addr2line -Cfe build/<type>/bin/lathe <offset>` names the caller that left the pair open.
+        auto log_imgui_error(ImGuiContext *context, void * /*user_data*/, char const *message) -> void {
+            static auto last = std::string{};
+            static auto repeats = 0U;
+            if (last == message && ++repeats % 600U != 0U) {
+                return;
+            }
+            if (last != message) {
+                repeats = 0;
+            }
+            last = message;
+
+            auto const *window = context->CurrentWindow;
+            error("[ImGui] {} (in window '{}', hovered '{}', {} ids pushed)", message,
+                  window != nullptr ? window->Name : "<none>",
+                  context->HoveredWindow != nullptr ? context->HoveredWindow->Name : "<none>",
+                  window != nullptr ? window->IDStack.Size : 0);
+
+            auto frames = std::array<void *, 32>{};
+            auto const count = backtrace(frames.data(), static_cast<int>(frames.size()));
+            auto *const symbols = backtrace_symbols(frames.data(), count);
+            for (auto index = 0; index < count && symbols != nullptr; ++index) {
+                error("[ImGui]   #{} {}", index, symbols[index]);
+            }
+            std::free(symbols); // NOLINT(cppcoreguidelines-no-malloc)
+        }
 
         auto apply_dark_theme() -> void {
             ImGui::StyleColorsDark();
@@ -135,6 +171,9 @@ namespace gui {
         shader{r, OverlayShaderInfo{.source = "assets/shaders/gui.slang",
                                     .blending = true,
                                     .debug_name = "gui.pipeline"}},
+        viewport_shader{r, OverlayShaderInfo{.source = "assets/shaders/gui.slang",
+                                             .blending = true,
+                                             .debug_name = "gui.viewport.pipeline"}},
         vertices{UploadRing::Info{.name = "imgui.vertices"}},
         indices{UploadRing::Info{.name = "imgui.indices", .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT}},
         renderer(r) {
@@ -151,11 +190,17 @@ namespace gui {
         // Lines drawn from atlas texels would read the glyph field's alpha as a distance.
         ImGui::GetStyle().AntiAliasedLinesUseTex = false;
 
+        // Recover from mismatches (red tooltip) without asserting, and say where they come from.
+        io.ConfigErrorRecovery = true;
+        io.ConfigErrorRecoveryEnableAssert = false;
+        ImGui::GetCurrentContext()->ErrorCallback = log_imgui_error;
+
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-        if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-            io.BackendFlags |= ImGuiBackendFlags_PlatformHasViewports;
-            io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
+        // Windows ImGui detaches from the main one need a window system of their own: not the headless (null) platform.
+        viewports_enabled = glfwGetPlatform() != GLFW_PLATFORM_NULL;
+        if (viewports_enabled) {
+            io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
             ImGuiStyle &style = ImGui::GetStyle();
             style.WindowRounding = 0.0F;
@@ -164,18 +209,23 @@ namespace gui {
 
         update_font(font);
         ImGui_ImplGlfw_InitForVulkan(w, true);
+        init_viewports();
     }
 
     ImGuiRenderer::~ImGuiRenderer() {
+        shutdown_viewports();
         ImGui_ImplGlfw_Shutdown();
-
-        ImGui::DestroyPlatformWindows();
 
         ImPlot::DestroyContext();
         ImGui::DestroyContext();
     }
 
-    auto ImGuiRenderer::begin_frame(VkExtent2D const framebuffer) -> void {
+    auto ImGuiRenderer::begin_frame(VkExtent2D const framebuffer, std::uint32_t const frame_index) -> void {
+        current_frame_index = frame_index;
+        // Here and not while recording: a view destroyed while the descriptor table is bound in the command buffer
+        // being recorded invalidates that command buffer.
+        wait_for_viewports(frame_index);
+        retire_textures();
         ImGuiIO &io = ImGui::GetIO();
         io.DisplaySize = ImVec2(static_cast<float>(framebuffer.width) / display_scale,
                                 static_cast<float>(framebuffer.height) / display_scale);
@@ -190,8 +240,9 @@ namespace gui {
         ImGui::EndFrame();
         ImGui::Render();
 
-        if (auto &io = ImGui::GetIO(); io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        if (viewports_enabled) {
             ImGui::UpdatePlatformWindows();
+            ImGui::RenderPlatformWindowsDefault();
         }
     }
 
@@ -207,17 +258,23 @@ namespace gui {
             return;
         }
 
-        draw(context, *bound, *data);
+        draw(*bound, *data,
+             DrawTarget{.vertices = vertices,
+                        .indices = indices,
+                        .ring_slot = context.frame_index,
+                        .preview_index = renderer.preview_texture_index()});
     }
 
-    auto ImGuiRenderer::draw(OverlayRecordContext const &context, BoundOverlayShader const &bound,
-                             ImDrawData const &data) -> void {
+    auto ImGuiRenderer::draw(BoundOverlayShader const &bound, ImDrawData const &data, DrawTarget const &target)
+            -> void {
         auto &gpu = renderer.context();
-        auto const frame = context.frame_index;
+        auto const frame = target.ring_slot;
+        auto &vertex_ring = target.vertices;
+        auto &index_ring = target.indices;
 
         update_textures(data);
 
-        for (auto *ring: {&vertices, &indices}) {
+        for (auto *ring: {&vertex_ring, &index_ring}) {
             if (auto const begun = ring->begin_frame(gpu, frame); !begun) {
                 error("[ImGui] Could not prepare an upload buffer: {}", begun.error().message);
                 return;
@@ -247,9 +304,9 @@ namespace gui {
         // Each command list goes into the rings as it is, with its own vertex address and index buffer, instead of
         // being gathered into one big vector first.
         for (auto const *list: std::span{data.CmdLists.Data, static_cast<std::size_t>(data.CmdListsCount)}) {
-            auto const vertex_slice = vertices.write(
+            auto const vertex_slice = vertex_ring.write(
                     gpu, frame, std::span<ImDrawVert const>{list->VtxBuffer.Data, static_cast<std::size_t>(list->VtxBuffer.Size)});
-            auto const index_slice = indices.write(
+            auto const index_slice = index_ring.write(
                     gpu, frame, std::span<ImDrawIdx const>{list->IdxBuffer.Data, static_cast<std::size_t>(list->IdxBuffer.Size)}, 4);
 
             if (!vertex_slice || !index_slice) {
@@ -282,7 +339,7 @@ namespace gui {
                         .lrtb = {left, right, top, bottom},
                         .vb = vertex_slice->address,
                         .base_vertex = imgui_cmd.VtxOffset,
-                        .texture_id = is_preview ? renderer.preview_texture_index()
+                        .texture_id = is_preview ? target.preview_index
                                                  : static_cast<std::uint32_t>(raw_tex_id & 0xFFFFFFFFULL),
                         .sampler_id = sampler.index,
                         .already_linear = already_linear ? 1U : 0U,
@@ -298,7 +355,7 @@ namespace gui {
             }
         }
 
-        for (auto *ring: {&vertices, &indices}) {
+        for (auto *ring: {&vertex_ring, &index_ring}) {
             if (auto const flushed = ring->flush(frame); !flushed) {
                 error("[ImGui] Could not flush an upload buffer: {}", flushed.error().message);
             }
@@ -312,11 +369,13 @@ namespace gui {
 
     auto ImGuiRenderer::update_font(FontChoice const &f) -> void {
         ImGuiIO &io = ImGui::GetIO();
+        // The atlas' loader, not a per-font one: only that kind gets LoaderInit and LoaderShutdown called.
+        io.Fonts->SetFontLoader(sdf_font_loader());
+
         ImFontConfig cfg{};
         cfg.FontDataOwnedByAtlas = false;
         cfg.SizePixels = std::ceil(f.size);
         cfg.PixelSnapH = true;
-        cfg.FontLoader = sdf_font_loader();
 
         ImFont *font = nullptr;
         auto loaded_font = read_resource(data_path(f.font_path));
@@ -343,7 +402,6 @@ namespace gui {
             ImFontConfig icon_cfg{};
             icon_cfg.MergeMode = true;
             icon_cfg.PixelSnapH = true;
-            icon_cfg.FontLoader = sdf_font_loader();
             icon_cfg.GlyphMinAdvanceX = cfg.SizePixels * 2.0F / 3.0F;
             static_cast<void>(io.Fonts->AddFontFromMemoryCompressedTTF(
                     fa_solid_900_compressed_data, static_cast<int>(fa_solid_900_compressed_size),
@@ -375,18 +433,112 @@ namespace gui {
         sampler = *created_sampler;
     }
 
-    // Creates, refreshes and releases the images behind ImGui's textures (the glyph atlas grows as text with new
-    // glyphs or sizes appears). An update uploads the whole atlas into a new image: the atlas is small and changes
-    // rarely, and there is no partial upload.
-    auto ImGuiRenderer::update_textures(ImDrawData const &data) -> void {
+    // Frees the images update_textures replaced once the frames in flight are done with them. Once per frame.
+    auto ImGuiRenderer::retire_textures() -> void {
         auto &images = renderer.image_storage();
 
         for (auto &retired: retired_textures) {
             if (--retired.frames == 0) {
+                // The descriptor sets in flight still name the view until each is rewritten, so destroying it
+                // needs the device idle. Only an atlas that grew gets here (new glyphs are uploaded in place).
+                vkDeviceWaitIdle(renderer.context().device);
                 static_cast<void>(images.destroy_image(retired.image));
             }
         }
         std::erase_if(retired_textures, [](RetiredTexture const &retired) { return retired.frames == 0; });
+    }
+
+    // Copies the part of `texture` that changed into its image, which keeps its descriptor and view: the image is
+    // in the shader-read layout, so the copy waits for the work already submitted and the work after waits for it.
+    auto ImGuiRenderer::upload_texture_region(ImageHandle const handle, ImTextureData &texture) -> bool {
+        auto *const image = renderer.image_storage().get(handle);
+        auto const rect = texture.UpdateRect;
+        if (image == nullptr) {
+            return false;
+        }
+        if (rect.w == 0 || rect.h == 0) {
+            return true;
+        }
+
+        auto &gpu = renderer.context();
+        auto const row_bytes = static_cast<std::size_t>(rect.w) * static_cast<std::size_t>(texture.BytesPerPixel);
+        auto const size = static_cast<VkDeviceSize>(row_bytes * rect.h);
+
+        auto staging = Buffer::create(gpu, BufferCreateInfo{
+                                                   .size = size,
+                                                   .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                   .memory = BufferMemory::upload,
+                                                   .debug_name = "imgui.texture_update",
+                                           });
+        if (!staging || staging->allocation_info.pMappedData == nullptr) {
+            return false;
+        }
+
+        auto *const mapped = static_cast<std::byte *>(staging->allocation_info.pMappedData);
+        for (auto row = 0; row < rect.h; ++row) {
+            std::memcpy(mapped + static_cast<std::size_t>(row) * row_bytes, texture.GetPixelsAt(rect.x, rect.y + row),
+                        row_bytes);
+        }
+        vmaFlushAllocation(gpu.allocator, staging->allocation, 0, size);
+
+        auto const transition = [&](VkCommandBuffer command_buffer, VkImageLayout from, VkImageLayout to,
+                                    VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                                    VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+            auto const barrier = VkImageMemoryBarrier2{
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .srcStageMask = src_stage,
+                    .srcAccessMask = src_access,
+                    .dstStageMask = dst_stage,
+                    .dstAccessMask = dst_access,
+                    .oldLayout = from,
+                    .newLayout = to,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = image->image(),
+                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+            };
+            auto const dependency = VkDependencyInfo{
+                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .imageMemoryBarrierCount = 1,
+                    .pImageMemoryBarriers = &barrier,
+            };
+            vkCmdPipelineBarrier2(command_buffer, &dependency);
+        };
+
+        gpu.one_time_submit([&](VkCommandBuffer command_buffer) {
+            transition(command_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+                       VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+
+            auto const region = VkBufferImageCopy2{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                    .imageOffset = {rect.x, rect.y, 0},
+                    .imageExtent = {rect.w, rect.h, 1},
+            };
+            auto const copy = VkCopyBufferToImageInfo2{
+                    .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+                    .srcBuffer = staging->buffer,
+                    .dstImage = image->image(),
+                    .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .regionCount = 1,
+                    .pRegions = &region,
+            };
+            vkCmdCopyBufferToImage2(command_buffer, &copy);
+
+            transition(command_buffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+        });
+
+        staging->destroy();
+        return true;
+    }
+
+    // Creates, refreshes and releases the images behind ImGui's textures (the glyph atlas grows as text with new
+    // glyphs or sizes appears). New glyphs are copied into the image in place; an atlas that grew gets a new image.
+    auto ImGuiRenderer::update_textures(ImDrawData const &data) -> void {
+        auto &images = renderer.image_storage();
 
         if (data.Textures == nullptr) {
             return;
@@ -399,9 +551,9 @@ namespace gui {
 
             auto const existing = textures.find(texture);
 
-            if (texture->Status == ImTextureStatus_WantDestroy && static_cast<std::uint32_t>(texture->UnusedFrames) >= retired_texture_frames) {
+            if (texture->Status == ImTextureStatus_WantDestroy && texture->UnusedFrames >= static_cast<int>(retired_texture_frames)) {
                 if (existing != textures.end()) {
-                    retired_textures.push_back({existing->second, retired_texture_frames});
+                    retired_textures.push_back({existing->second.image, retired_texture_frames});
                     textures.erase(existing);
                 }
                 texture->SetTexID(ImTextureID_Invalid);
@@ -411,6 +563,14 @@ namespace gui {
 
             if (texture->Status != ImTextureStatus_WantCreate && texture->Status != ImTextureStatus_WantUpdates) {
                 continue;
+            }
+
+            if (texture->Status == ImTextureStatus_WantUpdates && existing != textures.end() &&
+                existing->second.width == texture->Width && existing->second.height == texture->Height) {
+                if (upload_texture_region(existing->second.image, *texture)) {
+                    texture->SetStatus(ImTextureStatus_OK);
+                    continue;
+                }
             }
 
             auto const bytes_per_pixel = static_cast<std::size_t>(texture->BytesPerPixel);
@@ -438,10 +598,10 @@ namespace gui {
             }
 
             if (existing != textures.end()) {
-                retired_textures.push_back({existing->second, retired_texture_frames});
-                existing->second = *created;
+                retired_textures.push_back({existing->second.image, retired_texture_frames});
+                existing->second = AtlasImage{*created, texture->Width, texture->Height};
             } else {
-                textures.emplace(texture, *created);
+                textures.emplace(texture, AtlasImage{*created, texture->Width, texture->Height});
             }
 
             texture->SetTexID(ImTextureID{static_cast<std::uint64_t>(created->index) | font_texture_bit});

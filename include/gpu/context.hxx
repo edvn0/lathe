@@ -59,6 +59,8 @@ struct VulkanContext {
     VkQueue compute_queue = VK_NULL_HANDLE;
 
     AsyncComputeMode async_compute_mode = AsyncComputeMode::automatic;
+    // Load the Vulkan validation layer (Debug builds by default; --validation turns it on in any build).
+    bool validation = false;
     bool sync_validation = false;
 
     bool vsync = true;
