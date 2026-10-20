@@ -2,14 +2,19 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <initializer_list>
+#include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_node_editor.h>
 
 #include "rendering/debug_renderer.hxx"
 #include "rendering/hiz_occlusion.hxx"
@@ -19,6 +24,69 @@
 namespace stages {
     namespace {
 
+        namespace ed = ax::NodeEditor;
+
+        // A combo that also works inside a node of the frame graph editor. Opening a popup there does not work: it is
+        // placed and hit-tested in the canvas' zoomed space, and suspending the canvas inside a node loses what the
+        // node drew so far. So in the editor the node only gets the button; the list is kept as pending and drawn by
+        // draw_pending_combo after the nodes, and the pick is handed back the next time the combo is drawn.
+        struct PendingCombo {
+            ImGuiID id = 0;
+            ImVec2 min;
+            ImVec2 max;
+            std::vector<std::string> items;
+            std::size_t selected = 0;
+            bool opening = true;
+        };
+
+        std::optional<PendingCombo> pending_combo;
+        std::optional<std::pair<ImGuiID, std::size_t>> chosen_combo;
+
+        auto combo(char const *label, char const *preview, std::span<std::string const> items, std::size_t selected)
+                -> std::optional<std::size_t> {
+            if (ed::GetCurrentEditor() == nullptr) {
+                auto picked = std::optional<std::size_t>{};
+                if (ImGui::BeginCombo(label, preview)) {
+                    for (auto index = std::size_t{0}; index < items.size(); ++index) {
+                        if (ImGui::Selectable(items[index].c_str(), index == selected)) {
+                            picked = index;
+                        }
+                        if (index == selected) {
+                            ImGui::SetItemDefaultFocus();
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                return picked;
+            }
+
+            auto const id = ImGui::GetID(label);
+            ImGui::PushID(label);
+            auto const button_size = ImVec2{ImGui::CalcItemWidth() - ImGui::GetFrameHeight(), 0.0F};
+            auto const clicked = ImGui::Button(preview, button_size);
+            auto const min = ImGui::GetItemRectMin();
+            auto const max = ImGui::GetItemRectMax();
+            ImGui::SameLine(0.0F, 0.0F);
+            auto const arrow_clicked = ImGui::ArrowButton("##arrow", ImGuiDir_Down);
+            ImGui::SameLine();
+            ImGui::TextUnformatted(label);
+            ImGui::PopID();
+
+            if (clicked || arrow_clicked) {
+                pending_combo = PendingCombo{id, min, max, {items.begin(), items.end()}, selected, true};
+            } else if (pending_combo && pending_combo->id == id) {
+                pending_combo->min = min;
+                pending_combo->max = max;
+            }
+
+            if (chosen_combo && chosen_combo->first == id) {
+                auto const picked = chosen_combo->second;
+                chosen_combo.reset();
+                return picked;
+            }
+            return std::nullopt;
+        }
+
         auto draw_cluster_grid_settings(Renderer &renderer, std::optional<ClusterGridSettings> &refused) -> void {
             auto grid = refused.value_or(renderer.cluster_grid());
             bool changed = false;
@@ -27,22 +95,16 @@ namespace stages {
             std::string const preview =
                     preset == cluster_grid_presets.end() ? std::string{"Custom"} : std::string{preset->name};
 
-            if (ImGui::BeginCombo("Cluster grid", preview.c_str())) {
-                for (auto const &option: cluster_grid_presets) {
-                    bool const selected = option.grid == grid;
-                    auto const label =
-                            std::format("{} ({}x{}x{}, {} per cluster)", option.name, option.grid.tiles_x,
-                                        option.grid.tiles_y, option.grid.depth_slices, option.grid.light_capacity);
-
-                    if (ImGui::Selectable(label.c_str(), selected)) {
-                        grid = option.grid;
-                        changed = true;
-                    }
-                    if (selected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
+            auto labels = std::vector<std::string>{};
+            for (auto const &option: cluster_grid_presets) {
+                labels.push_back(std::format("{} ({}x{}x{}, {} per cluster)", option.name, option.grid.tiles_x,
+                                             option.grid.tiles_y, option.grid.depth_slices,
+                                             option.grid.light_capacity));
+            }
+            if (auto const picked = combo("Cluster grid", preview.c_str(), labels,
+                                          static_cast<std::size_t>(preset - cluster_grid_presets.begin()))) {
+                grid = cluster_grid_presets[*picked].grid;
+                changed = true;
             }
 
             auto const slider = [&](char const *label, std::uint32_t &value, std::uint32_t maximum,
@@ -117,14 +179,17 @@ namespace stages {
                 return count == 1 ? std::string{"Off"} : std::format("MSAA {}x", count);
             };
 
-            if (ImGui::BeginCombo("MSAA", label(current).c_str())) {
-                for (std::uint32_t count = 1; count <= max_samples; count <<= 1U) {
-                    if (ImGui::Selectable(label(count).c_str(), count == current)) {
-                        renderer.set_samples(static_cast<VkSampleCountFlagBits>(count));
-                    }
+            auto labels = std::vector<std::string>{};
+            auto selected = std::size_t{0};
+            for (std::uint32_t count = 1; count <= max_samples; count <<= 1U) {
+                if (count == current) {
+                    selected = labels.size();
                 }
+                labels.push_back(label(count));
+            }
 
-                ImGui::EndCombo();
+            if (auto const picked = combo("MSAA", label(current).c_str(), labels, selected)) {
+                renderer.set_samples(static_cast<VkSampleCountFlagBits>(std::uint32_t{1} << *picked));
             }
         }
 
@@ -197,9 +262,10 @@ namespace stages {
             constexpr std::array occlusion_test_names{"Hi-Z", "Stub: never occluded", "Stub: always defer"};
             auto test_mode = static_cast<int>(renderer.occlusion_test_mode());
 
-            if (ImGui::Combo("Occlusion test", &test_mode, occlusion_test_names.data(),
-                             static_cast<int>(occlusion_test_names.size()))) {
-                renderer.set_occlusion_test_mode(static_cast<OcclusionTestMode>(test_mode));
+            auto const occlusion_labels = std::vector<std::string>{occlusion_test_names.begin(), occlusion_test_names.end()};
+            if (auto const picked = combo("Occlusion test", occlusion_test_names[static_cast<std::size_t>(test_mode)],
+                                          occlusion_labels, static_cast<std::size_t>(test_mode))) {
+                renderer.set_occlusion_test_mode(static_cast<OcclusionTestMode>(*picked));
             }
 
             ImGui::SetItemTooltip("The stubs exercise the two-phase draw lists without the Hi-Z test: the frame must "
@@ -358,20 +424,14 @@ namespace stages {
             bool dirty = false;
 
             auto const current = context.renderer.colour_lut_name(grade.lut);
-            if (ImGui::BeginCombo("LUT", grade.lut < 0 ? "None" : std::string{current}.c_str())) {
-                if (ImGui::Selectable("None", grade.lut < 0)) {
-                    grade.lut = -1;
-                    dirty = true;
-                }
-
-                for (auto lut = std::int32_t{0}; std::cmp_less(lut, context.renderer.colour_lut_count()); ++lut) {
-                    auto const name = std::string{context.renderer.colour_lut_name(lut)};
-                    if (ImGui::Selectable(name.c_str(), grade.lut == lut)) {
-                        grade.lut = lut;
-                        dirty = true;
-                    }
-                }
-                ImGui::EndCombo();
+            auto lut_labels = std::vector<std::string>{"None"};
+            for (auto lut = std::int32_t{0}; std::cmp_less(lut, context.renderer.colour_lut_count()); ++lut) {
+                lut_labels.emplace_back(context.renderer.colour_lut_name(lut));
+            }
+            if (auto const picked = combo("LUT", grade.lut < 0 ? "None" : std::string{current}.c_str(), lut_labels,
+                                          static_cast<std::size_t>(grade.lut + 1))) {
+                grade.lut = static_cast<std::int32_t>(*picked) - 1;
+                dirty = true;
             }
 
             ImGui::BeginDisabled(grade.lut < 0);
@@ -572,6 +632,47 @@ namespace stages {
                                    .debug_renderer = debug_renderer_};
             stage->draw_settings(context);
         }
+    }
+
+    auto draw_pending_combo() -> void {
+        if (!pending_combo) {
+            return;
+        }
+
+        // The list is drawn at screen scale, outside the canvas, so it follows the canvas zoom by hand to match the
+        // text of the node it belongs to.
+        auto const zoom = (ed::CanvasToScreen(pending_combo->max).x - ed::CanvasToScreen(pending_combo->min).x) /
+                          std::max(pending_combo->max.x - pending_combo->min.x, 1.0F);
+        auto const &style = ImGui::GetStyle();
+
+        ed::Suspend();
+        if (pending_combo->opening) {
+            ImGui::OpenPopup("##node_combo");
+            pending_combo->opening = false;
+        }
+        ImGui::SetNextWindowPos(ed::CanvasToScreen({pending_combo->min.x, pending_combo->max.y}));
+        ImGui::SetNextWindowSizeConstraints({(pending_combo->max.x - pending_combo->min.x) * zoom, 0.0F},
+                                            {FLT_MAX, FLT_MAX});
+        ImGui::PushFont(nullptr, ImGui::GetFontSize() * zoom);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {style.WindowPadding.x * zoom, style.WindowPadding.y * zoom});
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {style.ItemSpacing.x * zoom, style.ItemSpacing.y * zoom});
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {style.FramePadding.x * zoom, style.FramePadding.y * zoom});
+
+        if (ImGui::BeginPopup("##node_combo")) {
+            for (auto index = std::size_t{0}; index < pending_combo->items.size(); ++index) {
+                if (ImGui::Selectable(pending_combo->items[index].c_str(), index == pending_combo->selected)) {
+                    chosen_combo = std::pair{pending_combo->id, index};
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndPopup();
+        } else {
+            pending_combo.reset();
+        }
+
+        ImGui::PopStyleVar(3);
+        ImGui::PopFont();
+        ed::Resume();
     }
 
 }

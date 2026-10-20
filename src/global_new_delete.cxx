@@ -67,6 +67,15 @@ auto operator new(std::size_t size) -> void * { return allocate(size); }
 
 auto operator new[](std::size_t size) -> void * { return allocate(size); }
 
+// Defined explicitly: libstdc++'s nothrow forms forward to the throwing ones, but under AddressSanitizer they are
+// replaced by its own allocator, and memory from a library's `new (std::nothrow)` would reach the header-stripping
+// deallocate() below.
+auto operator new(std::size_t size, std::nothrow_t const &) noexcept -> void * {
+    return allocate(size); // allocate() aborts instead of returning null
+}
+
+auto operator new[](std::size_t size, std::nothrow_t const &) noexcept -> void * { return allocate(size); }
+
 auto operator delete(void *ptr) noexcept -> void { deallocate(ptr); }
 
 auto operator delete[](void *ptr) noexcept -> void { deallocate(ptr); }
