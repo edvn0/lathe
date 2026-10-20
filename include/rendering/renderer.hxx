@@ -428,8 +428,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto begin_model_submissions(std::size_t count) -> std::span<ModelSubmission>;
     auto set_model_submission_slot_overrides(ModelSubmission &submission,
                                              std::span<MaterialSlotOverride const> overrides) -> void;
-    // `skipped` is how many entries were marked skip: with none, there is nothing to look through.
-    [[nodiscard]] auto end_model_submissions(std::size_t skipped) -> std::expected<void, RendererError>;
+    // `skipped` is how many entries were marked skip (with none, there is nothing to look through) and `outlined` how
+    // many of the others are outlined, which the frame's batching needs to know and would otherwise have to count.
+    [[nodiscard]] auto end_model_submissions(std::size_t skipped, std::size_t outlined)
+            -> std::expected<void, RendererError>;
     [[nodiscard]] auto has_model(ModelHandle handle) const noexcept -> bool { return model_slot(handle) != nullptr; }
 
     [[nodiscard]] auto outline_settings() noexcept -> OutlineSettings & { return outline_settings_; }
@@ -1644,6 +1646,8 @@ private:
     std::vector<Submission> submissions_;
     std::vector<ModelSubmission> model_submissions_;
     std::size_t opened_submissions_first_ = 0;
+    // How many of the frame's model submissions are outlined (they make batching create outline variants).
+    std::size_t outlined_submission_count_ = 0;
     std::vector<MaterialSlotOverride> slot_override_submissions_;
     std::vector<InstancedSubmission> instanced_submissions_;
     std::vector<glm::mat4> instance_transforms_;

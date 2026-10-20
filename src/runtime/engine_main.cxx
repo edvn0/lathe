@@ -230,11 +230,13 @@ namespace {
             auto fixups = std::vector<Fixup>{};
             auto fixups_mutex = std::mutex{};
             auto skipped = std::atomic<std::size_t>{0};
+            auto outlined_count = std::atomic<std::size_t>{0};
             auto const renderer = runtime.renderer.get();
 
             auto const fill = [&](std::size_t first, std::size_t last) {
                 auto local_fixups = std::vector<Fixup>{};
                 auto local_skipped = std::size_t{0};
+                auto local_outlined = std::size_t{0};
                 auto local_transforms = systems::WorldTransformCache{};
 
                 auto entities = pool.begin() + static_cast<std::ptrdiff_t>(first);
@@ -271,6 +273,7 @@ namespace {
                     submission.slot_override_count = 0;
                     submission.outlined = (outlines != nullptr && outlines->contains(entity)) || is_selected(entity);
                     submission.skip = false;
+                    local_outlined += submission.outlined ? 1U : 0U;
 
                     if (has_slots) {
                         local_fixups.push_back(Fixup{.index = index, .entity = entity});
@@ -278,6 +281,7 @@ namespace {
                 }
 
                 skipped += local_skipped;
+                outlined_count += local_outlined;
                 if (!local_fixups.empty()) {
                     auto const lock = std::scoped_lock{fixups_mutex};
                     fixups.insert(fixups.end(), local_fixups.begin(), local_fixups.end());
@@ -299,7 +303,7 @@ namespace {
                         std::span<MaterialSlotOverride const>{overrides->get(fixup.entity).slots});
             }
 
-            if (auto result = runtime.renderer->end_model_submissions(skipped.load()); !result) {
+            if (auto result = runtime.renderer->end_model_submissions(skipped.load(), outlined_count.load()); !result) {
                 error("Some scene objects have a model that does not exist: {}", describe(result.error()));
             }
         } else {
