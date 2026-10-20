@@ -630,7 +630,10 @@ namespace stages {
         if (auto const *stage = find(id); stage != nullptr && stage->draw_settings) {
             auto context = Context{.renderer = renderer, .ui = ui_, .max_preview_width = max_preview_width,
                                    .debug_renderer = debug_renderer_};
+            // Stages share labels ("Intensity"), and a panel draws several of them in one window.
+            ImGui::PushID(stage->id.c_str());
             stage->draw_settings(context);
+            ImGui::PopID();
         }
     }
 
