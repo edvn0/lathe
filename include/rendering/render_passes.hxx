@@ -242,6 +242,8 @@ namespace render_pass {
 
     struct CompositePassInfo {
         VkExtent2D extent{};
+        // Size of the scene images the shader samples; differs from `extent` when the render scale is not 1.
+        VkExtent2D scene_extent{};
 
         HdrTextureIndex hdr{};
         std::optional<BloomTextureIndex> bloom;

@@ -8,6 +8,7 @@
 
 #include <BS_thread_pool.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -717,6 +718,16 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto depth_format() const noexcept { return depth_format_; }
     [[nodiscard]] auto hdr_format() const noexcept { return hdr_format_; }
     [[nodiscard]] auto samples() const noexcept { return samples_; }
+
+    // The scene is rendered at the display size times this, then the composite pass resamples it to the display.
+    // Below 1 trades sharpness for speed, above 1 is supersampling. The run loop applies it when it sizes the
+    // renderer, so a change takes effect after the next resize settles.
+    static constexpr float min_render_scale = 0.2F;
+    static constexpr float max_render_scale = 3.5F;
+    auto set_render_scale(float scale) noexcept -> void {
+        render_scale_ = std::clamp(scale, min_render_scale, max_render_scale);
+    }
+    [[nodiscard]] auto render_scale() const noexcept -> float { return render_scale_; }
 
     // Takes effect at the start of the next frame. Counts the device does not support are clamped down.
     auto set_samples(VkSampleCountFlagBits samples) noexcept -> void;
@@ -1485,6 +1496,7 @@ private:
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     VkFormat swapchain_format_ = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
+    float render_scale_ = 1.0F;
     VkSampleCountFlagBits pending_samples_ = VK_SAMPLE_COUNT_1_BIT;
     VkExtent2D extent_{};
 

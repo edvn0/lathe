@@ -922,6 +922,7 @@ namespace {
                                              async_compute_choices, async_compute);
 
             auto diagnostics = cli.group("Diagnostics");
+            display.value("--render-scale", "FACTOR", "Draw the scene at the viewport size times FACTOR (0.2 to 3.5, default 1); the editor has a slider for it", render_scale);
             display.flag("--max-quality", "Turn every rendering feature on and up: 4x MSAA, fog, up to 64 shadowed local lights, heavier AO, all culling and clustered lighting", max_quality);
             diagnostics.flag("--frame-graph-dump",
                              "Log the compiled frame graph whenever it changes", dump_frame_graph);
@@ -973,6 +974,7 @@ namespace {
         std::optional<bool> validation;
         std::string async_passes;
         bool max_quality = false;
+        float render_scale = 1.0F;
         bool dump_frame_graph = false;
         bool ray_tracing_poc = false;
         std::string ray_tracing_poc_view = "beauty";
@@ -1225,6 +1227,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         runtime.renderer->set_async_gtao_automatic(automatic);
     }
     runtime.renderer->set_frame_graph_dump(dump_frame_graph);
+    runtime.renderer->set_render_scale(engine.render_scale);
     if (engine.max_quality) {
         auto &renderer = *runtime.renderer;
         renderer.set_samples(VK_SAMPLE_COUNT_4_BIT);
@@ -1516,6 +1519,16 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
             auto const size = profile.render_extent(
                     RenderExtent{.width = desired_render_extent.width, .height = desired_render_extent.height});
             target_render_extent = VkExtent2D{.width = size.width, .height = size.height};
+        }
+
+        // The render scale is applied last so a profile that fixes the size (the benchmarks) still gets it.
+        if (auto const scale = runtime.renderer->render_scale(); scale != 1.0F) {
+            constexpr auto max_dimension = 16384.0F;
+            auto const scaled = [&](std::uint32_t value) {
+                return static_cast<std::uint32_t>(std::clamp(std::round(static_cast<float>(value) * scale), 1.0F, max_dimension));
+            };
+            target_render_extent = VkExtent2D{.width = scaled(target_render_extent.width),
+                                              .height = scaled(target_render_extent.height)};
         }
 
         if (!compare(target_render_extent, pending_extent)) {

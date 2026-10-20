@@ -1342,6 +1342,7 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                             pass_context,
                             render_pass::CompositePassInfo{
                                     .extent = fullscreen ? swapchain_image.extent : targets->extent,
+                                    .scene_extent = targets->extent,
                                     .hdr = game_graph.scene_colour()
                                                    ? render_pass::HdrTextureIndex{transient_index(scene_colour)}
                                                    : state.handoff.hdr,
