@@ -988,6 +988,7 @@ namespace render_pass {
         context.resource_table.bind(context.command_buffer, context.frame_index, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     layout);
         detail::set_composite_dynamic_state(context.command_buffer, info.extent);
+        auto const scene_extent = info.scene_extent.width != 0 ? info.scene_extent : info.extent;
 
         auto const bloom_texture_index = info.bloom.has_value() ? info.bloom->index : info.bloom_fallback_texture_index;
         auto const bloom_intensity = info.bloom.has_value() ? info.bloom_intensity : 0.0F;
@@ -1000,8 +1001,8 @@ namespace render_pass {
                 .bloom_intensity = bloom_intensity,
                 .outline_texture_index = info.outline_texture_index,
                 .outline_thickness = info.outline_thickness_pixels,
-                .outline_texel_x = 1.0F / static_cast<float>(info.extent.width),
-                .outline_texel_y = 1.0F / static_cast<float>(info.extent.height),
+                .outline_texel_x = 1.0F / static_cast<float>(scene_extent.width),
+                .outline_texel_y = 1.0F / static_cast<float>(scene_extent.height),
                 .outline_r = info.outline_colour.r,
                 .outline_g = info.outline_colour.g,
                 .outline_b = info.outline_colour.b,

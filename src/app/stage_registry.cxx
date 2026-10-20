@@ -191,6 +191,14 @@ namespace stages {
             if (auto const picked = combo("MSAA", label(current).c_str(), labels, selected)) {
                 renderer.set_samples(static_cast<VkSampleCountFlagBits>(std::uint32_t{1} << *picked));
             }
+
+            auto percent = renderer.render_scale() * 100.0F;
+            if (ImGui::SliderFloat("Render scale", &percent, Renderer::min_render_scale * 100.0F,
+                                   Renderer::max_render_scale * 100.0F, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+                renderer.set_render_scale(percent / 100.0F);
+            }
+            ImGui::SetItemTooltip("Resolution the scene is drawn at, relative to the viewport. Under 100%% is faster "
+                                  "and softer, over 100%% supersamples and costs memory and time.");
         }
 
         auto draw_hiz_preview(Context &context) -> void {
