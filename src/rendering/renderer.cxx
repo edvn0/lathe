@@ -48,6 +48,40 @@
 #include "shader_push_constants.hxx"
 
 namespace {
+    // Folds `size` bytes into `hash`, a word at a time; the order of the bytes matters. Not a cryptographic hash: it is
+    // for telling two frames' data apart (see Renderer::set_frame_checksum_enabled).
+    auto checksum_bytes(std::uint64_t hash, void const *data, std::size_t size) noexcept -> std::uint64_t {
+        constexpr auto prime = std::uint64_t{0x9E3779B97F4A7C15ULL};
+        auto const *bytes = static_cast<unsigned char const *>(data);
+
+        hash = (hash ^ size) * prime;
+        auto offset = std::size_t{0};
+        for (; offset + sizeof(std::uint64_t) <= size; offset += sizeof(std::uint64_t)) {
+            auto word = std::uint64_t{0};
+            std::memcpy(&word, bytes + offset, sizeof(word));
+            hash = (hash ^ word) * prime;
+            hash ^= hash >> 29U;
+        }
+        for (; offset < size; ++offset) {
+            hash = (hash ^ bytes[offset]) * prime;
+        }
+        return hash;
+    }
+
+    // The LOD an instance at `instance_position` is drawn at, from its distance to the camera.
+    auto lod_index_for(glm::vec3 const &camera_position, glm::vec3 const &instance_position) noexcept -> std::uint32_t {
+        auto const delta = instance_position - camera_position;
+        auto const distance_sq = glm::dot(delta, delta);
+        std::uint32_t lod_index = 0;
+        for (; lod_index < lod_distances.size(); ++lod_index) {
+            auto const lod_distance = lod_distances[lod_index];
+            if (distance_sq < lod_distance * lod_distance) {
+                break;
+            }
+        }
+        return lod_index;
+    }
+
     constexpr std::uint32_t queries_per_overlay = 4;
     constexpr std::uint32_t full_frame_query_count = 2;
     constexpr std::uint32_t overlay_query_base = full_frame_query_count;
@@ -2233,9 +2267,11 @@ auto Renderer::create_model_common(
 
             // A skinned mesh ignores its node's transform (glTF 2.0): the joint matrices already carry every
             // ancestor, so applying it again would double-rotate e.g. a Z-up to Y-up parent node.
+            auto const draw_transform = model.animation != nullptr ? glm::mat4{1.0F} : local_to_model;
             flattened_draws.push_back(ModelDraw{
                     .mesh = imported_meshes[node.mesh_index],
-                    .local_transform = model.animation != nullptr ? glm::mat4{1.0F} : local_to_model,
+                    .local_transform = draw_transform,
+                    .identity_local = draw_transform == glm::mat4{1.0F},
             });
         }
 
@@ -2486,6 +2522,53 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
     return {};
 }
 
+auto Renderer::begin_model_submissions(std::size_t count) -> std::span<ModelSubmission> {
+    auto const used = submitted_model_count();
+    auto const room = used < maximum_submission_count_ ? static_cast<std::size_t>(maximum_submission_count_) - used
+                                                       : std::size_t{0};
+    count = std::min(count, room);
+
+    opened_submissions_first_ = model_submissions_.size();
+    model_submissions_.resize(opened_submissions_first_ + count);
+    return std::span{model_submissions_}.subspan(opened_submissions_first_);
+}
+
+auto Renderer::set_model_submission_slot_overrides(ModelSubmission &submission,
+                                                   std::span<MaterialSlotOverride const> overrides) -> void {
+    submission.slot_override_first = static_cast<std::uint32_t>(slot_override_submissions_.size());
+    submission.slot_override_count = static_cast<std::uint32_t>(overrides.size());
+    slot_override_submissions_.insert(slot_override_submissions_.end(), overrides.begin(), overrides.end());
+}
+
+auto Renderer::end_model_submissions(std::size_t skipped) -> std::expected<void, RendererError> {
+    if (skipped == 0) {
+        return {};
+    }
+
+    auto first_error = std::optional<RendererError>{};
+    auto kept = opened_submissions_first_;
+    for (auto index = opened_submissions_first_; index < model_submissions_.size(); ++index) {
+        auto &submission = model_submissions_[index];
+        if (submission.skip) {
+            continue;
+        }
+        if (model_slot(submission.model) == nullptr) {
+            first_error = first_error.value_or(make_error(RendererErrorType::invalid_model));
+            continue;
+        }
+        if (kept != index) {
+            model_submissions_[kept] = submission;
+        }
+        ++kept;
+    }
+    model_submissions_.resize(kept);
+
+    if (first_error) {
+        return std::unexpected(*first_error);
+    }
+    return {};
+}
+
 auto Renderer::resident_lod_groups(Submesh const &submesh, MaterialHandle base_material) const noexcept
         -> ResidentLodGroups {
     ResidentLodGroups result;
@@ -2522,7 +2605,7 @@ auto Renderer::submit_resident_instances(ModelHandle model, std::span<glm::mat4 
     auto const *model_data = model_slot(model);
 
     if (model_data == nullptr || model_data->draws.size() != 1 ||
-        model_data->draws.front().local_transform != glm::mat4{1.0F}) {
+        !model_data->draws.front().identity_local) {
         return false;
     }
 
@@ -3247,151 +3330,288 @@ auto Renderer::submit_mesh(MeshHandle mesh, glm::mat4 const &transform, Material
     return {};
 }
 
-auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices const &matrices, std::uint32_t frame_index)
-        -> std::expected<void, RendererError> {
-    ZoneScopedNC("PrepareFrame", tracy::Color::RoyalBlue);
-
-    if (!initialized_ || command_buffer == VK_NULL_HANDLE || frame_index >= frames_.size()) {
-        clear_submissions();
-        return std::unexpected(make_error(RendererErrorType::invalid_argument));
-    }
-
-    if (pending_samples_ != samples_) {
-        // Frame-graph targets are keyed on their sample count, so they reallocate by themselves; the idle wait only
-        // guarantees the previous count is no longer in flight.
-        if (auto waited = wait_idle(); !waited) {
-            clear_submissions();
-            return std::unexpected(waited.error());
-        }
-
-        info("Renderer: MSAA {}x -> {}x", static_cast<std::uint32_t>(samples_),
-             static_cast<std::uint32_t>(pending_samples_));
-
-        samples_ = pending_samples_;
-        hiz_history_valid_ = false;
-    }
-
+// What the stages that turn the frame's submissions into batches (build_batches, classify_batches, plan_shadow_batches,
+// emit_batches) hand on to the rest of prepare_frame.
+struct Renderer::BatchBuild {
     std::uint32_t submitted_triangle_count = 0;
+    std::uint64_t resident_instance_count = 0;
+    std::uint64_t resident_reserved_slots = 0;
+    MeshletVisibilityLayout meshlet_layout;
+    std::uint64_t shadow_scene_signature = 0;
+    bool has_animated_shadow_casters = false;
+    std::future<void> blend_sort_future;
+    // The transforms the chunks made for their instances; batches point into them until the frame is emitted.
+    std::vector<std::deque<glm::mat4>> computed_chunks;
+};
 
-    auto &frame_query = timestamp_queries_[frame_index];
+// A batch as one chunk of the frame's submissions saw it: the instances of the chunk that fall in the batch, in order.
+struct Renderer::LocalBatch {
+    BatchKey key{};
+    MeshHandle mesh{};
+    std::uint32_t submesh_index = 0;
+    MaterialHandle material{};
+    std::uint32_t lod_index = 0;
+    bool skinned = false;
 
-    vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, total_query_count);
+    std::vector<glm::mat4 const *> transforms;
+    std::vector<std::uint32_t> palette_offsets;
+};
 
-    auto &frame_pipeline_query = pipeline_stat_queries_[frame_index];
+// How the draws of a model resolve to batches, remembered for a chunk so the same model with the same material
+// override and outline is not worked out again for every object that uses it. Per submesh it holds, for each LOD, the
+// chunk's batch once it has been looked up. Objects with slot overrides do not use it.
+class Renderer::BatchRecipes {
+public:
+    struct Submesh {
+        std::array<LocalBatch *, lod_count> batch{};
+    };
 
-    vkCmdResetQueryPool(command_buffer, frame_pipeline_query.query_pool, 0, 1);
+    struct Draw {
+        MeshHandle mesh{};
+        MeshSlotData const *data = nullptr;
+        bool identity_local = true;
+        glm::mat4 local{1.0F};
+        std::vector<Submesh> submeshes;
+    };
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool, 0);
+    struct Recipe {
+        std::vector<Draw> draws;
+    };
 
-    pipeline_graph_.tick_retirement();
-    geometry_arena_.tick_retirement();
-
-    prune_outline_variants();
-
-    if (auto changed = shader_change_queue_.drain(); !changed.empty()) {
-        pipeline_graph_.on_files_changed(changed);
-    }
-
-    pipeline_graph_.process_dirty();
-
-    auto image_result = image_storage_.prepare_frame(command_buffer);
-
-    if (!image_result) {
-        clear_submissions();
-
-        return std::unexpected(make_error(RendererErrorType::device_error));
-    }
-
-    texture_streamer_.process_ready(image_storage_, command_buffer, frame_index);
-    model_streamer_.process_ready(*this, command_buffer);
-
-    std::erase_if(pending_pick_geometry_, [&](PendingPickGeometry &pending) {
-        if (pending.geometry.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
-            return false;
+    // The recipe for the model, or nullptr when the model does not exist (nothing to draw), or an error when one of
+    // its meshes does not.
+    [[nodiscard]] auto find(Renderer &renderer, ModelHandle model, MaterialHandle material_override, bool outlined)
+            -> std::expected<Recipe *, RendererError> {
+        if (table_.empty()) {
+            table_.assign(initial_capacity, 0U);
         }
 
-        // A model destroyed in the meantime has no slot, and the geometry is dropped.
-        register_model_pick_geometry(pending.model, pending.geometry.get());
-        return true;
-    });
-
-    if (auto environment = environment_.prepare(command_buffer, ++frame_counter_); !environment) {
-        clear_submissions();
-        return std::unexpected(environment.error());
-    }
-
-    auto resource_result = gpu_resource_table_.prepare_frame(frame_index, image_storage_, sampler_storage_);
-
-    if (!resource_result) {
-        clear_submissions();
-        return std::unexpected(make_resource_table_error(resource_result.error()));
-    }
-
-    auto &frame = frames_[frame_index];
-
-    if (auto cluster_buffers = prepare_cluster_buffers(frame); !cluster_buffers) {
-        clear_submissions();
-        return std::unexpected(cluster_buffers.error());
-    }
-
-    frame.view_projection = matrices.projection * matrices.view;
-
-    frame.retired_buffers.clear();
-    record_resident_instance_uploads(command_buffer, frame);
-
-    frame.draw_count = 0;
-    frame.transform_count = 0;
-    computed_transforms_.clear();
-    frame.indirect_commands.clear();
-    frame.batch_bounds.clear();
-
-    frame.indirect_command_count = 0;
-    frame.cull_chunk_count = 0;
-    frame.lod_chunk_count = 0;
-    frame.skin_jobs.clear();
-    frame.skin_scratch_used = 0;
-    frame.skin_palette_count = 0;
-    frame.skin_chunk_total = 0;
-    frame.skin_fallback_instances = 0;
-    frame.skinned_vertices = 0;
-    frame.lod_jobs.clear();
-    frame.cpu_instance_ranges.clear();
-    frame.opaque_indirect_count = 0;
-    frame.double_sided_indirect_count = 0;
-    frame.mask_indirect_count = 0;
-    frame.blend_indirect_count = 0;
-    frame.shadow_update_mask = 0;
-
-    auto const camera_position = glm::vec3(glm::inverse(matrices.view)[3]);
-    frame.lod_camera_position = camera_position;
-
-    ++batch_frame_;
-
-    if (batch_frame_ == 0) {
-        for (auto &batch: batches_ | std::views::values) {
-            batch.frame_stamp = 0;
+        auto const key = Key{model.index, model.generation, material_override.index, material_override.generation,
+                             outlined};
+        auto const mask = table_.size() - 1;
+        auto slot = hash(key) & mask;
+        while (table_[slot] != 0U) {
+            auto &entry = entries_[table_[slot] - 1U];
+            if (entry.key == key) {
+                return entry.recipe ? &*entry.recipe : nullptr;
+            }
+            slot = (slot + 1U) & mask;
         }
-        batch_frame_ = 1;
-    }
 
-    active_batches_.clear();
-
-    opaque_batches_.clear();
-    double_sided_batches_.clear();
-    mask_batches_.clear();
-    blend_batches_.clear();
-
-    auto const select_lod_index = [&camera_position](glm::vec3 const &instance_position) -> std::uint32_t {
-        auto const delta = instance_position - camera_position;
-        auto const distance_sq = glm::dot(delta, delta);
-        std::uint32_t lod_index = 0;
-        for (; lod_index < lod_distances.size(); ++lod_index) {
-            auto const lod_distance = lod_distances[lod_index];
-            if (distance_sq < lod_distance * lod_distance) {
-                break;
+        auto recipe = std::optional<Recipe>{};
+        if (auto const *model_data = renderer.model_slot(model); model_data != nullptr) {
+            recipe.emplace();
+            for (auto const &model_draw: model_data->draws) {
+                auto const *mesh = renderer.mesh_slot(model_draw.mesh);
+                if (mesh == nullptr) {
+                    return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+                }
+                recipe->draws.push_back(Draw{.mesh = model_draw.mesh,
+                                             .data = mesh,
+                                             .identity_local = model_draw.identity_local,
+                                             .local = model_draw.local_transform,
+                                             .submeshes = std::vector<Submesh>(mesh->submeshes.size())});
             }
         }
-        return lod_index;
+
+        entries_.push_back(Entry{key, std::move(recipe)});
+        table_[slot] = static_cast<std::uint32_t>(entries_.size());
+        if (entries_.size() * 2 > table_.size()) {
+            grow();
+        }
+        return entries_.back().recipe ? &*entries_.back().recipe : nullptr;
+    }
+
+private:
+    struct Key {
+        std::uint32_t model_index;
+        std::uint32_t model_generation;
+        std::uint32_t override_index;
+        std::uint32_t override_generation;
+        bool outlined;
+
+        auto operator==(Key const &) const noexcept -> bool = default;
+    };
+
+    struct Entry {
+        Key key;
+        std::optional<Recipe> recipe;
+    };
+
+    static constexpr std::size_t initial_capacity = 64;
+
+    [[nodiscard]] static auto hash(Key const &key) noexcept -> std::size_t {
+        auto value = (std::uint64_t{key.model_index} << 32U | key.model_generation) * 0x9E3779B97F4A7C15ULL;
+        value ^= (std::uint64_t{key.override_index} << 32U | key.override_generation) * 0xC2B2AE3D27D4EB4FULL;
+        value ^= key.outlined ? 0x165667B19E3779F9ULL : 0ULL;
+        value ^= value >> 32U;
+        return static_cast<std::size_t>(value);
+    }
+
+    auto grow() -> void {
+        table_.assign(table_.size() * 2, 0U);
+        auto const mask = table_.size() - 1;
+        for (auto index = std::size_t{0}; index < entries_.size(); ++index) {
+            auto slot = hash(entries_[index].key) & mask;
+            while (table_[slot] != 0U) {
+                slot = (slot + 1U) & mask;
+            }
+            table_[slot] = static_cast<std::uint32_t>(index + 1U);
+        }
+    }
+
+    std::vector<std::uint32_t> table_;
+    std::vector<Entry> entries_;
+};
+
+// The work of batching one range of the frame's model submissions, free of the shared batch table so that ranges can
+// be batched on different threads and merged afterwards in order (see build_batches).
+class Renderer::BatchChunk {
+public:
+    // The chunk's batch for `key`, made the first time the chunk needs it.
+    auto local_batch(Renderer &renderer, BatchKey const &key, MeshHandle mesh, std::uint32_t submesh_index,
+                     MaterialHandle material, std::uint32_t lod_index) -> LocalBatch & {
+        if (auto const found = lookup.find(key); found != lookup.end()) {
+            return *found->second;
+        }
+
+        auto &batch = batches.emplace_back();
+        batch.key = key;
+        batch.mesh = mesh;
+        batch.submesh_index = submesh_index;
+        batch.material = material;
+        batch.lod_index = lod_index;
+        auto const *batch_mesh = renderer.mesh_slot(mesh);
+        batch.skinned = batch_mesh != nullptr && submesh_index < batch_mesh->submeshes.size() &&
+                        batch_mesh->submeshes[submesh_index].lods[lod_index].skinned();
+        lookup.emplace(key, &batch);
+        return batch;
+    }
+
+    // In the order the chunk first needed them.
+    std::deque<LocalBatch> batches;
+    std::unordered_map<BatchKey, LocalBatch *, BatchKeyHash> lookup;
+    // Transforms made for the chunk's instances (a model's local transform times the object's); the batches point
+    // at them, so they live as long as the frame's batches do.
+    std::deque<glm::mat4> computed;
+    BatchRecipes recipes;
+    std::optional<RendererError> error;
+};
+
+// Batches model submissions [first, last) into `chunk`.
+auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t last, glm::vec3 const &camera_position)
+        -> void {
+    auto const push = [](LocalBatch &batch, glm::mat4 const *transform) {
+        batch.transforms.push_back(transform);
+        if (batch.skinned) {
+            batch.palette_offsets.push_back(BatchEntry::no_palette);
+        }
+    };
+
+    for (auto position = first; position < last; ++position) {
+        auto const &model_submission = model_submissions_[position];
+
+        if (model_submission.slot_override_count == 0) {
+            auto const recipe = chunk.recipes.find(*this, model_submission.model, model_submission.material_override,
+                                                   model_submission.outlined);
+            if (!recipe) {
+                chunk.error = recipe.error();
+                return;
+            }
+            if (*recipe == nullptr) {
+                continue;
+            }
+
+            for (auto &draw: (*recipe)->draws) {
+                auto const *instance_transform = &model_submission.transform;
+                if (!draw.identity_local) {
+                    instance_transform = &chunk.computed.emplace_back(model_submission.transform * draw.local);
+                }
+                auto const lod_index = lod_index_for(camera_position, glm::vec3((*instance_transform)[3]));
+
+                for (std::uint32_t submesh_index = 0; submesh_index < draw.submeshes.size(); ++submesh_index) {
+                    auto *&batch = draw.submeshes[submesh_index].batch[lod_index];
+                    if (batch == nullptr) {
+                        auto const &submesh = draw.data->submeshes[submesh_index];
+                        auto material = model_submission.material_override.valid() ? model_submission.material_override
+                                                                                   : submesh.material;
+                        material = material_storage_.material_for_lod(material, lod_index);
+
+                        if (model_submission.outlined) {
+                            material = outline_variant(material);
+                        }
+
+                        batch = &chunk.local_batch(*this,
+                                                   BatchKey{
+                                                           .mesh_index = draw.mesh.index,
+                                                           .submesh_index = submesh_index,
+                                                           .material_index = material_storage_.gpu_index(material),
+                                                           .lod_index = lod_index,
+                                                   },
+                                                   draw.mesh, submesh_index, material, lod_index);
+                    }
+                    push(*batch, instance_transform);
+                }
+            }
+            continue;
+        }
+
+        auto const *model = model_slot(model_submission.model);
+        if (model == nullptr) {
+            continue;
+        }
+
+        auto const slot_overrides = std::span{slot_override_submissions_}.subspan(model_submission.slot_override_first,
+                                                                                  model_submission.slot_override_count);
+
+        for (auto const &model_draw: model->draws) {
+            auto const *mesh = mesh_slot(model_draw.mesh);
+            if (mesh == nullptr) {
+                chunk.error = make_error(RendererErrorType::invalid_mesh);
+                return;
+            }
+            auto const *instance_transform = &model_submission.transform;
+            if (!model_draw.identity_local) {
+                instance_transform = &chunk.computed.emplace_back(model_submission.transform * model_draw.local_transform);
+            }
+            auto const lod_index = lod_index_for(camera_position, glm::vec3((*instance_transform)[3]));
+            for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
+                auto const &submesh = mesh->submeshes[submesh_index];
+                auto material = model_submission.material_override.valid() ? model_submission.material_override
+                                                                           : submesh.material;
+
+                for (auto const &slot_override: slot_overrides) {
+                    if (slot_override.source == submesh.material && slot_override.material.valid()) {
+                        material = slot_override.material;
+                        break;
+                    }
+                }
+                material = material_storage_.material_for_lod(material, lod_index);
+
+                if (model_submission.outlined) {
+                    material = outline_variant(material);
+                }
+
+                auto &batch = chunk.local_batch(*this,
+                                                BatchKey{
+                                                        .mesh_index = model_draw.mesh.index,
+                                                        .submesh_index = submesh_index,
+                                                        .material_index = material_storage_.gpu_index(material),
+                                                        .lod_index = lod_index,
+                                                },
+                                                model_draw.mesh, submesh_index, material, lod_index);
+                push(batch, instance_transform);
+            }
+        }
+    }
+}
+
+// Groups the frame's model, instanced and mesh submissions into batches (one per mesh, submesh, material and LOD), each
+// with the transforms of its instances in submission order, and opens the batches for the frame.
+auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_position, BatchBuild &build)
+        -> std::expected<void, RendererError> {
+    auto const select_lod_index = [&camera_position](glm::vec3 const &instance_position) -> std::uint32_t {
+        return lod_index_for(camera_position, instance_position);
     };
 
     auto const batch_for = [this](BatchKey const &key, MeshHandle mesh, std::uint32_t submesh_index,
@@ -3520,7 +3740,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             }
             instanced_batch_cache.assign(submesh_count * lod_slot_count, nullptr);
 
-            auto const identity_local = model_draw.local_transform == glm::mat4{1.0F};
+            auto const identity_local = model_draw.identity_local;
 
             for (std::size_t instance_index = 0; instance_index < transforms.size(); ++instance_index) {
                 auto const &transform = transforms[instance_index];
@@ -3574,64 +3794,80 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return true;
     };
 
-    for (std::size_t position = 0; position <= model_submissions_.size(); ++position) {
+    // The model submissions are batched in chunks (on several threads when there are many) and the chunks merged in
+    // order: each chunk's batches in the order it first needed them, so the batches come out in the order the serial
+    // loop would have made them, with their instances in submission order. An instanced submission sits between two
+    // runs of model submissions, so a run ends at the next one. Outline variants are made on demand, which only a
+    // single thread may do: with any submission outlined, the whole frame goes through one chunk.
+    constexpr auto parallel_batching_threshold = std::size_t{4096};
+    auto const model_count = model_submissions_.size();
+    auto const any_outlined = std::ranges::any_of(model_submissions_, &ModelSubmission::outlined);
+
+    auto const batch_models = [&](std::size_t first, std::size_t last) -> std::expected<void, RendererError> {
+        auto chunks = std::vector<std::unique_ptr<BatchChunk>>{};
+
+        if (last - first < parallel_batching_threshold || any_outlined) {
+            auto &chunk = chunks.emplace_back(std::make_unique<BatchChunk>());
+            build_chunk(*chunk, first, last, camera_position);
+        } else {
+            struct Finished {
+                std::size_t first;
+                std::unique_ptr<BatchChunk> chunk;
+            };
+            auto finished = std::vector<Finished>{};
+            auto finished_mutex = std::mutex{};
+
+            thread_pool()
+                    .submit_blocks(first, last,
+                                   [&](std::size_t block_first, std::size_t block_last) {
+                                       auto chunk = std::make_unique<BatchChunk>();
+                                       build_chunk(*chunk, block_first, block_last, camera_position);
+                                       auto const lock = std::scoped_lock{finished_mutex};
+                                       finished.push_back(Finished{block_first, std::move(chunk)});
+                                   })
+                    .wait();
+
+            std::ranges::sort(finished, {}, &Finished::first);
+            for (auto &done: finished) {
+                chunks.push_back(std::move(done.chunk));
+            }
+        }
+
+        for (auto &chunk: chunks) {
+            if (chunk->error) {
+                return std::unexpected(*chunk->error);
+            }
+
+            for (auto const &local: chunk->batches) {
+                auto &batch = batch_for(local.key, local.mesh, local.submesh_index, local.material, local.lod_index);
+                batch.transforms.insert(batch.transforms.end(), local.transforms.begin(), local.transforms.end());
+                batch.palette_offsets.insert(batch.palette_offsets.end(), local.palette_offsets.begin(),
+                                             local.palette_offsets.end());
+            }
+            build.computed_chunks.push_back(std::move(chunk->computed));
+        }
+        return {};
+    };
+
+    for (auto position = std::size_t{0};;) {
         if (!append_instanced_before(position)) {
             clear_submissions();
             return std::unexpected(make_error(RendererErrorType::invalid_mesh));
         }
-        if (position == model_submissions_.size()) {
+        if (position == model_count) {
             break;
         }
 
-        auto const &model_submission = model_submissions_[position];
-        auto const *model = model_slot(model_submission.model);
-
-        if (model == nullptr) {
-            continue;
+        auto end = model_count;
+        if (next_instanced < instanced_submissions_.size()) {
+            end = std::min(end, instanced_submissions_[next_instanced].model_submission_position);
         }
 
-        auto const slot_overrides = std::span{slot_override_submissions_}.subspan(model_submission.slot_override_first,
-                                                                                  model_submission.slot_override_count);
-
-        for (auto const &model_draw: model->draws) {
-            auto const *mesh = mesh_slot(model_draw.mesh);
-            if (mesh == nullptr) {
-                clear_submissions();
-                return std::unexpected(make_error(RendererErrorType::invalid_mesh));
-            }
-            auto const *instance_transform = &model_submission.transform;
-            if (model_draw.local_transform != glm::mat4{1.0F}) {
-                instance_transform =
-                        &computed_transforms_.emplace_back(model_submission.transform * model_draw.local_transform);
-            }
-            auto const lod_index = select_lod_index(glm::vec3((*instance_transform)[3]));
-            for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
-                auto const &submesh = mesh->submeshes[submesh_index];
-                auto material = model_submission.material_override.valid() ? model_submission.material_override
-                                                                           : submesh.material;
-
-                for (auto const &slot_override: slot_overrides) {
-                    if (slot_override.source == submesh.material && slot_override.material.valid()) {
-                        material = slot_override.material;
-                        break;
-                    }
-                }
-                material = material_storage_.material_for_lod(material, lod_index);
-
-                if (model_submission.outlined) {
-                    material = outline_variant(material);
-                }
-
-                auto const key = BatchKey{
-                        .mesh_index = model_draw.mesh.index,
-                        .submesh_index = submesh_index,
-                        .material_index = material_storage_.gpu_index(material),
-                        .lod_index = lod_index,
-                };
-
-                append_batch_transform(key, model_draw.mesh, submesh_index, material, lod_index, instance_transform);
-            }
+        if (auto batched = batch_models(position, end); !batched) {
+            clear_submissions();
+            return std::unexpected(batched.error());
         }
+        position = end;
     }
 
     for (auto const &submission: submissions_) {
@@ -3658,15 +3894,171 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
     }
 
+
+    build.resident_instance_count = resident_instance_count;
+    build.resident_reserved_slots = resident_reserved_slots;
+    return {};
+}
+
+// Sorts the frame's batches by how they are drawn (opaque, double sided, alpha-masked, blended), and starts ordering
+// the blended ones back to front.
+auto Renderer::classify_batches(glm::vec3 const &camera_position, BatchBuild &build)
+        -> std::expected<void, RendererError> {
     opaque_batches_.reserve(active_batches_.size());
     double_sided_batches_.reserve(active_batches_.size());
     mask_batches_.reserve(active_batches_.size());
     blend_batches_.reserve(active_batches_.size());
 
-    MeshletVisibilityLayout meshlet_layout;
+    for (auto const *batch: active_batches_) {
+        auto const *material = material_storage_.get(batch->material);
+        auto const alpha_mode = material != nullptr ? material->alpha_mode : AlphaMode::opaque;
 
-    auto const emit_batch = [this, &frame, &submitted_triangle_count,
-                             &meshlet_layout](BatchEntry const &batch,
+        switch (alpha_mode) {
+            case AlphaMode::opaque:
+                if (material != nullptr && (material->flags & GpuMaterial::flag_double_sided) != 0) {
+                    double_sided_batches_.push_back(batch);
+                } else {
+                    opaque_batches_.push_back(batch);
+                }
+                break;
+
+            case AlphaMode::mask:
+                mask_batches_.push_back(batch);
+                break;
+
+            case AlphaMode::blend: {
+                auto const *mesh = mesh_slot(batch->mesh);
+
+                if (mesh == nullptr) {
+                    clear_submissions();
+                    return std::unexpected(make_error(RendererErrorType::invalid_mesh));
+                }
+
+                auto const &submesh = mesh->submeshes[batch->submesh_index];
+                auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
+                auto const world_centre =
+                        batch->transforms.empty()
+                                ? glm::vec3{0.0F}
+                                : glm::vec3(*batch->transforms.front() * glm::vec4(local_centre, 1.0F));
+                auto const distance = world_centre - camera_position;
+                blend_batches_.push_back(PendingBlendBatch{
+                        .entry = batch,
+                        .camera_distance_sq = glm::dot(distance, distance),
+                });
+
+                break;
+            }
+        }
+    }
+
+    constexpr std::size_t parallel_blend_sort_threshold = 4'096;
+
+    auto sort_blend_batches = [this] {
+        std::ranges::sort(blend_batches_, [](PendingBlendBatch const &lhs, PendingBlendBatch const &rhs) {
+            return lhs.camera_distance_sq > rhs.camera_distance_sq;
+        });
+    };
+
+    if (blend_batches_.size() >= parallel_blend_sort_threshold) {
+        build.blend_sort_future = thread_pool().submit_task(sort_blend_batches);
+    } else {
+        sort_blend_batches();
+    }
+
+
+    return {};
+}
+
+// The furthest shadow cascade a batch's material casts into, or -1 if it casts none.
+auto Renderer::batch_max_shadow_cascade(BatchEntry const *batch) const noexcept -> std::int32_t {
+    auto const *material = material_storage_.get(batch->material);
+    auto const cascade = material != nullptr ? material->max_shadow_cascade : shadow_cascade_count - 1;
+    return cascade == GpuMaterial::no_shadow_cascade ? -1 : static_cast<std::int32_t>(cascade);
+}
+
+// The shadow side of the batches: a signature of what casts shadows (so a static scene can reuse its shadow maps),
+// whether anything casting is animated, and the batches ordered by the furthest cascade they reach.
+auto Renderer::plan_shadow_batches(RendererFrame &frame, BatchBuild &build) -> void {
+    std::uint64_t current_shadow_scene_signature = 0;
+    std::uint64_t shadow_caster_batch_count = 0;
+    bool has_animated_shadow_casters = false;
+    for (auto const *batch: active_batches_) {
+        auto const *material = material_storage_.get(batch->material);
+        auto const alpha_mode = material != nullptr ? material->alpha_mode : AlphaMode::opaque;
+        auto const max_cascade = batch_max_shadow_cascade(batch);
+
+        if (alpha_mode == AlphaMode::blend || max_cascade < 0) {
+            continue;
+        }
+
+        std::uint64_t batch_signature = 0xcbf29ce484222325ULL;
+        batch_signature = shadow_signature_combine(batch_signature, batch->mesh.index);
+        batch_signature = shadow_signature_combine(batch_signature, batch->submesh_index);
+        batch_signature = shadow_signature_combine(batch_signature, material_storage_.gpu_index(batch->material));
+        batch_signature = shadow_signature_combine(batch_signature, batch->lod_index);
+        batch_signature =
+                shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(batch->transforms.size()));
+        batch_signature = shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(max_cascade));
+
+        current_shadow_scene_signature ^= shadow_signature_mix(batch_signature);
+        ++shadow_caster_batch_count;
+
+        has_animated_shadow_casters = has_animated_shadow_casters ||
+                                      (material != nullptr && std::abs(material->wind_strength) > 1e-6F) ||
+                                      batch->lod_job != BatchEntry::no_lod_job ||
+                                      batch->skinned;
+    }
+    current_shadow_scene_signature =
+            shadow_signature_combine(current_shadow_scene_signature, shadow_caster_batch_count);
+
+    auto const order_shadow_batches = [this](auto &batches) {
+        std::array<std::uint32_t, shadow_cascade_count> prefix_counts{};
+        auto bucket_begin = batches.begin();
+
+        for (std::int32_t cascade = static_cast<std::int32_t>(shadow_cascade_count) - 1; cascade >= 0; --cascade) {
+            bucket_begin = std::partition(bucket_begin, batches.end(), [&](BatchEntry const *batch) {
+                return batch_max_shadow_cascade(batch) == cascade;
+            });
+
+            prefix_counts[static_cast<std::size_t>(cascade)] =
+                    static_cast<std::uint32_t>(std::distance(batches.begin(), bucket_begin));
+        }
+
+        return prefix_counts;
+    };
+
+    frame.shadow_opaque_indirect_count = order_shadow_batches(opaque_batches_);
+    frame.shadow_double_sided_indirect_count = order_shadow_batches(double_sided_batches_);
+    frame.shadow_mask_indirect_count = order_shadow_batches(mask_batches_);
+
+    build.shadow_scene_signature = current_shadow_scene_signature;
+    build.has_animated_shadow_casters = has_animated_shadow_casters;
+}
+
+// Writes the batches out for the GPU: each instance's transform and draw record into the frame's upload buffer, and
+// one indirect command and cull bounds per batch, in the order opaque, double sided, masked, blended.
+auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::expected<void, RendererError> {
+    auto &meshlet_layout = build.meshlet_layout;
+    auto &submitted_triangle_count = build.submitted_triangle_count;
+
+    // The per-instance copies of a batch (its transforms and its draw records) are not made while the batch is planned:
+    // each batch's slice of the upload buffer is already known then, so all the copies are made together afterwards,
+    // on several threads when there are many. Batches that need skinning are the exception, as they fill the shared
+    // skin job list in order.
+    struct CopyTask {
+        BatchEntry const *batch = nullptr;
+        std::byte *transform_out = nullptr;
+        std::byte *draw_out = nullptr;
+        std::uint32_t instance_count = 0;
+        GpuDraw draw{};
+        bool visibility = false;
+        std::uint64_t first_meshlet_bit = 0;
+        std::uint32_t meshlet_count = 0;
+    };
+    auto copy_tasks = std::vector<CopyTask>{};
+
+    auto const emit_batch = [this, &frame, &submitted_triangle_count, &meshlet_layout,
+                             &copy_tasks](BatchEntry const &batch,
                                               bool const allocate_meshlet_bits) -> std::expected<void, RendererError> {
         auto const *mesh = mesh_slot(batch.mesh);
 
@@ -3701,9 +4093,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             return std::unexpected(make_error(RendererErrorType::device_error));
         }
 
+        auto const skin_stream = !resident && batch.skinned && batch.palette_offsets.size() == instance_count;
+
         auto *const transform_out = frame.upload_buffer.mapped_data() + frame.transform_upload_offset +
                                     static_cast<std::size_t>(frame.transform_count) * sizeof(glm::mat4);
-        for (std::uint32_t instance = 0; !resident && instance < instance_count; ++instance) {
+        for (std::uint32_t instance = 0; skin_stream && instance < instance_count; ++instance) {
             std::memcpy(transform_out + static_cast<std::size_t>(instance) * sizeof(glm::mat4),
                         batch.transforms[instance], sizeof(glm::mat4));
         }
@@ -3730,13 +4124,32 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                                ? meshlet_layout.reserve(instance_count, geometry.meshlets.meshlet_count)
                                                : std::uint64_t{0};
 
-        auto const skin_stream = !resident && batch.skinned && batch.palette_offsets.size() == instance_count;
         auto const skin_vertex_count = geometry.vertices.vertex_count;
         auto const skin_bytes = (VkDeviceSize{skin_vertex_count} * sizeof(CompressedModelVertex) + 15U) & ~VkDeviceSize{15U};
 
         auto *const draw_out = frame.upload_buffer.mapped_data() + frame.draw_upload_offset +
                                static_cast<std::size_t>(first_instance) * sizeof(GpuDraw);
-        for (std::uint32_t instance = 0; !resident && instance < instance_count; ++instance) {
+        if (!resident && !skin_stream) {
+            copy_tasks.push_back(CopyTask{
+                    .batch = &batch,
+                    .transform_out = transform_out,
+                    .draw_out = draw_out,
+                    .instance_count = instance_count,
+                    .draw =
+                            GpuDraw{
+                                    .vertex_address = vertex_address,
+                                    .meshlet_address = meshlet_address,
+                                    .meshlet_data_address = meshlet_data_address,
+                                    .material_index = material_index,
+                                    .meshlet_visibility_offset = 0,
+                            },
+                    .visibility = meshlet_path && allocate_meshlet_bits,
+                    .first_meshlet_bit = first_meshlet_bit,
+                    .meshlet_count = geometry.meshlets.meshlet_count,
+            });
+        }
+
+        for (std::uint32_t instance = 0; skin_stream && instance < instance_count; ++instance) {
             auto instance_vertex_address = vertex_address;
 
             if (skin_stream) {
@@ -3839,121 +4252,6 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return {};
     };
 
-    for (auto const *batch: active_batches_) {
-        auto const *material = material_storage_.get(batch->material);
-        auto const alpha_mode = material != nullptr ? material->alpha_mode : AlphaMode::opaque;
-
-        switch (alpha_mode) {
-            case AlphaMode::opaque:
-                if (material != nullptr && (material->flags & GpuMaterial::flag_double_sided) != 0) {
-                    double_sided_batches_.push_back(batch);
-                } else {
-                    opaque_batches_.push_back(batch);
-                }
-                break;
-
-            case AlphaMode::mask:
-                mask_batches_.push_back(batch);
-                break;
-
-            case AlphaMode::blend: {
-                auto const *mesh = mesh_slot(batch->mesh);
-
-                if (mesh == nullptr) {
-                    clear_submissions();
-                    return std::unexpected(make_error(RendererErrorType::invalid_mesh));
-                }
-
-                auto const &submesh = mesh->submeshes[batch->submesh_index];
-                auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
-                auto const world_centre =
-                        batch->transforms.empty()
-                                ? glm::vec3{0.0F}
-                                : glm::vec3(*batch->transforms.front() * glm::vec4(local_centre, 1.0F));
-                auto const distance = world_centre - camera_position;
-                blend_batches_.push_back(PendingBlendBatch{
-                        .entry = batch,
-                        .camera_distance_sq = glm::dot(distance, distance),
-                });
-
-                break;
-            }
-        }
-    }
-
-    constexpr std::size_t parallel_blend_sort_threshold = 4'096;
-
-    auto sort_blend_batches = [this] {
-        std::ranges::sort(blend_batches_, [](PendingBlendBatch const &lhs, PendingBlendBatch const &rhs) {
-            return lhs.camera_distance_sq > rhs.camera_distance_sq;
-        });
-    };
-
-    std::future<void> blend_sort_future;
-    if (blend_batches_.size() >= parallel_blend_sort_threshold) {
-        blend_sort_future = thread_pool().submit_task(sort_blend_batches);
-    } else {
-        sort_blend_batches();
-    }
-
-    auto const batch_max_shadow_cascade = [this](BatchEntry const *batch) noexcept -> std::int32_t {
-        auto const *material = material_storage_.get(batch->material);
-        auto const cascade = material != nullptr ? material->max_shadow_cascade : shadow_cascade_count - 1;
-        return cascade == GpuMaterial::no_shadow_cascade ? -1 : static_cast<std::int32_t>(cascade);
-    };
-
-    std::uint64_t current_shadow_scene_signature = 0;
-    std::uint64_t shadow_caster_batch_count = 0;
-    bool has_animated_shadow_casters = false;
-    for (auto const *batch: active_batches_) {
-        auto const *material = material_storage_.get(batch->material);
-        auto const alpha_mode = material != nullptr ? material->alpha_mode : AlphaMode::opaque;
-        auto const max_cascade = batch_max_shadow_cascade(batch);
-
-        if (alpha_mode == AlphaMode::blend || max_cascade < 0) {
-            continue;
-        }
-
-        std::uint64_t batch_signature = 0xcbf29ce484222325ULL;
-        batch_signature = shadow_signature_combine(batch_signature, batch->mesh.index);
-        batch_signature = shadow_signature_combine(batch_signature, batch->submesh_index);
-        batch_signature = shadow_signature_combine(batch_signature, material_storage_.gpu_index(batch->material));
-        batch_signature = shadow_signature_combine(batch_signature, batch->lod_index);
-        batch_signature =
-                shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(batch->transforms.size()));
-        batch_signature = shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(max_cascade));
-
-        current_shadow_scene_signature ^= shadow_signature_mix(batch_signature);
-        ++shadow_caster_batch_count;
-
-        has_animated_shadow_casters = has_animated_shadow_casters ||
-                                      (material != nullptr && std::abs(material->wind_strength) > 1e-6F) ||
-                                      batch->lod_job != BatchEntry::no_lod_job ||
-                                      batch->skinned;
-    }
-    current_shadow_scene_signature =
-            shadow_signature_combine(current_shadow_scene_signature, shadow_caster_batch_count);
-
-    auto const order_shadow_batches = [&batch_max_shadow_cascade](auto &batches) {
-        std::array<std::uint32_t, shadow_cascade_count> prefix_counts{};
-        auto bucket_begin = batches.begin();
-
-        for (std::int32_t cascade = static_cast<std::int32_t>(shadow_cascade_count) - 1; cascade >= 0; --cascade) {
-            bucket_begin = std::partition(bucket_begin, batches.end(), [&](BatchEntry const *batch) {
-                return batch_max_shadow_cascade(batch) == cascade;
-            });
-
-            prefix_counts[static_cast<std::size_t>(cascade)] =
-                    static_cast<std::uint32_t>(std::distance(batches.begin(), bucket_begin));
-        }
-
-        return prefix_counts;
-    };
-
-    frame.shadow_opaque_indirect_count = order_shadow_batches(opaque_batches_);
-    frame.shadow_double_sided_indirect_count = order_shadow_batches(double_sided_batches_);
-    frame.shadow_mask_indirect_count = order_shadow_batches(mask_batches_);
-
     for (auto const *batch: opaque_batches_) {
         if (auto result = emit_batch(*batch, true); !result) {
             return std::unexpected(result.error());
@@ -3980,8 +4278,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     frame.mask_indirect_count = static_cast<std::uint32_t>(frame.indirect_commands.size()) -
                                 frame.opaque_indirect_count - frame.double_sided_indirect_count;
 
-    if (blend_sort_future.valid()) {
-        blend_sort_future.wait();
+    if (build.blend_sort_future.valid()) {
+        build.blend_sort_future.wait();
     }
 
     for (auto const &pending: blend_batches_) {
@@ -3994,7 +4292,212 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                  frame.opaque_indirect_count - frame.double_sided_indirect_count -
                                  frame.mask_indirect_count;
 
+    {
+        auto starts = std::vector<std::size_t>(copy_tasks.size() + 1, 0);
+        for (auto index = std::size_t{0}; index < copy_tasks.size(); ++index) {
+            starts[index + 1] = starts[index] + copy_tasks[index].instance_count;
+        }
+        auto const total = starts.back();
+
+        // Instances [first, last) counted across all the tasks in order.
+        auto const copy_range = [&](std::size_t first, std::size_t last) {
+            auto task = static_cast<std::size_t>(std::ranges::upper_bound(starts, first) - starts.begin()) - 1;
+            for (auto at = first; at < last; ++task) {
+                auto const &copy = copy_tasks[task];
+                auto const begin = at - starts[task];
+                auto const end = std::min<std::size_t>(copy.instance_count, last - starts[task]);
+
+                for (auto instance = begin; instance < end; ++instance) {
+                    std::memcpy(copy.transform_out + instance * sizeof(glm::mat4), copy.batch->transforms[instance],
+                                sizeof(glm::mat4));
+
+                    auto draw = copy.draw;
+                    if (copy.visibility) {
+                        draw.meshlet_visibility_offset = meshlet_visibility_offset(
+                                copy.first_meshlet_bit, static_cast<std::uint32_t>(instance), copy.meshlet_count);
+                    }
+                    std::memcpy(copy.draw_out + instance * sizeof(GpuDraw), &draw, sizeof(GpuDraw));
+                }
+                at = starts[task] + end;
+            }
+        };
+
+        constexpr auto parallel_copy_threshold = std::size_t{16'384};
+        if (total < parallel_copy_threshold) {
+            copy_range(0, total);
+        } else {
+            thread_pool().submit_blocks(std::size_t{0}, total, copy_range).wait();
+        }
+    }
+
     frame.indirect_command_count = static_cast<std::uint32_t>(frame.indirect_commands.size());
+
+    return {};
+}
+
+auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices const &matrices, std::uint32_t frame_index)
+        -> std::expected<void, RendererError> {
+    ZoneScopedNC("PrepareFrame", tracy::Color::RoyalBlue);
+
+    if (!initialized_ || command_buffer == VK_NULL_HANDLE || frame_index >= frames_.size()) {
+        clear_submissions();
+        return std::unexpected(make_error(RendererErrorType::invalid_argument));
+    }
+
+    if (pending_samples_ != samples_) {
+        // Frame-graph targets are keyed on their sample count, so they reallocate by themselves; the idle wait only
+        // guarantees the previous count is no longer in flight.
+        if (auto waited = wait_idle(); !waited) {
+            clear_submissions();
+            return std::unexpected(waited.error());
+        }
+
+        info("Renderer: MSAA {}x -> {}x", static_cast<std::uint32_t>(samples_),
+             static_cast<std::uint32_t>(pending_samples_));
+
+        samples_ = pending_samples_;
+        hiz_history_valid_ = false;
+    }
+
+    auto &frame_query = timestamp_queries_[frame_index];
+
+    vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, total_query_count);
+
+    auto &frame_pipeline_query = pipeline_stat_queries_[frame_index];
+
+    vkCmdResetQueryPool(command_buffer, frame_pipeline_query.query_pool, 0, 1);
+
+    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool, 0);
+
+    pipeline_graph_.tick_retirement();
+    geometry_arena_.tick_retirement();
+
+    prune_outline_variants();
+
+    if (auto changed = shader_change_queue_.drain(); !changed.empty()) {
+        pipeline_graph_.on_files_changed(changed);
+    }
+
+    pipeline_graph_.process_dirty();
+
+    auto image_result = image_storage_.prepare_frame(command_buffer);
+
+    if (!image_result) {
+        clear_submissions();
+
+        return std::unexpected(make_error(RendererErrorType::device_error));
+    }
+
+    texture_streamer_.process_ready(image_storage_, command_buffer, frame_index);
+    model_streamer_.process_ready(*this, command_buffer);
+
+    std::erase_if(pending_pick_geometry_, [&](PendingPickGeometry &pending) {
+        if (pending.geometry.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+            return false;
+        }
+
+        // A model destroyed in the meantime has no slot, and the geometry is dropped.
+        register_model_pick_geometry(pending.model, pending.geometry.get());
+        return true;
+    });
+
+    if (auto environment = environment_.prepare(command_buffer, ++frame_counter_); !environment) {
+        clear_submissions();
+        return std::unexpected(environment.error());
+    }
+
+    auto resource_result = gpu_resource_table_.prepare_frame(frame_index, image_storage_, sampler_storage_);
+
+    if (!resource_result) {
+        clear_submissions();
+        return std::unexpected(make_resource_table_error(resource_result.error()));
+    }
+
+    auto &frame = frames_[frame_index];
+
+    if (auto cluster_buffers = prepare_cluster_buffers(frame); !cluster_buffers) {
+        clear_submissions();
+        return std::unexpected(cluster_buffers.error());
+    }
+
+    frame.view_projection = matrices.projection * matrices.view;
+
+    frame.retired_buffers.clear();
+    record_resident_instance_uploads(command_buffer, frame);
+
+    frame.draw_count = 0;
+    frame.transform_count = 0;
+    computed_transforms_.clear();
+    frame.indirect_commands.clear();
+    frame.batch_bounds.clear();
+
+    frame.indirect_command_count = 0;
+    frame.cull_chunk_count = 0;
+    frame.lod_chunk_count = 0;
+    frame.skin_jobs.clear();
+    frame.skin_scratch_used = 0;
+    frame.skin_palette_count = 0;
+    frame.skin_chunk_total = 0;
+    frame.skin_fallback_instances = 0;
+    frame.skinned_vertices = 0;
+    frame.lod_jobs.clear();
+    frame.cpu_instance_ranges.clear();
+    frame.opaque_indirect_count = 0;
+    frame.double_sided_indirect_count = 0;
+    frame.mask_indirect_count = 0;
+    frame.blend_indirect_count = 0;
+    frame.shadow_update_mask = 0;
+
+    auto const camera_position = glm::vec3(glm::inverse(matrices.view)[3]);
+    frame.lod_camera_position = camera_position;
+
+    ++batch_frame_;
+
+    if (batch_frame_ == 0) {
+        for (auto &batch: batches_ | std::views::values) {
+            batch.frame_stamp = 0;
+        }
+        batch_frame_ = 1;
+    }
+
+    active_batches_.clear();
+
+    opaque_batches_.clear();
+    double_sided_batches_.clear();
+    mask_batches_.clear();
+    blend_batches_.clear();
+
+    BatchBuild build_state;
+    if (auto built = build_batches(frame, camera_position, build_state); !built) {
+        return std::unexpected(built.error());
+    }
+    if (auto classified = classify_batches(camera_position, build_state); !classified) {
+        return std::unexpected(classified.error());
+    }
+    plan_shadow_batches(frame, build_state);
+    if (auto emitted = emit_batches(frame, build_state); !emitted) {
+        return std::unexpected(emitted.error());
+    }
+
+    auto const resident_instance_count = build_state.resident_instance_count;
+    auto const resident_reserved_slots = build_state.resident_reserved_slots;
+    auto const current_shadow_scene_signature = build_state.shadow_scene_signature;
+    auto const has_animated_shadow_casters = build_state.has_animated_shadow_casters;
+    auto &meshlet_layout = build_state.meshlet_layout;
+    auto &submitted_triangle_count = build_state.submitted_triangle_count;
+
+    auto frame_checksum = std::uint64_t{0};
+    if (frame_checksum_enabled_ && frame.upload_buffer.mapped()) {
+        auto const *const upload = frame.upload_buffer.mapped_data();
+        frame_checksum = checksum_bytes(0, upload + frame.transform_upload_offset,
+                                        static_cast<std::size_t>(frame.transform_count) * sizeof(glm::mat4));
+        frame_checksum = checksum_bytes(frame_checksum, upload + frame.draw_upload_offset,
+                                        static_cast<std::size_t>(frame.draw_count) * sizeof(GpuDraw));
+        frame_checksum = checksum_bytes(frame_checksum, frame.indirect_commands.data(),
+                                        frame.indirect_commands.size() * sizeof(GpuDrawCommand));
+        frame_checksum = checksum_bytes(frame_checksum, frame.batch_bounds.data(),
+                                        frame.batch_bounds.size() * sizeof(GpuCullBounds));
+    }
 
     if (!frame.lod_jobs.empty()) {
         if (auto written = frame.lod_jobs_buffer.write(0, std::span<GpuLodJob const>{frame.lod_jobs}); !written) {
@@ -4834,6 +5337,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 #pragma endregion
 
     last_frame_stats_ = FrameStats{
+            .frame_checksum = frame_checksum,
             .submitted_triangle_count = submitted_triangle_count,
             .submitted_instance_count = static_cast<std::uint32_t>(frame.transform_count - resident_reserved_slots +
                                                                    resident_instance_count),

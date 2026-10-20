@@ -17,6 +17,9 @@
 struct ModelDraw {
     MeshHandle mesh{};
     glm::mat4 local_transform{1.0F};
+    // local_transform == the identity, worked out once when the draw is made: comparing sixteen floats for every
+    // entity every frame showed up in profiles.
+    bool identity_local = true;
 };
 
 struct ModelSlotData {

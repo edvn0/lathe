@@ -296,3 +296,45 @@ auto systems::get_world_transform(entt::registry const &registry, entt::entity e
 
     return world_matrix;
 }
+
+auto systems::WorldTransformCache::get(entt::registry const &registry, entt::entity entity,
+                                       Components::Transform const &transform) -> glm::mat4 {
+    // Most entities have no parent: no product to take.
+    if (!registry.all_of<Components::Parent>(entity)) {
+        return transform.matrix();
+    }
+    return get_with_parent(registry, entity, transform);
+}
+
+auto systems::WorldTransformCache::get_with_parent(entt::registry const &registry, entt::entity entity,
+                                                   Components::Transform const &transform) -> glm::mat4 {
+    return ancestors_of(registry, entity, 0) * transform.matrix();
+}
+
+auto systems::WorldTransformCache::ancestors_of(entt::registry const &registry, entt::entity entity, int depth)
+        -> glm::mat4 {
+    constexpr auto max_depth = 64;
+
+    auto const *parent = registry.try_get<Components::Parent const>(entity);
+    if (parent == nullptr || depth >= max_depth || !registry.valid(parent->entity)) {
+        return glm::mat4{1.0F};
+    }
+
+    // The parent's own product of ancestors, times its transform if it has one (a parent without one is passed
+    // through, as get_world_transform does).
+    auto const [found, inserted] = ancestors_.try_emplace(parent->entity);
+    if (!inserted) {
+        return found->second.state == State::known ? found->second.matrix : glm::mat4{1.0F}; // else: a cycle
+    }
+
+    auto matrix = ancestors_of(registry, parent->entity, depth + 1);
+    if (auto const *parent_transform = registry.try_get<Components::Transform const>(parent->entity)) {
+        matrix = matrix * parent_transform->matrix();
+    }
+
+    // try_emplace may have rehashed while recursing: look the entry up again.
+    auto &stored = ancestors_.at(parent->entity);
+    stored.matrix = matrix;
+    stored.state = State::known;
+    return matrix;
+}

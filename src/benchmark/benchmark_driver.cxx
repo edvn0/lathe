@@ -114,6 +114,7 @@ auto BenchmarkDriver::start_case(Application &application) -> void {
     auto const &scenario = scenarios_[current.scenario];
 
     set_fixed_random_seed(options_.seed);
+    application.renderer->set_frame_checksum_enabled(options_.frame_checksum);
 
     std::vector<CameraKeyframe> keyframes;
 
@@ -304,6 +305,7 @@ auto BenchmarkDriver::end_frame(Application &application, VulkanContext const &c
                             .shadowed_lights = renderer.local_shadow_stats().shadowed_lights,
                             .shadow_lights_cached = renderer.local_shadow_stats().cached_lights,
                             .shadow_tiles_drawn = renderer.local_shadow_stats().rendered_tiles,
+                            .frame_checksum = frame_stats.frame_checksum,
                     },
             .events = events_now.since(last_events_),
             .allocations = memory.total_allocations - last_allocations_,
