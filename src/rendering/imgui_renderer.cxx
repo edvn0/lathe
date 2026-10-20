@@ -167,7 +167,6 @@ namespace gui {
     }
 
     ImGuiRenderer::~ImGuiRenderer() {
-        ImGuiIO &io = ImGui::GetIO();
         ImGui_ImplGlfw_Shutdown();
 
         ImGui::DestroyPlatformWindows();
@@ -400,7 +399,7 @@ namespace gui {
 
             auto const existing = textures.find(texture);
 
-            if (texture->Status == ImTextureStatus_WantDestroy && texture->UnusedFrames >= retired_texture_frames) {
+            if (texture->Status == ImTextureStatus_WantDestroy && static_cast<std::uint32_t>(texture->UnusedFrames) >= retired_texture_frames) {
                 if (existing != textures.end()) {
                     retired_textures.push_back({existing->second, retired_texture_frames});
                     textures.erase(existing);
