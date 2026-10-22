@@ -94,8 +94,11 @@ namespace {
     };
 
     auto spawn(Scene &scene, std::string const &name, ModelHandle model, Components::Transform const &transform,
-               MaterialHandle material) -> void {
+               MaterialHandle material, bool is_static = false) -> void {
         auto entity = GeneratedEntity{&scene, "{}", name};
+        if (is_static) {
+            entity.emplace<Components::Static>();
+        }
         entity.emplace<Components::Transform>(transform);
         entity.emplace<Components::Model>(Components::Model{.model = model});
         if (material.valid()) {
@@ -131,7 +134,7 @@ namespace {
 
     constexpr float draw_call_spacing = 2.5F;
 
-    auto populate_draw_calls(BenchmarkScenarioContext const &context) -> void {
+    auto populate_draw_calls(BenchmarkScenarioContext const &context, bool is_static = false) -> void {
         MaterialSet materials{context.renderer};
         auto const colours = palette(materials, 16);
 
@@ -156,7 +159,7 @@ namespace {
                           .rotation = glm::angleAxis(yaw, glm::vec3{0.0F, 1.0F, 0.0F}),
                           .scale = glm::vec3{scale},
                   },
-                  colours[i % colours.size()]);
+                  colours[i % colours.size()], is_static);
         }
     }
 
@@ -466,7 +469,7 @@ namespace {
 
     // Entities made straight in the registry: a scenario of hundreds of thousands should cost the setup of the
     // components it measures and nothing else.
-    auto populate_cpu_submit(BenchmarkScenarioContext const &context) -> void {
+    auto populate_cpu_submit_entities(BenchmarkScenarioContext const &context, std::uint32_t dynamic_one_in) -> void {
         MaterialSet materials{context.renderer};
         // No shadow casting: the shadow pass draws casters whether or not the camera sees them, and would hide what
         // the CPU costs behind a GPU-bound frame.
@@ -494,7 +497,23 @@ namespace {
                                                                   : context.engine_models.sphere});
             registry.emplace<Components::MaterialOverride>(
                     entity, Components::MaterialOverride{.material = colours[i % colours.size()]});
+            // dynamic_one_in: 1 leaves every entity dynamic, 0 makes them all static, k keeps one in k dynamic.
+            if (dynamic_one_in == 0 || (dynamic_one_in > 1 && i % dynamic_one_in != 0)) {
+                registry.emplace<Components::Static>(entity);
+            }
         }
+    }
+
+    auto populate_cpu_submit(BenchmarkScenarioContext const &context) -> void {
+        populate_cpu_submit_entities(context, 1);
+    }
+
+    auto populate_cpu_submit_static(BenchmarkScenarioContext const &context) -> void {
+        populate_cpu_submit_entities(context, 0);
+    }
+
+    auto populate_cpu_submit_mixed(BenchmarkScenarioContext const &context) -> void {
+        populate_cpu_submit_entities(context, 10);
     }
 
     // A fixed crowd of entities under a chain of parents: each one walks the chain for its world matrix every frame.
@@ -561,7 +580,14 @@ auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<Be
             .info = {.name = "draw_calls", .load_axis = "objects", .default_loads = {1000, 4000, 16000}},
             .description = "One entity per object (cubes and spheres, 16 materials): per-object CPU submission, "
                            "culling and draw count.",
-            .populate = populate_draw_calls,
+            .populate = [](BenchmarkScenarioContext const &context) { populate_draw_calls(context, false); },
+            .camera_path = draw_calls_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "draw_calls_static", .load_axis = "objects", .default_loads = {1000, 4000, 16000}},
+            .description = "draw_calls with every object Static, in view with shadows: what the baked batches cost "
+                           "and save end to end, GPU included. Compare with draw_calls.",
+            .populate = [](BenchmarkScenarioContext const &context) { populate_draw_calls(context, true); },
             .camera_path = draw_calls_path,
     });
     scenarios.push_back(BenchmarkScenario{
@@ -676,6 +702,20 @@ auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<Be
             .description = "Many entities, none in view (the camera looks at an empty sky): per-entity scene "
                            "submission and culling input without GPU work. Run it at a tiny --benchmark-render-size.",
             .populate = populate_cpu_submit,
+            .camera_path = sky_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "cpu_submit_static", .load_axis = "objects", .default_loads = {25000, 100000, 400000}},
+            .description = "cpu_submit with every entity marked Static: the baked batches stay on the GPU between "
+                           "frames, so the CPU cost should stay flat as the objects grow.",
+            .populate = populate_cpu_submit_static,
+            .camera_path = sky_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "cpu_submit_mixed", .load_axis = "objects", .default_loads = {25000, 100000, 400000}},
+            .description = "cpu_submit with nine in ten entities Static and the rest dynamic: a scene of mostly "
+                           "scenery. Compare with cpu_submit (all dynamic) and cpu_submit_static (all static).",
+            .populate = populate_cpu_submit_mixed,
             .camera_path = sky_path,
     });
     scenarios.push_back(BenchmarkScenario{

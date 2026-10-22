@@ -46,6 +46,7 @@ add_library(
         rendering_error_describe.cxx
         render_passes.cxx
         scene.cxx
+        static_model_cache.cxx
         sky_model.cxx
         screenshot.cxx
         script_storage.cxx

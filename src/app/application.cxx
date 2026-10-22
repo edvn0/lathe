@@ -1463,7 +1463,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                     Components::RigidBody, Components::MaterialOverride, Components::PlayerTag,
                                     Components::Lifetime, Components::PointLight, Components::SpotLight,
                                     Components::Decal, Components::ParticleEmitter, Components::Text, Components::Script, Components::Behaviour,
-                                    Components::BulletTag>(
+                                    Components::BulletTag, Components::Static>(
                             registry, source, clone);
 
                     if (auto const *model = registry.try_get<Components::Model>(clone);
@@ -2147,6 +2147,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         tag_section.operator()<Components::PlayerTag>("Player Tag");
         tag_section.operator()<Components::BulletTag>("Bullet Tag");
+        tag_section.operator()<Components::Static>("Static");
 
         ImGui::Separator();
 

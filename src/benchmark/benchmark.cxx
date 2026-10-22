@@ -109,7 +109,7 @@ BenchmarkArguments::BenchmarkArguments(CommandLine &cli) {
                      options_.render_size = *size;
                      return {};
                  });
-    group.flag("--benchmark-screenshots", "Screenshot the first frame at or past each keyframe (single run only)",
+    group.flag("--benchmark-screenshots", "Screenshot the first frame at or past each keyframe of every run (slows the frames)",
                options_.keyframe_screenshots);
     group.flag("--benchmark-frame-checksum",
                "Hash the data prepare_frame writes for every frame into the results, to check that a change leaves it "

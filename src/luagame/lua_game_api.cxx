@@ -326,6 +326,20 @@ namespace {
         return 0;
     }
 
+    auto entity_set_static(lua_State *state) -> int {
+        auto const id = entity_arg(state, 1);
+        auto const is_static = lua_toboolean(state, 2) != 0;
+        auto &registry = registry_of(state);
+
+        if (is_static) {
+            registry.emplace_or_replace<Components::Static>(id);
+        } else {
+            registry.remove<Components::Static>(id);
+        }
+
+        return 0;
+    }
+
     // Applies the particle table at stack index 2 to `emitter`. On a problem the message is left on the stack and the
     // result is false, so the caller raises it after every C++ object here is gone.
     auto apply_particles(lua_State *state, Components::ParticleEmitter &emitter) -> bool {
@@ -1145,6 +1159,7 @@ namespace {
             luaL_Reg{"set_model", &entity_set_model},
             luaL_Reg{"set_material", &entity_set_material},
             luaL_Reg{"set_outlined", &entity_set_outlined},
+            luaL_Reg{"set_static", &entity_set_static},
             luaL_Reg{"add_particles", &entity_add_particles},
             luaL_Reg{"set_particles", &entity_set_particles},
             luaL_Reg{"remove_particles", &entity_remove_particles},

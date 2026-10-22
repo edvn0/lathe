@@ -94,8 +94,7 @@ auto BenchmarkDriver::create(BenchmarkOptions options,
         driver.cases_ = std::move(*planned);
 
         if (options.keyframe_screenshots) {
-            warn("--benchmark-screenshots only applies to --benchmark=; ignored for the suite");
-            options.keyframe_screenshots = false;
+            info("Benchmark: keyframe screenshots on (they slow the frames: do not read the timings)");
         }
 
         info("Benchmark suite: {} run(s) of {} measured frames into {}", driver.cases_.size(), options.frame_count,

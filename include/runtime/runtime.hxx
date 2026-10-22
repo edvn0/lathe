@@ -24,6 +24,7 @@
 #include "rendering/ray_tracing_poc.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
+#include "rendering/static_model_cache.hxx"
 #include "rendering/text_renderer.hxx"
 #include "serialisation/scene_serialisation.hxx"
 #include "terrain/terrain_world.hxx"
@@ -56,6 +57,9 @@ struct Runtime {
     std::unique_ptr<Scene> source_scene = std::make_unique<Scene>(*renderer);
     std::unique_ptr<Scene> runtime_scene;
     bool is_playing = false;
+
+    // The scene's static Models, baked (see StaticModelCache); submit_scene keeps it current.
+    StaticModelCache static_models;
 
     bool play_fullscreen = false;
 

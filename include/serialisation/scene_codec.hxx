@@ -77,6 +77,7 @@ enum class SceneEntityFlags : std::uint32_t {
     player = 1U << 1U,
     bullet = 1U << 2U,
     streamed_model = 1U << 3U,
+    static_geometry = 1U << 4U,
 };
 
 [[nodiscard]] constexpr auto operator|(SceneEntityFlags left, SceneEntityFlags right) noexcept -> SceneEntityFlags {
