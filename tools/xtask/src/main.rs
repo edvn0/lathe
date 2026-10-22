@@ -487,6 +487,8 @@ impl Config {
                 "-DCMAKE_PREFIX_PATH={}",
                 assimp_prefix.display()
             )));
+            // A build directory remembers the Assimp it found first; without this the prefix is ignored once cached.
+            args.push(OsString::from("-Uassimp_DIR"));
         }
 
         if self.profile_build {

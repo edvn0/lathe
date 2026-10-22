@@ -354,6 +354,10 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
             record.flags = record.flags | SceneEntityFlags::streamed_model;
         }
 
+        if (registry.all_of<Components::Static>(entity)) {
+            record.flags = record.flags | SceneEntityFlags::static_geometry;
+        }
+
         description.entities.push_back(std::move(record));
     }
 
@@ -820,6 +824,10 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
 
         if (has_flag(record.flags, SceneEntityFlags::bullet)) {
             registry.emplace<Components::BulletTag>(entity);
+        }
+
+        if (has_flag(record.flags, SceneEntityFlags::static_geometry)) {
+            registry.emplace<Components::Static>(entity);
         }
     }
 

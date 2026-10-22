@@ -47,8 +47,10 @@ namespace {
     }
 }
 
-Scene::Scene(Renderer &renderer) : hierarchy_revision_(next_hierarchy_revision()), renderer_(renderer) {
+Scene::Scene(Renderer &renderer) :
+    hierarchy_revision_(next_hierarchy_revision()), static_revision_(next_hierarchy_revision()), renderer_(renderer) {
     connect_light_signals();
+    connect_static_signals();
     connect_hierarchy_signals();
     entt::sink{lights_changed_signal_}.connect<&Renderer::mark_lights_dirty>(renderer);
 }
@@ -78,6 +80,36 @@ auto Scene::get_scripts() const noexcept -> ScriptStorage const & { return rende
 
 auto Scene::mark_lights_dirty(entt::registry &, entt::entity) -> void { lights_changed_signal_.publish(); }
 
+auto Scene::mark_static_dirty() noexcept -> void { static_revision_ = next_hierarchy_revision(); }
+
+auto Scene::mark_static_changed(entt::registry &, entt::entity) -> void { mark_static_dirty(); }
+
+auto Scene::connect_static_signals() -> void {
+    registry.on_construct<Components::Static>().connect<&Scene::mark_static_changed>(*this);
+    registry.on_destroy<Components::Static>().connect<&Scene::mark_static_changed>(*this);
+
+    registry.on_construct<Components::Model>().connect<&Scene::mark_static_changed>(*this);
+    registry.on_update<Components::Model>().connect<&Scene::mark_static_changed>(*this);
+    registry.on_destroy<Components::Model>().connect<&Scene::mark_static_changed>(*this);
+
+    registry.on_construct<Components::MaterialOverride>().connect<&Scene::mark_static_changed>(*this);
+    registry.on_update<Components::MaterialOverride>().connect<&Scene::mark_static_changed>(*this);
+    registry.on_destroy<Components::MaterialOverride>().connect<&Scene::mark_static_changed>(*this);
+
+    registry.on_construct<Components::Outlined>().connect<&Scene::mark_static_changed>(*this);
+    registry.on_destroy<Components::Outlined>().connect<&Scene::mark_static_changed>(*this);
+
+    registry.on_construct<Components::RigidBody>().connect<&Scene::mark_static_changed>(*this);
+    registry.on_destroy<Components::RigidBody>().connect<&Scene::mark_static_changed>(*this);
+
+    registry.on_construct<Components::Parent>().connect<&Scene::mark_static_changed>(*this);
+    registry.on_update<Components::Parent>().connect<&Scene::mark_static_changed>(*this);
+    registry.on_destroy<Components::Parent>().connect<&Scene::mark_static_changed>(*this);
+
+    registry.on_construct<Components::Transform>().connect<&Scene::mark_static_changed>(*this);
+    registry.on_destroy<Components::Transform>().connect<&Scene::mark_static_changed>(*this);
+}
+
 auto Scene::mark_hierarchy_changed(entt::registry &, entt::entity) -> void {
     hierarchy_revision_ = next_hierarchy_revision();
 }
@@ -103,6 +135,23 @@ auto Scene::connect_hierarchy_signals() -> void {
 }
 
 auto Scene::on_transform_changed(entt::registry &reg, entt::entity entity) -> void {
+    // A static entity is one under a Static (or Static itself): a patched Transform anywhere up the chain moves it.
+    auto const *statics = std::as_const(reg).storage<Components::Static>();
+    if (statics != nullptr && !statics->empty()) {
+        auto current = entity;
+        for (auto depth = 0; depth < 64 && reg.valid(current); ++depth) {
+            if (statics->contains(current)) {
+                mark_static_dirty();
+                break;
+            }
+            auto const *parent = reg.try_get<Components::Parent const>(current);
+            if (parent == nullptr) {
+                break;
+            }
+            current = parent->entity;
+        }
+    }
+
     if (reg.any_of<Components::PointLight, Components::SpotLight>(entity)) {
         lights_changed_signal_.publish();
     }

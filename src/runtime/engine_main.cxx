@@ -210,6 +210,16 @@ namespace {
         auto const debug_draw = draw_model_bounds || runtime.debug_renderer->meshlet_cones_debug_enabled() ||
                                 (cones_storage != nullptr && !cones_storage->empty());
 
+        // Static models are drawn from the baked batches below, and left out of the loop that follows. The debug
+        // drawing needs every model's world transform, so with it on they are submitted one by one like the rest.
+        auto &static_models = runtime.static_models;
+        if (debug_draw) {
+            static_models.clear();
+        } else {
+            static_models.update(registry, runtime.active_scene()->static_revision(), selected,
+                                 [&renderer = *runtime.renderer](ModelHandle model) { return renderer.has_model(model); });
+        }
+
         if (!debug_draw) {
             // Entities are looked at in the pool's order, as view.each() does, so what is submitted does not change.
             // The renderer's submissions are opened, filled straight from several threads (each entity is independent
@@ -221,9 +231,24 @@ namespace {
             };
 
             auto const &pool = *view.handle();
-            auto const submissions = runtime.renderer->begin_model_submissions(pool.size());
+
+            // With static models baked, the entities left to submit are listed once, so the renderer is asked for room
+            // for those and not for the whole pool.
+            auto const filtered = static_models.entity_count() != 0;
+            auto dynamic_entities = std::vector<entt::entity>{};
+            if (filtered) {
+                dynamic_entities.reserve(pool.size() - std::min(pool.size(), static_models.entity_count()));
+                for (auto const entity: pool) {
+                    if (!static_models.contains(entity)) {
+                        dynamic_entities.push_back(entity);
+                    }
+                }
+            }
+            auto const total = filtered ? dynamic_entities.size() : pool.size();
+
+            auto const submissions = runtime.renderer->begin_model_submissions(total);
             auto const count = submissions.size();
-            if (count < pool.size()) {
+            if (count < total) {
                 error("Could not submit all scene objects: the renderer holds {} models", count);
             }
 
@@ -241,7 +266,7 @@ namespace {
 
                 auto entities = pool.begin() + static_cast<std::ptrdiff_t>(first);
                 for (auto index = first; index < last; ++index, ++entities) {
-                    auto const entity = *entities;
+                    auto const entity = filtered ? dynamic_entities[index] : *entities;
                     auto &submission = submissions[index];
 
                     if (!view.contains(entity)) {
@@ -305,6 +330,15 @@ namespace {
 
             if (auto result = runtime.renderer->end_model_submissions(skipped.load(), outlined_count.load()); !result) {
                 error("Some scene objects have a model that does not exist: {}", describe(result.error()));
+            }
+
+            for (auto const &batch: static_models.batches()) {
+                auto result = runtime.renderer->submit_model_instances(batch.model, batch.transforms,
+                                                                       batch.material_override, batch.revision);
+                if (!result) {
+                    error("Could not submit static models (model index {}, {} instances): {}", batch.model.index,
+                          batch.transforms.size(), describe(result.error()));
+                }
             }
         } else {
             for (auto [entity, transform, model]: view.each()) {
