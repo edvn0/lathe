@@ -329,7 +329,7 @@ cpmaddpackage(
     NAME stb
     GITHUB_REPOSITORY nothings/stb
     GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20
-    GIT_SHALLOW YES
+    GIT_SHALLOW NO
     DOWNLOAD_ONLY YES
 )
 
