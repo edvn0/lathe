@@ -360,7 +360,7 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
             .lacunarity = 2.0F,
             .persistence = 0.5F,
             .seed = 1337U,
-            .uv_scale = 0.08F,
+            .uv_scale = 0.25F,
             .hills =
                     {
                             {.world_x = 48.0F, .world_z = -30.0F, .height = 16.0F, .radius = 14.0F},
@@ -387,10 +387,10 @@ auto BasicGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const
     auto &streamer = renderer.texture_streamer();
 
     auto const terrain_normal_index =
-            streamer.request(images, data_path("assets/textures/terrain/terrain_normal.exr"), TextureRole::normal_map,
+            streamer.request(images, data_path("assets/textures/terrain/terrain_normal.jpg"), TextureRole::normal_map,
                              images.flat_normal(), FlyString{"terrain.normal"});
 
-    auto const terrain_albedo_index = streamer.request(images, data_path("assets/textures/terrain/terrain_albedo.png"),
+    auto const terrain_albedo_index = streamer.request(images, data_path("assets/textures/terrain/terrain_albedo.jpg"),
                                                     TextureRole::colour, images.white(), FlyString{"terrain.albedo"});
 
     auto const terrain_roughness_index =
