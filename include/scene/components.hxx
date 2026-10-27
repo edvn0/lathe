@@ -198,6 +198,13 @@ namespace Components {
 
     struct Outlined {};
 
+    // Marks an entity, and everything parented under it, as never moving once the scene runs. A static Model is baked
+    // into a batch the renderer keeps on the GPU between frames (see StaticModelCache), so it costs nothing per frame
+    // until something changes. The bake is rebuilt when a Transform is patched (registry.patch, as the editor does),
+    // or a Model, MaterialOverride, Outlined, Parent or Static is added, changed or removed. Writing a static
+    // entity's Transform directly, as physics and animation do, is not noticed: do not mark entities they move.
+    struct Static {};
+
     struct BulletTag {};
 
     struct StreamedModelTag {};

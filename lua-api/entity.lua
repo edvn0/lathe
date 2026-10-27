@@ -36,6 +36,10 @@ function Entity:set_model(model) end
 function Entity:set_material(material) end
 ---@param outlined boolean
 function Entity:set_outlined(outlined) end
+---Marks the entity, and everything parented under it, as never moving: its model is baked into a batch kept on the GPU
+---instead of being submitted every frame. Moving a static entity from a script is not noticed; use it for scenery.
+---@param static boolean
+function Entity:set_static(static) end
 ---Adds a particle emitter. Raises an error if the entity has one (use set_particles) or a field is invalid.
 ---@param options ParticleOptions
 function Entity:add_particles(options) end

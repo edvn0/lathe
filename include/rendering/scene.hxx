@@ -54,12 +54,17 @@ public:
 
     [[nodiscard]] auto hierarchy_revision() const noexcept -> std::uint64_t { return hierarchy_revision_; }
 
+    // Changes whenever something a static batch is baked from changes (see Components::Static). Unique across scenes.
+    [[nodiscard]] auto static_revision() const noexcept -> std::uint64_t { return static_revision_; }
+    auto mark_static_dirty() noexcept -> void;
+
     [[nodiscard]] auto find_entity(std::string_view) const noexcept -> entt::entity;
 
 private:
     entt::registry registry;
     entt::sigh<void()> lights_changed_signal_;
     std::uint64_t hierarchy_revision_ = 0;
+    std::uint64_t static_revision_ = 0;
 
 public:
     std::unique_ptr<PhysicsWorld> physics_world;
@@ -79,6 +84,9 @@ private:
     auto on_streamed_model_tag_destroyed(entt::registry &, entt::entity) -> void;
 
     auto connect_light_signals() -> void;
+
+    auto mark_static_changed(entt::registry &, entt::entity) -> void;
+    auto connect_static_signals() -> void;
 
     auto mark_hierarchy_changed(entt::registry &, entt::entity) -> void;
     auto connect_hierarchy_signals() -> void;
