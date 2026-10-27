@@ -315,6 +315,14 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                 import_frame_buffer(frame.local_shadow_indirect_buffer, "local_shadow_indirect", false);
     }
 
+    // The overdraw view: the prepass pipelines count their fragments into a per-pixel buffer, which the forward pass
+    // reads back as a heatmap.
+    auto const overdraw_active = view_mode_ == ViewMode::overdraw && frame.overdraw_buffer.valid();
+    auto overdraw = frame_graph::BufferId{};
+    if (overdraw_active) {
+        overdraw = import_frame_buffer(frame.overdraw_buffer, "overdraw", false);
+    }
+
     auto const decals_active = frame.decal_count != 0;
     auto decals = frame_graph::BufferId{};
     auto decal_clusters = frame_graph::BufferId{};
@@ -854,6 +862,24 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
         declare_shadows();
     }
 
+    if (overdraw_active) {
+        frame_graph_.add_pass("overdraw_clear", frame_graph::PassType::transfer,
+                              {
+                                      .name_id = "overdraw_clear",
+                                      .label = "Overdraw clear",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::SlateGray),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  overdraw = pass.write(overdraw, frame_graph::Use::transfer_write);
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      auto const pass_context = pass_context_of(context);
+                                      vkCmdFillBuffer(pass_context.command_buffer, frame.overdraw_buffer.buffer, 0,
+                                                      VK_WHOLE_SIZE, 0);
+                                  }};
+                              });
+    }
+
     frame_graph_.add_pass(
             "depth_prepass", frame_graph::PassType::raster,
             {
@@ -870,6 +896,10 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                 [[maybe_unused]] auto const planes =
                         pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
                 read_skinned_vertices(pass, geometry_stages);
+                if (overdraw_active) {
+                    overdraw = pass.write(overdraw, frame_graph::Use::shader_read_write,
+                                          stages_of(ShaderStage::fragment));
+                }
                 if (meshlet_occlusion_active) {
                     [[maybe_unused]] auto const views =
                             pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
@@ -1010,6 +1040,10 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                     [[maybe_unused]] auto const planes =
                             pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
                     read_skinned_vertices(pass, geometry_stages);
+                    if (overdraw_active) {
+                        overdraw = pass.write(overdraw, frame_graph::Use::shader_read_write,
+                                              stages_of(ShaderStage::fragment));
+                    }
                     if (meshlet_occlusion_active) {
                         [[maybe_unused]] auto const views =
                                 pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
@@ -1168,6 +1202,9 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
         if (clustered) {
             [[maybe_unused]] auto const clusters =
                     pass.read(cluster_lights, frame_graph::Use::shader_read, fragment_stage);
+        }
+        if (overdraw_active) {
+            [[maybe_unused]] auto const counts = pass.read(overdraw, frame_graph::Use::shader_read, fragment_stage);
         }
         if (decals_active) {
             [[maybe_unused]] auto const decal_list = pass.read(decals, frame_graph::Use::shader_read, fragment_stage);
