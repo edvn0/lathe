@@ -234,6 +234,9 @@ namespace render_pass {
         PipelineNodeHandle skybox_pipeline{};
         bool draw_skybox = false;
 
+        PipelineNodeHandle grid_pipeline{};
+        bool draw_grid = false;
+
         std::uint32_t ao_texture_index = 0;
         std::uint32_t ao_sampler_index = 0;
 

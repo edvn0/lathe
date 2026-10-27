@@ -134,6 +134,12 @@ auto Application::draw_main_menu_bar() -> void {
     bool const busy = scene_save_job.has_value() || scene_load_job.has_value() || packaging_active();
 
     if (ImGui::BeginMenu("File")) {
+        ImGui::BeginDisabled(busy);
+        if (ImGui::MenuItem("New Scene", "Ctrl+N")) {
+            request_switch_game("empty");
+        }
+        ImGui::EndDisabled();
+
         ImGui::BeginDisabled(busy || scene_browser.is_open());
         if (ImGui::MenuItem("Open Scene...", "Ctrl+O")) {
             scene_browser.open("Open Scene", {{.label = "Lathe scenes (*.lbf)", .extensions = {".lbf"}}});
@@ -216,6 +222,11 @@ auto Application::draw_main_menu_bar() -> void {
         }
 
         ImGui::Separator();
+
+        bool grid = renderer->editor_grid();
+        if (ImGui::MenuItem("Grid and Axes", nullptr, &grid)) {
+            renderer->set_editor_grid(grid);
+        }
 
         bool cones = debug_renderer->meshlet_cones_debug_enabled();
         if (ImGui::MenuItem("Meshlet Normal Cones", nullptr, &cones)) {

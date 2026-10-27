@@ -2884,6 +2884,7 @@ auto Application::on_play_stopping() -> void {
 
 auto Application::create_ui_resources() -> void {
     editor_icons = std::make_unique<gui::EditorIcons>(*renderer);
+    renderer->set_editor_grid(true);
     remove_window_decorations();
 }
 
@@ -2989,6 +2990,9 @@ auto Application::handle_event(KeyPressedEvent ev) -> bool {
     }
     if (ev.key == GLFW_KEY_S && (ev.modifiers & GLFW_MOD_CONTROL) != 0) {
         start_save_scene((ev.modifiers & GLFW_MOD_SHIFT) != 0 ? std::filesystem::path{} : scene_path);
+    }
+    if (ev.key == GLFW_KEY_N && ev.modifiers == GLFW_MOD_CONTROL) {
+        request_switch_game("empty");
     }
     if (ev.key == GLFW_KEY_O && ev.modifiers == GLFW_MOD_CONTROL && !scene_browser.is_open()) {
         scene_browser.open("Open Scene", {{.label = "Lathe scenes (*.lbf)", .extensions = {".lbf"}}});
