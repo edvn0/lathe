@@ -156,6 +156,78 @@ namespace {
         return changed;
     };
 
+    constexpr auto draw_water = [](Components::Water &water) -> bool {
+        bool changed = false;
+
+        constexpr std::array<char const *, 2> bodies{"Ocean", "Lake / pool"};
+        auto body = static_cast<int>(water.body);
+        if (ImGui::Combo("Body", &body, bodies.data(), static_cast<int>(bodies.size()))) {
+            water.body = static_cast<Components::WaterBody>(body);
+            changed = true;
+        }
+        changed |= ImGui::Checkbox("Visible", &water.visible);
+        changed |= ImGui::DragFloat2(water.body == Components::WaterBody::ocean ? "Water zone" : "Extent", &water.extent.x,
+                                     0.1F, 0.1F, 1.0e5F, "%.1f m");
+        changed |= ImGui::ColorEdit3("Deep colour", &water.colour.x);
+        changed |= ImGui::SliderFloat("Roughness", &water.roughness, 0.0F, 1.0F);
+        changed |= ImGui::DragFloat3("Absorption", &water.absorption.x, 0.005F, 0.0F, 10.0F, "%.3f / m");
+        changed |= ImGui::DragFloat("Shore fade", &water.shore_fade, 0.01F, 0.0F, 10.0F, "%.2f m");
+        changed |= ImGui::DragFloat("Wave scale", &water.wave_scale, 0.005F, 0.001F, 10.0F, "%.3f / m");
+        changed |= ImGui::DragFloat("Wave speed", &water.wave_speed, 0.01F, 0.0F, 10.0F);
+        changed |= ImGui::DragFloat("Wave height", &water.wave_height, 0.005F, 0.0F, 20.0F, "%.3f m");
+        changed |= ImGui::DragFloat("Normal strength", &water.normal_strength, 0.01F, 0.0F, 10.0F);
+        changed |= ImGui::DragFloat("Refraction", &water.refraction_strength, 0.001F, 0.0F, 0.5F);
+        changed |= ImGui::SliderFloat("Foam", &water.foam, 0.0F, 2.0F);
+        changed |= ImGui::SliderFloat("Whitecaps", &water.whitecaps, 0.0F, 2.0F);
+        changed |= ImGui::SliderFloat("Caustics", &water.caustics, 0.0F, 2.0F);
+
+        if (ImGui::Button("Calm pool")) {
+            water = Components::Water::pool(water.body == Components::WaterBody::lake ? water.extent
+                                                                                      : glm::vec2{10.0F, 10.0F});
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Rough ocean")) {
+            water = Components::Water::ocean();
+            changed = true;
+        }
+        return changed;
+    };
+
+    constexpr auto draw_planet = [](Components::Planet &planet) -> bool {
+        bool changed = false;
+        auto radius_km = static_cast<float>(planet.radius / 1000.0);
+        if (ImGui::DragFloat("Radius", &radius_km, 1.0F, 1.0F, 1.0e6F, "%.0f km")) {
+            planet.radius = static_cast<double>(radius_km) * 1000.0;
+            changed = true;
+        }
+        changed |= ImGui::Checkbox("Visible", &planet.visible);
+        changed |= ImGui::SliderFloat("Exaggeration", &planet.exaggeration, 0.0F, 20.0F, "%.1f x");
+        changed |= ImGui::DragFloat("Sea level", &planet.sea_level, 1.0F, -10000.0F, 10000.0F, "%.0f m");
+        auto level = static_cast<int>(planet.max_level);
+        if (ImGui::SliderInt("Max level", &level, 0, 15)) {
+            planet.max_level = static_cast<std::uint8_t>(level);
+            changed = true;
+        }
+        constexpr std::array<char const *, 2> colours{"Image", "From elevation"};
+        auto colour = static_cast<int>(planet.colour);
+        if (ImGui::Combo("Colour", &colour, colours.data(), static_cast<int>(colours.size()))) {
+            planet.colour = static_cast<Components::PlanetColour>(colour);
+            changed = true;
+        }
+        changed |= ImGui::Checkbox("Ocean", &planet.ocean);
+        changed |= ImGui::Checkbox("Atmosphere", &planet.atmosphere);
+        auto atmosphere_km = planet.atmosphere_height / 1000.0F;
+        if (ImGui::DragFloat("Atmosphere height", &atmosphere_km, 0.5F, 1.0F, 1000.0F, "%.0f km")) {
+            planet.atmosphere_height = atmosphere_km * 1000.0F;
+            changed = true;
+        }
+        changed |= ImGui::SliderFloat("Atmosphere intensity", &planet.atmosphere_intensity, 0.0F, 5.0F);
+        changed |= ImGui::Checkbox("LOD colours", &planet.debug_lod);
+        ImGui::TextDisabled("Elevation: %s", planet.elevation_path.empty() ? "(none)" : planet.elevation_path.c_str());
+        return changed;
+    };
+
     constexpr auto draw_text = [](Components::Text &text) -> bool {
         bool changed = false;
 
@@ -383,6 +455,7 @@ namespace {
     }
 
     using gui::widget;
+    using gui::panel;
 
     [[nodiscard]] auto material_deletion_label(std::string_view name) -> std::string {
         return std::format("material:{}", name);
@@ -421,6 +494,12 @@ auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> pass
 }
 
 Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
+    event_subscriptions.push_back(event_bus.subscribe<KeyPressedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<KeyReleasedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseMovedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseScrolledEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseButtonPressedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseButtonReleasedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
     stage_registry.bind_debug_renderer(debug_renderer.get());
     // The editor ray-casts against models' triangles to pick and to place things on surfaces.
     renderer->model_streamer().collect_pick_geometry(true);
@@ -428,97 +507,130 @@ Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
 
 Application::~Application() = default;
 
-auto Application::on_ui(std::uint32_t frame_index) -> void {
-    if (is_playing && play_fullscreen) {
-        Runtime::on_ui(frame_index);
+auto Application::draw_event_metrics() -> void {
+    if (ImGui::Button("Reset")) {
+        event_bus.reset_metrics();
+    }
+
+    if (ImGui::BeginTable("Events", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        for (auto const *column: {"Event", "Subs", "Published", "Consumed", "Calls", "Avg us", "Max us"}) {
+            ImGui::TableSetupColumn(column);
+        }
+        ImGui::TableHeadersRow();
+
+        for (auto const &m: event_bus.metrics()) {
+            auto const avg_us = m.handler_calls == 0 ? 0.0 : static_cast<double>(m.total_ns) / 1000.0 / static_cast<double>(m.handler_calls);
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(m.name.data(), m.name.data() + m.name.size());
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu", m.subscribers);
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", static_cast<unsigned long long>(m.published));
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", static_cast<unsigned long long>(m.consumed));
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", static_cast<unsigned long long>(m.handler_calls));
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f", avg_us);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f", static_cast<double>(m.max_ns) / 1000.0);
+        }
+
+        ImGui::EndTable();
+    }
+}
+
+auto Application::dock_second_viewport(ImGuiID dockspace_id) -> void {
+    auto const *const first = ImGui::FindWindowByName("Viewport");
+    auto const *const second = ImGui::FindWindowByName("Viewport 2");
+
+    auto const second_docked = second != nullptr && second->DockId != 0 && ImGui::DockBuilderGetNode(second->DockId);
+    if (first == nullptr || first->DockId == 0 || second_docked) {
         return;
     }
 
-    auto const *main_viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(main_viewport->WorkPos);
-    ImGui::SetNextWindowSize(main_viewport->WorkSize);
-    ImGui::SetNextWindowViewport(main_viewport->ID);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
-    ImGui::Begin("##dockspace_host", nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                         ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBackground);
-    ImGui::PopStyleVar(3);
+    // The first viewport's node splits in two; the viewport keeps the left half and the new one takes the right.
+    auto left = first->DockId;
+    auto const right = ImGui::DockBuilderSplitNode(left, ImGuiDir_Right, 0.5F, nullptr, &left);
 
-    ImGuiID const dockspace_id = ImGui::GetID("MainDockSpace");
-
-    if (ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
-        ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
-        ImGui::DockBuilderSetNodeSize(dockspace_id, main_viewport->WorkSize);
-
-        ImGuiID center = dockspace_id;
-        ImGuiID const left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20F, nullptr, &center);
-        ImGuiID const right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25F, nullptr, &center);
-        ImGuiID const bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28F, nullptr, &center);
-
-        ImGui::DockBuilderDockWindow("Viewport", center);
-        ImGui::DockBuilderDockWindow("Frame graph", center);
-        ImGui::DockBuilderDockWindow("Hierarchy", left);
-        ImGui::DockBuilderDockWindow("Inspector", right);
-        ImGui::DockBuilderDockWindow("Console", bottom);
-        ImGui::DockBuilderDockWindow("Script", bottom);
-        ImGui::DockBuilderDockWindow("Assets", bottom);
-        ImGui::DockBuilderDockWindow("Load Model", bottom);
-        ImGui::DockBuilderDockWindow("Simulation", bottom);
-        ImGui::DockBuilderDockWindow("Scene stats", bottom);
-        ImGui::DockBuilderDockWindow("Frame timings", bottom);
-        ImGui::DockBuilderDockWindow("Lighting", bottom);
-        ImGui::DockBuilderDockWindow("Environment", bottom);
-
-        ImGui::DockBuilderFinish(dockspace_id);
+    ImGui::DockBuilderDockWindow("Viewport 2", right);
+    for (auto const id: {left, right}) {
+        if (auto *const node = ImGui::DockBuilderGetNode(id)) {
+            node->LocalFlags |= ImGuiDockNodeFlags_HiddenTabBar;
+        }
     }
 
-    ImGui::DockSpace(dockspace_id, ImVec2(0.0F, 0.0F), ImGuiDockNodeFlags_PassthruCentralNode);
-    ImGui::End();
+    ImGui::DockBuilderFinish(dockspace_id);
+}
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
-    widget("Viewport", [&] {
-        viewport_hovered = ImGui::IsWindowHovered();
-        viewport_screen_pos = ImGui::GetCursorScreenPos();
-        viewport_content_size = ImGui::GetContentRegionAvail();
-        viewport_seen_frame = ImGui::GetFrameCount();
+auto Application::draw_viewport(std::size_t index, char const *title, std::uint32_t frame_index) -> void {
+    auto &pane = viewports[index];
+    pane.hovered = false;
 
-        auto const target = renderer->viewport_target(frame_index);
-        bool const has_room = viewport_content_size.x > 0.0F && viewport_content_size.y > 0.0F;
+    widget(title, [&] {
+        auto &camera = pane.camera;
+
+        pane.hovered = ImGui::IsWindowHovered();
+        pane.screen_pos = ImGui::GetCursorScreenPos();
+        pane.content_size = ImGui::GetContentRegionAvail();
+        pane.seen_frame = ImGui::GetFrameCount();
+
+        if (pane.hovered) {
+            active_viewport = index;
+        }
+
+        if (index == 0) {
+            viewport_screen_pos = pane.screen_pos;
+            viewport_content_size = pane.content_size;
+            viewport_seen_frame = pane.seen_frame;
+        }
+
+        auto const is_active = active_viewport == index;
+
+        auto const target = renderer->view_viewport_target(pane.view, frame_index);
+        bool const has_room = pane.content_size.x > 0.0F && pane.content_size.y > 0.0F;
         if (target.valid() && has_room) {
-            ImGui::Image(gui::linear_source_texture_id(target.index), viewport_content_size);
+            ImGui::Image(gui::linear_source_texture_id(target.index), pane.content_size);
+        }
 
-            // View mode picker floating over the viewport's top-left corner, like Blender's shading dropdown.
-            ImGui::SetCursorScreenPos(ImVec2{viewport_screen_pos.x + 8.0F, viewport_screen_pos.y + 8.0F});
-            ImGui::SetNextItemWidth(170.0F);
-            auto const current_mode = renderer->view_mode();
-            auto const current_name =
-                    std::ranges::find(view_mode_names, current_mode, &std::pair<ViewMode, std::string_view>::first)
-                            ->second;
-            if (ImGui::BeginCombo("##view_mode", std::string{current_name}.c_str())) {
+        if (index != 0 && pane.view != Renderer::primary_view) {
+            auto const extent = renderer->view_extent(pane.view);
+            auto const aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+            renderer->set_view_camera(pane.view,
+                                      Renderer::CameraMatrices{
+                                              .view = camera.view(),
+                                              .projection = camera.projection(aspect),
+                                              .near_clip = camera.near_clip(),
+                                              .far_clip = camera.far_clip(),
+                                              .vertical_fov_radians = glm::radians(camera.field_of_view_degrees()),
+                                              .aspect_ratio = aspect,
+                                              .time = elapsed_time,
+                                      });
+        }
+
+        if (has_room) {
+            // The view mode of this viewport, over its top left corner.
+            ImGui::SetCursorScreenPos(ImVec2{pane.screen_pos.x + 8.0F, pane.screen_pos.y + 8.0F});
+            ImGui::SetNextItemWidth(140.0F);
+            auto const current_mode = renderer->view_mode(pane.view);
+            auto const current_name = std::ranges::find(view_mode_names, current_mode, &decltype(view_mode_names)::value_type::first)->second;
+            if (ImGui::BeginCombo(std::format("##view_mode_{}", index).c_str(), std::string{current_name}.c_str())) {
                 for (auto const &[mode, name]: view_mode_names) {
                     if (ImGui::Selectable(std::string{name}.c_str(), mode == current_mode)) {
-                        renderer->set_view_mode(mode);
+                        renderer->set_view_mode(pane.view, mode);
                     }
                 }
-
-                ImGui::Separator();
-
-                bool cones = debug_renderer->meshlet_cones_debug_enabled();
-                if (ImGui::Checkbox("Meshlet normal cones", &cones)) {
-                    debug_renderer->set_meshlet_cones_debug_enabled(cones);
-                }
-
-                bool bounds = debug_renderer->model_bounds_debug_enabled();
-                if (ImGui::Checkbox("Submesh bounds", &bounds)) {
-                    debug_renderer->set_model_bounds_debug_enabled(bounds);
-                }
-
                 ImGui::EndCombo();
             }
-            ImGui::SetCursorScreenPos(viewport_screen_pos);
+
+            if (index != 0) {
+                ImGui::SameLine();
+                if (ImGui::Button("Close")) {
+                    second_viewport_open = false;
+                }
+            }
         }
 
         if (!is_playing && has_room) {
@@ -526,15 +638,14 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
             auto const selected_entity = selection_context().primary();
 
-            if (selected_entity != entt::null && registry.valid(selected_entity) &&
+            // One gizmo at a time: in the viewport the pointer is in (or was last in).
+            if (is_active && selected_entity != entt::null && registry.valid(selected_entity) &&
                 registry.all_of<Components::Transform>(selected_entity)) {
                 ImGuizmo::SetOrthographic(false);
                 ImGuizmo::SetDrawlist();
-                ImGuizmo::SetRect(viewport_screen_pos.x, viewport_screen_pos.y, viewport_content_size.x,
-                                  viewport_content_size.y);
+                ImGuizmo::SetRect(pane.screen_pos.x, pane.screen_pos.y, pane.content_size.x, pane.content_size.y);
 
-                auto const aspect =
-                        viewport_content_size.y > 0.0F ? viewport_content_size.x / viewport_content_size.y : 1.0F;
+                auto const aspect = pane.content_size.y > 0.0F ? pane.content_size.x / pane.content_size.y : 1.0F;
                 auto const flip_z = glm::scale(glm::mat4(1.0F), glm::vec3(1.0F, 1.0F, -1.0F));
                 auto const view = flip_z * camera.view();
                 auto const projection = camera.projection(aspect) * flip_z;
@@ -561,18 +672,18 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
 
             // Click (not drag) in the viewport to pick; ctrl toggles, clicking empty space clears. With the text tool
-            // active the mouse previews and places text on a surface instead.
-            auto const pointer_on_scene = viewport_hovered && !ImGui::IsAnyItemHovered() && !ImGuizmo::IsOver() &&
-                                          !ImGuizmo::IsUsing();
+            // active the mouse previews and places text on a surface instead. Only the viewport under the pointer.
+            auto const pointer_on_scene = is_active && pane.hovered && !ImGui::IsAnyItemHovered() &&
+                                          !ImGuizmo::IsOver() && !ImGuizmo::IsUsing();
             auto const clicked = pointer_on_scene && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
                                  ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).x == 0.0F &&
                                  ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y == 0.0F;
 
             if (clicked || (pointer_on_scene && text_placement.active())) {
-                auto const aspect = viewport_content_size.x / viewport_content_size.y;
+                auto const aspect = pane.content_size.x / pane.content_size.y;
                 auto const mouse = ImGui::GetIO().MousePos;
-                auto const ndc_x = (((mouse.x - viewport_screen_pos.x) / viewport_content_size.x) * 2.0F) - 1.0F;
-                auto const ndc_y = 1.0F - (((mouse.y - viewport_screen_pos.y) / viewport_content_size.y) * 2.0F);
+                auto const ndc_x = (((mouse.x - pane.screen_pos.x) / pane.content_size.x) * 2.0F) - 1.0F;
+                auto const ndc_y = 1.0F - (((mouse.y - pane.screen_pos.y) / pane.content_size.y) * 2.0F);
 
                 // Camera-space ray through the pixel (LH, +z forward), recovered from the projection's focal terms.
                 auto const projection = camera.projection(aspect);
@@ -594,8 +705,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                              .camera_forward = glm::normalize(glm::vec3{to_world * glm::vec4{0.0F, 0.0F, 1.0F, 0.0F}}),
                              .projector = {.view = camera.view(),
                                            .focal = {projection[0][0], projection[1][1]},
-                                           .origin = {viewport_screen_pos.x, viewport_screen_pos.y},
-                                           .size = {viewport_content_size.x, viewport_content_size.y}},
+                                           .origin = {pane.screen_pos.x, pane.screen_pos.y},
+                                           .size = {pane.content_size.x, pane.content_size.y}},
                              .cursor = {mouse.x, mouse.y},
                              .click = clicked,
                              .snap_to_grid = ImGui::GetIO().KeyCtrl,
@@ -620,17 +731,146 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             }
         }
     });
+}
+
+// Runs once a frame after the renderer's own resize: the second viewport's view exists while the viewport is split
+// (and not playing, which stays single-view), and follows the size of its window.
+auto Application::update_views() -> void {
+    auto &pane = viewports[1];
+    auto const wanted = second_viewport_open && !is_playing;
+
+    if (!wanted) {
+        if (pane.view != Renderer::primary_view) {
+            renderer->destroy_view(pane.view);
+            pane.view = Renderer::primary_view;
+        }
+        return;
+    }
+
+    if (pane.seen_frame < 0 || pane.content_size.x < 1.0F || pane.content_size.y < 1.0F) {
+        return;
+    }
+
+    auto const scale = renderer->render_scale();
+    auto const scaled = [scale](float value) {
+        return static_cast<std::uint32_t>(std::clamp(std::round(value * scale), 1.0F, 16384.0F));
+    };
+    auto const target = VkExtent2D{.width = scaled(pane.content_size.x), .height = scaled(pane.content_size.y)};
+
+    if (pane.view == Renderer::primary_view) {
+        auto created = renderer->create_view(target);
+
+        if (!created) {
+            error("Could not create the second viewport: {}", describe(created.error()));
+            second_viewport_open = false;
+            return;
+        }
+
+        pane.view = *created;
+        pane.pending_extent = target;
+        pane.pending_since = std::chrono::steady_clock::now();
+
+        // The debug camera starts where the editor camera is, and keeps its own pose from then on.
+        if (!second_viewport_camera_seeded) {
+            pane.camera = viewports[0].camera;
+            second_viewport_camera_seeded = true;
+        }
+        return;
+    }
+
+    // A window being dragged changes size every frame; the view follows once it has held still for a moment.
+    if (target.width != pane.pending_extent.width || target.height != pane.pending_extent.height) {
+        pane.pending_extent = target;
+        pane.pending_since = std::chrono::steady_clock::now();
+    }
+
+    constexpr auto settle_time = std::chrono::milliseconds{150};
+    auto const current = renderer->view_extent(pane.view);
+    if ((pane.pending_extent.width != current.width || pane.pending_extent.height != current.height) &&
+        std::chrono::steady_clock::now() - pane.pending_since >= settle_time) {
+        if (auto const resized = renderer->resize_view(pane.view, pane.pending_extent); !resized) {
+            error("Could not resize the second viewport: {}", describe(resized.error()));
+        }
+    }
+}
+
+auto Application::on_ui(std::uint32_t frame_index) -> void {
+    if (is_playing && play_fullscreen) {
+        Runtime::on_ui(frame_index);
+        return;
+    }
+
+    handle_window_resize();
+    draw_main_menu_bar();
+
+    auto const *main_viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(main_viewport->WorkPos);
+    ImGui::SetNextWindowSize(main_viewport->WorkSize);
+    ImGui::SetNextWindowViewport(main_viewport->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
+    ImGui::Begin("##dockspace_host", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBackground);
+    ImGui::PopStyleVar(3);
+
+    ImGuiID const dockspace_id = ImGui::GetID("MainDockSpace");
+
+    if (reset_layout_requested) {
+        ImGui::DockBuilderRemoveNode(dockspace_id);
+        panels = PanelVisibility{};
+        reset_layout_requested = false;
+    }
+
+    if (ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
+        ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspace_id, main_viewport->WorkSize);
+
+        ImGuiID center = dockspace_id;
+        ImGuiID const left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20F, nullptr, &center);
+        ImGuiID const right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25F, nullptr, &center);
+        ImGuiID const bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28F, nullptr, &center);
+
+        ImGui::DockBuilderDockWindow("Viewport", center);
+        if (auto *const node = ImGui::DockBuilderGetNode(center)) {
+            node->LocalFlags |= ImGuiDockNodeFlags_HiddenTabBar;
+        }
+        ImGui::DockBuilderDockWindow("Hierarchy", left);
+        ImGui::DockBuilderDockWindow("Inspector", right);
+        ImGui::DockBuilderDockWindow("Console", bottom);
+
+        ImGui::DockBuilderFinish(dockspace_id);
+    }
+
+    if (split_viewport_requested) {
+        split_viewport_requested = false;
+        dock_second_viewport(dockspace_id);
+    }
+
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0F, 0.0F), ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::End();
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
+    draw_viewport(0, "Viewport", frame_index);
+    auto const second_shown = second_viewport_open && !is_playing;
+    if (second_shown) {
+        draw_viewport(1, "Viewport 2", frame_index);
+    }
+    viewport_hovered = viewports[0].hovered || (second_shown && viewports[1].hovered);
     ImGui::PopStyleVar();
 
-    if (game && game_hooks_enabled) {
+    if (game && game_hooks_enabled && panels.game) {
         game->on_ui(*active_scene(), *renderer);
     }
 #if LATHE_TRACK_MEMORY
-    widget("Memory", [] { on_memory_ui(); });
+    panel("Memory", panels.memory, [] { on_memory_ui(); });
 #endif
-    widget("Console", [&] { terminal_widget.draw(); });
+    panel("Events", panels.events, [&] { draw_event_metrics(); });
+    panel("Console", panels.console, [&] { terminal_widget.draw(); });
 
-    widget("Script", [&] {
+    panel("Script", panels.script, [&] {
         auto const world = is_playing ? std::optional<ScriptWorld>{}
                                       : std::optional<ScriptWorld>{ScriptWorld{
                                                 .registry = &source_scene->get_registry(),
@@ -638,25 +878,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                         }};
         if (script_widget.draw(world).transforms_written > 0) {
             renderer->mark_dynamic_shadow_casters_dirty();
-        }
-    });
-
-    widget("Load Model", [&] {
-        ImGui::TextUnformatted("glTF / GLB model");
-
-        ImGui::BeginDisabled(model_browser.is_open());
-        if (ImGui::Button("Browse...")) {
-            model_browse_target = ModelBrowseTarget::spawn_entity;
-            model_browser.open("Load Model", model_file_filters());
-        }
-        ImGui::EndDisabled();
-
-        for (auto const &load: std::views::reverse(model_loads)) {
-            if (!load.settled) {
-                ImGui::TextDisabled("Loading '%s'...", load.file_name.c_str());
-            } else {
-                ImGui::TextUnformatted(load.status.c_str());
-            }
         }
     });
 
@@ -745,7 +966,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         return changed;
     };
 
-    widget("Assets", [&] {
+    panel("Assets", panels.assets, [&] {
         auto &assets = renderer->assets();
 
         auto scan_directory = [](std::filesystem::path const &root, std::span<std::string_view const> extensions) {
@@ -1001,17 +1222,17 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         draw_named_only_section("Scripts", assets.scripts());
     });
 
-    widget("Hierarchy", [&] {
+    panel("Hierarchy", panels.hierarchy, [&] {
         auto const &style = ImGui::GetStyle();
 
-        ImGui::SeparatorText("Text");
-        {
-            bool placing = text_placement.active();
-            if (ImGui::Checkbox("Place text on surfaces (T)", &placing)) {
-                text_placement.set_active(placing);
-            }
+        if (text_placement.active()) {
+            ImGui::SeparatorText("Place text");
+            {
+                bool placing = true;
+                if (ImGui::Checkbox("Place text on surfaces (T)", &placing)) {
+                    text_placement.set_active(placing);
+                }
 
-            if (placing) {
                 auto &settings = text_placement.settings;
                 std::array<char, 256> buffer{};
                 copy_to_buffer(buffer, settings.text);
@@ -1029,44 +1250,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 }
                 ImGui::TextDisabled("Click a model to place it. R turns it (Shift+R back). Ctrl snaps to the grid, Alt skips snapping. Esc to stop.");
             }
-        }
-
-        ImGui::SeparatorText("Gizmo");
-
-        float const tool_icon_size = ImGui::GetFontSize() * 1.3F;
-
-        auto const tool_button = [&](gui::EditorIcon icon, bool active, char const *id, char const *tooltip) {
-            ImVec4 const bg = active ? ImVec4(0.26F, 0.59F, 0.98F, 0.45F) : ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
-            ImVec4 const tint = active ? ImVec4(1.0F, 1.0F, 1.0F, 1.0F) : ImVec4(0.68F, 0.68F, 0.72F, 1.0F);
-            bool const pressed =
-                    ImGui::ImageButton(id, editor_icons->texture(icon), ImVec2(tool_icon_size, tool_icon_size),
-                                       ImVec2(0, 0), ImVec2(1, 1), bg, tint);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s", tooltip);
-            }
-            return pressed;
-        };
-
-        if (tool_button(gui::EditorIcon::move, gizmo_operation == ImGuizmo::TRANSLATE, "##gizmo_move",
-                        "Translate (1)")) {
-            gizmo_operation = ImGuizmo::TRANSLATE;
-        }
-        ImGui::SameLine();
-        if (tool_button(gui::EditorIcon::rotate, gizmo_operation == ImGuizmo::ROTATE, "##gizmo_rotate", "Rotate (2)")) {
-            gizmo_operation = ImGuizmo::ROTATE;
-        }
-        ImGui::SameLine();
-        if (tool_button(gui::EditorIcon::scale, gizmo_operation == ImGuizmo::SCALE, "##gizmo_scale", "Scale (3)")) {
-            gizmo_operation = ImGuizmo::SCALE;
-        }
-
-        ImGui::SameLine(0.0F, style.ItemSpacing.x * 2.0F);
-
-        bool const is_local = gizmo_mode == ImGuizmo::LOCAL;
-        if (tool_button(is_local ? gui::EditorIcon::local : gui::EditorIcon::world, true, "##gizmo_space",
-                        is_local ? "Local space (4) -- click for world space"
-                                 : "World space (4) -- click for local space")) {
-            gizmo_mode = is_local ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
         }
 
         ImGui::SeparatorText("Entities");
@@ -1462,7 +1645,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     copy_components<Components::Transform, Components::Model, Components::InstancedModel,
                                     Components::RigidBody, Components::MaterialOverride, Components::PlayerTag,
                                     Components::Lifetime, Components::PointLight, Components::SpotLight,
-                                    Components::Decal, Components::ParticleEmitter, Components::Text, Components::Script, Components::Behaviour,
+                                    Components::Decal, Components::ParticleEmitter, Components::Water, Components::Planet, Components::Text, Components::Script, Components::Behaviour,
                                     Components::BulletTag, Components::Static>(
                             registry, source, clone);
 
@@ -1556,7 +1739,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    widget("Inspector", [&] {
+    panel("Inspector", panels.inspector, [&] {
         auto &registry = active_scene()->get_registry();
         auto const selected_entity = selection_context().primary();
 
@@ -1840,6 +2023,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         section.operator()<Components::SpotLight>("Spot Light", draw_spot_light);
         section.operator()<Components::Decal>("Decal", draw_decal);
         section.operator()<Components::ParticleEmitter>("Particle Emitter", draw_particle_emitter);
+        section.operator()<Components::Water>("Water", draw_water);
+        section.operator()<Components::Planet>("Planet", draw_planet);
         section.operator()<Components::Text>("Text", draw_text);
         section.operator()<Components::RigidBody>("Rigid Body", draw_rigid_body);
         section.operator()<Components::Lifetime>("Lifetime", draw_lifetime);
@@ -2173,6 +2358,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     ImGui::MenuItem("Particle Emitter")) {
                     registry.emplace<Components::ParticleEmitter>(selected_entity);
                 }
+                if (!registry.all_of<Components::Water>(selected_entity) && ImGui::MenuItem("Water")) {
+                    registry.emplace<Components::Water>(selected_entity, Components::Water::pool());
+                }
                 if (!registry.all_of<Components::Text>(selected_entity) && ImGui::MenuItem("Text")) {
                     registry.emplace<Components::Text>(selected_entity, Components::Text{.text = "Text"});
                 }
@@ -2231,29 +2419,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    widget("Simulation", [&] {
-        if (is_playing) {
-            if (ImGui::Button("Stop")) {
-                stop();
-            }
-        } else {
-            if (ImGui::Button("Play")) {
-                play();
-            }
-        }
-
-        ImGui::SameLine();
-        ImGui::Checkbox("Fullscreen", &play_fullscreen);
-
-        ImGui::Separator();
-        if (ImGui::Button("Screenshot (F12)")) {
-            request_screenshot();
-        }
-        ImGui::SameLine();
-        ImGui::Checkbox("Viewport only", &screenshot_viewport_only);
-    });
-
-    widget("Scene stats", [&] {
+    panel("Scene stats", panels.scene_stats, [&] {
         auto const &stats = renderer->last_frame_stats();
         renderer->request_pipeline_stats();
         auto const &pipeline_stats = renderer->last_frame_pipeline_stats();
@@ -2331,7 +2497,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::Text("Lights: %u point / %u spot", stats.point_light_count, stats.spot_light_count);
     });
 
-    widget("Frame timings", [&] {
+    panel("Frame timings", panels.frame_timings, [&] {
         if (ImPlot::BeginPlot("Stage timings (cumulative ms)", ImVec2(-1, 250))) {
             ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
             ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x, ImGuiCond_Always);
@@ -2422,7 +2588,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    widget("Frame graph", [&] {
+    panel("Frame graph", panels.frame_graph, [&] {
         if (ImGui::BeginTabBar("##frame_graph_tabs")) {
             if (ImGui::BeginTabItem("Graph")) {
                 frame_graph_editor.draw(*renderer, stage_registry);
@@ -2436,7 +2602,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    widget("Lighting", [&] {
+    auto const draw_rendering_settings = [&] {
         auto const draw_stage = [&](char const *id) {
             auto const *stage = stage_registry.find(FlyString{id});
             ImGui::SeparatorText(stage->title.data());
@@ -2453,7 +2619,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         draw_stage("shadows");
         draw_stage("ambient_occlusion");
         draw_stage("bloom");
+    };
 
+    auto const draw_lighting_settings = [&] {
         ImGui::SeparatorText("Punctual lights");
         auto &registry = active_scene()->get_registry();
 
@@ -2518,13 +2686,51 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 }
             }
         }
-    });
+    };
 
-    widget("Environment", [&] {
-        if (gui::draw_environment_panel(active_scene()->environment, renderer->environment_system(), model_browser,
-                                        browsing_environment)) {
+    auto const draw_environment_settings = [&] {
+        gui::draw_environment_panel(active_scene()->environment, renderer->environment_system(), model_browser,
+                                    browsing_environment);
+    };
+
+    // Project-wide configuration (rendering, lights, environment) lives in one large window rather than in docked
+    // panels. It is a normal window, not a modal, so the viewport stays live and the environment's file browser works.
+    if (panels.project_settings) {
+        auto const *const viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowSize(ImVec2{viewport->Size.x * 0.6F, viewport->Size.y * 0.75F}, ImGuiCond_Appearing);
+        ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2{0.5F, 0.5F});
+
+        if (ImGui::Begin("Project Settings", &panels.project_settings, ImGuiWindowFlags_NoDocking)) {
+            constexpr std::array<char const *, 3> pages{"Rendering", "Lighting", "Environment"};
+
+            if (ImGui::BeginChild("##project_settings_nav", ImVec2{170.0F, 0.0F}, ImGuiChildFlags_Borders)) {
+                for (auto const [index, name]: std::views::enumerate(pages)) {
+                    if (ImGui::Selectable(name, project_settings_page == static_cast<int>(index))) {
+                        project_settings_page = static_cast<int>(index);
+                    }
+                }
+            }
+            ImGui::EndChild();
+
+            ImGui::SameLine();
+
+            if (ImGui::BeginChild("##project_settings_page", ImVec2{0.0F, 0.0F})) {
+                switch (project_settings_page) {
+                    case 0:
+                        draw_rendering_settings();
+                        break;
+                    case 1:
+                        draw_lighting_settings();
+                        break;
+                    default:
+                        draw_environment_settings();
+                        break;
+                }
+            }
+            ImGui::EndChild();
         }
-    });
+        ImGui::End();
+    }
 
     draw_scene_file_ui();
 
@@ -2564,6 +2770,11 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     }
 
     gui::render_toasts();
+}
+
+auto Application::request_import_model() -> void {
+    model_browse_target = ModelBrowseTarget::spawn_entity;
+    model_browser.open("Load Model", model_file_filters());
 }
 
 auto Application::spawn_streamed_model(std::filesystem::path const &path) -> void {
@@ -2611,16 +2822,19 @@ auto Application::update_model_loads() -> void {
         if (state == ModelRequestState::failed) {
             load.status = std::format("Failed to load '{}': {}. Showing the placeholder cube.", load.file_name,
                                       streamer.failure_reason(load.model));
+            gui::toast_error("Model failed to load", load.status);
             continue;
         }
 
         if (load.model == engine_models.cube) {
             load.status = std::format("Could not reserve a model slot for '{}'. Showing the placeholder cube.",
                                       load.file_name);
+            gui::toast_warn("Model not loaded", load.status);
             continue;
         }
 
         load.status = std::format("Loaded '{}'", load.file_name);
+        gui::toast_success("Model loaded", load.status);
 
         if (load.scene != active_scene()) {
             continue;
@@ -2668,7 +2882,10 @@ auto Application::on_play_stopping() -> void {
     std::erase_if(model_loads, [&](StreamedModelLoad const &load) { return load.scene == runtime_scene.get(); });
 }
 
-auto Application::create_ui_resources() -> void { editor_icons = std::make_unique<gui::EditorIcons>(*renderer); }
+auto Application::create_ui_resources() -> void {
+    editor_icons = std::make_unique<gui::EditorIcons>(*renderer);
+    remove_window_decorations();
+}
 
 auto Application::on_source_scene_replaced() -> void { mark_source_scene_clean(); }
 
@@ -2685,15 +2902,16 @@ auto Application::on_shutdown() -> void {
 
 auto Application::editing_camera(float aspect_ratio) const -> CameraParams {
     return CameraParams{
-            .view = camera.view(),
-            .projection = camera.projection(aspect_ratio),
-            .near_clip = camera.near_clip(),
-            .far_clip = camera.far_clip(),
-            .vertical_fov_radians = glm::radians(camera.field_of_view_degrees()),
+            .view = viewports[0].camera.view(),
+            .projection = viewports[0].camera.projection(aspect_ratio),
+            .near_clip = viewports[0].camera.near_clip(),
+            .far_clip = viewports[0].camera.far_clip(),
+            .vertical_fov_radians = glm::radians(viewports[0].camera.field_of_view_degrees()),
     };
 }
 
 auto Application::camera_pivot() const -> glm::vec3 {
+    auto const &camera = active_camera();
     auto const &registry = active_scene()->get_registry();
     auto const selected = selection_context().primary();
 
@@ -2705,6 +2923,7 @@ auto Application::camera_pivot() const -> glm::vec3 {
 }
 
 auto Application::focus_selection() -> void {
+    auto &camera = active_camera();
     auto const &registry = active_scene()->get_registry();
     auto const selected = selection_context().primary();
 
@@ -2719,7 +2938,11 @@ auto Application::focus_selection() -> void {
     camera.look_at(transform.position - (camera.forward() * camera_pivot_distance), transform.position);
 }
 
-auto Application::pre_update(float delta_time) -> void { camera.update(std::min(delta_time, 0.1F)); }
+auto Application::pre_update(float delta_time) -> void {
+    for (auto &pane: viewports) {
+        pane.camera.update(std::min(delta_time, 0.1F));
+    }
+}
 
 auto Application::update(float delta_time) -> void {
     ZoneScopedNC("ApplicationUpdate", tracy::Color::Firebrick);
@@ -2747,7 +2970,7 @@ auto Application::update(float delta_time) -> void {
     Runtime::update(delta_time);
 }
 
-auto Application::on_event(KeyPressedEvent ev) -> bool {
+auto Application::handle_event(KeyPressedEvent ev) -> bool {
     if (packaging_active()) {
         return true;
     }
@@ -2802,22 +3025,35 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
             }
         }
 
-        camera.on_key_pressed(ev.key);
+        // F1..F8 pick the view mode of the viewport the pointer is in.
+        auto const function_key = ev.key - GLFW_KEY_F1;
+        if (function_key >= 0 && std::cmp_less(function_key, view_mode_names.size()) &&
+            !ImGui::GetIO().WantTextInput) {
+            renderer->set_view_mode(viewports[active_viewport].view,
+                                    view_mode_names[static_cast<std::size_t>(function_key)].first);
+            return true;
+        }
+
+        active_camera().on_key_pressed(ev.key);
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }
 
-auto Application::on_event(KeyReleasedEvent ev) -> bool {
+auto Application::handle_event(KeyReleasedEvent ev) -> bool {
     if (!is_playing) {
-        camera.on_key_released(ev.key);
+        // Both, so a key let go after the pointer moved to the other viewport does not leave the first one moving.
+        for (auto &pane: viewports) {
+            pane.camera.on_key_released(ev.key);
+        }
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }
 
-auto Application::on_event(MouseMovedEvent ev) -> bool {
+auto Application::handle_event(MouseMovedEvent ev) -> bool {
     if (!is_playing) {
+        auto &camera = active_camera();
         auto const dx = static_cast<float>(ev.delta_x);
         auto const dy = static_cast<float>(ev.delta_y);
 
@@ -2830,13 +3066,15 @@ auto Application::on_event(MouseMovedEvent ev) -> bool {
         }
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }
 
-auto Application::on_event(MouseScrolledEvent ev) -> bool {
+auto Application::handle_event(MouseScrolledEvent ev) -> bool {
     if (packaging_active()) {
         return true;
     }
+
+    auto &camera = active_camera();
 
     if (!is_playing && ImGui::GetIO().KeyCtrl) {
         auto const distance = glm::length(camera_pivot() - camera.position());
@@ -2846,10 +3084,10 @@ auto Application::on_event(MouseScrolledEvent ev) -> bool {
         camera.on_mouse_scrolled(static_cast<float>(ev.delta_y));
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }
 
-auto Application::on_event(MouseButtonPressedEvent ev) -> bool {
+auto Application::handle_event(MouseButtonPressedEvent ev) -> bool {
     if (packaging_active()) {
         return true;
     }
@@ -2863,13 +3101,13 @@ auto Application::on_event(MouseButtonPressedEvent ev) -> bool {
         }
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }
 
-auto Application::on_event(MouseButtonReleasedEvent ev) -> bool {
+auto Application::handle_event(MouseButtonReleasedEvent ev) -> bool {
     if (ev.button == GLFW_MOUSE_BUTTON_LEFT) {
         camera_drag = CameraDrag::none;
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }

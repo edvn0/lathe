@@ -6,8 +6,8 @@
 #include <imgui.h>
 
 namespace gui {
-    inline constexpr auto widget = [](char const *name, auto &&f) -> bool {
-        if (!ImGui::Begin(name)) {
+    inline constexpr auto widget = [](char const *name, auto &&f, bool *p_open = nullptr) -> bool {
+        if (!ImGui::Begin(name, p_open)) {
             ImGui::End();
             return false;
         }
@@ -25,5 +25,13 @@ namespace gui {
 
         ImGui::End();
         return false;
+    };
+
+    // A widget with a close button, driven by `open` so a menu can bring it back. Skipped entirely while closed.
+    inline constexpr auto panel = [](char const *name, bool &open, auto &&f) -> bool {
+        if (!open) {
+            return false;
+        }
+        return widget(name, f, &open);
     };
 }

@@ -295,6 +295,10 @@ auto MeshletShowcaseGame::on_update(Scene &scene, float delta_time) -> void {
     fov_degrees_ = shot.fov_degrees;
 }
 
+auto MeshletShowcaseGame::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &MeshletShowcaseGame::on_key_pressed);
+}
+
 auto MeshletShowcaseGame::on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void {
     if (event.key >= GLFW_KEY_1 && event.key < GLFW_KEY_1 + static_cast<std::int32_t>(shot_count)) {
         shot_index_ = static_cast<std::size_t>(event.key - GLFW_KEY_1);

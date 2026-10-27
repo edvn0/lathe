@@ -50,6 +50,7 @@
 #include "gpu/sampler_storage.hxx"
 #include "gpu/skinning.hxx"
 #include "gpu/submission_plan.hxx"
+#include "rendering/blend_order.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "rendering/environment.hxx"
 #include "rendering/forward_target.hxx"
@@ -671,6 +672,28 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     [[nodiscard]] auto submit_batches() const noexcept -> std::span<SubmitBatch const> { return submit_batches_; }
 
+    // Extra views of the scene, rendered beside the primary one (the editor's second viewport). Each has its own
+    // camera, view mode, render targets, culling and shadow cascades; the scene submissions are shared. prepare_frame
+    // prepares every view that has a camera set this frame and record_frame records them, so the caller only sets the
+    // cameras. The primary view is `primary_view` and keeps the plain accessors above.
+    using ViewId = std::uint32_t;
+    static constexpr ViewId primary_view = 0;
+
+    [[nodiscard]] auto create_view(VkExtent2D extent) -> std::expected<ViewId, RendererError>;
+    auto destroy_view(ViewId view) -> void;
+    [[nodiscard]] auto resize_view(ViewId view, VkExtent2D extent) -> std::expected<void, RendererError>;
+
+    // The view renders this frame only if its camera was set since the last prepare_frame.
+    auto set_view_camera(ViewId view, CameraMatrices const &camera) -> void;
+    auto set_view_mode(ViewId view, ViewMode mode) -> void;
+    [[nodiscard]] auto view_mode(ViewId view) const noexcept -> ViewMode;
+    [[nodiscard]] auto view_extent(ViewId view) const noexcept -> VkExtent2D;
+    [[nodiscard]] auto view_viewport_target(ViewId view, std::uint32_t frame_index) const noexcept -> ImageHandle;
+
+    // Drops the frame's scene submissions once every view has been prepared; prepare_frame keeps them while extra
+    // views are waiting. Safe to call after a failed prepare.
+    auto end_prepare() noexcept -> void;
+
     // Names a transient image for the UI pass to sample, so a tool can show it. Empty clears it. The image shows
     // through gui::preview_texture_id(), which the ImGui renderer resolves when it records.
     auto set_preview_resource(std::string name) -> void { preview_resource_ = std::move(name); }
@@ -682,7 +705,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     }
 
     [[nodiscard]] auto frame_graph_timings() const noexcept -> std::span<frame_graph::PassTiming const> {
-        return pass_profiler_.timings();
+        return pass_profiler_->timings();
     }
 
     [[nodiscard]] auto register_overlay(OverlayDesc desc) -> std::expected<OverlayRegistration, RendererError>;
@@ -718,6 +741,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto depth_format() const noexcept { return depth_format_; }
     [[nodiscard]] auto hdr_format() const noexcept { return hdr_format_; }
     [[nodiscard]] auto samples() const noexcept { return samples_; }
+
+    // The shader time (UBO.time) of the last prepared frame, which the water's waves are animated by; the CPU water
+    // queries (WaterSystem) take it to agree with what is drawn.
+    [[nodiscard]] auto frame_time() const noexcept -> float { return frame_time_; }
 
     // The scene is rendered at the display size times this, then the composite pass resamples it to the display.
     // Below 1 trades sharpness for speed, above 1 is supersampling. The run loop applies it when it sizes the
@@ -777,9 +804,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
     // it reads the whole upload every frame, so it is off by default.
     auto set_frame_checksum_enabled(bool enabled) noexcept -> void { frame_checksum_enabled_ = enabled; }
 
-    [[nodiscard]] auto transient_bytes() const noexcept -> std::uint64_t { return transient_allocator_.total_bytes(); }
+    [[nodiscard]] auto transient_bytes() const noexcept -> std::uint64_t { return transient_allocator_->total_bytes(); }
     [[nodiscard]] auto transient_unaliased_bytes() const noexcept -> std::uint64_t {
-        return transient_allocator_.unaliased_bytes();
+        return transient_allocator_->unaliased_bytes();
     }
     enum AsyncCandidate : std::uint8_t {
         async_light_clustering = 1U << 0U,
@@ -856,7 +883,15 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto last_cluster_stats() const noexcept -> ClusterStats const & { return last_cluster_stats_; }
 
     auto request_screenshot(ScreenshotSource source) noexcept -> void;
-    auto mark_lights_dirty() -> void { lights_dirty_mask_ = frames_.empty() ? 0U : ((1U << frames_.size()) - 1U); }
+    auto mark_lights_dirty() -> void {
+        lights_dirty_mask_ = frames_.empty() ? 0U : ((1U << frames_.size()) - 1U);
+
+        for (auto const &view: extra_views_) {
+            if (view) {
+                view->lights_dirty_mask = (1U << frames_in_flight) - 1U;
+            }
+        }
+    }
     auto wait_idle() -> std::expected<void, RendererError>;
 
     static auto compiler() noexcept -> renderer::SlangCompiler &;
@@ -1136,6 +1171,11 @@ private:
         std::uint32_t double_sided_indirect_count = 0;
         std::uint32_t mask_indirect_count = 0;
         std::uint32_t blend_indirect_count = 0;
+        // The blended commands split into runs of one draw path each (meshlet or indexed), in draw order.
+        std::vector<render_pass::BlendRun> blend_runs;
+        // A water material is among the blended batches: the forward pass is split around a copy of the scene colour
+        // and depth for it to refract (docs/water.md).
+        bool scene_copy_needed = false;
 
         std::array<std::uint32_t, shadow_cascade_count> shadow_opaque_indirect_count{};
         std::array<std::uint32_t, shadow_cascade_count> shadow_double_sided_indirect_count{};
@@ -1175,6 +1215,103 @@ private:
     struct OwnedFrameTargets {
         ImageHolder viewport_target{};
     };
+
+    // Everything that belongs to one view of the scene. The Renderer's members of the same names are the primary
+    // view's; a secondary view keeps its own copy here, and swap_view_state exchanges the two around that view's
+    // prepare and record (ViewScope), so the frame code runs unchanged against whichever view is current.
+    struct ViewState {
+        std::vector<RendererFrame> frames;
+        std::vector<Buffer> ubos;
+        VkExtent2D extent{};
+
+        HizPyramid hiz{};
+        glm::mat4 hiz_history_view_projection{1.0F};
+        bool hiz_history_valid = false;
+
+        ViewMode view_mode = ViewMode::lit;
+        std::uint32_t lights_dirty_mask = 0;
+
+        ImageHolder shadow_atlas{};
+        std::array<ShadowCascadeCacheEntry, shadow_cascade_count> shadow_cascade_cache{};
+        std::uint64_t shadow_frame = 0;
+        std::uint64_t cached_shadow_caster_revision = 0;
+        std::uint64_t shadow_scene_signature = 0;
+        glm::vec3 cached_shadow_light_direction{0.0F};
+        float cached_shadow_depth_bias_constant = 0.0F;
+        float cached_shadow_depth_bias_slope = 0.0F;
+        bool shadow_scene_signature_valid = false;
+        bool shadow_global_state_valid = false;
+        bool shadow_atlas_initialized = false;
+
+        std::unique_ptr<frame_graph::PlanCache> plan_cache = std::make_unique<frame_graph::PlanCache>();
+        frame_graph::CompiledGraph const *frame_plan = nullptr;
+        std::unique_ptr<frame_graph::TransientAllocator> transient_allocator =
+                std::make_unique<frame_graph::TransientAllocator>();
+        std::unique_ptr<frame_graph::PassProfiler> pass_profiler = std::make_unique<frame_graph::PassProfiler>();
+        std::uint64_t logged_plan_misses = 0;
+        std::uint64_t logged_transient_bytes = 0;
+
+        FrameTimings last_frame_timings{};
+        FrameStats last_frame_stats{};
+        ClusterStats last_cluster_stats{};
+
+        // The sample count the history was built at, so a change resets it.
+        VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+
+        // Secondary views only: the camera set for this frame, and whether prepare_frame took it.
+        CameraMatrices camera{};
+        bool camera_set = false;
+        bool prepared = false;
+    };
+
+    auto swap_view_state(ViewState &other) noexcept -> void;
+
+    class ViewScope {
+    public:
+        ViewScope(Renderer &renderer, ViewState &view) : renderer_(renderer), view_(view) {
+            renderer_.swap_view_state(view_);
+            renderer_.secondary_view_active_ = true;
+        }
+        ~ViewScope() {
+            renderer_.secondary_view_active_ = false;
+            renderer_.swap_view_state(view_);
+        }
+
+        ViewScope(ViewScope const &) = delete;
+        auto operator=(ViewScope const &) -> ViewScope & = delete;
+
+    private:
+        Renderer &renderer_;
+        ViewState &view_;
+    };
+
+    // The sizes of one frame slot's buffers, fixed at initialize and shared by every view.
+    struct FrameBufferLayout {
+        VkDeviceSize draw_size = 0;
+        VkDeviceSize transform_size = 0;
+        VkDeviceSize indirect_size = 0;
+        VkDeviceSize batch_bounds_size = 0;
+        VkDeviceSize occlusion_indirect_size = 0;
+        VkDeviceSize cull_chunks_size = 0;
+        VkDeviceSize occlusion_candidates_size = 0;
+        VkDeviceSize upload_size = 0;
+        VkDeviceSize transform_offset = 0;
+        VkDeviceSize indirect_offset = 0;
+        VkDeviceSize batch_bounds_offset = 0;
+    };
+
+    [[nodiscard]] auto create_frame_resources(RendererFrame &frame, VkExtent2D extent, std::uint32_t frame_index)
+            -> std::expected<void, RendererError>;
+    [[nodiscard]] auto create_shadow_atlas() -> std::expected<ImageHolder, RendererError>;
+    [[nodiscard]] auto create_ubos() -> std::expected<std::vector<Buffer>, RendererError>;
+    [[nodiscard]] auto view_state(ViewId view) noexcept -> ViewState *;
+    [[nodiscard]] auto view_state(ViewId view) const noexcept -> ViewState const *;
+    [[nodiscard]] auto has_pending_extra_views() const noexcept -> bool;
+    [[nodiscard]] auto prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices const &matrices,
+                                          std::uint32_t frame_index, bool secondary)
+            -> std::expected<void, RendererError>;
+    [[nodiscard]] auto record_frame_view(FrameRecordInfo const &info, bool secondary)
+            -> std::expected<void, RendererError>;
 
     struct InstancedSubmission {
         ModelHandle model{};
@@ -1251,7 +1388,8 @@ private:
 
     struct PendingBlendBatch {
         BatchEntry const *entry = nullptr;
-        float camera_distance_sq = 0.0F;
+        blend_order::Entry order{};
+        bool double_sided = false;
     };
 
     struct BatchKey {
@@ -1283,6 +1421,7 @@ private:
     std::vector<BatchEntry const *> double_sided_batches_;
     std::vector<BatchEntry const *> mask_batches_;
     std::vector<PendingBlendBatch> blend_batches_;
+    float frame_time_ = 0.0F;
 
     std::uint64_t batch_frame_ = 0;
 
@@ -1455,7 +1594,9 @@ private:
     [[nodiscard]]
     auto record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                              FrameTargets const &targets, std::uint32_t ao_texture_index,
-                             std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays)
+                             std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays,
+                             render_pass::ForwardPhase phase = render_pass::ForwardPhase::all,
+                             std::uint32_t scene_colour_index = 0, std::uint32_t scene_depth_index = 0)
             -> std::expected<render_pass::HdrTextureIndex, RendererError>;
 
     [[nodiscard]]
@@ -1499,6 +1640,10 @@ private:
     float render_scale_ = 1.0F;
     VkSampleCountFlagBits pending_samples_ = VK_SAMPLE_COUNT_1_BIT;
     VkExtent2D extent_{};
+    // The sample count the current view's history (the Hi-Z pyramid) was built at, so a change resets it.
+    VkSampleCountFlagBits history_samples_ = VK_SAMPLE_COUNT_1_BIT;
+    // True while a secondary view is swapped in, for the parts of the frame that only the primary view may do.
+    bool secondary_view_active_ = false;
 
     GeometryArena geometry_arena_{};
     MaterialStorage material_storage_{};
@@ -1701,15 +1846,16 @@ private:
     float timestamp_period_{1.0F};
 
     frame_graph::FrameGraph frame_graph_;
-    frame_graph::PlanCache plan_cache_;
+    std::unique_ptr<frame_graph::PlanCache> plan_cache_ = std::make_unique<frame_graph::PlanCache>();
     frame_graph::CompiledGraph const *frame_plan_ = nullptr;
     frame_graph::FrameGraphView frame_graph_view_;
     std::string preview_resource_;
     std::uint32_t preview_texture_index_ = 0;
     std::vector<SubmitBatch> submit_batches_;
-    frame_graph::PassProfiler pass_profiler_;
+    std::unique_ptr<frame_graph::PassProfiler> pass_profiler_ = std::make_unique<frame_graph::PassProfiler>();
 
-    frame_graph::TransientAllocator transient_allocator_;
+    std::unique_ptr<frame_graph::TransientAllocator> transient_allocator_ =
+            std::make_unique<frame_graph::TransientAllocator>();
     bool transient_aliasing_ = true;
     std::uint32_t async_candidates_ = async_gtao;
     bool async_gtao_automatic_ = true;
@@ -1735,6 +1881,19 @@ private:
     std::uint32_t pipeline_stats_hold_frames_ = 0;
 
     std::unique_ptr<ScreenshotCapture> screenshot_;
+
+    FrameBufferLayout frame_layout_{};
+    // Views other than the primary; a destroyed view leaves a null entry that create_view reuses. ViewId n is entry n-1.
+    std::vector<std::unique_ptr<ViewState>> extra_views_;
+    // True between the primary prepare and end_prepare while extra views still need the frame's submissions.
+    bool hold_submissions_ = false;
+    // Set when recording a view reallocated its transients, which updates the resource table the other views' command
+    // buffers have bound; record_frame then records the views again.
+    bool transients_reallocated_ = false;
+    // dynamic_shadow_casters_dirty_ as the primary view saw it, for the extra views' cascade caches.
+    bool dynamic_shadow_casters_dirty_for_views_ = false;
+    // Storage for the semaphore waits of the merged submit batches, which span refers to.
+    std::vector<std::vector<SemaphoreWait>> merged_waits_;
 
     bool initialized_ = false;
 };

@@ -443,7 +443,8 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
         barrier.srcAccessMask = 0;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        // The copy writes level 0 and the blits below write the rest.
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT;
         barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -509,7 +510,8 @@ auto Image::create(VulkanContext &context, ImageCreateInfo const &create_info, s
         for (uint32_t i = 1; i < create_info.mip_levels; i++) {
             barrier.subresourceRange.baseMipLevel = i - 1;
             barrier.subresourceRange.levelCount = 1;
-            barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            // Level 0 was written by the copy, every later one by the previous blit.
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT;
             barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
             barrier.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
             barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;

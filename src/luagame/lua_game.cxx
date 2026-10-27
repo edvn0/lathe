@@ -223,6 +223,13 @@ auto LuaGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene
     clone_editor_into_runtime<Components::Behaviour>(editor_scene, runtime_scene);
 }
 
+auto LuaGame::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &LuaGame::on_key_pressed);
+    listen(ctx, &LuaGame::on_key_released);
+    listen(ctx, &LuaGame::on_mouse_moved, true);
+    listen(ctx, &LuaGame::on_mouse_button_pressed);
+}
+
 auto LuaGame::on_key_released(Scene & , KeyReleasedEvent const &event) -> void {
     impl_->bindings.keys_down.erase(event.key);
 }

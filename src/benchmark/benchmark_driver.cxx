@@ -191,7 +191,7 @@ auto BenchmarkDriver::begin_frame(Application &application) -> void {
     application.elapsed_time = run_->simulated_time();
 
     auto const keyframe = run_->camera();
-    application.camera.look_at(keyframe.position, keyframe.target);
+    application.viewports[0].camera.look_at(keyframe.position, keyframe.target);
 
     if (run_->options().keyframe_screenshots && run_->at_keyframe()) {
         application.renderer->request_screenshot(ScreenshotSource::viewport);

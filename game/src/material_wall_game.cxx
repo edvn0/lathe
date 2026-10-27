@@ -504,6 +504,10 @@ auto MaterialWallGame::on_update(Scene &scene, float delta_time) -> void {
     }
 }
 
+auto MaterialWallGame::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &MaterialWallGame::on_key_pressed);
+}
+
 auto MaterialWallGame::on_key_pressed(Scene &, KeyPressedEvent const &event) -> void {
     if (event.key >= GLFW_KEY_1 && event.key < GLFW_KEY_1 + static_cast<std::int32_t>(shot_count)) {
         shot_ = static_cast<std::size_t>(event.key - GLFW_KEY_1);

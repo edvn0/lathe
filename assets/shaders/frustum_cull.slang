@@ -102,7 +102,9 @@ void transform_aabb(float4x4 model, float3 local_centre, float3 local_extent, fl
 
     world_extent = abs(axis_x) + abs(axis_y) + abs(axis_z);
 
-    world_extent.xz += wind_padding;
+    // Wind sways a mesh sideways; a displaced water surface moves vertically (renderer.cxx folds its wave height into
+    // the same padding), so the padding widens every axis.
+    world_extent += wind_padding;
 }
 
 void instance_world_aabb(CullPC pc, GpuCullBounds bounds, uint instance_index, out float3 world_centre,

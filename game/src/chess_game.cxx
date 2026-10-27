@@ -783,6 +783,11 @@ auto ChessGame::on_cursor_position(Scene & , CursorPositionEvent const &event) -
     }
 }
 
+auto ChessGame::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &ChessGame::on_key_pressed);
+    listen(ctx, &ChessGame::on_mouse_button_pressed);
+}
+
 auto ChessGame::on_mouse_button_pressed(Scene & , MouseButtonPressedEvent const &event) -> void {
     if (host_.player_mode && screen_ != Screen::playing) {
         return;

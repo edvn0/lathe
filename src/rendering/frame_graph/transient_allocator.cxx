@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "rendering/frame_graph/transient_allocator.hxx"
 
 #include <format>
@@ -72,6 +73,54 @@ namespace frame_graph {
         slots_.resize(slot_count);
     }
 
+    auto TransientAllocator::free_retired(Slot &slot) -> void {
+        if (!slot.retired) {
+            return;
+        }
+
+        slot.retired->entries.clear();
+        for (auto const block: slot.retired->blocks) {
+            if (context_ != nullptr && context_->allocator != VK_NULL_HANDLE) {
+                vmaFreeMemory(context_->allocator, block);
+            }
+        }
+        slot.retired.reset();
+    }
+
+    auto TransientAllocator::release_retired() -> void {
+        auto const any = std::ranges::any_of(slots_, [](Slot const &slot) { return slot.retired.has_value(); });
+        if (!any) {
+            return;
+        }
+
+        if (context_ != nullptr && context_->device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(context_->device);
+        }
+
+        for (auto &slot: slots_) {
+            free_retired(slot);
+        }
+    }
+
+    auto TransientAllocator::retire(std::uint32_t slot) -> void {
+        auto &state = slots_[slot];
+
+        if (state.retired) {
+            release_retired();
+        }
+
+        if (state.entries.empty() && state.blocks.empty()) {
+            return;
+        }
+
+        state.retired = Retired{.entries = std::move(state.entries), .blocks = std::move(state.blocks)};
+        state.entries.clear();
+        state.blocks.clear();
+        state.plan = {};
+        state.key = 0;
+        state.valid = false;
+    }
+
     auto TransientAllocator::release(std::uint32_t slot) -> void {
         if (slot >= slots_.size()) {
             return;
@@ -79,10 +128,12 @@ namespace frame_graph {
 
         auto &state = slots_[slot];
 
-        if ((!state.entries.empty() || !state.blocks.empty()) && context_ != nullptr &&
+        if ((!state.entries.empty() || !state.blocks.empty() || state.retired) && context_ != nullptr &&
             context_->device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(context_->device);
         }
+
+        free_retired(state);
 
         state.entries.clear();
         for (auto const block: state.blocks) {
@@ -150,7 +201,7 @@ namespace frame_graph {
             return false;
         }
 
-        release(slot);
+        retire(slot);
         state.plan = std::move(plan);
 
         for (auto const &block: state.plan.blocks) {

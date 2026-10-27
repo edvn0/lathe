@@ -496,6 +496,10 @@ auto MeshletGalleryGame::on_update(Scene &scene, float delta_time) -> void {
     }
 }
 
+auto MeshletGalleryGame::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &MeshletGalleryGame::on_key_pressed);
+}
+
 auto MeshletGalleryGame::on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void {
     switch (event.key) {
         case GLFW_KEY_1: set_look(Look::plain); break;

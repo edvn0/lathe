@@ -503,3 +503,71 @@ auto make_ribbon_mesh(std::span<glm::vec3 const> grid, std::uint32_t columns, fl
 
     return PrimitiveMeshData{.vertices = std::move(vertices), .indices = std::move(indices)};
 }
+
+namespace {
+
+    // Where the vertices of one grid axis sit in [0, 1].
+    auto grid_axis_stops(GridAxis const &axis) -> std::vector<float> {
+        auto const cells = std::max(axis.cells, 1U);
+        auto const focus = std::clamp(axis.focus, 0.0F, 1.0F);
+        auto const curve = std::max(axis.curve, 0.0F);
+
+        // Distance from the focus for s in [0, 1] of one side's cells: exponential spacing, linear when curve is 0.
+        auto const spread = [curve](float s) {
+            return curve < 1e-3F ? s : std::sinh(curve * s) / std::sinh(curve);
+        };
+
+        auto const below = static_cast<std::uint32_t>(std::lround(static_cast<float>(cells) * focus));
+        auto const above = cells - below;
+
+        std::vector<float> stops;
+        stops.reserve(cells + 1);
+        for (std::uint32_t i = below; i > 0; --i) {
+            stops.push_back(focus - focus * spread(static_cast<float>(i) / static_cast<float>(below)));
+        }
+        stops.push_back(focus);
+        for (std::uint32_t i = 1; i <= above; ++i) {
+            stops.push_back(focus + (1.0F - focus) * spread(static_cast<float>(i) / static_cast<float>(above)));
+        }
+        return stops;
+    }
+
+}
+
+auto make_water_grid_mesh(GridAxis x, GridAxis z) -> std::expected<PrimitiveMeshData, ModelLoadError> {
+    if (x.cells == 0U || z.cells == 0U) {
+        return std::unexpected(ModelLoadError{.type = ModelLoadErrorType::invalid_argument});
+    }
+
+    auto const xs = grid_axis_stops(x);
+    auto const zs = grid_axis_stops(z);
+    auto const columns = static_cast<std::uint32_t>(xs.size());
+
+    PrimitiveMeshData mesh;
+    mesh.vertices.reserve(xs.size() * zs.size());
+    for (auto const v: zs) {
+        for (auto const u: xs) {
+            mesh.vertices.push_back(ModelVertex{
+                    .position = {u - 0.5F, 0.0F, v - 0.5F},
+                    .normal = {0.0F, 1.0F, 0.0F},
+                    .tangent = glm::vec4{1.0F, 0.0F, 0.0F, 1.0F},
+                    .texcoord = {u, v},
+            });
+        }
+    }
+
+    // Wound like the cube's top face, so the grid faces up.
+    mesh.indices.reserve(static_cast<std::size_t>(columns - 1U) * (zs.size() - 1U) * 6U);
+    for (std::uint32_t row = 0; row + 1U < zs.size(); ++row) {
+        for (std::uint32_t column = 0; column + 1U < columns; ++column) {
+            auto const low_left = row * columns + column;
+            auto const low_right = low_left + 1U;
+            auto const high_left = low_left + columns;
+            auto const high_right = high_left + 1U;
+
+            mesh.indices.insert(mesh.indices.end(), {high_left, high_right, low_right, high_left, low_right, low_left});
+        }
+    }
+
+    return mesh;
+}

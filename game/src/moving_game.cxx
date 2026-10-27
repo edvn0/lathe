@@ -633,6 +633,12 @@ auto MovingGame::compose_skinned(Scene &scene, glm::vec3 const &player_position)
     skinned.touch();
 }
 
+auto MovingGame::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &MovingGame::on_key_pressed);
+    listen(ctx, &MovingGame::on_key_released);
+    listen(ctx, &MovingGame::on_mouse_moved, true);
+}
+
 auto MovingGame::on_key_pressed(Scene & , KeyPressedEvent const &event) -> void {
     controller_.on_key_pressed(event.key);
 

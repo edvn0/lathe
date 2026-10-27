@@ -36,7 +36,7 @@ public struct DrawCommand
     public uint first_instance;
 
     public uint meshlet_count;
-    public uint _pad0;
+    public uint blend_faces;
 };
 
 public static const uint cull_frustum_bit = 1u;
@@ -93,8 +93,24 @@ public struct Material {
 
     public float meshlet_extrude = 0.0F;
     public float meshlet_shrink = 0.0F;
-    public float _pad1 = 0.0F;
-    public float _pad2 = 0.0F;
+    public float water_foam = 0.0F;
+    public float water_caustics = 0.0F;
+
+    // rgb: absorption per metre, w: shoreline fade depth.
+    public float4 water_absorption;
+    // x: wave frequency (1/m), y: wave speed, z: normal strength, w: refraction strength.
+    public float4 water_waves;
+    // x: wave height (m) the surface is displaced by, y: whitecap amount, zw: unused.
+    public float4 water_shape;
+    // The rectangle (min x, min z, max x, max z) a water surface is clipped to.
+    public float4 water_zone;
+    // A spherical surface (w = 1): centre, wave anchor and tangent axes in render space, and the anchor's phase
+    // offsets (8 waves, 4 warp terms). Mirrors GpuMaterial.
+    public float4 water_sphere_centre;
+    public float4 water_anchor;
+    public float4 water_east;
+    public float4 water_north;
+    public float4 water_phases[3];
 };
 
 public static const uint view_lit = 0u;
@@ -113,6 +129,17 @@ public static const uint material_flag_alpha_to_coverage = 2u;
 public static const uint material_flag_outlined = 4u;
 
 public static const uint material_flag_grid = 8u;
+
+public static const uint material_flag_water = 16u;
+
+// A planet's terrain: base colour coordinates come from the direction to the planet's centre (see main_fs).
+public static const uint material_flag_planet = 32u;
+
+// DrawCommand.blend_faces: which faces of a blended draw are kept (the others are discarded in the fragment shader),
+// so a double-sided blended mesh is drawn as its back faces and then its front faces. Mirrors blend_order::Faces.
+public static const uint blend_faces_both = 0u;
+public static const uint blend_faces_back = 1u;
+public static const uint blend_faces_front = 2u;
 
 public static const uint cluster_grid_maximum_depth_slices = 64;
 
@@ -284,6 +311,11 @@ public struct PC
     public Ptr<uint> cluster_lights;
 
     public Ptr<OcclusionView> occlusion;
+
+    // Bindless indices (sampled_2d / sampled_2d_depth) of the copies of the scene colour and depth taken after the
+    // opaque and masked draws, for the blended draws that refract (water). 0 when no copy was taken this frame.
+    public uint scene_colour_index;
+    public uint scene_depth_index;
 };
 
 public static const uint shadow_flag_tiles = 1u;

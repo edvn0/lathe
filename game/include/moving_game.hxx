@@ -30,9 +30,11 @@ public:
     auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void override;
     auto on_update(Scene &scene, float delta_time) -> void override;
 
-    auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void override;
-    auto on_key_released(Scene &scene, KeyReleasedEvent const &event) -> void override;
-    auto on_mouse_moved(Scene &scene, MouseMovedEvent const &event) -> void override;
+    auto subscribe_input(InputContext const &ctx) -> void override;
+
+    auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void;
+    auto on_key_released(Scene &scene, KeyReleasedEvent const &event) -> void;
+    auto on_mouse_moved(Scene &scene, MouseMovedEvent const &event) -> void;
 
     auto on_ui(Scene &scene, Renderer &renderer) -> void override;
 

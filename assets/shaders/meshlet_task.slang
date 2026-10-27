@@ -7,6 +7,8 @@ public struct MeshletPayload
 {
     public uint instance_index;
     public uint meshlet_base;
+    // DrawCommand.blend_faces of the command this group came from.
+    public uint blend_faces;
     public uint meshlet_offsets[meshlets_per_task];
 };
 
@@ -78,9 +80,13 @@ bool meshlet_visible(PC pc, uint plane_offset, uint instance_index, uint meshlet
     const float wind_strength = abs(pc.materials[draw.material_index].wind_strength);
 
     const float extrude = pc.materials[draw.material_index].meshlet_extrude;
+    // A displaced water surface moves up to its wave height (meters) away from its mesh.
+    const float water_height = (pc.materials[draw.material_index].flags & material_flag_water) != 0
+                                       ? abs(pc.materials[draw.material_index].water_shape.x)
+                                       : 0.0;
 
     centre = mul(model, float4(meshlet.centre + meshlet.cone_axis * (extrude * meshlet.radius), 1.0)).xyz;
-    radius = meshlet.radius * max_scale + wind_strength * wind_radius_scale;
+    radius = meshlet.radius * max_scale + wind_strength * wind_radius_scale + water_height;
 
     if ((pc.cull_flags & cull_frustum_bit) != 0) {
         [unroll]
@@ -178,6 +184,7 @@ public void run_meshlet_task_remapped(PC pc, uint plane_offset, Ptr<uint> remap,
     if (lane == 0) {
         s_payload.instance_index = instance_index;
         s_payload.meshlet_base = meshlet_base;
+        s_payload.blend_faces = command.blend_faces;
     }
 
     GroupMemoryBarrierWithGroupSync();

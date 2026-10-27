@@ -6,6 +6,9 @@ import meshlet_task;
 import light_clusters;
 import environment;
 import local_shadows;
+#ifdef BLEND_PASS
+import water;
+#endif
 
 struct VertexOutput
 {
@@ -19,6 +22,9 @@ struct VertexOutput
     nointerpolation uint material_index;
 
     nointerpolation uint debug_cluster_id;
+
+    // Which faces this draw keeps (blend_faces_*), for blended draws.
+    nointerpolation uint blend_faces;
 };
 
 static const uint debug_instance_salt = 0x9E3779B9u;
@@ -44,6 +50,23 @@ VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_stre
     float3 world_normal = normalize(mul(normal_matrix, vertex.normal));
     float3 world_tangent = normalize(mul(normal_matrix, vertex.tangent.xyz));
 
+#ifdef BLEND_PASS
+    // Water: upward-facing surfaces are lifted by the same wave field the fragment shader shades (water_displacement),
+    // so the geometry and the normals agree. The normal stays flat here; main_fs rebuilds it from the field.
+    const Material material = pc.materials[draw.material_index];
+    if ((material.flags & material_flag_water) != 0) {
+        // An ocean's camera-following grid is clipped to its water zone (water_zone: min x, min z, max x, max z):
+        // vertices outside fold onto the zone's edge, so the triangles there collapse and draw nothing.
+        world_position.xz = clamp(world_position.xz, material.water_zone.xy, material.water_zone.zw);
+        // A flat surface moves along +Y, a sphere (a planet's ocean) along its own up.
+        const WaterFrame frame = water_frame(material, world_position.xyz);
+        if (material.water_shape.x > 0.0 && dot(world_normal, frame.up) > 0.5) {
+            world_position.xyz += frame.up * water_displacement(material, frame, ubo.time,
+                                                                length(ubo.camera_position - world_position.xyz));
+        }
+    }
+#endif
+
     VertexOutput output;
     output.position = mul(ubo.view_projection, world_position);
     output.world_position = world_position.xyz;
@@ -52,18 +75,23 @@ VertexOutput forward_vertex(PC pc, GpuDraw draw, float4x4 model, float wind_stre
     output.texture_coordinate = vertex.uvs;
     output.material_index = draw.material_index;
     output.debug_cluster_id = 0;
+    output.blend_faces = blend_faces_both;
 
     return output;
 }
 
 [shader("vertex")]
-VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID, uniform PC pc)
+VertexOutput main_vs(uint vertex_id: SV_VulkanVertexID, uint instance_index: SV_VulkanInstanceID,
+                     uint draw_index: SV_DrawIndex, uniform PC pc)
 {
     const GpuDraw draw = pc.draws[instance_index];
     const float wind_strength = pc.materials[draw.material_index].wind_strength;
 
     VertexOutput output = forward_vertex(pc, draw, pc.transforms[instance_index], wind_strength, MeshletDisplace.none(), vertex_id);
     output.debug_cluster_id = instance_index ^ debug_instance_salt;
+#ifdef BLEND_PASS
+    output.blend_faces = pc.task_commands[draw_index].blend_faces;
+#endif
     return output;
 }
 
@@ -88,6 +116,7 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
         VertexOutput output =
                 forward_vertex(pc, draw, model, wind_strength, displace, meshlet_vertex_index(draw, meshlet, v));
         output.debug_cluster_id = meshlet_index;
+        output.blend_faces = payload.blend_faces;
         verts[v] = output;
     }
 
@@ -335,6 +364,14 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
 {
     const var ubo = pc.ubo;
 
+#ifdef BLEND_PASS
+    // A double-sided blended mesh is drawn twice, back faces then front faces; a single-sided one keeps its front.
+    if ((input.blend_faces == blend_faces_back && is_front_face) ||
+        (input.blend_faces == blend_faces_front && !is_front_face)) {
+        discard;
+    }
+#endif
+
     const var material = pc.materials[input.material_index];
 
     float3 normal = normalize(input.world_normal);
@@ -359,6 +396,25 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
     const var sampler = samplers[NonUniformResourceIndex(material.sampler_index)];
 
     float2 uv = float2(input.texture_coordinate.x, input.texture_coordinate.y);
+
+    // A planet's surface (material_flag_planet) takes its equirectangular coordinates from the fragment's direction
+    // from the planet's centre instead of the vertex (half-precision vertex coordinates step every few texels of an
+    // Earth-sized texture). The frame is in the water sphere fields: centre, then the planet's x, y and z axes.
+    float2 uv_dx = ddx(uv);
+    float2 uv_dy = ddy(uv);
+    if ((material.flags & material_flag_planet) != 0) {
+        const float3 direction = normalize(input.world_position - material.water_sphere_centre.xyz);
+        const float3 local = float3(dot(direction, material.water_east.xyz), dot(direction, material.water_anchor.xyz),
+                                    dot(direction, material.water_north.xyz));
+        const float pi = 3.14159265358979323846;
+        // Longitude grows towards -x (planet::direction_of).
+        uv = float2((atan2(-local.x, local.z) + pi) / (2.0 * pi), (0.5 * pi - asin(clamp(local.y, -1.0, 1.0))) / pi);
+        uv_dx = ddx(uv);
+        uv_dy = ddy(uv);
+        // Across the date line u jumps by one; the gradients ignore that jump.
+        uv_dx.x -= round(uv_dx.x);
+        uv_dy.x -= round(uv_dy.x);
+    }
 
     float2 tangent_normal_xy = normal_texture.Sample(sampler, uv).xy * 2.0 - 1.0;
     tangent_normal_xy *= material.normal_scale;
@@ -412,7 +468,7 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
     float screen_space_ao = gtao_texture.Sample(gtao_sampler, screen_uv).r;
     ambient_occlusion *= lerp(1.0, screen_space_ao, ubo.ao_intensity);
 
-const var base_sample = texture.Sample(sampler, uv);
+const var base_sample = texture.SampleGrad(sampler, uv, uv_dx, uv_dy);
 
 if (material.alpha_mode == AlphaMode.mask && (material.flags & material_flag_alpha_to_coverage) == 0 &&
     base_sample.a < material.alpha_cutoff) {
@@ -423,6 +479,15 @@ var base_colour = base_sample.xyz *
                   float3(material.colour[0], material.colour[1], material.colour[2]);
 
     base_colour = base_colour * (1.0 - decals.albedo_coverage) + decals.albedo;
+
+#ifdef BLEND_PASS
+    // Water: the lighting below shades the foam (a rough white surface, lit like anything else); shade_water at the
+    // end composes the water itself and mixes the foam in.
+    const bool water_surface = (material.flags & material_flag_water) != 0 && ubo.view_mode == view_lit;
+    if (water_surface) {
+        base_colour = water_foam_albedo;
+    }
+#endif
 
     const float3 texture_base_colour = base_colour;
 
@@ -454,6 +519,13 @@ var base_colour = base_sample.xyz *
     metallic_roughness = metallic_roughness * (1.0 - decals.metallic_roughness_coverage) + decals.metallic_roughness;
     float metallic = metallic_roughness.x;
     float roughness = clamp(metallic_roughness.y, 0.045, 1.0);
+
+#ifdef BLEND_PASS
+    if (water_surface) {
+        metallic = 0.0;
+        roughness = water_foam_roughness;
+    }
+#endif
 
     float3 view_direction = normalize(ubo.camera_position - input.world_position);
 
@@ -603,7 +675,15 @@ var base_colour = base_sample.xyz *
     }
 
     OutputFS output;
-    output.colour = float4(fogged_colour, base_sample.a);
+    output.colour = float4(fogged_colour, base_sample.a * material.colour[3]);
+
+#ifdef BLEND_PASS
+    if (water_surface) {
+        const WaterShade water = shade_water(pc, material, input.world_position, normal, input.position.xy, view_z,
+                                             shadow);
+        output.colour = float4(lerp(water.colour, fogged_colour, water.foam), max(water.alpha, water.foam));
+    }
+#endif
 #ifdef OUTLINE_MASK
     output.outline = (material.flags & material_flag_outlined) != 0 ? 1.0 : 0.0;
 #endif

@@ -6,6 +6,7 @@ add_library(
     engine_terrain
     STATIC
         noise.cxx
+        planet.cxx
         terrain_chunk.cxx
         terrain_greedy_mesh.cxx
         terrain_mesh.cxx

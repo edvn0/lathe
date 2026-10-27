@@ -34,3 +34,15 @@ inline constexpr std::uint32_t grass_clump_card_lod = 2;
 
 [[nodiscard]] auto make_ribbon_mesh(std::span<glm::vec3 const> grid, std::uint32_t columns, float uv_scale = 0.25F)
         -> std::expected<PrimitiveMeshData, ModelLoadError>;
+
+// One axis of a water grid: `cells` cells across [-0.5, 0.5], packed densest at `focus` (0 = the -0.5 end, 0.5 = the
+// middle, 1 = the +0.5 end) and widening exponentially away from it by `curve` (0 = evenly spaced).
+struct GridAxis {
+    std::uint32_t cells = 64;
+    float curve = 0.0F;
+    float focus = 0.5F;
+};
+
+// A flat, upward-facing grid of `x.cells` by `z.cells` quads in the unit square of the XZ plane (y = 0), for surfaces
+// the vertex stage displaces (water). Every LOD keeps every triangle: a simplifier would flatten it to two.
+[[nodiscard]] auto make_water_grid_mesh(GridAxis x, GridAxis z) -> std::expected<PrimitiveMeshData, ModelLoadError>;

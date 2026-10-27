@@ -40,6 +40,7 @@
 #include "rendering/entity.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
+#include "rendering/water_system.hxx"
 #include "rendering/text_renderer.hxx"
 #include "scene/components.hxx"
 #include "scripting/lua_particles.hxx"
@@ -207,6 +208,38 @@ namespace {
 
         lua_pushnil(state);
 
+        return 1;
+    }
+
+    // The shader time the water is drawn at, so a query agrees with the surface on screen.
+    auto water_time(lua_State *state, int index) -> float {
+        if (!lua_isnoneornil(state, index)) {
+            return static_cast<float>(luaL_checknumber(state, index));
+        }
+        auto const *const renderer = game_host(state).renderer;
+        return renderer != nullptr ? renderer->frame_time() : 0.0F;
+    }
+
+    // scene.water_height(x, z [, time]): the water surface's height over (x, z), or nil where there is no water.
+    auto scene_water_height(lua_State *state) -> int {
+        auto const x = static_cast<float>(luaL_checknumber(state, 1));
+        auto const z = static_cast<float>(luaL_checknumber(state, 2));
+        auto const height = WaterSystem::water_height(registry_of(state), glm::vec2{x, z}, water_time(state, 3));
+
+        if (height) {
+            lua_pushnumber(state, *height);
+        } else {
+            lua_pushnil(state);
+        }
+        return 1;
+    }
+
+    // scene.is_underwater(x, y, z [, time])
+    auto scene_is_underwater(lua_State *state) -> int {
+        auto const point = glm::vec3{static_cast<float>(luaL_checknumber(state, 1)),
+                                     static_cast<float>(luaL_checknumber(state, 2)),
+                                     static_cast<float>(luaL_checknumber(state, 3))};
+        lua_pushboolean(state, WaterSystem::is_underwater(registry_of(state), point, water_time(state, 4)) ? 1 : 0);
         return 1;
     }
 
@@ -2427,7 +2460,9 @@ auto open_lua_game_api(LuaRuntime &runtime) -> void {
                 std::array{luaL_Reg{"spawn", &scene_spawn}, luaL_Reg{"find", &scene_find},
                            luaL_Reg{"clear", &scene_clear}, luaL_Reg{"add_effect", &scene_add_effect},
                            luaL_Reg{"remove_effect", &scene_remove_effect},
-                           luaL_Reg{"set_environment", &scene_set_environment}, luaL_Reg{nullptr, nullptr}});
+                           luaL_Reg{"set_environment", &scene_set_environment},
+                           luaL_Reg{"water_height", &scene_water_height},
+                           luaL_Reg{"is_underwater", &scene_is_underwater}, luaL_Reg{nullptr, nullptr}});
     set_library(state, "render", render_functions);
     set_library(state, "text", text_functions);
     set_library(state, "physics", physics_functions);

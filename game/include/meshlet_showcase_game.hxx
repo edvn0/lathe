@@ -21,7 +21,9 @@ public:
     auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void override;
     auto on_update(Scene &scene, float delta_time) -> void override;
 
-    auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void override;
+    auto subscribe_input(InputContext const &ctx) -> void override;
+
+    auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void;
 
     auto clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void override {
         clone_editor_into_runtime<Components::DebugMeshletCones>(editor_scene, runtime_scene);

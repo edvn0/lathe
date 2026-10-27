@@ -284,6 +284,13 @@ auto PuntGame::on_update(Scene &scene, float delta_time) -> void {
                           player_controller_.pitch_degrees(), speed_factor, delta_time, occlusion_query);
 }
 
+auto PuntGame::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &PuntGame::on_key_pressed);
+    listen(ctx, &PuntGame::on_key_released);
+    listen(ctx, &PuntGame::on_mouse_moved, true);
+    listen(ctx, &PuntGame::on_mouse_button_pressed);
+}
+
 auto PuntGame::on_key_pressed(Scene & , KeyPressedEvent const &event) -> void {
     player_controller_.on_key_pressed(event.key);
 

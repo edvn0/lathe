@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 
 #include <functional>
 #include <optional>
@@ -26,7 +27,7 @@ template<typename... ExtraComponents>
 auto clone_editor_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
     clone_registry<Components::Transform, Components::Model, Components::InstancedModel, Components::RigidBody,
                    Components::MaterialOverride, Components::PlayerTag, Components::Lifetime, Components::PointLight,
-                   Components::SpotLight, Components::Decal, Components::ParticleEmitter, Components::Text, Components::GeneratedMeta, Components::Meta,
+                   Components::SpotLight, Components::Decal, Components::ParticleEmitter, Components::Water, Components::Planet, Components::Text, Components::GeneratedMeta, Components::Meta,
                    Components::Parent, Components::Static, ExtraComponents...>(editor_scene.get_registry(), runtime_scene.get_registry());
 }
 
@@ -36,6 +37,9 @@ struct CameraParams {
     float near_clip = 0.1F;
     float far_clip = 10000.0F;
     float vertical_fov_radians = 1.0F;
+    // A floating origin: the world point (in double precision) that `view` treats as its origin. Systems that place
+    // content too far out for floats (PlanetSystem) draw relative to it; everything else assumes it is zero.
+    glm::dvec3 origin{0.0};
 };
 
 struct GameHost {
@@ -52,9 +56,34 @@ struct GameHost {
     TextRenderer *text = nullptr;
 };
 
+// What a game needs to subscribe to the runtime's EventBus: handlers only fire while playing, and look events (mouse
+// movement) only while the mouse is captured.
+struct InputContext {
+    EventBus &bus;
+    std::function<Scene *()> scene;
+    std::function<bool()> playing;
+    std::function<bool()> mouse_look;
+};
+
 class IGame {
 public:
     virtual ~IGame() = default;
+
+protected:
+    template<typename E, typename G>
+    auto listen(InputContext const &ctx, void (G::*handler)(Scene &, E const &), bool look = false) -> void {
+        input_subscriptions_.push_back(ctx.bus.subscribe<E>(
+            [this, ctx, handler, look](E const &event) {
+                if (ctx.playing() && (!look || ctx.mouse_look())) {
+                    (static_cast<G *>(this)->*handler)(*ctx.scene(), event);
+                }
+
+                return false;
+            },
+            200));
+    }
+
+public:
 
     virtual auto attach_host(GameHost host) -> void { (void) host; }
 
@@ -62,26 +91,8 @@ public:
 
     virtual auto on_update(Scene &scene, float delta_time) -> void = 0;
 
-    virtual auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void {
-        (void) scene;
-        (void) event;
-    }
-    virtual auto on_key_released(Scene &scene, KeyReleasedEvent const &event) -> void {
-        (void) scene;
-        (void) event;
-    }
-    virtual auto on_mouse_moved(Scene &scene, MouseMovedEvent const &event) -> void {
-        (void) scene;
-        (void) event;
-    }
-    virtual auto on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void {
-        (void) scene;
-        (void) event;
-    }
-    virtual auto on_mouse_button_released(Scene &scene, MouseButtonReleasedEvent const &event) -> void {
-        (void) scene;
-        (void) event;
-    }
+    // Games subscribe their input handlers here with listen(); the subscriptions live as long as the game.
+    virtual auto subscribe_input(InputContext const &ctx) -> void { (void) ctx; }
 
     [[nodiscard]] virtual auto wants_cursor() const -> bool { return false; }
 
@@ -125,4 +136,7 @@ public:
     virtual auto clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
         clone_editor_into_runtime<>(editor_scene, runtime_scene);
     }
+
+private:
+    std::vector<EventBus::Subscription> input_subscriptions_;
 };

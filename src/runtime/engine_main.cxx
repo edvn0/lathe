@@ -461,6 +461,13 @@ namespace {
             terrain->submit(*runtime.renderer);
         }
 
+        // Water bodies (Components::Water) and planets (Components::Planet), placed from this frame's camera.
+        runtime.water_system.submit(*runtime.renderer, registry, glm::vec3{glm::inverse(runtime.frame_view)[3]});
+        runtime.planet_system.submit(*runtime.renderer, registry,
+                                     PlanetView{.origin = runtime.frame_origin,
+                                                .camera = glm::dvec3{glm::inverse(runtime.frame_view)[3]},
+                                                .time = runtime.elapsed_time});
+
         return {};
     }
 
@@ -469,8 +476,8 @@ namespace {
                 .extent = context.swapchain.extent(),
                 .geometry_capacity = 256UZ * 1024UZ * 1024UZ,
                 .material_capacity = 4096,
-                .mesh_capacity = 4096,
-                .model_capacity = 1024,
+                .mesh_capacity = 8192,
+                .model_capacity = 4096,
                 .pipeline_capacity = 1024,
                 .swapchain_format = context.swapchain.format(),
                 .samples = VK_SAMPLE_COUNT_4_BIT,
@@ -586,6 +593,16 @@ namespace {
             return false;
         }
 
+        // The camera comes first: the scene submission places camera-relative content (the floating origin, the ocean
+        // grid) from it.
+        auto const active_aspect = runtime.renderer->aspect(frame->frame_index);
+        auto const active_camera = runtime.is_playing ? runtime.game->camera(*runtime.active_scene(), active_aspect)
+                                                      : runtime.editing_camera(active_aspect);
+
+        runtime.frame_view = active_camera.view;
+        runtime.frame_projection = active_camera.projection;
+        runtime.frame_origin = active_camera.origin;
+
         auto frame_ok = true;
         {
             auto const submitting = clock.scope(CpuPhase::scene_submit);
@@ -601,13 +618,6 @@ namespace {
                 frame_ok = false;
             }
         }
-
-        auto const active_aspect = runtime.renderer->aspect(frame->frame_index);
-        auto const active_camera = runtime.is_playing ? runtime.game->camera(*runtime.active_scene(), active_aspect)
-                                                      : runtime.editing_camera(active_aspect);
-
-        runtime.frame_view = active_camera.view;
-        runtime.frame_projection = active_camera.projection;
 
         if (frame_ok) {
             {
@@ -737,10 +747,10 @@ namespace {
         }
 
         if (action == GLFW_PRESS && !imgui_wants_keyboard()) {
-            app->on_event(KeyPressedEvent{.key = key, .modifiers = mods});
+            app->event_bus.publish(KeyPressedEvent{.key = key, .modifiers = mods});
         }
         if (action == GLFW_RELEASE) {
-            app->on_event(KeyReleasedEvent{.key = key, .modifiers = mods});
+            app->event_bus.publish(KeyReleasedEvent{.key = key, .modifiers = mods});
         }
     }
 
@@ -756,7 +766,7 @@ namespace {
                 app->release_mouse();
             }
 
-            app->on_event(MouseButtonReleasedEvent{.button = button, .modifiers = mods});
+            app->event_bus.publish(MouseButtonReleasedEvent{.button = button, .modifiers = mods});
             return;
         }
 
@@ -774,7 +784,7 @@ namespace {
             app->capture_mouse();
         }
 
-        app->on_event(MouseButtonPressedEvent{.button = button, .modifiers = mods});
+        app->event_bus.publish(MouseButtonPressedEvent{.button = button, .modifiers = mods});
     }
 
     auto cursor_position_callback(GLFWwindow *window, double x_position, double y_position) -> void {
@@ -798,7 +808,7 @@ namespace {
         app->last_mouse_x = x_position;
         app->last_mouse_y = y_position;
 
-        app->on_event(MouseMovedEvent{.delta_x = delta_x, .delta_y = delta_y});
+        app->event_bus.publish(MouseMovedEvent{.delta_x = delta_x, .delta_y = delta_y});
     }
 
     auto scroll_callback(GLFWwindow *window, double x_offset, double y_offset) -> void {
@@ -808,7 +818,7 @@ namespace {
             return;
         }
 
-        app->on_event(MouseScrolledEvent{.delta_x = x_offset, .delta_y = y_offset});
+        app->event_bus.publish(MouseScrolledEvent{.delta_x = x_offset, .delta_y = y_offset});
     }
 
     auto focus_callback(GLFWwindow *window, int focused) noexcept -> void {
@@ -1203,6 +1213,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     context.validation = engine.validation.value_or(validation_by_default);
     context.sync_validation = true;
 
+    context.undecorated_window = profile.custom_title_bar() && screen_type == ScreenType::windowed;
+
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
 
@@ -1222,6 +1234,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     runtime.game_factory = [](std::string_view name) { return create_game(name); };
     runtime.available_games = game_names();
     runtime.game = create_game(runtime.game_name);
+    runtime.subscribe_game_input();
 
     runtime.game->attach_host(GameHost{
             .player_mode = player_mode,
@@ -1417,7 +1430,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         for (auto const &injected: injected_keys) {
             if (injected.frame == frame_number) {
-                runtime.on_event(KeyPressedEvent{.key = injected.key, .modifiers = injected.modifiers});
+                runtime.event_bus.publish(KeyPressedEvent{.key = injected.key, .modifiers = injected.modifiers});
             }
         }
 
@@ -1586,6 +1599,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
             info("Resizing renderer to {}x{}", target_render_extent.width, target_render_extent.height);
             renderer_extent = target_render_extent;
         }
+
+        runtime.update_views();
     }
 
     context.running.store(false, std::memory_order_release);

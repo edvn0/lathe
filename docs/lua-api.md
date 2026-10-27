@@ -50,7 +50,11 @@ an entity and `e:aim(x, y, z)` turns it (a spot light points along the entity's 
 changes the sky, ambient light, exposure and sun; `render.bloom()` / `render.set_bloom{...}` read and change bloom, and `render.grade()` / `render.set_grade{ lut, intensity }`
 read and change colour grading (see `docs/colour-grading.md`).
 `assets.sphere()` and `assets.capsule()` give the built-in models, and `assets.material` takes `emissive`,
-`emissive_strength` and `double_sided` in its options table. `assets/scripts/lights/main.lua` (`--game=lights`) uses
+`emissive_strength` and `double_sided` in its options table.
+`scene.water_height(x, z [, time])` is the height of the water surface over (x, z), waves included (nil where there is
+no water), and `scene.is_underwater(x, y, z [, time])` says whether a point is below it; both read the scene's
+`Components::Water` bodies through the CPU copy of the wave field (`docs/water.md`), at the time the last frame's
+water was drawn unless given one. `assets/scripts/lights/main.lua` (`--game=lights`) uses
 all of them.
 
 ## Cameras
