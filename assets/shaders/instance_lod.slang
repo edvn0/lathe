@@ -23,8 +23,10 @@ public struct LodJob
     public uint group_count;
 
     public uint lod_groups;
-    public uint _pad0;
-    public uint _pad1;
+
+    // The mesh's bounding sphere as four half floats: centre x and y, then centre z and radius.
+    public uint sphere_xy;
+    public uint sphere_zr;
 
     public LodGroup groups[max_lod_groups];
 };
@@ -57,13 +59,15 @@ public struct LodPC
     public float camera_z;
     public uint job_count;
 
-    public float lod_distance_sq0;
-    public float lod_distance_sq1;
-    public float lod_distance_sq2;
-    public uint chunk_count;
+    public float lod_pixel_scale;
+    public float lod_radius_pixels_sq0;
+    public float lod_radius_pixels_sq1;
+    public float lod_radius_pixels_sq2;
 
+    public uint chunk_count;
     public uint stage;
     public uint _padding;
+    public uint _padding1;
 };
 
 static const uint max_task_group_count_x = 65535;
@@ -102,16 +106,29 @@ uint chunk_job(LodPC pc, uint chunk)
 
 uint instance_group(LodPC pc, LodJob job, uint local_index)
 {
-    const float3 origin = mul(job.transforms[local_index], float4(0.0, 0.0, 0.0, 1.0)).xyz;
-    const float3 delta = origin - float3(pc.camera_x, pc.camera_y, pc.camera_z);
+    const float4x4 transform = job.transforms[local_index];
+    const float3 local_centre = float3(f16tof32(job.sphere_xy & 0xFFFFu), f16tof32(job.sphere_xy >> 16),
+                                       f16tof32(job.sphere_zr & 0xFFFFu));
+    const float local_radius = f16tof32(job.sphere_zr >> 16);
+    const float3 centre = mul(transform, float4(local_centre, 1.0)).xyz;
+    const float3 delta = centre - float3(pc.camera_x, pc.camera_y, pc.camera_z);
     const float distance_sq = dot(delta, delta);
 
+    // The same test as lod_index_for on the CPU: how many pixels the instance's bounding sphere spans. The columns of
+    // the transform are the basis vectors, and the largest of them is the instance's scale.
+    const float3 column0 = float3(transform[0][0], transform[1][0], transform[2][0]);
+    const float3 column1 = float3(transform[0][1], transform[1][1], transform[2][1]);
+    const float3 column2 = float3(transform[0][2], transform[1][2], transform[2][2]);
+    const float scale_sq = max(dot(column0, column0), max(dot(column1, column1), dot(column2, column2)));
+    const float radius_pixels = local_radius * pc.lod_pixel_scale;
+    const float radius_pixels_sq = radius_pixels * radius_pixels * scale_sq;
+
     uint lod = 3;
-    if (distance_sq < pc.lod_distance_sq0) {
+    if (radius_pixels_sq >= pc.lod_radius_pixels_sq0 * distance_sq) {
         lod = 0;
-    } else if (distance_sq < pc.lod_distance_sq1) {
+    } else if (radius_pixels_sq >= pc.lod_radius_pixels_sq1 * distance_sq) {
         lod = 1;
-    } else if (distance_sq < pc.lod_distance_sq2) {
+    } else if (radius_pixels_sq >= pc.lod_radius_pixels_sq2 * distance_sq) {
         lod = 2;
     }
 

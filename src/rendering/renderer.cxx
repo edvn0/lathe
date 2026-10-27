@@ -20,6 +20,7 @@
 #include <future>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
+#include <glm/gtc/packing.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <limits>
 #include <numeric>
@@ -70,14 +71,31 @@ namespace {
         return hash;
     }
 
-    // The LOD an instance at `instance_position` is drawn at, from its distance to the camera.
-    auto lod_index_for(glm::vec3 const &camera_position, glm::vec3 const &instance_position) noexcept -> std::uint32_t {
-        auto const delta = instance_position - camera_position;
+    // What picking an instance's LOD needs of the frame: where the camera is and how many pixels one world unit at
+    // distance one covers (very large for an orthographic camera, which keeps every instance at full detail).
+    struct LodView {
+        glm::vec3 camera_position{0.0F};
+        float pixel_scale = 1.0e6F;
+    };
+
+    // The LOD an instance of `mesh` is drawn at, from how many pixels its bounding sphere spans. The same test runs on
+    // the GPU for resident instances (instance_lod.slang).
+    auto lod_index_for(LodView const &view, glm::mat4 const &transform, MeshSlotData const &mesh) noexcept
+            -> std::uint32_t {
+        auto const delta = glm::vec3(transform * glm::vec4(mesh.bounding_centre, 1.0F)) - view.camera_position;
         auto const distance_sq = glm::dot(delta, delta);
+        auto const local_radius = mesh.bounding_radius;
+
+        auto const scale_sq = std::max({glm::dot(glm::vec3(transform[0]), glm::vec3(transform[0])),
+                                        glm::dot(glm::vec3(transform[1]), glm::vec3(transform[1])),
+                                        glm::dot(glm::vec3(transform[2]), glm::vec3(transform[2]))});
+        auto const radius_pixels = local_radius * view.pixel_scale;
+        auto const radius_pixels_sq = radius_pixels * radius_pixels * scale_sq;
+
         std::uint32_t lod_index = 0;
-        for (; lod_index < lod_distances.size(); ++lod_index) {
-            auto const lod_distance = lod_distances[lod_index];
-            if (distance_sq < lod_distance * lod_distance) {
+        for (; lod_index < lod_radius_pixels.size(); ++lod_index) {
+            auto const threshold = lod_radius_pixels[lod_index];
+            if (radius_pixels_sq >= threshold * threshold * distance_sq) {
                 break;
             }
         }
@@ -1029,6 +1047,34 @@ namespace {
             .debug_name = "renderer.shadow_cull_pipeline",
     });
 
+    // The depth prepass pipelines (5: meshlet, 6: masked, 17 and 18: their instanced forms) again, with a fragment stage
+    // that counts every fragment into a per-pixel buffer (OVERDRAW_COUNT), for the overdraw view. The opaque ones have
+    // no fragment stage otherwise, so they get one here; none of these are used outside that view.
+    for (auto const source_index: {std::size_t{5}, std::size_t{6}, std::size_t{17}, std::size_t{18}}) {
+        auto overdraw_info = pipeline_infos[source_index];
+        auto has_fragment_stage = false;
+
+        for (auto &stage: overdraw_info.stages) {
+            if (stage.stage == renderer::ShaderStage::fragment) {
+                stage.defines.push_back(renderer::ShaderDefine{.name = "OVERDRAW_COUNT", .value = "1"});
+                has_fragment_stage = true;
+            }
+        }
+
+        if (!has_fragment_stage) {
+            overdraw_info.stages.push_back(renderer::ShaderCompileRequest{
+                    .source_path = data_path("assets/shaders/depth_prepass.slang"),
+                    .entry_point = FlyString{"main_fs"},
+                    .stage = renderer::ShaderStage::fragment,
+                    .include_directories = {},
+                    .defines = {renderer::ShaderDefine{.name = "OVERDRAW_COUNT", .value = "1"}},
+            });
+        }
+
+        overdraw_info.debug_name += ".overdraw";
+        pipeline_infos.push_back(std::move(overdraw_info));
+    }
+
         return pipeline_infos;
     }
 }
@@ -1226,6 +1272,10 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     skin_pipeline_ = *registered_pipelines[33];
     decal_cluster_pipeline_ = *registered_pipelines[34];
     shadow_cull_pipeline_ = *registered_pipelines[35];
+    depth_prepass_overdraw_pipeline_ = *registered_pipelines[36];
+    depth_prepass_overdraw_mask_pipeline_ = *registered_pipelines[37];
+    depth_prepass_overdraw_instanced_pipeline_ = *registered_pipelines[38];
+    depth_prepass_overdraw_mask_instanced_pipeline_ = *registered_pipelines[39];
 
     {
         auto initialised = environment_.initialize(EnvironmentSystem::CreateInfo{
@@ -2022,6 +2072,7 @@ auto Renderer::destroy() noexcept -> void {
         frame.cluster_stats_readback_buffer.destroy();
         frame.cluster_lights_buffer.destroy();
         frame.decal_clusters_buffer.destroy();
+        frame.overdraw_buffer.destroy();
         frame.local_shadow_indirect_buffer.destroy();
         frame.local_shadow_counts_buffer.destroy();
         frame.local_shadow_survivors_buffer.destroy();
@@ -3586,6 +3637,7 @@ public:
 // Batches model submissions [first, last) into `chunk`.
 auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t last, glm::vec3 const &camera_position)
         -> void {
+    auto const lod_view = LodView{.camera_position = camera_position, .pixel_scale = lod_pixel_scale_};
     constexpr auto max_instance_reserve = std::size_t{4096};
     chunk.instance_reserve = std::min((last - first) / 8, max_instance_reserve);
 
@@ -3615,7 +3667,7 @@ auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t las
                 if (!draw.identity_local) {
                     instance_transform = &chunk.computed.emplace_back(model_submission.transform * draw.local);
                 }
-                auto const lod_index = lod_index_for(camera_position, glm::vec3((*instance_transform)[3]));
+                auto const lod_index = lod_index_for(lod_view, *instance_transform, *draw.data);
 
                 for (std::uint32_t submesh_index = 0; submesh_index < draw.submeshes.size(); ++submesh_index) {
                     auto *&batch = draw.submeshes[submesh_index].batch[lod_index];
@@ -3662,7 +3714,7 @@ auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t las
             if (!model_draw.identity_local) {
                 instance_transform = &chunk.computed.emplace_back(model_submission.transform * model_draw.local_transform);
             }
-            auto const lod_index = lod_index_for(camera_position, glm::vec3((*instance_transform)[3]));
+            auto const lod_index = lod_index_for(lod_view, *instance_transform, *mesh);
             for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
                 auto const &submesh = mesh->submeshes[submesh_index];
                 auto material = model_submission.material_override.valid() ? model_submission.material_override
@@ -3698,8 +3750,9 @@ auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t las
 // with the transforms of its instances in submission order, and opens the batches for the frame.
 auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_position, BatchBuild &build)
         -> std::expected<void, RendererError> {
-    auto const select_lod_index = [&camera_position](glm::vec3 const &instance_position) -> std::uint32_t {
-        return lod_index_for(camera_position, instance_position);
+    auto const lod_view = LodView{.camera_position = camera_position, .pixel_scale = lod_pixel_scale_};
+    auto const select_lod_index = [&lod_view](glm::mat4 const &transform, MeshSlotData const &mesh) -> std::uint32_t {
+        return lod_index_for(lod_view, transform, mesh);
     };
 
     auto const batch_for = [this](BatchKey const &key, MeshHandle mesh, std::uint32_t submesh_index,
@@ -3736,7 +3789,7 @@ auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_posit
         }
     };
 
-    auto const lod_slot_count = lod_distances.size() + 1;
+    auto const lod_slot_count = lod_radius_pixels.size() + 1;
     std::vector<BatchEntry *> instanced_batch_cache;
     std::vector<MaterialHandle> instanced_materials;
 
@@ -3771,6 +3824,8 @@ auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_posit
                     .first_chunk = frame.lod_chunk_count,
                     .group_count = groups.count,
                     .lod_groups = groups.lod_groups,
+                    .sphere_xy = glm::packHalf2x16(glm::vec2{mesh->bounding_centre.x, mesh->bounding_centre.y}),
+                    .sphere_zr = glm::packHalf2x16(glm::vec2{mesh->bounding_centre.z, mesh->bounding_radius}),
             });
             frame.lod_chunk_count += (instance_count + cull_chunk_size - 1) / cull_chunk_size;
 
@@ -3844,7 +3899,7 @@ auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_posit
                 if (!identity_local) {
                     instance_transform = &computed_transforms_.emplace_back(transform * model_draw.local_transform);
                 }
-                auto const lod_index = select_lod_index(glm::vec3((*instance_transform)[3]));
+                auto const lod_index = select_lod_index(*instance_transform, *mesh);
 
                 for (std::uint32_t submesh_index = 0; submesh_index < submesh_count; ++submesh_index) {
                     auto *&batch = instanced_batch_cache[submesh_index * lod_slot_count + lod_index];
@@ -3965,7 +4020,7 @@ auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_posit
             return std::unexpected(make_error(RendererErrorType::invalid_mesh));
         }
 
-        auto const lod_index = select_lod_index(glm::vec3(submission.transform[3]));
+        auto const lod_index = select_lod_index(submission.transform, *mesh);
 
         for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
             auto const &submesh = mesh->submeshes[submesh_index];
@@ -4088,7 +4143,6 @@ auto Renderer::batch_max_shadow_cascade(BatchEntry const *batch) const noexcept 
 // whether anything casting is animated, and the batches ordered by the furthest cascade they reach.
 auto Renderer::plan_shadow_batches(RendererFrame &frame, BatchBuild &build) -> void {
     std::uint64_t current_shadow_scene_signature = 0;
-    std::uint64_t shadow_caster_batch_count = 0;
     bool has_animated_shadow_casters = false;
     for (auto const *batch: active_batches_) {
         auto const *material = material_storage_.get(batch->material);
@@ -4099,25 +4153,23 @@ auto Renderer::plan_shadow_batches(RendererFrame &frame, BatchBuild &build) -> v
             continue;
         }
 
+        // The LOD is left out, and so is the batch count: an instance that crosses an LOD threshold as the camera moves
+        // moves between batches of the same mesh, submesh and material, which would otherwise redraw every cascade for
+        // a change the shadow maps barely show. Weighting each key by its instance count makes the sum the same however
+        // the instances are split between LODs.
         std::uint64_t batch_signature = 0xcbf29ce484222325ULL;
         batch_signature = shadow_signature_combine(batch_signature, batch->mesh.index);
         batch_signature = shadow_signature_combine(batch_signature, batch->submesh_index);
         batch_signature = shadow_signature_combine(batch_signature, material_storage_.gpu_index(batch->material));
-        batch_signature = shadow_signature_combine(batch_signature, batch->lod_index);
-        batch_signature =
-                shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(batch->transforms.size()));
         batch_signature = shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(max_cascade));
 
-        current_shadow_scene_signature ^= shadow_signature_mix(batch_signature);
-        ++shadow_caster_batch_count;
+        current_shadow_scene_signature += shadow_signature_mix(batch_signature) * batch->transforms.size();
 
         has_animated_shadow_casters = has_animated_shadow_casters ||
                                       (material != nullptr && std::abs(material->wind_strength) > 1e-6F) ||
                                       batch->lod_job != BatchEntry::no_lod_job ||
                                       batch->skinned;
     }
-    current_shadow_scene_signature =
-            shadow_signature_combine(current_shadow_scene_signature, shadow_caster_batch_count);
 
     auto const order_shadow_batches = [this](auto &batches) {
         std::array<std::uint32_t, shadow_cascade_count> prefix_counts{};
@@ -4600,6 +4652,12 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
     auto const camera_position = glm::vec3(glm::inverse(matrices.view)[3]);
     frame.lod_camera_position = camera_position;
 
+    // An orthographic camera has no distance to shrink things by, so every instance stays at full detail.
+    lod_pixel_scale_ = matrices.projection[2][3] != 0.0F
+                               ? std::abs(matrices.projection[1][1]) * static_cast<float>(extent_.height) * 0.5F
+                               : 1.0e6F;
+    frame.lod_pixel_scale = lod_pixel_scale_;
+
     ++batch_frame_;
 
     if (batch_frame_ == 0) {
@@ -4950,7 +5008,8 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
                 batch_seed = shadow_signature_combine(batch_seed, batch->mesh.index);
                 batch_seed = shadow_signature_combine(batch_seed, batch->submesh_index);
                 batch_seed = shadow_signature_combine(batch_seed, material_storage_.gpu_index(batch->material));
-                batch_seed = shadow_signature_combine(batch_seed, batch->lod_index);
+                // No LOD in the seed: an instance crossing an LOD threshold as the camera moves is not a change that
+                // is worth redrawing a light's tile for.
                 if (wind > 1e-6F || batch->skinned) {
                     batch_seed = shadow_signature_combine(batch_seed, shadow_frame_);
                 }
@@ -5027,7 +5086,6 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
                     batch_key = shadow_signature_combine(batch_key, batch->mesh.index);
                     batch_key = shadow_signature_combine(batch_key, batch->submesh_index);
                     batch_key = shadow_signature_combine(batch_key, material_storage_.gpu_index(batch->material));
-                    batch_key = shadow_signature_combine(batch_key, batch->lod_index);
                     if (animated) {
                         batch_key = shadow_signature_combine(batch_key, shadow_frame_);
                     }
@@ -5343,6 +5401,8 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
+    auto const overdraw_active = view_mode_ == ViewMode::overdraw && frame.overdraw_buffer.valid();
+
     UBO const ubo{
             .view_projection = view_projection,
             .view = view,
@@ -5415,6 +5475,9 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
             .local_shadow_tile_count = frame.local_shadow_tile_count,
             .local_shadow_normal_offset_texels = local_shadow_settings_.normal_offset_texels,
             .environment = environment_.ubo_block(),
+            .overdraw_counts_address = overdraw_active ? frame.overdraw_buffer.device_address : 0,
+            .overdraw_width = overdraw_active ? extent_.width : 0U,
+            .overdraw_size = overdraw_active ? extent_.width * extent_.height : 0U,
     };
 
     if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {
@@ -5828,12 +5891,14 @@ auto Renderer::record_instance_lods(render_pass::Context const &pass_context, Re
             .camera_y = frame.lod_camera_position.y,
             .camera_z = frame.lod_camera_position.z,
             .job_count = static_cast<std::uint32_t>(frame.lod_jobs.size()),
-            .lod_distance_sq0 = lod_distances[0] * lod_distances[0],
-            .lod_distance_sq1 = lod_distances[1] * lod_distances[1],
-            .lod_distance_sq2 = lod_distances[2] * lod_distances[2],
+            .lod_pixel_scale = frame.lod_pixel_scale,
+            .lod_radius_pixels_sq0 = lod_radius_pixels[0] * lod_radius_pixels[0],
+            .lod_radius_pixels_sq1 = lod_radius_pixels[1] * lod_radius_pixels[1],
+            .lod_radius_pixels_sq2 = lod_radius_pixels[2] * lod_radius_pixels[2],
             .chunk_count = frame.lod_chunk_count,
             .stage = 0,
             ._padding = 0,
+            ._padding1 = 0,
     };
 
     constexpr std::array stages{0U, 1U, 2U};
@@ -6287,6 +6352,26 @@ auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<vo
         frame.decal_cluster_cells = cells;
     }
 
+    if (view_mode_ == ViewMode::overdraw &&
+        (!frame.overdraw_buffer.valid() || frame.overdraw_extent.width != extent_.width ||
+         frame.overdraw_extent.height != extent_.height)) {
+        auto overdraw = create_shared_buffer(
+                context_, BufferCreateInfo{
+                                  .size = sizeof(std::uint32_t) * VkDeviceSize{extent_.width} * extent_.height,
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                  .memory = BufferMemory::device,
+                                  .debug_name = "renderer.frame_overdraw",
+                          });
+
+        if (!overdraw) {
+            return std::unexpected(make_device_error(overdraw.error()));
+        }
+
+        frame.overdraw_buffer = std::move(*overdraw);
+        frame.overdraw_extent = extent_;
+    }
+
     if (frame.cluster_lights_buffer.valid() && frame.cluster_grid == cluster_grid_) {
         return {};
     }
@@ -6636,25 +6721,31 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
                                        render_pass::cull_stats
                             : render_pass::cull_occlusion | render_pass::cull_record | render_pass::cull_stats);
 
-    return render_pass::depth_prepass(pass_context,
-                                      render_pass::DepthPrepassInfo{
-                                              .extent = targets.extent,
-                                              .samples = samples_,
-                                              .phase = phase,
-                                              .draws = late ? late_view_draws(frame) : early_view_draws(frame),
-                                              .counts = batch_counts(frame),
-                                              .cull_planes_address = frame.frustum_planes_buffer.device_address,
-                                              .materials_address = material_storage_.device_address(),
-                                              .ubo_address = ubos_[frame_index].device_address,
-                                              .lights_address = frame.lights_buffer.device_address,
-                                              .occlusion_view_address = meshlet_view_address,
-                                              .extra_cull_flags = meshlet_flags,
-                                              .opaque_pipeline = depth_prepass_pipeline_,
-                                              .mask_pipeline = depth_prepass_mask_pipeline_,
-                                              .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
-                                              .mask_instanced_pipeline = depth_prepass_mask_instanced_pipeline_,
-                                              .meshlet_culling = meshlet_culling_,
-                                      });
+    // The overdraw view counts the fragments of both prepass phases into one buffer (see the frame graph).
+    auto const overdraw = view_mode_ == ViewMode::overdraw && frame.overdraw_buffer.valid();
+
+    return render_pass::depth_prepass(
+            pass_context,
+            render_pass::DepthPrepassInfo{
+                    .extent = targets.extent,
+                    .samples = samples_,
+                    .phase = phase,
+                    .draws = late ? late_view_draws(frame) : early_view_draws(frame),
+                    .counts = batch_counts(frame),
+                    .cull_planes_address = frame.frustum_planes_buffer.device_address,
+                    .materials_address = material_storage_.device_address(),
+                    .ubo_address = ubos_[frame_index].device_address,
+                    .lights_address = frame.lights_buffer.device_address,
+                    .occlusion_view_address = meshlet_view_address,
+                    .extra_cull_flags = meshlet_flags,
+                    .opaque_pipeline = overdraw ? depth_prepass_overdraw_pipeline_ : depth_prepass_pipeline_,
+                    .mask_pipeline = overdraw ? depth_prepass_overdraw_mask_pipeline_ : depth_prepass_mask_pipeline_,
+                    .opaque_instanced_pipeline = overdraw ? depth_prepass_overdraw_instanced_pipeline_
+                                                          : depth_prepass_instanced_pipeline_,
+                    .mask_instanced_pipeline = overdraw ? depth_prepass_overdraw_mask_instanced_pipeline_
+                                                        : depth_prepass_mask_instanced_pipeline_,
+                    .meshlet_culling = meshlet_culling_,
+            });
 }
 
 auto Renderer::record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void {

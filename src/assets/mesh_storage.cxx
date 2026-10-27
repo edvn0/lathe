@@ -1,5 +1,6 @@
 #include "assets/mesh_storage.hxx"
 
+#include <algorithm>
 #include <utility>
 
 auto MeshStorage::create(MeshStorageCreateInfo const &create_info) -> std::expected<MeshStorage, MeshStorageError> {
@@ -26,6 +27,19 @@ auto MeshStorage::create_mesh(std::vector<Submesh> submeshes) -> std::expected<M
     auto &[handle, slot] = *allocation;
 
     slot.submeshes = std::move(submeshes);
+
+    slot.bounding_centre = glm::vec3{0.0F};
+    slot.bounding_radius = 0.0F;
+    if (!slot.submeshes.empty()) {
+        auto low = slot.submeshes.front().bounds_min;
+        auto high = slot.submeshes.front().bounds_max;
+        for (auto const &submesh: slot.submeshes) {
+            low = glm::min(low, submesh.bounds_min);
+            high = glm::max(high, submesh.bounds_max);
+        }
+        slot.bounding_centre = (low + high) * 0.5F;
+        slot.bounding_radius = glm::length(high - low) * 0.5F;
+    }
 
     return handle;
 }

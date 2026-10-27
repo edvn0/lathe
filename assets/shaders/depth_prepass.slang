@@ -70,6 +70,20 @@ void main_mesh(in payload MeshletPayload payload, uint3 group_id: SV_GroupID, ui
 [shader("fragment")]
 uint main_fs(VertexOutput input, uniform PC pc) : SV_Coverage
 {
+#ifdef OVERDRAW_COUNT
+    // The overdraw view's pipelines count every fragment this stage runs for. Kept out of the normal pipelines, since a
+    // fragment shader that writes memory can cost the draws their early depth test.
+    {
+        const var ubo = pc.ubo;
+        const uint2 pixel = uint2(input.position.xy);
+        const uint slot = pixel.y * ubo.overdraw_width + pixel.x;
+
+        if (ubo.overdraw_width != 0 && slot < ubo.overdraw_size) {
+            InterlockedAdd(ubo.overdraw_counts[slot], 1u);
+        }
+    }
+#endif
+
     const var material = pc.materials[input.material_index];
 
     if (material.alpha_mode != AlphaMode.mask) {
