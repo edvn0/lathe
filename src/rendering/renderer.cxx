@@ -4947,7 +4947,8 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
                 batch_seed = shadow_signature_combine(batch_seed, batch->mesh.index);
                 batch_seed = shadow_signature_combine(batch_seed, batch->submesh_index);
                 batch_seed = shadow_signature_combine(batch_seed, material_storage_.gpu_index(batch->material));
-                batch_seed = shadow_signature_combine(batch_seed, batch->lod_index);
+                // No LOD in the seed: an instance crossing an LOD threshold as the camera moves is not a change that
+                // is worth redrawing a light's tile for.
                 if (wind > 1e-6F || batch->skinned) {
                     batch_seed = shadow_signature_combine(batch_seed, shadow_frame_);
                 }
@@ -5024,7 +5025,6 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
                     batch_key = shadow_signature_combine(batch_key, batch->mesh.index);
                     batch_key = shadow_signature_combine(batch_key, batch->submesh_index);
                     batch_key = shadow_signature_combine(batch_key, material_storage_.gpu_index(batch->material));
-                    batch_key = shadow_signature_combine(batch_key, batch->lod_index);
                     if (animated) {
                         batch_key = shadow_signature_combine(batch_key, shadow_frame_);
                     }
