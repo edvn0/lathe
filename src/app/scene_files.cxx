@@ -35,13 +35,6 @@ namespace {
         return path;
     }
 
-    [[nodiscard]] auto scene_file_filters() -> std::vector<gui::FileBrowser::Filter> {
-        return {
-                {.label = "Lathe scenes (*.lbf)", .extensions = {std::string{scene_file_extension}}},
-                {.label = "All files", .extensions = {}},
-        };
-    }
-
     auto fill_buffer(std::array<char, 512> &buffer, std::string_view text) -> void {
         auto const length = std::min(text.size(), buffer.size() - 1);
         std::ranges::copy(text.substr(0, length), buffer.begin());
