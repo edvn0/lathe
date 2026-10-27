@@ -25,6 +25,10 @@ struct Submesh {
 
 struct MeshSlotData {
     std::vector<Submesh> submeshes;
+
+    // A sphere around the bounds of every submesh, in the mesh's local space; how big an instance looks picks its LOD.
+    glm::vec3 bounding_centre{0.0F};
+    float bounding_radius = 0.0F;
 };
 
 enum class MeshStorageErrorType : std::uint8_t {

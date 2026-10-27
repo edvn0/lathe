@@ -20,6 +20,7 @@
 #include <future>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
+#include <glm/gtc/packing.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <limits>
 #include <numeric>
@@ -70,14 +71,31 @@ namespace {
         return hash;
     }
 
-    // The LOD an instance at `instance_position` is drawn at, from its distance to the camera.
-    auto lod_index_for(glm::vec3 const &camera_position, glm::vec3 const &instance_position) noexcept -> std::uint32_t {
-        auto const delta = instance_position - camera_position;
+    // What picking an instance's LOD needs of the frame: where the camera is and how many pixels one world unit at
+    // distance one covers (very large for an orthographic camera, which keeps every instance at full detail).
+    struct LodView {
+        glm::vec3 camera_position{0.0F};
+        float pixel_scale = 1.0e6F;
+    };
+
+    // The LOD an instance of `mesh` is drawn at, from how many pixels its bounding sphere spans. The same test runs on
+    // the GPU for resident instances (instance_lod.slang).
+    auto lod_index_for(LodView const &view, glm::mat4 const &transform, MeshSlotData const &mesh) noexcept
+            -> std::uint32_t {
+        auto const delta = glm::vec3(transform * glm::vec4(mesh.bounding_centre, 1.0F)) - view.camera_position;
         auto const distance_sq = glm::dot(delta, delta);
+        auto const local_radius = mesh.bounding_radius;
+
+        auto const scale_sq = std::max({glm::dot(glm::vec3(transform[0]), glm::vec3(transform[0])),
+                                        glm::dot(glm::vec3(transform[1]), glm::vec3(transform[1])),
+                                        glm::dot(glm::vec3(transform[2]), glm::vec3(transform[2]))});
+        auto const radius_pixels = local_radius * view.pixel_scale;
+        auto const radius_pixels_sq = radius_pixels * radius_pixels * scale_sq;
+
         std::uint32_t lod_index = 0;
-        for (; lod_index < lod_distances.size(); ++lod_index) {
-            auto const lod_distance = lod_distances[lod_index];
-            if (distance_sq < lod_distance * lod_distance) {
+        for (; lod_index < lod_radius_pixels.size(); ++lod_index) {
+            auto const threshold = lod_radius_pixels[lod_index];
+            if (radius_pixels_sq >= threshold * threshold * distance_sq) {
                 break;
             }
         }
@@ -3586,6 +3604,7 @@ public:
 // Batches model submissions [first, last) into `chunk`.
 auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t last, glm::vec3 const &camera_position)
         -> void {
+    auto const lod_view = LodView{.camera_position = camera_position, .pixel_scale = lod_pixel_scale_};
     constexpr auto max_instance_reserve = std::size_t{4096};
     chunk.instance_reserve = std::min((last - first) / 8, max_instance_reserve);
 
@@ -3615,7 +3634,7 @@ auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t las
                 if (!draw.identity_local) {
                     instance_transform = &chunk.computed.emplace_back(model_submission.transform * draw.local);
                 }
-                auto const lod_index = lod_index_for(camera_position, glm::vec3((*instance_transform)[3]));
+                auto const lod_index = lod_index_for(lod_view, *instance_transform, *draw.data);
 
                 for (std::uint32_t submesh_index = 0; submesh_index < draw.submeshes.size(); ++submesh_index) {
                     auto *&batch = draw.submeshes[submesh_index].batch[lod_index];
@@ -3662,7 +3681,7 @@ auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t las
             if (!model_draw.identity_local) {
                 instance_transform = &chunk.computed.emplace_back(model_submission.transform * model_draw.local_transform);
             }
-            auto const lod_index = lod_index_for(camera_position, glm::vec3((*instance_transform)[3]));
+            auto const lod_index = lod_index_for(lod_view, *instance_transform, *mesh);
             for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
                 auto const &submesh = mesh->submeshes[submesh_index];
                 auto material = model_submission.material_override.valid() ? model_submission.material_override
@@ -3698,8 +3717,9 @@ auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t las
 // with the transforms of its instances in submission order, and opens the batches for the frame.
 auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_position, BatchBuild &build)
         -> std::expected<void, RendererError> {
-    auto const select_lod_index = [&camera_position](glm::vec3 const &instance_position) -> std::uint32_t {
-        return lod_index_for(camera_position, instance_position);
+    auto const lod_view = LodView{.camera_position = camera_position, .pixel_scale = lod_pixel_scale_};
+    auto const select_lod_index = [&lod_view](glm::mat4 const &transform, MeshSlotData const &mesh) -> std::uint32_t {
+        return lod_index_for(lod_view, transform, mesh);
     };
 
     auto const batch_for = [this](BatchKey const &key, MeshHandle mesh, std::uint32_t submesh_index,
@@ -3736,7 +3756,7 @@ auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_posit
         }
     };
 
-    auto const lod_slot_count = lod_distances.size() + 1;
+    auto const lod_slot_count = lod_radius_pixels.size() + 1;
     std::vector<BatchEntry *> instanced_batch_cache;
     std::vector<MaterialHandle> instanced_materials;
 
@@ -3771,6 +3791,8 @@ auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_posit
                     .first_chunk = frame.lod_chunk_count,
                     .group_count = groups.count,
                     .lod_groups = groups.lod_groups,
+                    .sphere_xy = glm::packHalf2x16(glm::vec2{mesh->bounding_centre.x, mesh->bounding_centre.y}),
+                    .sphere_zr = glm::packHalf2x16(glm::vec2{mesh->bounding_centre.z, mesh->bounding_radius}),
             });
             frame.lod_chunk_count += (instance_count + cull_chunk_size - 1) / cull_chunk_size;
 
@@ -3844,7 +3866,7 @@ auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_posit
                 if (!identity_local) {
                     instance_transform = &computed_transforms_.emplace_back(transform * model_draw.local_transform);
                 }
-                auto const lod_index = select_lod_index(glm::vec3((*instance_transform)[3]));
+                auto const lod_index = select_lod_index(*instance_transform, *mesh);
 
                 for (std::uint32_t submesh_index = 0; submesh_index < submesh_count; ++submesh_index) {
                     auto *&batch = instanced_batch_cache[submesh_index * lod_slot_count + lod_index];
@@ -3965,7 +3987,7 @@ auto Renderer::build_batches(RendererFrame &frame, glm::vec3 const &camera_posit
             return std::unexpected(make_error(RendererErrorType::invalid_mesh));
         }
 
-        auto const lod_index = select_lod_index(glm::vec3(submission.transform[3]));
+        auto const lod_index = select_lod_index(submission.transform, *mesh);
 
         for (std::uint32_t submesh_index = 0; submesh_index < mesh->submeshes.size(); ++submesh_index) {
             auto const &submesh = mesh->submeshes[submesh_index];
@@ -4596,6 +4618,12 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
 
     auto const camera_position = glm::vec3(glm::inverse(matrices.view)[3]);
     frame.lod_camera_position = camera_position;
+
+    // An orthographic camera has no distance to shrink things by, so every instance stays at full detail.
+    lod_pixel_scale_ = matrices.projection[2][3] != 0.0F
+                               ? std::abs(matrices.projection[1][1]) * static_cast<float>(extent_.height) * 0.5F
+                               : 1.0e6F;
+    frame.lod_pixel_scale = lod_pixel_scale_;
 
     ++batch_frame_;
 
@@ -5825,12 +5853,14 @@ auto Renderer::record_instance_lods(render_pass::Context const &pass_context, Re
             .camera_y = frame.lod_camera_position.y,
             .camera_z = frame.lod_camera_position.z,
             .job_count = static_cast<std::uint32_t>(frame.lod_jobs.size()),
-            .lod_distance_sq0 = lod_distances[0] * lod_distances[0],
-            .lod_distance_sq1 = lod_distances[1] * lod_distances[1],
-            .lod_distance_sq2 = lod_distances[2] * lod_distances[2],
+            .lod_pixel_scale = frame.lod_pixel_scale,
+            .lod_radius_pixels_sq0 = lod_radius_pixels[0] * lod_radius_pixels[0],
+            .lod_radius_pixels_sq1 = lod_radius_pixels[1] * lod_radius_pixels[1],
+            .lod_radius_pixels_sq2 = lod_radius_pixels[2] * lod_radius_pixels[2],
             .chunk_count = frame.lod_chunk_count,
             .stage = 0,
             ._padding = 0,
+            ._padding1 = 0,
     };
 
     constexpr std::array stages{0U, 1U, 2U};

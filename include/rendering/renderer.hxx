@@ -947,8 +947,10 @@ private:
         std::uint32_t first_chunk = 0;
         std::uint32_t group_count = 0;
         std::uint32_t lod_groups = 0;
-        std::uint32_t pad0 = 0;
-        std::uint32_t pad1 = 0;
+        // The mesh's bounding sphere as four half floats (centre x, y, z, then radius), which is all the precision a LOD
+        // pick needs and fits the two words left over.
+        std::uint32_t sphere_xy = 0;
+        std::uint32_t sphere_zr = 0;
         std::array<GpuLodGroup, lod_count> groups{};
     };
 
@@ -1150,6 +1152,7 @@ private:
 
         std::uint32_t lod_chunk_count = 0;
         glm::vec3 lod_camera_position{0.0F};
+        float lod_pixel_scale = 1.0e6F;
         std::vector<GpuLodJob> lod_jobs;
         Buffer lod_jobs_buffer{};
 
@@ -1741,6 +1744,8 @@ private:
     ViewMode view_mode_ = ViewMode::lit;
     ClusterGridSettings cluster_grid_{};
     ClusterStats last_cluster_stats_{};
+    // Pixels per world unit at distance one for this frame's camera, which the LOD picks run on (see lod_index_for).
+    float lod_pixel_scale_ = 1.0e6F;
     float light_icon_world_size_ = 0.5F;
 
     ImageHolder shadow_atlas_{};
