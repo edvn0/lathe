@@ -2689,8 +2689,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     };
 
     auto const draw_environment_settings = [&] {
-        gui::draw_environment_panel(active_scene()->environment, renderer->environment_system(), model_browser,
-                                    browsing_environment);
+        (void) gui::draw_environment_panel(active_scene()->environment, renderer->environment_system(), model_browser,
+                                           browsing_environment);
     };
 
     // Project-wide configuration (rendering, lights, environment) lives in one large window rather than in docked
