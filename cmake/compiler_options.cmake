@@ -66,6 +66,12 @@ elseif(
     target_compile_options(engine_options INTERFACE -Werror)
   endif()
 
+  # Debug at -O0 spends most of its time in glm/std wrapper calls. -Og inlines those and still leaves the build
+  # steppable in a debugger; LATHE_DEBUG_OPTIMIZE=OFF gives back the plain -O0.
+  if(LATHE_DEBUG_OPTIMIZE AND NOT LATHE_SANITIZE)
+    target_compile_options(engine_options INTERFACE $<$<CONFIG:Debug>:-Og>)
+  endif()
+
   if(LATHE_ENABLE_EXCEPTIONS)
     target_compile_options(
         engine_options

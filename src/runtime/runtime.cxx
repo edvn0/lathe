@@ -473,10 +473,12 @@ auto Runtime::handle_event(KeyPressedEvent ev) -> bool {
 }
 
 auto Runtime::handle_event(KeyReleasedEvent ev) -> bool {
+    (void) ev;
     return false;
 }
 
 auto Runtime::handle_event(MouseMovedEvent ev) -> bool {
+    (void) ev;
     return false;
 }
 

@@ -96,6 +96,12 @@ option(
 )
 
 option(
+    LATHE_DEBUG_OPTIMIZE
+    "Compile the engine with -Og in Debug builds (much faster to run; variables may be optimised out in a debugger)"
+    ON
+)
+
+option(
     LATHE_WERROR
     "Treat warnings as errors on this project's own targets (lathe-core/lathe/lathe-tests)"
     OFF
@@ -323,7 +329,7 @@ cpmaddpackage(
     NAME stb
     GITHUB_REPOSITORY nothings/stb
     GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20
-    GIT_SHALLOW YES
+    GIT_SHALLOW NO
     DOWNLOAD_ONLY YES
 )
 

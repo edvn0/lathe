@@ -56,7 +56,7 @@ namespace {
 
 TEST_SUITE("unit") {
     TEST_CASE("load_compressed_texture: colour role transcodes to BC7 sRGB, mips, and caches") {
-        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.png";
+        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.jpg";
         auto const cache_dir = make_temp_cache_dir("colour");
 
         auto first = load_compressed_texture(AssetPath::external(source).value(), TextureRole::colour, cache_dir);
@@ -85,7 +85,7 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("load_compressed_texture: cache hit publishes a preview that matches the full mip tail") {
-        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.png";
+        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.jpg";
         auto const cache_dir = make_temp_cache_dir("preview");
 
         auto const path = AssetPath::external(source).value();
@@ -122,7 +122,7 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("load_compressed_texture: normal_map role transcodes to BC5") {
-        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_normal.exr";
+        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_normal.jpg";
         auto const cache_dir = make_temp_cache_dir("normal");
 
         auto result = load_compressed_texture(AssetPath::external(source).value(), TextureRole::normal_map, cache_dir);
@@ -138,7 +138,7 @@ TEST_SUITE("unit") {
     }
 
     TEST_CASE("load_compressed_texture: generic role transcodes to BC7 UNORM") {
-        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_normal.exr";
+        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_normal.jpg";
         auto const cache_dir = make_temp_cache_dir("generic");
 
         auto result = load_compressed_texture(AssetPath::external(source).value(), TextureRole::generic, cache_dir);

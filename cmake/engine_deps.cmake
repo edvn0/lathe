@@ -62,6 +62,8 @@ target_compile_definitions(
         GLM_FORCE_RADIANS
         GLM_FORCE_DEPTH_ZERO_TO_ONE
         GLM_ENABLE_EXPERIMENTAL
+        # glm's operators are chains of tiny templates; at -O0 each is a real call. Forcing them inline keeps Debug usable.
+        GLM_FORCE_INLINE
         SLANG_ROOT_PATH="${slang_root}"
         LATHE_ENABLE_VALIDATION=$<BOOL:${LATHE_ENABLE_VALIDATION}>
         # One sol2 configuration for every TU (ODR). SOL_NO_EXCEPTIONS is left to sol2's own __EXCEPTIONS detection
