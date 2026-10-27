@@ -4088,7 +4088,6 @@ auto Renderer::batch_max_shadow_cascade(BatchEntry const *batch) const noexcept 
 // whether anything casting is animated, and the batches ordered by the furthest cascade they reach.
 auto Renderer::plan_shadow_batches(RendererFrame &frame, BatchBuild &build) -> void {
     std::uint64_t current_shadow_scene_signature = 0;
-    std::uint64_t shadow_caster_batch_count = 0;
     bool has_animated_shadow_casters = false;
     for (auto const *batch: active_batches_) {
         auto const *material = material_storage_.get(batch->material);
@@ -4099,25 +4098,23 @@ auto Renderer::plan_shadow_batches(RendererFrame &frame, BatchBuild &build) -> v
             continue;
         }
 
+        // The LOD is left out, and so is the batch count: an instance that crosses an LOD threshold as the camera moves
+        // moves between batches of the same mesh, submesh and material, which would otherwise redraw every cascade for
+        // a change the shadow maps barely show. Weighting each key by its instance count makes the sum the same however
+        // the instances are split between LODs.
         std::uint64_t batch_signature = 0xcbf29ce484222325ULL;
         batch_signature = shadow_signature_combine(batch_signature, batch->mesh.index);
         batch_signature = shadow_signature_combine(batch_signature, batch->submesh_index);
         batch_signature = shadow_signature_combine(batch_signature, material_storage_.gpu_index(batch->material));
-        batch_signature = shadow_signature_combine(batch_signature, batch->lod_index);
-        batch_signature =
-                shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(batch->transforms.size()));
         batch_signature = shadow_signature_combine(batch_signature, static_cast<std::uint64_t>(max_cascade));
 
-        current_shadow_scene_signature ^= shadow_signature_mix(batch_signature);
-        ++shadow_caster_batch_count;
+        current_shadow_scene_signature += shadow_signature_mix(batch_signature) * batch->transforms.size();
 
         has_animated_shadow_casters = has_animated_shadow_casters ||
                                       (material != nullptr && std::abs(material->wind_strength) > 1e-6F) ||
                                       batch->lod_job != BatchEntry::no_lod_job ||
                                       batch->skinned;
     }
-    current_shadow_scene_signature =
-            shadow_signature_combine(current_shadow_scene_signature, shadow_caster_batch_count);
 
     auto const order_shadow_batches = [this](auto &batches) {
         std::array<std::uint32_t, shadow_cascade_count> prefix_counts{};
