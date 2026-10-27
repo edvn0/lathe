@@ -737,10 +737,10 @@ namespace {
         }
 
         if (action == GLFW_PRESS && !imgui_wants_keyboard()) {
-            app->on_event(KeyPressedEvent{.key = key, .modifiers = mods});
+            app->event_bus.publish(KeyPressedEvent{.key = key, .modifiers = mods});
         }
         if (action == GLFW_RELEASE) {
-            app->on_event(KeyReleasedEvent{.key = key, .modifiers = mods});
+            app->event_bus.publish(KeyReleasedEvent{.key = key, .modifiers = mods});
         }
     }
 
@@ -756,7 +756,7 @@ namespace {
                 app->release_mouse();
             }
 
-            app->on_event(MouseButtonReleasedEvent{.button = button, .modifiers = mods});
+            app->event_bus.publish(MouseButtonReleasedEvent{.button = button, .modifiers = mods});
             return;
         }
 
@@ -774,7 +774,7 @@ namespace {
             app->capture_mouse();
         }
 
-        app->on_event(MouseButtonPressedEvent{.button = button, .modifiers = mods});
+        app->event_bus.publish(MouseButtonPressedEvent{.button = button, .modifiers = mods});
     }
 
     auto cursor_position_callback(GLFWwindow *window, double x_position, double y_position) -> void {
@@ -798,7 +798,7 @@ namespace {
         app->last_mouse_x = x_position;
         app->last_mouse_y = y_position;
 
-        app->on_event(MouseMovedEvent{.delta_x = delta_x, .delta_y = delta_y});
+        app->event_bus.publish(MouseMovedEvent{.delta_x = delta_x, .delta_y = delta_y});
     }
 
     auto scroll_callback(GLFWwindow *window, double x_offset, double y_offset) -> void {
@@ -808,7 +808,7 @@ namespace {
             return;
         }
 
-        app->on_event(MouseScrolledEvent{.delta_x = x_offset, .delta_y = y_offset});
+        app->event_bus.publish(MouseScrolledEvent{.delta_x = x_offset, .delta_y = y_offset});
     }
 
     auto focus_callback(GLFWwindow *window, int focused) noexcept -> void {
@@ -1232,6 +1232,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     });
 
     if (manifest && !manifest->title.empty()) {
+    runtime.subscribe_game_input();
         glfwSetWindowTitle(context.window, manifest->title.c_str());
     }
     install_window_callbacks(context, runtime);
@@ -1417,7 +1418,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         for (auto const &injected: injected_keys) {
             if (injected.frame == frame_number) {
-                runtime.on_event(KeyPressedEvent{.key = injected.key, .modifiers = injected.modifiers});
+                runtime.event_bus.publish(KeyPressedEvent{.key = injected.key, .modifiers = injected.modifiers});
             }
         }
 

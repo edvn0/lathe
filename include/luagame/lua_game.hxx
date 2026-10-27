@@ -70,10 +70,12 @@ public:
     auto reload_behaviours() -> void override;
     auto clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void override;
 
-    auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void override;
-    auto on_key_released(Scene &scene, KeyReleasedEvent const &event) -> void override;
-    auto on_mouse_moved(Scene &scene, MouseMovedEvent const &event) -> void override;
-    auto on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void override;
+    auto subscribe_input(InputContext const &ctx) -> void override;
+
+    auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void;
+    auto on_key_released(Scene &scene, KeyReleasedEvent const &event) -> void;
+    auto on_mouse_moved(Scene &scene, MouseMovedEvent const &event) -> void;
+    auto on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void;
 
     [[nodiscard]] auto wants_cursor() const -> bool override;
     auto on_cursor_position(Scene &scene, CursorPositionEvent const &event) -> void override;

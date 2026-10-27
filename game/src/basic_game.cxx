@@ -1128,6 +1128,13 @@ auto BasicGame::on_update(Scene &scene, float delta_time) -> void {
                           speed_factor, delta_time, occlusion_query);
 }
 
+auto BasicGame::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &BasicGame::on_key_pressed);
+    listen(ctx, &BasicGame::on_key_released);
+    listen(ctx, &BasicGame::on_mouse_moved, true);
+    listen(ctx, &BasicGame::on_mouse_button_pressed);
+}
+
 auto BasicGame::on_key_pressed(Scene & , KeyPressedEvent const &event) -> void {
     player_controller_.on_key_pressed(event.key);
 }

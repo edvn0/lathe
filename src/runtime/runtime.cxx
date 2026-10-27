@@ -26,7 +26,23 @@
 Runtime::Runtime(VulkanContext &ctx) noexcept :
     context(ctx), renderer(std::make_unique<Renderer>(context)),
     debug_renderer(std::make_unique<debug_draw::DebugRenderer>(*renderer)),
-    text_renderer(std::make_unique<TextRenderer>()) {}
+    text_renderer(std::make_unique<TextRenderer>()) {
+    event_subscriptions.push_back(event_bus.subscribe<KeyPressedEvent>([this](auto const &ev) { return handle_event(ev); }, 100));
+    event_subscriptions.push_back(event_bus.subscribe<KeyReleasedEvent>([this](auto const &ev) { return handle_event(ev); }, 100));
+    event_subscriptions.push_back(event_bus.subscribe<MouseMovedEvent>([this](auto const &ev) { return handle_event(ev); }, 100));
+    event_subscriptions.push_back(event_bus.subscribe<MouseScrolledEvent>([this](auto const &ev) { return handle_event(ev); }, 100));
+    event_subscriptions.push_back(event_bus.subscribe<MouseButtonPressedEvent>([this](auto const &ev) { return handle_event(ev); }, 100));
+    event_subscriptions.push_back(event_bus.subscribe<MouseButtonReleasedEvent>([this](auto const &ev) { return handle_event(ev); }, 100));
+}
+
+auto Runtime::subscribe_game_input() -> void {
+    game->subscribe_input(InputContext{
+        .bus = event_bus,
+        .scene = [this] { return active_scene(); },
+        .playing = [this] { return is_playing; },
+        .mouse_look = [this] { return play_fullscreen || game_mouse_captured; },
+    });
+}
 
 Runtime::~Runtime() {
     if (terrain) {
@@ -404,6 +420,7 @@ auto Runtime::switch_game(std::string name) -> void {
                 .effects = &effect_system,
                 .text = text_renderer.get(),
         });
+        subscribe_game_input();
 
         scene_path.clear();
         scene_pack.reset();
@@ -419,7 +436,7 @@ auto Runtime::request_screenshot() -> void {
     renderer->request_screenshot(screenshot_viewport_only ? ScreenshotSource::viewport : ScreenshotSource::window);
 }
 
-auto Runtime::on_event(KeyPressedEvent ev) -> bool {
+auto Runtime::handle_event(KeyPressedEvent ev) -> bool {
     if (ev.key == GLFW_KEY_F12) {
         request_screenshot();
     }
@@ -441,54 +458,37 @@ auto Runtime::on_event(KeyPressedEvent ev) -> bool {
             }
         }
 
-        game->on_key_pressed(*active_scene(), ev);
     }
 
     return true;
 }
 
-auto Runtime::on_event(KeyReleasedEvent ev) -> bool {
-    if (is_playing) {
-        game->on_key_released(*active_scene(), ev);
-    }
-
-    return true;
+auto Runtime::handle_event(KeyReleasedEvent ev) -> bool {
+    return false;
 }
 
-auto Runtime::on_event(MouseMovedEvent ev) -> bool {
-    if (is_playing && (play_fullscreen || game_mouse_captured)) {
-        game->on_mouse_moved(*active_scene(), ev);
-    }
-
-    return true;
+auto Runtime::handle_event(MouseMovedEvent ev) -> bool {
+    return false;
 }
 
-auto Runtime::on_event(MouseScrolledEvent ev) -> bool {
+auto Runtime::handle_event(MouseScrolledEvent ev) -> bool {
     (void) ev;
 
-    return true;
+    return false;
 }
 
-auto Runtime::on_event(MouseButtonPressedEvent ev) -> bool {
+auto Runtime::handle_event(MouseButtonPressedEvent ev) -> bool {
     if (ev.button == GLFW_MOUSE_BUTTON_RIGHT) {
         mouse_dragging = true;
     }
 
-    if (is_playing) {
-        game->on_mouse_button_pressed(*active_scene(), ev);
-    }
-
-    return true;
+    return false;
 }
 
-auto Runtime::on_event(MouseButtonReleasedEvent ev) -> bool {
+auto Runtime::handle_event(MouseButtonReleasedEvent ev) -> bool {
     if (ev.button == GLFW_MOUSE_BUTTON_RIGHT) {
         mouse_dragging = false;
     }
 
-    if (is_playing) {
-        game->on_mouse_button_released(*active_scene(), ev);
-    }
-
-    return true;
+    return false;
 }

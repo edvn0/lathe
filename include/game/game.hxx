@@ -56,32 +56,39 @@ class IGame {
 public:
     virtual ~IGame() = default;
 
+// What a game needs to subscribe to the runtime's EventBus: handlers only fire while playing, and look events (mouse
+// movement) only while the mouse is captured.
+struct InputContext {
+    EventBus &bus;
+    std::function<Scene *()> scene;
+    std::function<bool()> playing;
+    std::function<bool()> mouse_look;
+};
+
     virtual auto attach_host(GameHost host) -> void { (void) host; }
 
     virtual auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void = 0;
 
+protected:
+    template<typename E, typename G>
+    auto listen(InputContext const &ctx, void (G::*handler)(Scene &, E const &), bool look = false) -> void {
+        input_subscriptions_.push_back(ctx.bus.subscribe<E>(
+            [this, ctx, handler, look](E const &event) {
+                if (ctx.playing() && (!look || ctx.mouse_look())) {
+                    (static_cast<G *>(this)->*handler)(*ctx.scene(), event);
+                }
+
+                return false;
+            },
+            200));
+    }
+
+public:
+
     virtual auto on_update(Scene &scene, float delta_time) -> void = 0;
 
-    virtual auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void {
-        (void) scene;
-        (void) event;
-    }
-    virtual auto on_key_released(Scene &scene, KeyReleasedEvent const &event) -> void {
-        (void) scene;
-        (void) event;
-    }
-    virtual auto on_mouse_moved(Scene &scene, MouseMovedEvent const &event) -> void {
-        (void) scene;
-        (void) event;
-    }
-    virtual auto on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void {
-        (void) scene;
-        (void) event;
-    }
-    virtual auto on_mouse_button_released(Scene &scene, MouseButtonReleasedEvent const &event) -> void {
-        (void) scene;
-        (void) event;
-    }
+    // Games subscribe their input handlers here with listen(); the subscriptions live as long as the game.
+    virtual auto subscribe_input(InputContext const &ctx) -> void { (void) ctx; }
 
     [[nodiscard]] virtual auto wants_cursor() const -> bool { return false; }
 
@@ -126,3 +133,6 @@ public:
         clone_editor_into_runtime<>(editor_scene, runtime_scene);
     }
 };
+
+private:
+    std::vector<EventBus::Subscription> input_subscriptions_;

@@ -23,8 +23,10 @@ public:
     auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void override;
     auto on_update(Scene &scene, float delta_time) -> void override;
 
-    auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void override;
-    auto on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void override;
+    auto subscribe_input(InputContext const &ctx) -> void override;
+
+    auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void;
+    auto on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void;
 
     [[nodiscard]] auto wants_cursor() const -> bool override { return true; }
     auto on_cursor_position(Scene &scene, CursorPositionEvent const &event) -> void override;

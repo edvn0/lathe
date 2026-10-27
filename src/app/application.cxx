@@ -493,6 +493,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             // View mode picker floating over the viewport's top-left corner, like Blender's shading dropdown.
             ImGui::SetCursorScreenPos(ImVec2{viewport_screen_pos.x + 8.0F, viewport_screen_pos.y + 8.0F});
             ImGui::SetNextItemWidth(170.0F);
+    event_subscriptions.push_back(event_bus.subscribe<KeyPressedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<KeyReleasedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseMovedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseScrolledEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseButtonPressedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseButtonReleasedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
             auto const current_mode = renderer->view_mode();
             auto const current_name =
                     std::ranges::find(view_mode_names, current_mode, &std::pair<ViewMode, std::string_view>::first)
@@ -500,6 +506,41 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             if (ImGui::BeginCombo("##view_mode", std::string{current_name}.c_str())) {
                 for (auto const &[mode, name]: view_mode_names) {
                     if (ImGui::Selectable(std::string{name}.c_str(), mode == current_mode)) {
+auto Application::draw_event_metrics() -> void {
+    if (ImGui::Button("Reset")) {
+        event_bus.reset_metrics();
+    }
+
+    if (ImGui::BeginTable("Events", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        for (auto const *column: {"Event", "Subs", "Published", "Consumed", "Calls", "Avg us", "Max us"}) {
+            ImGui::TableSetupColumn(column);
+        }
+        ImGui::TableHeadersRow();
+
+        for (auto const &m: event_bus.metrics()) {
+            auto const avg_us = m.handler_calls == 0 ? 0.0 : static_cast<double>(m.total_ns) / 1000.0 / static_cast<double>(m.handler_calls);
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(m.name.data(), m.name.data() + m.name.size());
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu", m.subscribers);
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", static_cast<unsigned long long>(m.published));
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", static_cast<unsigned long long>(m.consumed));
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", static_cast<unsigned long long>(m.handler_calls));
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f", avg_us);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f", static_cast<double>(m.max_ns) / 1000.0);
+        }
+
+        ImGui::EndTable();
+    }
+}
+
                         renderer->set_view_mode(mode);
                     }
                 }
@@ -700,6 +741,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             changed = true;
         }
 
+    widget("Events", [&] { draw_event_metrics(); });
         changed |= ImGui::Checkbox("Debug meshlet colours", &info.debug_meshlet_colours);
         changed |= ImGui::SliderFloat("Meshlet extrude", &info.meshlet_extrude, 0.0F, 4.0F);
         changed |= ImGui::SliderFloat("Meshlet shrink", &info.meshlet_shrink, 0.0F, 0.9F);
@@ -2747,7 +2789,7 @@ auto Application::update(float delta_time) -> void {
     Runtime::update(delta_time);
 }
 
-auto Application::on_event(KeyPressedEvent ev) -> bool {
+auto Application::handle_event(KeyPressedEvent ev) -> bool {
     if (packaging_active()) {
         return true;
     }
@@ -2805,18 +2847,18 @@ auto Application::on_event(KeyPressedEvent ev) -> bool {
         camera.on_key_pressed(ev.key);
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }
 
-auto Application::on_event(KeyReleasedEvent ev) -> bool {
+auto Application::handle_event(KeyReleasedEvent ev) -> bool {
     if (!is_playing) {
         camera.on_key_released(ev.key);
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }
 
-auto Application::on_event(MouseMovedEvent ev) -> bool {
+auto Application::handle_event(MouseMovedEvent ev) -> bool {
     if (!is_playing) {
         auto const dx = static_cast<float>(ev.delta_x);
         auto const dy = static_cast<float>(ev.delta_y);
@@ -2830,10 +2872,10 @@ auto Application::on_event(MouseMovedEvent ev) -> bool {
         }
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }
 
-auto Application::on_event(MouseScrolledEvent ev) -> bool {
+auto Application::handle_event(MouseScrolledEvent ev) -> bool {
     if (packaging_active()) {
         return true;
     }
@@ -2846,10 +2888,10 @@ auto Application::on_event(MouseScrolledEvent ev) -> bool {
         camera.on_mouse_scrolled(static_cast<float>(ev.delta_y));
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }
 
-auto Application::on_event(MouseButtonPressedEvent ev) -> bool {
+auto Application::handle_event(MouseButtonPressedEvent ev) -> bool {
     if (packaging_active()) {
         return true;
     }
@@ -2863,13 +2905,13 @@ auto Application::on_event(MouseButtonPressedEvent ev) -> bool {
         }
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }
 
-auto Application::on_event(MouseButtonReleasedEvent ev) -> bool {
+auto Application::handle_event(MouseButtonReleasedEvent ev) -> bool {
     if (ev.button == GLFW_MOUSE_BUTTON_LEFT) {
         camera_drag = CameraDrag::none;
     }
 
-    return Runtime::on_event(ev);
+    return false;
 }

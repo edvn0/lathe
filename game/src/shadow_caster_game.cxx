@@ -203,6 +203,10 @@ auto ShadowCasterGame::on_update(Scene &scene, float) -> void {
     humans.touch();
 }
 
+auto ShadowCasterGame::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &ShadowCasterGame::on_key_pressed);
+}
+
 auto ShadowCasterGame::on_key_pressed(Scene &, KeyPressedEvent const &event) -> void {
     if (renderer_ == nullptr) {
         return;

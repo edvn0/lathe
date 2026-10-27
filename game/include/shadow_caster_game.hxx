@@ -16,7 +16,8 @@ class ShadowCasterGame final : public IGame {
 public:
     auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void override;
     auto on_update(Scene &scene, float delta_time) -> void override;
-    auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void override;
+    auto subscribe_input(InputContext const &ctx) -> void override;
+    auto on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void;
 
     [[nodiscard]] auto camera(Scene const &scene, float aspect_ratio) const -> CameraParams override;
 

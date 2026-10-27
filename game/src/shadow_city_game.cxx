@@ -45,6 +45,10 @@ auto ShadowCityGame::on_update(Scene &, float) -> void {
     }
 }
 
+auto ShadowCityGame::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &ShadowCityGame::on_key_pressed);
+}
+
 auto ShadowCityGame::on_key_pressed(Scene &, KeyPressedEvent const &event) -> void {
     if (renderer_ == nullptr) {
         return;

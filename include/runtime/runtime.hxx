@@ -1,5 +1,8 @@
 #pragma once
 
+#include "core/event_bus.hxx"
+#include "scene/input_events.hxx"
+
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -155,12 +158,13 @@ struct Runtime {
     virtual auto update(float delta_time) -> void;
     virtual auto on_ui(std::uint32_t frame_index) -> void;
 
-    virtual auto on_event(KeyPressedEvent ev) -> bool;
-    virtual auto on_event(KeyReleasedEvent ev) -> bool;
-    virtual auto on_event(MouseMovedEvent ev) -> bool;
-    virtual auto on_event(MouseScrolledEvent ev) -> bool;
-    virtual auto on_event(MouseButtonPressedEvent ev) -> bool;
-    virtual auto on_event(MouseButtonReleasedEvent ev) -> bool;
+    // Called whenever `game` is replaced: lets the new game subscribe its input handlers to event_bus.
+    auto subscribe_game_input() -> void;
+
+    // Every input event goes through this bus; Runtime subscribes at priority 100, subclasses ahead of it.
+    EventBus event_bus;
+    std::vector<EventBus::Subscription> event_subscriptions;
+
 
     // Called before the renderer is torn down: drop everything that holds GPU resources.
     virtual auto on_shutdown() -> void;
@@ -184,6 +188,12 @@ protected:
 
     // Called from on_startup() once ImGui is up.
     virtual auto create_ui_resources() -> void {}
+    auto handle_event(KeyPressedEvent ev) -> bool;
+    auto handle_event(KeyReleasedEvent ev) -> bool;
+    auto handle_event(MouseMovedEvent ev) -> bool;
+    auto handle_event(MouseScrolledEvent ev) -> bool;
+    auto handle_event(MouseButtonPressedEvent ev) -> bool;
+    auto handle_event(MouseButtonReleasedEvent ev) -> bool;
 
     // Called when source_scene holds a fresh scene: populated by the game, or loaded from a file.
     virtual auto on_source_scene_replaced() -> void {}

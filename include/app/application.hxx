@@ -231,14 +231,15 @@ struct Application : Runtime {
     [[nodiscard]] auto editing_camera(float aspect_ratio) const -> CameraParams override;
     [[nodiscard]] auto observer_position() const -> glm::vec3 override { return camera.position(); }
 
-    auto on_event(KeyPressedEvent ev) -> bool override;
-    auto on_event(KeyReleasedEvent ev) -> bool override;
-    auto on_event(MouseMovedEvent ev) -> bool override;
-    auto on_event(MouseScrolledEvent ev) -> bool override;
-    auto on_event(MouseButtonPressedEvent ev) -> bool override;
-    auto on_event(MouseButtonReleasedEvent ev) -> bool override;
 
 protected:
+    auto draw_event_metrics() -> void;
+    auto handle_event(KeyPressedEvent ev) -> bool;
+    auto handle_event(KeyReleasedEvent ev) -> bool;
+    auto handle_event(MouseMovedEvent ev) -> bool;
+    auto handle_event(MouseScrolledEvent ev) -> bool;
+    auto handle_event(MouseButtonPressedEvent ev) -> bool;
+    auto handle_event(MouseButtonReleasedEvent ev) -> bool;
     auto on_play_starting() -> void override;
     auto on_play_stopping() -> void override;
     auto on_scene_opening() -> void override;
