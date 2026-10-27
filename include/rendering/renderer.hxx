@@ -847,6 +847,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto debug_draw_light_icons() const noexcept -> bool { return debug_draw_light_icons_; }
     auto set_debug_draw_light_icons(bool enabled) noexcept -> void { debug_draw_light_icons_ = enabled; }
 
+    // The editor's infinite ground grid with the world axes (assets/shaders/grid.slang). Off in an installed game.
+    [[nodiscard]] auto editor_grid() const noexcept -> bool { return editor_grid_; }
+    auto set_editor_grid(bool enabled) noexcept -> void { editor_grid_ = enabled; }
+
     [[nodiscard]] auto view_mode() const noexcept -> ViewMode { return view_mode_; }
     auto set_view_mode(ViewMode mode) noexcept -> void { view_mode_ = mode; }
 
@@ -1698,6 +1702,7 @@ private:
     PipelineNodeHandle decal_cluster_pipeline_;
     PipelineNodeHandle shadow_cull_pipeline_;
     PipelineNodeHandle skybox_pipeline_;
+    PipelineNodeHandle grid_pipeline_;
     FileChangeQueue shader_change_queue_;
 
     EnvironmentSystem environment_;
@@ -1727,6 +1732,7 @@ private:
 
     ImageHandle light_icon_texture_{};
     bool debug_draw_light_icons_ = false;
+    bool editor_grid_ = false;
 
     OverlayRegistry overlays_;
     OverlayRegistration light_icon_overlay_;

@@ -835,6 +835,27 @@ namespace render_pass {
             }
         }
 
+        if (draw_opaque && info.draw_grid) {
+            auto const grid_layout = detail::resolve_layout(context.pipeline_graph, info.grid_pipeline);
+
+            if (grid_layout != VK_NULL_HANDLE) {
+                detail::set_forward_dynamic_state(context.command_buffer, info.extent,
+                                                  detail::ForwardDynamicStateMode::blend);
+                vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
+
+                detail::bind_graphics_node(context.pipeline_graph, info.grid_pipeline, context.command_buffer,
+                                           info.samples, colour_attachment_count, true, true);
+                context.resource_table.bind(context.command_buffer, context.frame_index,
+                                            VK_PIPELINE_BIND_POINT_GRAPHICS, grid_layout);
+
+                SkyboxPushConstants const grid_pc{.ubo_address = info.ubo_address};
+
+                vkCmdPushConstants(context.command_buffer, grid_layout, VK_SHADER_STAGE_ALL, 0, sizeof(grid_pc),
+                                   &grid_pc);
+                vkCmdDraw(context.command_buffer, 3, 1, 0, 0);
+            }
+        }
+
         if (draw_blend && info.counts.blend != 0) {
             // Faces are not culled here: each blended command says which faces it keeps (back, front or both) and
             // the fragment shader drops the others, so a double-sided mesh draws its far side before its near side.

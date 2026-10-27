@@ -8,6 +8,7 @@
 #include "basic_game.hxx"
 #include "chess_game.hxx"
 #include "chess_lua.hxx"
+#include "empty_game.hxx"
 #include "glass_game.hxx"
 #include "globe_game.hxx"
 #include "core/logger.hxx"
@@ -22,7 +23,7 @@
 #include "shadow_caster_game.hxx"
 
 namespace {
-    constexpr std::array<std::string_view, 15> names{"basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "lights", "materials", "shadows", "shadowcity", "glass", "water", "globe", "snake"};
+    constexpr std::array<std::string_view, 16> names{"empty", "basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "lights", "materials", "shadows", "shadowcity", "glass", "water", "globe", "snake"};
 }
 
 auto game_names() -> std::span<std::string_view const> { return names; }
@@ -54,6 +55,11 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
         game->set_default_entry("assets/scripts/lights/main.lua");
 
         return game;
+    }
+
+    if (name == "empty") {
+        info("Starting an empty project");
+        return std::make_unique<EmptyGame>();
     }
 
     if (name == "materials") {

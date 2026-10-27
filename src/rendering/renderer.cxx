@@ -1029,6 +1029,33 @@ namespace {
             .debug_name = "renderer.shadow_cull_pipeline",
     });
 
+    pipeline_infos.push_back(PipelineRegisterInfo{
+            .stages =
+                    {
+                            renderer::ShaderCompileRequest{
+                                    .source_path = data_path("assets/shaders/grid.slang"),
+                                    .entry_point = FlyString{"main_vs"},
+                                    .stage = renderer::ShaderStage::vertex,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                            renderer::ShaderCompileRequest{
+                                    .source_path = data_path("assets/shaders/grid.slang"),
+                                    .entry_point = FlyString{"main_fs"},
+                                    .stage = renderer::ShaderStage::fragment,
+                                    .include_directories = {},
+                                    .defines = {},
+                            },
+                    },
+            .additional_descriptor_set_layouts = {},
+            .push_constant_ranges = {global_push_constant_range},
+            .colour_formats = {create_info.hdr_format},
+            .depth_format = create_info.depth_format,
+            .stencil_format = VK_FORMAT_UNDEFINED,
+            .samples = create_info.samples,
+            .debug_name = "renderer.grid_pipeline",
+    });
+
         return pipeline_infos;
     }
 }
@@ -1226,6 +1253,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     skin_pipeline_ = *registered_pipelines[33];
     decal_cluster_pipeline_ = *registered_pipelines[34];
     shadow_cull_pipeline_ = *registered_pipelines[35];
+    grid_pipeline_ = *registered_pipelines[36];
 
     {
         auto initialised = environment_.initialize(EnvironmentSystem::CreateInfo{
@@ -6824,6 +6852,8 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .blend_instanced_pipeline = forward_blend_instanced_pipeline_,
                     .skybox_pipeline = skybox_pipeline_,
                     .draw_skybox = (environment_.ubo_block().flags & environment_flag::skybox) != 0U,
+                    .grid_pipeline = grid_pipeline_,
+                    .draw_grid = editor_grid_,
                     .ao_texture_index = ao_texture_index,
                     .ao_sampler_index = sampler_storage_.linear_clamp().index,
                     .outline_mask = true,
