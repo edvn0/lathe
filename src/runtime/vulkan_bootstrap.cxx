@@ -226,6 +226,12 @@ namespace {
             auto const *const requested = std::getenv("LATHE_PLATFORM");
             auto const x11 = renderdoc.is_active() || (requested != nullptr && std::string_view{requested} == "x11");
             glfwInitHint(GLFW_PLATFORM, x11 ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM);
+
+            // libdecor draws its own title bar on Wayland even for an undecorated window; without it GLFW asks the
+            // compositor for client-side decorations, which is what a window with its own title bar wants.
+            if (context.undecorated_window) {
+                glfwInitHint(GLFW_WAYLAND_LIBDECOR, GLFW_WAYLAND_DISABLE_LIBDECOR);
+            }
             warn("Chosing: {} as platform.", x11 ? "X11" : "auto-detected");
 #endif
         }
@@ -258,7 +264,8 @@ namespace {
         // GLFW minimises a fullscreen window when it loses focus, and keeps doing so after the window manager has
         // taken the window out of fullscreen. Alt-Tabbing or clicking another window should not hide the game.
         glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
-        glfwWindowHint(GLFW_DECORATED, screen_type == ScreenType::borderless ? GLFW_FALSE : GLFW_TRUE);
+        glfwWindowHint(GLFW_DECORATED,
+                       screen_type == ScreenType::borderless || context.undecorated_window ? GLFW_FALSE : GLFW_TRUE);
         glfwWindowHint(GLFW_VISIBLE, screen_type == ScreenType::headless ? GLFW_FALSE : GLFW_TRUE);
 
         std::int32_t monitor_count{};
@@ -330,7 +337,7 @@ namespace {
             return false;
         }
 
-        info("GLFW window created");
+        info("GLFW window created (decorated: {})", glfwGetWindowAttrib(context.window, GLFW_DECORATED) == GLFW_TRUE);
 
         return true;
     }

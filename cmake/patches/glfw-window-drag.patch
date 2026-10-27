@@ -1,0 +1,117 @@
+--- a/include/GLFW/glfw3.h	2026-10-27 06:48:05.159579817 +0100
++++ b/include/GLFW/glfw3.h	2026-10-27 06:48:05.183579950 +0100
+@@ -3995,6 +3995,16 @@
+  */
+ GLFWAPI void glfwRequestWindowAttention(GLFWwindow* window);
+ 
++/*! @brief Asks the window system to start an interactive move or resize.
++ *
++ *  For undecorated windows that draw their own title bar. Call from a mouse button press. `edges` is a bitwise OR of
++ *  1 (top), 2 (bottom), 4 (left) and 8 (right), or 0 to move the window. Supported on Wayland and X11, otherwise a
++ *  no-op.
++ *
++ *  @ingroup window
++ */
++GLFWAPI void glfwStartWindowDrag(GLFWwindow* window, int edges);
++
+ /*! @brief Returns the monitor that the window uses for full screen mode.
+  *
+  *  This function returns the handle of the monitor that the specified window is
+--- a/src/window.c	2026-10-27 06:48:05.167579860 +0100
++++ b/src/window.c	2026-10-27 06:48:05.183579950 +0100
+@@ -839,6 +839,23 @@
+     _glfw.platform.requestWindowAttention(window);
+ }
+ 
++GLFWAPI void glfwStartWindowDrag(GLFWwindow* handle, int edges)
++{
++    _GLFWwindow* window = (_GLFWwindow*) handle;
++    assert(window != NULL);
++
++    _GLFW_REQUIRE_INIT();
++
++#if defined(_GLFW_WAYLAND)
++    if (_glfw.platform.platformID == GLFW_PLATFORM_WAYLAND)
++        _glfwStartWindowDragWayland(window, edges);
++#endif
++#if defined(_GLFW_X11)
++    if (_glfw.platform.platformID == GLFW_PLATFORM_X11)
++        _glfwStartWindowDragX11(window, edges);
++#endif
++}
++
+ GLFWAPI void glfwHideWindow(GLFWwindow* handle)
+ {
+     _GLFWwindow* window = (_GLFWwindow*) handle;
+--- a/src/wl_platform.h	2026-10-27 06:48:05.167579860 +0100
++++ b/src/wl_platform.h	2026-10-27 06:48:05.183579950 +0100
+@@ -631,6 +631,7 @@
+ void _glfwShowWindowWayland(_GLFWwindow* window);
+ void _glfwHideWindowWayland(_GLFWwindow* window);
+ void _glfwRequestWindowAttentionWayland(_GLFWwindow* window);
++void _glfwStartWindowDragWayland(_GLFWwindow* window, int edges);
+ void _glfwFocusWindowWayland(_GLFWwindow* window);
+ void _glfwSetWindowMonitorWayland(_GLFWwindow* window, _GLFWmonitor* monitor, int xpos, int ypos, int width, int height, int refreshRate);
+ GLFWbool _glfwWindowFocusedWayland(_GLFWwindow* window);
+--- a/src/wl_window.c	2026-10-27 06:48:05.167579860 +0100
++++ b/src/wl_window.c	2026-10-27 06:48:05.187579971 +0100
+@@ -2231,6 +2231,18 @@
+                     "Wayland: The platform does not support setting the window icon");
+ }
+ 
++void _glfwStartWindowDragWayland(_GLFWwindow* window, int edges)
++{
++    if (!window->wl.xdg.toplevel || !_glfw.wl.seat)
++        return;
++
++    // The edge bits match the xdg_toplevel resize edges.
++    if (edges == 0)
++        xdg_toplevel_move(window->wl.xdg.toplevel, _glfw.wl.seat, _glfw.wl.serial);
++    else
++        xdg_toplevel_resize(window->wl.xdg.toplevel, _glfw.wl.seat, _glfw.wl.serial, edges);
++}
++
+ void _glfwGetWindowPosWayland(_GLFWwindow* window, int* xpos, int* ypos)
+ {
+     // A Wayland client is not aware of its position, so just warn and leave it
+--- a/src/x11_platform.h	2026-10-27 06:48:05.167579860 +0100
++++ b/src/x11_platform.h	2026-10-27 06:48:05.187579971 +0100
+@@ -920,6 +920,7 @@
+ void _glfwShowWindowX11(_GLFWwindow* window);
+ void _glfwHideWindowX11(_GLFWwindow* window);
+ void _glfwRequestWindowAttentionX11(_GLFWwindow* window);
++void _glfwStartWindowDragX11(_GLFWwindow* window, int edges);
+ void _glfwFocusWindowX11(_GLFWwindow* window);
+ void _glfwSetWindowMonitorX11(_GLFWwindow* window, _GLFWmonitor* monitor, int xpos, int ypos, int width, int height, int refreshRate);
+ GLFWbool _glfwWindowFocusedX11(_GLFWwindow* window);
+--- a/src/x11_window.c	2026-10-27 06:48:05.167579860 +0100
++++ b/src/x11_window.c	2026-10-27 06:48:05.187579971 +0100
+@@ -2452,6 +2452,28 @@
+                   0, 1, 0);
+ }
+ 
++void _glfwStartWindowDragX11(_GLFWwindow* window, int edges)
++{
++    // _NET_WM_MOVERESIZE directions, indexed by the edge bits (top 1, bottom 2, left 4, right 8).
++    static const long direction[16] = {
++        8, 1, 5, -1, 7, 0, 6, -1, 3, 2, 4, -1, -1, -1, -1, -1
++    };
++
++    const Atom type = XInternAtom(_glfw.x11.display, "_NET_WM_MOVERESIZE", False);
++    if (!type || direction[edges & 15] < 0)
++        return;
++
++    Window root, child;
++    int rootX, rootY, childX, childY;
++    unsigned int mask;
++    XQueryPointer(_glfw.x11.display, window->x11.handle,
++                  &root, &child, &rootX, &rootY, &childX, &childY, &mask);
++
++    XUngrabPointer(_glfw.x11.display, CurrentTime);
++    sendEventToWM(window, type, rootX, rootY, direction[edges & 15], 1, 0);
++    XFlush(_glfw.x11.display);
++}
++
+ void _glfwFocusWindowX11(_GLFWwindow* window)
+ {
+     if (_glfw.x11.NET_ACTIVE_WINDOW)

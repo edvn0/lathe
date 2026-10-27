@@ -38,6 +38,9 @@ public:
     // True for an executable that is only ever an installed game.
     [[nodiscard]] virtual auto always_player() const -> bool { return false; }
 
+    // True when the executable draws its own title bar, so a windowed window is created without the OS one.
+    [[nodiscard]] virtual auto custom_title_bar() const -> bool { return false; }
+
     [[nodiscard]] virtual auto create_runtime(VulkanContext &context) -> std::unique_ptr<Runtime> = 0;
 
     // Command line: add this executable's own arguments, then (after parsing) stop early with an exit code, and

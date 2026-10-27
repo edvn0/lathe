@@ -455,6 +455,7 @@ namespace {
     }
 
     using gui::widget;
+    using gui::panel;
 
     [[nodiscard]] auto material_deletion_label(std::string_view name) -> std::string {
         return std::format("material:{}", name);
@@ -547,6 +548,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         return;
     }
 
+    handle_window_resize();
+    draw_main_menu_bar();
+
     auto const *main_viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(main_viewport->WorkPos);
     ImGui::SetNextWindowSize(main_viewport->WorkSize);
@@ -562,6 +566,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
     ImGuiID const dockspace_id = ImGui::GetID("MainDockSpace");
 
+    if (reset_layout_requested) {
+        ImGui::DockBuilderRemoveNode(dockspace_id);
+        panels = PanelVisibility{};
+        reset_layout_requested = false;
+    }
+
     if (ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
         ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
         ImGui::DockBuilderSetNodeSize(dockspace_id, main_viewport->WorkSize);
@@ -572,18 +582,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGuiID const bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28F, nullptr, &center);
 
         ImGui::DockBuilderDockWindow("Viewport", center);
-        ImGui::DockBuilderDockWindow("Frame graph", center);
+        if (auto *const node = ImGui::DockBuilderGetNode(center)) {
+            node->LocalFlags |= ImGuiDockNodeFlags_HiddenTabBar;
+        }
         ImGui::DockBuilderDockWindow("Hierarchy", left);
         ImGui::DockBuilderDockWindow("Inspector", right);
         ImGui::DockBuilderDockWindow("Console", bottom);
-        ImGui::DockBuilderDockWindow("Script", bottom);
-        ImGui::DockBuilderDockWindow("Assets", bottom);
-        ImGui::DockBuilderDockWindow("Load Model", bottom);
-        ImGui::DockBuilderDockWindow("Simulation", bottom);
-        ImGui::DockBuilderDockWindow("Scene stats", bottom);
-        ImGui::DockBuilderDockWindow("Frame timings", bottom);
-        ImGui::DockBuilderDockWindow("Lighting", bottom);
-        ImGui::DockBuilderDockWindow("Environment", bottom);
 
         ImGui::DockBuilderFinish(dockspace_id);
     }
@@ -603,35 +607,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         if (target.valid() && has_room) {
             ImGui::Image(gui::linear_source_texture_id(target.index), viewport_content_size);
 
-            // View mode picker floating over the viewport's top-left corner, like Blender's shading dropdown.
-            ImGui::SetCursorScreenPos(ImVec2{viewport_screen_pos.x + 8.0F, viewport_screen_pos.y + 8.0F});
-            ImGui::SetNextItemWidth(170.0F);
-            auto const current_mode = renderer->view_mode();
-            auto const current_name =
-                    std::ranges::find(view_mode_names, current_mode, &std::pair<ViewMode, std::string_view>::first)
-                            ->second;
-            if (ImGui::BeginCombo("##view_mode", std::string{current_name}.c_str())) {
-                for (auto const &[mode, name]: view_mode_names) {
-                    if (ImGui::Selectable(std::string{name}.c_str(), mode == current_mode)) {
-                        renderer->set_view_mode(mode);
-                    }
-                }
-
-                ImGui::Separator();
-
-                bool cones = debug_renderer->meshlet_cones_debug_enabled();
-                if (ImGui::Checkbox("Meshlet normal cones", &cones)) {
-                    debug_renderer->set_meshlet_cones_debug_enabled(cones);
-                }
-
-                bool bounds = debug_renderer->model_bounds_debug_enabled();
-                if (ImGui::Checkbox("Submesh bounds", &bounds)) {
-                    debug_renderer->set_model_bounds_debug_enabled(bounds);
-                }
-
-                ImGui::EndCombo();
-            }
-            ImGui::SetCursorScreenPos(viewport_screen_pos);
         }
 
         if (!is_playing && has_room) {
@@ -735,16 +710,16 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     });
     ImGui::PopStyleVar();
 
-    if (game && game_hooks_enabled) {
+    if (game && game_hooks_enabled && panels.game) {
         game->on_ui(*active_scene(), *renderer);
     }
 #if LATHE_TRACK_MEMORY
-    widget("Memory", [] { on_memory_ui(); });
+    panel("Memory", panels.memory, [] { on_memory_ui(); });
 #endif
-    widget("Events", [&] { draw_event_metrics(); });
-    widget("Console", [&] { terminal_widget.draw(); });
+    panel("Events", panels.events, [&] { draw_event_metrics(); });
+    panel("Console", panels.console, [&] { terminal_widget.draw(); });
 
-    widget("Script", [&] {
+    panel("Script", panels.script, [&] {
         auto const world = is_playing ? std::optional<ScriptWorld>{}
                                       : std::optional<ScriptWorld>{ScriptWorld{
                                                 .registry = &source_scene->get_registry(),
@@ -752,25 +727,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                                         }};
         if (script_widget.draw(world).transforms_written > 0) {
             renderer->mark_dynamic_shadow_casters_dirty();
-        }
-    });
-
-    widget("Load Model", [&] {
-        ImGui::TextUnformatted("glTF / GLB model");
-
-        ImGui::BeginDisabled(model_browser.is_open());
-        if (ImGui::Button("Browse...")) {
-            model_browse_target = ModelBrowseTarget::spawn_entity;
-            model_browser.open("Load Model", model_file_filters());
-        }
-        ImGui::EndDisabled();
-
-        for (auto const &load: std::views::reverse(model_loads)) {
-            if (!load.settled) {
-                ImGui::TextDisabled("Loading '%s'...", load.file_name.c_str());
-            } else {
-                ImGui::TextUnformatted(load.status.c_str());
-            }
         }
     });
 
@@ -859,7 +815,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         return changed;
     };
 
-    widget("Assets", [&] {
+    panel("Assets", panels.assets, [&] {
         auto &assets = renderer->assets();
 
         auto scan_directory = [](std::filesystem::path const &root, std::span<std::string_view const> extensions) {
@@ -1115,17 +1071,17 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         draw_named_only_section("Scripts", assets.scripts());
     });
 
-    widget("Hierarchy", [&] {
+    panel("Hierarchy", panels.hierarchy, [&] {
         auto const &style = ImGui::GetStyle();
 
-        ImGui::SeparatorText("Text");
-        {
-            bool placing = text_placement.active();
-            if (ImGui::Checkbox("Place text on surfaces (T)", &placing)) {
-                text_placement.set_active(placing);
-            }
+        if (text_placement.active()) {
+            ImGui::SeparatorText("Place text");
+            {
+                bool placing = true;
+                if (ImGui::Checkbox("Place text on surfaces (T)", &placing)) {
+                    text_placement.set_active(placing);
+                }
 
-            if (placing) {
                 auto &settings = text_placement.settings;
                 std::array<char, 256> buffer{};
                 copy_to_buffer(buffer, settings.text);
@@ -1143,44 +1099,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 }
                 ImGui::TextDisabled("Click a model to place it. R turns it (Shift+R back). Ctrl snaps to the grid, Alt skips snapping. Esc to stop.");
             }
-        }
-
-        ImGui::SeparatorText("Gizmo");
-
-        float const tool_icon_size = ImGui::GetFontSize() * 1.3F;
-
-        auto const tool_button = [&](gui::EditorIcon icon, bool active, char const *id, char const *tooltip) {
-            ImVec4 const bg = active ? ImVec4(0.26F, 0.59F, 0.98F, 0.45F) : ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
-            ImVec4 const tint = active ? ImVec4(1.0F, 1.0F, 1.0F, 1.0F) : ImVec4(0.68F, 0.68F, 0.72F, 1.0F);
-            bool const pressed =
-                    ImGui::ImageButton(id, editor_icons->texture(icon), ImVec2(tool_icon_size, tool_icon_size),
-                                       ImVec2(0, 0), ImVec2(1, 1), bg, tint);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s", tooltip);
-            }
-            return pressed;
-        };
-
-        if (tool_button(gui::EditorIcon::move, gizmo_operation == ImGuizmo::TRANSLATE, "##gizmo_move",
-                        "Translate (1)")) {
-            gizmo_operation = ImGuizmo::TRANSLATE;
-        }
-        ImGui::SameLine();
-        if (tool_button(gui::EditorIcon::rotate, gizmo_operation == ImGuizmo::ROTATE, "##gizmo_rotate", "Rotate (2)")) {
-            gizmo_operation = ImGuizmo::ROTATE;
-        }
-        ImGui::SameLine();
-        if (tool_button(gui::EditorIcon::scale, gizmo_operation == ImGuizmo::SCALE, "##gizmo_scale", "Scale (3)")) {
-            gizmo_operation = ImGuizmo::SCALE;
-        }
-
-        ImGui::SameLine(0.0F, style.ItemSpacing.x * 2.0F);
-
-        bool const is_local = gizmo_mode == ImGuizmo::LOCAL;
-        if (tool_button(is_local ? gui::EditorIcon::local : gui::EditorIcon::world, true, "##gizmo_space",
-                        is_local ? "Local space (4) -- click for world space"
-                                 : "World space (4) -- click for local space")) {
-            gizmo_mode = is_local ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
         }
 
         ImGui::SeparatorText("Entities");
@@ -1670,7 +1588,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    widget("Inspector", [&] {
+    panel("Inspector", panels.inspector, [&] {
         auto &registry = active_scene()->get_registry();
         auto const selected_entity = selection_context().primary();
 
@@ -2350,29 +2268,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    widget("Simulation", [&] {
-        if (is_playing) {
-            if (ImGui::Button("Stop")) {
-                stop();
-            }
-        } else {
-            if (ImGui::Button("Play")) {
-                play();
-            }
-        }
-
-        ImGui::SameLine();
-        ImGui::Checkbox("Fullscreen", &play_fullscreen);
-
-        ImGui::Separator();
-        if (ImGui::Button("Screenshot (F12)")) {
-            request_screenshot();
-        }
-        ImGui::SameLine();
-        ImGui::Checkbox("Viewport only", &screenshot_viewport_only);
-    });
-
-    widget("Scene stats", [&] {
+    panel("Scene stats", panels.scene_stats, [&] {
         auto const &stats = renderer->last_frame_stats();
         renderer->request_pipeline_stats();
         auto const &pipeline_stats = renderer->last_frame_pipeline_stats();
@@ -2450,7 +2346,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::Text("Lights: %u point / %u spot", stats.point_light_count, stats.spot_light_count);
     });
 
-    widget("Frame timings", [&] {
+    panel("Frame timings", panels.frame_timings, [&] {
         if (ImPlot::BeginPlot("Stage timings (cumulative ms)", ImVec2(-1, 250))) {
             ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
             ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x, ImGuiCond_Always);
@@ -2541,7 +2437,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    widget("Frame graph", [&] {
+    panel("Frame graph", panels.frame_graph, [&] {
         if (ImGui::BeginTabBar("##frame_graph_tabs")) {
             if (ImGui::BeginTabItem("Graph")) {
                 frame_graph_editor.draw(*renderer, stage_registry);
@@ -2555,7 +2451,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
     });
 
-    widget("Lighting", [&] {
+    auto const draw_rendering_settings = [&] {
         auto const draw_stage = [&](char const *id) {
             auto const *stage = stage_registry.find(FlyString{id});
             ImGui::SeparatorText(stage->title.data());
@@ -2572,7 +2468,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         draw_stage("shadows");
         draw_stage("ambient_occlusion");
         draw_stage("bloom");
+    };
 
+    auto const draw_lighting_settings = [&] {
         ImGui::SeparatorText("Punctual lights");
         auto &registry = active_scene()->get_registry();
 
@@ -2637,13 +2535,51 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 }
             }
         }
-    });
+    };
 
-    widget("Environment", [&] {
-        if (gui::draw_environment_panel(active_scene()->environment, renderer->environment_system(), model_browser,
-                                        browsing_environment)) {
+    auto const draw_environment_settings = [&] {
+        gui::draw_environment_panel(active_scene()->environment, renderer->environment_system(), model_browser,
+                                    browsing_environment);
+    };
+
+    // Project-wide configuration (rendering, lights, environment) lives in one large window rather than in docked
+    // panels. It is a normal window, not a modal, so the viewport stays live and the environment's file browser works.
+    if (panels.project_settings) {
+        auto const *const viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowSize(ImVec2{viewport->Size.x * 0.6F, viewport->Size.y * 0.75F}, ImGuiCond_Appearing);
+        ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2{0.5F, 0.5F});
+
+        if (ImGui::Begin("Project Settings", &panels.project_settings, ImGuiWindowFlags_NoDocking)) {
+            constexpr std::array<char const *, 3> pages{"Rendering", "Lighting", "Environment"};
+
+            if (ImGui::BeginChild("##project_settings_nav", ImVec2{170.0F, 0.0F}, ImGuiChildFlags_Borders)) {
+                for (auto const [index, name]: std::views::enumerate(pages)) {
+                    if (ImGui::Selectable(name, project_settings_page == static_cast<int>(index))) {
+                        project_settings_page = static_cast<int>(index);
+                    }
+                }
+            }
+            ImGui::EndChild();
+
+            ImGui::SameLine();
+
+            if (ImGui::BeginChild("##project_settings_page", ImVec2{0.0F, 0.0F})) {
+                switch (project_settings_page) {
+                    case 0:
+                        draw_rendering_settings();
+                        break;
+                    case 1:
+                        draw_lighting_settings();
+                        break;
+                    default:
+                        draw_environment_settings();
+                        break;
+                }
+            }
+            ImGui::EndChild();
         }
-    });
+        ImGui::End();
+    }
 
     draw_scene_file_ui();
 
@@ -2683,6 +2619,11 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     }
 
     gui::render_toasts();
+}
+
+auto Application::request_import_model() -> void {
+    model_browse_target = ModelBrowseTarget::spawn_entity;
+    model_browser.open("Load Model", model_file_filters());
 }
 
 auto Application::spawn_streamed_model(std::filesystem::path const &path) -> void {
@@ -2730,16 +2671,19 @@ auto Application::update_model_loads() -> void {
         if (state == ModelRequestState::failed) {
             load.status = std::format("Failed to load '{}': {}. Showing the placeholder cube.", load.file_name,
                                       streamer.failure_reason(load.model));
+            gui::toast_error("Model failed to load", load.status);
             continue;
         }
 
         if (load.model == engine_models.cube) {
             load.status = std::format("Could not reserve a model slot for '{}'. Showing the placeholder cube.",
                                       load.file_name);
+            gui::toast_warn("Model not loaded", load.status);
             continue;
         }
 
         load.status = std::format("Loaded '{}'", load.file_name);
+        gui::toast_success("Model loaded", load.status);
 
         if (load.scene != active_scene()) {
             continue;
@@ -2787,7 +2731,10 @@ auto Application::on_play_stopping() -> void {
     std::erase_if(model_loads, [&](StreamedModelLoad const &load) { return load.scene == runtime_scene.get(); });
 }
 
-auto Application::create_ui_resources() -> void { editor_icons = std::make_unique<gui::EditorIcons>(*renderer); }
+auto Application::create_ui_resources() -> void {
+    editor_icons = std::make_unique<gui::EditorIcons>(*renderer);
+    remove_window_decorations();
+}
 
 auto Application::on_source_scene_replaced() -> void { mark_source_scene_clean(); }
 

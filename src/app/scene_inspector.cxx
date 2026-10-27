@@ -65,8 +65,8 @@ namespace gui {
         path_buffer_[length] = '\0';
     }
 
-    auto SceneInspector::draw(EditorIcons const *icons, std::filesystem::path const &current_scene) -> void {
-        widget("Scene Inspector", [&] {
+    auto SceneInspector::draw(EditorIcons const *icons, std::filesystem::path const &current_scene, bool &open) -> void {
+        panel("Scene Inspector", open, [&] {
             ImGui::SetNextItemWidth(-1.0F);
             if (ImGui::InputText("##path", path_buffer_.data(), path_buffer_.size(),
                                  ImGuiInputTextFlags_EnterReturnsTrue)) {

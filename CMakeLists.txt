@@ -174,6 +174,7 @@ cpmaddpackage(
     NAME glfw
     GITHUB_REPOSITORY glfw/glfw
     GIT_TAG 3.4
+    PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/glfw-window-drag.patch"
     OPTIONS
         "GLFW_BUILD_EXAMPLES OFF"
         "GLFW_BUILD_TESTS OFF"

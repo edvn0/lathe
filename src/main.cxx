@@ -28,6 +28,8 @@ namespace {
         [[nodiscard]] auto name() const -> std::string_view override { return "lathe"; }
         [[nodiscard]] auto description() const -> std::string_view override { return "Lathe engine"; }
 
+        [[nodiscard]] auto custom_title_bar() const -> bool override { return true; }
+
         [[nodiscard]] auto create_runtime(VulkanContext &context) -> std::unique_ptr<Runtime> override {
             return std::make_unique<Application>(context);
         }

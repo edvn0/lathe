@@ -19,7 +19,7 @@ namespace gui {
     class SceneInspector {
     public:
         // `current_scene` is the file open in the editor, offered as a one-click target; may be empty.
-        auto draw(EditorIcons const *icons, std::filesystem::path const &current_scene) -> void;
+        auto draw(EditorIcons const *icons, std::filesystem::path const &current_scene, bool &open) -> void;
 
         auto inspect(std::filesystem::path const &path) -> void;
 

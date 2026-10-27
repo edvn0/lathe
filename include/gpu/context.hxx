@@ -22,6 +22,7 @@
 
 struct VulkanContext {
     GLFWwindow *window = nullptr;
+    bool undecorated_window = false;
 
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;

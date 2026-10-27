@@ -1213,6 +1213,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     context.validation = engine.validation.value_or(validation_by_default);
     context.sync_validation = true;
 
+    context.undecorated_window = profile.custom_title_bar() && screen_type == ScreenType::windowed;
+
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
 

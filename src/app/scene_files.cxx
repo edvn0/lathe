@@ -173,67 +173,9 @@ auto Application::on_files_dropped(std::span<std::filesystem::path const> paths)
 }
 
 auto Application::draw_scene_file_ui() -> void {
-    bool const busy = scene_save_job.has_value() || scene_load_job.has_value();
-
     draw_package_ui();
 
-    gui::widget("Scene", [&] {
-        auto const title = scene_path.empty() ? std::string{"(untitled)"} : gui::path_to_utf8(scene_path);
-        ImGui::Text("File: %s", title.c_str());
-
-        ImGui::BeginDisabled(busy || scene_browser.is_open());
-        if (ImGui::Button("Open...")) {
-            scene_browser.open("Open Scene", scene_file_filters());
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Save")) {
-            start_save_scene(scene_path);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Save As...")) {
-            start_save_scene({});
-        }
-        ImGui::EndDisabled();
-
-        if (game_choice.empty()) {
-            game_choice = game_name;
-        }
-
-        ImGui::BeginDisabled(busy || packaging_active());
-        ImGui::SetNextItemWidth(160.0F);
-        if (ImGui::BeginCombo("##game", game_choice.c_str())) {
-            for (auto const name: available_games) {
-                if (ImGui::Selectable(std::string{name}.c_str(), name == game_choice)) {
-                    game_choice = std::string{name};
-                }
-            }
-            ImGui::EndCombo();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Load Game")) {
-            request_switch_game(game_choice);
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(current: %s)", game_name.c_str());
-
-        if (ImGui::Button("Package Game...")) {
-            request_package_dialog();
-        }
-        ImGui::EndDisabled();
-
-        if (!package_status.empty()) {
-            ImGui::TextWrapped("%s", package_status.c_str());
-        }
-
-        if (!scene_status.empty()) {
-            ImGui::TextWrapped("%s", scene_status.c_str());
-        }
-
-        ImGui::TextDisabled("Ctrl+S save, Ctrl+Shift+S save as, Ctrl+O open.");
-        ImGui::TextDisabled("Drop a .lbf onto the window to open it, or a model (.gltf, .glb, .fbx, .obj, .usd, ...) to add it.");
-    });
-
-    scene_inspector.draw(editor_icons.get(), scene_path);
+    scene_inspector.draw(editor_icons.get(), scene_path, panels.scene_inspector);
 
     if (auto const picked = scene_browser.draw(editor_icons.get())) {
         request_open_scene(*picked);

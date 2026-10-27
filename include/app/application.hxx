@@ -73,6 +73,33 @@ struct Application : Runtime {
 
     std::unique_ptr<gui::EditorIcons> editor_icons;
 
+    // Which dockable panels are shown; the Window menu toggles them. The viewport is always there.
+    struct PanelVisibility {
+        bool hierarchy = true;
+        bool inspector = true;
+        bool assets = false;
+        bool console = true;
+        bool script = false;
+        // The current game's own panels (IGame::on_ui), e.g. the basic game's Grass tuning.
+        bool game = false;
+        bool project_settings = false;
+        bool frame_graph = false;
+        bool scene_stats = false;
+        bool frame_timings = false;
+        bool events = false;
+        bool memory = false;
+        bool scene_inspector = false;
+    } panels;
+
+    // True once the OS title bar is gone and the menu bar carries the title, drag area and window buttons.
+    int project_settings_page = 0;
+    bool reset_layout_requested = false;
+    bool custom_title_bar = false;
+    auto remove_window_decorations() -> void;
+    auto handle_window_resize() -> void;
+    auto draw_main_menu_bar() -> void;
+    auto request_import_model() -> void;
+
     enum class ModelBrowseTarget : std::uint8_t { spawn_entity, inspector };
     ModelBrowseTarget model_browse_target = ModelBrowseTarget::spawn_entity;
 
