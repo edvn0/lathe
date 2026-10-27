@@ -4,6 +4,7 @@
 #include <array>
 #include <expected>
 #include <optional>
+#include <utility>
 
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
@@ -1103,135 +1104,256 @@ auto Renderer::record_frame(FrameRecordInfo const &info) -> std::expected<void, 
                 });
     }
 
+    // With water on screen the forward pass is split in two around a copy of the scene colour and depth: the opaque
+    // and masked draws (and the sky), then the blended draws, which sample the copy to refract (docs/water.md).
+    // Without water it stays one pass and nothing is copied.
+    auto const scene_copy = frame.scene_copy_needed;
+    auto msaa_colour = frame_graph::ImageId{};
+    auto outline_msaa = frame_graph::ImageId{};
+    auto scene_colour_copy = frame_graph::ImageId{};
+    auto scene_depth_copy = frame_graph::ImageId{};
+
+    auto const declare_forward_reads = [&](frame_graph::PassBuilder &pass, bool with_overlays) {
+        [[maybe_unused]] auto const shadows = pass.read(shadow_image, frame_graph::Use::sampled, fragment_stage);
+        if (local_shadows_active) {
+            [[maybe_unused]] auto const local_shadows =
+                    pass.read(local_shadow_image, frame_graph::Use::sampled, fragment_stage);
+        }
+        if (with_overlays) {
+            [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
+            // What the game's scene draws read, so they run after the passes that wrote it.
+            for (auto const &game_read: game_graph.forward_reads()) {
+                [[maybe_unused]] auto const read = pass.read(
+                        frame_graph::BufferId{.index = game_read.buffer.index,
+                                              .generation = frame_graph_.latest_version(game_read.buffer.index)},
+                        frame_graph::Use::shader_read, game_read.stages);
+            }
+        }
+        if (environment_pending) {
+            [[maybe_unused]] auto const environment = pass.read(environment_token, frame_graph::Use::token_read);
+        }
+        [[maybe_unused]] auto const draws = pass.read(visible_draws, frame_graph::Use::shader_read, draw_stages);
+        [[maybe_unused]] auto const transforms =
+                pass.read(visible_transforms, frame_graph::Use::shader_read, draw_stages);
+        [[maybe_unused]] auto const commands = pass.read(occlusion_active ? merged_indirect : culled_indirect,
+                                                         frame_graph::Use::indirect_read);
+        [[maybe_unused]] auto const planes =
+                pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+        read_skinned_vertices(pass, draw_stages);
+        if (meshlet_occlusion_active) {
+            [[maybe_unused]] auto const views =
+                    pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+            [[maybe_unused]] auto const bits =
+                    pass.read(meshlet_bits, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
+        }
+        if (clustered) {
+            [[maybe_unused]] auto const clusters =
+                    pass.read(cluster_lights, frame_graph::Use::shader_read, fragment_stage);
+        }
+        if (decals_active) {
+            [[maybe_unused]] auto const decal_list = pass.read(decals, frame_graph::Use::shader_read, fragment_stage);
+            [[maybe_unused]] auto const decal_cells =
+                    pass.read(decal_clusters, frame_graph::Use::shader_read, fragment_stage);
+        }
+        if (ao_enabled) {
+            [[maybe_unused]] auto const ao = pass.read(ao_image, frame_graph::Use::sampled, fragment_stage);
+        }
+    };
+
+    // Records the draws of one phase of the forward pass; the blended phase (or the whole pass) also records the
+    // overlays and the game's scene draws.
+    auto const record_forward_phase = [&](frame_graph::PassContext &context, render_pass::ForwardPhase phase) {
+        if (!state.result) {
+            return;
+        }
+
+        auto const pass_context = pass_context_of(context);
+
+        OverlayScope const scene_scope{
+                .extent = targets->extent,
+                .colour_format = hdr_format_,
+                .depth_format = depth_format_,
+                .samples = samples_,
+                .colour_attachment_count = 2U,
+        };
+        auto scene_overlays = [&] {
+            record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
+
+            if (game_graph.has_scene_draws()) {
+                ZoneScopedNC("Game scene draws", tracy::Color::DeepPink);
+                TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer, "Game scene draws",
+                             tracy::Color::DeepPink);
+                game_graph.record_scene_draws(context, OverlayRecordContext{
+                                                               .command_buffer = pass_context.command_buffer,
+                                                               .frame_index = info.frame_index,
+                                                               .scope = scene_scope,
+                                                               .view_projection = frame.view_projection,
+                                                       });
+            }
+        };
+
+        state.handoff.ao_texture_index = ao_enabled ? transient_index(ao_image) : image_storage_.white().index;
+
+        auto const scene_copies =
+                phase == render_pass::ForwardPhase::blend
+                        ? std::pair{transient_index(scene_colour_copy), transient_index(scene_depth_copy)}
+                        : std::pair{0U, 0U};
+
+        // The split opaque phase writes no HDR image of its own when multisampled (its resolve is the colour copy);
+        // the blended phase hands on the real one.
+        auto const output = phase == render_pass::ForwardPhase::opaque && multisampled ? scene_colour_copy : hdr_image;
+        auto const hdr = record_forward_pass(pass_context, frame, *targets, state.handoff.ao_texture_index,
+                                             transient_index(output), render_pass::Callback::bind(scene_overlays),
+                                             phase, scene_copies.first, scene_copies.second);
+        if (hdr) {
+            state.handoff.hdr = *hdr;
+        } else {
+            state.result = std::unexpected(hdr.error());
+        }
+    };
+
     frame_graph_.add_pass(
             "forward", frame_graph::PassType::raster,
             {
                     .name_id = "forward_pass",
-                    .label = "Forward",
+                    .label = scene_copy ? "Forward (opaque)" : "Forward",
                     .color = static_cast<std::uint32_t>(tracy::Color::RoyalBlue),
             },
             [&](frame_graph::PassBuilder &pass) {
-                [[maybe_unused]] auto const shadows =
-                        pass.read(shadow_image, frame_graph::Use::sampled, fragment_stage);
-                if (local_shadows_active) {
-                    [[maybe_unused]] auto const local_shadows =
-                            pass.read(local_shadow_image, frame_graph::Use::sampled, fragment_stage);
-                }
-                [[maybe_unused]] auto const overlays = pass.read(overlay_data, frame_graph::Use::token_read);
-                if (environment_pending) {
-                    [[maybe_unused]] auto const environment =
-                            pass.read(environment_token, frame_graph::Use::token_read);
-                }
-                // What the game's scene draws read, so they run after the passes that wrote it.
-                for (auto const &game_read: game_graph.forward_reads()) {
-                    [[maybe_unused]] auto const read = pass.read(
-                            frame_graph::BufferId{.index = game_read.buffer.index,
-                                                  .generation = frame_graph_.latest_version(game_read.buffer.index)},
-                            frame_graph::Use::shader_read, game_read.stages);
-                }
-                [[maybe_unused]] auto const draws =
-                        pass.read(visible_draws, frame_graph::Use::shader_read, draw_stages);
-                [[maybe_unused]] auto const transforms =
-                        pass.read(visible_transforms, frame_graph::Use::shader_read, draw_stages);
-                [[maybe_unused]] auto const commands = pass.read(occlusion_active ? merged_indirect : culled_indirect,
-                                                                 frame_graph::Use::indirect_read);
-                [[maybe_unused]] auto const planes =
-                        pass.read(frustum_planes, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
-                read_skinned_vertices(pass, draw_stages);
-                if (meshlet_occlusion_active) {
-                    [[maybe_unused]] auto const views =
-                            pass.read(occlusion_views, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
-                    [[maybe_unused]] auto const bits =
-                            pass.read(meshlet_bits, frame_graph::Use::shader_read, stages_of(ShaderStage::task));
-                }
-                if (clustered) {
-                    [[maybe_unused]] auto const clusters =
-                            pass.read(cluster_lights, frame_graph::Use::shader_read, fragment_stage);
-                }
-                if (decals_active) {
-                    [[maybe_unused]] auto const decal_list =
-                            pass.read(decals, frame_graph::Use::shader_read, fragment_stage);
-                    [[maybe_unused]] auto const decal_cells =
-                            pass.read(decal_clusters, frame_graph::Use::shader_read, fragment_stage);
-                }
-                if (ao_enabled) {
-                    [[maybe_unused]] auto const ao = pass.read(ao_image, frame_graph::Use::sampled, fragment_stage);
-                }
+                declare_forward_reads(pass, !scene_copy);
 
                 if (multisampled) {
-                    auto const msaa = pass.color(
-                            pass.create(target_description(hdr_format_, samples_, false, "hdr_msaa")),
-                            frame_graph::LoadOp::clear, frame_graph::StoreOp::dont_care, forward_clear_colour);
-                    hdr_image =
-                            pass.create(target_description(hdr_format_, VK_SAMPLE_COUNT_1_BIT, true, "resolved_hdr"));
-                    hdr_image = pass.resolve(msaa, hdr_image, VK_RESOLVE_MODE_AVERAGE_BIT);
+                    // Split: the MSAA image is kept for the blended pass and the resolve is the scene colour copy.
+                    msaa_colour = pass.color(pass.create(target_description(hdr_format_, samples_, false, "hdr_msaa")),
+                                             frame_graph::LoadOp::clear,
+                                             scene_copy ? frame_graph::StoreOp::store : frame_graph::StoreOp::dont_care,
+                                             forward_clear_colour);
+                    if (scene_copy) {
+                        scene_colour_copy = pass.create(
+                                target_description(hdr_format_, VK_SAMPLE_COUNT_1_BIT, true, "scene_colour_copy"));
+                        scene_colour_copy = pass.resolve(msaa_colour, scene_colour_copy, VK_RESOLVE_MODE_AVERAGE_BIT);
+                    } else {
+                        hdr_image = pass.create(
+                                target_description(hdr_format_, VK_SAMPLE_COUNT_1_BIT, true, "resolved_hdr"));
+                        hdr_image = pass.resolve(msaa_colour, hdr_image, VK_RESOLVE_MODE_AVERAGE_BIT);
+                    }
                 } else {
                     hdr_image = pass.create(target_description(hdr_format_, VK_SAMPLE_COUNT_1_BIT, true, "hdr"));
                     hdr_image = pass.color(hdr_image, frame_graph::LoadOp::clear, frame_graph::StoreOp::store,
                                            forward_clear_colour);
                 }
 
-                {
-                    if (multisampled) {
-                        auto const outline_msaa = pass.color(
-                                pass.create(target_description(VK_FORMAT_R8_UNORM, samples_, false, "outline_msaa")),
-                                frame_graph::LoadOp::clear, frame_graph::StoreOp::dont_care, outline_clear_colour);
+                if (multisampled) {
+                    outline_msaa = pass.color(
+                            pass.create(target_description(VK_FORMAT_R8_UNORM, samples_, false, "outline_msaa")),
+                            frame_graph::LoadOp::clear,
+                            scene_copy ? frame_graph::StoreOp::store : frame_graph::StoreOp::dont_care,
+                            outline_clear_colour);
+                    if (!scene_copy) {
                         outline_image = pass.create(
                                 target_description(VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, true, "resolved_outline"));
                         outline_image = pass.resolve(outline_msaa, outline_image, VK_RESOLVE_MODE_AVERAGE_BIT);
-                    } else {
-                        outline_image = pass.create(
-                                target_description(VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, true, "outline"));
-                        outline_image = pass.color(outline_image, frame_graph::LoadOp::clear,
-                                                   frame_graph::StoreOp::store, outline_clear_colour);
                     }
+                } else {
+                    outline_image =
+                            pass.create(target_description(VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, true, "outline"));
+                    outline_image = pass.color(outline_image, frame_graph::LoadOp::clear, frame_graph::StoreOp::store,
+                                               outline_clear_colour);
                 }
                 depth_image = pass.write_depth(depth_image, frame_graph::LoadOp::load, frame_graph::StoreOp::store);
                 pass.render_area({.offset = {0, 0}, .extent = targets->extent});
 
                 return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                    if (!state.result) {
-                        return;
-                    }
-
-                    auto const pass_context = pass_context_of(context);
-
-                    OverlayScope const scene_scope{
-                            .extent = targets->extent,
-                            .colour_format = hdr_format_,
-                            .depth_format = depth_format_,
-                            .samples = samples_,
-                            .colour_attachment_count = 2U,
-                    };
-                    auto scene_overlays = [&] {
-                        record_overlay_stage(pass_context, OverlayStage::scene, scene_scope, frame.view_projection);
-
-                        if (game_graph.has_scene_draws()) {
-                            ZoneScopedNC("Game scene draws", tracy::Color::DeepPink);
-                            TracyVkZoneC(context_.host_query_context.context, pass_context.command_buffer,
-                                         "Game scene draws", tracy::Color::DeepPink);
-                            game_graph.record_scene_draws(context, OverlayRecordContext{
-                                                                           .command_buffer = pass_context.command_buffer,
-                                                                           .frame_index = info.frame_index,
-                                                                           .scope = scene_scope,
-                                                                           .view_projection = frame.view_projection,
-                                                                   });
-                        }
-                    };
-
-                    state.handoff.ao_texture_index =
-                            ao_enabled ? transient_index(ao_image) : image_storage_.white().index;
-
-                    auto const hdr = record_forward_pass(pass_context, frame, *targets, state.handoff.ao_texture_index,
-                                                         transient_index(hdr_image),
-                                                         render_pass::Callback::bind(scene_overlays));
-                    if (hdr) {
-                        state.handoff.hdr = *hdr;
-                    } else {
-                        state.result = std::unexpected(hdr.error());
-                    }
+                    record_forward_phase(context, scene_copy ? render_pass::ForwardPhase::opaque
+                                                             : render_pass::ForwardPhase::all);
                 }};
             });
+
+    if (scene_copy) {
+        if (multisampled) {
+            // The depth prepass already resolved the opaque and masked depth into a single-sample image the blended
+            // pass does not render to, so it is the depth copy as it is.
+            scene_depth_copy = resolved_depth_image;
+        } else {
+            frame_graph_.add_pass(
+                    "scene_copy", frame_graph::PassType::transfer,
+                    {
+                            .name_id = "scene_copy",
+                            .label = "Scene copy",
+                            .color = static_cast<std::uint32_t>(tracy::Color::SteelBlue),
+                    },
+                    [&](frame_graph::PassBuilder &pass) {
+                        hdr_image = pass.read(hdr_image, frame_graph::Use::transfer_src);
+                        depth_image = pass.read(depth_image, frame_graph::Use::transfer_src);
+                        scene_colour_copy = pass.create(
+                                target_description(hdr_format_, VK_SAMPLE_COUNT_1_BIT, true, "scene_colour_copy"));
+                        scene_colour_copy = pass.write(scene_colour_copy, frame_graph::Use::transfer_dst);
+                        scene_depth_copy = pass.create(
+                                target_description(depth_format_, VK_SAMPLE_COUNT_1_BIT, true, "scene_depth_copy"));
+                        scene_depth_copy = pass.write(scene_depth_copy, frame_graph::Use::transfer_dst);
+
+                        return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                            if (!state.result) {
+                                return;
+                            }
+
+                            ZoneScopedNC("Scene copy", tracy::Color::SteelBlue);
+
+                            auto const copy = [&](frame_graph::ImageId source, frame_graph::ImageId target,
+                                                  VkImageAspectFlags aspect) {
+                                VkImageCopy const region{
+                                        .srcSubresource = {.aspectMask = aspect, .layerCount = 1},
+                                        .dstSubresource = {.aspectMask = aspect, .layerCount = 1},
+                                        .extent = {targets->extent.width, targets->extent.height, 1},
+                                };
+                                vkCmdCopyImage(context.command_buffer, context.image(source).image,
+                                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, context.image(target).image,
+                                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                            };
+                            copy(hdr_image, scene_colour_copy, VK_IMAGE_ASPECT_COLOR_BIT);
+                            copy(depth_image, scene_depth_copy, VK_IMAGE_ASPECT_DEPTH_BIT);
+                        }};
+                    });
+        }
+
+        frame_graph_.add_pass(
+                "forward_blend", frame_graph::PassType::raster,
+                {
+                        .name_id = "forward_blend",
+                        .label = "Forward (blended)",
+                        .color = static_cast<std::uint32_t>(tracy::Color::CornflowerBlue),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    declare_forward_reads(pass, true);
+                    [[maybe_unused]] auto const colour_copy =
+                            pass.read(scene_colour_copy, frame_graph::Use::sampled, fragment_stage);
+                    [[maybe_unused]] auto const depth_copy =
+                            pass.read(scene_depth_copy, frame_graph::Use::sampled, fragment_stage);
+
+                    if (multisampled) {
+                        msaa_colour = pass.color(msaa_colour, frame_graph::LoadOp::load, frame_graph::StoreOp::dont_care);
+                        hdr_image = pass.create(
+                                target_description(hdr_format_, VK_SAMPLE_COUNT_1_BIT, true, "resolved_hdr"));
+                        hdr_image = pass.resolve(msaa_colour, hdr_image, VK_RESOLVE_MODE_AVERAGE_BIT);
+
+                        outline_msaa =
+                                pass.color(outline_msaa, frame_graph::LoadOp::load, frame_graph::StoreOp::dont_care);
+                        outline_image = pass.create(
+                                target_description(VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, true, "resolved_outline"));
+                        outline_image = pass.resolve(outline_msaa, outline_image, VK_RESOLVE_MODE_AVERAGE_BIT);
+                    } else {
+                        hdr_image = pass.color(hdr_image, frame_graph::LoadOp::load, frame_graph::StoreOp::store);
+                        outline_image =
+                                pass.color(outline_image, frame_graph::LoadOp::load, frame_graph::StoreOp::store);
+                    }
+                    depth_image = pass.write_depth(depth_image, frame_graph::LoadOp::load, frame_graph::StoreOp::store);
+                    pass.render_area({.offset = {0, 0}, .extent = targets->extent});
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        record_forward_phase(context, render_pass::ForwardPhase::blend);
+                    }};
+                });
+    }
 
     run_game_slot(GameSlot::after_lighting, resolved_depth_image, hdr_image);
 

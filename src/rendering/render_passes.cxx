@@ -285,6 +285,48 @@ namespace render_pass {
                                      command_count, sizeof(GpuDrawCommand));
         }
 
+        // Draws the blended commands run by run, so the back-to-front order holds across the meshlet and indexed
+        // paths; a run binds its path's shaders only when the previous run took the other path.
+        template<typename PushConstants>
+        auto draw_blend_runs(Context const &context, SceneDraw const &draw, DrawBuffers const &buffers,
+                             std::uint32_t first_command, std::span<BlendRun const> runs, PushConstants pc) noexcept
+                -> void {
+            auto bound = PipelineNodeHandle{};
+            auto layout = VkPipelineLayout{VK_NULL_HANDLE};
+
+            for (auto const &run: runs) {
+                if (run.count == 0) {
+                    continue;
+                }
+
+                auto const pipeline = run.meshlet ? draw.meshlet_pipeline : draw.instanced_pipeline;
+                if (layout == VK_NULL_HANDLE || !(bound == pipeline)) {
+                    bound = pipeline;
+                    layout = resolve_layout(context.pipeline_graph, pipeline);
+                    bind_graphics_node(context.pipeline_graph, pipeline, context.command_buffer, draw.samples,
+                                       draw.colour_attachment_count, draw.blending, !run.meshlet,
+                                       draw.write_outline_mask);
+                    context.resource_table.bind(context.command_buffer, context.frame_index,
+                                                VK_PIPELINE_BIND_POINT_GRAPHICS, layout);
+                    if (!run.meshlet) {
+                        vkCmdBindIndexBuffer(context.command_buffer, buffers.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+                    }
+                }
+
+                auto const offset = static_cast<VkDeviceSize>(first_command + run.first) * sizeof(GpuDrawCommand);
+                pc.task_commands_address = buffers.indirect.device_address + offset;
+                vkCmdPushConstants(context.command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);
+
+                if (run.meshlet) {
+                    vkCmdDrawMeshTasksIndirectEXT(context.command_buffer, buffers.indirect.buffer, offset, run.count,
+                                                  sizeof(GpuDrawCommand));
+                } else {
+                    vkCmdDrawIndexedIndirect(context.command_buffer, buffers.indirect.buffer,
+                                             offset + indexed_command_offset, run.count, sizeof(GpuDrawCommand));
+                }
+            }
+        }
+
         constexpr std::uint32_t shadow_flag_tiles = 1U;
         constexpr std::uint32_t shadow_flag_remap = 2U;
 
@@ -709,12 +751,17 @@ namespace render_pass {
                 .write_outline_mask = false,
         };
 
+        auto const draw_opaque = info.phase != ForwardPhase::blend;
+        auto const draw_blend = info.phase != ForwardPhase::opaque;
+
         if (!detail::scene_layouts_valid(context.pipeline_graph, opaque_draw) ||
-            (info.counts.blend != 0 && !detail::scene_layouts_valid(context.pipeline_graph, blend_draw))) {
+            (draw_blend && info.counts.blend != 0 && !detail::scene_layouts_valid(context.pipeline_graph, blend_draw))) {
             return std::unexpected(detail::make_error(RendererErrorType::invalid_pipeline));
         }
 
-        if (info.pipeline_statistics_query_pool != VK_NULL_HANDLE) {
+        // Pipeline statistics cover the opaque draws when the pass is split (a query cannot span two passes).
+        auto const query_stats = info.pipeline_statistics_query_pool != VK_NULL_HANDLE && draw_opaque;
+        if (query_stats) {
             vkCmdBeginQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0, 0);
         }
 
@@ -733,6 +780,8 @@ namespace render_pass {
                 .cull_planes_address = info.cull_planes_address,
                 .cluster_lights_address = info.cluster_lights_address,
                 .occlusion_address = info.occlusion_view_address,
+                .scene_colour_index = info.scene_colour_index,
+                .scene_depth_index = info.scene_depth_index,
         };
 
         auto opaque_pc = pc;
@@ -744,13 +793,13 @@ namespace render_pass {
         auto unculled_backface_pc = pc;
         unculled_backface_pc.cull_flags = info.meshlet_culling ? detail::cull_frustum : 0U;
 
-        if (info.counts.opaque != 0) {
+        if (draw_opaque && info.counts.opaque != 0) {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::main);
             detail::draw_scene_commands(context, opaque_draw, info.draws, 0, info.counts.opaque, opaque_pc);
         }
 
-        if (info.counts.double_sided != 0) {
+        if (draw_opaque && info.counts.double_sided != 0) {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::main);
             vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
@@ -758,7 +807,7 @@ namespace render_pass {
                                         info.counts.double_sided, mask_pc);
         }
 
-        if (info.counts.mask != 0) {
+        if (draw_opaque && info.counts.mask != 0) {
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::main);
             vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
@@ -766,7 +815,7 @@ namespace render_pass {
                                         mask_pc);
         }
 
-        if (info.draw_skybox) {
+        if (draw_opaque && info.draw_skybox) {
             auto const sky_layout = detail::resolve_layout(context.pipeline_graph, info.skybox_pipeline);
 
             if (sky_layout != VK_NULL_HANDLE) {
@@ -786,19 +835,23 @@ namespace render_pass {
             }
         }
 
-        if (info.counts.blend != 0) {
+        if (draw_blend && info.counts.blend != 0) {
+            // Faces are not culled here: each blended command says which faces it keeps (back, front or both) and
+            // the fragment shader drops the others, so a double-sided mesh draws its far side before its near side.
             detail::set_forward_dynamic_state(context.command_buffer, info.extent,
                                               detail::ForwardDynamicStateMode::blend);
             vkCmdSetCullMode(context.command_buffer, VK_CULL_MODE_NONE);
-            detail::draw_scene_commands(context, blend_draw, info.draws, info.counts.blend_first(), info.counts.blend,
-                                        unculled_backface_pc);
+            detail::draw_blend_runs(context, blend_draw, info.draws, info.counts.blend_first(), info.blend_runs,
+                                    unculled_backface_pc);
         }
 
-        if (info.pipeline_statistics_query_pool != VK_NULL_HANDLE) {
+        if (query_stats) {
             vkCmdEndQuery(context.command_buffer, info.pipeline_statistics_query_pool, 0);
         }
 
-        scene_overlays();
+        if (draw_blend) {
+            scene_overlays();
+        }
 
         return info.output_hdr;
     }

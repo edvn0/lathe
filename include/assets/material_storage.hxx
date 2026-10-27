@@ -4,6 +4,7 @@
 
 #include <glm/glm.hpp>
 
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -21,6 +22,38 @@
 
 #include "gpu/image.hxx"
 #include "gpu/sampler.hxx"
+
+// How a water material (MaterialCreateInfo::water) looks; see docs/water.md. Games do not make these: the WaterSystem
+// (rendering/water_system.hxx) builds the material from an entity's Components::Water. The base colour factor's rgb is the colour
+// light scatters back out of deep water, and the roughness factor blurs the environment reflection.
+struct WaterSettings {
+    // Beer-Lambert absorption per metre of water: red goes first, so deep water turns blue-green.
+    glm::vec3 absorption{0.45F, 0.09F, 0.06F};
+    // The water depth (m) over which the surface fades in from the shoreline.
+    float shore_fade = 0.35F;
+    // Wave pattern frequency (1/m): larger is smaller ripples.
+    float wave_scale = 0.35F;
+    float wave_speed = 1.0F;
+    float normal_strength = 0.6F;
+    // How far (in screen fractions at 1 m) the refraction is offset by the waves.
+    float refraction_strength = 0.04F;
+    float foam = 1.0F;
+    float caustics = 1.0F;
+    // How far (m) the surface is displaced up and down by the waves (0 keeps it flat), and how much foam the steepest
+    // crests break into.
+    float wave_height = 0.1F;
+    float whitecaps = 0.0F;
+    // The world rectangle (min x, min z, max x, max z) the surface is clipped to.
+    glm::vec4 zone{-1e9F, -1e9F, 1e9F, 1e9F};
+    // A spherical surface (see GpuMaterial::water_sphere_centre).
+    glm::vec4 sphere_centre{0.0F};
+    glm::vec4 anchor{0.0F};
+    glm::vec4 east{1.0F, 0.0F, 0.0F, 0.0F};
+    glm::vec4 north{0.0F, 0.0F, 1.0F, 0.0F};
+    std::array<glm::vec4, 3> phases{};
+
+    auto operator==(WaterSettings const &) const noexcept -> bool = default;
+};
 
 struct MaterialCreateInfo {
     glm::vec4 base_colour_factor{1.0F};
@@ -59,6 +92,12 @@ struct MaterialCreateInfo {
     bool outlined = false;
 
     bool grid = false;
+
+    // Shades the surface as water (needs AlphaMode::blend): refraction of the scene behind it, reflection, foam.
+    bool water = false;
+    // A planet's terrain (GpuMaterial::flag_planet); its frame is in water_settings' sphere fields.
+    bool planet_surface = false;
+    WaterSettings water_settings{};
 
     MaterialHandle far_material{};
     std::uint32_t far_material_lod = 2;

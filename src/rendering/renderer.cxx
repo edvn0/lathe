@@ -22,6 +22,8 @@
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <limits>
+#include <numeric>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -945,6 +947,14 @@ namespace {
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .debug_name = "renderer.instance_lod_pipeline",
     });
+
+    // The blended forward pipelines (1: meshlet, 14: instanced) keep only the faces each command asks for and shade
+    // water; BLEND_PASS keeps that out of the opaque pipelines.
+    for (auto const blend_index: {std::size_t{1}, std::size_t{14}}) {
+        for (auto &stage: pipeline_infos[blend_index].stages) {
+            stage.defines.push_back(renderer::ShaderDefine{.name = "BLEND_PASS", .value = "1"});
+        }
+    }
 
     for (auto const source_index: {std::size_t{0}, std::size_t{13}}) {
         auto outline_info = pipeline_infos[source_index];
@@ -3345,6 +3355,8 @@ struct Renderer::BatchBuild {
     std::uint64_t shadow_scene_signature = 0;
     bool has_animated_shadow_casters = false;
     std::future<void> blend_sort_future;
+    // A water material is among the blended batches (it needs the scene copy).
+    bool has_water = false;
     // The transforms the chunks made for their instances; batches point into them until the frame is emitted.
     std::vector<std::deque<glm::mat4>> computed_chunks;
 };
@@ -3950,14 +3962,34 @@ auto Renderer::classify_batches(glm::vec3 const &camera_position, BatchBuild &bu
 
                 auto const &submesh = mesh->submeshes[batch->submesh_index];
                 auto const local_centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
-                auto const world_centre =
-                        batch->transforms.empty()
-                                ? glm::vec3{0.0F}
-                                : glm::vec3(*batch->transforms.front() * glm::vec4(local_centre, 1.0F));
-                auto const distance = world_centre - camera_position;
+                auto const local_radius = glm::length(submesh.bounds_max - submesh.bounds_min) * 0.5F;
+                auto world_centre = glm::vec3{0.0F};
+                auto world_radius = local_radius;
+                if (!batch->transforms.empty()) {
+                    auto const &model = *batch->transforms.front();
+                    world_centre = glm::vec3(model * glm::vec4(local_centre, 1.0F));
+                    auto const max_scale = std::sqrt(std::max({glm::dot(glm::vec3(model[0]), glm::vec3(model[0])),
+                                                               glm::dot(glm::vec3(model[1]), glm::vec3(model[1])),
+                                                               glm::dot(glm::vec3(model[2]), glm::vec3(model[2]))}));
+                    world_radius = local_radius * max_scale;
+                }
+
+                auto const flags = material != nullptr ? material->flags : 0U;
+                if ((flags & GpuMaterial::flag_water) != 0) {
+                    build.has_water = true;
+                }
+
                 blend_batches_.push_back(PendingBlendBatch{
                         .entry = batch,
-                        .camera_distance_sq = glm::dot(distance, distance),
+                        .order =
+                                blend_order::Entry{
+                                        .camera_distance = glm::length(world_centre - camera_position),
+                                        .bounds_radius = world_radius,
+                                        .stable_id = {material_storage_.gpu_index(batch->material), batch->mesh.index,
+                                                      batch->submesh_index, batch->lod_index},
+                                        .water = (flags & GpuMaterial::flag_water) != 0,
+                                },
+                        .double_sided = (flags & GpuMaterial::flag_double_sided) != 0,
                 });
 
                 break;
@@ -3969,7 +4001,7 @@ auto Renderer::classify_batches(glm::vec3 const &camera_position, BatchBuild &bu
 
     auto sort_blend_batches = [this] {
         std::ranges::sort(blend_batches_, [](PendingBlendBatch const &lhs, PendingBlendBatch const &rhs) {
-            return lhs.camera_distance_sq > rhs.camera_distance_sq;
+            return blend_order::draws_before(lhs.order, rhs.order);
         });
     };
 
@@ -4072,8 +4104,9 @@ auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::exp
     auto copy_tasks = std::vector<CopyTask>{};
 
     auto const emit_batch = [this, &frame, &submitted_triangle_count, &meshlet_layout,
-                             &copy_tasks](BatchEntry const &batch,
-                                              bool const allocate_meshlet_bits) -> std::expected<void, RendererError> {
+                             &copy_tasks](BatchEntry const &batch, bool const allocate_meshlet_bits,
+                                          blend_order::Faces const faces =
+                                                  blend_order::Faces::both) -> std::expected<void, RendererError> {
         auto const *mesh = mesh_slot(batch.mesh);
 
         if (mesh == nullptr) {
@@ -4207,6 +4240,7 @@ auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::exp
         GpuDrawCommand command{
                 .instance_count = resident ? 0U : instance_count,
                 .first_instance = first_instance,
+                .blend_faces = std::to_underlying(faces),
         };
 
         if (meshlet_path) {
@@ -4253,7 +4287,11 @@ auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::exp
 
         auto const *material = material_storage_.get(batch.material);
 
-        auto const wind_padding = material != nullptr ? material->wind_strength : 0.0F;
+        auto wind_padding = material != nullptr ? material->wind_strength : 0.0F;
+        if (material != nullptr && (material->flags & GpuMaterial::flag_water) != 0) {
+            // The vertex stage lifts and lowers a water surface by up to its wave height.
+            wind_padding = std::max(std::abs(wind_padding), std::abs(material->water_shape.x));
+        }
 
         frame.batch_bounds.push_back(GpuCullBounds{
                 .bounds_min = submesh.bounds_min,
@@ -4296,9 +4334,29 @@ auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::exp
         build.blend_sort_future.wait();
     }
 
+    frame.blend_runs.clear();
+    frame.scene_copy_needed = build.has_water;
+    auto const blend_first = static_cast<std::uint32_t>(frame.indirect_commands.size());
+
     for (auto const &pending: blend_batches_) {
-        if (auto result = emit_batch(*pending.entry, false); !result) {
-            return std::unexpected(result.error());
+        // A double-sided batch is emitted twice (back faces, then front faces), except when its single command is
+        // filled in on the GPU (LOD-driven) or it streams skinned vertices, which would be skinned twice.
+        auto const &entry = *pending.entry;
+        auto const split_allowed = entry.lod_job == BatchEntry::no_lod_job && !entry.skinned;
+        auto const passes = blend_order::passes_for(pending.double_sided, split_allowed);
+
+        for (std::uint32_t pass = 0; pass < passes.count; ++pass) {
+            if (auto result = emit_batch(entry, false, passes.faces[pass]); !result) {
+                return std::unexpected(result.error());
+            }
+
+            auto const meshlet = frame.indirect_commands.back().meshlet_count != 0;
+            auto const index = static_cast<std::uint32_t>(frame.indirect_commands.size()) - 1U - blend_first;
+            if (!frame.blend_runs.empty() && frame.blend_runs.back().meshlet == meshlet) {
+                ++frame.blend_runs.back().count;
+            } else {
+                frame.blend_runs.push_back(render_pass::BlendRun{.first = index, .count = 1, .meshlet = meshlet});
+            }
         }
     }
 
@@ -4351,6 +4409,8 @@ auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::exp
 
 auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices const &matrices, std::uint32_t frame_index)
         -> std::expected<void, RendererError> {
+    frame_time_ = matrices.time;
+
     ZoneScopedNC("PrepareFrame", tracy::Color::RoyalBlue);
 
     if (!initialized_ || command_buffer == VK_NULL_HANDLE || frame_index >= frames_.size()) {
@@ -4460,6 +4520,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     frame.double_sided_indirect_count = 0;
     frame.mask_indirect_count = 0;
     frame.blend_indirect_count = 0;
+    frame.blend_runs.clear();
+    frame.scene_copy_needed = false;
     frame.shadow_update_mask = 0;
 
     auto const camera_position = glm::vec3(glm::inverse(matrices.view)[3]);
@@ -4790,9 +4852,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 }
 
                 if (batch->lod_job != BatchEntry::no_lod_job) {
-                    // Instances picked on the GPU by distance: their positions are not known here.
+                    // Instances picked on the GPU by distance: their positions are not known here, so every light is
+                    // redrawn and the hashes below would go unused.
                     lod_driven_casters = true;
-                    continue;
+                    break;
                 }
 
                 auto const wind = material != nullptr ? std::abs(material->wind_strength) : 0.0F;
@@ -4833,7 +4896,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                 }
             }
 
-            if (!casters_unchanged) {
+            if (!casters_unchanged && !lod_driven_casters) {
                 // Which casters fall inside which light's volume, summed per light. The sum is order independent, so
                 // the instances are split into blocks that run on the thread pool and add into atomics.
                 struct CasterBatch {
@@ -4904,8 +4967,57 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                     total.store(0, std::memory_order_relaxed);
                 }
 
+                // The light volumes binned into a coarse grid on XZ, so an instance only tests the lights whose volume
+                // reaches its cells instead of every shadowed light.
+                constexpr int light_grid_size = 32;
+                auto grid_min = glm::vec2{std::numeric_limits<float>::max()};
+                auto grid_max = glm::vec2{std::numeric_limits<float>::lowest()};
+                for (auto const &volume: volumes) {
+                    grid_min = glm::min(grid_min, glm::vec2{volume.x, volume.z} - volume.w);
+                    grid_max = glm::max(grid_max, glm::vec2{volume.x, volume.z} + volume.w);
+                }
+
+                auto const grid_scale = static_cast<float>(light_grid_size) /
+                                        std::max(std::max(grid_max.x - grid_min.x, grid_max.y - grid_min.y), 1e-3F);
+                auto const grid_cell = [&](float value, float low) {
+                    return std::clamp(static_cast<int>((value - low) * grid_scale), 0, light_grid_size - 1);
+                };
+
+                // Compressed rows: the lights of cell `i` are cell_light_indices[cell_first[i] .. cell_first[i + 1]).
+                std::array<std::uint32_t, light_grid_size * light_grid_size + 1> cell_first{};
+                auto const for_each_light_cell = [&](glm::vec4 const &volume, auto &&visit) {
+                    for (auto row = grid_cell(volume.z - volume.w, grid_min.y);
+                         row <= grid_cell(volume.z + volume.w, grid_min.y); ++row) {
+                        for (auto column = grid_cell(volume.x - volume.w, grid_min.x);
+                             column <= grid_cell(volume.x + volume.w, grid_min.x); ++column) {
+                            visit(static_cast<std::size_t>(row * light_grid_size + column));
+                        }
+                    }
+                };
+
+                for (auto const &volume: volumes) {
+                    for_each_light_cell(volume, [&](std::size_t cell) { ++cell_first[cell + 1]; });
+                }
+                std::partial_sum(cell_first.begin(), cell_first.end(), cell_first.begin());
+
+                std::vector<std::uint32_t> cell_light_indices(cell_first.back());
+                auto cell_fill = cell_first;
+                for (std::size_t light = 0; light < volumes.size(); ++light) {
+                    for_each_light_cell(volumes[light], [&](std::size_t cell) {
+                        cell_light_indices[cell_fill[cell]++] = static_cast<std::uint32_t>(light);
+                    });
+                }
+
+                auto const cell_lights = [&](int row, int column) {
+                    auto const cell = static_cast<std::size_t>(row * light_grid_size + column);
+                    return std::span<std::uint32_t const>{cell_light_indices.data() + cell_first[cell],
+                                                          cell_light_indices.data() + cell_first[cell + 1]};
+                };
+
                 auto const accumulate = [&](std::size_t first_block, std::size_t last_block) {
                     std::vector<std::uint64_t> local(selected.size(), 0);
+                    std::vector<std::uint32_t> visited(selected.size(), 0);
+                    std::uint32_t visit_stamp = 0;
 
                     for (auto block_index = first_block; block_index < last_block; ++block_index) {
                         auto const &block = blocks[block_index];
@@ -4923,11 +5035,11 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                             std::uint64_t instance_hash = 0;
                             bool hashed = false;
 
-                            for (std::size_t light = 0; light < volumes.size(); ++light) {
+                            auto const visit_light = [&](std::size_t light) {
                                 auto const outside =
                                         glm::max(glm::abs(glm::vec3{volumes[light]} - centre) - extent, glm::vec3{0.0F});
                                 if (glm::dot(outside, outside) > volumes[light].w * volumes[light].w) {
-                                    continue;
+                                    return;
                                 }
 
                                 if (!selected[light].candidate.point) {
@@ -4941,7 +5053,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                     }
 
                                     if (!inside) {
-                                        continue;
+                                        return;
                                     }
                                 }
 
@@ -4955,6 +5067,40 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
                                 }
 
                                 local[light] += instance_hash;
+                            };
+
+                            auto const low_x = centre.x - extent.x;
+                            auto const high_x = centre.x + extent.x;
+                            auto const low_z = centre.z - extent.z;
+                            auto const high_z = centre.z + extent.z;
+                            if (high_x < grid_min.x || low_x > grid_max.x || high_z < grid_min.y ||
+                                low_z > grid_max.y) {
+                                continue;
+                            }
+
+                            auto const first_column = grid_cell(low_x, grid_min.x);
+                            auto const last_column = grid_cell(high_x, grid_min.x);
+                            auto const first_row = grid_cell(low_z, grid_min.y);
+                            auto const last_row = grid_cell(high_z, grid_min.y);
+
+                            if (first_column == last_column && first_row == last_row) {
+                                for (auto const light: cell_lights(first_row, first_column)) {
+                                    visit_light(light);
+                                }
+                                continue;
+                            }
+
+                            // A light listed in several of the cells must still count once.
+                            ++visit_stamp;
+                            for (auto row = first_row; row <= last_row; ++row) {
+                                for (auto column = first_column; column <= last_column; ++column) {
+                                    for (auto const light: cell_lights(row, column)) {
+                                        if (visited[light] != visit_stamp) {
+                                            visited[light] = visit_stamp;
+                                            visit_light(light);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -4998,9 +5144,15 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
                 entry.hash = shadow_signature_combine(state, caster_hash[light]);
 
+                if (lod_driven_casters) {
+                    // No caster hash was computed; a miss makes the next frame without LOD casters redraw the tile.
+                    entry.dirty = true;
+                    local_shadow_cache_.erase(candidate.id);
+                    continue;
+                }
+
                 auto const cached = local_shadow_cache_.find(candidate.id);
-                entry.dirty = lod_driven_casters || cached == local_shadow_cache_.end() ||
-                              cached->second.hash != entry.hash;
+                entry.dirty = cached == local_shadow_cache_.end() || cached->second.hash != entry.hash;
                 local_shadow_cache_[candidate.id] = LocalShadowCacheEntry{.hash = entry.hash,
                                                                           .casters = caster_hash[light]};
             }
@@ -6543,7 +6695,9 @@ auto Renderer::ambient_occlusion_info(FrameTargets const &targets, std::uint32_t
 
 auto Renderer::record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                                    FrameTargets const &targets, std::uint32_t ao_texture_index,
-                                   std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays)
+                                   std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays,
+                                   render_pass::ForwardPhase phase, std::uint32_t scene_colour_index,
+                                   std::uint32_t scene_depth_index)
         -> std::expected<render_pass::HdrTextureIndex, RendererError> {
     auto const frame_index = pass_context.frame_index;
 
@@ -6551,6 +6705,10 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
             pass_context,
             render_pass::ForwardGeometryInfo{
                     .output_hdr = {.index = hdr_texture_index},
+                    .phase = phase,
+                    .blend_runs = frame.blend_runs,
+                    .scene_colour_index = scene_colour_index,
+                    .scene_depth_index = scene_depth_index,
                     .extent = targets.extent,
                     .samples = samples_,
                     .draws = forward_view_draws(frame),

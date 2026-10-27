@@ -39,6 +39,7 @@ add_library(
         overlay.cxx
         overlay_shader.cxx
         particle_system.cxx
+        planet_system.cxx
         pipeline_graph_repository.cxx
         ray_tracing_poc.cxx
         renderer.cxx
@@ -56,6 +57,7 @@ add_library(
         text_layout.cxx
         text_renderer.cxx
         toast.cxx
+        water_system.cxx
 )
 
 target_include_directories(

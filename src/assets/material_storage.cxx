@@ -397,8 +397,24 @@ auto to_gpu_material(MaterialCreateInfo const &create_info) noexcept -> GpuMater
             .flags = (create_info.double_sided ? GpuMaterial::flag_double_sided : 0U) |
                      (create_info.alpha_to_coverage ? GpuMaterial::flag_alpha_to_coverage : 0U) |
                      (create_info.outlined ? GpuMaterial::flag_outlined : 0U) |
-                     (create_info.grid ? GpuMaterial::flag_grid : 0U),
+                     (create_info.grid ? GpuMaterial::flag_grid : 0U) |
+                     (create_info.water && create_info.alpha_mode == AlphaMode::blend ? GpuMaterial::flag_water : 0U) |
+                     (create_info.planet_surface ? GpuMaterial::flag_planet : 0U),
             .meshlet_extrude = create_info.meshlet_extrude,
             .meshlet_shrink = create_info.meshlet_shrink,
+            .water_foam = create_info.water_settings.foam,
+            .water_caustics = create_info.water_settings.caustics,
+            .water_absorption = glm::vec4{create_info.water_settings.absorption, create_info.water_settings.shore_fade},
+            .water_waves = glm::vec4{create_info.water_settings.wave_scale, create_info.water_settings.wave_speed,
+                                     create_info.water_settings.normal_strength,
+                                     create_info.water_settings.refraction_strength},
+            .water_shape = glm::vec4{create_info.water_settings.wave_height, create_info.water_settings.whitecaps, 0.0F,
+                                     0.0F},
+            .water_zone = create_info.water_settings.zone,
+            .water_sphere_centre = create_info.water_settings.sphere_centre,
+            .water_anchor = create_info.water_settings.anchor,
+            .water_east = create_info.water_settings.east,
+            .water_north = create_info.water_settings.north,
+            .water_phases = create_info.water_settings.phases,
     };
 }

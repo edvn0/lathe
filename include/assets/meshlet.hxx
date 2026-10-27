@@ -52,7 +52,8 @@ struct GpuDrawCommand {
     std::uint32_t first_instance = 0;
 
     std::uint32_t meshlet_count = 0;
-    std::uint32_t _pad0 = 0;
+    // For blended draws, the faces kept (blend_order::Faces); 0 keeps both.
+    std::uint32_t blend_faces = 0;
 };
 
 inline constexpr std::size_t indexed_command_offset = 12;

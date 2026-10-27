@@ -5,6 +5,7 @@
 
 #include <entt/entt.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <optional>
 #include <string>
@@ -137,6 +138,126 @@ namespace Components {
         // Tints the particles (base colour times, emissive plus). Not reference counted: a released material is white.
         MaterialHandle material{};
         bool emitting = true;
+    };
+
+    enum class WaterBody : std::uint8_t {
+        // An open sea: a surface that follows the camera out to the horizon, at the entity's height, clipped to the
+        // `extent` rectangle about the entity (the water zone: where the sea may appear, so it stays out of the land).
+        ocean,
+        // A finite rectangle of `extent` metres (x, z) about the entity, at its height and turned by its yaw.
+        lake,
+    };
+
+    // A body of water, drawn and animated by the engine (rendering/water_system.hxx, docs/water.md). All data: the
+    // entity's transform places it (position and yaw; scale is ignored, `extent` sizes it). The system makes and owns
+    // its mesh and material. Use ocean() / pool() for sensible starting values.
+    struct Water {
+        WaterBody body = WaterBody::lake;
+        // Lake: the size (m) along x and z. Ocean: the water zone, the rectangle it is clipped to.
+        glm::vec2 extent{10.0F, 10.0F};
+        bool visible = true;
+
+        // The colour light scatters back out of deep water, and how blurred the reflection is.
+        glm::vec3 colour{0.08F, 0.35F, 0.4F};
+        float roughness = 0.05F;
+
+        // Beer-Lambert absorption per metre of water: red goes first, so deep water turns blue-green.
+        glm::vec3 absorption{0.35F, 0.07F, 0.05F};
+        // The water depth (m) over which the surface fades in from the shoreline.
+        float shore_fade = 0.25F;
+
+        // Waves: pattern frequency (1/m, larger is smaller waves), speed, how far (m) the surface moves up and down,
+        // and how strongly the shading normal follows the short waves on top.
+        float wave_scale = 0.45F;
+        float wave_speed = 0.8F;
+        float wave_height = 0.03F;
+        float normal_strength = 0.5F;
+
+        // Screen fraction (at 1 m) the refraction is offset by the waves.
+        float refraction_strength = 0.03F;
+        float foam = 0.8F;
+        // Foam on the steepest crests (whitecaps); 0 on calm water.
+        float whitecaps = 0.0F;
+        float caustics = 1.0F;
+
+        auto operator==(Water const &) const -> bool = default;
+
+        // A calm, clear pool or lake of `size` metres.
+        [[nodiscard]] static auto pool(glm::vec2 size = {10.0F, 10.0F}) -> Water {
+            return Water{.body = WaterBody::lake, .extent = size};
+        }
+
+        // A rough, deep sea with whitecaps, out to the horizon within a zone of `zone` metres.
+        [[nodiscard]] static auto ocean(glm::vec2 zone = {20000.0F, 20000.0F}) -> Water {
+            return Water{
+                    .body = WaterBody::ocean,
+                    .extent = zone,
+                    .colour = {0.02F, 0.16F, 0.22F},
+                    .roughness = 0.08F,
+                    .absorption = {0.45F, 0.12F, 0.09F},
+                    .shore_fade = 0.4F,
+                    .wave_scale = 0.13F,
+                    .wave_speed = 1.0F,
+                    .wave_height = 0.6F,
+                    .normal_strength = 1.3F,
+                    .refraction_strength = 0.03F,
+                    .foam = 1.0F,
+                    .whitecaps = 1.0F,
+                    .caustics = 0.8F,
+            };
+        }
+    };
+
+    enum class PlanetColour : std::uint8_t {
+        // The colour image (`colour_path`, an equirectangular RGB image such as NASA's Blue Marble).
+        image,
+        // Made from elevation and latitude: a depth gradient under the sea, beach, grass, rock, snow and polar ice.
+        elevation,
+    };
+
+    // A planet at real scale (docs/globe.md), drawn by rendering/planet_system.hxx: a cube-sphere quadtree of terrain
+    // chunks displaced by an equirectangular elevation map, an ocean at sea level shaded as water, and an optional
+    // atmosphere. The entity's position is the planet's centre and its rotation turns it; scale is ignored. Real
+    // scale needs a camera that sets CameraParams::origin (a floating origin): the system draws everything relative to
+    // it, so no planet-sized number reaches the GPU.
+    struct Planet {
+        double radius = 6'371'000.0;
+        // The two grey images of NASA's Blue Marble topography/bathymetry set (see planet::HeightmapSources). Until
+        // both exist the planet is a smooth sphere.
+        std::string elevation_path;
+        std::string bathymetry_path;
+        PlanetColour colour = PlanetColour::elevation;
+        std::string colour_path;
+        // Multiplies the relief (real relief is tiny next to the radius); 0 to about 20.
+        float exaggeration = 1.0F;
+        // Metres above the radius the ocean surface stands at.
+        float sea_level = 0.0F;
+        // The deepest quadtree level drawn for the terrain.
+        std::uint8_t max_level = 11;
+        bool ocean = true;
+        // The ocean's look: the waves, colour and foam of a Water body (its `body` and `extent` are not used).
+        Water ocean_water = deep_ocean();
+        bool atmosphere = true;
+        // Height (m) of the top of the atmosphere above sea level, and how bright its scattering is.
+        float atmosphere_height = 100'000.0F;
+        float atmosphere_intensity = 1.0F;
+        // Tints each terrain chunk by its quadtree level.
+        bool debug_lod = false;
+        bool visible = true;
+
+        auto operator==(Planet const &) const -> bool = default;
+
+        // A sea seen from orbit: darker than Water::ocean, with the same waves.
+        [[nodiscard]] static auto deep_ocean() -> Water {
+            auto water = Water::ocean();
+            water.colour = {0.01F, 0.05F, 0.09F};
+            water.absorption = {0.45F, 0.09F, 0.05F};
+            // Swells long enough to read from a few kilometres up.
+            water.wave_scale = 0.03F;
+            water.wave_height = 1.5F;
+            water.normal_strength = 1.5F;
+            return water;
+        }
     };
 
     // Text drawn in the world (rendering/text_renderer.hxx): the entity's transform places it and it is depth-tested and

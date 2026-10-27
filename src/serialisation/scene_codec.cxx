@@ -621,6 +621,124 @@ namespace {
         }
     }
 
+    auto write_water_fields(ByteWriter &writer, Components::Water const &water) -> void {
+        writer.write(std::to_underlying(water.body));
+        writer.write(water.extent.x);
+        writer.write(water.extent.y);
+        write_bool(writer, water.visible);
+        write_vec3(writer, water.colour);
+        writer.write(water.roughness);
+        write_vec3(writer, water.absorption);
+        writer.write(water.shore_fade);
+        writer.write(water.wave_scale);
+        writer.write(water.wave_speed);
+        writer.write(water.wave_height);
+        writer.write(water.normal_strength);
+        writer.write(water.refraction_strength);
+        writer.write(water.foam);
+        writer.write(water.whitecaps);
+        writer.write(water.caustics);
+    }
+
+    auto read_water_fields(ByteReader &reader, Components::Water &water) -> void {
+        auto const body = reader.read<std::uint8_t>();
+        if (body > std::to_underlying(Components::WaterBody::lake)) {
+            reader.fail();
+        }
+        water.body = static_cast<Components::WaterBody>(body);
+        reader.read(water.extent.x);
+        reader.read(water.extent.y);
+        water.visible = read_bool(reader);
+        water.colour = read_vec3(reader);
+        reader.read(water.roughness);
+        water.absorption = read_vec3(reader);
+        reader.read(water.shore_fade);
+        reader.read(water.wave_scale);
+        reader.read(water.wave_speed);
+        reader.read(water.wave_height);
+        reader.read(water.normal_strength);
+        reader.read(water.refraction_strength);
+        reader.read(water.foam);
+        reader.read(water.whitecaps);
+        reader.read(water.caustics);
+    }
+
+    auto write_planets(ByteWriter &writer, SceneDescription const &scene, StringTable &strings) -> void {
+        writer.write(static_cast<std::uint32_t>(scene.planets.size()));
+
+        for (auto const &component: scene.planets) {
+            auto const &planet = component.planet;
+
+            writer.write(component.entity);
+            writer.write(planet.radius);
+            writer.write(strings.intern(planet.elevation_path));
+            writer.write(strings.intern(planet.bathymetry_path));
+            writer.write(std::to_underlying(planet.colour));
+            writer.write(strings.intern(planet.colour_path));
+            writer.write(planet.exaggeration);
+            writer.write(planet.sea_level);
+            writer.write(planet.max_level);
+            write_bool(writer, planet.ocean);
+            write_water_fields(writer, planet.ocean_water);
+            write_bool(writer, planet.atmosphere);
+            writer.write(planet.atmosphere_height);
+            writer.write(planet.atmosphere_intensity);
+            write_bool(writer, planet.debug_lod);
+            write_bool(writer, planet.visible);
+        }
+    }
+
+    auto read_planets(ByteReader &reader, std::uint16_t, SceneDescription &scene, StringBlob const *strings) -> void {
+        scene.planets.resize(read_count(reader, 100));
+
+        for (auto &component: scene.planets) {
+            auto &planet = component.planet;
+
+            reader.read(component.entity);
+            reader.read(planet.radius);
+            read_text(reader, strings, true, planet.elevation_path);
+            read_text(reader, strings, true, planet.bathymetry_path);
+            auto const colour = reader.read<std::uint8_t>();
+            if (colour > std::to_underlying(Components::PlanetColour::elevation)) {
+                reader.fail();
+            }
+            planet.colour = static_cast<Components::PlanetColour>(colour);
+            read_text(reader, strings, true, planet.colour_path);
+            reader.read(planet.exaggeration);
+            reader.read(planet.sea_level);
+            reader.read(planet.max_level);
+            planet.ocean = read_bool(reader);
+            read_water_fields(reader, planet.ocean_water);
+            planet.atmosphere = read_bool(reader);
+            reader.read(planet.atmosphere_height);
+            reader.read(planet.atmosphere_intensity);
+            planet.debug_lod = read_bool(reader);
+            planet.visible = read_bool(reader);
+        }
+    }
+
+    auto write_waters(ByteWriter &writer, SceneDescription const &scene, StringTable &) -> void {
+        writer.write(static_cast<std::uint32_t>(scene.waters.size()));
+
+        for (auto const &component: scene.waters) {
+            auto const &water = component.water;
+
+            writer.write(component.entity);
+            write_water_fields(writer, water);
+        }
+    }
+
+    auto read_waters(ByteReader &reader, std::uint16_t, SceneDescription &scene, StringBlob const *) -> void {
+        scene.waters.resize(read_count(reader, 78));
+
+        for (auto &component: scene.waters) {
+            auto &water = component.water;
+
+            reader.read(component.entity);
+            read_water_fields(reader, water);
+        }
+    }
+
     auto read_particle_emitters(ByteReader &reader, std::uint16_t, SceneDescription &scene, StringBlob const *) -> void {
         scene.particle_emitters.resize(read_count(reader, 90));
 
@@ -1062,6 +1180,21 @@ namespace {
                     .read = read_spot_lights,
             },
             SectionCodec{
+                    .type = scene_section::planets,
+                    // New with string offsets, so it starts at the version the other string sections reached.
+                    .version = string_ref_section_version,
+                    .oldest_readable = string_ref_section_version,
+                    .write = write_planets,
+                    .read = read_planets,
+            },
+            SectionCodec{
+                    .type = scene_section::waters,
+                    .version = scene_section_version,
+                    .oldest_readable = 1,
+                    .write = write_waters,
+                    .read = read_waters,
+            },
+            SectionCodec{
                     .type = scene_section::particle_emitters,
                     .version = scene_section_version,
                     .oldest_readable = 1,
@@ -1397,6 +1530,8 @@ auto scene_section_info(std::uint32_t type) -> std::optional<SceneSectionInfo> {
             std::pair{scene_section::lifetimes, "lifetimes"sv},
             std::pair{scene_section::environment, "environment"sv},
             std::pair{scene_section::particle_emitters, "particle_emitters"sv},
+            std::pair{scene_section::waters, "waters"sv},
+            std::pair{scene_section::planets, "planets"sv},
             std::pair{scene_section::behaviours, "behaviours"sv},
             std::pair{scene_section::texts, "texts"sv},
     };
@@ -1415,7 +1550,7 @@ auto scene_section_info(std::uint32_t type) -> std::optional<SceneSectionInfo> {
     auto const uses_strings = type == scene_section::models || type == scene_section::textures ||
                               type == scene_section::entities || type == scene_section::texts ||
                               type == scene_section::scripts || type == scene_section::behaviours ||
-                              type == scene_section::environment;
+                              type == scene_section::environment || type == scene_section::planets;
 
     return SceneSectionInfo{
             .name = name != names.end() ? name->second : "?",
@@ -1491,7 +1626,7 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
     };
 
     if (!entities_valid(scene.point_lights) || !entities_valid(scene.spot_lights) ||
-        !entities_valid(scene.particle_emitters) || !entities_valid(scene.rigid_bodies) ||
+        !entities_valid(scene.particle_emitters) || !entities_valid(scene.waters) || !entities_valid(scene.planets) || !entities_valid(scene.rigid_bodies) ||
         !entities_valid(scene.scripts) || !entities_valid(scene.lifetimes) || !entities_valid(scene.behaviours) ||
         !entities_valid(scene.texts)) {
         return fail("component entity out of range");
@@ -1500,6 +1635,7 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
     if (!entities_unique(scene, scene.model_components) || !entities_unique(scene, scene.material_overrides) ||
         !entities_unique(scene, scene.instanced_models) || !entities_unique(scene, scene.point_lights) ||
         !entities_unique(scene, scene.spot_lights) || !entities_unique(scene, scene.particle_emitters) ||
+        !entities_unique(scene, scene.waters) || !entities_unique(scene, scene.planets) ||
         !entities_unique(scene, scene.rigid_bodies) ||
         !entities_unique(scene, scene.scripts) || !entities_unique(scene, scene.lifetimes) ||
         !entities_unique(scene, scene.behaviours) || !entities_unique(scene, scene.texts)) {
@@ -1572,6 +1708,27 @@ auto validate_scene(SceneDescription const &scene) -> std::expected<void, LbfErr
         if (!finite(light.colour) || !non_negative(light.intensity) || !non_negative(light.range) ||
             !non_negative(light.inner_cone_degrees) || !non_negative(light.outer_cone_degrees)) {
             return fail("spot light has a non-finite or negative value");
+        }
+    }
+
+    for (auto const &component: scene.planets) {
+        auto const &planet = component.planet;
+        if (!std::isfinite(planet.radius) || planet.radius <= 0.0 || !non_negative(planet.exaggeration) ||
+            !finite(planet.sea_level) || planet.max_level > 15 || !non_negative(planet.atmosphere_height) ||
+            !non_negative(planet.atmosphere_intensity)) {
+            return fail("planet has an invalid value");
+        }
+    }
+
+    for (auto const &component: scene.waters) {
+        auto const &water = component.water;
+
+        if (!finite(water.extent) || water.extent.x <= 0.0F || water.extent.y <= 0.0F || !finite(water.colour) ||
+            !finite(water.roughness) || !finite(water.absorption) || !non_negative(water.shore_fade) ||
+            !non_negative(water.wave_scale) || !finite(water.wave_speed) || !non_negative(water.wave_height) ||
+            !finite(water.normal_strength) || !finite(water.refraction_strength) || !non_negative(water.foam) ||
+            !non_negative(water.whitecaps) || !non_negative(water.caustics)) {
+            return fail("water has an invalid value");
         }
     }
 

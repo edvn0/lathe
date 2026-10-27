@@ -156,6 +156,78 @@ namespace {
         return changed;
     };
 
+    constexpr auto draw_water = [](Components::Water &water) -> bool {
+        bool changed = false;
+
+        constexpr std::array<char const *, 2> bodies{"Ocean", "Lake / pool"};
+        auto body = static_cast<int>(water.body);
+        if (ImGui::Combo("Body", &body, bodies.data(), static_cast<int>(bodies.size()))) {
+            water.body = static_cast<Components::WaterBody>(body);
+            changed = true;
+        }
+        changed |= ImGui::Checkbox("Visible", &water.visible);
+        changed |= ImGui::DragFloat2(water.body == Components::WaterBody::ocean ? "Water zone" : "Extent", &water.extent.x,
+                                     0.1F, 0.1F, 1.0e5F, "%.1f m");
+        changed |= ImGui::ColorEdit3("Deep colour", &water.colour.x);
+        changed |= ImGui::SliderFloat("Roughness", &water.roughness, 0.0F, 1.0F);
+        changed |= ImGui::DragFloat3("Absorption", &water.absorption.x, 0.005F, 0.0F, 10.0F, "%.3f / m");
+        changed |= ImGui::DragFloat("Shore fade", &water.shore_fade, 0.01F, 0.0F, 10.0F, "%.2f m");
+        changed |= ImGui::DragFloat("Wave scale", &water.wave_scale, 0.005F, 0.001F, 10.0F, "%.3f / m");
+        changed |= ImGui::DragFloat("Wave speed", &water.wave_speed, 0.01F, 0.0F, 10.0F);
+        changed |= ImGui::DragFloat("Wave height", &water.wave_height, 0.005F, 0.0F, 20.0F, "%.3f m");
+        changed |= ImGui::DragFloat("Normal strength", &water.normal_strength, 0.01F, 0.0F, 10.0F);
+        changed |= ImGui::DragFloat("Refraction", &water.refraction_strength, 0.001F, 0.0F, 0.5F);
+        changed |= ImGui::SliderFloat("Foam", &water.foam, 0.0F, 2.0F);
+        changed |= ImGui::SliderFloat("Whitecaps", &water.whitecaps, 0.0F, 2.0F);
+        changed |= ImGui::SliderFloat("Caustics", &water.caustics, 0.0F, 2.0F);
+
+        if (ImGui::Button("Calm pool")) {
+            water = Components::Water::pool(water.body == Components::WaterBody::lake ? water.extent
+                                                                                      : glm::vec2{10.0F, 10.0F});
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Rough ocean")) {
+            water = Components::Water::ocean();
+            changed = true;
+        }
+        return changed;
+    };
+
+    constexpr auto draw_planet = [](Components::Planet &planet) -> bool {
+        bool changed = false;
+        auto radius_km = static_cast<float>(planet.radius / 1000.0);
+        if (ImGui::DragFloat("Radius", &radius_km, 1.0F, 1.0F, 1.0e6F, "%.0f km")) {
+            planet.radius = static_cast<double>(radius_km) * 1000.0;
+            changed = true;
+        }
+        changed |= ImGui::Checkbox("Visible", &planet.visible);
+        changed |= ImGui::SliderFloat("Exaggeration", &planet.exaggeration, 0.0F, 20.0F, "%.1f x");
+        changed |= ImGui::DragFloat("Sea level", &planet.sea_level, 1.0F, -10000.0F, 10000.0F, "%.0f m");
+        auto level = static_cast<int>(planet.max_level);
+        if (ImGui::SliderInt("Max level", &level, 0, 15)) {
+            planet.max_level = static_cast<std::uint8_t>(level);
+            changed = true;
+        }
+        constexpr std::array<char const *, 2> colours{"Image", "From elevation"};
+        auto colour = static_cast<int>(planet.colour);
+        if (ImGui::Combo("Colour", &colour, colours.data(), static_cast<int>(colours.size()))) {
+            planet.colour = static_cast<Components::PlanetColour>(colour);
+            changed = true;
+        }
+        changed |= ImGui::Checkbox("Ocean", &planet.ocean);
+        changed |= ImGui::Checkbox("Atmosphere", &planet.atmosphere);
+        auto atmosphere_km = planet.atmosphere_height / 1000.0F;
+        if (ImGui::DragFloat("Atmosphere height", &atmosphere_km, 0.5F, 1.0F, 1000.0F, "%.0f km")) {
+            planet.atmosphere_height = atmosphere_km * 1000.0F;
+            changed = true;
+        }
+        changed |= ImGui::SliderFloat("Atmosphere intensity", &planet.atmosphere_intensity, 0.0F, 5.0F);
+        changed |= ImGui::Checkbox("LOD colours", &planet.debug_lod);
+        ImGui::TextDisabled("Elevation: %s", planet.elevation_path.empty() ? "(none)" : planet.elevation_path.c_str());
+        return changed;
+    };
+
     constexpr auto draw_text = [](Components::Text &text) -> bool {
         bool changed = false;
 
@@ -421,12 +493,53 @@ auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> pass
 }
 
 Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
+    event_subscriptions.push_back(event_bus.subscribe<KeyPressedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<KeyReleasedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseMovedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseScrolledEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseButtonPressedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
+    event_subscriptions.push_back(event_bus.subscribe<MouseButtonReleasedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
     stage_registry.bind_debug_renderer(debug_renderer.get());
     // The editor ray-casts against models' triangles to pick and to place things on surfaces.
     renderer->model_streamer().collect_pick_geometry(true);
 }
 
 Application::~Application() = default;
+
+auto Application::draw_event_metrics() -> void {
+    if (ImGui::Button("Reset")) {
+        event_bus.reset_metrics();
+    }
+
+    if (ImGui::BeginTable("Events", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        for (auto const *column: {"Event", "Subs", "Published", "Consumed", "Calls", "Avg us", "Max us"}) {
+            ImGui::TableSetupColumn(column);
+        }
+        ImGui::TableHeadersRow();
+
+        for (auto const &m: event_bus.metrics()) {
+            auto const avg_us = m.handler_calls == 0 ? 0.0 : static_cast<double>(m.total_ns) / 1000.0 / static_cast<double>(m.handler_calls);
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(m.name.data(), m.name.data() + m.name.size());
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu", m.subscribers);
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", static_cast<unsigned long long>(m.published));
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", static_cast<unsigned long long>(m.consumed));
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", static_cast<unsigned long long>(m.handler_calls));
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f", avg_us);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f", static_cast<double>(m.max_ns) / 1000.0);
+        }
+
+        ImGui::EndTable();
+    }
+}
 
 auto Application::on_ui(std::uint32_t frame_index) -> void {
     if (is_playing && play_fullscreen) {
@@ -493,12 +606,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             // View mode picker floating over the viewport's top-left corner, like Blender's shading dropdown.
             ImGui::SetCursorScreenPos(ImVec2{viewport_screen_pos.x + 8.0F, viewport_screen_pos.y + 8.0F});
             ImGui::SetNextItemWidth(170.0F);
-    event_subscriptions.push_back(event_bus.subscribe<KeyPressedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
-    event_subscriptions.push_back(event_bus.subscribe<KeyReleasedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
-    event_subscriptions.push_back(event_bus.subscribe<MouseMovedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
-    event_subscriptions.push_back(event_bus.subscribe<MouseScrolledEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
-    event_subscriptions.push_back(event_bus.subscribe<MouseButtonPressedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
-    event_subscriptions.push_back(event_bus.subscribe<MouseButtonReleasedEvent>([this](auto const &ev) { return handle_event(ev); }, 0));
             auto const current_mode = renderer->view_mode();
             auto const current_name =
                     std::ranges::find(view_mode_names, current_mode, &std::pair<ViewMode, std::string_view>::first)
@@ -506,41 +613,6 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             if (ImGui::BeginCombo("##view_mode", std::string{current_name}.c_str())) {
                 for (auto const &[mode, name]: view_mode_names) {
                     if (ImGui::Selectable(std::string{name}.c_str(), mode == current_mode)) {
-auto Application::draw_event_metrics() -> void {
-    if (ImGui::Button("Reset")) {
-        event_bus.reset_metrics();
-    }
-
-    if (ImGui::BeginTable("Events", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-        for (auto const *column: {"Event", "Subs", "Published", "Consumed", "Calls", "Avg us", "Max us"}) {
-            ImGui::TableSetupColumn(column);
-        }
-        ImGui::TableHeadersRow();
-
-        for (auto const &m: event_bus.metrics()) {
-            auto const avg_us = m.handler_calls == 0 ? 0.0 : static_cast<double>(m.total_ns) / 1000.0 / static_cast<double>(m.handler_calls);
-
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(m.name.data(), m.name.data() + m.name.size());
-            ImGui::TableNextColumn();
-            ImGui::Text("%zu", m.subscribers);
-            ImGui::TableNextColumn();
-            ImGui::Text("%llu", static_cast<unsigned long long>(m.published));
-            ImGui::TableNextColumn();
-            ImGui::Text("%llu", static_cast<unsigned long long>(m.consumed));
-            ImGui::TableNextColumn();
-            ImGui::Text("%llu", static_cast<unsigned long long>(m.handler_calls));
-            ImGui::TableNextColumn();
-            ImGui::Text("%.2f", avg_us);
-            ImGui::TableNextColumn();
-            ImGui::Text("%.2f", static_cast<double>(m.max_ns) / 1000.0);
-        }
-
-        ImGui::EndTable();
-    }
-}
-
                         renderer->set_view_mode(mode);
                     }
                 }
@@ -669,6 +741,7 @@ auto Application::draw_event_metrics() -> void {
 #if LATHE_TRACK_MEMORY
     widget("Memory", [] { on_memory_ui(); });
 #endif
+    widget("Events", [&] { draw_event_metrics(); });
     widget("Console", [&] { terminal_widget.draw(); });
 
     widget("Script", [&] {
@@ -741,7 +814,6 @@ auto Application::draw_event_metrics() -> void {
             changed = true;
         }
 
-    widget("Events", [&] { draw_event_metrics(); });
         changed |= ImGui::Checkbox("Debug meshlet colours", &info.debug_meshlet_colours);
         changed |= ImGui::SliderFloat("Meshlet extrude", &info.meshlet_extrude, 0.0F, 4.0F);
         changed |= ImGui::SliderFloat("Meshlet shrink", &info.meshlet_shrink, 0.0F, 0.9F);
@@ -1504,7 +1576,7 @@ auto Application::draw_event_metrics() -> void {
                     copy_components<Components::Transform, Components::Model, Components::InstancedModel,
                                     Components::RigidBody, Components::MaterialOverride, Components::PlayerTag,
                                     Components::Lifetime, Components::PointLight, Components::SpotLight,
-                                    Components::Decal, Components::ParticleEmitter, Components::Text, Components::Script, Components::Behaviour,
+                                    Components::Decal, Components::ParticleEmitter, Components::Water, Components::Planet, Components::Text, Components::Script, Components::Behaviour,
                                     Components::BulletTag, Components::Static>(
                             registry, source, clone);
 
@@ -1882,6 +1954,8 @@ auto Application::draw_event_metrics() -> void {
         section.operator()<Components::SpotLight>("Spot Light", draw_spot_light);
         section.operator()<Components::Decal>("Decal", draw_decal);
         section.operator()<Components::ParticleEmitter>("Particle Emitter", draw_particle_emitter);
+        section.operator()<Components::Water>("Water", draw_water);
+        section.operator()<Components::Planet>("Planet", draw_planet);
         section.operator()<Components::Text>("Text", draw_text);
         section.operator()<Components::RigidBody>("Rigid Body", draw_rigid_body);
         section.operator()<Components::Lifetime>("Lifetime", draw_lifetime);
@@ -2214,6 +2288,9 @@ auto Application::draw_event_metrics() -> void {
                 if (!registry.all_of<Components::ParticleEmitter>(selected_entity) &&
                     ImGui::MenuItem("Particle Emitter")) {
                     registry.emplace<Components::ParticleEmitter>(selected_entity);
+                }
+                if (!registry.all_of<Components::Water>(selected_entity) && ImGui::MenuItem("Water")) {
+                    registry.emplace<Components::Water>(selected_entity, Components::Water::pool());
                 }
                 if (!registry.all_of<Components::Text>(selected_entity) && ImGui::MenuItem("Text")) {
                     registry.emplace<Components::Text>(selected_entity, Components::Text{.text = "Text"});

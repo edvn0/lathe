@@ -17,6 +17,22 @@ function scene.find(name) end
 ---Destroys every entity in the scene.
 function scene.clear() end
 
+---The height of the water surface over (x, z), waves included, or nil where no water body covers the point. A lake
+---wins over an ocean. `time` defaults to the time the last frame's water was drawn at, so the answer matches the screen.
+---@param x number
+---@param z number
+---@param time? number
+---@return number?
+function scene.water_height(x, z, time) end
+
+---Whether the point is below the water surface over it (false where there is no water).
+---@param x number
+---@param y number
+---@param z number
+---@param time? number
+---@return boolean
+function scene.is_underwater(x, y, z, time) end
+
 ---Changes the scene's lighting environment: the fields given, the rest stay.
 ---@param options EnvironmentOptions
 function scene.set_environment(options) end

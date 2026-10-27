@@ -322,6 +322,10 @@ auto Runtime::on_startup() -> void {
 
         effect_system.create(renderer->game_gpu());
 
+        if (auto const created = planet_system.create(renderer->game_gpu()); !created) {
+            warn("Could not set up planet atmospheres: {}", describe(created.error()));
+        }
+
         if (ray_tracing_poc_enabled) {
             if (!context.ray_query_supported) {
                 warn("--rt-poc needs VK_KHR_ray_query, which this device does not support");
@@ -341,6 +345,11 @@ auto Runtime::on_startup() -> void {
             text_renderer->declare(graph, active_scene() != nullptr ? &active_scene()->get_registry() : nullptr);
             if (auto const *scene = active_scene(); scene != nullptr) {
                 particle_system.declare(graph, scene->get_registry(), &renderer->material_storage(), last_delta_time);
+            }
+            if (auto const *scene = active_scene(); scene != nullptr) {
+                planet_system.declare(graph, scene->get_registry(), frame_view, frame_projection, frame_origin,
+                                      renderer->directional_light().direction,
+                                      renderer->directional_light().intensity);
             }
             ray_tracing_poc.declare(graph, frame_view, frame_projection, renderer->directional_light().direction);
             if (game && game_hooks_enabled) {
@@ -411,6 +420,7 @@ auto Runtime::switch_game(std::string name) -> void {
         // The old game's finalizers release effects through effect_system, so it goes before anything new binds.
         game.reset();
         game = std::move(next);
+        subscribe_game_input();
         game_name = name;
 
         game->attach_host(GameHost{
@@ -420,7 +430,6 @@ auto Runtime::switch_game(std::string name) -> void {
                 .effects = &effect_system,
                 .text = text_renderer.get(),
         });
-        subscribe_game_input();
 
         scene_path.clear();
         scene_pack.reset();

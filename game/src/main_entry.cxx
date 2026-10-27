@@ -8,6 +8,8 @@
 #include "basic_game.hxx"
 #include "chess_game.hxx"
 #include "chess_lua.hxx"
+#include "glass_game.hxx"
+#include "globe_game.hxx"
 #include "core/logger.hxx"
 #include "material_wall_game.hxx"
 #include "meshlet_gallery_game.hxx"
@@ -16,10 +18,11 @@
 #include "moving_game.hxx"
 #include "net_lua.hxx"
 #include "punt_game.hxx"
+#include "water_game.hxx"
 #include "shadow_caster_game.hxx"
 
 namespace {
-    constexpr std::array<std::string_view, 12> names{"basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "lights", "materials", "shadows", "shadowcity", "snake"};
+    constexpr std::array<std::string_view, 15> names{"basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "lights", "materials", "shadows", "shadowcity", "glass", "water", "globe", "snake"};
 }
 
 auto game_names() -> std::span<std::string_view const> { return names; }
@@ -66,6 +69,21 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
     if (name == "shadowcity") {
         info("Starting the 'shadowcity' stress scene");
         return std::make_unique<ShadowCityGame>();
+    }
+
+    if (name == "glass") {
+        info("Starting the 'glass' transparency gallery");
+        return std::make_unique<GlassGame>();
+    }
+
+    if (name == "globe") {
+        info("Starting the 'globe' Earth");
+        return std::make_unique<GlobeGame>();
+    }
+
+    if (name == "water") {
+        info("Starting the 'water' pool and sea");
+        return std::make_unique<WaterGame>();
     }
 
     if (name == "gallery") {

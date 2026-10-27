@@ -435,6 +435,14 @@ auto capture_scene(Scene const &scene, Renderer &renderer, EngineModels const &e
             });
         }
 
+        if (auto const *planet = registry.try_get<Components::Planet>(entity)) {
+            description.planets.push_back(ScenePlanetComponent{.entity = entity_index, .planet = *planet});
+        }
+
+        if (auto const *water = registry.try_get<Components::Water>(entity)) {
+            description.waters.push_back(SceneWaterComponent{.entity = entity_index, .water = *water});
+        }
+
         if (auto const *text = registry.try_get<Components::Text>(entity)) {
             description.texts.push_back(SceneTextComponent{.entity = entity_index, .text = *text});
         }
@@ -909,6 +917,14 @@ auto instantiate_scene(Scene &scene, Renderer &renderer, EngineModels const &eng
         auto emitter = component.emitter;
         emitter.material = material_at(component.material);
         registry.emplace<Components::ParticleEmitter>(entities[component.entity], emitter);
+    }
+
+    for (auto const &component: description.planets) {
+        registry.emplace<Components::Planet>(entities[component.entity], component.planet);
+    }
+
+    for (auto const &component: description.waters) {
+        registry.emplace<Components::Water>(entities[component.entity], component.water);
     }
 
     for (auto const &component: description.texts) {

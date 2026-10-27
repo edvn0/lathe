@@ -461,6 +461,13 @@ namespace {
             terrain->submit(*runtime.renderer);
         }
 
+        // Water bodies (Components::Water) and planets (Components::Planet), placed from this frame's camera.
+        runtime.water_system.submit(*runtime.renderer, registry, glm::vec3{glm::inverse(runtime.frame_view)[3]});
+        runtime.planet_system.submit(*runtime.renderer, registry,
+                                     PlanetView{.origin = runtime.frame_origin,
+                                                .camera = glm::dvec3{glm::inverse(runtime.frame_view)[3]},
+                                                .time = runtime.elapsed_time});
+
         return {};
     }
 
@@ -469,8 +476,8 @@ namespace {
                 .extent = context.swapchain.extent(),
                 .geometry_capacity = 256UZ * 1024UZ * 1024UZ,
                 .material_capacity = 4096,
-                .mesh_capacity = 4096,
-                .model_capacity = 1024,
+                .mesh_capacity = 8192,
+                .model_capacity = 4096,
                 .pipeline_capacity = 1024,
                 .swapchain_format = context.swapchain.format(),
                 .samples = VK_SAMPLE_COUNT_4_BIT,
@@ -586,6 +593,16 @@ namespace {
             return false;
         }
 
+        // The camera comes first: the scene submission places camera-relative content (the floating origin, the ocean
+        // grid) from it.
+        auto const active_aspect = runtime.renderer->aspect(frame->frame_index);
+        auto const active_camera = runtime.is_playing ? runtime.game->camera(*runtime.active_scene(), active_aspect)
+                                                      : runtime.editing_camera(active_aspect);
+
+        runtime.frame_view = active_camera.view;
+        runtime.frame_projection = active_camera.projection;
+        runtime.frame_origin = active_camera.origin;
+
         auto frame_ok = true;
         {
             auto const submitting = clock.scope(CpuPhase::scene_submit);
@@ -601,13 +618,6 @@ namespace {
                 frame_ok = false;
             }
         }
-
-        auto const active_aspect = runtime.renderer->aspect(frame->frame_index);
-        auto const active_camera = runtime.is_playing ? runtime.game->camera(*runtime.active_scene(), active_aspect)
-                                                      : runtime.editing_camera(active_aspect);
-
-        runtime.frame_view = active_camera.view;
-        runtime.frame_projection = active_camera.projection;
 
         if (frame_ok) {
             {
@@ -1222,6 +1232,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     runtime.game_factory = [](std::string_view name) { return create_game(name); };
     runtime.available_games = game_names();
     runtime.game = create_game(runtime.game_name);
+    runtime.subscribe_game_input();
 
     runtime.game->attach_host(GameHost{
             .player_mode = player_mode,
@@ -1232,7 +1243,6 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     });
 
     if (manifest && !manifest->title.empty()) {
-    runtime.subscribe_game_input();
         glfwSetWindowTitle(context.window, manifest->title.c_str());
     }
     install_window_callbacks(context, runtime);

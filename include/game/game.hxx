@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 
 #include <functional>
 #include <optional>
@@ -26,7 +27,7 @@ template<typename... ExtraComponents>
 auto clone_editor_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
     clone_registry<Components::Transform, Components::Model, Components::InstancedModel, Components::RigidBody,
                    Components::MaterialOverride, Components::PlayerTag, Components::Lifetime, Components::PointLight,
-                   Components::SpotLight, Components::Decal, Components::ParticleEmitter, Components::Text, Components::GeneratedMeta, Components::Meta,
+                   Components::SpotLight, Components::Decal, Components::ParticleEmitter, Components::Water, Components::Planet, Components::Text, Components::GeneratedMeta, Components::Meta,
                    Components::Parent, Components::Static, ExtraComponents...>(editor_scene.get_registry(), runtime_scene.get_registry());
 }
 
@@ -36,6 +37,9 @@ struct CameraParams {
     float near_clip = 0.1F;
     float far_clip = 10000.0F;
     float vertical_fov_radians = 1.0F;
+    // A floating origin: the world point (in double precision) that `view` treats as its origin. Systems that place
+    // content too far out for floats (PlanetSystem) draw relative to it; everything else assumes it is zero.
+    glm::dvec3 origin{0.0};
 };
 
 struct GameHost {
@@ -52,10 +56,6 @@ struct GameHost {
     TextRenderer *text = nullptr;
 };
 
-class IGame {
-public:
-    virtual ~IGame() = default;
-
 // What a game needs to subscribe to the runtime's EventBus: handlers only fire while playing, and look events (mouse
 // movement) only while the mouse is captured.
 struct InputContext {
@@ -65,9 +65,9 @@ struct InputContext {
     std::function<bool()> mouse_look;
 };
 
-    virtual auto attach_host(GameHost host) -> void { (void) host; }
-
-    virtual auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void = 0;
+class IGame {
+public:
+    virtual ~IGame() = default;
 
 protected:
     template<typename E, typename G>
@@ -84,6 +84,10 @@ protected:
     }
 
 public:
+
+    virtual auto attach_host(GameHost host) -> void { (void) host; }
+
+    virtual auto on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void = 0;
 
     virtual auto on_update(Scene &scene, float delta_time) -> void = 0;
 
@@ -132,7 +136,7 @@ public:
     virtual auto clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
         clone_editor_into_runtime<>(editor_scene, runtime_scene);
     }
-};
 
 private:
     std::vector<EventBus::Subscription> input_subscriptions_;
+};

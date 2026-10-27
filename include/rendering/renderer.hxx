@@ -50,6 +50,7 @@
 #include "gpu/sampler_storage.hxx"
 #include "gpu/skinning.hxx"
 #include "gpu/submission_plan.hxx"
+#include "rendering/blend_order.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "rendering/environment.hxx"
 #include "rendering/forward_target.hxx"
@@ -719,6 +720,10 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto hdr_format() const noexcept { return hdr_format_; }
     [[nodiscard]] auto samples() const noexcept { return samples_; }
 
+    // The shader time (UBO.time) of the last prepared frame, which the water's waves are animated by; the CPU water
+    // queries (WaterSystem) take it to agree with what is drawn.
+    [[nodiscard]] auto frame_time() const noexcept -> float { return frame_time_; }
+
     // The scene is rendered at the display size times this, then the composite pass resamples it to the display.
     // Below 1 trades sharpness for speed, above 1 is supersampling. The run loop applies it when it sizes the
     // renderer, so a change takes effect after the next resize settles.
@@ -1136,6 +1141,11 @@ private:
         std::uint32_t double_sided_indirect_count = 0;
         std::uint32_t mask_indirect_count = 0;
         std::uint32_t blend_indirect_count = 0;
+        // The blended commands split into runs of one draw path each (meshlet or indexed), in draw order.
+        std::vector<render_pass::BlendRun> blend_runs;
+        // A water material is among the blended batches: the forward pass is split around a copy of the scene colour
+        // and depth for it to refract (docs/water.md).
+        bool scene_copy_needed = false;
 
         std::array<std::uint32_t, shadow_cascade_count> shadow_opaque_indirect_count{};
         std::array<std::uint32_t, shadow_cascade_count> shadow_double_sided_indirect_count{};
@@ -1251,7 +1261,8 @@ private:
 
     struct PendingBlendBatch {
         BatchEntry const *entry = nullptr;
-        float camera_distance_sq = 0.0F;
+        blend_order::Entry order{};
+        bool double_sided = false;
     };
 
     struct BatchKey {
@@ -1283,6 +1294,7 @@ private:
     std::vector<BatchEntry const *> double_sided_batches_;
     std::vector<BatchEntry const *> mask_batches_;
     std::vector<PendingBlendBatch> blend_batches_;
+    float frame_time_ = 0.0F;
 
     std::uint64_t batch_frame_ = 0;
 
@@ -1455,7 +1467,9 @@ private:
     [[nodiscard]]
     auto record_forward_pass(render_pass::Context const &pass_context, RendererFrame const &frame,
                              FrameTargets const &targets, std::uint32_t ao_texture_index,
-                             std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays)
+                             std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays,
+                             render_pass::ForwardPhase phase = render_pass::ForwardPhase::all,
+                             std::uint32_t scene_colour_index = 0, std::uint32_t scene_depth_index = 0)
             -> std::expected<render_pass::HdrTextureIndex, RendererError>;
 
     [[nodiscard]]

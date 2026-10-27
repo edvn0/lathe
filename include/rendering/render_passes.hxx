@@ -181,8 +181,29 @@ namespace render_pass {
         float denoise_depth_sigma = 40.0F;
     };
 
+    // A stretch of the blended indirect commands that all take the same draw path, so the back-to-front order holds
+    // across meshlet and indexed batches. `first` counts from the first blended command.
+    struct BlendRun {
+        std::uint32_t first = 0;
+        std::uint32_t count = 0;
+        bool meshlet = false;
+    };
+
+    // Which draws a forward pass records. The pass is split in two around the scene copy when water is drawn.
+    enum class ForwardPhase : std::uint8_t {
+        all,
+        opaque,
+        blend,
+    };
+
     struct ForwardGeometryInfo {
         HdrTextureIndex output_hdr{};
+
+        ForwardPhase phase = ForwardPhase::all;
+        std::span<BlendRun const> blend_runs;
+        // Bindless indices of the scene copies (PC.scene_colour_index / scene_depth_index), 0 when not taken.
+        std::uint32_t scene_colour_index = 0;
+        std::uint32_t scene_depth_index = 0;
 
         VkExtent2D extent{};
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;

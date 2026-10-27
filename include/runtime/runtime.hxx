@@ -24,6 +24,8 @@
 #include "rendering/frame_graph/pass_profiler.hxx"
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/particle_system.hxx"
+#include "rendering/planet_system.hxx"
+#include "rendering/water_system.hxx"
 #include "rendering/ray_tracing_poc.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
@@ -114,6 +116,8 @@ struct Runtime {
     bool game_hooks_enabled = true;
     float last_delta_time = 0.0F;
     ParticleSystem particle_system;
+    WaterSystem water_system;
+    PlanetSystem planet_system;
     EffectSystem effect_system;
 
     // The ray query proof of concept (docs/ray-tracing.md). Off unless run_engine was given --rt-poc.
@@ -122,6 +126,8 @@ struct Runtime {
     // The camera of the frame being recorded, for passes that need its matrices. Set by run_engine every frame.
     glm::mat4 frame_view{1.0F};
     glm::mat4 frame_projection{1.0F};
+    // The camera's floating origin (CameraParams::origin) this frame.
+    glm::dvec3 frame_origin{0.0};
 
     [[nodiscard]] auto active_terrain() const noexcept -> TerrainWorld * {
         return terrain_enabled ? terrain.get() : nullptr;
@@ -152,14 +158,14 @@ struct Runtime {
 
     auto request_screenshot() -> void;
 
+    // Called whenever `game` is replaced: lets the new game subscribe its input handlers to event_bus.
+    auto subscribe_game_input() -> void;
+
     // Per-frame, in order: pre_update (before a benchmark steers the frame), update, then on_ui while the frame's
     // ImGui is open.
     virtual auto pre_update(float delta_time) -> void { (void) delta_time; }
     virtual auto update(float delta_time) -> void;
     virtual auto on_ui(std::uint32_t frame_index) -> void;
-
-    // Called whenever `game` is replaced: lets the new game subscribe its input handlers to event_bus.
-    auto subscribe_game_input() -> void;
 
     // Every input event goes through this bus; Runtime subscribes at priority 100, subclasses ahead of it.
     EventBus event_bus;
@@ -182,18 +188,18 @@ struct Runtime {
     [[nodiscard]] virtual auto observer_position() const -> glm::vec3 { return glm::vec3{0.0F}; }
 
 protected:
-    // Called at the start of play() and stop(), before the play scene is created or torn down.
-    virtual auto on_play_starting() -> void {}
-    virtual auto on_play_stopping() -> void {}
-
-    // Called from on_startup() once ImGui is up.
-    virtual auto create_ui_resources() -> void {}
     auto handle_event(KeyPressedEvent ev) -> bool;
     auto handle_event(KeyReleasedEvent ev) -> bool;
     auto handle_event(MouseMovedEvent ev) -> bool;
     auto handle_event(MouseScrolledEvent ev) -> bool;
     auto handle_event(MouseButtonPressedEvent ev) -> bool;
     auto handle_event(MouseButtonReleasedEvent ev) -> bool;
+    // Called at the start of play() and stop(), before the play scene is created or torn down.
+    virtual auto on_play_starting() -> void {}
+    virtual auto on_play_stopping() -> void {}
+
+    // Called from on_startup() once ImGui is up.
+    virtual auto create_ui_resources() -> void {}
 
     // Called when source_scene holds a fresh scene: populated by the game, or loaded from a file.
     virtual auto on_source_scene_replaced() -> void {}
