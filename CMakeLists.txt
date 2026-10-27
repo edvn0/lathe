@@ -96,6 +96,12 @@ option(
 )
 
 option(
+    LATHE_DEBUG_OPTIMIZE
+    "Compile the engine with -Og in Debug builds (much faster to run; variables may be optimised out in a debugger)"
+    ON
+)
+
+option(
     LATHE_WERROR
     "Treat warnings as errors on this project's own targets (lathe-core/lathe/lathe-tests)"
     OFF
