@@ -320,7 +320,8 @@ float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float refe
 }
 
 float3 shade_light(Ptr<UBO> ubo, GpuLight punctual_light, float3 world_position, float3 geometric_normal,
-                   float3 shading_normal, float3 view_direction, float3 base_colour, float metallic, float roughness)
+                   float3 shading_normal, float3 view_direction, float3 base_colour, float metallic, float roughness,
+                   float fade)
 {
     float3 to_light = punctual_light.position - world_position;
     float distance = length(to_light);
@@ -336,11 +337,15 @@ float3 shade_light(Ptr<UBO> ubo, GpuLight punctual_light, float3 world_position,
         cone_falloff *= cone_falloff;
     }
 
-    float3 radiance = punctual_light.colour * punctual_light.intensity * distance_falloff * cone_falloff;
+    float3 radiance = punctual_light.colour * punctual_light.intensity * distance_falloff * cone_falloff * fade;
 
-    if (radiance.x + radiance.y + radiance.z > 0.0) {
-        radiance *= local_shadow(ubo, punctual_light, world_position, geometric_normal);
+    // A light that does not reach this pixel (out of range, outside the cone or faded out) adds nothing: skip its
+    // shadow lookup and the BRDF.
+    if (radiance.x + radiance.y + radiance.z <= 0.0) {
+        return float3(0.0);
     }
+
+    radiance *= local_shadow(ubo, punctual_light, world_position, geometric_normal);
 
     return shade_punctual(shading_normal, view_direction, light_dir, radiance, base_colour, metallic, roughness);
 }
@@ -571,8 +576,8 @@ var base_colour = base_sample.xyz *
 
             const GpuLight light = pc.lights[light_index];
             punctual_contribution += shade_light(ubo, light, input.world_position, normal, shading_normal,
-                                                 view_direction, base_colour, metallic, roughness) *
-                                     light_screen_fade(ubo, light);
+                                                 view_direction, base_colour, metallic, roughness,
+                                                 light_screen_fade(ubo, light));
 
             if (lane_next == light_index) {
                 ++cursor;
@@ -583,8 +588,8 @@ var base_colour = base_sample.xyz *
         for (uint light_index = 0; light_index < pc.light_count; ++light_index) {
             const GpuLight light = pc.lights[light_index];
             punctual_contribution += shade_light(ubo, light, input.world_position, normal, shading_normal,
-                                                 view_direction, base_colour, metallic, roughness) *
-                                     light_screen_fade(ubo, light);
+                                                 view_direction, base_colour, metallic, roughness,
+                                                 light_screen_fade(ubo, light));
         }
     }
 
