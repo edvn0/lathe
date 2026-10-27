@@ -10,6 +10,7 @@
 #include "rendering/file_browser.hxx"
 
 #include <array>
+#include <chrono>
 #include <span>
 #include <cstdint>
 #include <filesystem>
@@ -120,7 +121,35 @@ struct Application : Runtime {
     auto on_frame_timings(std::span<frame_graph::PassTiming const> passes) -> void override { add_pass_timings(passes); }
     float timing_x = 0.0F;
 
-    EditorCamera camera;
+    // One pane of the editor's central area: a view of the scene with its own camera. Pane 0 is the renderer's primary
+    // view (Runtime's viewport_* fields mirror it, which the run loop sizes the renderer by); pane 1 is an extra view
+    // that exists while the viewport is split.
+    struct ViewportPane {
+        EditorCamera camera;
+        Renderer::ViewId view = Renderer::primary_view;
+        ImVec2 screen_pos{};
+        ImVec2 content_size{};
+        bool hovered = false;
+        int seen_frame = -1;
+        VkExtent2D pending_extent{};
+        std::chrono::steady_clock::time_point pending_since{};
+    };
+
+    std::array<ViewportPane, 2> viewports;
+    // The pane that takes keyboard camera input, the gizmo and the F-key view modes: the one the pointer last was in.
+    std::size_t active_viewport = 0;
+    bool second_viewport_open = false;
+    // The second viewport window was just opened and still has to be docked beside the first.
+    bool split_viewport_requested = false;
+    bool second_viewport_camera_seeded = false;
+
+    [[nodiscard]] auto active_camera() noexcept -> EditorCamera & { return viewports[active_viewport].camera; }
+    [[nodiscard]] auto active_camera() const noexcept -> EditorCamera const & {
+        return viewports[active_viewport].camera;
+    }
+    auto draw_viewport(std::size_t index, char const *title, std::uint32_t frame_index) -> void;
+    auto dock_second_viewport(ImGuiID dockspace_id) -> void;
+    auto update_views() -> void override;
 
     enum class CameraDrag : std::uint8_t { none, orbit, pan };
     CameraDrag camera_drag = CameraDrag::none;
@@ -256,7 +285,7 @@ struct Application : Runtime {
     auto update(float delta_time) -> void override;
 
     [[nodiscard]] auto editing_camera(float aspect_ratio) const -> CameraParams override;
-    [[nodiscard]] auto observer_position() const -> glm::vec3 override { return camera.position(); }
+    [[nodiscard]] auto observer_position() const -> glm::vec3 override { return viewports[0].camera.position(); }
 
 
 protected:

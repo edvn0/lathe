@@ -44,6 +44,7 @@ add_library(
         ray_tracing_poc.cxx
         renderer.cxx
         renderer_frame_graph.cxx
+        renderer_views.cxx
         rendering_error_describe.cxx
         render_passes.cxx
         scene.cxx

@@ -1599,6 +1599,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
             info("Resizing renderer to {}x{}", target_render_extent.width, target_render_extent.height);
             renderer_extent = target_render_extent;
         }
+
+        runtime.update_views();
     }
 
     context.running.store(false, std::memory_order_release);

@@ -166,6 +166,9 @@ struct Runtime {
     virtual auto pre_update(float delta_time) -> void { (void) delta_time; }
     virtual auto update(float delta_time) -> void;
     virtual auto on_ui(std::uint32_t frame_index) -> void;
+    // Once a frame, after the renderer's own resize: where an editor creates, resizes and drops the renderer's extra
+    // views (its second viewport).
+    virtual auto update_views() -> void {}
 
     // Every input event goes through this bus; Runtime subscribes at priority 100, subclasses ahead of it.
     EventBus event_bus;

@@ -1370,7 +1370,6 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     auto const draw_size = *draw_size_result;
     auto const transform_size = *transform_size_result;
     auto const indirect_size = *indirect_size_result;
-    auto const culled_indirect_size = indirect_size;
 
     auto const cull_batch_capacity = std::min(maximum_draw_count_, maximum_cull_batch_count);
     auto const occlusion_indirect_size = static_cast<VkDeviceSize>(cull_batch_capacity) * sizeof(GpuDrawCommand);
@@ -1396,26 +1395,24 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     auto const upload_size = batch_bounds_offset + batch_bounds_size;
 
-    auto shadow_atlas = create_held_image(
-            image_storage_,
-            ImageCreateInfo{
-                    .extent = VkExtent3D{.width = shadow_atlas_width, .height = shadow_atlas_height, .depth = 1},
-                    .format = VK_FORMAT_D32_SFLOAT,
-                    .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
-                    .image_type = VK_IMAGE_TYPE_2D,
-                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
-                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                    .flags = 0,
-                    .samples = VK_SAMPLE_COUNT_1_BIT,
-                    .tiling = VK_IMAGE_TILING_OPTIMAL,
-                    .mip_levels = 1,
-                    .array_layers = 1,
-                    .debug_name = "renderer.shadow_atlas",
-            });
+    frame_layout_ = FrameBufferLayout{
+            .draw_size = draw_size,
+            .transform_size = transform_size,
+            .indirect_size = indirect_size,
+            .batch_bounds_size = batch_bounds_size,
+            .occlusion_indirect_size = occlusion_indirect_size,
+            .cull_chunks_size = cull_chunks_size,
+            .occlusion_candidates_size = occlusion_candidates_size,
+            .upload_size = upload_size,
+            .transform_offset = transform_offset,
+            .indirect_offset = indirect_offset,
+            .batch_bounds_offset = batch_bounds_offset,
+    };
+
+    auto shadow_atlas = create_shadow_atlas();
 
     if (!shadow_atlas) {
-        return std::unexpected(make_image_error(shadow_atlas.error()));
+        return std::unexpected(shadow_atlas.error());
     }
 
     shadow_atlas_ = std::move(*shadow_atlas);
@@ -1445,354 +1442,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
 
     local_shadow_atlas_ = std::move(*local_shadow_atlas);
 
-    constexpr VkDeviceSize visible_lights_size =
-            (sizeof(glm::vec4) + sizeof(std::uint32_t)) * VkDeviceSize{maximum_light_count} + sizeof(std::uint32_t);
-
     frames_.resize(frames_in_flight);
-    transient_allocator_.initialize(context_, image_storage_, frames_in_flight);
+    transient_allocator_->initialize(context_, image_storage_, frames_in_flight);
 
     for (std::uint32_t frame_index = 0; frame_index < static_cast<std::uint32_t>(frames_.size()); ++frame_index) {
-        auto &frame = frames_[frame_index];
-
-        auto upload = Buffer::create(context_, BufferCreateInfo{
-                                                       .size = upload_size,
-                                                       .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                                       .memory = BufferMemory::upload,
-                                                       .debug_name = "renderer.frame_upload",
-                                               });
-
-        if (!upload) {
-            return std::unexpected(make_device_error(upload.error()));
+        if (auto created = create_frame_resources(frames_[frame_index], create_info.extent, frame_index); !created) {
+            return std::unexpected(created.error());
         }
-
-        frame.upload_buffer = std::move(*upload);
-
-        auto draws = create_shared_buffer(context_, BufferCreateInfo{
-                                                            .size = draw_size,
-                                                            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                            .memory = BufferMemory::device,
-                                                            .debug_name = "renderer.frame_draws",
-                                                    });
-
-        if (!draws) {
-            return std::unexpected(make_device_error(draws.error()));
-        }
-
-        frame.draw_buffer = std::move(*draws);
-
-        auto transforms = create_shared_buffer(context_, BufferCreateInfo{
-                                                                 .size = transform_size,
-                                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                 .memory = BufferMemory::device,
-                                                                 .debug_name = "renderer.frame_transforms",
-                                                         });
-
-        if (!transforms) {
-            return std::unexpected(make_device_error(transforms.error()));
-        }
-
-        frame.transform_buffer = std::move(*transforms);
-
-        auto indirect = create_shared_buffer(
-                context_,
-                BufferCreateInfo{
-                        .size = indirect_size,
-                        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                        .memory = BufferMemory::device,
-                        .debug_name = "renderer.frame_indirect",
-                });
-
-        if (!indirect) {
-            return std::unexpected(make_device_error(indirect.error()));
-        }
-
-        frame.indirect_buffer = std::move(*indirect);
-
-        auto batch_bounds = create_shared_buffer(context_, BufferCreateInfo{
-                                                                   .size = batch_bounds_size,
-                                                                   .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                   .memory = BufferMemory::device,
-                                                                   .debug_name = "renderer.frame_batch_bounds",
-                                                           });
-
-        if (!batch_bounds) {
-            return std::unexpected(make_device_error(batch_bounds.error()));
-        }
-
-        frame.batch_bounds_buffer = std::move(*batch_bounds);
-
-        auto culled_indirect = create_shared_buffer(
-                context_, BufferCreateInfo{
-                                  .size = culled_indirect_size,
-                                  .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                  .memory = BufferMemory::device,
-                                  .debug_name = "renderer.frame_culled_indirect",
-                          });
-
-        if (!culled_indirect) {
-            return std::unexpected(make_device_error(culled_indirect.error()));
-        }
-
-        frame.culled_indirect_buffer = std::move(*culled_indirect);
-
-        auto visible_draws = create_shared_buffer(context_, BufferCreateInfo{
-                                                                    .size = draw_size,
-                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                    .memory = BufferMemory::device,
-                                                                    .debug_name = "renderer.frame_visible_draws",
-                                                            });
-
-        if (!visible_draws) {
-            return std::unexpected(make_device_error(visible_draws.error()));
-        }
-
-        frame.visible_draw_buffer = std::move(*visible_draws);
-
-        auto visible_transforms =
-                create_shared_buffer(context_, BufferCreateInfo{
-                                                       .size = transform_size,
-                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                       .memory = BufferMemory::device,
-                                                       .debug_name = "renderer.frame_visible_transforms",
-                                               });
-
-        if (!visible_transforms) {
-            return std::unexpected(make_device_error(visible_transforms.error()));
-        }
-
-        frame.visible_transform_buffer = std::move(*visible_transforms);
-
-        struct OcclusionBufferSpec {
-            Buffer *buffer;
-            VkDeviceSize size;
-            VkBufferUsageFlags usage;
-            BufferMemory memory;
-            char const *debug_name;
-        };
-
-        constexpr VkBufferUsageFlags storage_usage =
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-        constexpr VkBufferUsageFlags indirect_usage = storage_usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-
-        std::array const occlusion_buffers{
-                OcclusionBufferSpec{.buffer = &frame.occlusion_views_buffer,
-                                    .size = 2 * sizeof(GpuOcclusionView),
-                                    .usage = storage_usage,
-                                    .memory = BufferMemory::upload,
-                                    .debug_name = "renderer.frame_occlusion_views"},
-                OcclusionBufferSpec{.buffer = &frame.occlusion_candidates_buffer,
-                                    .size = occlusion_candidates_size,
-                                    .usage = storage_usage,
-                                    .memory = BufferMemory::device,
-                                    .debug_name = "renderer.frame_occlusion_candidates"},
-                OcclusionBufferSpec{.buffer = &frame.cull_chunks_buffer,
-                                    .size = cull_chunks_size,
-                                    .usage = storage_usage,
-                                    .memory = BufferMemory::device,
-                                    .debug_name = "renderer.frame_cull_chunks"},
-                OcclusionBufferSpec{.buffer = &frame.late_indirect_buffer,
-                                    .size = occlusion_indirect_size,
-                                    .usage = indirect_usage,
-                                    .memory = BufferMemory::device,
-                                    .debug_name = "renderer.frame_late_indirect"},
-                OcclusionBufferSpec{.buffer = &frame.merged_indirect_buffer,
-                                    .size = occlusion_indirect_size,
-                                    .usage = indirect_usage,
-                                    .memory = BufferMemory::device,
-                                    .debug_name = "renderer.frame_merged_indirect"},
-                OcclusionBufferSpec{.buffer = &frame.occlusion_stats_buffer,
-                                    .size = occlusion_stat_count * sizeof(std::uint32_t),
-                                    .usage = storage_usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                    .memory = BufferMemory::device,
-                                    .debug_name = "renderer.frame_occlusion_stats"},
-                OcclusionBufferSpec{.buffer = &frame.occlusion_stats_readback_buffer,
-                                    .size = occlusion_stat_count * sizeof(std::uint32_t),
-                                    .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                    .memory = BufferMemory::readback,
-                                    .debug_name = "renderer.frame_occlusion_stats_readback"},
-        };
-
-        for (auto const &spec: occlusion_buffers) {
-            auto buffer = create_shared_buffer(context_, BufferCreateInfo{
-                                                                 .size = spec.size,
-                                                                 .usage = spec.usage,
-                                                                 .memory = spec.memory,
-                                                                 .debug_name = spec.debug_name,
-                                                         });
-
-            if (!buffer) {
-                return std::unexpected(make_device_error(buffer.error()));
-            }
-
-            *spec.buffer = std::move(*buffer);
-        }
-
-        auto frustum_planes_buffer =
-                create_shared_buffer(context_, BufferCreateInfo{
-                                                       .size = sizeof(glm::vec4) * cull_plane_count,
-                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                       .memory = BufferMemory::upload,
-                                                       .debug_name = "renderer.frame_frustum_planes",
-                                               });
-
-        if (!frustum_planes_buffer) {
-            return std::unexpected(make_device_error(frustum_planes_buffer.error()));
-        }
-
-        frame.frustum_planes_buffer = std::move(*frustum_planes_buffer);
-
-        auto lod_jobs_buffer =
-                create_shared_buffer(context_, BufferCreateInfo{
-                                                       .size = sizeof(GpuLodJob) * maximum_lod_job_count,
-                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                       .memory = BufferMemory::upload,
-                                                       .debug_name = "renderer.frame_lod_jobs",
-                                               });
-
-        if (!lod_jobs_buffer) {
-            return std::unexpected(make_device_error(lod_jobs_buffer.error()));
-        }
-
-        frame.lod_jobs_buffer = std::move(*lod_jobs_buffer);
-        frame.lod_jobs.reserve(maximum_lod_job_count);
-
-        {
-            auto skin_upload = Buffer::create(context_, BufferCreateInfo{
-                                                                .size = skin_input_size(),
-                                                                .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                                                .memory = BufferMemory::upload,
-                                                                .debug_name = "renderer.frame_skin_upload",
-                                                        });
-            if (!skin_upload) {
-                return std::unexpected(make_device_error(skin_upload.error()));
-            }
-            frame.skin_upload_buffer = std::move(*skin_upload);
-
-            auto skin_input = create_shared_buffer(context_, BufferCreateInfo{
-                                                                     .size = skin_input_size(),
-                                                                     .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                                                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                     .memory = BufferMemory::device,
-                                                                     .debug_name = "renderer.frame_skin_input",
-                                                             });
-            if (!skin_input) {
-                return std::unexpected(make_device_error(skin_input.error()));
-            }
-            frame.skin_input_buffer = std::move(*skin_input);
-
-            auto skin_scratch = create_shared_buffer(context_, BufferCreateInfo{
-                                                                       .size = std::max<VkDeviceSize>(
-                                                                               skin_scratch_capacity_, 256),
-                                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                       .memory = BufferMemory::device,
-                                                                       .debug_name = "renderer.frame_skin_scratch",
-                                                               });
-            if (!skin_scratch) {
-                return std::unexpected(make_device_error(skin_scratch.error()));
-            }
-            frame.skin_scratch_buffer = std::move(*skin_scratch);
-            frame.skin_jobs.reserve(maximum_skin_jobs_);
-        }
-
-        auto lights_buffer = create_shared_buffer(context_, BufferCreateInfo{
-                                                                    .size = sizeof(GpuLight) * maximum_light_count,
-                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                    .memory = BufferMemory::upload,
-                                                                    .debug_name = "renderer.frame_lights",
-                                                            });
-
-        if (!lights_buffer) {
-            return std::unexpected(make_device_error(lights_buffer.error()));
-        }
-
-        frame.lights_buffer = std::move(*lights_buffer);
-
-        auto visible_lights = create_shared_buffer(context_, BufferCreateInfo{
-                                                                     .size = visible_lights_size,
-                                                                     .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                     .memory = BufferMemory::device,
-                                                                     .debug_name = "renderer.frame_visible_lights",
-                                                             });
-
-        if (!visible_lights) {
-            return std::unexpected(make_device_error(visible_lights.error()));
-        }
-
-        frame.visible_lights_buffer = std::move(*visible_lights);
-
-        auto decals_buffer = create_shared_buffer(context_, BufferCreateInfo{
-                                                                    .size = sizeof(GpuDecal) * maximum_decal_count,
-                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                    .memory = BufferMemory::upload,
-                                                                    .debug_name = "renderer.frame_decals",
-                                                            });
-
-        if (!decals_buffer) {
-            return std::unexpected(make_device_error(decals_buffer.error()));
-        }
-
-        frame.decals_buffer = std::move(*decals_buffer);
-
-        auto local_shadow_tiles = create_shared_buffer(
-                context_, BufferCreateInfo{
-                                  .size = sizeof(local_shadows::GpuShadowTile) * local_shadows::maximum_tiles,
-                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                  .memory = BufferMemory::upload,
-                                  .debug_name = "renderer.frame_local_shadow_tiles",
-                          });
-
-        if (!local_shadow_tiles) {
-            return std::unexpected(make_device_error(local_shadow_tiles.error()));
-        }
-
-        frame.local_shadow_tiles_buffer = std::move(*local_shadow_tiles);
-
-        auto local_shadow_planes = create_shared_buffer(
-                context_, BufferCreateInfo{
-                                  .size = sizeof(glm::vec4) * 6 * local_shadows::maximum_tiles,
-                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                  .memory = BufferMemory::upload,
-                                  .debug_name = "renderer.frame_local_shadow_planes",
-                          });
-
-        if (!local_shadow_planes) {
-            return std::unexpected(make_device_error(local_shadow_planes.error()));
-        }
-
-        frame.local_shadow_planes_buffer = std::move(*local_shadow_planes);
-
-        auto targets = create_frame_targets(frame_index, create_info.extent);
-
-        if (!targets) {
-            return std::unexpected(targets.error());
-        }
-
-        frame.viewport_target = std::move(targets->viewport_target);
-
-        frame.draw_upload_offset = 0;
-        frame.transform_upload_offset = transform_offset;
-        frame.indirect_upload_offset = indirect_offset;
-        frame.batch_bounds_upload_offset = batch_bounds_offset;
-        frame.indirect_commands.reserve(maximum_draw_count_);
-        frame.batch_bounds.reserve(maximum_draw_count_);
     }
 
     auto hiz = create_hiz_pyramid(create_info.extent);
@@ -1870,7 +1526,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         vkResetQueryPool(context_.device, query_pool, 0, 1);
     }
 
-    if (!pass_profiler_.initialize(frame_graph::PassProfilerCreateInfo{
+    if (!pass_profiler_->initialize(frame_graph::PassProfilerCreateInfo{
                 .physical_device = context_.physical_device,
                 .device = context_.device,
                 .queue_family = {context_.queue_families.graphics, context_.queue_families.compute},
@@ -1882,22 +1538,13 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
-    ubos_.resize(frames_in_flight);
-    for (auto &ubo: ubos_) {
-        auto maybe_ubo = create_shared_buffer(context_, BufferCreateInfo{
-                                                                .size = sizeof(UBO),
-                                                                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                                .memory = BufferMemory::upload,
-                                                                .debug_name = "renderer.ubo",
-                                                        });
-        if (!maybe_ubo) {
-            error("Failed to create ubo");
-            return std::unexpected(make_error(RendererErrorType::device_error));
-        }
+    auto ubos = create_ubos();
 
-        ubo = std::move(*maybe_ubo);
+    if (!ubos) {
+        return std::unexpected(ubos.error());
     }
+
+    ubos_ = std::move(*ubos);
 
     mark_lights_dirty();
 
@@ -1913,8 +1560,423 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     return {};
 }
 
+auto Renderer::create_shadow_atlas() -> std::expected<ImageHolder, RendererError> {
+    auto shadow_atlas = create_held_image(
+            image_storage_,
+            ImageCreateInfo{
+                    .extent = VkExtent3D{.width = shadow_atlas_width, .height = shadow_atlas_height, .depth = 1},
+                    .format = VK_FORMAT_D32_SFLOAT,
+                    .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    .aspect = VK_IMAGE_ASPECT_DEPTH_BIT,
+                    .image_type = VK_IMAGE_TYPE_2D,
+                    .view_type = VK_IMAGE_VIEW_TYPE_2D,
+                    .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
+                    .flags = 0,
+                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                    .mip_levels = 1,
+                    .array_layers = 1,
+                    .debug_name = "renderer.shadow_atlas",
+            });
+
+    if (!shadow_atlas) {
+        return std::unexpected(make_image_error(shadow_atlas.error()));
+    }
+
+    return std::move(*shadow_atlas);
+}
+
+auto Renderer::create_frame_resources(RendererFrame &frame, VkExtent2D extent, std::uint32_t frame_index)
+        -> std::expected<void, RendererError> {
+    auto const &draw_size = frame_layout_.draw_size;
+    auto const &transform_size = frame_layout_.transform_size;
+    auto const &indirect_size = frame_layout_.indirect_size;
+    auto const &culled_indirect_size = frame_layout_.indirect_size;
+    auto const &batch_bounds_size = frame_layout_.batch_bounds_size;
+    auto const &occlusion_indirect_size = frame_layout_.occlusion_indirect_size;
+    auto const &cull_chunks_size = frame_layout_.cull_chunks_size;
+    auto const &occlusion_candidates_size = frame_layout_.occlusion_candidates_size;
+    auto const &upload_size = frame_layout_.upload_size;
+    auto const &transform_offset = frame_layout_.transform_offset;
+    auto const &indirect_offset = frame_layout_.indirect_offset;
+    auto const &batch_bounds_offset = frame_layout_.batch_bounds_offset;
+    constexpr VkDeviceSize visible_lights_size =
+            (sizeof(glm::vec4) + sizeof(std::uint32_t)) * VkDeviceSize{maximum_light_count} + sizeof(std::uint32_t);
+
+
+    auto upload = Buffer::create(context_, BufferCreateInfo{
+                                                   .size = upload_size,
+                                                   .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                   .memory = BufferMemory::upload,
+                                                   .debug_name = "renderer.frame_upload",
+                                           });
+
+    if (!upload) {
+        return std::unexpected(make_device_error(upload.error()));
+    }
+
+    frame.upload_buffer = std::move(*upload);
+
+    auto draws = create_shared_buffer(context_, BufferCreateInfo{
+                                                        .size = draw_size,
+                                                        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                        .memory = BufferMemory::device,
+                                                        .debug_name = "renderer.frame_draws",
+                                                });
+
+    if (!draws) {
+        return std::unexpected(make_device_error(draws.error()));
+    }
+
+    frame.draw_buffer = std::move(*draws);
+
+    auto transforms = create_shared_buffer(context_, BufferCreateInfo{
+                                                             .size = transform_size,
+                                                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                             .memory = BufferMemory::device,
+                                                             .debug_name = "renderer.frame_transforms",
+                                                     });
+
+    if (!transforms) {
+        return std::unexpected(make_device_error(transforms.error()));
+    }
+
+    frame.transform_buffer = std::move(*transforms);
+
+    auto indirect = create_shared_buffer(
+            context_,
+            BufferCreateInfo{
+                    .size = indirect_size,
+                    .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                    .memory = BufferMemory::device,
+                    .debug_name = "renderer.frame_indirect",
+            });
+
+    if (!indirect) {
+        return std::unexpected(make_device_error(indirect.error()));
+    }
+
+    frame.indirect_buffer = std::move(*indirect);
+
+    auto batch_bounds = create_shared_buffer(context_, BufferCreateInfo{
+                                                               .size = batch_bounds_size,
+                                                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                               .memory = BufferMemory::device,
+                                                               .debug_name = "renderer.frame_batch_bounds",
+                                                       });
+
+    if (!batch_bounds) {
+        return std::unexpected(make_device_error(batch_bounds.error()));
+    }
+
+    frame.batch_bounds_buffer = std::move(*batch_bounds);
+
+    auto culled_indirect = create_shared_buffer(
+            context_, BufferCreateInfo{
+                              .size = culled_indirect_size,
+                              .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              .memory = BufferMemory::device,
+                              .debug_name = "renderer.frame_culled_indirect",
+                      });
+
+    if (!culled_indirect) {
+        return std::unexpected(make_device_error(culled_indirect.error()));
+    }
+
+    frame.culled_indirect_buffer = std::move(*culled_indirect);
+
+    auto visible_draws = create_shared_buffer(context_, BufferCreateInfo{
+                                                                .size = draw_size,
+                                                                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                .memory = BufferMemory::device,
+                                                                .debug_name = "renderer.frame_visible_draws",
+                                                        });
+
+    if (!visible_draws) {
+        return std::unexpected(make_device_error(visible_draws.error()));
+    }
+
+    frame.visible_draw_buffer = std::move(*visible_draws);
+
+    auto visible_transforms =
+            create_shared_buffer(context_, BufferCreateInfo{
+                                                   .size = transform_size,
+                                                   .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                   .memory = BufferMemory::device,
+                                                   .debug_name = "renderer.frame_visible_transforms",
+                                           });
+
+    if (!visible_transforms) {
+        return std::unexpected(make_device_error(visible_transforms.error()));
+    }
+
+    frame.visible_transform_buffer = std::move(*visible_transforms);
+
+    struct OcclusionBufferSpec {
+        Buffer *buffer;
+        VkDeviceSize size;
+        VkBufferUsageFlags usage;
+        BufferMemory memory;
+        char const *debug_name;
+    };
+
+    constexpr VkBufferUsageFlags storage_usage =
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    constexpr VkBufferUsageFlags indirect_usage = storage_usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+
+    std::array const occlusion_buffers{
+            OcclusionBufferSpec{.buffer = &frame.occlusion_views_buffer,
+                                .size = 2 * sizeof(GpuOcclusionView),
+                                .usage = storage_usage,
+                                .memory = BufferMemory::upload,
+                                .debug_name = "renderer.frame_occlusion_views"},
+            OcclusionBufferSpec{.buffer = &frame.occlusion_candidates_buffer,
+                                .size = occlusion_candidates_size,
+                                .usage = storage_usage,
+                                .memory = BufferMemory::device,
+                                .debug_name = "renderer.frame_occlusion_candidates"},
+            OcclusionBufferSpec{.buffer = &frame.cull_chunks_buffer,
+                                .size = cull_chunks_size,
+                                .usage = storage_usage,
+                                .memory = BufferMemory::device,
+                                .debug_name = "renderer.frame_cull_chunks"},
+            OcclusionBufferSpec{.buffer = &frame.late_indirect_buffer,
+                                .size = occlusion_indirect_size,
+                                .usage = indirect_usage,
+                                .memory = BufferMemory::device,
+                                .debug_name = "renderer.frame_late_indirect"},
+            OcclusionBufferSpec{.buffer = &frame.merged_indirect_buffer,
+                                .size = occlusion_indirect_size,
+                                .usage = indirect_usage,
+                                .memory = BufferMemory::device,
+                                .debug_name = "renderer.frame_merged_indirect"},
+            OcclusionBufferSpec{.buffer = &frame.occlusion_stats_buffer,
+                                .size = occlusion_stat_count * sizeof(std::uint32_t),
+                                .usage = storage_usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                         VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                .memory = BufferMemory::device,
+                                .debug_name = "renderer.frame_occlusion_stats"},
+            OcclusionBufferSpec{.buffer = &frame.occlusion_stats_readback_buffer,
+                                .size = occlusion_stat_count * sizeof(std::uint32_t),
+                                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                .memory = BufferMemory::readback,
+                                .debug_name = "renderer.frame_occlusion_stats_readback"},
+    };
+
+    for (auto const &spec: occlusion_buffers) {
+        auto buffer = create_shared_buffer(context_, BufferCreateInfo{
+                                                             .size = spec.size,
+                                                             .usage = spec.usage,
+                                                             .memory = spec.memory,
+                                                             .debug_name = spec.debug_name,
+                                                     });
+
+        if (!buffer) {
+            return std::unexpected(make_device_error(buffer.error()));
+        }
+
+        *spec.buffer = std::move(*buffer);
+    }
+
+    auto frustum_planes_buffer =
+            create_shared_buffer(context_, BufferCreateInfo{
+                                                   .size = sizeof(glm::vec4) * cull_plane_count,
+                                                   .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                   .memory = BufferMemory::upload,
+                                                   .debug_name = "renderer.frame_frustum_planes",
+                                           });
+
+    if (!frustum_planes_buffer) {
+        return std::unexpected(make_device_error(frustum_planes_buffer.error()));
+    }
+
+    frame.frustum_planes_buffer = std::move(*frustum_planes_buffer);
+
+    auto lod_jobs_buffer =
+            create_shared_buffer(context_, BufferCreateInfo{
+                                                   .size = sizeof(GpuLodJob) * maximum_lod_job_count,
+                                                   .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                   .memory = BufferMemory::upload,
+                                                   .debug_name = "renderer.frame_lod_jobs",
+                                           });
+
+    if (!lod_jobs_buffer) {
+        return std::unexpected(make_device_error(lod_jobs_buffer.error()));
+    }
+
+    frame.lod_jobs_buffer = std::move(*lod_jobs_buffer);
+    frame.lod_jobs.reserve(maximum_lod_job_count);
+
+    {
+        auto skin_upload = Buffer::create(context_, BufferCreateInfo{
+                                                            .size = skin_input_size(),
+                                                            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                            .memory = BufferMemory::upload,
+                                                            .debug_name = "renderer.frame_skin_upload",
+                                                    });
+        if (!skin_upload) {
+            return std::unexpected(make_device_error(skin_upload.error()));
+        }
+        frame.skin_upload_buffer = std::move(*skin_upload);
+
+        auto skin_input = create_shared_buffer(context_, BufferCreateInfo{
+                                                                 .size = skin_input_size(),
+                                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                 .memory = BufferMemory::device,
+                                                                 .debug_name = "renderer.frame_skin_input",
+                                                         });
+        if (!skin_input) {
+            return std::unexpected(make_device_error(skin_input.error()));
+        }
+        frame.skin_input_buffer = std::move(*skin_input);
+
+        auto skin_scratch = create_shared_buffer(context_, BufferCreateInfo{
+                                                                   .size = std::max<VkDeviceSize>(
+                                                                           skin_scratch_capacity_, 256),
+                                                                   .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                   .memory = BufferMemory::device,
+                                                                   .debug_name = "renderer.frame_skin_scratch",
+                                                           });
+        if (!skin_scratch) {
+            return std::unexpected(make_device_error(skin_scratch.error()));
+        }
+        frame.skin_scratch_buffer = std::move(*skin_scratch);
+        frame.skin_jobs.reserve(maximum_skin_jobs_);
+    }
+
+    auto lights_buffer = create_shared_buffer(context_, BufferCreateInfo{
+                                                                .size = sizeof(GpuLight) * maximum_light_count,
+                                                                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                .memory = BufferMemory::upload,
+                                                                .debug_name = "renderer.frame_lights",
+                                                        });
+
+    if (!lights_buffer) {
+        return std::unexpected(make_device_error(lights_buffer.error()));
+    }
+
+    frame.lights_buffer = std::move(*lights_buffer);
+
+    auto visible_lights = create_shared_buffer(context_, BufferCreateInfo{
+                                                                 .size = visible_lights_size,
+                                                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                 .memory = BufferMemory::device,
+                                                                 .debug_name = "renderer.frame_visible_lights",
+                                                         });
+
+    if (!visible_lights) {
+        return std::unexpected(make_device_error(visible_lights.error()));
+    }
+
+    frame.visible_lights_buffer = std::move(*visible_lights);
+
+    auto decals_buffer = create_shared_buffer(context_, BufferCreateInfo{
+                                                                .size = sizeof(GpuDecal) * maximum_decal_count,
+                                                                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                .memory = BufferMemory::upload,
+                                                                .debug_name = "renderer.frame_decals",
+                                                        });
+
+    if (!decals_buffer) {
+        return std::unexpected(make_device_error(decals_buffer.error()));
+    }
+
+    frame.decals_buffer = std::move(*decals_buffer);
+
+    auto local_shadow_tiles = create_shared_buffer(
+            context_, BufferCreateInfo{
+                              .size = sizeof(local_shadows::GpuShadowTile) * local_shadows::maximum_tiles,
+                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              .memory = BufferMemory::upload,
+                              .debug_name = "renderer.frame_local_shadow_tiles",
+                      });
+
+    if (!local_shadow_tiles) {
+        return std::unexpected(make_device_error(local_shadow_tiles.error()));
+    }
+
+    frame.local_shadow_tiles_buffer = std::move(*local_shadow_tiles);
+
+    auto local_shadow_planes = create_shared_buffer(
+            context_, BufferCreateInfo{
+                              .size = sizeof(glm::vec4) * 6 * local_shadows::maximum_tiles,
+                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              .memory = BufferMemory::upload,
+                              .debug_name = "renderer.frame_local_shadow_planes",
+                      });
+
+    if (!local_shadow_planes) {
+        return std::unexpected(make_device_error(local_shadow_planes.error()));
+    }
+
+    frame.local_shadow_planes_buffer = std::move(*local_shadow_planes);
+
+    auto targets = create_frame_targets(frame_index, extent);
+
+    if (!targets) {
+        return std::unexpected(targets.error());
+    }
+
+    frame.viewport_target = std::move(targets->viewport_target);
+
+    frame.draw_upload_offset = 0;
+    frame.transform_upload_offset = transform_offset;
+    frame.indirect_upload_offset = indirect_offset;
+    frame.batch_bounds_upload_offset = batch_bounds_offset;
+    frame.indirect_commands.reserve(maximum_draw_count_);
+    frame.batch_bounds.reserve(maximum_draw_count_);
+
+    return {};
+}
+
+auto Renderer::create_ubos() -> std::expected<std::vector<Buffer>, RendererError> {
+    std::vector<Buffer> ubos(frames_in_flight);
+
+    for (auto &ubo: ubos) {
+        auto maybe_ubo = create_shared_buffer(context_, BufferCreateInfo{
+                                                                .size = sizeof(UBO),
+                                                                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                .memory = BufferMemory::upload,
+                                                                .debug_name = "renderer.ubo",
+                                                        });
+        if (!maybe_ubo) {
+            error("Failed to create ubo");
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+
+        ubo = std::move(*maybe_ubo);
+    }
+
+    return ubos;
+}
+
 auto Renderer::destroy() noexcept -> void {
     debug("[Renderer::destroy] enter");
+
+    // The views' buffers and images come out of the storages torn down below.
+    if (!extra_views_.empty()) {
+        static_cast<void>(wait_idle());
+        extra_views_.clear();
+    }
 
     // Its buffers come out of the allocator torn down below.
     game_gpu_.reset();
@@ -1947,7 +2009,7 @@ auto Renderer::destroy() noexcept -> void {
     pipeline_stat_queries_.clear();
     last_frame_pipeline_stats_ = {};
 
-    pass_profiler_.destroy();
+    pass_profiler_->destroy();
 
     for (auto &ubo: ubos_) {
         ubo.destroy();
@@ -2007,7 +2069,7 @@ auto Renderer::destroy() noexcept -> void {
         frame.cluster_stats_pending = false;
     }
 
-    transient_allocator_.release_all();
+    transient_allocator_->release_all();
 
     frames_.clear();
 
@@ -4407,9 +4469,14 @@ auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::exp
     return {};
 }
 
-auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices const &matrices, std::uint32_t frame_index)
-        -> std::expected<void, RendererError> {
+auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices const &matrices,
+                                  std::uint32_t frame_index, bool secondary) -> std::expected<void, RendererError> {
+    // A secondary view takes the submissions the primary view already collected, and leaves everything that happens
+    // once a frame (streaming, pipeline and material updates, the environment, the timing queries) to the primary.
     frame_time_ = matrices.time;
+
+    // Replaced transients are destroyed here, with nothing recorded for the frame yet that could have them bound.
+    transient_allocator_->release_retired();
 
     ZoneScopedNC("PrepareFrame", tracy::Color::RoyalBlue);
 
@@ -4418,7 +4485,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
 
-    if (pending_samples_ != samples_) {
+    if (!secondary && pending_samples_ != samples_) {
         // Frame-graph targets are keyed on their sample count, so they reallocate by themselves; the idle wait only
         // guarantees the previous count is no longer in flight.
         if (auto waited = wait_idle(); !waited) {
@@ -4433,58 +4500,64 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         hiz_history_valid_ = false;
     }
 
+    if (history_samples_ != samples_) {
+        hiz_history_valid_ = false;
+        history_samples_ = samples_;
+    }
+
     auto &frame_query = timestamp_queries_[frame_index];
-
-    vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, total_query_count);
-
     auto &frame_pipeline_query = pipeline_stat_queries_[frame_index];
 
-    vkCmdResetQueryPool(command_buffer, frame_pipeline_query.query_pool, 0, 1);
+    if (!secondary) {
+        vkCmdResetQueryPool(command_buffer, frame_query.query_pool, 0, total_query_count);
 
-    vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool, 0);
+        vkCmdResetQueryPool(command_buffer, frame_pipeline_query.query_pool, 0, 1);
 
-    pipeline_graph_.tick_retirement();
-    geometry_arena_.tick_retirement();
+        vkCmdWriteTimestamp2(command_buffer, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, frame_query.query_pool, 0);
 
-    prune_outline_variants();
+        pipeline_graph_.tick_retirement();
+        geometry_arena_.tick_retirement();
 
-    if (auto changed = shader_change_queue_.drain(); !changed.empty()) {
-        pipeline_graph_.on_files_changed(changed);
-    }
+        prune_outline_variants();
 
-    pipeline_graph_.process_dirty();
-
-    auto image_result = image_storage_.prepare_frame(command_buffer);
-
-    if (!image_result) {
-        clear_submissions();
-
-        return std::unexpected(make_error(RendererErrorType::device_error));
-    }
-
-    texture_streamer_.process_ready(image_storage_, command_buffer, frame_index);
-    model_streamer_.process_ready(*this, command_buffer);
-
-    std::erase_if(pending_pick_geometry_, [&](PendingPickGeometry &pending) {
-        if (pending.geometry.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
-            return false;
+        if (auto changed = shader_change_queue_.drain(); !changed.empty()) {
+            pipeline_graph_.on_files_changed(changed);
         }
 
-        // A model destroyed in the meantime has no slot, and the geometry is dropped.
-        register_model_pick_geometry(pending.model, pending.geometry.get());
-        return true;
-    });
+        pipeline_graph_.process_dirty();
 
-    if (auto environment = environment_.prepare(command_buffer, ++frame_counter_); !environment) {
-        clear_submissions();
-        return std::unexpected(environment.error());
-    }
+        auto image_result = image_storage_.prepare_frame(command_buffer);
 
-    auto resource_result = gpu_resource_table_.prepare_frame(frame_index, image_storage_, sampler_storage_);
+        if (!image_result) {
+            clear_submissions();
 
-    if (!resource_result) {
-        clear_submissions();
-        return std::unexpected(make_resource_table_error(resource_result.error()));
+            return std::unexpected(make_error(RendererErrorType::device_error));
+        }
+
+        texture_streamer_.process_ready(image_storage_, command_buffer, frame_index);
+        model_streamer_.process_ready(*this, command_buffer);
+
+        std::erase_if(pending_pick_geometry_, [&](PendingPickGeometry &pending) {
+            if (pending.geometry.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+                return false;
+            }
+
+            // A model destroyed in the meantime has no slot, and the geometry is dropped.
+            register_model_pick_geometry(pending.model, pending.geometry.get());
+            return true;
+        });
+
+        if (auto environment = environment_.prepare(command_buffer, ++frame_counter_); !environment) {
+            clear_submissions();
+            return std::unexpected(environment.error());
+        }
+
+        auto resource_result = gpu_resource_table_.prepare_frame(frame_index, image_storage_, sampler_storage_);
+
+        if (!resource_result) {
+            clear_submissions();
+            return std::unexpected(make_resource_table_error(resource_result.error()));
+        }
     }
 
     auto &frame = frames_[frame_index];
@@ -4582,10 +4655,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         }
     }
 
-    auto material_result = material_storage_.prepare_frame(command_buffer, frame_index);
-    if (!material_result) {
-        clear_submissions();
-        return std::unexpected(make_material_error(material_result.error()));
+    if (!secondary) {
+        auto material_result = material_storage_.prepare_frame(command_buffer, frame_index);
+        if (!material_result) {
+            clear_submissions();
+            return std::unexpected(make_material_error(material_result.error()));
+        }
     }
 
     if (auto skin_result = prepare_skin_upload(frame); !skin_result) {
@@ -4618,6 +4693,12 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
             cached.valid = false;
         }
         shadow_atlas_initialized_ = false;
+    }
+
+    // The primary view consumes the flag; the other views' cascade caches see the value it had.
+    auto const dynamic_casters_dirty = secondary ? dynamic_shadow_casters_dirty_for_views_ : dynamic_shadow_casters_dirty_;
+    if (!secondary) {
+        dynamic_shadow_casters_dirty_for_views_ = dynamic_shadow_casters_dirty_;
     }
 
     bool projection_shape_changed = false;
@@ -4658,7 +4739,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         auto const matrix_changed =
                 !cached.valid || !nearly_equal(candidate_cascades.view_projection[cascade], cached.view_projection);
 
-        auto const dynamic_due = (dynamic_shadow_casters_dirty_ || has_animated_shadow_casters) && period_due;
+        auto const dynamic_due = (dynamic_casters_dirty || has_animated_shadow_casters) && period_due;
         auto const update = force_all_cascades || cascade == 0U || (matrix_changed && period_due) || dynamic_due;
 
         if (update) {
@@ -4682,7 +4763,9 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     frame.pending_shadow_depth_bias_slope = shadow_settings_.depth_bias_slope;
     frame.pending_shadow_caster_revision = shadow_caster_revision_;
     frame.pending_shadow_scene_signature = current_shadow_scene_signature;
-    dynamic_shadow_casters_dirty_ = false;
+    if (!secondary) {
+        dynamic_shadow_casters_dirty_ = false;
+    }
 
     auto const view_projection = projection * view;
 
@@ -4698,15 +4781,19 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     auto const light_lod_cull = std::max(light_lod_settings_.cull_radius_pixels, 0.0F);
     auto const light_lod_fade = std::max(light_lod_settings_.fade_radius_pixels, light_lod_cull + 1e-3F);
 
-    local_shadow_tile_staging_.clear();
-    local_shadow_plane_staging_.clear();
+    // The local shadow atlas is shared, and the primary view picks and draws its tiles. A secondary view reuses the
+    // tiles the primary just chose, and draws none of its own.
     frame.local_shadow_render_tiles.clear();
-    point_light_shadow_tiles_.assign(point_light_submissions_.size(), local_shadows::no_tile);
-    spot_light_shadow_tiles_.assign(spot_light_submissions_.size(), local_shadows::no_tile);
-    local_shadow_stats_ = {};
-    local_shadow_allocator_.begin_frame();
+    if (!secondary) {
+        local_shadow_tile_staging_.clear();
+        local_shadow_plane_staging_.clear();
+        point_light_shadow_tiles_.assign(point_light_submissions_.size(), local_shadows::no_tile);
+        spot_light_shadow_tiles_.assign(spot_light_submissions_.size(), local_shadows::no_tile);
+        local_shadow_stats_ = {};
+        local_shadow_allocator_.begin_frame();
+    }
 
-    if (local_shadow_settings_.enabled) {
+    if (!secondary && local_shadow_settings_.enabled) {
         struct ShadowCandidate {
             bool point = false;
             std::size_t index = 0;
@@ -5202,8 +5289,10 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
     }
 
     frame.local_shadow_tile_count = static_cast<std::uint32_t>(local_shadow_tile_staging_.size());
-    local_shadow_stats_.rendered_tiles = static_cast<std::uint32_t>(frame.local_shadow_render_tiles.size());
-    local_shadow_stats_.atlas_cells_used = local_shadow_allocator_.used_cells();
+    if (!secondary) {
+        local_shadow_stats_.rendered_tiles = static_cast<std::uint32_t>(frame.local_shadow_render_tiles.size());
+        local_shadow_stats_.atlas_cells_used = local_shadow_allocator_.used_cells();
+    }
 
     if (frame.local_shadow_tile_count != 0 &&
         (!frame.local_shadow_tiles_buffer.write(0, std::as_bytes(std::span{local_shadow_tile_staging_})) ||
@@ -5212,7 +5301,8 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
-    if (auto cull_buffers = prepare_local_shadow_cull_buffers(frame); !cull_buffers) {
+    if (auto cull_buffers = secondary ? std::expected<void, RendererError>{} : prepare_local_shadow_cull_buffers(frame);
+        !cull_buffers) {
         clear_submissions();
         return std::unexpected(cull_buffers.error());
     }
@@ -5524,7 +5614,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
 
     clear_submissions();
 
-    if (frame_query.has_results) {
+    if (!secondary && frame_query.has_results) {
         last_frame_timings_.valid = false;
         std::array<std::uint64_t, full_frame_query_count> results{};
         auto const query_result =
@@ -5547,7 +5637,7 @@ auto Renderer::prepare_frame(VkCommandBuffer command_buffer, CameraMatrices cons
         frame_query.has_results = false;
     }
 
-    if (frame_pipeline_query.has_results) {
+    if (!secondary && frame_pipeline_query.has_results) {
         last_frame_pipeline_stats_.valid = false;
         std::array<std::uint64_t, pipeline_stat_count> results{};
 
@@ -6724,7 +6814,7 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                                     ? frame.occlusion_views_buffer.device_address + sizeof(GpuOcclusionView)
                                     : VkDeviceAddress{0},
                     .extra_cull_flags = frame.meshlet_occlusion_active ? render_pass::cull_replay : 0U,
-                    .pipeline_statistics_query_pool = pipeline_stats_hold_frames_ != 0
+                    .pipeline_statistics_query_pool = pipeline_stats_hold_frames_ != 0 && !secondary_view_active_
                                                               ? pipeline_stat_queries_[frame_index].query_pool
                                                               : VkQueryPool{VK_NULL_HANDLE},
                     .meshlet_culling = meshlet_culling_,
@@ -7291,6 +7381,10 @@ auto Renderer::upload_frame_data(VkCommandBuffer command_buffer, RendererFrame &
 }
 
 auto Renderer::clear_submissions() noexcept -> void {
+    if (hold_submissions_) {
+        return;
+    }
+
     submissions_.clear();
     model_submissions_.clear();
     outlined_submission_count_ = 0;

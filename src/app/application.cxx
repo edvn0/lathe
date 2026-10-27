@@ -542,6 +542,258 @@ auto Application::draw_event_metrics() -> void {
     }
 }
 
+auto Application::dock_second_viewport(ImGuiID dockspace_id) -> void {
+    auto const *const first = ImGui::FindWindowByName("Viewport");
+    auto const *const second = ImGui::FindWindowByName("Viewport 2");
+
+    auto const second_docked = second != nullptr && second->DockId != 0 && ImGui::DockBuilderGetNode(second->DockId);
+    if (first == nullptr || first->DockId == 0 || second_docked) {
+        return;
+    }
+
+    // The first viewport's node splits in two; the viewport keeps the left half and the new one takes the right.
+    auto left = first->DockId;
+    auto const right = ImGui::DockBuilderSplitNode(left, ImGuiDir_Right, 0.5F, nullptr, &left);
+
+    ImGui::DockBuilderDockWindow("Viewport 2", right);
+    for (auto const id: {left, right}) {
+        if (auto *const node = ImGui::DockBuilderGetNode(id)) {
+            node->LocalFlags |= ImGuiDockNodeFlags_HiddenTabBar;
+        }
+    }
+
+    ImGui::DockBuilderFinish(dockspace_id);
+}
+
+auto Application::draw_viewport(std::size_t index, char const *title, std::uint32_t frame_index) -> void {
+    auto &pane = viewports[index];
+    pane.hovered = false;
+
+    widget(title, [&] {
+        auto &camera = pane.camera;
+
+        pane.hovered = ImGui::IsWindowHovered();
+        pane.screen_pos = ImGui::GetCursorScreenPos();
+        pane.content_size = ImGui::GetContentRegionAvail();
+        pane.seen_frame = ImGui::GetFrameCount();
+
+        if (pane.hovered) {
+            active_viewport = index;
+        }
+
+        if (index == 0) {
+            viewport_screen_pos = pane.screen_pos;
+            viewport_content_size = pane.content_size;
+            viewport_seen_frame = pane.seen_frame;
+        }
+
+        auto const is_active = active_viewport == index;
+
+        auto const target = renderer->view_viewport_target(pane.view, frame_index);
+        bool const has_room = pane.content_size.x > 0.0F && pane.content_size.y > 0.0F;
+        if (target.valid() && has_room) {
+            ImGui::Image(gui::linear_source_texture_id(target.index), pane.content_size);
+        }
+
+        if (index != 0 && pane.view != Renderer::primary_view) {
+            auto const extent = renderer->view_extent(pane.view);
+            auto const aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+            renderer->set_view_camera(pane.view,
+                                      Renderer::CameraMatrices{
+                                              .view = camera.view(),
+                                              .projection = camera.projection(aspect),
+                                              .near_clip = camera.near_clip(),
+                                              .far_clip = camera.far_clip(),
+                                              .vertical_fov_radians = glm::radians(camera.field_of_view_degrees()),
+                                              .aspect_ratio = aspect,
+                                              .time = elapsed_time,
+                                      });
+        }
+
+        if (has_room) {
+            // The view mode of this viewport, over its top left corner.
+            ImGui::SetCursorScreenPos(ImVec2{pane.screen_pos.x + 8.0F, pane.screen_pos.y + 8.0F});
+            ImGui::SetNextItemWidth(140.0F);
+            auto const current_mode = renderer->view_mode(pane.view);
+            auto const current_name = std::ranges::find(view_mode_names, current_mode, &decltype(view_mode_names)::value_type::first)->second;
+            if (ImGui::BeginCombo(std::format("##view_mode_{}", index).c_str(), std::string{current_name}.c_str())) {
+                for (auto const &[mode, name]: view_mode_names) {
+                    if (ImGui::Selectable(std::string{name}.c_str(), mode == current_mode)) {
+                        renderer->set_view_mode(pane.view, mode);
+                    }
+                }
+                ImGui::EndCombo();
+            }
+
+            if (index != 0) {
+                ImGui::SameLine();
+                if (ImGui::Button("Close")) {
+                    second_viewport_open = false;
+                }
+            }
+        }
+
+        if (!is_playing && has_room) {
+            auto &registry = active_scene()->get_registry();
+
+            auto const selected_entity = selection_context().primary();
+
+            // One gizmo at a time: in the viewport the pointer is in (or was last in).
+            if (is_active && selected_entity != entt::null && registry.valid(selected_entity) &&
+                registry.all_of<Components::Transform>(selected_entity)) {
+                ImGuizmo::SetOrthographic(false);
+                ImGuizmo::SetDrawlist();
+                ImGuizmo::SetRect(pane.screen_pos.x, pane.screen_pos.y, pane.content_size.x, pane.content_size.y);
+
+                auto const aspect = pane.content_size.y > 0.0F ? pane.content_size.x / pane.content_size.y : 1.0F;
+                auto const flip_z = glm::scale(glm::mat4(1.0F), glm::vec3(1.0F, 1.0F, -1.0F));
+                auto const view = flip_z * camera.view();
+                auto const projection = camera.projection(aspect) * flip_z;
+
+                auto const previous_matrix = registry.get<Components::Transform>(selected_entity).matrix();
+                auto matrix = previous_matrix;
+
+                if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection), gizmo_operation, gizmo_mode,
+                                         glm::value_ptr(matrix))) {
+                    auto const delta = matrix * glm::inverse(previous_matrix);
+                    auto const snapshot = selection_context().snapshot();
+
+                    for (auto const entity: selection_roots(registry, snapshot.entities)) {
+                        if (entity == selected_entity) {
+                            set_transform_from_matrix(registry, entity, matrix);
+                        } else if (registry.all_of<Components::Transform>(entity)) {
+                            set_transform_from_matrix(registry, entity,
+                                                      delta * registry.get<Components::Transform>(entity).matrix());
+                        }
+                    }
+
+                    renderer->mark_dynamic_shadow_casters_dirty();
+                }
+            }
+
+            // Click (not drag) in the viewport to pick; ctrl toggles, clicking empty space clears. With the text tool
+            // active the mouse previews and places text on a surface instead. Only the viewport under the pointer.
+            auto const pointer_on_scene = is_active && pane.hovered && !ImGui::IsAnyItemHovered() &&
+                                          !ImGuizmo::IsOver() && !ImGuizmo::IsUsing();
+            auto const clicked = pointer_on_scene && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                                 ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).x == 0.0F &&
+                                 ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y == 0.0F;
+
+            if (clicked || (pointer_on_scene && text_placement.active())) {
+                auto const aspect = pane.content_size.x / pane.content_size.y;
+                auto const mouse = ImGui::GetIO().MousePos;
+                auto const ndc_x = (((mouse.x - pane.screen_pos.x) / pane.content_size.x) * 2.0F) - 1.0F;
+                auto const ndc_y = 1.0F - (((mouse.y - pane.screen_pos.y) / pane.content_size.y) * 2.0F);
+
+                // Camera-space ray through the pixel (LH, +z forward), recovered from the projection's focal terms.
+                auto const projection = camera.projection(aspect);
+                auto const camera_ray = glm::vec3{ndc_x / projection[0][0], ndc_y / projection[1][1], 1.0F};
+                auto const to_world = glm::inverse(camera.view());
+                auto const direction = glm::normalize(glm::vec3{to_world * glm::vec4{camera_ray, 0.0F}});
+                auto &selection = selection_context();
+
+                if (text_placement.active()) {
+                    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_R, false) &&
+                        !ImGui::GetIO().KeyCtrl) {
+                        text_placement.step_roll(ImGui::GetIO().KeyShift);
+                    }
+
+                    auto const placed = text_placement.update(
+                            *active_scene(), *renderer, *debug_renderer,
+                            {.origin = camera.position(),
+                             .direction = direction,
+                             .camera_forward = glm::normalize(glm::vec3{to_world * glm::vec4{0.0F, 0.0F, 1.0F, 0.0F}}),
+                             .projector = {.view = camera.view(),
+                                           .focal = {projection[0][0], projection[1][1]},
+                                           .origin = {pane.screen_pos.x, pane.screen_pos.y},
+                                           .size = {pane.content_size.x, pane.content_size.y}},
+                             .cursor = {mouse.x, mouse.y},
+                             .click = clicked,
+                             .snap_to_grid = ImGui::GetIO().KeyCtrl,
+                             .bypass_snap = ImGui::GetIO().KeyAlt});
+
+                    if (placed != entt::null) {
+                        selection.select(placed);
+                    }
+                } else {
+                    auto const hit = pick_entity(*active_scene(), *renderer, camera.position(), direction);
+
+                    if (hit != entt::null) {
+                        if (ImGui::GetIO().KeyCtrl) {
+                            selection.toggle(hit);
+                        } else {
+                            selection.select(hit);
+                        }
+                    } else if (!ImGui::GetIO().KeyCtrl) {
+                        selection.clear();
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Runs once a frame after the renderer's own resize: the second viewport's view exists while the viewport is split
+// (and not playing, which stays single-view), and follows the size of its window.
+auto Application::update_views() -> void {
+    auto &pane = viewports[1];
+    auto const wanted = second_viewport_open && !is_playing;
+
+    if (!wanted) {
+        if (pane.view != Renderer::primary_view) {
+            renderer->destroy_view(pane.view);
+            pane.view = Renderer::primary_view;
+        }
+        return;
+    }
+
+    if (pane.seen_frame < 0 || pane.content_size.x < 1.0F || pane.content_size.y < 1.0F) {
+        return;
+    }
+
+    auto const scale = renderer->render_scale();
+    auto const scaled = [scale](float value) {
+        return static_cast<std::uint32_t>(std::clamp(std::round(value * scale), 1.0F, 16384.0F));
+    };
+    auto const target = VkExtent2D{.width = scaled(pane.content_size.x), .height = scaled(pane.content_size.y)};
+
+    if (pane.view == Renderer::primary_view) {
+        auto created = renderer->create_view(target);
+
+        if (!created) {
+            error("Could not create the second viewport: {}", describe(created.error()));
+            second_viewport_open = false;
+            return;
+        }
+
+        pane.view = *created;
+        pane.pending_extent = target;
+        pane.pending_since = std::chrono::steady_clock::now();
+
+        // The debug camera starts where the editor camera is, and keeps its own pose from then on.
+        if (!second_viewport_camera_seeded) {
+            pane.camera = viewports[0].camera;
+            second_viewport_camera_seeded = true;
+        }
+        return;
+    }
+
+    // A window being dragged changes size every frame; the view follows once it has held still for a moment.
+    if (target.width != pane.pending_extent.width || target.height != pane.pending_extent.height) {
+        pane.pending_extent = target;
+        pane.pending_since = std::chrono::steady_clock::now();
+    }
+
+    constexpr auto settle_time = std::chrono::milliseconds{150};
+    auto const current = renderer->view_extent(pane.view);
+    if ((pane.pending_extent.width != current.width || pane.pending_extent.height != current.height) &&
+        std::chrono::steady_clock::now() - pane.pending_since >= settle_time) {
+        if (auto const resized = renderer->resize_view(pane.view, pane.pending_extent); !resized) {
+            error("Could not resize the second viewport: {}", describe(resized.error()));
+        }
+    }
+}
+
 auto Application::on_ui(std::uint32_t frame_index) -> void {
     if (is_playing && play_fullscreen) {
         Runtime::on_ui(frame_index);
@@ -592,122 +844,21 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::DockBuilderFinish(dockspace_id);
     }
 
+    if (split_viewport_requested) {
+        split_viewport_requested = false;
+        dock_second_viewport(dockspace_id);
+    }
+
     ImGui::DockSpace(dockspace_id, ImVec2(0.0F, 0.0F), ImGuiDockNodeFlags_PassthruCentralNode);
     ImGui::End();
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
-    widget("Viewport", [&] {
-        viewport_hovered = ImGui::IsWindowHovered();
-        viewport_screen_pos = ImGui::GetCursorScreenPos();
-        viewport_content_size = ImGui::GetContentRegionAvail();
-        viewport_seen_frame = ImGui::GetFrameCount();
-
-        auto const target = renderer->viewport_target(frame_index);
-        bool const has_room = viewport_content_size.x > 0.0F && viewport_content_size.y > 0.0F;
-        if (target.valid() && has_room) {
-            ImGui::Image(gui::linear_source_texture_id(target.index), viewport_content_size);
-
-        }
-
-        if (!is_playing && has_room) {
-            auto &registry = active_scene()->get_registry();
-
-            auto const selected_entity = selection_context().primary();
-
-            if (selected_entity != entt::null && registry.valid(selected_entity) &&
-                registry.all_of<Components::Transform>(selected_entity)) {
-                ImGuizmo::SetOrthographic(false);
-                ImGuizmo::SetDrawlist();
-                ImGuizmo::SetRect(viewport_screen_pos.x, viewport_screen_pos.y, viewport_content_size.x,
-                                  viewport_content_size.y);
-
-                auto const aspect =
-                        viewport_content_size.y > 0.0F ? viewport_content_size.x / viewport_content_size.y : 1.0F;
-                auto const flip_z = glm::scale(glm::mat4(1.0F), glm::vec3(1.0F, 1.0F, -1.0F));
-                auto const view = flip_z * camera.view();
-                auto const projection = camera.projection(aspect) * flip_z;
-
-                auto const previous_matrix = registry.get<Components::Transform>(selected_entity).matrix();
-                auto matrix = previous_matrix;
-
-                if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(projection), gizmo_operation, gizmo_mode,
-                                         glm::value_ptr(matrix))) {
-                    auto const delta = matrix * glm::inverse(previous_matrix);
-                    auto const snapshot = selection_context().snapshot();
-
-                    for (auto const entity: selection_roots(registry, snapshot.entities)) {
-                        if (entity == selected_entity) {
-                            set_transform_from_matrix(registry, entity, matrix);
-                        } else if (registry.all_of<Components::Transform>(entity)) {
-                            set_transform_from_matrix(registry, entity,
-                                                      delta * registry.get<Components::Transform>(entity).matrix());
-                        }
-                    }
-
-                    renderer->mark_dynamic_shadow_casters_dirty();
-                }
-            }
-
-            // Click (not drag) in the viewport to pick; ctrl toggles, clicking empty space clears. With the text tool
-            // active the mouse previews and places text on a surface instead.
-            auto const pointer_on_scene = viewport_hovered && !ImGui::IsAnyItemHovered() && !ImGuizmo::IsOver() &&
-                                          !ImGuizmo::IsUsing();
-            auto const clicked = pointer_on_scene && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
-                                 ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).x == 0.0F &&
-                                 ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y == 0.0F;
-
-            if (clicked || (pointer_on_scene && text_placement.active())) {
-                auto const aspect = viewport_content_size.x / viewport_content_size.y;
-                auto const mouse = ImGui::GetIO().MousePos;
-                auto const ndc_x = (((mouse.x - viewport_screen_pos.x) / viewport_content_size.x) * 2.0F) - 1.0F;
-                auto const ndc_y = 1.0F - (((mouse.y - viewport_screen_pos.y) / viewport_content_size.y) * 2.0F);
-
-                // Camera-space ray through the pixel (LH, +z forward), recovered from the projection's focal terms.
-                auto const projection = camera.projection(aspect);
-                auto const camera_ray = glm::vec3{ndc_x / projection[0][0], ndc_y / projection[1][1], 1.0F};
-                auto const to_world = glm::inverse(camera.view());
-                auto const direction = glm::normalize(glm::vec3{to_world * glm::vec4{camera_ray, 0.0F}});
-                auto &selection = selection_context();
-
-                if (text_placement.active()) {
-                    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_R, false) &&
-                        !ImGui::GetIO().KeyCtrl) {
-                        text_placement.step_roll(ImGui::GetIO().KeyShift);
-                    }
-
-                    auto const placed = text_placement.update(
-                            *active_scene(), *renderer, *debug_renderer,
-                            {.origin = camera.position(),
-                             .direction = direction,
-                             .camera_forward = glm::normalize(glm::vec3{to_world * glm::vec4{0.0F, 0.0F, 1.0F, 0.0F}}),
-                             .projector = {.view = camera.view(),
-                                           .focal = {projection[0][0], projection[1][1]},
-                                           .origin = {viewport_screen_pos.x, viewport_screen_pos.y},
-                                           .size = {viewport_content_size.x, viewport_content_size.y}},
-                             .cursor = {mouse.x, mouse.y},
-                             .click = clicked,
-                             .snap_to_grid = ImGui::GetIO().KeyCtrl,
-                             .bypass_snap = ImGui::GetIO().KeyAlt});
-
-                    if (placed != entt::null) {
-                        selection.select(placed);
-                    }
-                } else {
-                    auto const hit = pick_entity(*active_scene(), *renderer, camera.position(), direction);
-
-                    if (hit != entt::null) {
-                        if (ImGui::GetIO().KeyCtrl) {
-                            selection.toggle(hit);
-                        } else {
-                            selection.select(hit);
-                        }
-                    } else if (!ImGui::GetIO().KeyCtrl) {
-                        selection.clear();
-                    }
-                }
-            }
-        }
-    });
+    draw_viewport(0, "Viewport", frame_index);
+    auto const second_shown = second_viewport_open && !is_playing;
+    if (second_shown) {
+        draw_viewport(1, "Viewport 2", frame_index);
+    }
+    viewport_hovered = viewports[0].hovered || (second_shown && viewports[1].hovered);
     ImGui::PopStyleVar();
 
     if (game && game_hooks_enabled && panels.game) {
@@ -2751,15 +2902,16 @@ auto Application::on_shutdown() -> void {
 
 auto Application::editing_camera(float aspect_ratio) const -> CameraParams {
     return CameraParams{
-            .view = camera.view(),
-            .projection = camera.projection(aspect_ratio),
-            .near_clip = camera.near_clip(),
-            .far_clip = camera.far_clip(),
-            .vertical_fov_radians = glm::radians(camera.field_of_view_degrees()),
+            .view = viewports[0].camera.view(),
+            .projection = viewports[0].camera.projection(aspect_ratio),
+            .near_clip = viewports[0].camera.near_clip(),
+            .far_clip = viewports[0].camera.far_clip(),
+            .vertical_fov_radians = glm::radians(viewports[0].camera.field_of_view_degrees()),
     };
 }
 
 auto Application::camera_pivot() const -> glm::vec3 {
+    auto const &camera = active_camera();
     auto const &registry = active_scene()->get_registry();
     auto const selected = selection_context().primary();
 
@@ -2771,6 +2923,7 @@ auto Application::camera_pivot() const -> glm::vec3 {
 }
 
 auto Application::focus_selection() -> void {
+    auto &camera = active_camera();
     auto const &registry = active_scene()->get_registry();
     auto const selected = selection_context().primary();
 
@@ -2785,7 +2938,11 @@ auto Application::focus_selection() -> void {
     camera.look_at(transform.position - (camera.forward() * camera_pivot_distance), transform.position);
 }
 
-auto Application::pre_update(float delta_time) -> void { camera.update(std::min(delta_time, 0.1F)); }
+auto Application::pre_update(float delta_time) -> void {
+    for (auto &pane: viewports) {
+        pane.camera.update(std::min(delta_time, 0.1F));
+    }
+}
 
 auto Application::update(float delta_time) -> void {
     ZoneScopedNC("ApplicationUpdate", tracy::Color::Firebrick);
@@ -2868,7 +3025,16 @@ auto Application::handle_event(KeyPressedEvent ev) -> bool {
             }
         }
 
-        camera.on_key_pressed(ev.key);
+        // F1..F8 pick the view mode of the viewport the pointer is in.
+        auto const function_key = ev.key - GLFW_KEY_F1;
+        if (function_key >= 0 && std::cmp_less(function_key, view_mode_names.size()) &&
+            !ImGui::GetIO().WantTextInput) {
+            renderer->set_view_mode(viewports[active_viewport].view,
+                                    view_mode_names[static_cast<std::size_t>(function_key)].first);
+            return true;
+        }
+
+        active_camera().on_key_pressed(ev.key);
     }
 
     return false;
@@ -2876,7 +3042,10 @@ auto Application::handle_event(KeyPressedEvent ev) -> bool {
 
 auto Application::handle_event(KeyReleasedEvent ev) -> bool {
     if (!is_playing) {
-        camera.on_key_released(ev.key);
+        // Both, so a key let go after the pointer moved to the other viewport does not leave the first one moving.
+        for (auto &pane: viewports) {
+            pane.camera.on_key_released(ev.key);
+        }
     }
 
     return false;
@@ -2884,6 +3053,7 @@ auto Application::handle_event(KeyReleasedEvent ev) -> bool {
 
 auto Application::handle_event(MouseMovedEvent ev) -> bool {
     if (!is_playing) {
+        auto &camera = active_camera();
         auto const dx = static_cast<float>(ev.delta_x);
         auto const dy = static_cast<float>(ev.delta_y);
 
@@ -2903,6 +3073,8 @@ auto Application::handle_event(MouseScrolledEvent ev) -> bool {
     if (packaging_active()) {
         return true;
     }
+
+    auto &camera = active_camera();
 
     if (!is_playing && ImGui::GetIO().KeyCtrl) {
         auto const distance = glm::length(camera_pivot() - camera.position());

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <optional>
 #include <vector>
 
 #include "gpu/image_storage.hxx"
@@ -36,6 +37,9 @@ namespace frame_graph {
 
         auto release(std::uint32_t slot) -> void;
         auto release_all() -> void;
+        // Destroys what reallocations replaced, after the device is idle. Call it where no command buffer of the
+        // current frame has been recorded yet.
+        auto release_retired() -> void;
 
         [[nodiscard]] auto image(std::uint32_t slot, std::uint32_t resource) const noexcept -> Image const *;
         [[nodiscard]] auto handle(std::uint32_t slot, std::uint32_t resource) const noexcept -> ImageHandle;
@@ -55,6 +59,14 @@ namespace frame_graph {
             std::vector<ImageHolder> mip_slots;
         };
 
+        // What a reallocation replaced. A command buffer recorded earlier in the same frame (another view's) may have
+        // the bindless table bound with these images in it, and destroying them would invalidate it, so they live on
+        // until release_retired, which the renderer calls before it records anything for the next frame.
+        struct Retired {
+            std::vector<Entry> entries;
+            std::vector<VmaAllocation> blocks;
+        };
+
         struct Slot {
             std::uint64_t key = 0;
             bool valid = false;
@@ -65,7 +77,11 @@ namespace frame_graph {
             TransientPlan plan;
             std::vector<VmaAllocation> blocks;
             std::vector<Entry> entries;
+            std::optional<Retired> retired;
         };
+
+        auto free_retired(Slot &slot) -> void;
+        auto retire(std::uint32_t slot) -> void;
 
         VulkanContext *context_ = nullptr;
         ImageStorage *images_ = nullptr;

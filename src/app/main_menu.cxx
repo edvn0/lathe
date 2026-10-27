@@ -210,11 +210,9 @@ auto Application::draw_main_menu_bar() -> void {
     }
 
     if (ImGui::BeginMenu("View")) {
-        auto const current_mode = renderer->view_mode();
-        for (auto const &[mode, name]: view_mode_names) {
-            if (ImGui::MenuItem(std::string{name}.c_str(), nullptr, mode == current_mode)) {
-                renderer->set_view_mode(mode);
-            }
+        // Each viewport carries its own view mode; the menu only splits the area.
+        if (ImGui::MenuItem("Split Viewport", nullptr, &second_viewport_open, !is_playing) && second_viewport_open) {
+            split_viewport_requested = true;
         }
 
         ImGui::Separator();
