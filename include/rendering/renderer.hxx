@@ -139,9 +139,11 @@ enum class ViewMode : std::uint32_t {
     ambient_occlusion,
     meshlets,
     lighting_only,
+    // How many fragments the depth prepass rasterises per pixel, as a heatmap (blue 1, green 4, red 8 or more).
+    overdraw,
 };
 
-inline constexpr std::array<std::pair<ViewMode, std::string_view>, 8> view_mode_names{{
+inline constexpr std::array<std::pair<ViewMode, std::string_view>, 9> view_mode_names{{
         {ViewMode::lit, "Lit"},
         {ViewMode::base_colour, "Base colour"},
         {ViewMode::normals, "Normals"},
@@ -150,6 +152,7 @@ inline constexpr std::array<std::pair<ViewMode, std::string_view>, 8> view_mode_
         {ViewMode::ambient_occlusion, "Ambient occlusion"},
         {ViewMode::meshlets, "Meshlets"},
         {ViewMode::lighting_only, "Lighting only"},
+        {ViewMode::overdraw, "Overdraw"},
 }};
 
 struct FrameStats {
@@ -303,9 +306,14 @@ struct UBO {
     float local_shadow_padding = 0.0F;
 
     EnvironmentUboBlock environment{};
+
+    // The per-pixel fragment counts of the overdraw view (zero width when the view is off).
+    VkDeviceAddress overdraw_counts_address = 0;
+    std::uint32_t overdraw_width = 0;
+    std::uint32_t overdraw_size = 0;
 };
 
-static_assert(sizeof(UBO) == 1008, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 1024, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(offsetof(UBO, environment) == 816);
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 288);
@@ -1113,6 +1121,9 @@ private:
 
         Buffer decals_buffer{};
         Buffer decal_clusters_buffer{};
+        // One counter per pixel for the overdraw view, made when the view is first used and again if the extent changes.
+        Buffer overdraw_buffer{};
+        VkExtent2D overdraw_extent{};
         std::uint32_t decal_cluster_cells = 0;
         std::uint32_t decal_count = 0;
 
@@ -1684,6 +1695,11 @@ private:
     PipelineNodeHandle shadow_mask_instanced_pipeline_;
     PipelineNodeHandle depth_prepass_instanced_pipeline_;
     PipelineNodeHandle depth_prepass_mask_instanced_pipeline_;
+    // The same four with a fragment stage that counts each fragment into the overdraw buffer, for the overdraw view.
+    PipelineNodeHandle depth_prepass_overdraw_pipeline_;
+    PipelineNodeHandle depth_prepass_overdraw_mask_pipeline_;
+    PipelineNodeHandle depth_prepass_overdraw_instanced_pipeline_;
+    PipelineNodeHandle depth_prepass_overdraw_mask_instanced_pipeline_;
     PipelineNodeHandle forward_instanced_pipeline_;
     PipelineNodeHandle forward_blend_instanced_pipeline_;
     PipelineNodeHandle composite_pipeline_;

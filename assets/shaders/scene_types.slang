@@ -121,6 +121,7 @@ public static const uint view_metallic = 4u;
 public static const uint view_ambient_occlusion = 5u;
 public static const uint view_meshlets = 6u;
 public static const uint view_lighting_only = 7u;
+public static const uint view_overdraw = 8u;
 
 public static const uint material_flag_double_sided = 1u;
 
@@ -285,6 +286,11 @@ public struct UBO {
     public float4 sun_direction_cos_radius;
     public float4 sun_disc_radiance;
     public Ptr<GpuEnvironmentSh> environment_sh;
+
+    // The per-pixel fragment counts of the overdraw view (zero width when the view is off).
+    public Ptr<uint> overdraw_counts;
+    public uint overdraw_width;
+    public uint overdraw_size;
 };
 
 public struct PC

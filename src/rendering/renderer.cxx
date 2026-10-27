@@ -1047,6 +1047,34 @@ namespace {
             .debug_name = "renderer.shadow_cull_pipeline",
     });
 
+    // The depth prepass pipelines (5: meshlet, 6: masked, 17 and 18: their instanced forms) again, with a fragment stage
+    // that counts every fragment into a per-pixel buffer (OVERDRAW_COUNT), for the overdraw view. The opaque ones have
+    // no fragment stage otherwise, so they get one here; none of these are used outside that view.
+    for (auto const source_index: {std::size_t{5}, std::size_t{6}, std::size_t{17}, std::size_t{18}}) {
+        auto overdraw_info = pipeline_infos[source_index];
+        auto has_fragment_stage = false;
+
+        for (auto &stage: overdraw_info.stages) {
+            if (stage.stage == renderer::ShaderStage::fragment) {
+                stage.defines.push_back(renderer::ShaderDefine{.name = "OVERDRAW_COUNT", .value = "1"});
+                has_fragment_stage = true;
+            }
+        }
+
+        if (!has_fragment_stage) {
+            overdraw_info.stages.push_back(renderer::ShaderCompileRequest{
+                    .source_path = data_path("assets/shaders/depth_prepass.slang"),
+                    .entry_point = FlyString{"main_fs"},
+                    .stage = renderer::ShaderStage::fragment,
+                    .include_directories = {},
+                    .defines = {renderer::ShaderDefine{.name = "OVERDRAW_COUNT", .value = "1"}},
+            });
+        }
+
+        overdraw_info.debug_name += ".overdraw";
+        pipeline_infos.push_back(std::move(overdraw_info));
+    }
+
         return pipeline_infos;
     }
 }
@@ -1244,6 +1272,10 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     skin_pipeline_ = *registered_pipelines[33];
     decal_cluster_pipeline_ = *registered_pipelines[34];
     shadow_cull_pipeline_ = *registered_pipelines[35];
+    depth_prepass_overdraw_pipeline_ = *registered_pipelines[36];
+    depth_prepass_overdraw_mask_pipeline_ = *registered_pipelines[37];
+    depth_prepass_overdraw_instanced_pipeline_ = *registered_pipelines[38];
+    depth_prepass_overdraw_mask_instanced_pipeline_ = *registered_pipelines[39];
 
     {
         auto initialised = environment_.initialize(EnvironmentSystem::CreateInfo{
@@ -2040,6 +2072,7 @@ auto Renderer::destroy() noexcept -> void {
         frame.cluster_stats_readback_buffer.destroy();
         frame.cluster_lights_buffer.destroy();
         frame.decal_clusters_buffer.destroy();
+        frame.overdraw_buffer.destroy();
         frame.local_shadow_indirect_buffer.destroy();
         frame.local_shadow_counts_buffer.destroy();
         frame.local_shadow_survivors_buffer.destroy();
@@ -5368,6 +5401,8 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
         return std::unexpected(make_error(RendererErrorType::device_error));
     }
 
+    auto const overdraw_active = view_mode_ == ViewMode::overdraw && frame.overdraw_buffer.valid();
+
     UBO const ubo{
             .view_projection = view_projection,
             .view = view,
@@ -5440,6 +5475,9 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
             .local_shadow_tile_count = frame.local_shadow_tile_count,
             .local_shadow_normal_offset_texels = local_shadow_settings_.normal_offset_texels,
             .environment = environment_.ubo_block(),
+            .overdraw_counts_address = overdraw_active ? frame.overdraw_buffer.device_address : 0,
+            .overdraw_width = overdraw_active ? extent_.width : 0U,
+            .overdraw_size = overdraw_active ? extent_.width * extent_.height : 0U,
     };
 
     if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {
@@ -6314,6 +6352,26 @@ auto Renderer::prepare_cluster_buffers(RendererFrame &frame) -> std::expected<vo
         frame.decal_cluster_cells = cells;
     }
 
+    if (view_mode_ == ViewMode::overdraw &&
+        (!frame.overdraw_buffer.valid() || frame.overdraw_extent.width != extent_.width ||
+         frame.overdraw_extent.height != extent_.height)) {
+        auto overdraw = create_shared_buffer(
+                context_, BufferCreateInfo{
+                                  .size = sizeof(std::uint32_t) * VkDeviceSize{extent_.width} * extent_.height,
+                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                  .memory = BufferMemory::device,
+                                  .debug_name = "renderer.frame_overdraw",
+                          });
+
+        if (!overdraw) {
+            return std::unexpected(make_device_error(overdraw.error()));
+        }
+
+        frame.overdraw_buffer = std::move(*overdraw);
+        frame.overdraw_extent = extent_;
+    }
+
     if (frame.cluster_lights_buffer.valid() && frame.cluster_grid == cluster_grid_) {
         return {};
     }
@@ -6663,25 +6721,31 @@ auto Renderer::record_depth_prepass(render_pass::Context const &pass_context, Re
                                        render_pass::cull_stats
                             : render_pass::cull_occlusion | render_pass::cull_record | render_pass::cull_stats);
 
-    return render_pass::depth_prepass(pass_context,
-                                      render_pass::DepthPrepassInfo{
-                                              .extent = targets.extent,
-                                              .samples = samples_,
-                                              .phase = phase,
-                                              .draws = late ? late_view_draws(frame) : early_view_draws(frame),
-                                              .counts = batch_counts(frame),
-                                              .cull_planes_address = frame.frustum_planes_buffer.device_address,
-                                              .materials_address = material_storage_.device_address(),
-                                              .ubo_address = ubos_[frame_index].device_address,
-                                              .lights_address = frame.lights_buffer.device_address,
-                                              .occlusion_view_address = meshlet_view_address,
-                                              .extra_cull_flags = meshlet_flags,
-                                              .opaque_pipeline = depth_prepass_pipeline_,
-                                              .mask_pipeline = depth_prepass_mask_pipeline_,
-                                              .opaque_instanced_pipeline = depth_prepass_instanced_pipeline_,
-                                              .mask_instanced_pipeline = depth_prepass_mask_instanced_pipeline_,
-                                              .meshlet_culling = meshlet_culling_,
-                                      });
+    // The overdraw view counts the fragments of both prepass phases into one buffer (see the frame graph).
+    auto const overdraw = view_mode_ == ViewMode::overdraw && frame.overdraw_buffer.valid();
+
+    return render_pass::depth_prepass(
+            pass_context,
+            render_pass::DepthPrepassInfo{
+                    .extent = targets.extent,
+                    .samples = samples_,
+                    .phase = phase,
+                    .draws = late ? late_view_draws(frame) : early_view_draws(frame),
+                    .counts = batch_counts(frame),
+                    .cull_planes_address = frame.frustum_planes_buffer.device_address,
+                    .materials_address = material_storage_.device_address(),
+                    .ubo_address = ubos_[frame_index].device_address,
+                    .lights_address = frame.lights_buffer.device_address,
+                    .occlusion_view_address = meshlet_view_address,
+                    .extra_cull_flags = meshlet_flags,
+                    .opaque_pipeline = overdraw ? depth_prepass_overdraw_pipeline_ : depth_prepass_pipeline_,
+                    .mask_pipeline = overdraw ? depth_prepass_overdraw_mask_pipeline_ : depth_prepass_mask_pipeline_,
+                    .opaque_instanced_pipeline = overdraw ? depth_prepass_overdraw_instanced_pipeline_
+                                                          : depth_prepass_instanced_pipeline_,
+                    .mask_instanced_pipeline = overdraw ? depth_prepass_overdraw_mask_instanced_pipeline_
+                                                        : depth_prepass_mask_instanced_pipeline_,
+                    .meshlet_culling = meshlet_culling_,
+            });
 }
 
 auto Renderer::record_environment_pass(render_pass::Context const &pass_context, RendererFrame const &frame) -> void {

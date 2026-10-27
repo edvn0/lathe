@@ -345,6 +345,18 @@ float3 shade_light(Ptr<UBO> ubo, GpuLight punctual_light, float3 world_position,
     return shade_punctual(shading_normal, view_direction, light_dir, radiance, base_colour, metallic, roughness);
 }
 
+// The overdraw view's colour for a pixel the depth prepass rasterised `count` fragments to: black for none, then blue
+// for one, through green and yellow, to red at eight or more.
+float3 overdraw_heatmap_colour(uint count)
+{
+    if (count == 0) {
+        return float3(0.0);
+    }
+
+    const float t = saturate((float(count) - 1.0) / 7.0);
+    return saturate(float3(2.0 * t - 0.5, 1.5 - abs(4.0 * t - 2.0), 1.5 - 3.0 * t));
+}
+
 float3 cluster_heatmap_colour(uint light_count, uint capacity)
 {
     if (light_count == 0) {
@@ -672,6 +684,10 @@ var base_colour = base_sample.xyz *
         fogged_colour = float3(metallic);
     } else if (ubo.view_mode == view_ambient_occlusion) {
         fogged_colour = float3(ambient_occlusion);
+    } else if (ubo.view_mode == view_overdraw && ubo.overdraw_width != 0) {
+        const uint2 pixel = uint2(input.position.xy);
+        const uint slot = pixel.y * ubo.overdraw_width + pixel.x;
+        fogged_colour = overdraw_heatmap_colour(slot < ubo.overdraw_size ? ubo.overdraw_counts[slot] : 0u);
     }
 
     OutputFS output;
