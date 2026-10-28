@@ -8,7 +8,6 @@
 #include <string>
 #include <vector>
 
-class CommandLine;
 class JsonValue;
 
 struct BenchmarkCompareOptions {
@@ -21,21 +20,10 @@ struct BenchmarkCompareOptions {
     double minimum_flagged_ms = 0.5;
 };
 
-class BenchmarkCompareArguments {
-public:
-    explicit BenchmarkCompareArguments(CommandLine &cli);
-
-    BenchmarkCompareArguments(BenchmarkCompareArguments const &) = delete;
-    auto operator=(BenchmarkCompareArguments const &) -> BenchmarkCompareArguments & = delete;
-
-    [[nodiscard]]
-    auto options() const -> std::optional<BenchmarkCompareOptions>;
-
-private:
-    BenchmarkCompareOptions options_;
-    std::optional<std::filesystem::path> report_;
-    bool enabled_ = false;
-};
+// What the comparison variables (include/benchmark/benchmark_cvars.hxx) ask for; nullopt unless --benchmark-compare
+// was given.
+[[nodiscard]]
+auto benchmark_compare_options() -> std::optional<BenchmarkCompareOptions>;
 
 enum class CompareVerdict : std::uint8_t {
     unchanged,

@@ -6,6 +6,7 @@ add_library(
     engine_core
     STATIC
         command_line.cxx
+        cvar.cxx
         error_describe.cxx
         fly_string.cxx
         game_manifest.cxx

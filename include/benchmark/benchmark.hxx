@@ -12,12 +12,11 @@
 #include <vector>
 
 #include "benchmark/benchmark_analysis.hxx"
-#include "runtime/presentation_arguments.hxx"
+#include "runtime/engine_cvars.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "scene/camera_path.hxx"
 
 struct FrameTimings;
-class CommandLine;
 class JsonWriter;
 
 enum class BenchmarkMode : std::uint8_t {
@@ -64,25 +63,17 @@ struct BenchmarkOptions {
 inline constexpr BenchmarkRenderSize benchmark_default_suite_render_size{.width = 1920, .height = 1080};
 inline constexpr std::uint32_t benchmark_default_suite_repeats = 3;
 
-class BenchmarkArguments {
-public:
-    explicit BenchmarkArguments(CommandLine &cli);
-
-    BenchmarkArguments(BenchmarkArguments const &) = delete;
-    auto operator=(BenchmarkArguments const &) -> BenchmarkArguments & = delete;
-
-    [[nodiscard]]
-    auto options() const -> std::expected<std::optional<BenchmarkOptions>, std::string>;
-
-private:
-    BenchmarkOptions options_;
-    std::optional<std::filesystem::path> single_;
-    std::optional<std::filesystem::path> suite_;
-    std::optional<std::uint32_t> repeats_;
-};
+// What the benchmark variables (include/benchmark/benchmark_cvars.hxx) ask for: nullopt when no benchmark was
+// requested, an error when they contradict each other.
+[[nodiscard]]
+auto benchmark_options() -> std::expected<std::optional<BenchmarkOptions>, std::string>;
 
 [[nodiscard]]
 auto parse_render_size(std::string_view text) -> std::expected<BenchmarkRenderSize, std::string>;
+
+// "scenario:1,2,4": the load levels to sweep a scenario through.
+[[nodiscard]]
+auto parse_benchmark_sweep(std::string_view spec) -> std::expected<BenchmarkSweep, std::string>;
 
 inline constexpr float benchmark_timestep = 1.0F / 60.0F;
 

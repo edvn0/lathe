@@ -296,6 +296,7 @@ auto Application::draw_main_menu_bar() -> void {
         ImGui::MenuItem("Frame Timings", nullptr, &panels.frame_timings);
         ImGui::MenuItem("Scene Stats", nullptr, &panels.scene_stats);
         ImGui::MenuItem("Events", nullptr, &panels.events);
+        ImGui::MenuItem("CVars", nullptr, &panels.cvars);
 #if LATHE_TRACK_MEMORY
         ImGui::MenuItem("Memory", nullptr, &panels.memory);
 #endif

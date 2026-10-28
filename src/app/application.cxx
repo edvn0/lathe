@@ -868,6 +868,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     panel("Memory", panels.memory, [] { on_memory_ui(); });
 #endif
     panel("Events", panels.events, [&] { draw_event_metrics(); });
+    panel("CVars", panels.cvars, [&] { draw_cvar_panel(); });
     panel("Console", panels.console, [&] { terminal_widget.draw(); });
 
     panel("Script", panels.script, [&] {

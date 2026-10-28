@@ -54,6 +54,23 @@ models) is the engine root, found beside the executable or in a checkout. `data_
 back to the engine's; `engine_path` is engine-only; `Paths::data_directories` lists both for include paths and
 watchers. Editor state lives in `<project>/.lathe/state` (gitignore `.lathe/`); the cache is user-wide.
 
+## CVars
+
+Every command line option and `LATHE_*` environment variable is a `CVar` (`include/core/cvar.hxx`): one typed value
+declared at namespace scope, which registers itself with `CVarRegistry::global()`. The runtime's are in
+`include/runtime/engine_cvars.hxx` (`cvars::render_scale`, `cvars::vsync`, ...), the benchmark runner's in
+`include/benchmark/benchmark_cvars.hxx`.
+
+A value comes from, weakest first: its default, the environment (`LATHE_` + the name in capitals, `LATHE_RENDER_SCALE=2`),
+the command line (`--render-scale 2`; `_` in the name is `-`), then a run-time set (the editor's Debug > CVars panel).
+Options that start an action (`--bake-shaders`, `--benchmark`, `--scene`) are command line only. `--help` is generated
+from the registry.
+
+Read one with `get()`. A setting whose default depends on the run (a benchmark turns vsync off) is read with
+`has_value()` or `value_or(fallback)` instead, which tell "asked for" from "left alone". To add one, define it in the
+module's `*_cvars.cxx` next to the others (a definition nothing refers to is dropped from a static library, so it must
+live in a file its readers already pull in) and declare it in the header.
+
 ## Packaging
 
 The editor's *Package* action ships `lathe-player` (found beside the editor executable) rather than the editor itself;

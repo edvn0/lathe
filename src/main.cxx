@@ -34,13 +34,8 @@ namespace {
             return std::make_unique<Application>(context);
         }
 
-        auto add_arguments(CommandLine &cli) -> void override {
-            benchmark_arguments_.emplace(cli);
-            compare_arguments_.emplace(cli);
-        }
-
         [[nodiscard]] auto early_exit() -> std::optional<int> override {
-            if (auto const compare_options = compare_arguments_->options()) {
+            if (auto const compare_options = benchmark_compare_options()) {
                 return run_benchmark_compare(*compare_options);
             }
 
@@ -48,7 +43,7 @@ namespace {
         }
 
         [[nodiscard]] auto prepare() -> std::expected<void, std::string> override {
-            auto options = benchmark_arguments_->options();
+            auto options = benchmark_options();
 
             if (!options) {
                 return std::unexpected(std::format("Invalid benchmark arguments: {}", options.error()));
@@ -141,8 +136,6 @@ namespace {
         }
 
     private:
-        std::optional<BenchmarkArguments> benchmark_arguments_;
-        std::optional<BenchmarkCompareArguments> compare_arguments_;
         std::optional<BenchmarkOptions> benchmark_options_;
         std::optional<BenchmarkDriver> benchmark_;
     };

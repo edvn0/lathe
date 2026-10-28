@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "benchmark/benchmark.hxx"
+#include "benchmark/benchmark_cvars.hxx"
+#include "core/cvar.hxx"
 #include "core/command_line.hxx"
 #include "core/random.hxx"
 #include "rendering/renderer.hxx"
@@ -82,14 +84,16 @@ namespace {
 
     [[nodiscard]] auto parse_benchmark_options(std::span<char const *const> args)
             -> std::expected<std::optional<BenchmarkOptions>, std::string> {
+        CVarRegistry::global().reset_all();
+
         CommandLine cli{"lathe", ""};
-        BenchmarkArguments arguments{cli};
+        CVarRegistry::global().attach(cli);
 
         auto const outcome = cli.parse(args);
         if (!outcome) {
             return std::unexpected(outcome.error());
         }
-        return arguments.options();
+        return benchmark_options();
     }
 
 }

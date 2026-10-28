@@ -11,8 +11,11 @@
 
 #include "benchmark/benchmark.hxx"
 #include "benchmark/benchmark_compare.hxx"
+#include "benchmark/benchmark_cvars.hxx"
 #include "core/command_line.hxx"
+#include "core/cvar.hxx"
 #include "core/json.hxx"
+#include "runtime/engine_cvars.hxx"
 #include "rendering/renderer.hxx"
 
 namespace {
@@ -33,14 +36,16 @@ namespace {
 
     [[nodiscard]] auto parse_benchmark_options(std::span<char const *const> args)
             -> std::expected<std::optional<BenchmarkOptions>, std::string> {
+        CVarRegistry::global().reset_all();
+
         CommandLine cli{"lathe", ""};
-        BenchmarkArguments arguments{cli};
+        CVarRegistry::global().attach(cli);
 
         auto const outcome = cli.parse(args);
         if (!outcome) {
             return std::unexpected(outcome.error());
         }
-        return arguments.options();
+        return benchmark_options();
     }
 
     [[nodiscard]] auto
@@ -112,29 +117,32 @@ TEST_CASE("suite options: defaults, sweeps, scenarios and errors") {
     }
 
     SUBCASE("present mode and swapchain images") {
+        CVarRegistry::global().reset_all();
         CommandLine cli{"lathe", ""};
-        PresentationArguments presentation{cli};
+        CVarRegistry::global().attach(cli);
         std::array<char const *, 2> args{"--present-mode=immediate", "--swapchain-images=4"};
         REQUIRE(cli.parse(args).has_value());
-        CHECK(presentation.present_mode == PresentModeChoice::immediate);
-        CHECK(presentation.swapchain_images == 4U);
-        CHECK_FALSE(presentation.vsync.has_value());
+        CHECK(cvars::present_mode.value() == PresentModeChoice::immediate);
+        CHECK(cvars::swapchain_images.value() == 4U);
+        CHECK_FALSE(cvars::vsync.has_value());
 
         for (auto const *bad: {"--present-mode=tearing", "--swapchain-images=9", "--swapchain-images=1",
                                "--vsync=maybe"}) {
+            CVarRegistry::global().reset_all();
             CommandLine bad_cli{"lathe", ""};
-            PresentationArguments bad_presentation{bad_cli};
+            CVarRegistry::global().attach(bad_cli);
             std::array<char const *, 1> bad_args{bad};
             CHECK_FALSE(bad_cli.parse(bad_args).has_value());
         }
     }
 
     SUBCASE("vsync") {
+        CVarRegistry::global().reset_all();
         CommandLine cli{"lathe", ""};
-        PresentationArguments presentation{cli};
+        CVarRegistry::global().attach(cli);
         std::array<char const *, 1> args{"--vsync=on"};
         REQUIRE(cli.parse(args).has_value());
-        CHECK(presentation.vsync == true);
+        CHECK(cvars::vsync.value() == true);
     }
 }
 
@@ -401,10 +409,11 @@ TEST_CASE("compare reads schema 1 single runs") {
 
     std::array<char const *, 3> args{"--benchmark-compare=a.json,b.json", "--benchmark-threshold=5",
                                      "--benchmark-report=out.md"};
+    CVarRegistry::global().reset_all();
     CommandLine cli{"lathe", ""};
-    BenchmarkCompareArguments arguments{cli};
+    CVarRegistry::global().attach(cli);
     REQUIRE(cli.parse(args).has_value());
-    auto const options = arguments.options();
+    auto const options = benchmark_compare_options();
     REQUIRE(options.has_value());
     CHECK(options->base == "a.json");
     CHECK(options->head == "b.json");

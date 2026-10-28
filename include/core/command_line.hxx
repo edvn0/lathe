@@ -29,6 +29,9 @@ public:
 
     auto flag(std::string_view name, std::string_view help, bool &target) -> void;
 
+    // A switch that runs `on_set` each time it is given.
+    auto flag(std::string_view name, std::string_view help, std::function<void()> on_set) -> void;
+
     auto option(std::string_view name, std::string_view hint, std::string_view help, Setter setter,
                 bool repeatable = false) -> void;
 
@@ -136,6 +139,9 @@ public:
 
     auto positional(std::string_view name, std::string_view help, std::string &target) -> void;
 
+    // A paragraph printed after the options in --help.
+    auto note(std::string_view text) -> void;
+
     [[nodiscard]]
     auto parse(std::span<char const *const> args) -> std::expected<Outcome, std::string>;
 
@@ -154,6 +160,7 @@ private:
     friend class CommandLineGroup;
 
     auto add_flag(std::size_t group, std::string_view name, std::string_view help, bool &target) -> void;
+    auto add_flag(std::size_t group, std::string_view name, std::string_view help, std::function<void()> on_set) -> void;
     auto add_option(std::size_t group, std::string_view name, std::string_view hint, std::string_view help,
                     CommandLineGroup::Setter setter, bool repeatable) -> void;
 
