@@ -21,6 +21,7 @@
 #include <glm/gtc/packing.hpp>
 #include <ktx.h>
 #include <stb_image_resize2.h>
+#include <zstd.h>
 
 #include "core/logger.hxx"
 #include "gpu/image.hxx"
@@ -28,6 +29,13 @@
 namespace {
 
     constexpr int texture_pipeline_encoder_version = 3;
+
+    // Levels of new cache files are zstd-compressed. The pixels are the same as before, so the encoder version (and so
+    // every existing cache entry) stays as it is; both kinds are read.
+    constexpr std::uint32_t zstd_compression_level = 15;
+
+    std::atomic<float> rdo_lambda{0.0F};
+    std::atomic<std::uint32_t> max_extent{0};
 
     auto make_error(TexturePipelineErrorType type, std::string_view message = {},
                     std::source_location location = std::source_location::current()) -> TexturePipelineError {
@@ -79,7 +87,12 @@ namespace {
     [[nodiscard]]
     auto cache_path_for(std::string_view identity, TextureRole role, std::filesystem::path const &cache_directory,
                         std::string_view stem) -> std::filesystem::path {
-        auto const key = std::format("{}|{}|{}", identity, static_cast<int>(role), texture_pipeline_encoder_version);
+        auto key = std::format("{}|{}|{}", identity, static_cast<int>(role), texture_pipeline_encoder_version);
+
+        // Only when on, so entries made without RDO keep their names.
+        if (auto const lambda = rdo_lambda.load(std::memory_order_relaxed); lambda > 0.0F) {
+            key += std::format("|rdo{}", lambda);
+        }
 
         return cache_directory / std::format("{}.{}.ktx2", stem, to_hex(fnv1a(key)));
     }
@@ -192,6 +205,12 @@ namespace {
         params.normalMap = role == TextureRole::normal_map ? KTX_TRUE : KTX_FALSE;
         params.uastcFlags = static_cast<ktx_pack_uastc_flags>(KTX_PACK_UASTC_LEVEL_FASTEST);
 
+        if (auto const lambda = rdo_lambda.load(std::memory_order_relaxed); lambda > 0.0F) {
+            params.uastcRDO = KTX_TRUE;
+            // Normal maps want about half the strength of colour (libktx suggests 0.25 to 0.75 for them).
+            params.uastcRDOQualityScalar = role == TextureRole::normal_map ? lambda * 0.5F : lambda;
+        }
+
         if (ktxTexture2_CompressBasisEx(texture.get(), &params) != KTX_SUCCESS) {
             return std::unexpected(
                     make_error(TexturePipelineErrorType::encode_failed, "ktxTexture2_CompressBasisEx failed"));
@@ -270,13 +289,56 @@ namespace {
         return result;
     }
 
+    // Drops the top mips of a texture larger than the configured limit.
+    [[nodiscard]]
+    auto apply_max_extent(CompressedTexture texture) -> CompressedTexture {
+        auto const limit = max_extent.load(std::memory_order_relaxed);
+        std::size_t skip = 0;
+
+        while (limit != 0 && skip + 1 < texture.mips.size() &&
+               std::max(texture.mips[skip].width, texture.mips[skip].height) > limit) {
+            ++skip;
+        }
+
+        if (skip == 0) {
+            return texture;
+        }
+
+        std::vector<std::byte> data;
+        std::vector<CompressedMipLevel> mips;
+        mips.reserve(texture.mips.size() - skip);
+
+        for (auto level = skip; level < texture.mips.size(); ++level) {
+            auto const &mip = texture.mips[level];
+            auto const begin = texture.data.begin() + mip.byte_offset;
+
+            mips.push_back(CompressedMipLevel{
+                    .width = mip.width,
+                    .height = mip.height,
+                    .byte_offset = static_cast<std::uint32_t>(data.size()),
+                    .byte_length = mip.byte_length,
+            });
+            data.insert(data.end(), begin, begin + mip.byte_length);
+        }
+
+        texture.width = mips.front().width;
+        texture.height = mips.front().height;
+        texture.data = std::move(data);
+        texture.mips = std::move(mips);
+
+        return texture;
+    }
+
     [[nodiscard]]
     auto transcode_target(TextureRole role) noexcept -> ktx_transcode_fmt_e {
         return role == TextureRole::normal_map ? KTX_TTF_BC5_RG : KTX_TTF_BC7_RGBA;
     }
 
-    // Cache files are written by libktx after transcoding, so they are plain 2D KTX2 containers with no
-    // supercompression. Reading them directly lets each level range land in its final buffer with a single copy.
+    // Cache files are written by libktx after transcoding: plain 2D KTX2 containers, either with no supercompression or
+    // with per-level zstd. Reading them directly lets each level land in its final buffer with a single copy (or a
+    // single inflate).
+    constexpr std::uint32_t supercompression_none = 0;
+    constexpr std::uint32_t supercompression_zstd = 2;
     constexpr std::uint32_t ktx2_header_bytes = 80;
     constexpr std::uint32_t ktx2_level_entry_bytes = 24;
     constexpr std::uint32_t ktx2_max_levels = 32;
@@ -288,6 +350,8 @@ namespace {
     struct Ktx2Level {
         std::uint64_t offset = 0;
         std::uint64_t length = 0;
+        // Size once inflated; equals `length` without supercompression.
+        std::uint64_t uncompressed_length = 0;
     };
 
     class Ktx2File {
@@ -313,6 +377,19 @@ namespace {
             return file;
         }
 
+        // First level whose largest side fits in `limit`; the last level if none does. 0 (no limit) gives level 0.
+        [[nodiscard]]
+        auto level_for_extent(std::uint32_t limit) const noexcept -> std::uint32_t {
+            auto const largest = std::max(width_, height_);
+            std::uint32_t level = 0;
+
+            while (limit != 0 && level + 1 < levels_.size() && (largest >> level) > limit) {
+                ++level;
+            }
+
+            return level;
+        }
+
         // First level whose largest side fits in the preview budget, or 0 when the texture is already that small.
         [[nodiscard]]
         auto preview_level() const noexcept -> std::uint32_t {
@@ -335,6 +412,10 @@ namespace {
                 return std::nullopt;
             }
 
+            if (supercompression_ == supercompression_zstd) {
+                return read_zstd(first_level, debug_name);
+            }
+
             auto range_begin = std::numeric_limits<std::uint64_t>::max();
             std::uint64_t range_end = 0;
 
@@ -347,11 +428,7 @@ namespace {
                 return std::nullopt;
             }
 
-            CompressedTexture result;
-            result.format = format_;
-            result.width = std::max<std::uint32_t>(width_ >> first_level, 1);
-            result.height = std::max<std::uint32_t>(height_ >> first_level, 1);
-            result.debug_name = debug_name;
+            auto result = make_result(first_level, debug_name);
             result.data.resize(range_end - range_begin);
 
             stream_.seekg(static_cast<std::streamoff>(range_begin));
@@ -377,6 +454,67 @@ namespace {
 
     private:
         [[nodiscard]]
+        auto make_result(std::uint32_t first_level, FlyString debug_name) const -> CompressedTexture {
+            CompressedTexture result;
+            result.format = format_;
+            result.width = std::max<std::uint32_t>(width_ >> first_level, 1);
+            result.height = std::max<std::uint32_t>(height_ >> first_level, 1);
+            result.debug_name = debug_name;
+            return result;
+        }
+
+        // Each level is its own zstd frame. They are inflated into one buffer in file order (smallest level first),
+        // which is the layout the uncompressed path produces.
+        [[nodiscard]]
+        auto read_zstd(std::uint32_t first_level, FlyString debug_name) -> std::optional<CompressedTexture> {
+            std::uint64_t total = 0;
+
+            for (auto level = first_level; level < levels_.size(); ++level) {
+                total += levels_[level].uncompressed_length;
+            }
+
+            if (total > std::numeric_limits<std::uint32_t>::max()) {
+                return std::nullopt;
+            }
+
+            auto result = make_result(first_level, debug_name);
+            result.data.resize(total);
+            result.mips.resize(levels_.size() - first_level);
+
+            std::vector<std::byte> compressed;
+            std::uint64_t cursor = 0;
+
+            for (auto level = static_cast<std::uint32_t>(levels_.size()); level-- > first_level;) {
+                auto const &entry = levels_[level];
+
+                compressed.resize(entry.length);
+                stream_.seekg(static_cast<std::streamoff>(entry.offset));
+                stream_.read(reinterpret_cast<char *>(compressed.data()), static_cast<std::streamsize>(entry.length));
+
+                if (!stream_) {
+                    return std::nullopt;
+                }
+
+                auto const inflated = ZSTD_decompress(result.data.data() + cursor, entry.uncompressed_length,
+                                                      compressed.data(), compressed.size());
+
+                if (ZSTD_isError(inflated) != 0 || inflated != entry.uncompressed_length) {
+                    return std::nullopt;
+                }
+
+                result.mips[level - first_level] = CompressedMipLevel{
+                        .width = std::max<std::uint32_t>(width_ >> level, 1),
+                        .height = std::max<std::uint32_t>(height_ >> level, 1),
+                        .byte_offset = static_cast<std::uint32_t>(cursor),
+                        .byte_length = static_cast<std::uint32_t>(entry.uncompressed_length),
+                };
+                cursor += entry.uncompressed_length;
+            }
+
+            return result;
+        }
+
+        [[nodiscard]]
         auto read_layout(std::uint64_t file_size) -> bool {
             std::array<std::byte, ktx2_header_bytes> header{};
             stream_.read(reinterpret_cast<char *>(header.data()), static_cast<std::streamsize>(header.size()));
@@ -397,11 +535,15 @@ namespace {
             auto const level_count = field(40);
             auto const supercompression = field(44);
 
-            if (depth > 1 || layers > 1 || faces != 1 || supercompression != 0 || level_count == 0 ||
+            auto const known_supercompression =
+                    supercompression == supercompression_none || supercompression == supercompression_zstd;
+
+            if (depth > 1 || layers > 1 || faces != 1 || !known_supercompression || level_count == 0 ||
                 level_count > ktx2_max_levels) {
                 return false;
             }
 
+            supercompression_ = supercompression;
             format_ = static_cast<VkFormat>(field(12));
             width_ = field(20);
             height_ = field(24);
@@ -423,6 +565,7 @@ namespace {
             for (std::uint32_t level = 0; level < level_count; ++level) {
                 std::memcpy(&levels_[level].offset, index.data() + level * ktx2_level_entry_bytes, 8);
                 std::memcpy(&levels_[level].length, index.data() + level * ktx2_level_entry_bytes + 8, 8);
+                std::memcpy(&levels_[level].uncompressed_length, index.data() + level * ktx2_level_entry_bytes + 16, 8);
 
                 if (levels_[level].offset > file_size || levels_[level].length > file_size - levels_[level].offset) {
                     return false;
@@ -433,6 +576,7 @@ namespace {
         }
 
         std::ifstream stream_;
+        std::uint32_t supercompression_ = supercompression_none;
         VkFormat format_ = VK_FORMAT_UNDEFINED;
         std::uint32_t width_ = 0;
         std::uint32_t height_ = 0;
@@ -459,7 +603,7 @@ namespace {
             }
         }
 
-        auto texture = file->read(0, debug_name);
+        auto texture = file->read(file->level_for_extent(max_extent.load(std::memory_order_relaxed)), debug_name);
 
         lookup_sample.stop();
 
@@ -519,9 +663,17 @@ namespace {
 
         ScopedProfileSample const write_sample{profile != nullptr ? &profile->texture_cache_write_ns : nullptr};
 
+        // Taken before supercompression, which replaces the texture's data with the compressed levels.
+        auto extracted = extract_compressed_texture(texture.get(), debug_name);
+
+        if (auto const status = ktxTexture2_DeflateZstd(texture.get(), zstd_compression_level); status != KTX_SUCCESS) {
+            warn("texture_pipeline: zstd supercompression failed for '{}' ({}); caching it uncompressed",
+                 cache_path.string(), static_cast<int>(status));
+        }
+
         write_cache_atomic(texture.get(), cache_path);
 
-        return extract_compressed_texture(texture.get(), debug_name);
+        return apply_max_extent(std::move(extracted));
     }
 
     [[nodiscard]]
@@ -536,6 +688,10 @@ namespace {
     }
 
 }
+
+auto set_texture_rdo_lambda(float lambda) noexcept -> void { rdo_lambda.store(lambda, std::memory_order_relaxed); }
+
+auto set_texture_max_extent(std::uint32_t extent) noexcept -> void { max_extent.store(extent, std::memory_order_relaxed); }
 
 auto default_texture_cache_directory() -> std::filesystem::path {
     if (auto const *xdg_cache = std::getenv("XDG_CACHE_HOME"); xdg_cache != nullptr && *xdg_cache != '\0') {

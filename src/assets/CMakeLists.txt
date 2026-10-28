@@ -53,6 +53,14 @@ target_link_libraries(
         spirv-tools::opt
 )
 
+# libktx ships its own zstd (the symbols are in the static library); the texture cache reads zstd-supercompressed
+# levels with it directly instead of going through ktxTexture2.
+target_include_directories(
+    engine_assets
+    PRIVATE
+        "${ktx_SOURCE_DIR}/external/basisu/zstd"
+)
+
 target_precompile_headers(
     engine_assets
     REUSE_FROM
