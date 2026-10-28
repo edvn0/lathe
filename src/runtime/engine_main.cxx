@@ -1069,6 +1069,18 @@ static auto ctrl_c_handler(int) -> void {
     glfwPostEmptyEvent();
 }
 
+// Models and textures stream in after startup, and a scene saved before they arrive would hold the stand-ins instead of
+// the files. Try again next frame until nothing is loading.
+static auto queue_save_scene_when_loaded(Runtime &runtime, EngineProfile &profile, std::filesystem::path path) -> void {
+    runtime.renderer->queue_render_thread_event([&runtime, &profile, path = std::move(path)]() mutable {
+        if (runtime.renderer->model_streamer().pending_count() + runtime.renderer->texture_streamer().pending_count() != 0) {
+            queue_save_scene_when_loaded(runtime, profile, std::move(path));
+            return;
+        }
+        profile.save_scene(runtime, path);
+    });
+}
+
 auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     CommandLine cli{std::string{profile.name()}, std::string{profile.description()}};
     EngineArguments engine{cli};
@@ -1373,8 +1385,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
                 [&runtime, path = *engine.open_scene] { runtime.open_scene(path); });
     }
     if (engine.save_scene) {
-        runtime.renderer->queue_render_thread_event(
-                [&runtime, &profile, path = *engine.save_scene] { profile.save_scene(runtime, path); });
+        queue_save_scene_when_loaded(runtime, profile, *engine.save_scene);
     }
 
     if (auto const attached = profile.attach(runtime, context); !attached) {
