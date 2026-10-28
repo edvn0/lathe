@@ -140,6 +140,7 @@ namespace cvars {
             .help = "Suite: runs of each case (3)",
             .hint = "N",
             .min = 1,
+            .default_label = "auto",
     }};
 
     CVar<std::string> benchmark_compare{{

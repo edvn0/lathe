@@ -106,6 +106,8 @@ struct CVarInfo {
     std::function<std::expected<void, std::string>(std::string_view)> validator{};
     // A bool that takes on|off instead of being a bare switch: it can be turned off, and left unset.
     bool toggle = false;
+    // What to show for the default when it depends on the run ("auto"), instead of the type's zero value.
+    std::string_view default_label{};
     // Not read from the environment: an action to run, not a setting.
     bool cli_only = false;
 };
@@ -148,11 +150,15 @@ public:
     }
 
     [[nodiscard]] auto hint() const -> std::string override;
+    // The value as text; while nothing has set it and the default depends on the run, that default's label.
     [[nodiscard]] auto text() const -> std::string override {
         std::scoped_lock const lock{mutex_};
-        return format(value_);
+        return source_ == CVarSource::fallback && !info_.default_label.empty() ? std::string{info_.default_label}
+                                                                               : format(value_);
     }
-    [[nodiscard]] auto default_text() const -> std::string override { return format(info_.default_value); }
+    [[nodiscard]] auto default_text() const -> std::string override {
+        return info_.default_label.empty() ? format(info_.default_value) : std::string{info_.default_label};
+    }
     [[nodiscard]] auto is_flag() const -> bool override { return is_bool && !info_.toggle; }
     [[nodiscard]] auto is_list() const -> bool override { return is_strings; }
 

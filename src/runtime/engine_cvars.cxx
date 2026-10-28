@@ -226,6 +226,7 @@ namespace cvars {
             .group = "Presentation",
             .help = "Cap the frame rate at the refresh rate (off by default while benchmarking)",
             .toggle = true,
+            .default_label = "auto",
     }};
     CVar<PresentModeChoice> present_mode{{
             .name = "present_mode",
@@ -233,6 +234,7 @@ namespace cvars {
             .help = "Present mode outright (benchmarks prefer immediate: MAILBOX can still pace acquisition to the "
                     "refresh rate)",
             .choices = present_mode_choices,
+            .default_label = "auto",
     }};
     CVar<std::uint32_t> swapchain_images{{
             .name = "swapchain_images",
@@ -241,6 +243,7 @@ namespace cvars {
             .hint = "N",
             .min = 2,
             .max = 8,
+            .default_label = "auto",
     }};
     CVar<bool> hdr{{
             .name = "hdr",
@@ -248,6 +251,7 @@ namespace cvars {
             .help = "Output linear scRGB on an HDR display (falls back to sRGB when the surface offers none; on by "
                     "default except in benchmarks and tests)",
             .toggle = true,
+            .default_label = "auto",
     }};
     CVar<float> paper_white{{
             .name = "paper_white",
@@ -278,6 +282,7 @@ namespace cvars {
             .group = "Diagnostics",
             .help = "Load the Vulkan validation layer (on by default in Debug builds, off in Release)",
             .toggle = true,
+            .default_label = "auto",
     }};
     CVar<std::string> frame_graph_dot{{
             .name = "frame_graph_dot",

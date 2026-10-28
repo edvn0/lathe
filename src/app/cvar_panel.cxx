@@ -56,6 +56,7 @@ auto Application::draw_cvar_panel() -> void {
         ImGui::TableNextRow();
 
         ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(std::string{cvar->name()}.c_str());
         if (ImGui::BeginItemTooltip()) {
             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0F);
@@ -70,6 +71,7 @@ auto Application::draw_cvar_panel() -> void {
         ImGui::SetNextItemWidth(-1.0F);
 
         if (cvar->is_list()) {
+            ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("%s", cvar->text().c_str());
         } else if (cvar->is_flag()) {
             auto on = cvar->text() == "on";
@@ -98,9 +100,11 @@ auto Application::draw_cvar_panel() -> void {
         }
 
         ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%s", cvar->default_text().c_str());
 
         ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(std::string{to_string(cvar->source())}.c_str());
 
         ImGui::PopID();

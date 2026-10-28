@@ -194,3 +194,19 @@ TEST_CASE("every engine variable has a unique name, command line option and envi
     CHECK(names.contains("platform"));
     CHECK(names.contains("window_size"));
 }
+
+TEST_CASE("a default that depends on the run is shown by its label until something sets the value") {
+    CVar<bool> sync{{.name = "test_sync", .group = "Test", .help = "", .toggle = true, .default_label = "auto"}};
+
+    CHECK(sync.text() == "auto");
+    CHECK(sync.default_text() == "auto");
+
+    REQUIRE(sync.set_text("off", CVarSource::runtime).has_value());
+
+    CHECK(sync.text() == "off");
+    CHECK(sync.default_text() == "auto");
+
+    sync.reset();
+
+    CHECK(sync.text() == "auto");
+}
