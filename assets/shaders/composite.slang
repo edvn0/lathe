@@ -20,6 +20,10 @@ struct CompositePC {
     uint lut_texture_index;
     float lut_size;
     float lut_intensity;
+
+    uint hdr_output;
+    float hdr_peak_relative;
+    float output_scale;
 };
 
 struct VertexOutput
@@ -74,6 +78,22 @@ float3 aces_fitted(float3 colour)
     );
 }
 
+// HDR: values up to paper white (1.0) pass through unchanged; above it the brightest channel rolls off exponentially
+// towards the display peak, and all channels are scaled together so the hue holds.
+float3 hdr_rolloff(float3 colour, float peak_relative)
+{
+    const float knee = 1.0;
+    const float range = max(peak_relative - knee, 1e-3);
+    const float brightest = max(colour.r, max(colour.g, colour.b));
+
+    if (brightest <= knee) {
+        return colour;
+    }
+
+    const float mapped = knee + range * (1.0 - exp(-(brightest - knee) / range));
+    return colour * (mapped / brightest);
+}
+
 // Interleaved gradient noise (Jimenez), remapped to a triangular distribution in [-1, 1].
 float dither_noise(float2 pixel)
 {
@@ -119,9 +139,11 @@ FragmentOutput main_fs(VertexOutput input, uniform CompositePC pc)
 
     float3 combined_hdr = hdr_colour + bloom_colour * pc.bloom_intensity;
 
-    float3 mapped = aces_fitted(combined_hdr * pc.exposure);
+    const bool hdr = pc.hdr_output != 0;
+    float3 mapped = hdr ? hdr_rolloff(max(combined_hdr * pc.exposure, 0.0), pc.hdr_peak_relative)
+                        : aces_fitted(combined_hdr * pc.exposure);
 
-    if (pc.lut_texture_index != 0 && pc.lut_intensity > 0.0) {
+    if (!hdr && pc.lut_texture_index != 0 && pc.lut_intensity > 0.0) {
         const float3 encoded_in = linear_to_srgb(saturate(mapped));
         const float3 graded = sample_lut(encoded_in, pc.lut_texture_index, pc.lut_size, samplers[sampler_index]);
         mapped = srgb_to_linear(lerp(encoded_in, graded, saturate(pc.lut_intensity)));
@@ -145,6 +167,12 @@ FragmentOutput main_fs(VertexOutput input, uniform CompositePC pc)
         const float edge = saturate(nearby - inside);
 
         mapped = lerp(mapped, float3(pc.outline_r, pc.outline_g, pc.outline_b), edge);
+    }
+
+    if (hdr) {
+        FragmentOutput hdr_output;
+        hdr_output.colour = float4(mapped * pc.output_scale, 1.0);
+        return hdr_output;
     }
 
     // The swapchain is 8-bit sRGB: dither by one code value in encoded space so smooth gradients don't band.

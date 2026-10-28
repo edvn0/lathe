@@ -26,6 +26,9 @@ struct ScreenshotImage {
 
     bool managed_by_graph = false;
 
+    // For a float (scRGB) image: the value that is white, so the PNG is exposed like an SDR screenshot.
+    float white_level = 1.0F;
+
     VkImageLayout layout_before = VK_IMAGE_LAYOUT_UNDEFINED;
     VkPipelineStageFlags2 stage_before = VK_PIPELINE_STAGE_2_NONE;
     VkAccessFlags2 access_before = VK_ACCESS_2_NONE;
@@ -76,6 +79,7 @@ private:
 
         VkExtent2D extent{};
         VkFormat format = VK_FORMAT_UNDEFINED;
+        float white_level = 1.0F;
         std::size_t byte_size = 0;
     };
 

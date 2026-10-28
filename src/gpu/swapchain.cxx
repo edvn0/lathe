@@ -83,6 +83,10 @@ auto Swapchain::initialize(SwapchainCreateInfo const &create_info) noexcept -> b
     vsync_ = create_info.vsync;
     preferred_present_mode_ = create_info.preferred_present_mode;
     requested_image_count_ = create_info.image_count;
+    hdr_requested_ = create_info.hdr;
+    hdr_metadata_ = create_info.hdr_metadata;
+    paper_white_nits_ = create_info.paper_white_nits;
+    peak_nits_ = create_info.peak_nits;
 
     if (requested_extent_.width == 0 || requested_extent_.height == 0) {
         error("Initial framebuffer extent must be non-zero");
@@ -97,8 +101,8 @@ auto Swapchain::initialize(SwapchainCreateInfo const &create_info) noexcept -> b
         return false;
     }
 
-    info("Swapchain created: {}x{}, {} images, format {}", extent_.width, extent_.height, images_.size(),
-         static_cast<int>(surface_format_.format));
+    info("Swapchain created: {}x{}, {} images, format {}{}", extent_.width, extent_.height, images_.size(),
+         static_cast<int>(surface_format_.format), hdr_active() ? " (HDR, scRGB)" : "");
 
     return true;
 }
@@ -364,6 +368,7 @@ auto Swapchain::create_swapchain(VkSwapchainKHR old_swapchain) noexcept -> bool 
     }
 
     swapchain_ = new_swapchain;
+    apply_hdr_metadata();
 
     std::uint32_t actual_image_count = 0;
 
@@ -563,8 +568,50 @@ auto Swapchain::destroy_frame_resources() noexcept -> void {
     frames_.clear();
 }
 
+auto Swapchain::set_hdr_levels(float paper_white_nits, float peak_nits) noexcept -> void {
+    paper_white_nits_ = paper_white_nits;
+    peak_nits_ = peak_nits;
+    apply_hdr_metadata();
+}
+
+auto Swapchain::apply_hdr_metadata() const noexcept -> void {
+    if (!hdr_metadata_ || !hdr_active() || swapchain_ == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // sRGB primaries with a D65 white point: scRGB is defined against them.
+    VkHdrMetadataEXT const metadata{
+            .sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
+            .pNext = nullptr,
+            .displayPrimaryRed = {0.640F, 0.330F},
+            .displayPrimaryGreen = {0.300F, 0.600F},
+            .displayPrimaryBlue = {0.150F, 0.060F},
+            .whitePoint = {0.3127F, 0.3290F},
+            .maxLuminance = peak_nits_,
+            .minLuminance = 0.0F,
+            .maxContentLightLevel = peak_nits_,
+            .maxFrameAverageLightLevel = paper_white_nits_,
+    };
+
+    vkSetHdrMetadataEXT(device_, 1, &swapchain_, &metadata);
+}
+
 auto Swapchain::choose_surface_format(std::vector<VkSurfaceFormatKHR> const &formats) const noexcept
         -> VkSurfaceFormatKHR {
+    if (hdr_requested_) {
+        auto const scrgb = std::ranges::find_if(formats, [](VkSurfaceFormatKHR const &format) {
+            return format.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+                   format.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+        });
+
+        if (scrgb != formats.end()) {
+            return *scrgb;
+        }
+
+        warn("HDR was requested but the surface offers no scRGB format (R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR); "
+             "using sRGB. Needs a compositor with HDR on for this output, and on Linux native Wayland (not XWayland).");
+    }
+
     constexpr std::array preferred_formats{
             VK_FORMAT_B8G8R8A8_SRGB,
             VK_FORMAT_R8G8B8A8_SRGB,

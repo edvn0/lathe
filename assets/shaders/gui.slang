@@ -16,6 +16,7 @@ struct PC
     uint sampler_id;
     uint already_linear;
     uint sdf_text;
+    float output_scale;
 }
 
 struct VertexOutput
@@ -69,6 +70,8 @@ float4 main_fs(VertexOutput input, uniform PC pc) : SV_Target0
     {
         colour.rgb = srgb_to_linear(colour.rgb);
     }
+
+    colour.rgb *= pc.output_scale;
 
     return colour;
 }

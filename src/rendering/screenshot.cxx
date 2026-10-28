@@ -12,10 +12,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -31,6 +33,9 @@ namespace {
             case VK_FORMAT_R8G8B8A8_UNORM:
                 return 4;
 
+            case VK_FORMAT_R16G16B16A16_SFLOAT:
+                return 8;
+
             default:
                 return 0;
         }
@@ -38,6 +43,43 @@ namespace {
 
     auto is_bgra(VkFormat format) -> bool {
         return format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+    }
+
+    auto half_to_float(std::uint16_t half) -> float {
+        auto const sign = (half & 0x8000U) != 0 ? -1.0F : 1.0F;
+        auto const exponent = static_cast<int>((half >> 10U) & 0x1FU);
+        auto const mantissa = static_cast<float>(half & 0x3FFU);
+
+        if (exponent == 0) {
+            return sign * std::ldexp(mantissa, -24);
+        }
+        if (exponent == 31) {
+            return mantissa == 0.0F ? sign * std::numeric_limits<float>::infinity() : 0.0F;
+        }
+        return sign * std::ldexp(1.0F + mantissa / 1024.0F, exponent - 15);
+    }
+
+    // scRGB half floats to 8-bit sRGB RGBA, clipping everything above `white_level`.
+    auto float16_to_rgba8(std::vector<std::byte> const &pixels, float white_level) -> std::vector<std::byte> {
+        std::vector<std::byte> result(pixels.size() / 2);
+
+        for (std::size_t i = 0; i + 8 <= pixels.size(); i += 8) {
+            for (std::size_t channel = 0; channel < 4; ++channel) {
+                std::uint16_t half = 0;
+                std::memcpy(&half, pixels.data() + i + channel * 2, sizeof(half));
+
+                auto value = std::clamp(half_to_float(half), 0.0F, std::numeric_limits<float>::max());
+                if (channel < 3) {
+                    value = std::min(value / white_level, 1.0F);
+                    value = value <= 0.0031308F ? value * 12.92F : 1.055F * std::pow(value, 1.0F / 2.4F) - 0.055F;
+                } else {
+                    value = std::min(value, 1.0F);
+                }
+                result[i / 2 + channel] = static_cast<std::byte>(std::lround(value * 255.0F));
+            }
+        }
+
+        return result;
     }
 
     auto make_timestamp() -> std::string {
@@ -53,7 +95,11 @@ namespace {
         return {buffer.data(), std::strlen(buffer.data())};
     }
 
-    auto write_screenshot_png(std::vector<std::byte> pixels, VkExtent2D extent, VkFormat format) -> void {
+    auto write_screenshot_png(std::vector<std::byte> pixels, VkExtent2D extent, VkFormat format, float white_level)
+            -> void {
+        if (format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+            pixels = float16_to_rgba8(pixels, white_level);
+        }
 
         if (is_bgra(format)) {
             for (std::size_t i = 0; i + 4 <= pixels.size(); i += 4) {
@@ -292,6 +338,7 @@ auto ScreenshotCapture::record(VulkanContext &ctx, VkCommandBuffer command_buffe
     slot.gpu_pending = true;
     slot.extent = extent;
     slot.format = format;
+    slot.white_level = source.white_level;
     slot.byte_size = static_cast<std::size_t>(byte_size);
 
     return true;
@@ -354,12 +401,14 @@ auto ScreenshotCapture::try_resolve(std::uint32_t frame_index) -> void {
 
         auto const format = slot_ptr->format;
 
+        auto const white_level = slot_ptr->white_level;
+
         std::vector<std::byte> pixels(byte_size);
 
         std::memcpy(pixels.data(), mapped, byte_size);
 
         finish();
 
-        write_screenshot_png(std::move(pixels), extent, format);
+        write_screenshot_png(std::move(pixels), extent, format, white_level);
     });
 }

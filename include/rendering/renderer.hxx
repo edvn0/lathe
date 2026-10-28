@@ -338,6 +338,11 @@ struct RendererCreateInfo {
 
     VkFormat hdr_format = VK_FORMAT_R16G16B16A16_SFLOAT;
     VkFormat swapchain_format = VK_FORMAT_B8G8R8A8_SRGB;
+    // The swapchain is linear scRGB (swapchain_format is then R16G16B16A16_SFLOAT): composition rolls highlights off
+    // towards peak_nits instead of tonemapping to 0..1, and everything drawn on it is scaled to paper_white_nits.
+    bool hdr_output = false;
+    float paper_white_nits = 203.0F;
+    float peak_nits = 1000.0F;
 
     VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
 
@@ -707,6 +712,11 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto set_preview_resource(std::string name) -> void { preview_resource_ = std::move(name); }
     [[nodiscard]] auto preview_resource() const noexcept -> std::string const & { return preview_resource_; }
     [[nodiscard]] auto preview_texture_index() const noexcept -> std::uint32_t { return preview_texture_index_; }
+
+    // True when the swapchain is linear scRGB, so the framebuffer is not sRGB-encoded 8-bit.
+    [[nodiscard]] auto hdr_output() const noexcept -> bool { return hdr_output_; }
+    // What UI colour and the viewport image are multiplied by on the swapchain: paper white in units of 80 nits.
+    [[nodiscard]] auto ui_output_scale() const noexcept -> float { return hdr_output_ ? paper_white_nits_ / 80.0F : 1.0F; }
 
     [[nodiscard]] auto frame_graph_view() const noexcept -> frame_graph::FrameGraphView const & {
         return frame_graph_view_;
@@ -1654,6 +1664,9 @@ private:
     VkFormat hdr_format_ = VK_FORMAT_UNDEFINED;
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
     VkFormat swapchain_format_ = VK_FORMAT_UNDEFINED;
+    bool hdr_output_ = false;
+    float paper_white_nits_ = 203.0F;
+    float peak_nits_ = 1000.0F;
     VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
     float render_scale_ = 1.0F;
     VkSampleCountFlagBits pending_samples_ = VK_SAMPLE_COUNT_1_BIT;

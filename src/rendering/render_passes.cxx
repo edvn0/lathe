@@ -1083,6 +1083,9 @@ namespace render_pass {
                 .lut_texture_index = info.lut_texture_index,
                 .lut_size = static_cast<float>(info.lut_size),
                 .lut_intensity = info.lut_intensity,
+                .hdr_output = info.hdr_output ? 1U : 0U,
+                .hdr_peak_relative = info.hdr_peak_relative,
+                .output_scale = info.output_scale,
         };
 
         vkCmdPushConstants(context.command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(pc), &pc);

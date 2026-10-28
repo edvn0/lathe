@@ -105,6 +105,8 @@ namespace gui {
             UploadRing &indices;
             std::uint32_t ring_slot;
             std::uint32_t preview_index;
+            // paper white / 80 on an HDR scRGB target, so the UI sits at the same brightness as the scene.
+            float output_scale = 1.0F;
         };
 
         auto update_textures(ImDrawData const &data) -> void;
