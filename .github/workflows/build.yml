@@ -66,6 +66,8 @@ jobs:
     env:
       CCACHE_NOHASHDIR: "true"
       CCACHE_COMPILERCHECK: content
+      # The precompiled header is rebuilt per build tree, so ccache has to ignore its mtime and defines to hit.
+      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
       CCACHE_MAXSIZE: 1G
 
     steps:
@@ -223,6 +225,8 @@ jobs:
     env:
       CCACHE_NOHASHDIR: "true"
       CCACHE_COMPILERCHECK: content
+      # The precompiled header is rebuilt per build tree, so ccache has to ignore its mtime and defines to hit.
+      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
       CCACHE_MAXSIZE: 1G
 
     steps:
