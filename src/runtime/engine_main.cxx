@@ -1154,7 +1154,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     if (!engine.record_resources.empty()) {
         start_resource_recording();
-    } else if (auto const resource_pack_path = Paths::current().data_root() / "resources.lbf";
+    } else if (auto const resource_pack_path = Paths::current().engine_root() / "resources.lbf";
                std::filesystem::exists(resource_pack_path)) {
         if (auto pack = ResourcePack::open(resource_pack_path)) {
             info("Using {} bundled resources from '{}'", (*pack)->size(), resource_pack_path.string());
@@ -1179,14 +1179,14 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     // A packaged pack beside the data wins; otherwise dev runs cache under XDG_CACHE_HOME, keyed by data directory
     // so separate checkouts don't evict each other.
-    auto const packaged_pack_path = Paths::current().data_root() / "shaders.lsp";
+    auto const packaged_pack_path = Paths::current().engine_root() / "shaders.lsp";
     auto const default_pack_path = std::filesystem::exists(packaged_pack_path) ? packaged_pack_path : [] {
         auto const *xdg = std::getenv("XDG_CACHE_HOME");
         auto const *home = std::getenv("HOME");
         auto root = xdg != nullptr && *xdg != '\0' ? std::filesystem::path{xdg}
                     : home != nullptr && *home != '\0' ? std::filesystem::path{home} / ".cache"
                                                       : std::filesystem::path{"cache"};
-        auto const key = std::hash<std::string>{}(Paths::current().data_root().string());
+        auto const key = std::hash<std::string>{}(Paths::current().engine_root().string());
 
         return root / "lathe" / std::format("shaders-{:016x}.lsp", key);
     }();
@@ -1201,7 +1201,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         if (std::filesystem::exists(pack_path)) {
             if (auto pack = renderer::ShaderPack::load(pack_path)) {
-                if (pack->matches_sources(Paths::current().data_root() / "assets" / "shaders")) {
+                if (pack->matches_sources(Paths::current().engine_root() / "assets" / "shaders")) {
                     info("Using {} precompiled shaders from '{}'", pack->size(), pack_path.string());
                     renderer::install_shader_pack(std::make_shared<renderer::ShaderPack const>(std::move(*pack)));
                     pack_usable = true;

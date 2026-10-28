@@ -53,3 +53,24 @@ TEST_CASE("a project roots the data at the project and keeps cache and state und
     CHECK(paths.cache("a")->absolute() == root / ".lathe" / "cache" / "a");
     CHECK(paths.state("imgui.ini")->absolute() == root / ".lathe" / "state" / "imgui.ini");
 }
+
+TEST_CASE("a project's content shadows the engine's, which stays reachable") {
+    auto const project = scratch_directory("lathe_mounts_project");
+    auto const engine = scratch_directory("lathe_mounts_engine");
+
+    std::filesystem::create_directories(engine / "assets" / "shaders");
+    std::filesystem::create_directories(project / "assets" / "shaders");
+    std::ofstream{engine / "assets" / "shared.txt"} << "engine";
+    std::ofstream{engine / "assets" / "engine_only.txt"} << "engine";
+    std::ofstream{project / "assets" / "shared.txt"} << "project";
+
+    auto const paths = Paths::resolve({.project_root = project, .engine_dir = engine});
+
+    CHECK(paths.engine_root() == engine);
+    CHECK(paths.data("assets/shared.txt")->absolute() == project / "assets" / "shared.txt");
+    CHECK(paths.data("assets/engine_only.txt")->absolute() == engine / "assets" / "engine_only.txt");
+    CHECK(paths.data("assets/new.txt")->absolute() == project / "assets" / "new.txt");
+    CHECK(paths.engine("assets/shared.txt")->absolute() == engine / "assets" / "shared.txt");
+    CHECK(paths.data_directories("assets/shaders") == std::vector{project / "assets" / "shaders", engine / "assets" / "shaders"});
+    CHECK(paths.relative_to_roots(engine / "assets" / "shared.txt") == std::filesystem::path{"assets/shared.txt"});
+}

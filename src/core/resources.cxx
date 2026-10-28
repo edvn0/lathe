@@ -23,7 +23,7 @@ namespace {
     }
 
     auto read_from_disk(DataPath const &path) -> std::optional<std::vector<std::byte>> {
-        std::ifstream file{Paths::current().data_root() / path.logical(), std::ios::binary};
+        std::ifstream file{path.absolute(), std::ios::binary};
 
         if (!file) {
             return std::nullopt;

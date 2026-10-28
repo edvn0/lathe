@@ -87,6 +87,7 @@ auto Application::start_package() -> void {
                                     .scene = package_scene_file};
     options.output_dir = output_dir;
     options.data_root = Paths::current().data_root();
+    options.engine_root = Paths::current().engine_root();
     options.executable = executable;
     options.compiler = &Renderer::compiler();
     options.archive = package_form.archive;

@@ -289,9 +289,7 @@ auto Runtime::register_overlays() -> void {
 }
 
 auto Runtime::on_startup() -> void {
-    std::array const shader_directories{
-            data_path("assets/shaders").absolute(),
-    };
+    auto const shader_directories = Paths::current().data_directories("assets/shaders");
     if (!player_mode && !shader_watcher_.start(renderer->shader_change_queue(), shader_directories)) {
         error("Shader hot-reload watcher failed to start -- shaders will not live-reload this run");
     }

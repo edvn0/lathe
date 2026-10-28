@@ -37,6 +37,33 @@ namespace {
         return std::filesystem::path{fallback} / "lathe";
     }
 
+    auto holds_engine_assets(std::filesystem::path const &directory) -> bool {
+        std::error_code error;
+
+        return std::filesystem::exists(directory / "assets" / "shaders", error);
+    }
+
+    // Where the engine's own resources are when the data root is not them: the working directory (a checkout), else
+    // beside the executable (the build copies assets there).
+    auto find_engine_root() -> std::filesystem::path {
+        std::error_code error;
+        auto const working_directory = std::filesystem::current_path(error);
+
+        if (holds_engine_assets(working_directory)) {
+            return working_directory;
+        }
+
+        if (auto const exe = executable_directory(); !exe.empty()) {
+            for (auto const &candidate: {exe, exe / "data", exe / ".." / "share" / "lathe"}) {
+                if (holds_engine_assets(candidate)) {
+                    return candidate.lexically_normal();
+                }
+            }
+        }
+
+        return working_directory;
+    }
+
     auto holds_manifest(std::filesystem::path const &directory) -> bool {
         std::error_code error;
 
@@ -89,6 +116,8 @@ auto Paths::resolve(PathsOptions const &options) -> Paths {
         auto const root = std::filesystem::absolute(*options.project_root, error).lexically_normal();
 
         paths.data_ = root;
+        paths.engine_ = options.engine_dir ? std::filesystem::absolute(*options.engine_dir, error).lexically_normal()
+                                           : find_engine_root();
         paths.cache_ = root / ".lathe" / "cache";
         paths.state_ = root / ".lathe" / "state";
         paths.screenshots_ = paths.state_ / "screenshots";
@@ -126,13 +155,68 @@ auto Paths::resolve(PathsOptions const &options) -> Paths {
         paths.screenshots_ = working_directory / "screenshots";
     }
 
+    paths.engine_ = paths.data_;
+
     return paths;
 }
 
 auto Paths::data(std::string_view relative) const -> std::optional<DataPath> {
     auto const path = paths_detail::sanitise(relative);
 
-    return path ? std::optional{DataPath{data_, *path}} : std::nullopt;
+    if (!path) {
+        return std::nullopt;
+    }
+
+    if (engine_ != data_) {
+        std::error_code error;
+
+        if (!std::filesystem::exists(data_ / *path, error) && std::filesystem::exists(engine_ / *path, error)) {
+            return DataPath{engine_, *path};
+        }
+    }
+
+    return DataPath{data_, *path};
+}
+
+auto Paths::engine(std::string_view relative) const -> std::optional<DataPath> {
+    auto const path = paths_detail::sanitise(relative);
+
+    return path ? std::optional{DataPath{engine_, *path}} : std::nullopt;
+}
+
+auto Paths::data_directories(std::string_view relative) const -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> directories;
+    auto const path = paths_detail::sanitise(relative);
+
+    if (!path) {
+        return directories;
+    }
+
+    std::error_code error;
+
+    for (auto const &root: {data_, engine_}) {
+        auto const directory = root / *path;
+
+        if (std::filesystem::is_directory(directory, error) && !std::ranges::contains(directories, directory)) {
+            directories.push_back(directory);
+        }
+    }
+
+    return directories;
+}
+
+auto Paths::relative_to_roots(std::filesystem::path const &absolute) const -> std::optional<std::filesystem::path> {
+    auto const normal = absolute.lexically_normal();
+
+    for (auto const &root: {data_, engine_}) {
+        auto relative = normal.lexically_relative(root);
+
+        if (!relative.empty() && *relative.begin() != "..") {
+            return relative;
+        }
+    }
+
+    return std::nullopt;
 }
 
 auto Paths::cache(std::string_view relative) const -> std::optional<CachePath> {
@@ -166,6 +250,8 @@ auto Paths::current() -> Paths const & {
 }
 
 auto data_path(std::string_view relative) -> DataPath { return Paths::current().data(relative).value(); }
+
+auto engine_path(std::string_view relative) -> DataPath { return Paths::current().engine(relative).value(); }
 
 auto cache_path(std::string_view relative) -> CachePath { return Paths::current().cache(relative).value(); }
 
@@ -231,11 +317,8 @@ auto AssetPath::from_user(std::filesystem::path const &path) -> std::optional<As
         return from_serialised(path.generic_string());
     }
 
-    auto const &root = Paths::current().data_root();
-    auto const relative = path.lexically_normal().lexically_relative(root);
-
-    if (!relative.empty() && *relative.begin() != "..") {
-        if (auto data = Paths::current().data(relative.generic_string())) {
+    if (auto const relative = Paths::current().relative_to_roots(path)) {
+        if (auto data = Paths::current().data(relative->generic_string())) {
             return AssetPath{*data};
         }
     }
