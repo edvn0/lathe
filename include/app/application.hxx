@@ -234,6 +234,19 @@ struct Application : Runtime {
 
     auto on_files_dropped(std::span<std::filesystem::path const> paths) -> void override;
 
+    // Leaving with changes that would be lost (confirm_exit): the scene, edited project settings, a save or package that
+    // has not finished. The popup offers to save what can be saved, exit anyway, or stay.
+    bool exit_confirmed = false;
+    bool exit_popup_requested = false;
+    bool exit_after_save = false;
+    bool exit_scene_dirty = false;
+    std::vector<std::string> exit_changes;
+    [[nodiscard]] auto unsaved_changes() -> std::vector<std::string>;
+    [[nodiscard]] auto confirm_exit() -> bool override;
+    auto draw_exit_ui() -> void;
+    [[nodiscard]] auto project_form_dirty() const -> bool;
+    auto save_project_form() -> bool;
+
     auto draw_scene_file_ui() -> void;
 
     // Projects (project_files.cxx): open or create one and switch to it in process (Runtime::switch_project).

@@ -2,6 +2,7 @@
 #include "app/application.hxx"
 
 #include <algorithm>
+#include <GLFW/glfw3.h>
 #include <cctype>
 #include <format>
 #include <string>
@@ -18,6 +19,7 @@ namespace {
     constexpr auto unsaved_changes_popup = "Unsaved changes";
     constexpr auto save_as_popup = "Save scene as";
     constexpr auto game_switch_popup = "Load game";
+    constexpr auto exit_popup = "Exit";
     constexpr std::string_view default_scene_path = "scenes/untitled.lbf";
 
     [[nodiscard]] auto lowercase_extension(std::filesystem::path const &path) -> std::string {
@@ -127,6 +129,12 @@ auto Application::update_scene_save() -> void {
                     static_cast<double>(saved->file_size) / (1024.0 * 1024.0), saved->seconds,
                     saved->warnings.empty() && saved->cook.failures.empty() ? "" : " with warnings; see the console");
 
+            if (exit_after_save) {
+                exit_after_save = false;
+                exit_confirmed = true;
+                glfwSetWindowShouldClose(context.window, GLFW_TRUE);
+            }
+
             if (open_after_save.has_value()) {
                 auto next = std::move(*open_after_save);
                 open_after_save.reset();
@@ -137,6 +145,7 @@ auto Application::update_scene_save() -> void {
             scene_status = std::format("Saving '{}' failed; see the console. Nothing was opened.",
                                        gui::path_to_utf8(path.filename()));
             open_after_save.reset();
+            exit_after_save = false;
         }
     }
 }
@@ -168,6 +177,7 @@ auto Application::on_files_dropped(std::span<std::filesystem::path const> paths)
 auto Application::draw_scene_file_ui() -> void {
     draw_package_ui();
     draw_project_ui();
+    draw_exit_ui();
 
     scene_inspector.draw(editor_icons.get(), scene_path, panels.scene_inspector);
 
@@ -295,4 +305,104 @@ auto Application::draw_scene_file_ui() -> void {
 
         ImGui::EndPopup();
     }
+}
+
+auto Application::unsaved_changes() -> std::vector<std::string> {
+    std::vector<std::string> changes;
+
+    if (source_scene_dirty()) {
+        changes.emplace_back(scene_path.empty() ? "The scene has unsaved changes and no file yet."
+                                                : std::format("'{}' has unsaved changes.",
+                                                              gui::path_to_utf8(scene_path.filename())));
+    }
+
+    if (project_form_dirty()) {
+        changes.emplace_back("The project settings have edits that are not saved.");
+    }
+
+    if (scene_save_job.has_value()) {
+        changes.emplace_back("A scene is still being saved.");
+    }
+
+    if (packaging_active()) {
+        changes.emplace_back("A game package is still being built.");
+    }
+
+    return changes;
+}
+
+auto Application::confirm_exit() -> bool {
+    if (exit_confirmed) {
+        return true;
+    }
+
+    exit_scene_dirty = source_scene_dirty();
+    exit_changes = unsaved_changes();
+
+    if (exit_changes.empty()) {
+        return true;
+    }
+
+    exit_popup_requested = true;
+
+    return false;
+}
+
+auto Application::draw_exit_ui() -> void {
+    if (exit_popup_requested) {
+        ImGui::OpenPopup(exit_popup);
+        exit_popup_requested = false;
+    }
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2{0.5F, 0.5F});
+
+    if (!ImGui::BeginPopupModal(exit_popup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    ImGui::TextUnformatted("Exit with changes that will be lost?");
+
+    for (auto const &change: exit_changes) {
+        ImGui::BulletText("%s", change.c_str());
+    }
+
+    ImGui::Separator();
+
+    auto const scene_unsavable = exit_scene_dirty && scene_path.empty();
+
+    ImGui::BeginDisabled(scene_save_job.has_value() || packaging_active() || scene_unsavable);
+    if (ImGui::Button("Save and exit")) {
+        if (project_form_dirty()) {
+            static_cast<void>(save_project_form());
+        }
+
+        if (exit_scene_dirty) {
+            exit_after_save = true;
+            start_save_scene(scene_path);
+        } else {
+            exit_confirmed = true;
+            glfwSetWindowShouldClose(context.window, GLFW_TRUE);
+        }
+
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+
+    if (scene_unsavable) {
+        ImGui::SetItemTooltip("Save the scene to a file first (File > Save As).");
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Exit without saving")) {
+        exit_confirmed = true;
+        glfwSetWindowShouldClose(context.window, GLFW_TRUE);
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::EndPopup();
 }

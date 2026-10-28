@@ -26,6 +26,52 @@ namespace {
 
 }
 
+auto Application::project_form_dirty() const -> bool {
+    auto const &form = project_form;
+
+    if (!project || form.root != project->root) {
+        return false;
+    }
+
+    auto const &manifest = project->manifest;
+
+    return text_of(form.name) != manifest.name || text_of(form.title) != manifest.title ||
+           text_of(form.version) != manifest.version || text_of(form.game) != manifest.game ||
+           text_of(form.entry) != manifest.entry || text_of(form.scene) != manifest.scene;
+}
+
+auto Application::save_project_form() -> bool {
+    auto &form = project_form;
+
+    if (!project || form.root != project->root) {
+        return false;
+    }
+
+    auto updated = *project;
+
+    updated.manifest.name = text_of(form.name);
+    updated.manifest.title = text_of(form.title);
+    updated.manifest.version = text_of(form.version);
+    updated.manifest.game = text_of(form.game);
+    updated.manifest.entry = text_of(form.entry);
+    updated.manifest.scene = text_of(form.scene);
+
+    auto const saved = updated.save();
+
+    if (!saved) {
+        form.status = saved.error();
+        return false;
+    }
+
+    project = std::move(updated);
+    form.status = "Saved. The game and script apply the next time the project opens.";
+
+    auto const &title = project->manifest.title.empty() ? project->manifest.name : project->manifest.title;
+    glfwSetWindowTitle(context.window, title.c_str());
+
+    return true;
+}
+
 auto Application::draw_project_settings_page() -> void {
     if (!project) {
         ImGui::TextWrapped("No project is open. A project holds your scenes, scripts and assets, and the game that "
@@ -101,24 +147,7 @@ auto Application::draw_project_settings_page() -> void {
     ImGui::Spacing();
 
     if (ImGui::Button("Save")) {
-        auto updated = *project;
-
-        updated.manifest.name = text_of(form.name);
-        updated.manifest.title = text_of(form.title);
-        updated.manifest.version = text_of(form.version);
-        updated.manifest.game = text_of(form.game);
-        updated.manifest.entry = text_of(form.entry);
-        updated.manifest.scene = text_of(form.scene);
-
-        if (auto const saved = updated.save()) {
-            project = std::move(updated);
-            form.status = "Saved. The game and script apply the next time the project opens.";
-
-            auto const &title = project->manifest.title.empty() ? project->manifest.name : project->manifest.title;
-            glfwSetWindowTitle(context.window, title.c_str());
-        } else {
-            form.status = saved.error();
-        }
+        static_cast<void>(save_project_form());
     }
 
     ImGui::SameLine();

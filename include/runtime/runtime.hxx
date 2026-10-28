@@ -185,6 +185,10 @@ struct Runtime {
     // Called before the renderer is torn down: drop everything that holds GPU resources.
     virtual auto on_shutdown() -> void;
 
+    // Asked whenever the window is closed or the game requests exit; false keeps the engine running (the editor asks what
+    // to do with unsaved changes first, then closes again). The player has nothing to lose.
+    [[nodiscard]] virtual auto confirm_exit() -> bool { return true; }
+
     virtual auto on_files_dropped(std::span<std::filesystem::path const> paths) -> void { (void) paths; }
 
     virtual auto on_frame_timings(std::span<frame_graph::PassTiming const> passes) -> void { (void) passes; }

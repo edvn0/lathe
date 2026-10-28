@@ -1495,8 +1495,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     std::uint32_t bench_samples = 0;
     std::uint64_t bench_last_serial = ~std::uint64_t{0};
 
-    while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire) &&
-           glfwWindowShouldClose(context.window) != GLFW_TRUE) {
+    // A close request is handled right after polling, where the runtime may veto it (unsaved changes).
+    while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire)) {
         ZoneScopedNC("MainLoop", tracy::Color::Gray);
 
         auto const frame_number = frames_run++;
@@ -1531,7 +1531,11 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
 
         if (glfwWindowShouldClose(context.window) == GLFW_TRUE) {
-            break;
+            if (runtime.confirm_exit()) {
+                break;
+            }
+
+            glfwSetWindowShouldClose(context.window, GLFW_FALSE);
         }
 
         {
