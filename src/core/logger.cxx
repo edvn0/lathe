@@ -133,6 +133,8 @@ namespace logger {
                                                            });
     }
 
+    auto Logger::flush() -> void { logger_state().logger->flush(); }
+
     auto Logger::drain_console(std::vector<ConsoleMessage> &output) -> void {
         logger_state().terminal_sink->drain(output);
     }

@@ -88,6 +88,7 @@ struct Application : Runtime {
         bool scene_stats = false;
         bool frame_timings = false;
         bool events = false;
+        bool cvars = false;
         bool memory = false;
         bool scene_inspector = false;
     } panels;
@@ -330,6 +331,9 @@ struct Application : Runtime {
 
 protected:
     auto draw_event_metrics() -> void;
+    auto draw_cvar_panel() -> void;
+    std::array<char, 128> cvar_filter{};
+    std::string cvar_status;
     auto handle_event(KeyPressedEvent ev) -> bool;
     auto handle_event(KeyReleasedEvent ev) -> bool;
     auto handle_event(MouseMovedEvent ev) -> bool;

@@ -9,6 +9,7 @@ add_library(
         benchmark.cxx
         benchmark_analysis.cxx
         benchmark_compare.cxx
+        benchmark_cvars.cxx
         benchmark_driver.cxx
         benchmark_environment.cxx
         benchmark_scenarios.cxx

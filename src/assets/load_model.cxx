@@ -654,6 +654,10 @@ namespace {
 
     auto finalize_primitive_cpu(ModelCpuPrimitive raw, ModelLoadProfile *profile)
             -> std::expected<ModelCpuPrimitive, ModelLoadError> {
+        if (thread_pool_shutting_down()) {
+            return std::unexpected(ModelLoadError{.type = ModelLoadErrorType::cancelled});
+        }
+
         auto vertices = std::move(raw.vertices);
         auto indices = std::move(raw.indices);
         auto skin = std::move(raw.skin);
@@ -1051,6 +1055,10 @@ auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_s
                                 std::shared_ptr<ModelLoadProfile> profile)
         -> std::expected<ModelCpuData, ModelLoadError> {
     ZoneScopedNC("LoadModelCpuUnfinalized", tracy::Color::Goldenrod);
+
+    if (thread_pool_shutting_down()) {
+        return std::unexpected(ModelLoadError{.type = ModelLoadErrorType::cancelled});
+    }
 
     if (is_assimp_model(path.absolute())) {
         return load_model_cpu_assimp(path, sampler_storage, std::move(profile));

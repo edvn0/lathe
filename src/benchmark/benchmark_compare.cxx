@@ -12,19 +12,10 @@
 #include <string_view>
 
 #include "benchmark/benchmark.hxx"
-#include "core/command_line.hxx"
+#include "benchmark/benchmark_cvars.hxx"
 #include "core/json.hxx"
 
 namespace {
-
-    [[nodiscard]] auto parse_percent(std::string_view value) -> std::expected<double, std::string> {
-        auto result = 0.0;
-        auto const [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
-        if (error != std::errc{} || end != value.data() + value.size() || !(result >= 0.0)) {
-            return std::unexpected(std::format("'{}' is not a non-negative number", value));
-        }
-        return result;
-    }
 
     constexpr std::array<std::string_view, 4> headline_metrics{
             "displayed_p99_ms",
@@ -282,49 +273,23 @@ namespace {
 
 }
 
-BenchmarkCompareArguments::BenchmarkCompareArguments(CommandLine &cli) {
-    auto group = cli.group("Benchmark comparison");
-    group.option("--benchmark-compare", "BASE.json,HEAD.json",
-               "Compare two benchmark results and print a Markdown report, without starting the renderer",
-               [this](std::string_view value) -> std::expected<void, std::string> {
-                   auto const comma = value.find(',');
-                   if (comma == std::string_view::npos || comma == 0 || comma + 1 == value.size()) {
-                       return std::unexpected(std::string{"needs <base.json>,<head.json>"});
-                   }
-                   options_.base = std::filesystem::path{value.substr(0, comma)};
-                   options_.head = std::filesystem::path{value.substr(comma + 1)};
-                   enabled_ = true;
-                   return {};
-               });
-    group.value("--benchmark-report", "OUT.md", "Also write the comparison report to a file", report_);
-    group.option("--benchmark-threshold", "PERCENT", "Flag a metric whose median moved more than this (10)",
-               [this](std::string_view value) -> std::expected<void, std::string> {
-                   auto const percent = parse_percent(value);
-                   if (!percent) {
-                       return std::unexpected(percent.error());
-                   }
-                   options_.threshold_percent = *percent;
-                   return {};
-               });
-    group.option("--benchmark-fail-threshold", "PERCENT",
-               "Exit 1 when a headline metric regresses more than this (20)",
-               [this](std::string_view value) -> std::expected<void, std::string> {
-                   auto const percent = parse_percent(value);
-                   if (!percent) {
-                       return std::unexpected(percent.error());
-                   }
-                   options_.fail_threshold_percent = *percent;
-                   return {};
-               });
-}
+auto benchmark_compare_options() -> std::optional<BenchmarkCompareOptions> {
+    auto const pair = cvars::benchmark_compare.value();
 
-auto BenchmarkCompareArguments::options() const -> std::optional<BenchmarkCompareOptions> {
-    if (!enabled_) {
+    if (!pair) {
         return std::nullopt;
     }
 
-    auto options = options_;
-    options.report = report_;
+    // Validated when it was set: <base.json>,<head.json>.
+    auto const comma = pair->find(',');
+
+    BenchmarkCompareOptions options;
+    options.base = std::filesystem::path{pair->substr(0, comma)};
+    options.head = std::filesystem::path{pair->substr(comma + 1)};
+    options.report = cvars::benchmark_report.value();
+    options.threshold_percent = cvars::benchmark_threshold.get();
+    options.fail_threshold_percent = cvars::benchmark_fail_threshold.get();
+
     return options;
 }
 

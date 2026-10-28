@@ -13,6 +13,7 @@
 #include <string_view>
 #include <vector>
 
+#include "runtime/engine_cvars.hxx"
 #include "core/logger.hxx"
 #include "gpu/context.hxx"
 #include "gpu/renderdoc.hxx"
@@ -222,9 +223,8 @@ namespace {
         } else {
 #if defined(__linux__)
             // Wayland does not let a client place its own windows, so ImGui windows cannot be dragged out of the main
-            // one there. LATHE_PLATFORM=x11 runs through XWayland instead.
-            auto const *const requested = std::getenv("LATHE_PLATFORM");
-            auto const x11 = renderdoc.is_active() || (requested != nullptr && std::string_view{requested} == "x11");
+            // one there. --platform x11 (LATHE_PLATFORM=x11) runs through XWayland instead.
+            auto const x11 = renderdoc.is_active() || cvars::platform.get() == "x11";
             glfwInitHint(GLFW_PLATFORM, x11 ? GLFW_PLATFORM_X11 : GLFW_ANY_PLATFORM);
 
             // libdecor draws its own title bar on Wayland even for an undecorated window; without it GLFW asks the
@@ -318,15 +318,10 @@ namespace {
             case ScreenType::windowed:
                 std::int32_t width = 1280;
                 std::int32_t height = 720;
-                // LATHE_WINDOW_SIZE=WxH sizes the windowed/headless window, e.g. for full-HD screenshots.
-                if (auto const *size = std::getenv("LATHE_WINDOW_SIZE")) {
-                    std::int32_t parsed_width = 0;
-                    std::int32_t parsed_height = 0;
-                    if (std::sscanf(size, "%dx%d", &parsed_width, &parsed_height) == 2 && parsed_width > 0 &&
-                        parsed_height > 0) {
-                        width = parsed_width;
-                        height = parsed_height;
-                    }
+                // --window-size WxH sizes the windowed/headless window, e.g. for full-HD screenshots.
+                if (auto const size = parse_window_size(cvars::window_size.get())) {
+                    width = size->first;
+                    height = size->second;
                 }
                 context.window = glfwCreateWindow(width, height, "VK", nullptr, nullptr);
                 break;

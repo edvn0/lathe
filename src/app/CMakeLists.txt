@@ -8,6 +8,7 @@ add_library(
     engine_app
     STATIC
         application.cxx
+        cvar_panel.cxx
         frame_graph_details.cxx
         frame_graph_editor.cxx
         game_packager.cxx

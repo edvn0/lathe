@@ -5,6 +5,7 @@
 #include <memory>
 #include <string_view>
 
+#include "core/thread_pool.hxx"
 #include "runtime/engine_main.hxx"
 #include "runtime/runtime.hxx"
 
@@ -27,5 +28,5 @@ namespace {
 auto main(int argc, char **argv) -> int {
     PlayerProfile profile;
 
-    return run_engine(argc, argv, profile);
+    return exit_promptly(run_engine(argc, argv, profile));
 }

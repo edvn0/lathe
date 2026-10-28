@@ -100,7 +100,9 @@ enum class ModelLoadErrorType : std::uint8_t {
     material_creation_failed,
     invalid_material_index,
     invalid_argument,
-    image_decode_failed
+    image_decode_failed,
+    // The process is shutting down; queued work gave up before it began.
+    cancelled,
 };
 
 struct ModelLoadError {
@@ -287,6 +289,8 @@ struct std::formatter<ModelLoadErrorType> : std::formatter<std::string_view> {
                     return "invalid_argument";
                 case ModelLoadErrorType::image_decode_failed:
                     return "image_decode_failed";
+                case ModelLoadErrorType::cancelled:
+                    return "cancelled";
             }
 
             return "unknown_model_load_error";

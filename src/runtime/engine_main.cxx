@@ -39,9 +39,10 @@
 
 #include "rendering/file_browser.hxx"
 #include "runtime/engine_main.hxx"
-#include "runtime/presentation_arguments.hxx"
+#include "runtime/engine_cvars.hxx"
 #include "runtime/runtime.hxx"
 #include "assets/texture_pipeline.hxx"
+#include "core/cvar.hxx"
 #include "core/game_manifest.hxx"
 #include "core/project_file.hxx"
 #include "core/paths.hxx"
@@ -901,6 +902,10 @@ namespace {
     }
 
     auto destroy_runtime(VulkanContext &context, Runtime &runtime) noexcept -> void {
+        // The streamers wait for every request they queued before they let go of the device; have the ones that have
+        // not started give up, or an exit during a big load waits for the whole backlog.
+        request_thread_pool_shutdown();
+
         if (context.device != VK_NULL_HANDLE) {
             auto const result = wait_idle_or_exit(context.device, "destroy_runtime");
 
@@ -922,19 +927,6 @@ namespace {
 
 namespace {
 
-    constexpr std::array<std::pair<std::string_view, ScreenType>, 4> screen_type_choices{{
-            {"windowed", ScreenType::windowed},
-            {"fullscreen", ScreenType::fullscreen},
-            {"borderless", ScreenType::borderless},
-            {"headless", ScreenType::headless},
-    }};
-
-    constexpr std::array<std::pair<std::string_view, AsyncComputeMode>, 3> async_compute_choices{{
-            {"auto", AsyncComputeMode::automatic},
-            {"off", AsyncComputeMode::off},
-            {"same_family", AsyncComputeMode::same_family},
-    }};
-
     [[nodiscard]] auto game_help() -> std::string {
         std::string names;
         for (auto const name: game_names()) {
@@ -944,120 +936,27 @@ namespace {
         return std::format("Which game to run: {} (default {})", names, game_names().front());
     }
 
-    struct EngineArguments {
-        explicit EngineArguments(CommandLine &cli) {
-            auto packaging = cli.group("Packaging");
-            packaging.value("--shader-pack", "FILE.lsp", "Precompiled shaders to use (default: shaders.lsp in the data directory, else a cache under $XDG_CACHE_HOME/lathe that is filled automatically)", shader_pack);
-            packaging.value("--bake-shaders", "FILE.lsp", "Compile every shader under assets/shaders (plus assets/shaders/variants.txt) into a shader pack, then exit; needs no GPU or window", bake_shaders);
-            packaging.value("--record-shaders", "FILE.lsp", "Write every shader this run compiles to a shader pack, then exit", record_shaders);
-            packaging.value("--record-resources", "FILE.lbf", "Write the editor font and icons this run loaded to a resource pack, then exit", record_resources);
-            packaging.value("--record-assets", "FILE.txt", "Write the data files this run opened to a list, then exit", record_assets);
-            packaging.value("--screenshot-frame", "N", "Save a screenshot on frame N (see the screenshots directory)", screenshot_frame);
-            packaging.flag("--screenshot-window", "Screenshots capture the whole editor window, not just the viewport", screenshot_window);
-            packaging.value("--inject-keys", "FRAME:KEY,...", "Press GLFW key codes on given frames, e.g. 120:257 presses Enter on frame 120; prefix ctrl+, shift+ or alt+ for modifiers, e.g. 120:ctrl+82 is Ctrl+R", inject_keys);
-            packaging.value("--exit-after-frames", "N", "Exit after N frames (0: run until closed)", exit_after_frames);
-            packaging.value("--bench-frames", "N", "Average per-pass GPU time over N frames after warm-up, print it, then exit", bench_frames);
-            packaging.flag("--bench-pipeline-stats", "Keep the task/mesh/fragment invocation query on while benchmarking (it is slow: measures the old behaviour)", bench_pipeline_stats);
-            packaging.value("--bench-warmup", "N", "Frames to run before --bench-frames starts sampling (default 120)", bench_warmup);
-            cli.group("Paths").value("--data-dir", "DIR", "Game data directory (default: an installed game's data/, else the working directory)", data_dir);
-            cli.group("Paths").value("--project", "PATH", "A lathe.project or the directory holding one (default: the nearest one at or above the working directory)", project);
-            auto display = cli.group("Display");
-            display.choice<ScreenType>("--screen-type", "Window mode (default fullscreen)", screen_type_choices,
-                                       screen_type);
+    CVar<std::string> game_cvar{{
+            .name = "game",
+            .group = "Game",
+            .help = "",
+            .help_fn = game_help,
+            .hint = "NAME",
+            .validator = [](std::string_view text) -> std::expected<void, std::string> {
+                auto const names = game_names();
 
-            display.value("--async-passes", "LIST", "Passes that run on the async compute queue when it exists: light, occlusion, gtao (comma separated, always on), none, or auto (default: GTAO only while frames are heavy enough to overlap it)", async_passes);
-            display.choice<AsyncComputeMode>("--async-compute",
-                                             "Run compute passes on a separate queue family (auto), on the graphics queue "
-                                             "(off), or on a second queue of the graphics family (same_family)",
-                                             async_compute_choices, async_compute);
+                if (std::ranges::find(names, text) != names.end()) {
+                    return {};
+                }
 
-            auto diagnostics = cli.group("Diagnostics");
-            display.value("--render-scale", "FACTOR", "Draw the scene at the viewport size times FACTOR (0.2 to 3.5, default 1); the editor has a slider for it", render_scale);
-            display.flag("--max-quality", "Turn every rendering feature on and up: 4x MSAA, fog, up to 64 shadowed local lights, heavier AO, all culling and clustered lighting", max_quality);
-            display.value("--max-texture-size", "TEXELS",
-                          "Largest side of any loaded texture; bigger ones lose their top mips (0 = no limit)",
-                          max_texture_size);
-            display.value("--texture-rdo", "LAMBDA",
-                          "Smaller texture files at some quality cost: UASTC RDO strength, about 0.25 to 10 (0 = off). "
-                          "Textures are re-encoded and cached separately",
-                          texture_rdo);
-            diagnostics.flag("--frame-graph-dump",
-                             "Log the compiled frame graph whenever it changes", dump_frame_graph);
-            diagnostics.toggle("--validation",
-                               "Load the Vulkan validation layer (on by default in Debug builds, off in Release)",
-                               validation);
-            diagnostics.value("--frame-graph-dot", "FILE.dot",
-                              "Write the compiled frame graph as Graphviz whenever it changes (render with `dot "
-                              "-Tsvg`).",
-                              frame_graph_dot);
-            diagnostics.flag("--rt-poc",
-                             "Trace a sphere into the scene with VK_KHR_ray_query (docs/ray-tracing.md)",
-                             ray_tracing_poc);
-            diagnostics.value("--rt-poc-view", "NAME",
-                              "Debug view of --rt-poc: beauty, normals, distance, shadow-mask, triangle, barycentrics, "
-                              "depth-test",
-                              ray_tracing_poc_view);
-
-            auto game_group = cli.group("Game");
-            game_group.value("--script", "FILE.lua", "Entry script of a Lua game (--game lua), relative to the data directory", script);
-            game_group.flag("--player", "Run as an installed game would: fullscreen play, no editor", player);
-            game_group.option("--game", "NAME", game_help(),
-                              [this](std::string_view text) -> std::expected<void, std::string> {
-                                  auto const names = game_names();
-
-                                  if (std::ranges::find(names, text) == names.end()) {
-                                      std::string expected;
-                                      for (auto const name: names) {
-                                          expected += expected.empty() ? "" : "|";
-                                          expected += name;
-                                      }
-                                      return std::unexpected(std::format("'{}' (expected {})", text, expected));
-                                  }
-
-                                  game = std::string{text};
-                                  return {};
-                              });
-
-            auto scene = cli.group("Scene");
-            scene.value("--scene", "FILE.lbf", "Open a saved scene in place of the game's", open_scene);
-            scene.value("--save-scene", "FILE.lbf", "Cook the (opened) scene into a self-contained .lbf", save_scene);
-        }
-
-        EngineArguments(EngineArguments const &) = delete;
-        auto operator=(EngineArguments const &) -> EngineArguments & = delete;
-
-        std::optional<ScreenType> screen_type;
-        std::optional<AsyncComputeMode> async_compute;
-        std::optional<bool> validation;
-        std::string async_passes;
-        bool max_quality = false;
-        float render_scale = 1.0F;
-        std::optional<std::uint32_t> max_texture_size;
-        std::optional<float> texture_rdo;
-        bool dump_frame_graph = false;
-        bool ray_tracing_poc = false;
-        std::string ray_tracing_poc_view = "beauty";
-        std::string frame_graph_dot;
-        std::string game;
-        std::string data_dir;
-        std::string project;
-        std::string script;
-        bool player = false;
-        std::string shader_pack;
-        std::string record_shaders;
-        std::string bake_shaders;
-        std::string record_assets;
-        std::string record_resources;
-        std::uint32_t exit_after_frames = 0;
-        std::uint32_t bench_frames = 0;
-        std::uint32_t bench_warmup = 120;
-        bool bench_pipeline_stats = false;
-        std::uint32_t screenshot_frame = 0;
-        bool screenshot_window = false;
-        std::string inject_keys;
-        std::optional<std::filesystem::path> open_scene;
-        std::optional<std::filesystem::path> save_scene;
-    };
+                std::string expected;
+                for (auto const name: names) {
+                    expected += expected.empty() ? "" : "|";
+                    expected += name;
+                }
+                return std::unexpected(std::format("'{}' (expected {})", text, expected));
+            },
+    }};
 
 }
 
@@ -1086,8 +985,13 @@ static auto queue_save_scene_when_loaded(Runtime &runtime, EngineProfile &profil
 
 auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     CommandLine cli{std::string{profile.name()}, std::string{profile.description()}};
-    EngineArguments engine{cli};
-    PresentationArguments presentation{cli};
+
+    // Weakest first: the environment, then the command line.
+    for (auto const &problem: CVarRegistry::global().apply_environment()) {
+        std::println(stderr, "{}: ignoring {}", profile.name(), problem);
+    }
+
+    CVarRegistry::global().attach(cli);
     profile.add_arguments(cli);
 
     auto const parsed = cli.parse(argc, argv);
@@ -1107,9 +1011,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     std::optional<ProjectFile> project;
 
     // A project is looked for only when nothing says where the data is: an installed game never is one.
-    if (engine.data_dir.empty()) {
+    if (cvars::data_dir.get().empty()) {
         std::error_code ignored;
-        auto const found = !engine.project.empty() ? std::optional{std::filesystem::path{engine.project}}
+        auto const found = !cvars::project.get().empty() ? std::optional{std::filesystem::path{cvars::project.get()}}
                                                    : ProjectFile::find_root(std::filesystem::current_path(ignored));
 
         if (found) {
@@ -1118,7 +1022,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
             } else {
                 error("Could not open the project: {}", loaded.error());
 
-                if (!engine.project.empty()) {
+                if (!cvars::project.get().empty()) {
                     return EXIT_FAILURE;
                 }
             }
@@ -1126,7 +1030,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     }
 
     Paths::set_current(Paths::resolve({
-            .data_dir = engine.data_dir.empty() ? std::nullopt : std::optional{std::filesystem::path{engine.data_dir}},
+            .data_dir = cvars::data_dir.get().empty() ? std::nullopt : std::optional{std::filesystem::path{cvars::data_dir.get()}},
             .project_root = project ? std::optional{project->root} : std::nullopt,
     }));
     std::optional<GameManifest> manifest;
@@ -1147,13 +1051,13 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         RecentProjects::user_default().remember(project->root);
     }
 
-    auto const player_mode = manifest.has_value() || engine.player || profile.always_player();
+    auto const player_mode = manifest.has_value() || cvars::player.get() || profile.always_player();
 
-    if (!engine.record_assets.empty()) {
+    if (!cvars::record_assets.get().empty()) {
         Paths::start_access_recording();
     }
 
-    if (!engine.record_resources.empty()) {
+    if (!cvars::record_resources.get().empty()) {
         start_resource_recording();
     } else if (auto const resource_pack_path = Paths::current().engine_root() / "resources.lbf";
                std::filesystem::exists(resource_pack_path)) {
@@ -1165,8 +1069,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
     }
 
-    if (!engine.bake_shaders.empty()) {
-        auto const baked = renderer::bake_shaders(Renderer::compiler(), engine.bake_shaders);
+    if (!cvars::bake_shaders.get().empty()) {
+        auto const baked = renderer::bake_shaders(Renderer::compiler(), cvars::bake_shaders.get());
 
         if (!baked) {
             error("{}", baked.error());
@@ -1174,7 +1078,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
 
         info("Baked {} entry points and {} variants to '{}'", baked->entry_points, baked->variants,
-             engine.bake_shaders);
+             cvars::bake_shaders.get());
         return EXIT_SUCCESS;
     }
 
@@ -1193,11 +1097,11 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     }();
     auto cache_shaders = false;
 
-    if (!engine.record_shaders.empty()) {
+    if (!cvars::record_shaders.get().empty()) {
         renderer::start_shader_recording();
     } else {
-        auto const pack_path = engine.shader_pack.empty() ? default_pack_path
-                                                          : std::filesystem::path{engine.shader_pack};
+        auto const pack_path = cvars::shader_pack.get().empty() ? default_pack_path
+                                                          : std::filesystem::path{cvars::shader_pack.get()};
         auto pack_usable = false;
 
         if (std::filesystem::exists(pack_path)) {
@@ -1218,7 +1122,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         // No usable pack (first run, or the sources changed): record what this run compiles into the default
         // pack so the next run skips compilation. An explicit --shader-pack is never overwritten.
-        if (!pack_usable && engine.shader_pack.empty()) {
+        if (!pack_usable && cvars::shader_pack.get().empty()) {
             renderer::start_shader_recording();
             cache_shaders = true;
         }
@@ -1230,27 +1134,27 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     std::signal(SIGINT, ctrl_c_handler);
 
-    auto const screen_type = engine.screen_type.value_or(ScreenType::fullscreen);
+    auto const screen_type = cvars::screen_type.get();
 
     if (auto const prepared = profile.prepare(); !prepared) {
         error("{}", prepared.error());
         return EXIT_FAILURE;
     }
 
-    set_texture_max_extent(engine.max_texture_size.value_or(0));
-    set_texture_rdo_lambda(engine.texture_rdo.value_or(0.0F));
+    set_texture_max_extent(cvars::max_texture_size.get());
+    set_texture_rdo_lambda(cvars::texture_rdo.get());
 
-    auto const dump_frame_graph = engine.dump_frame_graph;
+    auto const dump_frame_graph = cvars::frame_graph_dump.get();
 
     VulkanContext context{};
-    context.vsync = presentation.vsync.value_or(!profile.deterministic());
-    context.async_compute_mode = engine.async_compute.value_or(AsyncComputeMode::automatic);
-    context.swapchain_image_count = presentation.swapchain_images.value_or(0U);
-    context.hdr = presentation.hdr.value_or(!profile.deterministic());
-    context.hdr_paper_white_nits = presentation.paper_white_nits.value_or(203.0F);
-    context.hdr_peak_nits = std::max(presentation.peak_nits.value_or(1000.0F), context.hdr_paper_white_nits);
+    context.vsync = cvars::vsync.value_or(!profile.deterministic());
+    context.async_compute_mode = cvars::async_compute.get();
+    context.swapchain_image_count = cvars::swapchain_images.value_or(0U);
+    context.hdr = cvars::hdr.value_or(!profile.deterministic());
+    context.hdr_paper_white_nits = cvars::paper_white.get();
+    context.hdr_peak_nits = std::max(cvars::peak_nits.get(), context.hdr_paper_white_nits);
 
-    auto const chosen_present_mode = presentation.present_mode.has_value() ? presentation.present_mode
+    auto const chosen_present_mode = cvars::present_mode.has_value() ? cvars::present_mode.value()
                                      : (profile.deterministic() && !context.vsync)
                                              ? std::optional{PresentModeChoice::immediate}
                                              : std::nullopt;
@@ -1276,7 +1180,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 #else
     constexpr auto validation_by_default = false;
 #endif
-    context.validation = engine.validation.value_or(validation_by_default);
+    context.validation = cvars::validation.value_or(validation_by_default);
     context.sync_validation = true;
 
     context.undecorated_window = profile.custom_title_bar() && screen_type == ScreenType::windowed;
@@ -1290,7 +1194,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     }
 
     if (!context.hdr) {
-        info("HDR output: off ({})", presentation.hdr.has_value() ? "--hdr off" : "deterministic run");
+        info("HDR output: off ({})", cvars::hdr.has_value() ? "--hdr off" : "deterministic run");
     } else if (context.swapchain.hdr_active()) {
         info("HDR output: on (scRGB, paper white {} nits, peak {} nits, metadata {})", context.hdr_paper_white_nits,
              context.hdr_peak_nits, context.hdr_metadata_supported ? "set" : "unsupported");
@@ -1302,11 +1206,11 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     Runtime &runtime = *runtime_owner;
     runtime.player_mode = player_mode;
     runtime.project = project;
-    runtime.screenshot_viewport_only = !engine.screenshot_window;
-    runtime.game_name = !engine.game.empty() ? engine.game
+    runtime.screenshot_viewport_only = !cvars::screenshot_window.get();
+    runtime.game_name = !game_cvar.get().empty() ? game_cvar.get()
                             : launch && !launch->game.empty() ? launch->game
                                                  : std::string{game_names().front()};
-    runtime.script_entry = !engine.script.empty() ? engine.script : launch ? launch->entry : std::string{};
+    runtime.script_entry = !cvars::script.get().empty() ? cvars::script.get() : launch ? launch->entry : std::string{};
     runtime.game_factory = [](std::string_view name) { return create_game(name); };
     runtime.available_games = game_names();
     runtime.game = create_game(runtime.game_name);
@@ -1315,7 +1219,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     runtime.game->attach_host(GameHost{
             .player_mode = player_mode,
             .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
-            .script_entry = !engine.script.empty() ? engine.script : launch ? launch->entry : std::string{},
+            .script_entry = !cvars::script.get().empty() ? cvars::script.get() : launch ? launch->entry : std::string{},
             .effects = &runtime.effect_system,
             .text = runtime.text_renderer.get(),
     });
@@ -1332,8 +1236,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     {
         auto mask = std::uint32_t{0};
-        auto const automatic = engine.async_passes.empty() || engine.async_passes == "auto";
-        auto const names = automatic ? std::string{"gtao"} : engine.async_passes;
+        auto const automatic = cvars::async_passes.get().empty() || cvars::async_passes.get() == "auto";
+        auto const names = automatic ? std::string{"gtao"} : cvars::async_passes.get();
         for (auto const name: std::views::split(names, ',')) {
             auto const token = std::string_view{name.begin(), name.end()};
             if (token == "light") {
@@ -1350,8 +1254,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         runtime.renderer->set_async_gtao_automatic(automatic);
     }
     runtime.renderer->set_frame_graph_dump(dump_frame_graph);
-    runtime.renderer->set_render_scale(engine.render_scale);
-    if (engine.max_quality) {
+    runtime.renderer->set_render_scale(cvars::render_scale.get());
+    if (cvars::max_quality.get()) {
         auto &renderer = *runtime.renderer;
         renderer.set_samples(VK_SAMPLE_COUNT_4_BIT);
         renderer.set_meshlet_culling(true);
@@ -1385,22 +1289,22 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         info("--max-quality: MSAA up to 4x ({}x supported), fog, AO {}x{}, up to 64 shadowed local lights",
              static_cast<std::uint32_t>(renderer.max_samples()), ao.slice_count, ao.step_count);
     }
-    runtime.ray_tracing_poc_enabled = engine.ray_tracing_poc;
+    runtime.ray_tracing_poc_enabled = cvars::rt_poc.get();
     {
         auto const names = RayTracingPoc::view_names;
-        auto const found = std::ranges::find(names, std::string_view{engine.ray_tracing_poc_view});
+        auto const found = std::ranges::find(names, std::string_view{cvars::rt_poc_view.get()});
         if (found == names.end()) {
-            warn("--rt-poc-view '{}' is not a view; using beauty", engine.ray_tracing_poc_view);
+            warn("--rt-poc-view '{}' is not a view; using beauty", cvars::rt_poc_view.get());
         } else {
             runtime.ray_tracing_poc.set_view(static_cast<std::uint32_t>(found - names.begin()));
         }
     }
-    runtime.renderer->set_frame_graph_dot(engine.frame_graph_dot);
+    runtime.renderer->set_frame_graph_dot(cvars::frame_graph_dot.get());
 
     runtime.on_startup();
 
     // A packaged game ships its own cooked scene; it has to be open before play starts, because opening stops play.
-    auto const manifest_scene = manifest && !manifest->scene.empty() && !engine.open_scene
+    auto const manifest_scene = manifest && !manifest->scene.empty() && !cvars::scene.has_value()
                                         ? std::optional{Paths::current().data_root() / manifest->scene}
                                         : std::nullopt;
 
@@ -1417,17 +1321,17 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     }
 
     // A project opens its main scene for editing, without starting play.
-    if (project && !manifest && !engine.open_scene && !project->manifest.scene.empty()) {
+    if (project && !manifest && !cvars::scene.has_value() && !project->manifest.scene.empty()) {
         runtime.renderer->queue_render_thread_event(
                 [&runtime, path = project->root / project->manifest.scene] { runtime.open_scene(path); });
     }
 
-    if (engine.open_scene) {
+    if (auto const open_scene = cvars::scene.value()) {
         runtime.renderer->queue_render_thread_event(
-                [&runtime, path = *engine.open_scene] { runtime.open_scene(path); });
+                [&runtime, path = *open_scene] { runtime.open_scene(path); });
     }
-    if (engine.save_scene) {
-        queue_save_scene_when_loaded(runtime, profile, *engine.save_scene);
+    if (auto const save_scene = cvars::save_scene.value()) {
+        queue_save_scene_when_loaded(runtime, profile, *save_scene);
     }
 
     if (auto const attached = profile.attach(runtime, context); !attached) {
@@ -1456,7 +1360,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     };
     std::vector<InjectedKey> injected_keys;
 
-    for (auto const item: CommandLine::split(engine.inject_keys, ',')) {
+    for (auto const item: CommandLine::split(cvars::inject_keys.get(), ',')) {
         auto const colon = item.find(':');
 
         if (colon == std::string_view::npos) {
@@ -1501,11 +1405,11 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         auto const frame_number = frames_run++;
 
-        if (engine.exit_after_frames != 0 && frame_number >= engine.exit_after_frames) {
+        if (cvars::exit_after_frames.get() != 0 && frame_number >= cvars::exit_after_frames.get()) {
             break;
         }
 
-        if (engine.screenshot_frame != 0 && frame_number == engine.screenshot_frame) {
+        if (cvars::screenshot_frame.get() != 0 && frame_number == cvars::screenshot_frame.get()) {
             runtime.request_screenshot();
         }
 
@@ -1553,7 +1457,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         auto const now = std::chrono::steady_clock::now();
         // A benchmark advances the scene by frame, not by wall-clock time, so every run times the same frames.
-        auto const measured_step = engine.bench_frames != 0 ? 1.0F / 60.0F
+        auto const measured_step = cvars::bench_frames.get() != 0 ? 1.0F / 60.0F
                                                             : std::chrono::duration<float>(now - last_frame_time).count();
         auto const delta_time = profile.fixed_timestep().value_or(measured_step);
         last_frame_time = now;
@@ -1578,7 +1482,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         FrameMark;
 
-        if (engine.bench_pipeline_stats) {
+        if (cvars::bench_pipeline_stats.get()) {
             runtime.renderer->request_pipeline_stats();
         }
 
@@ -1586,7 +1490,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
             timings.valid && runtime.can_start_recording_statistics()) {
             runtime.on_frame_timings(timings.passes);
 
-            if (engine.bench_frames != 0 && frame_number >= engine.bench_warmup &&
+            if (cvars::bench_frames.get() != 0 && frame_number >= cvars::bench_warmup.get() &&
                 timings.frame_serial != bench_last_serial) {
                 bench_last_serial = timings.frame_serial;
                 bench_full_frame_ms += timings.full_frame_ms;
@@ -1597,9 +1501,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
                     entry.total_ms += pass.milliseconds.value_or(0.0F);
                     entry.total_start_ms += pass.start_milliseconds.value_or(0.0F);
                 }
-                if (bench_samples >= engine.bench_frames) {
+                if (bench_samples >= cvars::bench_frames.get()) {
                     std::println("[bench] {} frames after {} warm-up, mean GPU ms per frame:", bench_samples,
-                                 engine.bench_warmup);
+                                 cvars::bench_warmup.get());
                     auto pass_sum = 0.0;
                     for (auto const &[name, entry]: bench_passes) {
                         auto const mean = entry.total_ms / static_cast<double>(bench_samples);
@@ -1690,9 +1594,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     context.running.store(false, std::memory_order_release);
 
-    if (!engine.record_shaders.empty()) {
-        if (auto const saved = renderer::finish_shader_recording(engine.record_shaders)) {
-            info("Recorded {} shaders to '{}'", *saved, engine.record_shaders);
+    if (!cvars::record_shaders.get().empty()) {
+        if (auto const saved = renderer::finish_shader_recording(cvars::record_shaders.get())) {
+            info("Recorded {} shaders to '{}'", *saved, cvars::record_shaders.get());
         } else {
             error("Could not write the shader pack: {}", saved.error());
             exit_code = EXIT_FAILURE;
@@ -1707,20 +1611,20 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
     }
 
-    if (!engine.record_resources.empty()) {
+    if (!cvars::record_resources.get().empty()) {
         auto resources = finish_resource_recording();
         auto const count = resources.size();
 
-        if (auto const written = ResourcePack::write(std::move(resources), engine.record_resources)) {
-            info("Recorded {} resources to '{}'", count, engine.record_resources);
+        if (auto const written = ResourcePack::write(std::move(resources), cvars::record_resources.get())) {
+            info("Recorded {} resources to '{}'", count, cvars::record_resources.get());
         } else {
             error("Could not write the resource pack: {}", describe(written.error()));
             exit_code = EXIT_FAILURE;
         }
     }
 
-    if (!engine.record_assets.empty()) {
-        std::ofstream list{engine.record_assets, std::ios::trunc};
+    if (!cvars::record_assets.get().empty()) {
+        std::ofstream list{cvars::record_assets.get(), std::ios::trunc};
         auto const files = Paths::finish_access_recording();
 
         for (auto const &file: files) {
@@ -1728,9 +1632,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
 
         if (list) {
-            info("Recorded {} data files to '{}'", files.size(), engine.record_assets);
+            info("Recorded {} data files to '{}'", files.size(), cvars::record_assets.get());
         } else {
-            error("Could not write '{}'", engine.record_assets);
+            error("Could not write '{}'", cvars::record_assets.get());
             exit_code = EXIT_FAILURE;
         }
     }

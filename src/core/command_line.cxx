@@ -23,6 +23,7 @@ struct CommandLine::Impl {
     std::vector<Group> groups;
     std::vector<std::string> positionals;
     std::vector<Entry> arguments;
+    std::vector<std::string> notes;
 };
 
 CommandLine::CommandLine(std::string program, std::string description) : impl_(std::make_unique<Impl>()) {
@@ -48,6 +49,16 @@ auto CommandLine::add_flag(std::size_t group, std::string_view name, std::string
     impl_->groups[group].entries.push_back({.left = std::string{name}, .help = std::string{help}});
 }
 
+auto CommandLine::add_flag(std::size_t group, std::string_view name, std::string_view help,
+                           std::function<void()> on_set) -> void {
+    impl_->cli |= lyra::opt([on_set = std::move(on_set)](bool given) {
+        if (given) {
+            on_set();
+        }
+    })[std::string{name}];
+    impl_->groups[group].entries.push_back({.left = std::string{name}, .help = std::string{help}});
+}
+
 auto CommandLine::add_option(std::size_t group, std::string_view name, std::string_view hint, std::string_view help,
                              CommandLineGroup::Setter setter, bool repeatable) -> void {
     auto parser = lyra::opt(
@@ -70,6 +81,10 @@ auto CommandLine::add_option(std::size_t group, std::string_view name, std::stri
 
 auto CommandLineGroup::flag(std::string_view name, std::string_view help, bool &target) -> void {
     owner_->add_flag(index_, name, help, target);
+}
+
+auto CommandLineGroup::flag(std::string_view name, std::string_view help, std::function<void()> on_set) -> void {
+    owner_->add_flag(index_, name, help, std::move(on_set));
 }
 
 auto CommandLineGroup::option(std::string_view name, std::string_view hint, std::string_view help, Setter setter,
@@ -100,6 +115,8 @@ auto CommandLine::positional(std::string_view name, std::string_view help, std::
     impl_->positionals.emplace_back(name);
     impl_->arguments.push_back({.left = std::format("<{}>", name), .help = std::string{help}});
 }
+
+auto CommandLine::note(std::string_view text) -> void { impl_->notes.emplace_back(text); }
 
 auto CommandLine::parse(std::span<char const *const> args) -> std::expected<Outcome, std::string> {
     std::vector<std::string> storage;
@@ -172,6 +189,10 @@ auto CommandLine::help_text() const -> std::string {
 
     text += "\nHelp:\n";
     append_entry(help_left, "Show this message and exit.");
+
+    for (auto const &note: impl_->notes) {
+        text += "\n" + note + "\n";
+    }
     return text;
 }
 
