@@ -15,6 +15,7 @@
 #include "benchmark/benchmark_compare.hxx"
 #include "benchmark/benchmark_driver.hxx"
 #include "core/logger.hxx"
+#include "core/thread_pool.hxx"
 #include "core/random.hxx"
 #include "gpu/context.hxx"
 #include "gpu/swapchain.hxx"
@@ -145,5 +146,5 @@ namespace {
 auto main(int argc, char **argv) -> int {
     EditorProfile profile;
 
-    return run_engine(argc, argv, profile);
+    return exit_promptly(run_engine(argc, argv, profile));
 }

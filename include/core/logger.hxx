@@ -32,6 +32,8 @@ namespace logger {
 
         auto drain_console(std::vector<ConsoleMessage> &output) -> void;
 
+        auto flush() -> void;
+
     private:
         Logger() = default;
     };

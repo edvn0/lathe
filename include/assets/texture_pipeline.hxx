@@ -27,6 +27,8 @@ enum class TexturePipelineErrorType : std::uint8_t {
     encode_failed,
     cache_io_failed,
     transcode_failed,
+    // The process is shutting down; queued work gave up before it began.
+    cancelled,
 };
 
 struct TexturePipelineError {
@@ -104,6 +106,8 @@ struct std::formatter<TexturePipelineErrorType> : std::formatter<std::string_vie
                     return "cache_io_failed";
                 case TexturePipelineErrorType::transcode_failed:
                     return "transcode_failed";
+                case TexturePipelineErrorType::cancelled:
+                    return "cancelled";
             }
 
             return "unknown_texture_pipeline_error";

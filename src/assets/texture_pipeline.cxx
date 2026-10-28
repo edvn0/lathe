@@ -24,6 +24,7 @@
 #include <zstd.h>
 
 #include "core/logger.hxx"
+#include "core/thread_pool.hxx"
 #include "gpu/image.hxx"
 
 namespace {
@@ -680,6 +681,11 @@ namespace {
     auto compress_decoded_image(DecodedImage const &decoded, TextureRole role, std::filesystem::path const &cache_path,
                                 FlyString debug_name,
                                 ModelLoadProfile *profile) -> std::expected<CompressedTexture, TexturePipelineError> {
+        // Decoding is done and encoding is the slow part: give up here rather than start it.
+        if (thread_pool_shutting_down()) {
+            return std::unexpected(make_error(TexturePipelineErrorType::cancelled, "shutting down"));
+        }
+
         auto const width = decoded.width();
         auto const height = decoded.height();
         auto rgba8 = to_rgba8(decoded);
@@ -710,6 +716,10 @@ auto load_compressed_texture(AssetPath const &asset_path, TextureRole role,
                              std::shared_ptr<ModelLoadProfile> const &profile,
                              std::shared_ptr<TexturePreviewSlot> const &preview)
         -> std::expected<CompressedTexture, TexturePipelineError> {
+    if (thread_pool_shutting_down()) {
+        return std::unexpected(make_error(TexturePipelineErrorType::cancelled, "shutting down"));
+    }
+
     auto const &source_path = asset_path.absolute();
     auto *const profile_ptr = profile.get();
 
@@ -773,6 +783,10 @@ auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> enco
                                                  std::shared_ptr<ModelLoadProfile> const &profile,
                                                  std::shared_ptr<TexturePreviewSlot> const &preview)
         -> std::expected<CompressedTexture, TexturePipelineError> {
+    if (thread_pool_shutting_down()) {
+        return std::unexpected(make_error(TexturePipelineErrorType::cancelled, "shutting down"));
+    }
+
     auto *const profile_ptr = profile.get();
 
     if (profile_ptr != nullptr) {

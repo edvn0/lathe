@@ -902,6 +902,10 @@ namespace {
     }
 
     auto destroy_runtime(VulkanContext &context, Runtime &runtime) noexcept -> void {
+        // The streamers wait for every request they queued before they let go of the device; have the ones that have
+        // not started give up, or an exit during a big load waits for the whole backlog.
+        request_thread_pool_shutdown();
+
         if (context.device != VK_NULL_HANDLE) {
             auto const result = wait_idle_or_exit(context.device, "destroy_runtime");
 

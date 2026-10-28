@@ -109,7 +109,12 @@ auto TextureStreamer::request_cooked(ImageStorage &images,
         profile->expected_texture_count.fetch_add(1, std::memory_order_relaxed);
     }
 
-    auto future = thread_pool().submit_task([loader = std::move(loader), profile = std::move(profile)]() {
+    auto future = thread_pool().submit_task([loader = std::move(loader), profile = std::move(profile)]()
+                                                    -> std::expected<CompressedTexture, TexturePipelineError> {
+        if (thread_pool_shutting_down()) {
+            return std::unexpected(TexturePipelineError{.type = TexturePipelineErrorType::cancelled});
+        }
+
         auto texture = loader();
 
         if (profile != nullptr) {
@@ -263,8 +268,12 @@ auto TextureStreamer::flush(ImageStorage &images, VulkanContext &context) -> std
 }
 
 auto TextureStreamer::wait_all() -> void {
-    for (auto &request: pending_) {
-        request.future.wait();
+    // A texture task owns everything it touches, so at shutdown the ones still encoding can be left to finish (or be
+    // abandoned, see exit_promptly) instead of being waited for.
+    if (!thread_pool_shutting_down()) {
+        for (auto &request: pending_) {
+            request.future.wait();
+        }
     }
 
     pending_.clear();
