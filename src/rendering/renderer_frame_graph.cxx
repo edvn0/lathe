@@ -1540,6 +1540,9 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                                     .lut_texture_index = grade_lut != nullptr ? grade_lut->image.index : 0,
                                     .lut_size = grade_lut != nullptr ? grade_lut->size : 0,
                                     .lut_intensity = grade_lut != nullptr ? colour_grade_settings_.intensity : 0.0F,
+                                    .hdr_output = hdr_output_,
+                                    .hdr_peak_relative = peak_nits_ / paper_white_nits_,
+                                    .output_scale = fullscreen ? paper_white_nits_ / 80.0F : 1.0F,
                             },
                             fullscreen ? ui_callback : render_pass::Callback{});
                     if (!composited) {
@@ -1636,7 +1639,8 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                                                    : ScreenshotImage{.image = swapchain_image.image,
                                                                      .format = swapchain_image.format,
                                                                      .extent = swapchain_image.extent,
-                                                                     .managed_by_graph = true};
+                                                                     .managed_by_graph = true,
+                                                                     .white_level = ui_output_scale()};
                         (void) screenshot_->record(context_, context.command_buffer, image, info.frame_index);
                     }};
                 });

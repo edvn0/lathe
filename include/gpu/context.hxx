@@ -66,6 +66,12 @@ struct VulkanContext {
 
     bool vsync = true;
 
+    // Ask for an HDR (scRGB) swapchain; swapchain.hdr_active() says whether the surface gave one.
+    bool hdr = false;
+    bool hdr_metadata_supported = false;
+    float hdr_paper_white_nits = 203.0F;
+    float hdr_peak_nits = 1000.0F;
+
     std::optional<VkPresentModeKHR> present_mode;
     std::uint32_t swapchain_image_count = 0;
 

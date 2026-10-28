@@ -22,4 +22,7 @@ struct PresentationArguments {
     std::optional<bool> vsync;
     std::optional<PresentModeChoice> present_mode;
     std::optional<std::uint32_t> swapchain_images;
+    std::optional<bool> hdr;
+    std::optional<float> paper_white_nits;
+    std::optional<float> peak_nits;
 };

@@ -480,6 +480,9 @@ namespace {
                 .model_capacity = 4096,
                 .pipeline_capacity = 1024,
                 .swapchain_format = context.swapchain.format(),
+                .hdr_output = context.swapchain.hdr_active(),
+                .paper_white_nits = context.hdr_paper_white_nits,
+                .peak_nits = context.hdr_peak_nits,
                 .samples = VK_SAMPLE_COUNT_4_BIT,
         });
 
@@ -1183,6 +1186,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     context.vsync = presentation.vsync.value_or(!profile.deterministic());
     context.async_compute_mode = engine.async_compute.value_or(AsyncComputeMode::automatic);
     context.swapchain_image_count = presentation.swapchain_images.value_or(0U);
+    context.hdr = presentation.hdr.value_or(!profile.deterministic());
+    context.hdr_paper_white_nits = presentation.paper_white_nits.value_or(203.0F);
+    context.hdr_peak_nits = std::max(presentation.peak_nits.value_or(1000.0F), context.hdr_paper_white_nits);
 
     auto const chosen_present_mode = presentation.present_mode.has_value() ? presentation.present_mode
                                      : (profile.deterministic() && !context.vsync)
@@ -1221,6 +1227,15 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         context.destroy();
 
         return EXIT_FAILURE;
+    }
+
+    if (!context.hdr) {
+        info("HDR output: off ({})", presentation.hdr.has_value() ? "--hdr off" : "deterministic run");
+    } else if (context.swapchain.hdr_active()) {
+        info("HDR output: on (scRGB, paper white {} nits, peak {} nits, metadata {})", context.hdr_paper_white_nits,
+             context.hdr_peak_nits, context.hdr_metadata_supported ? "set" : "unsupported");
+    } else {
+        warn("HDR output: requested but unsupported by this surface, using sRGB");
     }
 
     auto const runtime_owner = profile.create_runtime(context);

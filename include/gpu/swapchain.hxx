@@ -28,6 +28,14 @@ struct SwapchainCreateInfo {
     std::optional<VkPresentModeKHR> preferred_present_mode;
 
     std::uint32_t image_count = 0;
+
+    // Ask for linear scRGB (R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR). Falls back to 8-bit sRGB when the surface
+    // does not offer it; hdr_active() says which one was built.
+    bool hdr = false;
+    // VK_EXT_hdr_metadata is enabled on the device.
+    bool hdr_metadata = false;
+    float paper_white_nits = 203.0F;
+    float peak_nits = 1000.0F;
 };
 
 enum class SwapchainFrameResult : std::uint8_t {
@@ -164,6 +172,16 @@ public:
         return surface_format_.format;
     }
 
+    // Decided from the format and colour space the swapchain was built with, not from what was asked for.
+    [[nodiscard]]
+    auto hdr_active() const noexcept -> bool {
+        return surface_format_.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+               surface_format_.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+    }
+
+    // Applies to the current swapchain, and to every one built after it.
+    auto set_hdr_levels(float paper_white_nits, float peak_nits) noexcept -> void;
+
     [[nodiscard]]
     auto image_count() const noexcept -> std::uint32_t {
         return static_cast<std::uint32_t>(images_.size());
@@ -197,6 +215,8 @@ private:
     [[nodiscard]]
     auto choose_surface_format(std::vector<VkSurfaceFormatKHR> const &formats) const noexcept -> VkSurfaceFormatKHR;
 
+    auto apply_hdr_metadata() const noexcept -> void;
+
     [[nodiscard]]
     auto choose_present_mode(std::vector<VkPresentModeKHR> const &present_modes) const noexcept -> VkPresentModeKHR;
 
@@ -218,6 +238,11 @@ private:
     std::optional<VkPresentModeKHR> preferred_present_mode_;
     std::uint32_t requested_image_count_ = 0;
     VkPresentModeKHR present_mode_ = VK_PRESENT_MODE_FIFO_KHR;
+
+    bool hdr_requested_ = false;
+    bool hdr_metadata_ = false;
+    float paper_white_nits_ = 203.0F;
+    float peak_nits_ = 1000.0F;
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkSurfaceFormatKHR surface_format_{};

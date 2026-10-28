@@ -1174,6 +1174,9 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     hdr_format_ = create_info.hdr_format;
     depth_format_ = create_info.depth_format;
     swapchain_format_ = create_info.swapchain_format;
+    hdr_output_ = create_info.hdr_output;
+    paper_white_nits_ = create_info.paper_white_nits;
+    peak_nits_ = create_info.peak_nits;
     samples_ = create_info.samples;
     pending_samples_ = create_info.samples;
     extent_ = create_info.extent;

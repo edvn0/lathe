@@ -37,9 +37,9 @@ Environment variables:
 
   ASSIMP_PREFIX
       Host install prefix of a shared Assimp. Mounted read-only into the container at the same path and
-      added to CMAKE_PREFIX_PATH ahead of the image's own.
+      added to CMAKE_PREFIX_PATH. The image's own Assimp is never used, since the binary runs on the host.
 
-      Default: unset (the image's Assimp, or the source build).
+      Default: unset (Assimp is built from source and linked statically).
 
   PROFILE_BUILD=1
       Adds -fno-omit-frame-pointer.
@@ -482,13 +482,21 @@ impl Config {
             )));
         }
 
+        // The executables run on the host, so the Assimp they use has to exist there. The image's own install
+        // (/usr/local) does not: the binary records it as its RUNPATH, the host loader skips it and picks up a
+        // different libassimp, and startup dies on a missing symbol. So Assimp is either the host prefix or a static
+        // source build, never whatever the image happens to contain. Both settings are passed on every configure,
+        // because a build directory otherwise keeps the Assimp it found first.
+        args.push(OsString::from("-Uassimp_DIR"));
         if let Some(assimp_prefix) = &self.assimp_prefix {
+            args.push(OsString::from("-DLATHE_SYSTEM_ASSIMP=ON"));
             args.push(OsString::from(format!(
                 "-DCMAKE_PREFIX_PATH={}",
                 assimp_prefix.display()
             )));
-            // A build directory remembers the Assimp it found first; without this the prefix is ignored once cached.
-            args.push(OsString::from("-Uassimp_DIR"));
+        } else {
+            args.push(OsString::from("-DLATHE_SYSTEM_ASSIMP=OFF"));
+            args.push(OsString::from("-UCMAKE_PREFIX_PATH"));
         }
 
         if self.profile_build {

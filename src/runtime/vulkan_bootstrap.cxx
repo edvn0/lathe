@@ -382,6 +382,11 @@ namespace {
             }
 
             instance_extensions.assign(required_extensions, required_extensions + extension_count);
+
+            // Without it a surface lists sRGB formats only, so there is no HDR to pick.
+            if (instance_extension_available(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {
+                instance_extensions.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
+            }
         }
 
         auto validation_enabled = context.validation;
@@ -807,6 +812,9 @@ namespace {
                     std::ranges::find(domains, host_time_domain) != domains.end();
         }
 
+        context.hdr_metadata_supported =
+                supports_device_extension(context.physical_device, VK_EXT_HDR_METADATA_EXTENSION_NAME);
+
         info("Calibrated timestamps support: {} (host-calibrated: {})",
              context.calibrated_timestamps_supported ? "yes" : "no",
              context.host_calibrated_timestamps_supported ? "yes" : "no");
@@ -842,6 +850,10 @@ namespace {
 
         if (context.calibrated_timestamps_supported) {
             device_extensions.push_back(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+        }
+
+        if (context.hdr_metadata_supported) {
+            device_extensions.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME);
         }
 
         if (context.ray_query_supported) {
@@ -1102,6 +1114,10 @@ namespace {
                 .vsync = context.vsync,
                 .preferred_present_mode = context.present_mode,
                 .image_count = context.swapchain_image_count,
+                .hdr = context.hdr,
+                .hdr_metadata = context.hdr_metadata_supported,
+                .paper_white_nits = context.hdr_paper_white_nits,
+                .peak_nits = context.hdr_peak_nits,
         });
     }
 

@@ -287,6 +287,13 @@ namespace render_pass {
         std::uint32_t lut_texture_index = 0;
         std::uint32_t lut_size = 0;
         float lut_intensity = 0.0F;
+
+        // HDR output: skip the SDR curve, roll the brightest channel off above 1.0 (paper white) towards
+        // `hdr_peak_relative` (peak / paper white), and multiply by `output_scale` (paper white / 80 when this pass
+        // writes the swapchain itself, 1 when a later pass scales it).
+        bool hdr_output = false;
+        float hdr_peak_relative = 1.0F;
+        float output_scale = 1.0F;
     };
 
     struct Callback {

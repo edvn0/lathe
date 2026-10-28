@@ -44,6 +44,7 @@ namespace gui {
             std::uint32_t sampler_id{0};
             std::uint32_t already_linear{0};
             std::uint32_t sdf_text{0};
+            float output_scale{1.0F};
         };
 
         // Frames a replaced atlas image is kept for, so the frames still in flight can finish sampling it.
@@ -279,7 +280,8 @@ namespace gui {
              DrawTarget{.vertices = vertices,
                         .indices = indices,
                         .ring_slot = context.frame_index,
-                        .preview_index = renderer.preview_texture_index()});
+                        .preview_index = renderer.preview_texture_index(),
+                        .output_scale = renderer.ui_output_scale()});
     }
 
     auto ImGuiRenderer::draw(BoundOverlayShader const &bound, ImDrawData const &data, DrawTarget const &target)
@@ -361,6 +363,7 @@ namespace gui {
                         .sampler_id = sampler.index,
                         .already_linear = already_linear ? 1U : 0U,
                         .sdf_text = (raw_tex_id & font_texture_bit) != 0 ? 1U : 0U,
+                        .output_scale = target.output_scale,
                 });
 
                 bound.set_scissor(VkRect2D{
