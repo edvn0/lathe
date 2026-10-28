@@ -113,6 +113,9 @@ public:
     static auto set_current(Paths paths) -> void;
     [[nodiscard]] static auto current() -> Paths const &;
 
+    // The user-wide state directory (not a project's), for things like the recent projects list.
+    [[nodiscard]] static auto user_state_directory() -> std::filesystem::path;
+
     static auto start_access_recording() -> void;
     [[nodiscard]] static auto finish_access_recording() -> std::vector<std::string>;
 

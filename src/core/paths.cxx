@@ -1,11 +1,14 @@
 #include "core/paths.hxx"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <mutex>
 #include <set>
+#include <memory>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace {
     auto executable_directory() -> std::filesystem::path {
@@ -72,11 +75,11 @@ namespace {
 }
 
 namespace {
-    auto current_storage() -> std::optional<Paths> & {
-        static std::optional<Paths> storage;
-
-        return storage;
-    }
+    // Paths::current() hands out references that other threads (streaming, watchers) keep using while a project is
+    // switched, so a replaced snapshot is retired, never freed. A switch is rare and a Paths is small.
+    std::atomic<Paths const *> current_snapshot{nullptr};
+    std::mutex snapshot_mutex;
+    std::vector<std::unique_ptr<Paths>> retired_snapshots;
 }
 
 namespace paths_detail {
@@ -237,16 +240,32 @@ auto Paths::screenshot(std::string_view relative) const -> std::optional<Screens
     return path ? std::optional{ScreenshotPath{screenshots_, *path}} : std::nullopt;
 }
 
-auto Paths::set_current(Paths paths) -> void { current_storage() = std::move(paths); }
+auto Paths::user_state_directory() -> std::filesystem::path { return home_relative("XDG_STATE_HOME", ".local/state"); }
+
+auto Paths::set_current(Paths paths) -> void {
+    std::scoped_lock const lock{snapshot_mutex};
+
+    auto &snapshot = retired_snapshots.emplace_back(new Paths(std::move(paths)));
+
+    current_snapshot.store(snapshot.get(), std::memory_order_release);
+}
 
 auto Paths::current() -> Paths const & {
-    auto &storage = current_storage();
-
-    if (!storage) {
-        storage = resolve({});
+    if (auto const *snapshot = current_snapshot.load(std::memory_order_acquire)) {
+        return *snapshot;
     }
 
-    return *storage;
+    {
+        std::scoped_lock const lock{snapshot_mutex};
+
+        if (auto const *snapshot = current_snapshot.load(std::memory_order_acquire)) {
+            return *snapshot;
+        }
+    }
+
+    set_current(resolve({}));
+
+    return *current_snapshot.load(std::memory_order_acquire);
 }
 
 auto data_path(std::string_view relative) -> DataPath { return Paths::current().data(relative).value(); }

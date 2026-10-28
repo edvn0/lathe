@@ -14,6 +14,7 @@ add_library(
         main_menu.cxx
         package_ui.cxx
         pass_timeline.cxx
+        project_files.cxx
         scene_files.cxx
         scene_inspector.cxx
         stage_registry.cxx

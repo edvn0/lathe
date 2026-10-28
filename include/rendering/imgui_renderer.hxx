@@ -58,6 +58,8 @@ namespace gui {
 
         auto update_font(FontChoice const &) -> void;
         auto set_app_name(std::string_view) -> void;
+        // Moves the layout file to the current project's state directory (after Paths changed), keeping the layout now shown.
+        auto use_project_layout() -> void;
 
         // The same three steps as every immediate-mode renderer: build the frame, record it into an overlay's
         // command buffer, finish it. `framebuffer` is the size of the target the UI is drawn into.

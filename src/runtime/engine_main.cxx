@@ -1144,6 +1144,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     if (project) {
         info("Project '{}' at {}", project->manifest.name, project->root.string());
+        RecentProjects::user_default().remember(project->root);
     }
 
     auto const player_mode = manifest.has_value() || engine.player || profile.always_player();
@@ -1300,6 +1301,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     auto const runtime_owner = profile.create_runtime(context);
     Runtime &runtime = *runtime_owner;
     runtime.player_mode = player_mode;
+    runtime.project = project;
     runtime.screenshot_viewport_only = !engine.screenshot_window;
     runtime.game_name = !engine.game.empty() ? engine.game
                             : launch && !launch->game.empty() ? launch->game

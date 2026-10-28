@@ -74,3 +74,26 @@ TEST_CASE("a project's content shadows the engine's, which stays reachable") {
     CHECK(paths.data_directories("assets/shaders") == std::vector{project / "assets" / "shaders", engine / "assets" / "shaders"});
     CHECK(paths.relative_to_roots(engine / "assets" / "shared.txt") == std::filesystem::path{"assets/shared.txt"});
 }
+
+TEST_CASE("recent projects are newest first, deduplicated, and skip ones that are gone") {
+    auto const directory = scratch_directory("lathe_recent");
+    auto const first = directory / "first";
+    auto const second = directory / "second";
+
+    for (auto const &root: {first, second}) {
+        std::filesystem::create_directories(root);
+        std::ofstream{root / ProjectFile::file_name} << "name = \"x\"\n";
+    }
+
+    RecentProjects const recent{directory / "state" / "recent.txt"};
+
+    recent.remember(first);
+    recent.remember(second);
+    recent.remember(first);
+
+    CHECK(recent.list() == std::vector{first, second});
+
+    std::filesystem::remove(second / ProjectFile::file_name);
+
+    CHECK(recent.list() == std::vector{first});
+}

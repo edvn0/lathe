@@ -382,6 +382,20 @@ namespace gui {
         }
     }
 
+    auto ImGuiRenderer::use_project_layout() -> void {
+        ImGuiIO &io = ImGui::GetIO();
+        auto const file_name = std::filesystem::path{config_name}.filename().string();
+
+        if (io.IniFilename != nullptr) {
+            ImGui::SaveIniSettingsToDisk(io.IniFilename);
+        }
+
+        config_name = state_path(file_name).absolute().string();
+        config_path = std::make_unique<std::filesystem::path>(config_name);
+        io.IniFilename = config_name.c_str();
+        ImGui::LoadIniSettingsFromDisk(io.IniFilename);
+    }
+
     auto ImGuiRenderer::set_app_name(const std::string_view name) -> void {
         config_name = state_path(std::format("{}.ini", name)).absolute().string();
         config_path = std::make_unique<std::filesystem::path>(config_name);

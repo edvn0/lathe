@@ -236,6 +236,19 @@ struct Application : Runtime {
 
     auto draw_scene_file_ui() -> void;
 
+    // Projects (project_files.cxx): open or create one and switch to it in process (Runtime::switch_project).
+    gui::FileBrowser project_browser;
+    std::optional<std::filesystem::path> pending_project_open;
+    bool project_switch_popup_requested = false;
+    bool new_project_popup_requested = false;
+    std::array<char, 512> new_project_directory{};
+    std::array<char, 128> new_project_name{};
+    std::string new_project_status;
+    auto request_open_project(std::filesystem::path root) -> void;
+    auto request_new_project_dialog() -> void;
+    auto create_project() -> bool;
+    auto draw_project_ui() -> void;
+
     std::string game_choice;
     std::optional<std::string> pending_game_switch;
     bool game_switch_popup_requested = false;

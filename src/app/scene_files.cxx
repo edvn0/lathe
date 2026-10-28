@@ -167,6 +167,7 @@ auto Application::on_files_dropped(std::span<std::filesystem::path const> paths)
 
 auto Application::draw_scene_file_ui() -> void {
     draw_package_ui();
+    draw_project_ui();
 
     scene_inspector.draw(editor_icons.get(), scene_path, panels.scene_inspector);
 
