@@ -43,6 +43,7 @@
 #include "runtime/runtime.hxx"
 #include "assets/texture_pipeline.hxx"
 #include "core/game_manifest.hxx"
+#include "core/project_file.hxx"
 #include "core/paths.hxx"
 #include "core/resources.hxx"
 #include "serialisation/resource_pack.hxx"
@@ -959,6 +960,7 @@ namespace {
             packaging.flag("--bench-pipeline-stats", "Keep the task/mesh/fragment invocation query on while benchmarking (it is slow: measures the old behaviour)", bench_pipeline_stats);
             packaging.value("--bench-warmup", "N", "Frames to run before --bench-frames starts sampling (default 120)", bench_warmup);
             cli.group("Paths").value("--data-dir", "DIR", "Game data directory (default: an installed game's data/, else the working directory)", data_dir);
+            cli.group("Paths").value("--project", "PATH", "A lathe.project or the directory holding one (default: the nearest one at or above the working directory)", project);
             auto display = cli.group("Display");
             display.choice<ScreenType>("--screen-type", "Window mode (default fullscreen)", screen_type_choices,
                                        screen_type);
@@ -1038,6 +1040,7 @@ namespace {
         std::string frame_graph_dot;
         std::string game;
         std::string data_dir;
+        std::string project;
         std::string script;
         bool player = false;
         std::string shader_pack;
@@ -1101,7 +1104,31 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         return *exit_code;
     }
 
-    Paths::set_current(Paths::resolve({.data_dir = engine.data_dir.empty() ? std::nullopt : std::optional{std::filesystem::path{engine.data_dir}}}));
+    std::optional<ProjectFile> project;
+
+    // A project is looked for only when nothing says where the data is: an installed game never is one.
+    if (engine.data_dir.empty()) {
+        std::error_code ignored;
+        auto const found = !engine.project.empty() ? std::optional{std::filesystem::path{engine.project}}
+                                                   : ProjectFile::find_root(std::filesystem::current_path(ignored));
+
+        if (found) {
+            if (auto loaded = ProjectFile::load(*found)) {
+                project = std::move(*loaded);
+            } else {
+                error("Could not open the project: {}", loaded.error());
+
+                if (!engine.project.empty()) {
+                    return EXIT_FAILURE;
+                }
+            }
+        }
+    }
+
+    Paths::set_current(Paths::resolve({
+            .data_dir = engine.data_dir.empty() ? std::nullopt : std::optional{std::filesystem::path{engine.data_dir}},
+            .project_root = project ? std::optional{project->root} : std::nullopt,
+    }));
     std::optional<GameManifest> manifest;
 
     if (auto const manifest_path = Paths::current().data_root() / "game.toml"; std::filesystem::exists(manifest_path)) {
@@ -1112,6 +1139,14 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
     }
 
+    // Which game and script to start: a packaged game's manifest, else the project's. Only the manifest means player mode.
+    auto const launch = manifest ? manifest : project ? std::optional{project->manifest} : std::nullopt;
+
+    if (project) {
+        info("Project '{}' at {}", project->manifest.name, project->root.string());
+        RecentProjects::user_default().remember(project->root);
+    }
+
     auto const player_mode = manifest.has_value() || engine.player || profile.always_player();
 
     if (!engine.record_assets.empty()) {
@@ -1120,7 +1155,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     if (!engine.record_resources.empty()) {
         start_resource_recording();
-    } else if (auto const resource_pack_path = Paths::current().data_root() / "resources.lbf";
+    } else if (auto const resource_pack_path = Paths::current().engine_root() / "resources.lbf";
                std::filesystem::exists(resource_pack_path)) {
         if (auto pack = ResourcePack::open(resource_pack_path)) {
             info("Using {} bundled resources from '{}'", (*pack)->size(), resource_pack_path.string());
@@ -1145,14 +1180,14 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     // A packaged pack beside the data wins; otherwise dev runs cache under XDG_CACHE_HOME, keyed by data directory
     // so separate checkouts don't evict each other.
-    auto const packaged_pack_path = Paths::current().data_root() / "shaders.lsp";
+    auto const packaged_pack_path = Paths::current().engine_root() / "shaders.lsp";
     auto const default_pack_path = std::filesystem::exists(packaged_pack_path) ? packaged_pack_path : [] {
         auto const *xdg = std::getenv("XDG_CACHE_HOME");
         auto const *home = std::getenv("HOME");
         auto root = xdg != nullptr && *xdg != '\0' ? std::filesystem::path{xdg}
                     : home != nullptr && *home != '\0' ? std::filesystem::path{home} / ".cache"
                                                       : std::filesystem::path{"cache"};
-        auto const key = std::hash<std::string>{}(Paths::current().data_root().string());
+        auto const key = std::hash<std::string>{}(Paths::current().engine_root().string());
 
         return root / "lathe" / std::format("shaders-{:016x}.lsp", key);
     }();
@@ -1167,7 +1202,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         if (std::filesystem::exists(pack_path)) {
             if (auto pack = renderer::ShaderPack::load(pack_path)) {
-                if (pack->matches_sources(Paths::current().data_root() / "assets" / "shaders")) {
+                if (pack->matches_sources(Paths::current().engine_root() / "assets" / "shaders")) {
                     info("Using {} precompiled shaders from '{}'", pack->size(), pack_path.string());
                     renderer::install_shader_pack(std::make_shared<renderer::ShaderPack const>(std::move(*pack)));
                     pack_usable = true;
@@ -1266,11 +1301,12 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     auto const runtime_owner = profile.create_runtime(context);
     Runtime &runtime = *runtime_owner;
     runtime.player_mode = player_mode;
+    runtime.project = project;
     runtime.screenshot_viewport_only = !engine.screenshot_window;
     runtime.game_name = !engine.game.empty() ? engine.game
-                            : manifest           ? manifest->game
+                            : launch && !launch->game.empty() ? launch->game
                                                  : std::string{game_names().front()};
-    runtime.script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{};
+    runtime.script_entry = !engine.script.empty() ? engine.script : launch ? launch->entry : std::string{};
     runtime.game_factory = [](std::string_view name) { return create_game(name); };
     runtime.available_games = game_names();
     runtime.game = create_game(runtime.game_name);
@@ -1279,13 +1315,13 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     runtime.game->attach_host(GameHost{
             .player_mode = player_mode,
             .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
-            .script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{},
+            .script_entry = !engine.script.empty() ? engine.script : launch ? launch->entry : std::string{},
             .effects = &runtime.effect_system,
             .text = runtime.text_renderer.get(),
     });
 
-    if (manifest && !manifest->title.empty()) {
-        glfwSetWindowTitle(context.window, manifest->title.c_str());
+    if (launch && !launch->title.empty()) {
+        glfwSetWindowTitle(context.window, launch->title.c_str());
     }
     install_window_callbacks(context, runtime);
 
@@ -1380,6 +1416,12 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         });
     }
 
+    // A project opens its main scene for editing, without starting play.
+    if (project && !manifest && !engine.open_scene && !project->manifest.scene.empty()) {
+        runtime.renderer->queue_render_thread_event(
+                [&runtime, path = project->root / project->manifest.scene] { runtime.open_scene(path); });
+    }
+
     if (engine.open_scene) {
         runtime.renderer->queue_render_thread_event(
                 [&runtime, path = *engine.open_scene] { runtime.open_scene(path); });
@@ -1453,8 +1495,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     std::uint32_t bench_samples = 0;
     std::uint64_t bench_last_serial = ~std::uint64_t{0};
 
-    while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire) &&
-           glfwWindowShouldClose(context.window) != GLFW_TRUE) {
+    // A close request is handled right after polling, where the runtime may veto it (unsaved changes).
+    while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire)) {
         ZoneScopedNC("MainLoop", tracy::Color::Gray);
 
         auto const frame_number = frames_run++;
@@ -1489,7 +1531,11 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
 
         if (glfwWindowShouldClose(context.window) == GLFW_TRUE) {
-            break;
+            if (runtime.confirm_exit()) {
+                break;
+            }
+
+            glfwSetWindowShouldClose(context.window, GLFW_FALSE);
         }
 
         {

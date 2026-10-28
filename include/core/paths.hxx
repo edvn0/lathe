@@ -99,6 +99,11 @@ private:
 
 struct PathsOptions {
     std::optional<std::filesystem::path> data_dir;
+    // The root of a project (the directory holding lathe.project): it becomes the data root and editor state lives under
+    // its .lathe/ directory. The cache is the user-wide one, as for an installed game.
+    std::optional<std::filesystem::path> project_root;
+    // Where the engine's own resources are, for a project; found from the working directory and executable if unset.
+    std::optional<std::filesystem::path> engine_dir;
 };
 
 class Paths {
@@ -108,13 +113,30 @@ public:
     static auto set_current(Paths paths) -> void;
     [[nodiscard]] static auto current() -> Paths const &;
 
+    // The user-wide state directory (not a project's), for things like the recent projects list.
+    [[nodiscard]] static auto user_state_directory() -> std::filesystem::path;
+
     static auto start_access_recording() -> void;
     [[nodiscard]] static auto finish_access_recording() -> std::vector<std::string>;
 
     [[nodiscard]] auto installed() const noexcept -> bool { return installed_; }
+    [[nodiscard]] auto in_project() const noexcept -> bool { return project_; }
+    // The root of the project's content, or of the engine's when there is no project.
     [[nodiscard]] auto data_root() const noexcept -> std::filesystem::path const & { return data_; }
+    // The root of the engine's own resources (shaders, fonts, built-in textures and models). Equal to data_root()
+    // unless a project is open.
+    [[nodiscard]] auto engine_root() const noexcept -> std::filesystem::path const & { return engine_; }
 
+    // Content: the project's file when it has one, else the engine's, else where the project's would be (so new files
+    // are created in the project).
     [[nodiscard]] auto data(std::string_view relative) const -> std::optional<DataPath>;
+    // An engine resource, which a project cannot shadow.
+    [[nodiscard]] auto engine(std::string_view relative) const -> std::optional<DataPath>;
+    // Every existing directory 'relative' names, the project's first, for include paths and watchers.
+    [[nodiscard]] auto data_directories(std::string_view relative) const -> std::vector<std::filesystem::path>;
+    // The path relative to a mount root it lies under (project first), if any.
+    [[nodiscard]] auto relative_to_roots(std::filesystem::path const &absolute) const -> std::optional<std::filesystem::path>;
+
     [[nodiscard]] auto cache(std::string_view relative) const -> std::optional<CachePath>;
     [[nodiscard]] auto state(std::string_view relative) const -> std::optional<StatePath>;
     [[nodiscard]] auto screenshot(std::string_view relative) const -> std::optional<ScreenshotPath>;
@@ -123,10 +145,12 @@ private:
     Paths() = default;
 
     std::filesystem::path data_;
+    std::filesystem::path engine_;
     std::filesystem::path cache_;
     std::filesystem::path state_;
     std::filesystem::path screenshots_;
     bool installed_ = false;
+    bool project_ = false;
 };
 
 namespace paths_detail {
@@ -145,6 +169,7 @@ auto RootedPath<Root>::join(std::string_view child) const -> std::optional<Roote
 }
 
 [[nodiscard]] auto data_path(std::string_view relative) -> DataPath;
+[[nodiscard]] auto engine_path(std::string_view relative) -> DataPath;
 [[nodiscard]] auto cache_path(std::string_view relative) -> CachePath;
 [[nodiscard]] auto state_path(std::string_view relative) -> StatePath;
 [[nodiscard]] auto screenshot_path(std::string_view relative) -> ScreenshotPath;

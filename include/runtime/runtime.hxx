@@ -17,6 +17,7 @@
 #include <imgui.h>
 
 #include "assets/file_change_watcher.hxx"
+#include "core/project_file.hxx"
 #include "game/game.hxx"
 #include "gpu/context.hxx"
 #include "rendering/effect_system.hxx"
@@ -100,6 +101,12 @@ struct Runtime {
     // new game's on_populate and recreates terrain. Runs on the render thread.
     auto switch_game(std::string name) -> void;
 
+    // The open project, if any. switch_project makes another one current without restarting: the engine's own resources
+    // stay put (Paths keeps them as its engine root), the content, cache and editor state move to the new project, and
+    // its game and scene load. Runs on the render thread; it refuses while a scene is loading.
+    std::optional<ProjectFile> project;
+    auto switch_project(std::filesystem::path root) -> void;
+
     // What switch_game can load; set by run_engine from the executable's game_names()/create_game().
     std::function<std::unique_ptr<IGame>(std::string_view)> game_factory;
     std::span<std::string_view const> available_games;
@@ -177,6 +184,10 @@ struct Runtime {
 
     // Called before the renderer is torn down: drop everything that holds GPU resources.
     virtual auto on_shutdown() -> void;
+
+    // Asked whenever the window is closed or the game requests exit; false keeps the engine running (the editor asks what
+    // to do with unsaved changes first, then closes again). The player has nothing to lose.
+    [[nodiscard]] virtual auto confirm_exit() -> bool { return true; }
 
     virtual auto on_files_dropped(std::span<std::filesystem::path const> paths) -> void { (void) paths; }
 

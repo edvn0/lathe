@@ -43,6 +43,17 @@ auto main(int argc, char **argv) -> int {
 Games are looked up through `game_names()` / `create_game()`, which the executable defines (see
 `game/src/main_entry.cxx`).
 
+## Projects
+
+A project is a directory with a `lathe.project` at its root (the keys of `game.toml`: `name`, `title`, `version`,
+`game`, `entry`, `scene`; `game` may be left out). `lathe --project PATH` opens one, as does running from inside one.
+File > New Project, Open Project and Recent Projects switch in process; Edit > Project Settings edits the manifest.
+
+`Paths` has two content roots. The project's is the data root. The engine's (shaders, fonts, built-in textures and
+models) is the engine root, found beside the executable or in a checkout. `data_path` takes the project's file and falls
+back to the engine's; `engine_path` is engine-only; `Paths::data_directories` lists both for include paths and
+watchers. Editor state lives in `<project>/.lathe/state` (gitignore `.lathe/`); the cache is user-wide.
+
 ## Packaging
 
 The editor's *Package* action ships `lathe-player` (found beside the editor executable) rather than the editor itself;

@@ -289,9 +289,7 @@ auto Runtime::register_overlays() -> void {
 }
 
 auto Runtime::on_startup() -> void {
-    std::array const shader_directories{
-            data_path("assets/shaders").absolute(),
-    };
+    auto const shader_directories = Paths::current().data_directories("assets/shaders");
     if (!player_mode && !shader_watcher_.start(renderer->shader_change_queue(), shader_directories)) {
         error("Shader hot-reload watcher failed to start -- shaders will not live-reload this run");
     }
@@ -438,6 +436,61 @@ auto Runtime::switch_game(std::string name) -> void {
         create_terrain();
 
         scene_status = std::format("Loaded game '{}'.", name);
+    });
+}
+
+auto Runtime::switch_project(std::filesystem::path root) -> void {
+    renderer->queue_render_thread_event([this, root = std::move(root)] {
+        if (scene_load_job.has_value()) {
+            scene_status = "A scene is opening; wait for it to finish before opening a project.";
+            return;
+        }
+
+        auto loaded = ProjectFile::load(root);
+
+        if (!loaded) {
+            error("Could not open the project: {}", loaded.error());
+            scene_status = std::format("Could not open the project: {}", loaded.error());
+            return;
+        }
+
+        if (is_playing) {
+            stop();
+        }
+
+        if (auto const idle = renderer->wait_idle(); !idle.has_value()) {
+            warn("{}", describe(idle.error()));
+        }
+
+        // Everything that reads Paths from now on sees the new project; the engine's resources do not move.
+        Paths::set_current(Paths::resolve({.project_root = loaded->root, .engine_dir = Paths::current().engine_root()}));
+        project = std::move(*loaded);
+        RecentProjects::user_default().remember(project->root);
+        info("Project '{}' at {}", project->manifest.name, project->root.string());
+
+        shader_watcher_.stop();
+
+        if (!player_mode && !shader_watcher_.start(renderer->shader_change_queue(),
+                                                    Paths::current().data_directories("assets/shaders"))) {
+            error("Shader hot-reload watcher failed to restart");
+        }
+
+        if (imgui_renderer) {
+            imgui_renderer->use_project_layout();
+        }
+
+        auto const &title = project->manifest.title.empty() ? project->manifest.name : project->manifest.title;
+        glfwSetWindowTitle(context.window, title.c_str());
+
+        script_entry = project->manifest.entry;
+        switch_game(project->manifest.game.empty() ? std::string{available_games.front()} : project->manifest.game);
+
+        // Queued after the game switch, which replaces the source scene the project's scene then loads into.
+        if (!project->manifest.scene.empty()) {
+            renderer->queue_render_thread_event([this, scene = project->root / project->manifest.scene] {
+                open_scene(scene);
+            });
+        }
     });
 }
 

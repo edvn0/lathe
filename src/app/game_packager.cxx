@@ -142,7 +142,7 @@ namespace {
         }
 
         if (!bake_failure.empty()) {
-            auto const existing = options.data_root / "shaders.lsp";
+            auto const existing = (options.engine_root.empty() ? options.data_root : options.engine_root) / "shaders.lsp";
 
             if (!fs::exists(existing, error) || !fs::copy_file(existing, shader_pack, error)) {
                 return abort(std::format("could not bake shaders ({}) and there is no shaders.lsp to reuse",
@@ -163,6 +163,18 @@ namespace {
             return abort(assets.error());
         }
 
+        if (!options.engine_root.empty() && options.engine_root != options.data_root) {
+            auto engine_assets = list_files(options.engine_root / "assets", data / "assets");
+
+            if (!engine_assets) {
+                return abort(engine_assets.error());
+            }
+
+            // Copied in order, so the project's files overwrite the engine's.
+            engine_assets->insert(engine_assets->end(), assets->begin(), assets->end());
+            assets = std::move(engine_assets);
+        }
+
         std::uintmax_t total_bytes = 0;
 
         for (auto const &file: *assets) {
@@ -177,7 +189,7 @@ namespace {
                 return abort("cancelled");
             }
 
-            context.set(std::format("Copying {}", fs::relative(file.from, options.data_root).generic_string()),
+            context.set(std::format("Copying {}", fs::relative(file.to, data).generic_string()),
                         bake_end + (assets_end - bake_end) * static_cast<float>(static_cast<double>(copied_bytes) /
                                                                                 static_cast<double>(std::max<std::uintmax_t>(total_bytes, 1))));
 

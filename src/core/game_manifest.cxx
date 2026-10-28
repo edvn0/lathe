@@ -17,7 +17,7 @@ namespace {
     }
 }
 
-auto GameManifest::load(std::filesystem::path const &path) -> std::expected<GameManifest, std::string> {
+auto GameManifest::load(std::filesystem::path const &path, bool require_game) -> std::expected<GameManifest, std::string> {
     std::ifstream in{path};
 
     if (!in) {
@@ -68,7 +68,7 @@ auto GameManifest::load(std::filesystem::path const &path) -> std::expected<Game
         }
     }
 
-    if (manifest.game.empty()) {
+    if (require_game && manifest.game.empty()) {
         return std::unexpected{std::format("{}: missing 'game'", path.string())};
     }
 

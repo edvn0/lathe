@@ -26,6 +26,9 @@ struct PackageOptions {
 
     // Where assets/ is read from, and the running executable (plus the shared libraries next to it) to ship.
     std::filesystem::path data_root;
+    // The engine's own assets/ when a project is open (empty or equal to data_root otherwise); shipped under the
+    // project's, which wins on a clash.
+    std::filesystem::path engine_root;
     std::filesystem::path executable;
 
     // Bakes data/shaders.lsp; null or invalid falls back to the data root's own shaders.lsp.

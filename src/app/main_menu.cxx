@@ -157,6 +157,31 @@ auto Application::draw_main_menu_bar() -> void {
 
         ImGui::Separator();
 
+        ImGui::BeginDisabled(busy);
+        if (ImGui::MenuItem("New Project...")) {
+            request_new_project_dialog();
+        }
+        if (ImGui::MenuItem("Open Project...")) {
+            project_browser.open("Open Project", {{.label = "Lathe projects (lathe.project)", .extensions = {".project"}}});
+        }
+        if (ImGui::BeginMenu("Recent Projects")) {
+            auto const recent = RecentProjects::user_default().list();
+
+            for (auto const &root: recent) {
+                if (ImGui::MenuItem(gui::path_to_utf8(root).c_str())) {
+                    request_open_project(root);
+                }
+            }
+
+            if (recent.empty()) {
+                ImGui::TextDisabled("No recent projects");
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Separator();
+
         ImGui::BeginDisabled(busy || model_browser.is_open());
         if (ImGui::MenuItem("Import Model...")) {
             request_import_model();

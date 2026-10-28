@@ -77,7 +77,7 @@ namespace renderer {
             return std::unexpected{"Slang is not available, so shaders cannot be baked"};
         }
 
-        auto const root = Paths::current().data_root();
+        auto const root = Paths::current().engine_root();
         auto const shader_directory = root / "assets" / "shaders";
 
         std::error_code error;
@@ -119,7 +119,7 @@ namespace renderer {
 
             discoveries.push_back(thread_pool().submit_task(
                     [&compiler, &shader_directory, logical = std::move(logical), relative = std::move(relative)]() mutable {
-                        auto path = Paths::current().data(logical);
+                        auto path = Paths::current().engine(logical);
 
                         if (!path) {
                             return FileEntryPoints{
@@ -155,7 +155,7 @@ namespace renderer {
                 stage_of.emplace(std::format("{}|{}", file.relative, entry.name), entry.stage);
 
                 requests.push_back(ShaderCompileRequest{
-                        .source_path = *Paths::current().data(file.logical),
+                        .source_path = *Paths::current().engine(file.logical),
                         .entry_point = entry.name,
                         .stage = entry.stage,
                         .include_directories = {shader_directory},

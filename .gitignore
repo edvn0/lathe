@@ -21,3 +21,6 @@ frame_graph_layout.txt
 
 # Large scenes cooked from external assets (see assets/scripts/sponza)
 /assets/scenes/sponza*.lbf
+
+# Per-project cache and editor state
+.lathe/

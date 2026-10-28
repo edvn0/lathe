@@ -265,7 +265,7 @@ namespace renderer {
             return std::unexpected{"shader recording was not started"};
         }
 
-        if (auto const hash = hash_shader_sources(Paths::current().data_root() / "assets" / "shaders")) {
+        if (auto const hash = hash_shader_sources(Paths::current().engine_root() / "assets" / "shaders")) {
             state.pack->set_source_hash(*hash);
         }
 

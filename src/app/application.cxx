@@ -998,7 +998,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::BulletText("%s%s", entry.name.c_str(), entry.handle.valid() ? "" : " (invalid)");
         };
 
-        auto draw_file_backed_section = [&]<typename HandleT>(char const *label, std::filesystem::path const &root,
+        auto draw_file_backed_section = [&]<typename HandleT>(char const *label, std::vector<std::filesystem::path> const &roots,
                                                               std::span<std::string_view const> extensions,
                                                               NamedAssetTable<HandleT> &table, auto &&load,
                                                               auto &&draw_entry) {
@@ -1010,25 +1010,28 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 draw_entry(entry);
             }
 
-            for (auto const &path: scan_directory(root, extensions)) {
-                auto const filename = path.filename().string();
-                if (table.find(filename).valid()) {
-                    continue;
-                }
+            // The project's directory first, then the engine's, so a project sees its own content and the built-ins.
+            for (auto const &root: roots) {
+                for (auto const &path: scan_directory(root, extensions)) {
+                    auto const filename = path.filename().string();
+                    if (table.find(filename).valid()) {
+                        continue;
+                    }
 
-                ImGui::PushID(path.string().c_str());
-                if (ImGui::Button("Load")) {
-                    load(path, filename);
+                    ImGui::PushID(path.string().c_str());
+                    if (ImGui::Button("Load")) {
+                        load(path, filename);
+                    }
+                    ImGui::PopID();
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s (not loaded)", path.string().c_str());
                 }
-                ImGui::PopID();
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s (not loaded)", path.string().c_str());
             }
         };
 
         static constexpr auto const &model_extensions = model_file_extensions;
         draw_file_backed_section(
-                "Models", data_path("assets/models").absolute(), model_extensions, assets.models(),
+                "Models", Paths::current().data_directories("assets/models"), model_extensions, assets.models(),
                 [&](std::filesystem::path const &path, std::string const &name) {
                     static_cast<void>(
                             renderer->model_streamer().request(*renderer, AssetPath::from_user(path).value_or(AssetPath::missing()),
@@ -1052,7 +1055,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         static constexpr std::array<std::string_view, 3> texture_extensions{".png", ".jpg", ".jpeg"};
         draw_file_backed_section(
-                "Textures", data_path("assets/textures").absolute(), texture_extensions, assets.textures(),
+                "Textures", Paths::current().data_directories("assets/textures"), texture_extensions, assets.textures(),
                 [&](std::filesystem::path const &path, std::string const &name) {
                     static_cast<void>(renderer->request_texture(AssetPath::from_user(path).value_or(AssetPath::missing()), TextureRole::colour,
                                                                 renderer->image_storage().white(), name));
@@ -2701,7 +2704,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2{0.5F, 0.5F});
 
         if (ImGui::Begin("Project Settings", &panels.project_settings, ImGuiWindowFlags_NoDocking)) {
-            constexpr std::array<char const *, 3> pages{"Rendering", "Lighting", "Environment"};
+            constexpr std::array<char const *, 4> pages{"Project", "Rendering", "Lighting", "Environment"};
 
             if (ImGui::BeginChild("##project_settings_nav", ImVec2{170.0F, 0.0F}, ImGuiChildFlags_Borders)) {
                 for (auto const [index, name]: std::views::enumerate(pages)) {
@@ -2717,9 +2720,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             if (ImGui::BeginChild("##project_settings_page", ImVec2{0.0F, 0.0F})) {
                 switch (project_settings_page) {
                     case 0:
-                        draw_rendering_settings();
+                        draw_project_settings_page();
                         break;
                     case 1:
+                        draw_rendering_settings();
+                        break;
+                    case 2:
                         draw_lighting_settings();
                         break;
                     default:

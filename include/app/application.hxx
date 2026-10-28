@@ -234,7 +234,47 @@ struct Application : Runtime {
 
     auto on_files_dropped(std::span<std::filesystem::path const> paths) -> void override;
 
+    // Leaving with changes that would be lost (confirm_exit): the scene, edited project settings, a save or package that
+    // has not finished. The popup offers to save what can be saved, exit anyway, or stay.
+    bool exit_confirmed = false;
+    bool exit_popup_requested = false;
+    bool exit_after_save = false;
+    bool exit_scene_dirty = false;
+    std::vector<std::string> exit_changes;
+    [[nodiscard]] auto unsaved_changes() -> std::vector<std::string>;
+    [[nodiscard]] auto confirm_exit() -> bool override;
+    auto draw_exit_ui() -> void;
+    [[nodiscard]] auto project_form_dirty() const -> bool;
+    auto save_project_form() -> bool;
+
     auto draw_scene_file_ui() -> void;
+
+    // Projects (project_files.cxx): open or create one and switch to it in process (Runtime::switch_project).
+    gui::FileBrowser project_browser;
+    std::optional<std::filesystem::path> pending_project_open;
+    bool project_switch_popup_requested = false;
+    bool new_project_popup_requested = false;
+    std::array<char, 512> new_project_directory{};
+    std::array<char, 128> new_project_name{};
+
+    // The Project page of the settings window: the open project's manifest being edited, reloaded when another opens.
+    struct ProjectForm {
+        std::filesystem::path root;
+        std::array<char, 128> name{};
+        std::array<char, 128> title{};
+        std::array<char, 32> version{};
+        std::array<char, 128> game{};
+        std::array<char, 256> entry{};
+        std::array<char, 256> scene{};
+        std::string status;
+    } project_form;
+    std::filesystem::path package_form_project;
+    auto draw_project_settings_page() -> void;
+    std::string new_project_status;
+    auto request_open_project(std::filesystem::path root) -> void;
+    auto request_new_project_dialog() -> void;
+    auto create_project() -> bool;
+    auto draw_project_ui() -> void;
 
     std::string game_choice;
     std::optional<std::string> pending_game_switch;
