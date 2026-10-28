@@ -99,8 +99,8 @@ private:
 
 struct PathsOptions {
     std::optional<std::filesystem::path> data_dir;
-    // The root of a project (the directory holding lathe.project): it becomes the data root, and the cache and editor
-    // state live under its .lathe/ directory.
+    // The root of a project (the directory holding lathe.project): it becomes the data root and editor state lives under
+    // its .lathe/ directory. The cache is the user-wide one, as for an installed game.
     std::optional<std::filesystem::path> project_root;
     // Where the engine's own resources are, for a project; found from the working directory and executable if unset.
     std::optional<std::filesystem::path> engine_dir;

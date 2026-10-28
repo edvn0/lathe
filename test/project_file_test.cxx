@@ -43,14 +43,18 @@ TEST_CASE("find_root walks up to the nearest lathe.project") {
     CHECK_FALSE(ProjectFile::find_root(std::filesystem::temp_directory_path() / "lathe_no_such_project").has_value());
 }
 
-TEST_CASE("a project roots the data at the project and keeps cache and state under .lathe") {
+TEST_CASE("a project roots the data at the project and keeps state under .lathe and the cache shared") {
     auto const root = scratch_directory("lathe_project_paths");
+    auto const cache = scratch_directory("lathe_project_cache");
+
+    setenv("XDG_CACHE_HOME", cache.c_str(), 1);
+
     auto const paths = Paths::resolve({.project_root = root});
 
     CHECK(paths.in_project());
     CHECK_FALSE(paths.installed());
     CHECK(paths.data_root() == root);
-    CHECK(paths.cache("a")->absolute() == root / ".lathe" / "cache" / "a");
+    CHECK(paths.cache("a")->absolute() == cache / "lathe" / "a");
     CHECK(paths.state("imgui.ini")->absolute() == root / ".lathe" / "state" / "imgui.ini");
 }
 

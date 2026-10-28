@@ -243,6 +243,20 @@ struct Application : Runtime {
     bool new_project_popup_requested = false;
     std::array<char, 512> new_project_directory{};
     std::array<char, 128> new_project_name{};
+
+    // The Project page of the settings window: the open project's manifest being edited, reloaded when another opens.
+    struct ProjectForm {
+        std::filesystem::path root;
+        std::array<char, 128> name{};
+        std::array<char, 128> title{};
+        std::array<char, 32> version{};
+        std::array<char, 128> game{};
+        std::array<char, 256> entry{};
+        std::array<char, 256> scene{};
+        std::string status;
+    } project_form;
+    std::filesystem::path package_form_project;
+    auto draw_project_settings_page() -> void;
     std::string new_project_status;
     auto request_open_project(std::filesystem::path root) -> void;
     auto request_new_project_dialog() -> void;

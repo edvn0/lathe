@@ -121,12 +121,12 @@ auto Paths::resolve(PathsOptions const &options) -> Paths {
         paths.data_ = root;
         paths.engine_ = options.engine_dir ? std::filesystem::absolute(*options.engine_dir, error).lexically_normal()
                                            : find_engine_root();
-        paths.cache_ = root / ".lathe" / "cache";
+        // Downloads, cooked textures and shader binaries are the same for every project, so they are shared.
+        paths.cache_ = home_relative("XDG_CACHE_HOME", ".cache");
         paths.state_ = root / ".lathe" / "state";
         paths.screenshots_ = paths.state_ / "screenshots";
         paths.project_ = true;
 
-        std::filesystem::create_directories(paths.cache_, error);
         std::filesystem::create_directories(paths.state_, error);
 
         return paths;

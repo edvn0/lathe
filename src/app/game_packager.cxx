@@ -142,7 +142,7 @@ namespace {
         }
 
         if (!bake_failure.empty()) {
-            auto const existing = options.data_root / "shaders.lsp";
+            auto const existing = (options.engine_root.empty() ? options.data_root : options.engine_root) / "shaders.lsp";
 
             if (!fs::exists(existing, error) || !fs::copy_file(existing, shader_pack, error)) {
                 return abort(std::format("could not bake shaders ({}) and there is no shaders.lsp to reuse",

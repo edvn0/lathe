@@ -174,6 +174,9 @@ namespace gui {
 
         auto const &data_root = Paths::current().data_root();
         place("Project", data_root);
+        if (auto const &engine_root = Paths::current().engine_root(); engine_root != data_root) {
+            place("Engine", engine_root);
+        }
         place("Models", data_path("assets/models").absolute());
 
         char const *home = std::getenv("HOME");

@@ -130,6 +130,39 @@ TEST_SUITE("unit") {
         CHECK(slurp(root / "data" / "scenes" / "main.lbf") == "scene2");
     }
 
+    TEST_CASE("GamePackageJob: a project's assets are shipped over the engine's") {
+        TempDir dir;
+        write(dir.path / "engine" / "assets" / "shaders" / "a.slang", "engine shader");
+        write(dir.path / "engine" / "assets" / "shared.txt", "engine");
+        write(dir.path / "engine" / "shaders.lsp", "pack");
+        write(dir.path / "project" / "assets" / "shared.txt", "project");
+        write(dir.path / "project" / "assets" / "mine.txt", "mine");
+        write(dir.path / "bin" / "lathe", "exe");
+        write(dir.path / "staging.lbf", "scene");
+
+        PackageOptions options;
+        options.manifest = GameManifest{.name = "demo", .game = "empty", .version = "1", .scene = "scenes/main.lbf"};
+        options.output_dir = dir.path / "out";
+        options.cooked_scene = dir.path / "staging.lbf";
+        options.data_root = dir.path / "project";
+        options.engine_root = dir.path / "engine";
+        options.executable = dir.path / "bin" / "lathe";
+
+        fs::create_directories(options.output_dir);
+
+        auto job = GamePackageJob::start(options);
+        wait_for(job);
+        auto const result = job.take();
+
+        REQUIRE_MESSAGE(result.has_value(), result.error());
+
+        auto const data = dir.path / "out" / "demo" / "data";
+        CHECK(slurp(data / "assets" / "shaders" / "a.slang") == "engine shader");
+        CHECK(slurp(data / "assets" / "shared.txt") == "project");
+        CHECK(slurp(data / "assets" / "mine.txt") == "mine");
+        CHECK(slurp(data / "shaders.lsp") == "pack");
+    }
+
     TEST_CASE("GamePackageJob: refuses to replace a directory that is not a package") {
         TempDir dir;
         write(dir.path / "data" / "shaders.lsp", "pack");

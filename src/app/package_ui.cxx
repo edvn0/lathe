@@ -37,11 +37,25 @@ namespace {
 }
 
 auto Application::request_package_dialog() -> void {
-    if (package_form.name[0] == '\0') {
-        fill(package_form.name, game_name.empty() ? "game" : game_name);
-        fill(package_form.title, game_name.empty() ? "Lathe Game" : game_name);
-        fill(package_form.version, "0.1.0");
-        fill(package_form.output, "packages");
+    // Filled once, then again whenever another project is open, so the form never carries the last project's name.
+    auto const project_root = project ? project->root : std::filesystem::path{};
+
+    if (package_form.name[0] == '\0' || package_form_project != project_root) {
+        package_form_project = project_root;
+
+        if (project) {
+            auto const &manifest = project->manifest;
+
+            fill(package_form.name, manifest.name.empty() ? "game" : manifest.name);
+            fill(package_form.title, manifest.title.empty() ? manifest.name : manifest.title);
+            fill(package_form.version, manifest.version.empty() ? "0.1.0" : manifest.version);
+            fill(package_form.output, gui::path_to_utf8(project->root / "packages"));
+        } else {
+            fill(package_form.name, game_name.empty() ? "game" : game_name);
+            fill(package_form.title, game_name.empty() ? "Lathe Game" : game_name);
+            fill(package_form.version, "0.1.0");
+            fill(package_form.output, "packages");
+        }
     }
 
     package_popup_requested = true;
