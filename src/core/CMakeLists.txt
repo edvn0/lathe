@@ -14,6 +14,7 @@ add_library(
         logger.cxx
         memory_tracker.cxx
         paths.cxx
+        project_file.cxx
         random.cxx
         resources.cxx
         sha256.cxx

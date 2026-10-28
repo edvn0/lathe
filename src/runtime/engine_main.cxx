@@ -43,6 +43,7 @@
 #include "runtime/runtime.hxx"
 #include "assets/texture_pipeline.hxx"
 #include "core/game_manifest.hxx"
+#include "core/project_file.hxx"
 #include "core/paths.hxx"
 #include "core/resources.hxx"
 #include "serialisation/resource_pack.hxx"
@@ -959,6 +960,7 @@ namespace {
             packaging.flag("--bench-pipeline-stats", "Keep the task/mesh/fragment invocation query on while benchmarking (it is slow: measures the old behaviour)", bench_pipeline_stats);
             packaging.value("--bench-warmup", "N", "Frames to run before --bench-frames starts sampling (default 120)", bench_warmup);
             cli.group("Paths").value("--data-dir", "DIR", "Game data directory (default: an installed game's data/, else the working directory)", data_dir);
+            cli.group("Paths").value("--project", "PATH", "A lathe.project or the directory holding one (default: the nearest one at or above the working directory)", project);
             auto display = cli.group("Display");
             display.choice<ScreenType>("--screen-type", "Window mode (default fullscreen)", screen_type_choices,
                                        screen_type);
@@ -1038,6 +1040,7 @@ namespace {
         std::string frame_graph_dot;
         std::string game;
         std::string data_dir;
+        std::string project;
         std::string script;
         bool player = false;
         std::string shader_pack;
@@ -1101,7 +1104,31 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         return *exit_code;
     }
 
-    Paths::set_current(Paths::resolve({.data_dir = engine.data_dir.empty() ? std::nullopt : std::optional{std::filesystem::path{engine.data_dir}}}));
+    std::optional<ProjectFile> project;
+
+    // A project is looked for only when nothing says where the data is: an installed game never is one.
+    if (engine.data_dir.empty()) {
+        std::error_code ignored;
+        auto const found = !engine.project.empty() ? std::optional{std::filesystem::path{engine.project}}
+                                                   : ProjectFile::find_root(std::filesystem::current_path(ignored));
+
+        if (found) {
+            if (auto loaded = ProjectFile::load(*found)) {
+                project = std::move(*loaded);
+            } else {
+                error("Could not open the project: {}", loaded.error());
+
+                if (!engine.project.empty()) {
+                    return EXIT_FAILURE;
+                }
+            }
+        }
+    }
+
+    Paths::set_current(Paths::resolve({
+            .data_dir = engine.data_dir.empty() ? std::nullopt : std::optional{std::filesystem::path{engine.data_dir}},
+            .project_root = project ? std::optional{project->root} : std::nullopt,
+    }));
     std::optional<GameManifest> manifest;
 
     if (auto const manifest_path = Paths::current().data_root() / "game.toml"; std::filesystem::exists(manifest_path)) {
@@ -1110,6 +1137,13 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         } else {
             error("Ignoring game manifest: {}", loaded.error());
         }
+    }
+
+    // Which game and script to start: a packaged game's manifest, else the project's. Only the manifest means player mode.
+    auto const launch = manifest ? manifest : project ? std::optional{project->manifest} : std::nullopt;
+
+    if (project) {
+        info("Project '{}' at {}", project->manifest.name, project->root.string());
     }
 
     auto const player_mode = manifest.has_value() || engine.player || profile.always_player();
@@ -1268,9 +1302,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     runtime.player_mode = player_mode;
     runtime.screenshot_viewport_only = !engine.screenshot_window;
     runtime.game_name = !engine.game.empty() ? engine.game
-                            : manifest           ? manifest->game
+                            : launch && !launch->game.empty() ? launch->game
                                                  : std::string{game_names().front()};
-    runtime.script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{};
+    runtime.script_entry = !engine.script.empty() ? engine.script : launch ? launch->entry : std::string{};
     runtime.game_factory = [](std::string_view name) { return create_game(name); };
     runtime.available_games = game_names();
     runtime.game = create_game(runtime.game_name);
@@ -1279,13 +1313,13 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     runtime.game->attach_host(GameHost{
             .player_mode = player_mode,
             .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
-            .script_entry = !engine.script.empty() ? engine.script : manifest ? manifest->entry : std::string{},
+            .script_entry = !engine.script.empty() ? engine.script : launch ? launch->entry : std::string{},
             .effects = &runtime.effect_system,
             .text = runtime.text_renderer.get(),
     });
 
-    if (manifest && !manifest->title.empty()) {
-        glfwSetWindowTitle(context.window, manifest->title.c_str());
+    if (launch && !launch->title.empty()) {
+        glfwSetWindowTitle(context.window, launch->title.c_str());
     }
     install_window_callbacks(context, runtime);
 
@@ -1378,6 +1412,12 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
             runtime.play_fullscreen = true;
             runtime.play();
         });
+    }
+
+    // A project opens its main scene for editing, without starting play.
+    if (project && !manifest && !engine.open_scene && !project->manifest.scene.empty()) {
+        runtime.renderer->queue_render_thread_event(
+                [&runtime, path = project->root / project->manifest.scene] { runtime.open_scene(path); });
     }
 
     if (engine.open_scene) {

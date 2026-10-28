@@ -99,6 +99,9 @@ private:
 
 struct PathsOptions {
     std::optional<std::filesystem::path> data_dir;
+    // The root of a project (the directory holding lathe.project): it becomes the data root, and the cache and editor
+    // state live under its .lathe/ directory.
+    std::optional<std::filesystem::path> project_root;
 };
 
 class Paths {
@@ -112,6 +115,7 @@ public:
     [[nodiscard]] static auto finish_access_recording() -> std::vector<std::string>;
 
     [[nodiscard]] auto installed() const noexcept -> bool { return installed_; }
+    [[nodiscard]] auto in_project() const noexcept -> bool { return project_; }
     [[nodiscard]] auto data_root() const noexcept -> std::filesystem::path const & { return data_; }
 
     [[nodiscard]] auto data(std::string_view relative) const -> std::optional<DataPath>;
@@ -127,6 +131,7 @@ private:
     std::filesystem::path state_;
     std::filesystem::path screenshots_;
     bool installed_ = false;
+    bool project_ = false;
 };
 
 namespace paths_detail {

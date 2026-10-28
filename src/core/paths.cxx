@@ -85,6 +85,21 @@ auto Paths::resolve(PathsOptions const &options) -> Paths {
     auto paths = Paths{};
     std::error_code error;
 
+    if (options.project_root && !options.data_dir) {
+        auto const root = std::filesystem::absolute(*options.project_root, error).lexically_normal();
+
+        paths.data_ = root;
+        paths.cache_ = root / ".lathe" / "cache";
+        paths.state_ = root / ".lathe" / "state";
+        paths.screenshots_ = paths.state_ / "screenshots";
+        paths.project_ = true;
+
+        std::filesystem::create_directories(paths.cache_, error);
+        std::filesystem::create_directories(paths.state_, error);
+
+        return paths;
+    }
+
     if (options.data_dir) {
         paths.data_ = std::filesystem::absolute(*options.data_dir, error).lexically_normal();
         paths.installed_ = true;
