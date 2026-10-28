@@ -57,6 +57,16 @@ private:
 [[nodiscard]]
 auto default_texture_cache_directory() -> std::filesystem::path;
 
+// Process-wide encoding knobs, set once at startup before any texture loads.
+//
+// RDO lambda: UASTC rate-distortion optimisation. 0 (the default) is off; larger values give smaller files and lower
+// quality (about 0.25 to 10; 1 is a mild setting). It changes what is written, so entries are cached separately.
+auto set_texture_rdo_lambda(float lambda) noexcept -> void;
+
+// Largest side of a loaded texture, in texels: the top mips of anything larger are dropped as it loads (the cache keeps
+// the full chain). 0 is no limit.
+auto set_texture_max_extent(std::uint32_t extent) noexcept -> void;
+
 [[nodiscard]]
 auto load_compressed_texture(AssetPath const &source_path, TextureRole role,
                              std::filesystem::path const &cache_directory = default_texture_cache_directory(),

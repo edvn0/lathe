@@ -41,6 +41,7 @@
 #include "runtime/engine_main.hxx"
 #include "runtime/presentation_arguments.hxx"
 #include "runtime/runtime.hxx"
+#include "assets/texture_pipeline.hxx"
 #include "core/game_manifest.hxx"
 #include "core/paths.hxx"
 #include "core/resources.hxx"
@@ -971,6 +972,13 @@ namespace {
             auto diagnostics = cli.group("Diagnostics");
             display.value("--render-scale", "FACTOR", "Draw the scene at the viewport size times FACTOR (0.2 to 3.5, default 1); the editor has a slider for it", render_scale);
             display.flag("--max-quality", "Turn every rendering feature on and up: 4x MSAA, fog, up to 64 shadowed local lights, heavier AO, all culling and clustered lighting", max_quality);
+            display.value("--max-texture-size", "TEXELS",
+                          "Largest side of any loaded texture; bigger ones lose their top mips (0 = no limit)",
+                          max_texture_size);
+            display.value("--texture-rdo", "LAMBDA",
+                          "Smaller texture files at some quality cost: UASTC RDO strength, about 0.25 to 10 (0 = off). "
+                          "Textures are re-encoded and cached separately",
+                          texture_rdo);
             diagnostics.flag("--frame-graph-dump",
                              "Log the compiled frame graph whenever it changes", dump_frame_graph);
             diagnostics.toggle("--validation",
@@ -1022,6 +1030,8 @@ namespace {
         std::string async_passes;
         bool max_quality = false;
         float render_scale = 1.0F;
+        std::optional<std::uint32_t> max_texture_size;
+        std::optional<float> texture_rdo;
         bool dump_frame_graph = false;
         bool ray_tracing_poc = false;
         std::string ray_tracing_poc_view = "beauty";
@@ -1179,6 +1189,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         error("{}", prepared.error());
         return EXIT_FAILURE;
     }
+
+    set_texture_max_extent(engine.max_texture_size.value_or(0));
+    set_texture_rdo_lambda(engine.texture_rdo.value_or(0.0F));
 
     auto const dump_frame_graph = engine.dump_frame_graph;
 

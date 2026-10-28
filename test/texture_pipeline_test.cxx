@@ -40,14 +40,15 @@ namespace {
         REQUIRE(ktx2_files.size() == 1);
 
         ktxTexture2 *raw = nullptr;
+        // Without the load-image-data bit libktx leaves the file's supercompression as it is on disk.
         auto const create_result = ktxTexture2_CreateFromNamedFile(ktx2_files.front().string().c_str(),
-                                                                   KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw);
+                                                                   KTX_TEXTURE_CREATE_NO_FLAGS, &raw);
 
         REQUIRE(create_result == KTX_SUCCESS);
         REQUIRE(raw != nullptr);
 
         CHECK(raw->vkFormat == static_cast<ktx_uint32_t>(expected_format));
-        CHECK(raw->supercompressionScheme == KTX_SS_NONE);
+        CHECK(raw->supercompressionScheme == KTX_SS_ZSTD);
 
         ktxTexture_Destroy(ktxTexture(raw));
     }
@@ -82,6 +83,73 @@ TEST_SUITE("unit") {
         CHECK(second->data == first->data);
 
         std::filesystem::remove_all(cache_dir);
+    }
+
+    TEST_CASE("load_compressed_texture: reads a cache file written without supercompression") {
+        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.jpg";
+        auto const cache_dir = make_temp_cache_dir("legacy");
+        auto const path = AssetPath::external(source).value();
+
+        auto first = load_compressed_texture(path, TextureRole::colour, cache_dir);
+        REQUIRE(first.has_value());
+
+        // libktx inflates on load, so writing the texture back leaves the plain layout older caches have.
+        for (auto const &entry: std::filesystem::directory_iterator{cache_dir}) {
+            if (entry.path().extension() != ".ktx2") {
+                continue;
+            }
+
+            ktxTexture2 *raw = nullptr;
+            REQUIRE(ktxTexture2_CreateFromNamedFile(entry.path().string().c_str(),
+                                                    KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &raw) == KTX_SUCCESS);
+            REQUIRE(ktxTexture2_WriteToNamedFile(raw, entry.path().string().c_str()) == KTX_SUCCESS);
+            CHECK(raw->supercompressionScheme == KTX_SS_NONE);
+            ktxTexture_Destroy(ktxTexture(raw));
+        }
+
+        auto second = load_compressed_texture(path, TextureRole::colour, cache_dir);
+        REQUIRE(second.has_value());
+        CHECK(second->data == first->data);
+
+        std::filesystem::remove_all(cache_dir);
+    }
+
+    TEST_CASE("load_compressed_texture: a maximum extent drops the top mips, on a miss and on a hit") {
+        auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.jpg";
+        auto const cache_dir = make_temp_cache_dir("max_extent");
+        auto const path = AssetPath::external(source).value();
+
+        auto full = load_compressed_texture(path, TextureRole::colour, cache_dir);
+        REQUIRE(full.has_value());
+        REQUIRE(std::max(full->width, full->height) > 128);
+
+        set_texture_max_extent(128);
+
+        // The cache already holds the full chain, so this is a hit that reads from a lower level.
+        auto hit = load_compressed_texture(path, TextureRole::colour, cache_dir);
+
+        // A different cache directory forces a fresh encode, which is capped as it is returned.
+        auto const miss_dir = make_temp_cache_dir("max_extent_miss");
+        auto miss = load_compressed_texture(path, TextureRole::colour, miss_dir);
+
+        set_texture_max_extent(0);
+
+        for (auto const *capped: {&hit, &miss}) {
+            REQUIRE(capped->has_value());
+            CHECK(std::max((*capped)->width, (*capped)->height) <= 128);
+            CHECK_FALSE(validate_compressed_texture(**capped).has_value());
+
+            auto const skipped = full->mips.size() - (*capped)->mips.size();
+            auto const &kept = full->mips[skipped];
+            CHECK((*capped)->mips.front().width == kept.width);
+            auto const &first = (*capped)->mips.front();
+            CHECK(std::equal((*capped)->data.begin() + first.byte_offset,
+                             (*capped)->data.begin() + first.byte_offset + first.byte_length,
+                             full->data.begin() + kept.byte_offset));
+        }
+
+        std::filesystem::remove_all(cache_dir);
+        std::filesystem::remove_all(miss_dir);
     }
 
     TEST_CASE("load_compressed_texture: cache hit publishes a preview that matches the full mip tail") {
