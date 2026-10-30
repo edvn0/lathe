@@ -35,36 +35,13 @@
 #include "rendering/particle_system.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/terminal_widget.hxx"
+#include "app/gpu_timings_view.hxx"
+#include "core/gpu_timings.hxx"
 #include "scene/editor_camera.hxx"
 #include "scene/hierarchy_model.hxx"
 #include "scripting/script_widget.hxx"
 #include "serialisation/scene_serialisation.hxx"
 #include "terrain/terrain_world.hxx"
-
-struct ScrollingBuffer {
-    std::int32_t max_size;
-    std::int32_t offset = 0;
-    std::vector<ImVec2> data;
-
-    explicit ScrollingBuffer(const std::int32_t m = 600U) : max_size(m) {
-        data.reserve(static_cast<std::size_t>(max_size));
-    }
-
-    [[gnu::always_inline]]
-    constexpr auto size() -> decltype(auto) {
-        return data.size();
-    }
-
-    auto add_point(float x, float y) -> void {
-
-        if (std::cmp_less(size(), max_size)) {
-            data.emplace_back(x, y);
-        } else {
-            data[static_cast<std::size_t>(offset)] = ImVec2(x, y);
-            offset = (offset + 1) % max_size;
-        }
-    }
-};
 
 struct Application : Runtime {
     explicit Application(VulkanContext &ctx) noexcept;
@@ -93,6 +70,9 @@ struct Application : Runtime {
         bool scene_inspector = false;
     } panels;
 
+    // Opens the named panels (the PanelVisibility field names); unknown names are logged.
+    auto show_panels_from(std::string_view names) -> void;
+
     // True once the OS title bar is gone and the menu bar carries the title, drag area and window buttons.
     int project_settings_page = 0;
     bool reset_layout_requested = false;
@@ -108,19 +88,11 @@ struct Application : Runtime {
     bool rename_needs_focus = false;
     bool inspector_name_dirty = false;
 
-    struct TimingSeries {
-        std::string id;
-        std::string label;
-        ScrollingBuffer buffer;
-        float smoothed = 0.0F;
-        bool primed = false;
-    };
-    static constexpr float timing_smoothing = 0.08F;
-    std::vector<TimingSeries> timing_series;
+    GpuTimings gpu_timings;
+    float gpu_frame_ms = 0.0F;
+    gui::GpuTimingsViewState gpu_timings_view;
 
-    auto add_pass_timings(std::span<frame_graph::PassTiming const> passes) -> void;
-    auto on_frame_timings(std::span<frame_graph::PassTiming const> passes) -> void override { add_pass_timings(passes); }
-    float timing_x = 0.0F;
+    auto on_frame_timings(FrameTimings const &timings) -> void override;
 
     // One pane of the editor's central area: a view of the scene with its own camera. Pane 0 is the renderer's primary
     // view (Runtime's viewport_* fields mirror it, which the run loop sizes the renderer by); pane 1 is an extra view

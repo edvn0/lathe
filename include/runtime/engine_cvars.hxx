@@ -34,6 +34,7 @@ namespace cvars {
     extern CVar<std::string> record_assets;
     extern CVar<std::uint32_t> screenshot_frame;
     extern CVar<bool> screenshot_window;
+    extern CVar<std::string> show_panels;
     extern CVar<std::string> inject_keys;
     extern CVar<std::uint32_t> exit_after_frames;
     extern CVar<std::uint32_t> bench_frames;

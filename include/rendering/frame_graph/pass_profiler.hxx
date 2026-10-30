@@ -37,8 +37,6 @@ namespace frame_graph {
         std::string label;
         LogicalQueue queue = LogicalQueue::graphics;
         std::optional<float> milliseconds;
-        // From the earliest pass start of the frame, across queues.
-        std::optional<float> start_milliseconds;
     };
 
     struct PassProfilerCreateInfo {
@@ -81,8 +79,6 @@ namespace frame_graph {
                 -> tracy::SourceLocationData const *;
 
     private:
-        auto assign_start_offsets(std::span<std::optional<std::uint64_t> const> begins) -> void;
-
         struct Written {
             std::string name_id;
             std::string label;

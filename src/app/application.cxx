@@ -44,7 +44,6 @@
 #include "gpu/context.hxx"
 #include "implot.h"
 #include "imgui_internal.h"
-#include "app/pass_timeline.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
@@ -66,6 +65,7 @@
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/screenshot.hxx"
+#include "core/command_line.hxx"
 #include "app/asset_picker.hxx"
 #include "app/surface_pick.hxx"
 #include "app/text_placement.hxx"
@@ -469,28 +469,22 @@ namespace {
     }
 }
 
-auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> passes) -> void {
-    timing_x += 1.0F;
+auto Application::on_frame_timings(FrameTimings const &timings) -> void {
+    constexpr auto graphics_lane = std::uint8_t{0};
+    constexpr auto compute_lane = std::uint8_t{1};
+    constexpr auto overlay_lane = std::uint8_t{2};
 
-    for (auto const &pass: passes) {
-        if (std::ranges::none_of(timing_series,
-                                 [&](TimingSeries const &series) { return series.id == pass.name_id; })) {
-            auto buffer = timing_series.empty() ? ScrollingBuffer{600} : timing_series.back().buffer;
-            timing_series.push_back(TimingSeries{.id = pass.name_id, .label = pass.label, .buffer = std::move(buffer)});
-        }
+    gpu_timings.begin_frame();
+    for (auto const &pass: timings.passes) {
+        gpu_timings.record(pass.name_id, pass.label,
+                           pass.queue == frame_graph::LogicalQueue::graphics ? graphics_lane : compute_lane,
+                           pass.milliseconds);
     }
-
-    auto running_total = 0.0F;
-    for (auto &series: timing_series) {
-        auto const found = std::ranges::find_if(
-                passes, [&](frame_graph::PassTiming const &pass) { return pass.name_id == series.id; });
-        auto const sample = found != passes.end() ? found->milliseconds.value_or(0.0F) : 0.0F;
-        // Smooth each pass before stacking, so one slow frame nudges the graph instead of spiking it.
-        series.smoothed = series.primed ? series.smoothed + (timing_smoothing * (sample - series.smoothed)) : sample;
-        series.primed = true;
-        running_total += series.smoothed;
-        series.buffer.add_point(timing_x, running_total);
+    for (auto const &overlay: timings.overlays) {
+        auto const id = std::format("overlay:{}", overlay.name);
+        gpu_timings.record(id, overlay.name, overlay_lane, overlay.prepare_milliseconds + overlay.record_milliseconds);
     }
+    gpu_frame_ms = timings.full_frame_ms;
 }
 
 Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
@@ -506,6 +500,34 @@ Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
 }
 
 Application::~Application() = default;
+
+auto Application::show_panels_from(std::string_view names) -> void {
+    auto const table = std::array<std::pair<std::string_view, bool *>, 14>{{
+            {"hierarchy", &panels.hierarchy},
+            {"inspector", &panels.inspector},
+            {"assets", &panels.assets},
+            {"console", &panels.console},
+            {"script", &panels.script},
+            {"game", &panels.game},
+            {"project_settings", &panels.project_settings},
+            {"frame_graph", &panels.frame_graph},
+            {"scene_stats", &panels.scene_stats},
+            {"frame_timings", &panels.frame_timings},
+            {"events", &panels.events},
+            {"cvars", &panels.cvars},
+            {"memory", &panels.memory},
+            {"scene_inspector", &panels.scene_inspector},
+    }};
+
+    for (auto const name: CommandLine::split(names, ',')) {
+        auto const found = std::ranges::find_if(table, [&](auto const &entry) { return entry.first == name; });
+        if (found == table.end()) {
+            warn("show_panels: unknown panel '{}'", name);
+            continue;
+        }
+        *found->second = true;
+    }
+}
 
 auto Application::draw_event_metrics() -> void {
     if (ImGui::Button("Reset")) {
@@ -830,7 +852,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         ImGuiID center = dockspace_id;
         ImGuiID const left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20F, nullptr, &center);
-        ImGuiID const right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25F, nullptr, &center);
+        ImGuiID const right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30F, nullptr, &center);
         ImGuiID const bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28F, nullptr, &center);
 
         ImGui::DockBuilderDockWindow("Viewport", center);
@@ -840,6 +862,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::DockBuilderDockWindow("Hierarchy", left);
         ImGui::DockBuilderDockWindow("Inspector", right);
         ImGui::DockBuilderDockWindow("Console", bottom);
+        ImGui::DockBuilderDockWindow("Frame timings", right);
 
         ImGui::DockBuilderFinish(dockspace_id);
     }
@@ -2501,109 +2524,10 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::Text("Lights: %u point / %u spot", stats.point_light_count, stats.spot_light_count);
     });
 
-    panel("Frame timings", panels.frame_timings, [&] {
-        if (ImPlot::BeginPlot("Stage timings (cumulative ms)", ImVec2(-1, 250))) {
-            ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
-            ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x, ImGuiCond_Always);
-
-            for (auto index = std::size_t{0}; index < timing_series.size(); ++index) {
-                auto const &buf = timing_series[index].buffer;
-
-                if (buf.data.empty()) {
-                    continue;
-                }
-
-                ImPlotSpec spec;
-                spec.Offset = buf.offset;
-                spec.Stride = sizeof(ImVec2);
-                spec.FillAlpha = 0.35F;
-
-                auto const &label = timing_series[index].label;
-
-                if (index == 0) {
-                    ImPlot::PlotShaded(label.c_str(), &buf.data[0].x, &buf.data[0].y, static_cast<int>(buf.data.size()),
-                                       0.0, spec);
-                } else {
-                    auto const &prev = timing_series[index - 1].buffer;
-
-                    ImPlotSpec prev_spec;
-                    prev_spec.Offset = prev.offset;
-                    prev_spec.Stride = sizeof(ImVec2);
-
-                    ImPlot::PlotShaded(label.c_str(), &buf.data[0].x, &buf.data[0].y, &prev.data[0].y,
-                                       static_cast<int>(buf.data.size()), prev_spec);
-                }
-            }
-
-            ImPlot::EndPlot();
-        }
-
-        if (auto const graph_timings = renderer->frame_graph_timings();
-            !graph_timings.empty() &&
-            ImGui::BeginTable("Frame graph", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Pass");
-            ImGui::TableSetupColumn("Id");
-            ImGui::TableSetupColumn("Queue");
-            ImGui::TableSetupColumn("GPU (ms)");
-            ImGui::TableHeadersRow();
-
-            for (auto const &timing: graph_timings) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(timing.label.c_str());
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(timing.name_id.c_str());
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(timing.queue == frame_graph::LogicalQueue::graphics ? "graphics" : "compute");
-                ImGui::TableNextColumn();
-                if (timing.milliseconds) {
-                    ImGui::Text("%.3f", static_cast<double>(*timing.milliseconds));
-                } else {
-                    ImGui::TextUnformatted("-");
-                }
-            }
-
-            ImGui::EndTable();
-        }
-
-        auto const &overlay_timings = renderer->last_frame_timings().overlays;
-
-        if (!overlay_timings.empty() &&
-            ImGui::BeginTable("Overlay timings", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Overlay");
-            ImGui::TableSetupColumn("Stage");
-            ImGui::TableSetupColumn("Prepare (ms)");
-            ImGui::TableSetupColumn("Record (ms)");
-            ImGui::TableHeadersRow();
-
-            for (auto const &timing: overlay_timings) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(timing.name.c_str());
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(timing.stage == OverlayStage::scene ? "scene" : "ui");
-                ImGui::TableNextColumn();
-                ImGui::Text("%.3f", static_cast<double>(timing.prepare_milliseconds));
-                ImGui::TableNextColumn();
-                ImGui::Text("%.3f", static_cast<double>(timing.record_milliseconds));
-            }
-
-            ImGui::EndTable();
-        }
-    });
+    panel("Frame timings", panels.frame_timings, [&] { gui::draw_gpu_timings(gpu_timings, gpu_frame_ms, gpu_timings_view); });
 
     panel("Frame graph", panels.frame_graph, [&] {
-        if (ImGui::BeginTabBar("##frame_graph_tabs")) {
-            if (ImGui::BeginTabItem("Graph")) {
-                frame_graph_editor.draw(*renderer, stage_registry);
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Timeline")) {
-                gui::draw_pass_timeline(*renderer);
-                ImGui::EndTabItem();
-            }
-            ImGui::EndTabBar();
-        }
+        frame_graph_editor.draw(*renderer, stage_registry);
     });
 
     auto const draw_rendering_settings = [&] {

@@ -107,6 +107,12 @@ namespace cvars {
             .group = "Packaging",
             .help = "Screenshots capture the whole editor window, not just the viewport",
     }};
+    CVar<std::string> show_panels{{
+            .name = "show_panels",
+            .group = "Packaging",
+            .help = "Open these editor panels at startup, e.g. frame_timings,scene_stats (names as in the Window menu)",
+            .hint = "NAME,...",
+    }};
     CVar<std::string> inject_keys{{
             .name = "inject_keys",
             .group = "Packaging",

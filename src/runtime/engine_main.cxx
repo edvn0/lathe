@@ -1392,7 +1392,6 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     struct BenchPass {
         frame_graph::LogicalQueue queue = frame_graph::LogicalQueue::graphics;
         double total_ms = 0.0;
-        double total_start_ms = 0.0;
     };
     std::map<std::string, BenchPass> bench_passes;
     double bench_full_frame_ms = 0.0;
@@ -1488,7 +1487,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
         if (auto const &timings = runtime.renderer->last_frame_timings();
             timings.valid && runtime.can_start_recording_statistics()) {
-            runtime.on_frame_timings(timings.passes);
+            runtime.on_frame_timings(timings);
 
             if (cvars::bench_frames.get() != 0 && frame_number >= cvars::bench_warmup.get() &&
                 timings.frame_serial != bench_last_serial) {
@@ -1499,7 +1498,6 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
                     auto &entry = bench_passes[pass.name_id];
                     entry.queue = pass.queue;
                     entry.total_ms += pass.milliseconds.value_or(0.0F);
-                    entry.total_start_ms += pass.start_milliseconds.value_or(0.0F);
                 }
                 if (bench_samples >= cvars::bench_frames.get()) {
                     std::println("[bench] {} frames after {} warm-up, mean GPU ms per frame:", bench_samples,
@@ -1508,8 +1506,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
                     for (auto const &[name, entry]: bench_passes) {
                         auto const mean = entry.total_ms / static_cast<double>(bench_samples);
                         pass_sum += mean;
-                        auto const start = entry.total_start_ms / static_cast<double>(bench_samples);
-                        std::println("[bench]   {:<32} {:>8.4f} ms  start {:>8.4f}  ({})", name, mean, start,
+                        std::println("[bench]   {:<32} {:>8.4f} ms  ({})", name, mean,
                                      entry.queue == frame_graph::LogicalQueue::graphics ? "graphics" : "compute");
                     }
                     std::println("[bench] sum of passes {:.4f} ms, full frame {:.4f} ms", pass_sum,

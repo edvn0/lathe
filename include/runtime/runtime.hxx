@@ -191,7 +191,7 @@ struct Runtime {
 
     virtual auto on_files_dropped(std::span<std::filesystem::path const> paths) -> void { (void) paths; }
 
-    virtual auto on_frame_timings(std::span<frame_graph::PassTiming const> passes) -> void { (void) passes; }
+    virtual auto on_frame_timings(FrameTimings const &timings) -> void { (void) timings; }
 
     // The camera used while not playing (a game supplies its own while playing), and the point terrain streams
     // around while not playing.

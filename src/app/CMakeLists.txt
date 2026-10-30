@@ -12,9 +12,9 @@ add_library(
         frame_graph_details.cxx
         frame_graph_editor.cxx
         game_packager.cxx
+        gpu_timings_view.cxx
         main_menu.cxx
         package_ui.cxx
-        pass_timeline.cxx
         project_files.cxx
         project_settings.cxx
         scene_files.cxx
