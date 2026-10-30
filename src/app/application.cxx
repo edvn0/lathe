@@ -2527,7 +2527,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     panel("Frame timings", panels.frame_timings, [&] { gui::draw_gpu_timings(gpu_timings, gpu_frame_ms, gpu_timings_view); });
 
     panel("Frame graph", panels.frame_graph, [&] {
-        frame_graph_editor.draw(*renderer, stage_registry);
+        frame_graph_editor.draw(*renderer, stage_registry, gpu_timings);
     });
 
     auto const draw_rendering_settings = [&] {

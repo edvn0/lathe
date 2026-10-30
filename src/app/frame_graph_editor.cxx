@@ -54,21 +54,16 @@ namespace gui {
             return "pass";
         }
 
-        auto timing_of(Renderer const &renderer, std::string_view name_id) -> std::optional<float> {
-            for (auto const &timing: renderer.frame_graph_timings()) {
-                if (timing.name_id == name_id) {
-                    return timing.milliseconds;
-                }
+        // Smoothed, so node heat and times don't flicker with every frame's jitter.
+        auto timing_of(GpuTimings const &timings, std::string_view name_id) -> std::optional<float> {
+            if (auto const *timing = timings.find(name_id); timing != nullptr && timing->active) {
+                return timing->ema_ms;
             }
             return std::nullopt;
         }
 
-        auto total_milliseconds(Renderer const &renderer) -> float {
-            auto total = 0.0F;
-            for (auto const &timing: renderer.frame_graph_timings()) {
-                total += timing.milliseconds.value_or(0.0F);
-            }
-            return total;
+        auto total_milliseconds(GpuTimings const &timings) -> float {
+            return timings.lane_total_ms(0) + timings.lane_total_ms(1);
         }
 
         auto barrier_total(frame_graph::BarrierSet const &set) -> std::uint32_t {
@@ -318,7 +313,7 @@ namespace gui {
         }
     }
 
-    auto FrameGraphEditor::draw(Renderer &renderer, stages::Registry &registry) -> void {
+    auto FrameGraphEditor::draw(Renderer &renderer, stages::Registry &registry, GpuTimings const &timings) -> void {
         auto const &view = renderer.frame_graph_view();
         if (view.revision == 0) {
             ImGui::TextDisabled("No frame graph yet");
@@ -358,7 +353,7 @@ namespace gui {
             relayout(view, registry);
         }
 
-        auto const total_ms = std::max(total_milliseconds(renderer), 0.001F);
+        auto const total_ms = std::max(total_milliseconds(timings), 0.001F);
         auto const stage_list = registry.stages();
 
         ed::SetCurrentEditor(context_->editor);
@@ -378,7 +373,7 @@ namespace gui {
 
             auto stats = NodeStats{};
             for (auto const pass: node.passes) {
-                stats.milliseconds += timing_of(renderer, view.graph.passes[pass].profile.name_id).value_or(0.0F);
+                stats.milliseconds += timing_of(timings, view.graph.passes[pass].profile.name_id).value_or(0.0F);
                 stats.barriers += pass_barriers_[pass];
             }
 
@@ -574,7 +569,7 @@ namespace gui {
             }
 
             draw_resource_details(view, selected_resources_, renderer);
-            draw_pass_details(view, selected_passes_, renderer);
+            draw_pass_details(view, selected_passes_, renderer, timings);
 
             if (split) {
                 ImGui::TableNextColumn();

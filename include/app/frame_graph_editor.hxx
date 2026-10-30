@@ -9,6 +9,7 @@
 
 #include "app/frame_graph_layout_store.hxx"
 #include "app/stage_registry.hxx"
+#include "core/gpu_timings.hxx"
 #include "rendering/frame_graph/layout.hxx"
 
 class Renderer;
@@ -28,7 +29,7 @@ namespace gui {
         FrameGraphEditor(FrameGraphEditor &&) = delete;
         auto operator=(FrameGraphEditor &&) -> FrameGraphEditor & = delete;
 
-        auto draw(Renderer &renderer, stages::Registry &registry) -> void;
+        auto draw(Renderer &renderer, stages::Registry &registry, GpuTimings const &timings) -> void;
 
     private:
         struct Context;

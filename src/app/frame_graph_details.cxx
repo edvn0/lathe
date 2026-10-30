@@ -55,18 +55,16 @@ namespace gui {
             return nullptr;
         }
 
-        auto draw_pass(frame_graph::FrameGraphView const &view, std::uint32_t pass_index, Renderer &renderer)
-                -> void {
+        auto draw_pass(frame_graph::FrameGraphView const &view, std::uint32_t pass_index, Renderer &renderer,
+                       GpuTimings const &timings) -> void {
             auto const &graph = view.graph;
             auto const &pass = graph.passes[pass_index];
 
             ImGui::PushID(static_cast<int>(pass_index));
             ImGui::SeparatorText(pass.name.c_str());
 
-            for (auto const &timing: renderer.frame_graph_timings()) {
-                if (timing.name_id == pass.profile.name_id && timing.milliseconds) {
-                    ImGui::TextDisabled("%.3f ms", static_cast<double>(*timing.milliseconds));
-                }
+            if (auto const *timing = timings.find(pass.profile.name_id); timing != nullptr && timing->active) {
+                ImGui::TextDisabled("%.3f ms", static_cast<double>(timing->ema_ms));
             }
 
             if (ImGui::BeginTable("accesses", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
@@ -122,10 +120,10 @@ namespace gui {
     }
 
     auto draw_pass_details(frame_graph::FrameGraphView const &view, std::span<std::uint32_t const> passes,
-                           Renderer &renderer) -> void {
+                           Renderer &renderer, GpuTimings const &timings) -> void {
         for (auto const pass: passes) {
             if (pass < view.graph.passes.size()) {
-                draw_pass(view, pass, renderer);
+                draw_pass(view, pass, renderer, timings);
             }
         }
     }
