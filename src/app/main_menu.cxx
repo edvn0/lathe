@@ -307,6 +307,8 @@ auto Application::draw_main_menu_bar() -> void {
 #endif
         ImGui::Separator();
         ImGui::MenuItem("Scene File Inspector", nullptr, &panels.scene_inspector);
+        ImGui::Separator();
+        cache_menu.draw();
         ImGui::EndMenu();
     }
 
@@ -424,4 +426,6 @@ auto Application::draw_main_menu_bar() -> void {
     }
 
     ImGui::EndMainMenuBar();
+
+    cache_menu.draw_popups();
 }
