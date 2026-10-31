@@ -23,6 +23,7 @@
 #include <stb_image_resize2.h>
 #include <zstd.h>
 
+#include "assets/gpu_texture_service.hxx"
 #include "core/logger.hxx"
 #include "core/thread_pool.hxx"
 #include "gpu/image.hxx"
@@ -643,6 +644,74 @@ namespace {
         }
     }
 
+    // Compresses the mip chain on the GPU, when a service is installed: BC5 for normal maps, BC7 for the rest. Null on
+    // any failure, and the caller compresses on the CPU.
+    [[nodiscard]]
+    auto compress_on_gpu(std::vector<RawMip> const &mips, TextureRole role) -> KtxTexturePtr {
+        if (mips.empty()) {
+            return nullptr;
+        }
+
+        auto const service = gpu_texture_service();
+
+        if (service == nullptr) {
+            return nullptr;
+        }
+
+        std::vector<GpuTextureLevel> levels;
+        levels.reserve(mips.size());
+
+        for (auto const &mip: mips) {
+            levels.push_back(GpuTextureLevel{.rgba = mip.pixels, .width = mip.width, .height = mip.height});
+        }
+
+        auto const format = role == TextureRole::normal_map ? GpuBlockFormat::bc5 : GpuBlockFormat::bc7;
+        auto outcome = service->submit(levels, format).get();
+
+        if (!outcome) {
+            debug("texture_pipeline: GPU compression unavailable ({}), using the CPU", outcome.error());
+
+            return nullptr;
+        }
+
+        ktxTextureCreateInfo create_info{};
+        create_info.vkFormat = format == GpuBlockFormat::bc5     ? VK_FORMAT_BC5_UNORM_BLOCK
+                               : role == TextureRole::colour ? VK_FORMAT_BC7_SRGB_BLOCK
+                                                             : VK_FORMAT_BC7_UNORM_BLOCK;
+        create_info.baseWidth = mips.front().width;
+        create_info.baseHeight = mips.front().height;
+        create_info.baseDepth = 1;
+        create_info.numDimensions = 2;
+        create_info.numLevels = static_cast<std::uint32_t>(mips.size());
+        create_info.numLayers = 1;
+        create_info.numFaces = 1;
+        create_info.isArray = KTX_FALSE;
+        create_info.generateMipmaps = KTX_FALSE;
+
+        ktxTexture2 *raw = nullptr;
+
+        if (ktxTexture2_Create(&create_info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &raw) != KTX_SUCCESS) {
+            return nullptr;
+        }
+
+        KtxTexturePtr texture{raw};
+
+        for (std::uint32_t level = 0; level < mips.size(); ++level) {
+            auto const &blocks = (*outcome)[level];
+
+            if (blocks.size() != block_count_4x4(mips[level].width, mips[level].height) * 16 ||
+                ktxTexture_SetImageFromMemory(ktxTexture(texture.get()), level, 0, 0,
+                                              reinterpret_cast<ktx_uint8_t const *>(blocks.data()),
+                                              blocks.size()) != KTX_SUCCESS) {
+                warn("texture_pipeline: the GPU's blocks for level {} do not fit; using the CPU", level);
+
+                return nullptr;
+            }
+        }
+
+        return texture;
+    }
+
     [[nodiscard]]
     auto encode_and_transcode(std::vector<std::byte> base_rgba8, std::uint32_t width, std::uint32_t height,
                               TextureRole role, CacheTarget const &target, FlyString debug_name,
@@ -665,24 +734,36 @@ namespace {
 
         ScopedProfileSample encode_sample{profile != nullptr ? &profile->texture_encode_ns : nullptr};
 
-        auto encoded = encode_uastc(mips, role);
+        // The GPU writes BC7 or BC5 directly. The CPU encodes UASTC and transcodes it, which is where the time goes.
+        auto texture = compress_on_gpu(mips, role);
+
+        if (texture == nullptr) {
+            // A GPU request that failed because we are shutting down must not turn into minutes of CPU encoding.
+            if (thread_pool_shutting_down()) {
+                return std::unexpected(make_error(TexturePipelineErrorType::cancelled, "shutting down"));
+            }
+
+            auto encoded = encode_uastc(mips, role);
+
+            encode_sample.stop();
+
+            if (!encoded) {
+                return std::unexpected(encoded.error());
+            }
+
+            texture = std::move(*encoded);
+
+            ScopedProfileSample transcode_sample{profile != nullptr ? &profile->texture_transcode_ns : nullptr};
+
+            if (ktxTexture2_TranscodeBasis(texture.get(), transcode_target(role), 0) != KTX_SUCCESS) {
+                return std::unexpected(
+                        make_error(TexturePipelineErrorType::transcode_failed, "ktxTexture2_TranscodeBasis failed"));
+            }
+
+            transcode_sample.stop();
+        }
 
         encode_sample.stop();
-
-        if (!encoded) {
-            return std::unexpected(encoded.error());
-        }
-
-        auto texture = std::move(*encoded);
-
-        ScopedProfileSample transcode_sample{profile != nullptr ? &profile->texture_transcode_ns : nullptr};
-
-        if (ktxTexture2_TranscodeBasis(texture.get(), transcode_target(role), 0) != KTX_SUCCESS) {
-            return std::unexpected(
-                    make_error(TexturePipelineErrorType::transcode_failed, "ktxTexture2_TranscodeBasis failed"));
-        }
-
-        transcode_sample.stop();
 
         ScopedProfileSample const write_sample{profile != nullptr ? &profile->texture_cache_write_ns : nullptr};
 

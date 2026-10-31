@@ -1,4 +1,4 @@
-#include "assets/bc7_gpu_encoder.hxx"
+#include "assets/gpu_texture_encoder.hxx"
 
 #include <algorithm>
 #include <array>
@@ -7,8 +7,8 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
-#include <limits>
 #include <format>
+#include <limits>
 #include <utility>
 
 #include <encoder/basisu_gpu_texture.h>
@@ -31,6 +31,7 @@ namespace {
         VkDeviceAddress jobs;
         std::uint32_t job_count;
         std::uint32_t total_blocks;
+        std::uint32_t format;
     };
 
     constexpr std::uint32_t threads_per_group = 64;
@@ -50,18 +51,23 @@ namespace {
         std::vector<std::uint8_t> rgba;
     };
 
-    // PSNR of any BC7 image against the original, over RGBA, decoded by the library libktx carries.
-    auto psnr_any(std::span<std::byte const> blocks, SourceImage const &original) -> double {
+    // PSNR of a BC7 or BC5 image against the original, decoded by the library libktx carries. BC7 is scored over RGBA,
+    // BC5 over the two channels it keeps (red and green).
+    auto psnr_of(std::span<std::byte const> blocks, SourceImage const &original, GpuBlockFormat format) -> double {
         auto const blocks_x = (original.width + 3) / 4;
         auto const blocks_y = (original.height + 3) / 4;
+        auto const channels = format == GpuBlockFormat::bc5 ? 2U : 4U;
         auto squared_error = 0.0;
         auto count = 0.0;
         std::array<basisu::color_rgba, 16> decoded{};
 
         for (std::uint32_t by = 0; by < blocks_y; ++by) {
             for (std::uint32_t bx = 0; bx < blocks_x; ++bx) {
-                if (!basisu::unpack_bc7(blocks.data() + (static_cast<std::size_t>(by) * blocks_x + bx) * 16,
-                                        decoded.data())) {
+                auto const *block = blocks.data() + (static_cast<std::size_t>(by) * blocks_x + bx) * 16;
+
+                if (!basisu::unpack_block(format == GpuBlockFormat::bc5 ? basisu::texture_format::cBC5
+                                                                        : basisu::texture_format::cBC7,
+                                          block, decoded.data())) {
                     return -1.0;
                 }
 
@@ -73,10 +79,12 @@ namespace {
                         continue;
                     }
 
-                    for (std::uint32_t channel = 0; channel < 4; ++channel) {
+                    for (std::uint32_t channel = 0; channel < channels; ++channel) {
                         auto const difference =
                                 static_cast<double>(decoded[texel][channel]) -
-                                static_cast<double>(original.rgba[(static_cast<std::size_t>(y) * original.width + x) * 4 + channel]);
+                                static_cast<double>(
+                                        original.rgba[(static_cast<std::size_t>(y) * original.width + x) * 4 +
+                                                      channel]);
                         squared_error += difference * difference;
                         count += 1.0;
                     }
@@ -87,6 +95,9 @@ namespace {
         return squared_error <= 0.0 ? 99.0 : 10.0 * std::log10(255.0 * 255.0 / (squared_error / count));
     }
 
+    auto psnr_any(std::span<std::byte const> blocks, SourceImage const &original) -> double {
+        return psnr_of(blocks, original, GpuBlockFormat::bc7);
+    }
 
     // Makes sure 'buffer' holds at least 'size' bytes, growing it (and dropping the old contents) when it does not.
     auto ensure_capacity(VulkanContext &context, Buffer &buffer, VkDeviceSize size, BufferMemory memory,
@@ -109,9 +120,9 @@ namespace {
         return true;
     }
 
-}
+} // namespace
 
-struct Bc7GpuEncoder::Impl {
+struct GpuTextureEncoder::Impl {
     VulkanContext *context = nullptr;
     VkShaderEXT shader = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -157,13 +168,13 @@ struct Bc7GpuEncoder::Impl {
     }
 };
 
-Bc7GpuEncoder::Bc7GpuEncoder() = default;
-Bc7GpuEncoder::~Bc7GpuEncoder() = default;
-Bc7GpuEncoder::Bc7GpuEncoder(Bc7GpuEncoder &&other) noexcept = default;
-auto Bc7GpuEncoder::operator=(Bc7GpuEncoder &&other) noexcept -> Bc7GpuEncoder & = default;
+GpuTextureEncoder::GpuTextureEncoder() = default;
+GpuTextureEncoder::~GpuTextureEncoder() = default;
+GpuTextureEncoder::GpuTextureEncoder(GpuTextureEncoder &&other) noexcept = default;
+auto GpuTextureEncoder::operator=(GpuTextureEncoder &&other) noexcept -> GpuTextureEncoder & = default;
 
-auto Bc7GpuEncoder::create(VulkanContext &context, renderer::SlangCompiler const &compiler)
-        -> std::expected<Bc7GpuEncoder, std::string> {
+auto GpuTextureEncoder::create(VulkanContext &context, renderer::SlangCompiler const &compiler)
+        -> std::expected<GpuTextureEncoder, std::string> {
     if (!context.shader_objects_supported) {
         return std::unexpected{"the device has no VK_EXT_shader_object"};
     }
@@ -173,16 +184,16 @@ auto Bc7GpuEncoder::create(VulkanContext &context, renderer::SlangCompiler const
     }
 
     auto compiled = compiler.compile(renderer::ShaderCompileRequest{
-            .source_path = engine_path("assets/shaders/bc7_encode.slang"),
+            .source_path = engine_path("assets/shaders/texture_compress.slang"),
             .entry_point = FlyString{"main_cs"},
             .stage = renderer::ShaderStage::compute,
     });
 
     if (!compiled) {
-        return std::unexpected{std::format("compiling bc7_encode.slang: {}", describe(compiled.error()))};
+        return std::unexpected{std::format("compiling texture_compress.slang: {}", describe(compiled.error()))};
     }
 
-    Bc7GpuEncoder encoder;
+    GpuTextureEncoder encoder;
     encoder.impl_ = std::make_unique<Impl>();
     auto &impl = *encoder.impl_;
     impl.context = &context;
@@ -252,7 +263,8 @@ auto Bc7GpuEncoder::create(VulkanContext &context, renderer::SlangCompiler const
     return encoder;
 }
 
-auto Bc7GpuEncoder::encode_batch(std::span<Bc7Level const> levels) -> std::expected<Result, std::string> {
+auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, GpuBlockFormat format)
+        -> std::expected<Result, std::string> {
     if (impl_ == nullptr) {
         return std::unexpected{"the encoder was not created"};
     }
@@ -283,7 +295,7 @@ auto Bc7GpuEncoder::encode_batch(std::span<Bc7Level const> levels) -> std::expec
         job_words.insert(job_words.end(), {static_cast<std::uint32_t>(texels), level.width, level.height,
                                            (level.width + 3) / 4, static_cast<std::uint32_t>(blocks), 0, 0, 0});
         texels += static_cast<std::uint64_t>(level.width) * level.height;
-        blocks += bc7_block_count(level.width, level.height);
+        blocks += block_count_4x4(level.width, level.height);
     }
 
     block_starts.push_back(blocks);
@@ -292,10 +304,10 @@ auto Bc7GpuEncoder::encode_batch(std::span<Bc7Level const> levels) -> std::expec
         return std::unexpected{"the batch is too large for 32-bit indexing; split it"};
     }
 
-    if (!ensure_capacity(context, impl.input, texels * 4, BufferMemory::upload, "bc7_encoder.input") ||
+    if (!ensure_capacity(context, impl.input, texels * 4, BufferMemory::upload, "gpu_texture_encoder.input") ||
         !ensure_capacity(context, impl.jobs, job_words.size() * sizeof(std::uint32_t), BufferMemory::upload,
-                         "bc7_encoder.jobs") ||
-        !ensure_capacity(context, impl.output, blocks * 16, BufferMemory::readback, "bc7_encoder.output")) {
+                         "gpu_texture_encoder.jobs") ||
+        !ensure_capacity(context, impl.output, blocks * 16, BufferMemory::readback, "gpu_texture_encoder.output")) {
         return std::unexpected{"could not allocate the encoder's buffers"};
     }
 
@@ -318,6 +330,7 @@ auto Bc7GpuEncoder::encode_batch(std::span<Bc7Level const> levels) -> std::expec
             .jobs = impl.jobs.device_address,
             .job_count = static_cast<std::uint32_t>(levels.size()),
             .total_blocks = static_cast<std::uint32_t>(blocks),
+            .format = static_cast<std::uint32_t>(format),
     };
 
     vkResetCommandBuffer(impl.commands, 0);
@@ -334,7 +347,8 @@ auto Bc7GpuEncoder::encode_batch(std::span<Bc7Level const> levels) -> std::expec
     auto const stage = VK_SHADER_STAGE_COMPUTE_BIT;
     vkCmdBindShadersEXT(impl.commands, 1, &stage, &impl.shader);
     vkCmdPushConstants(impl.commands, impl.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), &constants);
-    vkCmdDispatch(impl.commands, static_cast<std::uint32_t>((blocks + threads_per_group - 1) / threads_per_group), 1, 1);
+    vkCmdDispatch(impl.commands, static_cast<std::uint32_t>((blocks + threads_per_group - 1) / threads_per_group), 1,
+                  1);
 
     VkMemoryBarrier2 const barrier{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -390,8 +404,8 @@ auto Bc7GpuEncoder::encode_batch(std::span<Bc7Level const> levels) -> std::expec
 
     std::array<std::uint64_t, 2> ticks{};
 
-    if (vkGetQueryPoolResults(context.device, impl.timestamps, 0, 2, sizeof(ticks), ticks.data(),
-                              sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) {
+    if (vkGetQueryPoolResults(context.device, impl.timestamps, 0, 2, sizeof(ticks), ticks.data(), sizeof(std::uint64_t),
+                              VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(context.physical_device, &properties);
         result.gpu_ms = static_cast<double>(ticks[1] - ticks[0]) * properties.limits.timestampPeriod * 1e-6;
@@ -402,11 +416,11 @@ auto Bc7GpuEncoder::encode_batch(std::span<Bc7Level const> levels) -> std::expec
     return result;
 }
 
-auto Bc7GpuEncoder::encode(std::span<std::byte const> rgba8, std::uint32_t width, std::uint32_t height)
-        -> std::expected<Result, std::string> {
-    auto const level = Bc7Level{.rgba = rgba8, .width = width, .height = height};
+auto GpuTextureEncoder::encode(std::span<std::byte const> rgba8, std::uint32_t width, std::uint32_t height,
+                               GpuBlockFormat format) -> std::expected<Result, std::string> {
+    auto const level = GpuTextureLevel{.rgba = rgba8, .width = width, .height = height};
 
-    return encode_batch(std::span{&level, 1});
+    return encode_batch(std::span{&level, 1}, format);
 }
 
 namespace {
@@ -416,13 +430,13 @@ namespace {
         auto decoded = DecodedImage::load_from_file(path.string(), ImageColourSpace::linear);
 
         if (!decoded) {
-            warn("bc7-bench: could not decode '{}'", path.string());
+            warn("gpu-texture-bench: could not decode '{}'", path.string());
 
             return std::nullopt;
         }
 
         if (decoded->format() != VK_FORMAT_R8G8B8A8_UNORM && decoded->format() != VK_FORMAT_R8G8B8A8_SRGB) {
-            warn("bc7-bench: '{}' is not an 8-bit RGBA image", path.string());
+            warn("gpu-texture-bench: '{}' is not an 8-bit RGBA image", path.string());
 
             return std::nullopt;
         }
@@ -435,12 +449,13 @@ namespace {
         return image;
     }
 
-    auto as_level(SourceImage const &image) -> Bc7Level {
-        return Bc7Level{.rgba = std::as_bytes(std::span{image.rgba}), .width = image.width, .height = image.height};
+    auto as_level(SourceImage const &image) -> GpuTextureLevel {
+        return GpuTextureLevel{
+                .rgba = std::as_bytes(std::span{image.rgba}), .width = image.width, .height = image.height};
     }
 
     // One image, GPU against the engine's CPU path.
-    auto benchmark_image(Bc7GpuEncoder &encoder, std::filesystem::path const &image_path) -> bool {
+    auto benchmark_image(GpuTextureEncoder &encoder, std::filesystem::path const &image_path) -> bool {
         auto const loaded = load_rgba(image_path);
 
         if (!loaded) {
@@ -448,22 +463,22 @@ namespace {
         }
 
         auto const &original = *loaded;
-        info("bc7-bench: {} is {}x{}", image_path.filename().string(), original.width, original.height);
+        info("gpu-texture-bench: {} is {}x{}", image_path.filename().string(), original.width, original.height);
 
         // The first dispatch pays for warm-up and driver-side allocations; time the ones after it.
         constexpr auto runs = 5;
-        Bc7GpuEncoder::Result best;
+        GpuTextureEncoder::Result best;
 
         for (auto run = 0; run < runs; ++run) {
             auto result = encoder.encode(std::as_bytes(std::span{original.rgba}), original.width, original.height);
 
             if (!result) {
-                error("bc7-bench: {}", result.error());
+                error("gpu-texture-bench: {}", result.error());
 
                 return false;
             }
 
-            info("bc7-bench: GPU run {}: {:.2f} ms on the GPU, {:.2f} ms with copies", run + 1, result->gpu_ms,
+            info("gpu-texture-bench: GPU run {}: {:.2f} ms on the GPU, {:.2f} ms with copies", run + 1, result->gpu_ms,
                  result->total_ms);
 
             if (run == 0 || result->gpu_ms < best.gpu_ms) {
@@ -473,10 +488,10 @@ namespace {
 
         auto const gpu_psnr = psnr_any(best.blocks.front(), original);
 
-        // The engine's own path for the same image: decode, mips, UASTC, transcode to BC7. A throw-away cache keeps it a
-        // cold run, and its time covers every mip level, which is a third more texels than the GPU encoded here.
+        // The engine's own path for the same image: decode, mips, UASTC, transcode to BC7. A throw-away cache keeps it
+        // a cold run, and its time covers every mip level, which is a third more texels than the GPU encoded here.
         auto const cache_dir = std::filesystem::temp_directory_path() /
-                               std::format("bc7_bench_{}", Clock::now().time_since_epoch().count());
+                               std::format("gpu_texture_bench_{}", Clock::now().time_since_epoch().count());
         auto const cpu_start = Clock::now();
         auto cpu = load_compressed_texture(AssetPath::external(image_path).value(), TextureRole::generic,
                                            TextureCache{cache_dir});
@@ -484,11 +499,11 @@ namespace {
         std::error_code ignored;
         std::filesystem::remove_all(cache_dir, ignored);
 
-        info("bc7-bench: GPU best {:.2f} ms on the GPU ({:.2f} ms with copies); PSNR {:.2f} dB", best.gpu_ms,
+        info("gpu-texture-bench: GPU best {:.2f} ms on the GPU ({:.2f} ms with copies); PSNR {:.2f} dB", best.gpu_ms,
              best.total_ms, gpu_psnr);
 
         if (!cpu) {
-            warn("bc7-bench: the CPU path failed, nothing to compare with");
+            warn("gpu-texture-bench: the CPU path failed, nothing to compare with");
 
             return true;
         }
@@ -496,14 +511,53 @@ namespace {
         auto const &base = cpu->mips.front();
         std::span<std::byte const> cpu_blocks{cpu->data.data() + base.byte_offset, base.byte_length};
 
-        info("bc7-bench: CPU (UASTC to BC7, all levels, one thread's wall time with the pool busy) {:.0f} ms", cpu_ms);
-        info("bc7-bench: CPU PSNR {:.2f} dB", psnr_any(cpu_blocks, original));
+        info("gpu-texture-bench: CPU (UASTC to BC7, all levels, one thread's wall time with the pool busy) {:.0f} ms",
+             cpu_ms);
+        info("gpu-texture-bench: CPU PSNR {:.2f} dB", psnr_any(cpu_blocks, original));
+
+        // The same image as a normal map: BC5 on the GPU against the engine's CPU path for normal maps.
+        auto bc5 = encoder.encode(std::as_bytes(std::span{original.rgba}), original.width, original.height,
+                                  GpuBlockFormat::bc5);
+
+        if (!bc5) {
+            error("gpu-texture-bench: {}", bc5.error());
+
+            return false;
+        }
+
+        auto bc5_best = std::move(*bc5);
+
+        for (auto run = 1; run < runs; ++run) {
+            if (auto again = encoder.encode(std::as_bytes(std::span{original.rgba}), original.width, original.height,
+                                            GpuBlockFormat::bc5);
+                again && again->gpu_ms < bc5_best.gpu_ms) {
+                bc5_best = std::move(*again);
+            }
+        }
+
+        info("gpu-texture-bench: BC5 on the GPU {:.2f} ms ({:.2f} ms with copies); PSNR over R and G {:.2f} dB",
+             bc5_best.gpu_ms, bc5_best.total_ms, psnr_of(bc5_best.blocks.front(), original, GpuBlockFormat::bc5));
+
+        auto const normal_cache_dir = std::filesystem::temp_directory_path() /
+                                      std::format("gpu_texture_bench_n_{}", Clock::now().time_since_epoch().count());
+        auto cpu_normal = load_compressed_texture(AssetPath::external(image_path).value(), TextureRole::normal_map,
+                                                  TextureCache{normal_cache_dir});
+        std::filesystem::remove_all(normal_cache_dir, ignored);
+
+        if (cpu_normal) {
+            auto const &normal_base = cpu_normal->mips.front();
+            std::span<std::byte const> normal_blocks{cpu_normal->data.data() + normal_base.byte_offset,
+                                                     normal_base.byte_length};
+
+            info("gpu-texture-bench: BC5 on the CPU PSNR over R and G {:.2f} dB",
+                 psnr_of(normal_blocks, original, GpuBlockFormat::bc5));
+        }
 
         return true;
     }
 
     // Every image of a directory: all at once in batches, then one at a time.
-    auto benchmark_directory(Bc7GpuEncoder &encoder, std::filesystem::path const &directory) -> bool {
+    auto benchmark_directory(GpuTextureEncoder &encoder, std::filesystem::path const &directory) -> bool {
         std::vector<std::filesystem::path> files;
 
         for (auto const &entry: std::filesystem::directory_iterator{directory}) {
@@ -518,12 +572,12 @@ namespace {
         std::ranges::sort(files);
 
         if (files.empty()) {
-            error("bc7-bench: no PNG or JPEG files in '{}'", directory.string());
+            error("gpu-texture-bench: no PNG or JPEG files in '{}'", directory.string());
 
             return false;
         }
 
-        info("bc7-bench: decoding {} images from '{}'", files.size(), directory.string());
+        info("gpu-texture-bench: decoding {} images from '{}'", files.size(), directory.string());
 
         auto const decode_start = Clock::now();
         std::vector<SourceImage> images;
@@ -536,7 +590,7 @@ namespace {
             }
 
             if ((index + 1) % 10 == 0 || index + 1 == files.size()) {
-                info("bc7-bench: decoded {}/{}", index + 1, files.size());
+                info("gpu-texture-bench: decoded {}/{}", index + 1, files.size());
             }
         }
 
@@ -547,8 +601,8 @@ namespace {
             texels += static_cast<std::uint64_t>(image.width) * image.height;
         }
 
-        info("bc7-bench: {} images, {:.1f} Mtexel, decoded in {:.0f} ms", images.size(), static_cast<double>(texels) * 1e-6,
-             decode_ms);
+        info("gpu-texture-bench: {} images, {:.1f} Mtexel, decoded in {:.0f} ms", images.size(),
+             static_cast<double>(texels) * 1e-6, decode_ms);
 
         // Batches of at most this many bytes of pixels, so a big directory does not need all of it on the GPU at once.
         constexpr std::uint64_t batch_bytes = 256ULL * 1024 * 1024;
@@ -558,7 +612,7 @@ namespace {
         auto batch_count = 0;
 
         for (auto first = std::size_t{0}; first < images.size();) {
-            std::vector<Bc7Level> levels;
+            std::vector<GpuTextureLevel> levels;
             auto bytes = std::uint64_t{0};
             auto last = first;
 
@@ -576,7 +630,7 @@ namespace {
             }
 
             if (!result) {
-                error("bc7-bench: {}", result.error());
+                error("gpu-texture-bench: {}", result.error());
 
                 return false;
             }
@@ -589,8 +643,8 @@ namespace {
                 batched[index] = std::move(result->blocks[index - first]);
             }
 
-            info("bc7-bench: batch {} ({} images, {:.0f} MB): {:.2f} ms on the GPU, {:.2f} ms with copies", batch_count,
-                 last - first, static_cast<double>(bytes) / 1e6, result->gpu_ms, result->total_ms);
+            info("gpu-texture-bench: batch {} ({} images, {:.0f} MB): {:.2f} ms on the GPU, {:.2f} ms with copies",
+                 batch_count, last - first, static_cast<double>(bytes) / 1e6, result->gpu_ms, result->total_ms);
 
             first = last;
         }
@@ -602,7 +656,7 @@ namespace {
             auto result = encoder.encode(std::as_bytes(std::span{image.rgba}), image.width, image.height);
 
             if (!result) {
-                error("bc7-bench: {}", result.error());
+                error("gpu-texture-bench: {}", result.error());
 
                 return false;
             }
@@ -625,25 +679,26 @@ namespace {
             }
         }
 
-        info("bc7-bench: batched in {} dispatch(es): {:.2f} ms on the GPU, {:.2f} ms with copies", batch_count,
+        info("gpu-texture-bench: batched in {} dispatch(es): {:.2f} ms on the GPU, {:.2f} ms with copies", batch_count,
              batched_gpu_ms, batched_total_ms);
-        info("bc7-bench: one at a time ({} dispatches): {:.2f} ms on the GPU, {:.2f} ms with copies", images.size(),
-             single_gpu_ms, single_total_ms);
-        info("bc7-bench: batching is {:.1f}x faster end to end", single_total_ms / std::max(batched_total_ms, 1e-6));
-        info("bc7-bench: PSNR mean {:.2f} dB, lowest {:.2f} dB ({})", psnr_sum / static_cast<double>(images.size()),
-             psnr_min, names[worst]);
+        info("gpu-texture-bench: one at a time ({} dispatches): {:.2f} ms on the GPU, {:.2f} ms with copies",
+             images.size(), single_gpu_ms, single_total_ms);
+        info("gpu-texture-bench: batching is {:.1f}x faster end to end",
+             single_total_ms / std::max(batched_total_ms, 1e-6));
+        info("gpu-texture-bench: PSNR mean {:.2f} dB, lowest {:.2f} dB ({})",
+             psnr_sum / static_cast<double>(images.size()), psnr_min, names[worst]);
 
         return true;
     }
 
-}
+} // namespace
 
-auto run_bc7_benchmark(VulkanContext &context, renderer::SlangCompiler const &compiler,
-                       std::filesystem::path const &path) -> bool {
-    auto encoder = Bc7GpuEncoder::create(context, compiler);
+auto run_gpu_texture_benchmark(VulkanContext &context, renderer::SlangCompiler const &compiler,
+                               std::filesystem::path const &path) -> bool {
+    auto encoder = GpuTextureEncoder::create(context, compiler);
 
     if (!encoder) {
-        error("bc7-bench: {}", encoder.error());
+        error("gpu-texture-bench: {}", encoder.error());
 
         return false;
     }

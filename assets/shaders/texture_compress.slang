@@ -1,6 +1,6 @@
-module bc7_encode;
+module texture_compress;
 
-// Prototype BC7 encoder: one thread per 4x4 block, mode 6 only (one subset, 7-bit RGBA endpoints with a p-bit each, 16
+// GPU texture block compressor: one thread per 4x4 block. BC7 is mode 6 only (one subset, 7-bit RGBA endpoints with a p-bit each, 16
 // four-bit indices). Mode 6 is the all-rounder: it handles gradients and alpha, and loses to the multi-subset modes
 // only where a block holds two unrelated colours.
 //
@@ -18,7 +18,10 @@ struct Bc7PushConstants
     uint4* jobs; // two uint4 per job: (first texel, width, height, blocks_x), (first block, 0, 0, 0)
     uint job_count;
     uint total_blocks;
+    uint format; // 0: BC7, 1: BC5
 };
+
+static const uint format_bc5 = 1;
 
 [vk::push_constant] Bc7PushConstants pc;
 
@@ -110,6 +113,51 @@ void put_bits(inout uint4 block, uint position, uint value, uint bits)
     }
 }
 
+// One BC4 block (8 bytes) of `values`, written at bit `base` of `block`: the extremes as endpoints, so they are exact, and
+// the six values between them at even steps (the eight-value mode, endpoint 0 above endpoint 1) as the other palette
+// entries. When every value is equal the endpoints are equal and every index is 0.
+void put_bc4(inout uint4 block, uint base, float values[16])
+{
+    float low = 255.0;
+    float high = 0.0;
+
+    for (uint i = 0; i < 16; ++i) {
+        low = min(low, values[i]);
+        high = max(high, values[i]);
+    }
+
+    const float e0 = high;
+    const float e1 = low;
+
+    float palette[8];
+
+    palette[0] = e0;
+    palette[1] = e1;
+
+    for (uint i = 2; i < 8; ++i) {
+        palette[i] = (float(8 - i) * e0 + float(i - 1) * e1) / 7.0;
+    }
+
+    put_bits(block, base, uint(e0), 8);
+    put_bits(block, base + 8, uint(e1), 8);
+
+    for (uint texel = 0; texel < 16; ++texel) {
+        uint best = 0;
+        float best_error = 1e30;
+
+        for (uint candidate = 0; candidate < 8; ++candidate) {
+            const float error = abs(values[texel] - palette[candidate]);
+
+            if (error < best_error) {
+                best_error = error;
+                best = candidate;
+            }
+        }
+
+        put_bits(block, base + 16 + texel * 3, best, 3);
+    }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void main_cs(uint3 dispatch_id: SV_DispatchThreadID)
@@ -151,6 +199,25 @@ void main_cs(uint3 dispatch_id: SV_DispatchThreadID)
 
         texels[i] = unpack_texel(pc.src[first_texel + y * width + x]);
         mean += texels[i];
+    }
+
+    if (pc.format == format_bc5) {
+        float red[16];
+        float green[16];
+
+        for (uint i = 0; i < 16; ++i) {
+            red[i] = texels[i].x;
+            green[i] = texels[i].y;
+        }
+
+        uint4 bc5 = uint4(0);
+
+        put_bc4(bc5, 0, red);
+        put_bc4(bc5, 64, green);
+
+        pc.dst[block_id] = bc5;
+
+        return;
     }
 
     mean *= 1.0 / 16.0;

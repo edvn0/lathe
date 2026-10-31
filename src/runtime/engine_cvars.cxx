@@ -67,8 +67,15 @@ namespace cvars {
                     "$XDG_CACHE_HOME/lathe that is filled automatically)",
             .hint = "FILE.lsp",
     }};
-    CVar<std::string> bc7_bench{{
-            .name = "bc7_bench",
+    CVar<bool> gpu_texture_encoder{{
+            .name = "gpu_texture_encoder",
+            .group = "Packaging",
+            .help = "Compress textures to BC7 on the GPU (a spare compute queue), which is far faster than the CPU encoder; "
+                    "off: always on the CPU. Normal maps are always compressed on the CPU",
+            .default_value = true,
+    }};
+    CVar<std::string> gpu_texture_bench{{
+            .name = "gpu_texture_bench",
             .group = "Packaging",
             .help = "Compress an 8-bit RGBA image to BC7 on the GPU and with the CPU path, print times and quality, then "
                     "exit (prototype)",

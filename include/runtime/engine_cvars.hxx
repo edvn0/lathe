@@ -28,7 +28,8 @@ namespace cvars {
 
     // Packaging and automation.
     extern CVar<std::string> shader_pack;
-    extern CVar<std::string> bc7_bench;
+    extern CVar<bool> gpu_texture_encoder;
+    extern CVar<std::string> gpu_texture_bench;
     extern CVar<std::uint32_t> cache_max_size;
     extern CVar<bool> clear_cache;
     extern CVar<bool> cache_stats;
