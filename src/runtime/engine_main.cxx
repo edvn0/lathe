@@ -196,12 +196,20 @@ namespace {
         // Editor selection is drawn with the same outline games get from Components::Outlined. The selection is read
         // once: asking it per entity locks it every time.
         auto selected = std::vector<entt::entity>{};
+        auto submesh = SelectionContext::SubmeshHighlight{};
         if (!runtime.is_playing) {
-            selected = selection_context().snapshot().entities;
+            auto snapshot = selection_context().snapshot();
+            selected = std::move(snapshot.entities);
+            submesh = snapshot.submesh;
             std::ranges::sort(selected);
         }
-        auto const is_selected = [&selected](entt::entity entity) {
-            return !selected.empty() && std::ranges::binary_search(selected, entity);
+        // A singled-out material slot is outlined instead of its whole entity.
+        auto const is_selected = [&selected, &submesh](entt::entity entity) {
+            return !selected.empty() && std::ranges::binary_search(selected, entity) &&
+                   !(submesh.active() && submesh.entity == entity);
+        };
+        auto const outline_source_of = [&submesh](entt::entity entity) {
+            return submesh.active() && submesh.entity == entity ? submesh.material : MaterialHandle{};
         };
 
         // Looked up once for all entities, not once per entity by type. Through a const registry, a component nobody
@@ -303,8 +311,9 @@ namespace {
                     submission.slot_override_first = 0;
                     submission.slot_override_count = 0;
                     submission.outlined = (outlines != nullptr && outlines->contains(entity)) || is_selected(entity);
+                    submission.outline_source = submission.outlined ? MaterialHandle{} : outline_source_of(entity);
                     submission.skip = false;
-                    local_outlined += submission.outlined ? 1U : 0U;
+                    local_outlined += (submission.outlined || submission.outline_source.valid()) ? 1U : 0U;
 
                     if (has_slots) {
                         local_fixups.push_back(Fixup{.index = index, .entity = entity});
@@ -349,6 +358,7 @@ namespace {
         } else {
             for (auto [entity, transform, model]: view.each()) {
                 auto const outlined = registry.all_of<Components::Outlined>(entity) || is_selected(entity);
+                auto const outline_source = outlined ? MaterialHandle{} : outline_source_of(entity);
                 auto const *override_component = registry.try_get<Components::MaterialOverride const>(entity);
                 auto const material_override =
                         override_component != nullptr ? override_component->material : MaterialHandle{};
@@ -358,7 +368,7 @@ namespace {
 
                 auto const world_transform = world_transforms.get(registry, entity, transform);
                 auto result = runtime.renderer->submit_model(model.model, world_transform, material_override,
-                                                             slot_overrides, outlined);
+                                                             slot_overrides, outlined, outline_source);
 
                 if (!result) {
                     error("Could not submit scene object (model index {}): {}", model.model.index,

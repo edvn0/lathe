@@ -8,6 +8,8 @@
 #include <entt/entt.hpp>
 #include <glm/glm.hpp>
 
+#include "assets/material.hxx"
+
 class Renderer;
 class Scene;
 
@@ -20,6 +22,9 @@ struct SurfaceHit {
     glm::vec3 normal{0.0F, 1.0F, 0.0F};
     // The hit triangle's corners in world space, when the model has triangles on the CPU.
     std::optional<std::array<glm::vec3, 3>> triangle;
+    // The model material of the hit triangle's submesh (a "Slot N" of the inspector; the same handle the model's
+    // model_materials lists), when the model has triangles on the CPU. Invalid otherwise.
+    MaterialHandle material{};
 };
 
 enum class PickTargets : std::uint8_t {

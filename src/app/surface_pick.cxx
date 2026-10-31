@@ -118,7 +118,8 @@ auto pick_surface(Scene &scene, Renderer &renderer, glm::vec3 const &origin, glm
                                            .distance = glm::dot(position - origin, direction),
                                            .position = position,
                                            .normal = to_world_normal(surface->normal),
-                                           .triangle = world_corners};
+                                           .triangle = world_corners,
+                                           .material = renderer.model_source_material(model->model, surface->material)};
                 } else if (!geometry && targets == PickTargets::everything) {
                     auto const local_hit = local_origin + (local_direction * *box_t);
                     auto const position = glm::vec3{world * glm::vec4{local_hit, 1.0F}};

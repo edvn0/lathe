@@ -51,6 +51,7 @@ auto SelectionContext::snapshot() const -> Snapshot {
     return Snapshot{
             .entities = entities_,
             .primary = primary_.load(std::memory_order_relaxed),
+            .submesh = submesh_,
             .version = version_.load(std::memory_order_relaxed),
     };
 }
@@ -65,7 +66,34 @@ auto SelectionContext::size() const -> std::size_t {
     return entities_.size();
 }
 
+auto SelectionContext::select_submesh(entt::entity entity, MaterialHandle material) -> void {
+    std::scoped_lock const lock{mutex_};
+
+    auto const before = submesh_;
+    submesh_ = SubmeshHighlight{.entity = entity, .material = material};
+    publish(entity == entt::null ? std::vector<entt::entity>{} : std::vector<entt::entity>{entity}, entity);
+
+    if (before != submesh_) {
+        version_.fetch_add(1, std::memory_order_acq_rel);
+    }
+}
+
+auto SelectionContext::clear_submesh() -> void {
+    std::scoped_lock const lock{mutex_};
+
+    if (submesh_ != SubmeshHighlight{}) {
+        submesh_ = {};
+        version_.fetch_add(1, std::memory_order_acq_rel);
+    }
+}
+
+auto SelectionContext::submesh_highlight() const -> SubmeshHighlight {
+    std::scoped_lock const lock{mutex_};
+    return submesh_;
+}
+
 auto SelectionContext::select(entt::entity entity) -> void {
+    clear_submesh();
     modify([entity](Transaction &transaction) {
         transaction.clear();
         transaction.set(entity, true);
@@ -101,9 +129,15 @@ auto SelectionContext::assign(std::span<entt::entity const> entities, entt::enti
 }
 
 auto SelectionContext::publish(std::vector<entt::entity> entities, entt::entity primary) -> void {
-    if (entities == entities_ && primary == primary_.load(std::memory_order_relaxed)) {
+    // The singled-out slot only holds while its entity is all that is selected.
+    auto const highlight_holds = submesh_.entity != entt::null && entities.size() == 1 && entities.front() == submesh_.entity;
+    auto const highlight = highlight_holds ? submesh_ : SubmeshHighlight{};
+
+    if (entities == entities_ && primary == primary_.load(std::memory_order_relaxed) && highlight == submesh_) {
         return;
     }
+
+    submesh_ = highlight;
 
     entities_ = std::move(entities);
     primary_.store(primary, std::memory_order_release);

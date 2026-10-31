@@ -10,11 +10,25 @@
 
 #include <entt/entity/entity.hpp>
 
+#include "assets/material.hxx"
+
 class SelectionContext {
 public:
+    // One material slot of a model entity, picked on its own: the entity's submeshes drawn with `material` (a "Slot N"
+    // of its inspector) are outlined instead of the whole model. It only holds while that entity is the whole
+    // selection; any other change of the selection drops it.
+    struct SubmeshHighlight {
+        entt::entity entity = entt::null;
+        MaterialHandle material{};
+
+        [[nodiscard]] auto active() const noexcept -> bool { return entity != entt::null && material.valid(); }
+        auto operator==(SubmeshHighlight const &) const noexcept -> bool = default;
+    };
+
     struct Snapshot {
         std::vector<entt::entity> entities;
         entt::entity primary = entt::null;
+        SubmeshHighlight submesh;
         std::uint64_t version = 0;
     };
 
@@ -59,6 +73,11 @@ public:
     [[nodiscard]] auto empty() const -> bool { return size() == 0; }
 
     auto select(entt::entity entity) -> void;
+    // Selects only `entity`, with one of its material slots singled out (see SubmeshHighlight).
+    auto select_submesh(entt::entity entity, MaterialHandle material) -> void;
+    // Drops the singled-out slot, keeping the selection.
+    auto clear_submesh() -> void;
+    [[nodiscard]] auto submesh_highlight() const -> SubmeshHighlight;
     auto toggle(entt::entity entity) -> void;
     auto add(entt::entity entity) -> void;
     auto remove(entt::entity entity) -> void;
@@ -97,6 +116,7 @@ private:
 
     mutable std::mutex mutex_;
     std::vector<entt::entity> entities_;
+    SubmeshHighlight submesh_;
     std::atomic<entt::entity> primary_{entt::entity{entt::null}};
     std::atomic<std::uint64_t> version_{0};
 };

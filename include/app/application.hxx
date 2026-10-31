@@ -1,5 +1,6 @@
 #pragma once
 
+#include "scene/selection_context.hxx"
 #include "rendering/imgui_renderer.hxx"
 #include "rendering/frame_graph/pass_profiler.hxx"
 #include "runtime/runtime.hxx"
@@ -183,6 +184,8 @@ struct Application : Runtime {
 
     bool browsing_environment = false;
     std::optional<std::filesystem::path> pending_model_pick;
+    // The singled-out material slot the inspector last scrolled to, so it scrolls once per pick, not every frame.
+    SelectionContext::SubmeshHighlight scrolled_to_submesh;
 
     struct StreamedModelLoad {
         Scene *scene = nullptr;

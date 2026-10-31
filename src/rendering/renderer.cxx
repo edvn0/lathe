@@ -2276,7 +2276,8 @@ auto Renderer::create_model_from_cpu_data(ModelCpuData const &cpu_data) -> std::
                 .geometry = std::async(std::launch::async,
                                        [triangles = ModelPickGeometry::collect(cpu_data)]() mutable {
                                            return ModelPickGeometry::build(std::move(triangles.positions),
-                                                                           std::move(triangles.indices));
+                                                                           std::move(triangles.indices),
+                                                                           std::move(triangles.materials));
                                        }),
         });
     }
@@ -2457,6 +2458,7 @@ auto Renderer::create_model_common(
             .bounds_max = model.bounds_max,
             .lights = model.lights,
             .animation = model.animation,
+            .source_materials = model.materials,
             .skin_inflate = model.skin_inflate,
     });
 
@@ -2623,9 +2625,21 @@ auto Renderer::model_materials(ModelHandle model) const -> std::vector<MaterialH
     return materials;
 }
 
+auto Renderer::model_source_material(ModelHandle model, std::uint32_t material_index) const -> MaterialHandle {
+    auto const *slot = model_slot(model);
+
+    if (slot == nullptr) {
+        return {};
+    }
+
+    // A primitive without a material of its own draws with the default one.
+    return material_index < slot->source_materials.size() ? slot->source_materials[material_index]
+                                                          : default_material_handle_;
+}
+
 auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override,
-                            std::span<MaterialSlotOverride const> slot_overrides, bool outlined)
-        -> std::expected<void, RendererError> {
+                            std::span<MaterialSlotOverride const> slot_overrides, bool outlined,
+                            MaterialHandle outline_source) -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
@@ -2644,15 +2658,16 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 const &transform, Mater
             .slot_override_first = slot_override_first,
             .slot_override_count = static_cast<std::uint32_t>(slot_overrides.size()),
             .outlined = outlined,
+            .outline_source = outline_source,
     });
-    outlined_submission_count_ += outlined ? 1U : 0U;
+    outlined_submission_count_ += (outlined || outline_source.valid()) ? 1U : 0U;
 
     return {};
 }
 
 auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHandle material_override,
-                            std::span<MaterialSlotOverride const> slot_overrides, bool outlined)
-        -> std::expected<void, RendererError> {
+                            std::span<MaterialSlotOverride const> slot_overrides, bool outlined,
+                            MaterialHandle outline_source) -> std::expected<void, RendererError> {
     if (model_slot(model) == nullptr) {
         return std::unexpected(make_error(RendererErrorType::invalid_model));
     }
@@ -2671,8 +2686,9 @@ auto Renderer::submit_model(ModelHandle model, glm::mat4 &&transform, MaterialHa
             .slot_override_first = slot_override_first,
             .slot_override_count = static_cast<std::uint32_t>(slot_overrides.size()),
             .outlined = outlined,
+            .outline_source = outline_source,
     });
-    outlined_submission_count_ += outlined ? 1U : 0U;
+    outlined_submission_count_ += (outlined || outline_source.valid()) ? 1U : 0U;
 
     return {};
 }
@@ -3681,7 +3697,8 @@ auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t las
     for (auto position = first; position < last; ++position) {
         auto const &model_submission = model_submissions_[position];
 
-        if (model_submission.slot_override_count == 0) {
+        // Outlining only some submeshes goes through the per-submesh path below.
+        if (model_submission.slot_override_count == 0 && !model_submission.outline_source.valid()) {
             auto const recipe = chunk.recipes.find(*this, model_submission.model, model_submission.material_override,
                                                    model_submission.outlined);
             if (!recipe) {
@@ -3758,7 +3775,8 @@ auto Renderer::build_chunk(BatchChunk &chunk, std::size_t first, std::size_t las
                 }
                 material = material_storage_.material_for_lod(material, lod_index);
 
-                if (model_submission.outlined) {
+                if (model_submission.outlined ||
+                    (model_submission.outline_source.valid() && submesh.material == model_submission.outline_source)) {
                     material = outline_variant(material);
                 }
 
