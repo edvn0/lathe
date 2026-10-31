@@ -44,7 +44,6 @@
 #include "gpu/context.hxx"
 #include "implot.h"
 #include "imgui_internal.h"
-#include "app/pass_timeline.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/engine_models.hxx"
 #include "rendering/entity.hxx"
@@ -66,6 +65,7 @@
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/screenshot.hxx"
+#include "core/command_line.hxx"
 #include "app/asset_picker.hxx"
 #include "app/surface_pick.hxx"
 #include "app/text_placement.hxx"
@@ -469,28 +469,22 @@ namespace {
     }
 }
 
-auto Application::add_pass_timings(std::span<frame_graph::PassTiming const> passes) -> void {
-    timing_x += 1.0F;
+auto Application::on_frame_timings(FrameTimings const &timings) -> void {
+    constexpr auto graphics_lane = std::uint8_t{0};
+    constexpr auto compute_lane = std::uint8_t{1};
+    constexpr auto overlay_lane = std::uint8_t{2};
 
-    for (auto const &pass: passes) {
-        if (std::ranges::none_of(timing_series,
-                                 [&](TimingSeries const &series) { return series.id == pass.name_id; })) {
-            auto buffer = timing_series.empty() ? ScrollingBuffer{600} : timing_series.back().buffer;
-            timing_series.push_back(TimingSeries{.id = pass.name_id, .label = pass.label, .buffer = std::move(buffer)});
-        }
+    gpu_timings.begin_frame();
+    for (auto const &pass: timings.passes) {
+        gpu_timings.record(pass.name_id, pass.label,
+                           pass.queue == frame_graph::LogicalQueue::graphics ? graphics_lane : compute_lane,
+                           pass.milliseconds);
     }
-
-    auto running_total = 0.0F;
-    for (auto &series: timing_series) {
-        auto const found = std::ranges::find_if(
-                passes, [&](frame_graph::PassTiming const &pass) { return pass.name_id == series.id; });
-        auto const sample = found != passes.end() ? found->milliseconds.value_or(0.0F) : 0.0F;
-        // Smooth each pass before stacking, so one slow frame nudges the graph instead of spiking it.
-        series.smoothed = series.primed ? series.smoothed + (timing_smoothing * (sample - series.smoothed)) : sample;
-        series.primed = true;
-        running_total += series.smoothed;
-        series.buffer.add_point(timing_x, running_total);
+    for (auto const &overlay: timings.overlays) {
+        auto const id = std::format("overlay:{}", overlay.name);
+        gpu_timings.record(id, overlay.name, overlay_lane, overlay.prepare_milliseconds + overlay.record_milliseconds);
     }
+    gpu_frame_ms = timings.full_frame_ms;
 }
 
 Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
@@ -503,9 +497,39 @@ Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
     stage_registry.bind_debug_renderer(debug_renderer.get());
     // The editor ray-casts against models' triangles to pick and to place things on surfaces.
     renderer->model_streamer().collect_pick_geometry(true);
+    register_commands();
+    register_editor_commands();
 }
 
 Application::~Application() = default;
+
+auto Application::show_panels_from(std::string_view names) -> void {
+    auto const table = std::array<std::pair<std::string_view, bool *>, 14>{{
+            {"hierarchy", &panels.hierarchy},
+            {"inspector", &panels.inspector},
+            {"assets", &panels.assets},
+            {"console", &panels.console},
+            {"script", &panels.script},
+            {"game", &panels.game},
+            {"project_settings", &panels.project_settings},
+            {"frame_graph", &panels.frame_graph},
+            {"scene_stats", &panels.scene_stats},
+            {"frame_timings", &panels.frame_timings},
+            {"events", &panels.events},
+            {"cvars", &panels.cvars},
+            {"memory", &panels.memory},
+            {"scene_inspector", &panels.scene_inspector},
+    }};
+
+    for (auto const name: CommandLine::split(names, ',')) {
+        auto const found = std::ranges::find_if(table, [&](auto const &entry) { return entry.first == name; });
+        if (found == table.end()) {
+            warn("show_panels: unknown panel '{}'", name);
+            continue;
+        }
+        *found->second = true;
+    }
+}
 
 auto Application::draw_event_metrics() -> void {
     if (ImGui::Button("Reset")) {
@@ -576,6 +600,13 @@ auto Application::draw_viewport(std::size_t index, char const *title, std::uint3
         pane.screen_pos = ImGui::GetCursorScreenPos();
         pane.content_size = ImGui::GetContentRegionAvail();
         pane.seen_frame = ImGui::GetFrameCount();
+
+        if (add_menu_requested && pane.hovered && !is_playing) {
+            add_menu_requested = false;
+            add_menu_position = cursor_spawn_position(pane);
+            ImGui::OpenPopup("viewport_add_menu");
+        }
+        draw_add_menu();
 
         if (pane.hovered) {
             active_viewport = index;
@@ -830,7 +861,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
         ImGuiID center = dockspace_id;
         ImGuiID const left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20F, nullptr, &center);
-        ImGuiID const right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25F, nullptr, &center);
+        ImGuiID const right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.30F, nullptr, &center);
         ImGuiID const bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28F, nullptr, &center);
 
         ImGui::DockBuilderDockWindow("Viewport", center);
@@ -840,6 +871,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::DockBuilderDockWindow("Hierarchy", left);
         ImGui::DockBuilderDockWindow("Inspector", right);
         ImGui::DockBuilderDockWindow("Console", bottom);
+        ImGui::DockBuilderDockWindow("Frame timings", right);
 
         ImGui::DockBuilderFinish(dockspace_id);
     }
@@ -1674,11 +1706,30 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     return clone;
                 };
 
+                // A copy left exactly on its original draws the same pixels again (and z-fights); step it aside by
+                // one model width along X, or a unit when the size is not known.
+                auto const step_aside = [&](entt::entity clone) {
+                    auto *transform = registry.try_get<Components::Transform>(clone);
+                    if (transform == nullptr) {
+                        return;
+                    }
+
+                    auto step = 1.0F;
+                    if (auto const *model = registry.try_get<Components::Model>(clone)) {
+                        if (auto const bounds = renderer->model_bounds(model->model)) {
+                            step = std::max(0.01F, (bounds->second.x - bounds->first.x) * std::abs(transform->scale.x) * 1.1F);
+                        }
+                    }
+                    transform->position.x += step;
+                };
+
                 std::vector<entt::entity> clones;
                 for (auto const source: selected_roots()) {
                     auto const *source_parent = registry.try_get<Components::Parent>(source);
-                    clones.push_back(
-                            duplicate_subtree(source, source_parent != nullptr ? source_parent->entity : entt::null));
+                    auto const clone =
+                            duplicate_subtree(source, source_parent != nullptr ? source_parent->entity : entt::null);
+                    step_aside(clone);
+                    clones.push_back(clone);
                 }
                 selection.assign(clones);
                 break;
@@ -2501,109 +2552,10 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         ImGui::Text("Lights: %u point / %u spot", stats.point_light_count, stats.spot_light_count);
     });
 
-    panel("Frame timings", panels.frame_timings, [&] {
-        if (ImPlot::BeginPlot("Stage timings (cumulative ms)", ImVec2(-1, 250))) {
-            ImPlot::SetupAxes("Frame", "ms", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
-            ImPlot::SetupAxisLimits(ImAxis_X1, timing_x - 600.0, timing_x, ImGuiCond_Always);
-
-            for (auto index = std::size_t{0}; index < timing_series.size(); ++index) {
-                auto const &buf = timing_series[index].buffer;
-
-                if (buf.data.empty()) {
-                    continue;
-                }
-
-                ImPlotSpec spec;
-                spec.Offset = buf.offset;
-                spec.Stride = sizeof(ImVec2);
-                spec.FillAlpha = 0.35F;
-
-                auto const &label = timing_series[index].label;
-
-                if (index == 0) {
-                    ImPlot::PlotShaded(label.c_str(), &buf.data[0].x, &buf.data[0].y, static_cast<int>(buf.data.size()),
-                                       0.0, spec);
-                } else {
-                    auto const &prev = timing_series[index - 1].buffer;
-
-                    ImPlotSpec prev_spec;
-                    prev_spec.Offset = prev.offset;
-                    prev_spec.Stride = sizeof(ImVec2);
-
-                    ImPlot::PlotShaded(label.c_str(), &buf.data[0].x, &buf.data[0].y, &prev.data[0].y,
-                                       static_cast<int>(buf.data.size()), prev_spec);
-                }
-            }
-
-            ImPlot::EndPlot();
-        }
-
-        if (auto const graph_timings = renderer->frame_graph_timings();
-            !graph_timings.empty() &&
-            ImGui::BeginTable("Frame graph", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Pass");
-            ImGui::TableSetupColumn("Id");
-            ImGui::TableSetupColumn("Queue");
-            ImGui::TableSetupColumn("GPU (ms)");
-            ImGui::TableHeadersRow();
-
-            for (auto const &timing: graph_timings) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(timing.label.c_str());
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(timing.name_id.c_str());
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(timing.queue == frame_graph::LogicalQueue::graphics ? "graphics" : "compute");
-                ImGui::TableNextColumn();
-                if (timing.milliseconds) {
-                    ImGui::Text("%.3f", static_cast<double>(*timing.milliseconds));
-                } else {
-                    ImGui::TextUnformatted("-");
-                }
-            }
-
-            ImGui::EndTable();
-        }
-
-        auto const &overlay_timings = renderer->last_frame_timings().overlays;
-
-        if (!overlay_timings.empty() &&
-            ImGui::BeginTable("Overlay timings", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Overlay");
-            ImGui::TableSetupColumn("Stage");
-            ImGui::TableSetupColumn("Prepare (ms)");
-            ImGui::TableSetupColumn("Record (ms)");
-            ImGui::TableHeadersRow();
-
-            for (auto const &timing: overlay_timings) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(timing.name.c_str());
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(timing.stage == OverlayStage::scene ? "scene" : "ui");
-                ImGui::TableNextColumn();
-                ImGui::Text("%.3f", static_cast<double>(timing.prepare_milliseconds));
-                ImGui::TableNextColumn();
-                ImGui::Text("%.3f", static_cast<double>(timing.record_milliseconds));
-            }
-
-            ImGui::EndTable();
-        }
-    });
+    panel("Frame timings", panels.frame_timings, [&] { gui::draw_gpu_timings(gpu_timings, gpu_frame_ms, gpu_timings_view); });
 
     panel("Frame graph", panels.frame_graph, [&] {
-        if (ImGui::BeginTabBar("##frame_graph_tabs")) {
-            if (ImGui::BeginTabItem("Graph")) {
-                frame_graph_editor.draw(*renderer, stage_registry);
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Timeline")) {
-                gui::draw_pass_timeline(*renderer);
-                ImGui::EndTabItem();
-            }
-            ImGui::EndTabBar();
-        }
+        frame_graph_editor.draw(*renderer, stage_registry, gpu_timings);
     });
 
     auto const draw_rendering_settings = [&] {
@@ -2983,59 +2935,23 @@ auto Application::handle_event(KeyPressedEvent ev) -> bool {
         return true;
     }
 
-    if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL && !scene_load_job.has_value()) {
-        renderer->queue_render_thread_event([this] {
-            if (is_playing) {
-                stop();
+    // Shortcuts are commands (editor_commands.cxx); each says where it may fire.
+    auto const editing = !is_playing && !ImGui::GetIO().WantCaptureKeyboard;
+    if (commands.run_for_key(ev.key, ev.modifiers, [&](editor::CommandContext where) {
+            switch (where) {
+                case editor::CommandContext::always:
+                    return true;
+                case editor::CommandContext::editing:
+                    return editing;
+                case editor::CommandContext::viewport:
+                    return editing && viewport_hovered;
             }
-
-            game->on_populate(*source_scene, *renderer, engine_models);
-            scene_path.clear();
-            scene_pack.reset();
-            mark_source_scene_clean();
-        });
-    }
-    if (ev.key == GLFW_KEY_S && (ev.modifiers & GLFW_MOD_CONTROL) != 0) {
-        start_save_scene((ev.modifiers & GLFW_MOD_SHIFT) != 0 ? std::filesystem::path{} : scene_path);
-    }
-    if (ev.key == GLFW_KEY_N && ev.modifiers == GLFW_MOD_CONTROL) {
-        request_switch_game("empty");
-    }
-    if (ev.key == GLFW_KEY_O && ev.modifiers == GLFW_MOD_CONTROL && !scene_browser.is_open()) {
-        scene_browser.open("Open Scene", {{.label = "Lathe scenes (*.lbf)", .extensions = {".lbf"}}});
+            return false;
+        })) {
+        return true;
     }
 
     if (!is_playing) {
-        if (!ImGui::GetIO().WantCaptureKeyboard) {
-            switch (ev.key) {
-                case GLFW_KEY_1:
-                    gizmo_operation = ImGuizmo::TRANSLATE;
-                    break;
-                case GLFW_KEY_2:
-                    gizmo_operation = ImGuizmo::ROTATE;
-                    break;
-                case GLFW_KEY_3:
-                    gizmo_operation = ImGuizmo::SCALE;
-                    break;
-                case GLFW_KEY_4:
-                    gizmo_mode = gizmo_mode == ImGuizmo::WORLD ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
-                    break;
-                case GLFW_KEY_F:
-                    if (ev.modifiers == 0) {
-                        focus_selection();
-                    }
-                    break;
-                case GLFW_KEY_T:
-                    text_placement.set_active(!text_placement.active());
-                    break;
-                case GLFW_KEY_ESCAPE:
-                    text_placement.set_active(false);
-                    break;
-                default:
-                    break;
-            }
-        }
-
         // F1..F8 pick the view mode of the viewport the pointer is in.
         auto const function_key = ev.key - GLFW_KEY_F1;
         if (function_key >= 0 && std::cmp_less(function_key, view_mode_names.size()) &&

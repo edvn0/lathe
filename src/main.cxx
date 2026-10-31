@@ -19,6 +19,7 @@
 #include "core/random.hxx"
 #include "gpu/context.hxx"
 #include "gpu/swapchain.hxx"
+#include "runtime/engine_cvars.hxx"
 #include "runtime/engine_main.hxx"
 #include "runtime/frame_clock.hxx"
 
@@ -32,7 +33,9 @@ namespace {
         [[nodiscard]] auto custom_title_bar() const -> bool override { return true; }
 
         [[nodiscard]] auto create_runtime(VulkanContext &context) -> std::unique_ptr<Runtime> override {
-            return std::make_unique<Application>(context);
+            auto application = std::make_unique<Application>(context);
+            application->show_panels_from(cvars::show_panels.get());
+            return application;
         }
 
         [[nodiscard]] auto early_exit() -> std::optional<int> override {

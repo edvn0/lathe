@@ -94,11 +94,22 @@ float3 hdr_rolloff(float3 colour, float peak_relative)
     return colour * (mapped / brightest);
 }
 
-// Interleaved gradient noise (Jimenez), remapped to a triangular distribution in [-1, 1].
+// PCG hash of the pixel coordinate.
+uint pcg_hash(uint v)
+{
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// White noise with a triangular distribution in [-1, 1]. Unlike interleaved gradient noise it has no structure, so
+// it doesn't leave faint patterns on very shallow gradients.
 float dither_noise(float2 pixel)
 {
-    float a = frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
-    float b = frac(52.9829189 * frac(dot(pixel + 17.0, float2(0.06711056, 0.00583715))));
+    const uint2 p = uint2(pixel);
+    const uint h = pcg_hash(p.x + pcg_hash(p.y));
+    const float a = float(h & 0xFFFFu) * (1.0 / 65536.0);
+    const float b = float(h >> 16u) * (1.0 / 65536.0);
     return a + b - 1.0;
 }
 
