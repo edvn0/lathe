@@ -20,7 +20,7 @@ namespace editor {
         always,
         // Not playing and no text field wants the keyboard.
         editing,
-        // As editing, with the pointer over a viewport.
+        // As editing, with the pointer over a viewport (or a drag that began there): the viewport's tools and camera.
         viewport,
     };
 

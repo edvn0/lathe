@@ -56,24 +56,24 @@ auto Application::register_editor_commands() -> void {
                   }});
 
     commands.add({.id = "gizmo.translate", .label = "Translate", .shortcut = {GLFW_KEY_1, 0},
-                  .context = CommandContext::editing, .action = [this] { gizmo_operation = ImGuizmo::TRANSLATE; }});
+                  .context = CommandContext::viewport, .action = [this] { gizmo_operation = ImGuizmo::TRANSLATE; }});
     commands.add({.id = "gizmo.rotate", .label = "Rotate", .shortcut = {GLFW_KEY_2, 0},
-                  .context = CommandContext::editing, .action = [this] { gizmo_operation = ImGuizmo::ROTATE; }});
+                  .context = CommandContext::viewport, .action = [this] { gizmo_operation = ImGuizmo::ROTATE; }});
     commands.add({.id = "gizmo.scale", .label = "Scale", .shortcut = {GLFW_KEY_3, 0},
-                  .context = CommandContext::editing, .action = [this] { gizmo_operation = ImGuizmo::SCALE; }});
+                  .context = CommandContext::viewport, .action = [this] { gizmo_operation = ImGuizmo::SCALE; }});
     commands.add({.id = "gizmo.toggle_space", .label = "Local Space", .shortcut = {GLFW_KEY_4, 0},
-                  .context = CommandContext::editing, .action = [this] {
+                  .context = CommandContext::viewport, .action = [this] {
                       gizmo_mode = gizmo_mode == ImGuizmo::WORLD ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
                   }});
 
     commands.add({.id = "edit.focus_selection", .label = "Focus Selection", .shortcut = {GLFW_KEY_F, 0},
-                  .context = CommandContext::editing, .action = [this] { focus_selection(); }});
+                  .context = CommandContext::viewport, .action = [this] { focus_selection(); }});
 
     commands.add({.id = "tool.place_text", .label = "Place Text", .shortcut = {GLFW_KEY_T, 0},
-                  .context = CommandContext::editing,
+                  .context = CommandContext::viewport,
                   .action = [this] { text_placement.set_active(!text_placement.active()); }});
     commands.add({.id = "tool.cancel_text", .label = "Stop Placing Text", .shortcut = {GLFW_KEY_ESCAPE, 0},
-                  .context = CommandContext::editing, .action = [this] { text_placement.set_active(false); }});
+                  .context = CommandContext::viewport, .action = [this] { text_placement.set_active(false); }});
 
     commands.add({.id = "viewport.add_menu", .label = "Add...", .shortcut = {GLFW_KEY_A, GLFW_MOD_SHIFT},
                   .context = CommandContext::viewport, .action = [this] { add_menu_requested = true; }});

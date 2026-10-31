@@ -168,6 +168,10 @@ struct Application : Runtime {
 
     entt::entity hierarchy_context_entity = entt::null;
 
+    // Ctrl+C in the hierarchy: the entities (roots of the selection) that Ctrl+V duplicates, from the scene they are in.
+    std::vector<entt::entity> hierarchy_clipboard;
+    Scene const *hierarchy_clipboard_scene = nullptr;
+
     stages::Registry stage_registry;
     gui::FrameGraphEditor frame_graph_editor;
 
@@ -199,6 +203,13 @@ struct Application : Runtime {
     std::vector<StreamedModelLoad> model_loads;
 
     auto spawn_streamed_model(std::filesystem::path const &path) -> void;
+
+    // The loading card over the viewport while models and textures stream in (load_progress.cxx).
+    struct LoadProgress {
+        std::size_t peak_textures = 0;
+        float busy_seconds = 0.0F;
+    } load_progress;
+    auto draw_load_progress() -> void;
 
     auto update_model_loads() -> void;
 

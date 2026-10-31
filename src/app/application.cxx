@@ -898,6 +898,8 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
     viewport_hovered = viewports[0].hovered || (second_shown && viewports[1].hovered);
     ImGui::PopStyleVar();
 
+    draw_load_progress();
+
     if (game && game_hooks_enabled && panels.game) {
         game->on_ui(*active_scene(), *renderer);
     }
@@ -1354,7 +1356,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         }
         hierarchy_model.set_filter(hierarchy_search);
 
-        enum class HierarchyAction : std::uint8_t { none, add_child, duplicate, remove, reparent };
+        enum class HierarchyAction : std::uint8_t { none, add_child, duplicate, copy, paste, remove, reparent };
         HierarchyAction pending_action = HierarchyAction::none;
         entt::entity action_target = entt::null;
         entt::entity drag_reparent_source = entt::null;
@@ -1636,6 +1638,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 if (ImGui::MenuItem(count > 1 ? "Duplicate Selected" : "Duplicate", "Ctrl+D")) {
                     pending_action = HierarchyAction::duplicate;
                 }
+                if (ImGui::MenuItem(count > 1 ? "Copy Selected" : "Copy", "Ctrl+C")) {
+                    pending_action = HierarchyAction::copy;
+                }
+                if (ImGui::MenuItem("Paste", "Ctrl+V", false, !hierarchy_clipboard.empty())) {
+                    pending_action = HierarchyAction::paste;
+                }
                 ImGui::Separator();
                 if (ImGui::MenuItem(count > 1 ? "Delete Selected" : "Delete", "Del")) {
                     pending_action = HierarchyAction::remove;
@@ -1655,6 +1663,12 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_D) && !selection.empty()) {
                 pending_action = HierarchyAction::duplicate;
             }
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_C) && !selection.empty()) {
+                pending_action = HierarchyAction::copy;
+            }
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_V) && !hierarchy_clipboard.empty()) {
+                pending_action = HierarchyAction::paste;
+            }
         }
 
         if (ImGui::BeginPopupContextWindow("hierarchy_bg_context",
@@ -1663,10 +1677,23 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 pending_action = HierarchyAction::add_child;
                 action_target = entt::null;
             }
+            if (ImGui::MenuItem("Paste", "Ctrl+V", false, !hierarchy_clipboard.empty())) {
+                pending_action = HierarchyAction::paste;
+            }
             ImGui::EndPopup();
         }
 
         auto const selected_roots = [&] { return selection_roots(registry, selection.snapshot().entities); };
+
+        // What was copied that is still there; a copy from another scene means nothing in this registry.
+        auto const clipboard_roots = [&] {
+            auto valid = std::vector<entt::entity>{};
+            if (hierarchy_clipboard_scene == active_scene()) {
+                std::ranges::copy_if(hierarchy_clipboard, std::back_inserter(valid),
+                                     [&](entt::entity entity) { return registry.valid(entity); });
+            }
+            return valid;
+        };
 
         switch (pending_action) {
             case HierarchyAction::add_child: {
@@ -1678,7 +1705,14 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 selection.select(new_entity);
                 break;
             }
+            case HierarchyAction::copy: {
+                hierarchy_clipboard = selected_roots();
+                hierarchy_clipboard_scene = active_scene();
+                break;
+            }
+            case HierarchyAction::paste:
             case HierarchyAction::duplicate: {
+                auto const pasting = pending_action == HierarchyAction::paste;
                 std::function<entt::entity(entt::entity, entt::entity)> duplicate_subtree =
                         [&](entt::entity source, entt::entity parent) -> entt::entity {
                     auto const clone = registry.create();
@@ -1711,30 +1745,53 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     return clone;
                 };
 
-                // A copy left exactly on its original draws the same pixels again (and z-fights); step it aside by
-                // one model width along X, or a unit when the size is not known.
-                auto const step_aside = [&](entt::entity clone) {
-                    auto *transform = registry.try_get<Components::Transform>(clone);
-                    if (transform == nullptr) {
-                        return;
+                // A copy left exactly on its original draws the same pixels again (and z-fights), so the copies move
+                // aside together by the width of the whole selection along X: one shared step keeps a group from landing
+                // on itself. A model's width comes from its bounds; with none to go by the step is a unit.
+                auto const sources = pasting ? clipboard_roots() : selected_roots();
+                auto const step = [&] {
+                    auto low = std::numeric_limits<float>::max();
+                    auto high = std::numeric_limits<float>::lowest();
+                    for (auto const source: sources) {
+                        auto const *transform = registry.try_get<Components::Transform>(source);
+                        if (transform == nullptr) {
+                            continue;
+                        }
+
+                        auto near_edge = transform->position.x;
+                        auto far_edge = near_edge;
+                        if (auto const *model = registry.try_get<Components::Model>(source)) {
+                            if (auto const bounds = renderer->model_bounds(model->model)) {
+                                auto const a = transform->position.x + (bounds->first.x * transform->scale.x);
+                                auto const b = transform->position.x + (bounds->second.x * transform->scale.x);
+                                near_edge = std::min(a, b);
+                                far_edge = std::max(a, b);
+                            }
+                        }
+                        low = std::min(low, near_edge);
+                        high = std::max(high, far_edge);
                     }
 
-                    auto step = 1.0F;
-                    if (auto const *model = registry.try_get<Components::Model>(clone)) {
-                        if (auto const bounds = renderer->model_bounds(model->model)) {
-                            step = std::max(0.01F, (bounds->second.x - bounds->first.x) * std::abs(transform->scale.x) * 1.1F);
-                        }
-                    }
-                    transform->position.x += step;
-                };
+                    return high - low > 0.01F ? (high - low) * 1.1F : 1.0F;
+                }();
+
+                if (sources.empty()) {
+                    break;
+                }
 
                 std::vector<entt::entity> clones;
-                for (auto const source: selected_roots()) {
+                for (auto const source: sources) {
                     auto const *source_parent = registry.try_get<Components::Parent>(source);
                     auto const clone =
                             duplicate_subtree(source, source_parent != nullptr ? source_parent->entity : entt::null);
-                    step_aside(clone);
+                    if (auto *transform = registry.try_get<Components::Transform>(clone)) {
+                        transform->position.x += step;
+                    }
                     clones.push_back(clone);
+                }
+                // The next paste copies from the last one, so repeated pastes line up instead of stacking.
+                if (pasting && !clones.empty()) {
+                    hierarchy_clipboard = clones;
                 }
                 selection.assign(clones);
                 break;
@@ -2867,6 +2924,7 @@ auto Application::on_source_scene_replaced() -> void { mark_source_scene_clean()
 
 auto Application::on_scene_opening() -> void {
     selection_context().clear();
+    hierarchy_clipboard.clear();
     model_loads.clear();
 }
 
@@ -2953,6 +3011,9 @@ auto Application::handle_event(KeyPressedEvent ev) -> bool {
 
     // Shortcuts are commands (editor_commands.cxx); each says where it may fire.
     auto const editing = !is_playing && !ImGui::GetIO().WantCaptureKeyboard;
+    // Keys act on the viewport only while the pointer is in it (or a drag that started there is going on), so a key
+    // typed with the hierarchy or inspector focused does not also move the camera or switch the gizmo.
+    auto const viewport_input = viewport_hovered || mouse_dragging;
     if (commands.run_for_key(ev.key, ev.modifiers, [&](editor::CommandContext where) {
             switch (where) {
                 case editor::CommandContext::always:
@@ -2960,7 +3021,7 @@ auto Application::handle_event(KeyPressedEvent ev) -> bool {
                 case editor::CommandContext::editing:
                     return editing;
                 case editor::CommandContext::viewport:
-                    return editing && viewport_hovered;
+                    return editing && viewport_input;
             }
             return false;
         })) {
@@ -2977,7 +3038,11 @@ auto Application::handle_event(KeyPressedEvent ev) -> bool {
             return true;
         }
 
-        active_camera().on_key_pressed(ev.key);
+        // Ctrl and Alt chords are shortcuts (Ctrl+D duplicates), not movement, and typing in a field is not either.
+        if (viewport_input && (ev.modifiers & (GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER)) == 0 &&
+            !ImGui::GetIO().WantTextInput) {
+            active_camera().on_key_pressed(ev.key);
+        }
     }
 
     return false;
