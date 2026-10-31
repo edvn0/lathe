@@ -216,6 +216,7 @@ struct Application : Runtime {
     auto update_model_loads() -> void;
 
     auto set_entity_model(entt::registry &registry, entt::entity entity, ModelHandle model) -> void;
+    auto spawn_model_lights(Scene *scene, entt::entity model_entity, ModelHandle model) -> void;
 
     std::uint64_t scene_clean_fingerprint = 0;
 

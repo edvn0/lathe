@@ -261,6 +261,15 @@ namespace cvars {
                     "Textures are re-encoded and cached separately",
             .hint = "LAMBDA",
     }};
+    CVar<float> ui_font_size{{
+            .name = "ui_font_size",
+            .group = "Display",
+            .help = "Editor and in-game UI text size in pixels (default 14); read at start-up",
+            .hint = "PIXELS",
+            .default_value = 14.0F,
+            .min = 8.0F,
+            .max = 48.0F,
+    }};
 
     CVar<bool> vsync{{
             .name = "vsync",

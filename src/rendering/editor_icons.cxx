@@ -2,7 +2,10 @@
 #include "core/paths.hxx"
 #include "core/resources.hxx"
 
+#include <algorithm>
 #include <array>
+#include <bit>
+#include <cmath>
 #include <format>
 #include <string_view>
 
@@ -51,11 +54,11 @@ namespace gui {
                     ImageCreateInfo{
                             .extent = VkExtent3D{.width = decoded->width(), .height = decoded->height(), .depth = 1},
                             .format = VK_FORMAT_R8G8B8A8_UNORM,
-                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                             .aspect = VK_IMAGE_ASPECT_COLOR_BIT,
                             .view_type = VK_IMAGE_VIEW_TYPE_2D,
                             .descriptor_views = image_descriptor_view_bit(ImageDescriptorView::sampled_2d),
-                            .mip_levels = 1,
+                            .mip_levels = static_cast<std::uint32_t>(std::bit_width(std::max(decoded->width(), decoded->height()))),
                             .array_layers = 1,
                             .debug_name = std::format("editor_icon.{}", file.name),
                     },
@@ -73,6 +76,14 @@ namespace gui {
 
     auto EditorIcons::texture(EditorIcon icon) const noexcept -> ImTextureID {
         return ImTextureID{textures_[static_cast<std::size_t>(icon)].index};
+    }
+
+    auto EditorIcons::snapped_size(float size) noexcept -> float {
+        return std::max(1.0F, std::round(size));
+    }
+
+    auto EditorIcons::centred_offset(float available, float size) noexcept -> float {
+        return std::floor((available - size) * 0.5F);
     }
 
 }

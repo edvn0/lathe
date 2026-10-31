@@ -1,6 +1,11 @@
 #include "assets/load_model.hxx"
 
+#include <array>
 #include <bit>
+#include <numeric>
+#include <string_view>
+#include <cctype>
+#include <glm/gtx/component_wise.hpp>
 #include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
@@ -98,6 +103,144 @@ namespace {
 
         for (auto const child: cpu_data.nodes[node_index].children) {
             accumulate_node_lights(asset, cpu_data, child, convention, local_to_model, out_lights);
+        }
+    }
+
+    auto compute_model_bounds(ModelCpuData const &cpu_data) -> std::pair<glm::vec3, glm::vec3>;
+
+    // Warm white unless the material's name or emissive factor says otherwise: glTF has no colour for a glowing mesh
+    // beyond its (often textured) emissive map, and the maps are not decoded at this point.
+    auto emissive_light_colour(std::string_view name, glm::vec3 factor) -> glm::vec3 {
+        std::string lower{name};
+        std::ranges::transform(lower, lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        struct Named {
+            std::string_view word;
+            glm::vec3 colour;
+        };
+        static constexpr std::array named{
+                Named{"orange", {1.0F, 0.55F, 0.15F}}, Named{"blue", {0.25F, 0.45F, 1.0F}},
+                Named{"pink", {1.0F, 0.35F, 0.70F}},   Named{"red", {1.0F, 0.15F, 0.12F}},
+                Named{"green", {0.25F, 1.0F, 0.30F}},  Named{"white", {1.0F, 0.95F, 0.85F}},
+        };
+        for (auto const &entry: named) {
+            if (lower.contains(entry.word)) {
+                return entry.colour;
+            }
+        }
+
+        auto const peak = std::max({factor.x, factor.y, factor.z});
+        auto const trough = std::min({factor.x, factor.y, factor.z});
+        if (peak > 0.0F && peak - trough > 0.05F * peak) {
+            return factor / peak;
+        }
+        return {1.0F, 0.78F, 0.50F};
+    }
+
+    // A glTF without KHR_lights_punctual still has its lamps, as emissive meshes. Every small connected piece of an
+    // emissive primitive (a bulb, a lantern's glass, a spotlight's lens) becomes a point light at its centre, so the
+    // scene is lit by them as well as showing them glowing. Pieces large next to the model (a glowing wall) are left
+    // alone: a point at their centre would be wrong.
+    auto synthesize_emissive_lights(fastgltf::Asset const &asset, ModelCpuData const &cpu_data,
+                                    std::vector<ModelCpuLight> &out_lights) -> void {
+        static constexpr std::size_t max_synthesized_lights = 512;
+        static constexpr float max_emitter_fraction = 0.05F;
+        static constexpr float range_per_emitter_size = 40.0F;
+        static constexpr float synthesized_intensity = 25.0F;
+
+        struct Emitter {
+            glm::vec3 centre{0.0F};
+            float extent = 0.0F;
+            glm::vec3 colour{1.0F};
+        };
+
+        std::vector<std::vector<Emitter>> emitters(cpu_data.meshes.size());
+        bool any = false;
+
+        for (std::size_t mesh_index = 0; mesh_index < cpu_data.meshes.size(); ++mesh_index) {
+            for (auto const &primitive: cpu_data.meshes[mesh_index].primitives) {
+                if (!primitive.material_index.has_value() || primitive.vertices.empty()) {
+                    continue;
+                }
+                auto const &material = cpu_data.materials[*primitive.material_index];
+                auto const emissive = material.emissive_factor * material.emissive_strength;
+                if (!material.emissive_image.has_value() || std::max({emissive.x, emissive.y, emissive.z}) <= 0.0F) {
+                    continue;
+                }
+
+                std::vector<std::uint32_t> parent(primitive.vertices.size());
+                std::iota(parent.begin(), parent.end(), 0U);
+                auto const find = [&](std::uint32_t v) {
+                    while (parent[v] != v) {
+                        parent[v] = parent[parent[v]];
+                        v = parent[v];
+                    }
+                    return v;
+                };
+                for (std::size_t i = 0; i + 2 < primitive.indices.size(); i += 3) {
+                    auto const a = find(primitive.indices[i]);
+                    parent[find(primitive.indices[i + 1])] = a;
+                    parent[find(primitive.indices[i + 2])] = a;
+                }
+
+                struct Box {
+                    glm::vec3 min{std::numeric_limits<float>::max()};
+                    glm::vec3 max{std::numeric_limits<float>::lowest()};
+                };
+                std::unordered_map<std::uint32_t, Box> boxes;
+                for (auto const index: primitive.indices) {
+                    auto &box = boxes[find(index)];
+                    box.min = glm::min(box.min, primitive.vertices[index].position);
+                    box.max = glm::max(box.max, primitive.vertices[index].position);
+                }
+
+                auto const colour =
+                        emissive_light_colour(asset.materials[*primitive.material_index].name, material.emissive_factor);
+                for (auto const &[root, box]: boxes) {
+                    emitters[mesh_index].push_back(Emitter{
+                            .centre = (box.min + box.max) * 0.5F,
+                            .extent = glm::compMax(box.max - box.min),
+                            .colour = colour,
+                    });
+                    any = true;
+                }
+            }
+        }
+
+        if (!any) {
+            return;
+        }
+
+        auto const [bounds_min, bounds_max] = compute_model_bounds(cpu_data);
+        auto const max_extent = glm::compMax(bounds_max - bounds_min) * max_emitter_fraction;
+
+        auto const walk = [&](auto &&self, std::uint32_t node_index, glm::mat4 const &parent_transform) -> void {
+            auto const &node = cpu_data.nodes[node_index];
+            auto const transform = parent_transform * node.local_transform;
+
+            if (node.mesh_index < emitters.size()) {
+                auto const scale = std::max({glm::length(glm::vec3{transform[0]}), glm::length(glm::vec3{transform[1]}),
+                                             glm::length(glm::vec3{transform[2]})});
+                for (auto const &emitter: emitters[node.mesh_index]) {
+                    auto const extent = std::max(emitter.extent * scale, 1.0e-4F);
+                    if (extent > max_extent || out_lights.size() >= max_synthesized_lights) {
+                        continue;
+                    }
+                    ModelCpuLight light{};
+                    light.position = glm::vec3{transform * glm::vec4{emitter.centre, 1.0F}};
+                    light.colour = emitter.colour;
+                    light.intensity = synthesized_intensity;
+                    light.range = extent * range_per_emitter_size;
+                    out_lights.push_back(light);
+                }
+            }
+
+            for (auto const child: node.children) {
+                self(self, child, transform);
+            }
+        };
+        for (auto const root: cpu_data.scene_roots) {
+            walk(walk, root, glm::mat4{1.0F});
         }
     }
 
@@ -1198,6 +1341,9 @@ auto load_model_cpu_unfinalized(AssetPath const &path, SamplerStorage &sampler_s
 
     for (auto const root: cpu_data.scene_roots) {
         accumulate_node_lights(asset, cpu_data, root, convention, glm::mat4{1.0F}, cpu_data.lights);
+    }
+    if (asset.lights.empty()) {
+        synthesize_emissive_lights(asset, cpu_data, cpu_data.lights);
     }
     debug("[load_model_cpu]: extracted {} lights from {} scene roots", cpu_data.lights.size(),
           cpu_data.scene_roots.size());

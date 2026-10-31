@@ -1,4 +1,5 @@
 #include "runtime/runtime.hxx"
+#include "runtime/engine_cvars.hxx"
 
 #include <volk.h>
 
@@ -296,7 +297,7 @@ auto Runtime::on_startup() -> void {
     imgui_renderer = std::make_unique<gui::ImGuiRenderer>(
             *renderer, gui::FontChoice{
                                .font_path = "assets/fonts/GoogleSansCode-Regular.ttf",
-                               .size = 12,
+                               .size = cvars::ui_font_size.get(),
                        });
     create_ui_resources();
     register_overlays();

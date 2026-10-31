@@ -60,6 +60,7 @@ namespace cvars {
     extern CVar<bool> max_quality;
     extern CVar<std::uint32_t> max_texture_size;
     extern CVar<float> texture_rdo;
+    extern CVar<float> ui_font_size;
 
     // Presentation.
     extern CVar<bool> vsync;
