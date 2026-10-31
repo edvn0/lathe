@@ -145,8 +145,21 @@ struct LuaHttp::Impl {
         return std::ranges::find(options.allowed_hosts, host) != options.allowed_hosts.end();
     }
 
-    auto cache_root() const -> std::filesystem::path {
-        return options.cache_directory.empty() ? cache_path("downloads/lua").absolute() : options.cache_directory;
+    // Where earlier versions kept script downloads.
+    auto legacy_root() const -> std::filesystem::path { return cache_path("downloads/lua").absolute(); }
+
+    // Where the download called 'name' with this hash goes. In the store it is keyed by the hash, so the same bytes are
+    // kept once whatever scripts call them; the name only shapes the file's name.
+    auto download_path(std::string const &sha256, std::string const &name) const -> std::filesystem::path {
+        if (!options.cache_directory.empty()) {
+            return options.cache_directory / name;
+        }
+
+        auto const downloads = options.downloads.enabled() ? options.downloads : DownloadCache::global();
+        auto const stored = downloads.path(sha256, std::filesystem::path{name}.stem().string(),
+                                           std::filesystem::path{name}.extension().string(), legacy_root() / name);
+
+        return stored.empty() ? legacy_root() / name : stored;
     }
 
     // Reads `url` and the options table at `table_index` into a new request; an empty result means `problem` says why.
@@ -233,7 +246,7 @@ struct LuaHttp::Impl {
                 return fail("name must be a plain relative path of letters, digits, '.', '_' and '-'");
             }
 
-            request->path = cache_root() / name;
+            request->path = download_path(request->sha256, name);
         }
 
         return request;

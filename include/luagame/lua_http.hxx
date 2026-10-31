@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "net/http.hxx"
+#include "storage/download_cache.hxx"
 #include "scripting/lua_api.hxx"
 
 class LuaRuntime;
@@ -18,8 +19,11 @@ struct LuaHttpOptions {
     // list, so a request that matters should carry a sha256, which downloads always do.
     std::vector<std::string> allowed_hosts{"raw.githubusercontent.com", "github.com", "objects.githubusercontent.com"};
 
-    // Where downloads are kept; empty means the engine's cache directory ("downloads/lua").
+    // Where downloads are kept: this directory when set (tools and tests), else the cache store's downloads.
     std::filesystem::path cache_directory;
+
+    // The store's downloads to use instead of the process-wide one; unset means DownloadCache::global().
+    DownloadCache downloads;
 
     std::size_t max_in_flight = 8;
     std::size_t max_body_bytes = std::size_t{4} * 1024U * 1024U;

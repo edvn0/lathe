@@ -15,6 +15,8 @@
 
 #include "core/sha256.hxx"
 #include "luagame/lua_http.hxx"
+#include "storage/cache_store.hxx"
+#include "storage/download_cache.hxx"
 #include "scripting/lua_runtime.hxx"
 
 namespace {
@@ -90,10 +92,16 @@ namespace {
 
             return std::move(*created);
         }();
+        // Set to put downloads in a cache store instead of in 'cache'.
+        std::shared_ptr<CacheStore> store;
         LuaHttp http{[this] {
             LuaHttpOptions options;
 
-            options.cache_directory = cache;
+            if (store != nullptr) {
+                options.downloads = DownloadCache{store};
+            } else {
+                options.cache_directory = cache;
+            }
             options.max_in_flight = 3;
             options.make_handler = [this]() -> std::unique_ptr<IHttpMessageHandler> {
                 return std::make_unique<FakeServer::Handler>(server);
@@ -102,7 +110,9 @@ namespace {
             return options;
         }()};
 
-        Harness() { http.open(runtime); }
+        explicit Harness(std::shared_ptr<CacheStore> cache_store = nullptr) : store(std::move(cache_store)) {
+            http.open(runtime);
+        }
 
         ~Harness() { std::filesystem::remove_all(cache); }
 
@@ -236,6 +246,43 @@ TEST_CASE("lua http: a download is kept in the cache, checked, and reused") {
     CHECK(h.wait_for("E:done()"));
     CHECK(h.run("assert(E:ok())").empty());
     CHECK(h.server.requests.load() == 1);
+}
+
+TEST_CASE("lua http: without a cache directory downloads go to the cache store, keyed by their hash") {
+    auto const store_directory = unique_cache_directory();
+    auto store = CacheStore::open(store_directory);
+    REQUIRE(store.has_value());
+
+    Harness h{*store};
+    std::string const content = "model bytes";
+    std::string const url = "https://raw.githubusercontent.com/a/model.glb";
+
+    h.server.responses[url] = {200, content};
+
+    CHECK(h.run("D = http.download('" + url + "', { sha256 = '" + hash_of(content) + "', name = 'snake/model.glb' })")
+                  .empty());
+    CHECK(h.wait_for("D:done()"));
+    CHECK(h.run("assert(D:ok(), tostring(D:error()))").empty());
+    CHECK(h.run("PATH = D:path()").empty());
+
+    std::filesystem::path const stored = h.global("PATH");
+
+    CHECK(stored.extension() == ".glb");
+    CHECK(stored.filename().string().starts_with("model."));
+    CHECK(stored.string().starts_with(store_directory.string()));
+    REQUIRE(std::filesystem::exists(stored));
+    CHECK(std::filesystem::file_size(stored) == content.size());
+    CHECK(h.server.requests.load() == 1);
+    CHECK(store.value()->stats()->total_entries() == 1);
+
+    // The same bytes under another name are the same file, and the network is not touched again.
+    CHECK(h.run("E = http.download('" + url + "', { sha256 = '" + hash_of(content) + "', name = 'other/copy.glb' })")
+                  .empty());
+    CHECK(h.wait_for("E:done()"));
+    CHECK(h.run("assert(E:ok())").empty());
+    CHECK(h.server.requests.load() == 1);
+
+    std::filesystem::remove_all(store_directory);
 }
 
 TEST_CASE("lua http: a download with the wrong hash fails and leaves no file") {

@@ -18,6 +18,7 @@
 #include "gpu/shader_binary_cache.hxx"
 #include "gpu/shader_stage.hxx"
 #include "storage/cache_store.hxx"
+#include "storage/download_cache.hxx"
 
 namespace {
 
@@ -681,6 +682,97 @@ TEST_SUITE("unit") {
         std::filesystem::remove_all(shaders);
 
         CHECK_FALSE(cache.find("/checkout").has_value());
+
+        std::filesystem::remove_all(dir);
+    }
+
+    TEST_CASE("CacheStore: a reserved file is listed, sized once written, and survives orphan removal") {
+        auto const dir = make_temp_dir("reserve");
+        auto store = open_store(dir);
+        declare_files(*store);
+
+        auto const path = store->reserve_file("files", "map", "earth", ".png");
+        REQUIRE(path.has_value());
+        CHECK(path->extension() == ".png");
+        CHECK(std::filesystem::exists(path->parent_path()));
+
+        // Reserved but not written: counted, but a miss.
+        CHECK(store->stats()->total_entries() == 1);
+        CHECK_FALSE(store->find_file("files", "map").has_value());
+
+        // Reserving again after the writer finished keeps the file and gives the same path.
+        REQUIRE(store->reserve_file("files", "map", "earth", ".png").value() == *path);
+        write_file(*path, "pixels");
+        std::filesystem::last_write_time(*path, std::filesystem::file_time_type::clock::now() - std::chrono::hours{2});
+
+        CHECK(store->remove_orphans().entries == 0);
+        CHECK(store->find_file("files", "map") == path);
+        CHECK(store->stats()->namespaces.front().bytes == 6);
+
+        std::filesystem::remove_all(dir);
+    }
+
+    TEST_CASE("DownloadCache: hands out a stable path, adopts the old location and is never evicted") {
+        auto const dir = make_temp_dir("downloads");
+        auto store = open_store(dir);
+        DownloadCache downloads{store};
+        REQUIRE(downloads.enabled());
+
+        auto const legacy = dir / "old" / "model.glb";
+        std::filesystem::create_directories(legacy.parent_path());
+        write_file(legacy, "glb bytes");
+
+        // Nothing is recorded for something never downloaded.
+        CHECK_FALSE(downloads.find("gallery/Missing", "Missing", ".glb", dir / "old" / "nothing.glb").has_value());
+        CHECK(store->stats()->total_entries() == 0);
+
+        auto const found = downloads.find("gallery/Model", "Model", ".glb", legacy);
+        REQUIRE(found.has_value());
+        CHECK(found->extension() == ".glb");
+        CHECK_FALSE(std::filesystem::exists(legacy));
+        CHECK(std::filesystem::file_size(*found) == 9);
+
+        CHECK(downloads.path("gallery/Model", "Model", ".glb") == *found);
+        CHECK(downloads.find("gallery/Model", "Model", ".glb") == found);
+
+        CHECK(store->enforce_budget(1).entries == 0);
+        CHECK(std::filesystem::exists(*found));
+
+        std::filesystem::remove_all(dir);
+    }
+
+    TEST_CASE("DownloadCache: without a store it hands out nothing") {
+        DownloadCache downloads;
+
+        CHECK_FALSE(downloads.enabled());
+        CHECK(downloads.path("k", "k", ".bin").empty());
+        CHECK_FALSE(downloads.find("k", "k", ".bin").has_value());
+    }
+
+    TEST_CASE("CacheStore: a key's lock excludes other holders until it is released") {
+        auto const dir = make_temp_dir("locks");
+        auto store = open_store(dir);
+
+        auto held = store->lock("files", "k");
+        REQUIRE(held);
+
+        // A different key is free; the same key blocks until the holder lets go (or the waiter is told to give up).
+        CHECK(store->lock("files", "other"));
+        CHECK_FALSE(store->lock("files", "k", {}, std::chrono::seconds{0}));
+        CHECK_FALSE(store->lock("files", "k", [] { return true; }));
+
+        std::atomic<bool> acquired{false};
+        std::jthread waiter{[&] {
+            auto lock = store->lock("files", "k");
+            acquired = static_cast<bool>(lock);
+        }};
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+        CHECK_FALSE(acquired.load());
+
+        held = CacheLock{};
+        waiter.join();
+        CHECK(acquired.load());
 
         std::filesystem::remove_all(dir);
     }

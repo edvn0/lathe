@@ -20,8 +20,16 @@
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 #include "scene/components.hxx"
+#include "storage/download_cache.hxx"
 
 namespace {
+    // Where the gallery game left the model: in the cache store, or in the layout earlier versions used.
+    auto gallery_download(std::string_view file) -> std::filesystem::path {
+        auto const legacy = cache_path(std::format("downloads/gallery/{}.glb", file)).absolute();
+
+        return DownloadCache::global().find(std::format("gallery/{}", file), file, ".glb", legacy).value_or(legacy);
+    }
+
     struct ModelSource {
         std::string_view file;
         bool cached;
@@ -131,8 +139,7 @@ auto populate_shadow_city(Scene &scene, Renderer &renderer, EngineModels const &
 
     for (std::size_t i = 0; i < sources.size(); ++i) {
         auto const &source = sources[i];
-        auto const path = source.cached ? cache_path(std::format("downloads/gallery/{}.glb", source.file)).absolute()
-                                        : data_path(source.file).absolute();
+        auto const path = source.cached ? gallery_download(source.file) : data_path(source.file).absolute();
         auto const asset = AssetPath::external(path);
         auto loaded = asset ? renderer.load_model(*asset) : std::unexpected(RendererError{});
         if (!loaded) {

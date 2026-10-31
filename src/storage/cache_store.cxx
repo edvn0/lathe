@@ -1,6 +1,8 @@
 #include "storage/cache_store.hxx"
 
 #include <sqlite3.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -11,6 +13,7 @@
 #include <map>
 #include <set>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #include "core/logger.hxx"
@@ -215,6 +218,12 @@ struct CacheStore::Impl {
         static_cast<void>(update.run());
     }
 
+    auto refresh_size(std::string_view ns, std::string_view key, std::uint64_t size) -> void {
+        Statement update{db, "UPDATE entries SET size = ?3 WHERE ns = ?1 AND key = ?2"};
+        update.text(1, ns).text(2, key).integer(3, static_cast<std::int64_t>(size));
+        static_cast<void>(update.run());
+    }
+
     // Deletes the rows and then their files. The caller holds the mutex.
     auto delete_rows(std::vector<Row> const &rows) -> CacheReclaimed {
         CacheReclaimed reclaimed;
@@ -333,7 +342,65 @@ auto PendingCacheFile::operator=(PendingCacheFile &&other) noexcept -> PendingCa
     return *this;
 }
 
+CacheLock::~CacheLock() {
+    if (descriptor_ >= 0) {
+        // Closing the descriptor drops the flock.
+        ::close(descriptor_);
+    }
+}
+
+CacheLock::CacheLock(CacheLock &&other) noexcept : descriptor_(std::exchange(other.descriptor_, -1)) {}
+
+auto CacheLock::operator=(CacheLock &&other) noexcept -> CacheLock & {
+    if (this != &other) {
+        if (descriptor_ >= 0) {
+            ::close(descriptor_);
+        }
+
+        descriptor_ = std::exchange(other.descriptor_, -1);
+    }
+
+    return *this;
+}
+
 CacheStore::~CacheStore() = default;
+
+auto CacheStore::lock(std::string_view ns, std::string_view key, std::function<bool()> const &give_up,
+                      std::chrono::seconds timeout) -> CacheLock {
+    auto const digest = sha256_hex(std::as_bytes(std::span{key.data(), key.size()}));
+    auto const directory = directory_ / "locks";
+
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+
+    // One file per key, opened per call: flock locks belong to the open file, so threads of this process exclude each
+    // other as well as other processes do.
+    auto const path = directory / std::format("{}.{}.lock", sanitise_label(ns), std::string_view{digest}.substr(0, 32));
+    auto const descriptor = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+
+    if (descriptor < 0) {
+        return {};
+    }
+
+    auto const deadline = std::chrono::steady_clock::now() + timeout;
+
+    for (;;) {
+        if (::flock(descriptor, LOCK_EX | LOCK_NB) == 0) {
+            return CacheLock{descriptor};
+        }
+
+        if ((errno != EWOULDBLOCK && errno != EINTR) || std::chrono::steady_clock::now() >= deadline ||
+            (give_up && give_up())) {
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    }
+
+    ::close(descriptor);
+
+    return {};
+}
 
 auto CacheStore::set_clock(std::function<std::int64_t()> clock) -> void {
     std::scoped_lock const lock{impl_->mutex};
@@ -535,7 +602,7 @@ auto CacheStore::find_file(std::string_view ns, std::string_view key) -> std::op
         return std::nullopt;
     }
 
-    Statement find{impl.db, "SELECT file, last_used FROM entries WHERE ns = ?1 AND key = ?2 AND file IS NOT NULL"};
+    Statement find{impl.db, "SELECT file, last_used, size FROM entries WHERE ns = ?1 AND key = ?2 AND file IS NOT NULL"};
     find.text(1, ns).text(2, key);
 
     if (!find.step()) {
@@ -544,6 +611,7 @@ auto CacheStore::find_file(std::string_view ns, std::string_view key) -> std::op
 
     auto const path = impl.blobs / find.column_text(0);
     auto const last_used = find.column_int(1);
+    auto const recorded_size = static_cast<std::uint64_t>(find.column_int(2));
 
     std::error_code error;
 
@@ -557,6 +625,70 @@ auto CacheStore::find_file(std::string_view ns, std::string_view key) -> std::op
     }
 
     impl.touch(ns, key, last_used);
+
+    // A reserved file is written by someone else, after its entry was recorded.
+    if (recorded_size == 0) {
+        impl.refresh_size(ns, key, file_size_or_zero(path));
+    }
+
+    return path;
+}
+
+namespace {
+    // Where the file for 'key' lives: blobs/<ns>/<label>.<hash of the key><extension>.
+    auto payload_path(std::filesystem::path const &blobs, std::string_view ns, std::string_view key,
+                      std::string_view label, std::string_view extension) -> std::filesystem::path {
+        auto const digest = sha256_hex(std::as_bytes(std::span{key.data(), key.size()}));
+
+        return blobs / std::string{ns} /
+               std::format("{}.{}{}", sanitise_label(label), std::string_view{digest}.substr(0, 16), extension);
+    }
+}
+
+auto CacheStore::reserve_file(std::string_view ns, std::string_view key, std::string_view label,
+                              std::string_view extension) -> std::expected<std::filesystem::path, CacheStoreError> {
+    auto &impl = *impl_;
+    std::scoped_lock const lock{impl.mutex};
+
+    auto spec = impl.require(ns, CacheKind::file);
+
+    if (!spec) {
+        return std::unexpected(std::move(spec.error()));
+    }
+
+    // The key decides the file: asking again with another label finds the first one's.
+    auto const existing = [&]() -> std::optional<std::string> {
+        Statement find{impl.db, "SELECT file FROM entries WHERE ns = ?1 AND key = ?2 AND file IS NOT NULL"};
+        find.text(1, ns).text(2, key);
+
+        return find.step() ? std::optional{find.column_text(0)} : std::nullopt;
+    }();
+
+    auto const path = existing ? impl.blobs / *existing
+                               : payload_path(impl.blobs, ns, key, label,
+                                              extension.empty() ? (*spec)->extension : extension);
+
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+
+    if (error) {
+        return std::unexpected(make_error(CacheStoreErrorType::io_failed,
+                                          std::format("{}: {}", path.parent_path().string(), error.message())));
+    }
+
+    auto const now = impl.now();
+    Statement put{impl.db, "INSERT INTO entries(ns, key, size, source, file, data, created, last_used)"
+                           " VALUES(?1, ?2, ?3, '', ?4, NULL, ?5, ?5)"
+                           " ON CONFLICT(ns, key) DO UPDATE SET file = excluded.file, last_used = excluded.last_used"};
+    put.text(1, ns)
+            .text(2, key)
+            .integer(3, static_cast<std::int64_t>(file_size_or_zero(path)))
+            .text(4, path.lexically_relative(impl.blobs).generic_string())
+            .integer(5, now);
+
+    if (!put.run()) {
+        return std::unexpected(impl.last_error("reserve"));
+    }
 
     return path;
 }
@@ -576,10 +708,7 @@ auto CacheStore::begin_file(std::string_view ns, std::string_view key, std::stri
             return std::unexpected(std::move(spec.error()));
         }
 
-        auto const digest = sha256_hex(std::as_bytes(std::span{key.data(), key.size()}));
-        final_path = impl.blobs / std::string{ns} /
-                     std::format("{}.{}{}", sanitise_label(label), std::string_view{digest}.substr(0, 16),
-                                 extension.empty() ? std::string_view{(*spec)->extension} : extension);
+        final_path = payload_path(impl.blobs, ns, key, label, extension.empty() ? (*spec)->extension : extension);
     }
 
     std::error_code error;
@@ -671,6 +800,21 @@ auto CacheStore::erase(std::string_view ns, std::string_view key) -> void {
 auto CacheStore::stats() -> std::expected<CacheStats, CacheStoreError> {
     auto &impl = *impl_;
     std::scoped_lock const lock{impl.mutex};
+
+    {
+        std::vector<Row> unsized;
+        Statement list{impl.db, "SELECT ns, key, file FROM entries WHERE size = 0 AND file IS NOT NULL"};
+
+        while (list.step()) {
+            unsized.push_back(Row{.ns = list.column_text(0), .key = list.column_text(1), .file = list.column_text(2)});
+        }
+
+        for (auto const &row: unsized) {
+            if (auto const size = file_size_or_zero(impl.blobs / row.file); size != 0) {
+                impl.refresh_size(row.ns, row.key, size);
+            }
+        }
+    }
 
     CacheStats result;
     result.directory = directory_;
@@ -829,6 +973,18 @@ auto CacheStore::remove_orphans() -> CacheReclaimed {
         if (std::filesystem::remove(it->path(), time_error)) {
             ++reclaimed.entries;
             reclaimed.bytes += size;
+        }
+    }
+
+    // Lock files are never needed again once nobody is waiting on them.
+    auto const lock_cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours{24};
+
+    for (std::filesystem::directory_iterator it{directory_ / "locks", error}, end; !error && it != end;
+         it.increment(error)) {
+        std::error_code time_error;
+
+        if (std::filesystem::last_write_time(it->path(), time_error) < lock_cutoff && !time_error) {
+            std::filesystem::remove(it->path(), time_error);
         }
     }
 

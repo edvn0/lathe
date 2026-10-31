@@ -732,6 +732,15 @@ auto load_compressed_texture(AssetPath const &asset_path, TextureRole role,
         return std::move(*cached);
     }
 
+    // Another process may be encoding this very texture: wait for it, and take its result.
+    auto const producing = target.cache.lock(target.key);
+
+    if (producing) {
+        if (auto cached = try_load_cached(target, FlyString{stem}, profile_ptr, preview.get()); cached.has_value()) {
+            return std::move(*cached);
+        }
+    }
+
     debug("texture_pipeline: '{}' not cached, decoding from source '{}'", stem, source_path.string());
 
     ScopedProfileSample decode_sample{profile_ptr != nullptr ? &profile_ptr->texture_decode_ns : nullptr};
@@ -776,6 +785,15 @@ auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> enco
         return std::move(*cached);
     }
 
+    // Another process may be encoding this very texture: wait for it, and take its result.
+    auto const producing = target.cache.lock(target.key);
+
+    if (producing) {
+        if (auto cached = try_load_cached(target, FlyString{cache_key}, profile_ptr, preview.get()); cached.has_value()) {
+            return std::move(*cached);
+        }
+    }
+
     debug("texture_pipeline: '{}' not cached, decoding from embedded memory", cache_key);
 
     ScopedProfileSample decode_sample{profile_ptr != nullptr ? &profile_ptr->texture_decode_ns : nullptr};
@@ -813,6 +831,15 @@ auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels,
 
     if (auto cached = try_load_cached(target, FlyString{cache_key}, profile_ptr, nullptr); cached.has_value()) {
         return std::move(*cached);
+    }
+
+    // Another process may be encoding this very texture: wait for it, and take its result.
+    auto const producing = target.cache.lock(target.key);
+
+    if (producing) {
+        if (auto cached = try_load_cached(target, FlyString{cache_key}, profile_ptr, nullptr); cached.has_value()) {
+            return std::move(*cached);
+        }
     }
 
     debug("texture_pipeline: '{}' not cached, encoding from raw pixel memory", cache_key);

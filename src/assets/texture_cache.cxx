@@ -2,6 +2,7 @@
 
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
+#include "core/thread_pool.hxx"
 #include "storage/caches.hxx"
 
 namespace {
@@ -73,6 +74,11 @@ auto TextureCache::commit(PendingCacheFile &&pending, std::string_view source) c
     }
 
     return committed.has_value();
+}
+
+auto TextureCache::lock(std::string_view key) const -> CacheLock {
+    return store_ != nullptr ? store_->lock(namespace_name, key, [] { return thread_pool_shutting_down(); })
+                             : CacheLock{};
 }
 
 auto TextureCache::discard(std::string_view key) const -> void {

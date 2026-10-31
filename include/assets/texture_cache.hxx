@@ -39,6 +39,11 @@ public:
     // when that is gone.
     auto commit(PendingCacheFile &&pending, std::string_view source) const -> bool;
 
+    // Waits while another process or thread is producing the file for 'key', then holds the right to. Look again after
+    // taking it: whoever held it before you has probably finished the job. Empty when caching is off or the wait was
+    // given up (shutdown, a producer that never finished).
+    [[nodiscard]] auto lock(std::string_view key) const -> CacheLock;
+
     // Forgets 'key', after its file turned out to be unreadable.
     auto discard(std::string_view key) const -> void;
 

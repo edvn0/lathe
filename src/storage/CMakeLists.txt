@@ -8,6 +8,7 @@ add_library(
     STATIC
         cache_store.cxx
         caches.cxx
+        download_cache.cxx
         storage_error_describe.cxx
 )
 

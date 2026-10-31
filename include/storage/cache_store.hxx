@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -135,6 +136,29 @@ private:
     std::filesystem::path final_;
 };
 
+// Held while one process or thread produces the entry for a key, so the others wait for it instead of repeating the
+// work; see CacheStore::lock(). Released when destroyed, or when the process dies.
+class CacheLock {
+public:
+    CacheLock() = default;
+    ~CacheLock();
+
+    CacheLock(CacheLock const &) = delete;
+    auto operator=(CacheLock const &) -> CacheLock & = delete;
+    CacheLock(CacheLock &&other) noexcept;
+    auto operator=(CacheLock &&other) noexcept -> CacheLock &;
+
+    // False when the wait was given up on, in which case nothing is held and the caller just does the work.
+    [[nodiscard]] explicit operator bool() const noexcept { return descriptor_ >= 0; }
+
+private:
+    friend class CacheStore;
+
+    explicit CacheLock(int descriptor) : descriptor_(descriptor) {}
+
+    int descriptor_ = -1;
+};
+
 // An on-disk cache shared by every Lathe process (editor, player, packager, benchmark) of a user: a SQLite database
 // indexing the entries (key, version, size, source, last use) plus a blobs/ directory for the large payloads. Keys are
 // whole strings, so there are no hash collisions to guard against. Entries carry their namespace's version, are evicted
@@ -177,6 +201,19 @@ public:
     // Atomically installs the written file and records the entry; returns its final path.
     [[nodiscard]] auto commit(PendingCacheFile &&pending, CacheEntryInfo const &info = {})
             -> std::expected<std::filesystem::path, CacheStoreError>;
+
+    // For a file whose writer installs it atomically itself (the HTTP client's downloads): records the entry, so it is
+    // counted, listed and cleared, and returns the stable path to write to. The entry's size is read from the file when
+    // it exists (on find_file() and stats()).
+    [[nodiscard]] auto reserve_file(std::string_view ns, std::string_view key, std::string_view label = {},
+                                    std::string_view extension = {})
+            -> std::expected<std::filesystem::path, CacheStoreError>;
+
+    // Waits until nobody else holds the lock for 'key', then takes it. Callers that missed take it, look again, and only
+    // then produce the entry, so two processes cooking the same texture do it once. Gives up (returning an empty lock)
+    // after 'timeout' or once 'give_up' returns true.
+    [[nodiscard]] auto lock(std::string_view ns, std::string_view key, std::function<bool()> const &give_up = {},
+                            std::chrono::seconds timeout = std::chrono::minutes{10}) -> CacheLock;
 
     auto erase(std::string_view ns, std::string_view key) -> void;
 
