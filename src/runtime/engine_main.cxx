@@ -1120,36 +1120,55 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     auto const shader_pack_cache = ShaderPackCache::global();
     auto const shader_pack_key = Paths::current().engine_root().string();
     auto const packaged_pack_path = Paths::current().engine_root() / "shaders.lsp";
-    auto const default_pack_path = std::filesystem::exists(packaged_pack_path)
-                                           ? packaged_pack_path
-                                           : shader_pack_cache.find(shader_pack_key).value_or(std::filesystem::path{});
+    auto const shader_directory = Paths::current().engine_root() / "assets" / "shaders";
     auto cache_shaders = false;
 
     if (!cvars::record_shaders.get().empty()) {
         renderer::start_shader_recording();
     } else {
-        auto const pack_path = cvars::shader_pack.get().empty() ? default_pack_path
-                                                          : std::filesystem::path{cvars::shader_pack.get()};
-        auto pack_usable = false;
+        // An explicit --shader-pack is the only candidate. Otherwise a packaged pack is tried first and the cached one
+        // after it, so a stale packaged pack (say a leftover shaders.lsp) never hides a good cache entry.
+        auto candidates = std::vector<std::filesystem::path>{};
 
-        if (std::filesystem::exists(pack_path)) {
-            if (auto pack = renderer::ShaderPack::load(pack_path)) {
-                if (pack->matches_sources(Paths::current().engine_root() / "assets" / "shaders")) {
-                    info("Using {} precompiled shaders from '{}'", pack->size(), pack_path.string());
-                    renderer::install_shader_pack(std::make_shared<renderer::ShaderPack const>(std::move(*pack)));
-                    pack_usable = true;
-                } else {
-                    warn("Ignoring shader pack '{}': the shader sources changed since it was recorded; "
-                         "re-record it with --record-shaders",
-                         pack_path.string());
-                }
-            } else {
-                error("Ignoring shader pack: {}", pack.error());
+        if (!cvars::shader_pack.get().empty()) {
+            candidates.emplace_back(cvars::shader_pack.get());
+        } else {
+            candidates.push_back(packaged_pack_path);
+
+            if (auto cached = shader_pack_cache.find(shader_pack_key)) {
+                candidates.push_back(std::move(*cached));
             }
         }
 
-        // No usable pack (first run, or the sources changed): record what this run compiles into the default
-        // pack so the next run skips compilation. An explicit --shader-pack is never overwritten.
+        auto pack_usable = false;
+
+        for (auto const &pack_path: candidates) {
+            if (!std::filesystem::exists(pack_path)) {
+                continue;
+            }
+
+            auto pack = renderer::ShaderPack::load(pack_path);
+
+            if (!pack) {
+                error("Ignoring shader pack: {}", pack.error());
+                continue;
+            }
+
+            if (!pack->matches_sources(shader_directory)) {
+                warn("Ignoring shader pack '{}': the shader sources changed since it was recorded; "
+                     "re-record it with --record-shaders",
+                     pack_path.string());
+                continue;
+            }
+
+            info("Using {} precompiled shaders from '{}'", pack->size(), pack_path.string());
+            renderer::install_shader_pack(std::make_shared<renderer::ShaderPack const>(std::move(*pack)));
+            pack_usable = true;
+            break;
+        }
+
+        // No usable pack (first run, or the sources changed): record what this run compiles into the cache so the
+        // next run skips compilation. An explicit --shader-pack is never overwritten.
         if (!pack_usable && cvars::shader_pack.get().empty()) {
             renderer::start_shader_recording();
             cache_shaders = true;
@@ -1445,11 +1464,32 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     std::uint32_t bench_samples = 0;
     std::uint64_t bench_last_serial = ~std::uint64_t{0};
 
+    // Writes the recorded shaders to the cache once; early, so a run that never exits cleanly still leaves a pack.
+    auto const save_shader_cache = [&] {
+        if (!std::exchange(cache_shaders, false)) {
+            return;
+        }
+
+        if (auto pending = shader_pack_cache.begin(shader_pack_key)) {
+            if (auto const saved = renderer::finish_shader_recording(pending->path())) {
+                info("Cached {} compiled shaders", *saved);
+                static_cast<void>(shader_pack_cache.commit(std::move(*pending), shader_directory.string()));
+            } else {
+                warn("Could not cache compiled shaders: {}", saved.error());
+            }
+        }
+    };
+    constexpr std::uint32_t shader_cache_frame = 120;
+
     // A close request is handled right after polling, where the runtime may veto it (unsaved changes).
     while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire)) {
         ZoneScopedNC("MainLoop", tracy::Color::Gray);
 
         auto const frame_number = frames_run++;
+
+        if (frame_number == shader_cache_frame) {
+            save_shader_cache();
+        }
 
         if (cvars::exit_after_frames.get() != 0 && frame_number >= cvars::exit_after_frames.get()) {
             break;
@@ -1647,17 +1687,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
     }
 
-    if (cache_shaders) {
-        if (auto pending = shader_pack_cache.begin(shader_pack_key)) {
-            if (auto const saved = renderer::finish_shader_recording(pending->path())) {
-                info("Cached {} compiled shaders", *saved);
-                static_cast<void>(shader_pack_cache.commit(
-                        std::move(*pending), (Paths::current().engine_root() / "assets" / "shaders").string()));
-            } else {
-                warn("Could not cache compiled shaders: {}", saved.error());
-            }
-        }
-    }
+    save_shader_cache();
 
     if (!cvars::record_resources.get().empty()) {
         auto resources = finish_resource_recording();
