@@ -3367,7 +3367,14 @@ auto Renderer::cached_model(AssetPath const &source) const -> ModelHandle {
 
 auto Renderer::model_source(ModelHandle handle) const noexcept -> AssetPath const * {
     auto const it = model_sources_.find(model_source_key(handle));
-    return it != model_sources_.end() ? &it->second : nullptr;
+
+    if (it != model_sources_.end()) {
+        return &it->second;
+    }
+
+    // A model still streaming in has no registered source yet, but a scene saved now (a recovery save, say) must not
+    // lose it.
+    return model_streamer_.pending_source(handle);
 }
 
 auto Renderer::destroy_model(ModelHandle handle) -> std::expected<void, RendererError> {
@@ -7280,7 +7287,7 @@ auto Renderer::wait_idle() -> std::expected<void, RendererError> {
     auto const result = wait_idle_bounded(context_.device, "Renderer::wait_idle");
 
     if (is_device_failure(result)) {
-        context_.device_lost.store(true, std::memory_order_release);
+        context_.mark_device_lost();
     }
 
     return result == VK_SUCCESS ? std::expected<void, RendererError>{}

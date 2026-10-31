@@ -345,6 +345,7 @@ protected:
     auto on_play_stopping() -> void override;
     auto on_scene_opening() -> void override;
     auto on_shutdown() -> void override;
+    [[nodiscard]] auto recover_work() -> std::optional<std::filesystem::path> override;
     auto create_ui_resources() -> void override;
     auto on_source_scene_replaced() -> void override;
 };

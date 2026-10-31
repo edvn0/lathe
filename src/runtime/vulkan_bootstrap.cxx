@@ -1,5 +1,6 @@
 #include "runtime/vulkan_bootstrap.hxx"
 
+#include "gpu/device_checkpoints.hxx"
 #include <volk.h>
 
 #include <GLFW/glfw3.h>
@@ -851,6 +852,13 @@ namespace {
             device_extensions.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME);
         }
 
+        auto const checkpoints_supported =
+                supports_device_extension(context.physical_device, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+
+        if (checkpoints_supported) {
+            device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+        }
+
         if (context.ray_query_supported) {
             device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
             device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
@@ -969,6 +977,7 @@ namespace {
         }
 
         volkLoadDevice(context.device);
+        device_checkpoints::enable(checkpoints_supported);
         vkGetDeviceQueue(context.device, context.queue_families.graphics, 0, &context.graphics_queue);
         vkGetDeviceQueue(context.device, context.queue_families.present, 0, &context.present_queue);
         vkGetDeviceQueue(context.device, context.queue_families.compute, context.queue_families.compute_queue_index,

@@ -7,6 +7,7 @@ add_library(
     STATIC
         buffer.cxx
         context.cxx
+        device_checkpoints.cxx
         gpu_error_describe.cxx
         gpu_resource_table.cxx
         host_query_context.cxx

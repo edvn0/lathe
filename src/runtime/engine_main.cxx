@@ -1,6 +1,9 @@
 #include <fstream>
 #include <charconv>
 #include <csignal>
+#include <cstring>
+#include <cerrno>
+#include <unistd.h>
 #include <map>
 #include <memory>
 #include <print>
@@ -597,7 +600,7 @@ namespace {
 
                 case SwapchainBeginFrameError::Kind::device_lost:
                     error("The Vulkan device was lost");
-                    context.device_lost.store(true, std::memory_order_release);
+                    context.mark_device_lost();
 
                     return false;
 
@@ -707,7 +710,7 @@ namespace {
 
             case SwapchainFrameResult::device_lost:
                 error("The Vulkan device was lost");
-                context.device_lost.store(true, std::memory_order_release);
+                context.mark_device_lost();
 
                 return false;
 
@@ -898,22 +901,77 @@ namespace {
         return result;
     }
 
-    auto report_device_lost(VulkanContext &context) noexcept -> void {
+    // A crash that repeats right after a relaunch must not loop: the restart is refused within this many seconds of the
+    // previous one (LATHE_RELAUNCHED holds its time).
+    constexpr std::int64_t relaunch_cooldown_seconds = 60;
+
+    auto now_seconds() -> std::int64_t {
+        return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+    }
+
+    auto relaunch_allowed() -> bool {
+        auto const *previous = std::getenv("LATHE_RELAUNCHED");
+
+        if (previous == nullptr) {
+            return true;
+        }
+
+        std::int64_t then = 0;
+        std::from_chars(previous, previous + std::string_view{previous}.size(), then);
+
+        return now_seconds() - then >= relaunch_cooldown_seconds;
+    }
+
+    // Replaces this process with a fresh one that opens 'scene'; only returns if that fails.
+    auto relaunch_with_scene(int argc, char **argv, std::filesystem::path const &scene) noexcept -> void {
+        setenv("LATHE_RELAUNCHED", std::to_string(now_seconds()).c_str(), 1);
+
+        auto arguments = std::vector<std::string>(argv, argv + argc);
+        arguments.push_back("--scene");
+        arguments.push_back(scene.string());
+
+        auto pointers = std::vector<char *>{};
+
+        for (auto &argument: arguments) {
+            pointers.push_back(argument.data());
+        }
+
+        pointers.push_back(nullptr);
+
+        execv("/proc/self/exe", pointers.data());
+        error("Could not restart: {}", std::strerror(errno));
+    }
+
+    // Returns where the unsaved work went, if it could be written.
+    auto report_device_lost(VulkanContext &context, Runtime &runtime) noexcept -> std::optional<std::filesystem::path> {
         error("The GPU device was lost or stopped responding; the application cannot continue.");
 
         if (context.window != nullptr) {
             glfwHideWindow(context.window);
         }
 
+        auto const recovered = runtime.recover_work();
+
+        auto const restarting = recovered && relaunch_allowed();
+        auto const outcome =
+                recovered ? std::format("Your unsaved work was written to:\n{}\n\n{}", recovered->string(),
+                                        restarting ? "The editor will restart and open it.\n\n"
+                                                   : "Please restart the editor and open it.\n\n")
+                          : std::string{"Work since the last save could not be recovered.\n\nPlease restart the runtime.\n\n"};
+
         auto const shown = show_fatal_dialog(
                 "Graphics device lost",
-                "The GPU stopped responding, so the renderer cannot continue.\n\n"
-                "Please restart the runtime. Work since the last save could not be recovered.\n\n"
-                "If this keeps happening, update your graphics driver and check the log for details.");
+                std::format("The GPU stopped responding, so the renderer cannot continue.\n\n"
+                            "{}"
+                            "If this keeps happening, update your graphics driver and check the log for details.",
+                            outcome));
 
         if (!shown) {
             error("No dialog tool is available to show the device-lost notice; see the log above.");
         }
+
+        return restarting ? recovered : std::nullopt;
     }
 
     auto destroy_runtime(VulkanContext &context, Runtime &runtime) noexcept -> void {
@@ -1717,9 +1775,11 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
     }
 
+    auto relaunch_scene = std::optional<std::filesystem::path>{};
+
     if (context.device_lost.load(std::memory_order_acquire)) {
         exit_code = EXIT_FAILURE;
-        report_device_lost(context);
+        relaunch_scene = report_device_lost(context, runtime);
     }
 
     if (profile.interrupted()) {
@@ -1727,6 +1787,11 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     }
 
     destroy_runtime(context, runtime);
+
+    if (relaunch_scene) {
+        info("Restarting with the recovered scene '{}'", relaunch_scene->string());
+        relaunch_with_scene(argc, argv, *relaunch_scene);
+    }
 
     if (exit_code == EXIT_SUCCESS) {
         info("Runtime exited successfully");

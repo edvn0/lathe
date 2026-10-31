@@ -88,6 +88,9 @@ struct VulkanContext {
     std::atomic_bool running{true};
 
     std::atomic_bool device_lost{false};
+
+    // Sets device_lost; the first caller also logs the last checkpoint each queue reached (see device_checkpoints.hxx).
+    auto mark_device_lost() -> void;
     std::atomic_bool framebuffer_dirty{false};
     std::atomic_int framebuffer_width{0};
     std::atomic_int framebuffer_height{0};

@@ -56,6 +56,10 @@ public:
     [[nodiscard]]
     auto failure_reason(ModelHandle handle) const -> std::string_view;
 
+    // The file a model that is still loading was requested from; null once it has installed (the sink knows it then).
+    [[nodiscard]]
+    auto pending_source(ModelHandle handle) const noexcept -> AssetPath const *;
+
     auto process_ready(IModelSink &sink, VkCommandBuffer command_buffer) -> void;
 
     auto wait_all() -> void;

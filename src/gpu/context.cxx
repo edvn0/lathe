@@ -1,5 +1,7 @@
 #include "gpu/context.hxx"
 
+#include "gpu/device_checkpoints.hxx"
+
 #include <limits>
 
 #include "core/logger.hxx"
@@ -104,7 +106,7 @@ auto VulkanContext::one_time_submit(std::function<void(VkCommandBuffer)> &&func)
         error("one_time_submit failed: VkResult {}", static_cast<int>(result));
 
         if (is_device_failure(result)) {
-            device_lost.store(true, std::memory_order_release);
+            mark_device_lost();
         }
     }
 
@@ -114,4 +116,10 @@ auto VulkanContext::one_time_submit(std::function<void(VkCommandBuffer)> &&func)
 
     auto const size = static_cast<std::uint32_t>(one_time_command_buffers.size());
     one_time_buffer_index = ((one_time_buffer_index + 1) % size);
+}
+
+auto VulkanContext::mark_device_lost() -> void {
+    if (!device_lost.exchange(true, std::memory_order_acq_rel)) {
+        device_checkpoints::report(*this);
+    }
 }
