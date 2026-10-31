@@ -55,6 +55,10 @@ public:
     GpuTextureEncoder();
     ~GpuTextureEncoder();
 
+    // Makes the next dispatch of any encoder write through an unmapped address, which loses the device. For tests of
+    // the device-lost path (game.debug_lose_device in Lua); the flag is cleared by the dispatch that uses it.
+    static auto lose_device_on_next_dispatch() noexcept -> void;
+
     GpuTextureEncoder(GpuTextureEncoder const &) = delete;
     auto operator=(GpuTextureEncoder const &) -> GpuTextureEncoder & = delete;
     GpuTextureEncoder(GpuTextureEncoder &&other) noexcept;
