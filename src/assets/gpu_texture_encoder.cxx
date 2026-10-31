@@ -1,6 +1,6 @@
 #include "assets/gpu_texture_encoder.hxx"
 
-#include <cstdlib>
+#include <atomic>
 
 #include "gpu/device_checkpoints.hxx"
 #include "gpu/device_wait.hxx"
@@ -38,6 +38,8 @@ namespace {
         std::uint32_t total_blocks;
         std::uint32_t format;
     };
+
+    std::atomic_bool fault_next_dispatch{false}; // NOLINT: process-wide test hook.
 
     constexpr std::uint32_t threads_per_group = 64;
     constexpr std::uint64_t submit_timeout_ns = 30'000'000'000ULL;
@@ -174,6 +176,10 @@ struct GpuTextureEncoder::Impl {
 };
 
 GpuTextureEncoder::GpuTextureEncoder() = default;
+
+auto GpuTextureEncoder::lose_device_on_next_dispatch() noexcept -> void {
+    fault_next_dispatch.store(true, std::memory_order_release);
+}
 GpuTextureEncoder::~GpuTextureEncoder() = default;
 GpuTextureEncoder::GpuTextureEncoder(GpuTextureEncoder &&other) noexcept = default;
 auto GpuTextureEncoder::operator=(GpuTextureEncoder &&other) noexcept -> GpuTextureEncoder & = default;
@@ -341,10 +347,9 @@ auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, Gp
             .format = static_cast<std::uint32_t>(format),
     };
 
-    // LATHE_FAULT_TEST=encoder points the output at unmapped memory, to check that a device loss reports its checkpoints.
     auto faulty = constants;
 
-    if (auto const *fault = std::getenv("LATHE_FAULT_TEST"); fault != nullptr && std::string_view{fault} == "encoder") {
+    if (fault_next_dispatch.exchange(false, std::memory_order_acq_rel)) {
         faulty.dst = 0xDEAD0000ULL;
     }
 

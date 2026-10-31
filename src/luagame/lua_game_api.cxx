@@ -24,6 +24,7 @@
 #include <imgui.h>
 
 #include "luagame/lua_game.hxx"
+#include "assets/gpu_texture_encoder.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/model.hxx"
 #include "assets/model_streamer.hxx"
@@ -1502,6 +1503,13 @@ namespace {
         return 0;
     }
 
+    auto game_debug_lose_device(lua_State *state) -> int {
+        static_cast<void>(state);
+        GpuTextureEncoder::lose_device_on_next_dispatch();
+
+        return 0;
+    }
+
     auto game_time(lua_State *state) -> int {
         lua_pushnumber(state, ImGui::GetTime());
 
@@ -1860,6 +1868,7 @@ namespace {
 
     constexpr std::array game_functions{
             luaL_Reg{"quit", &game_quit},
+            luaL_Reg{"debug_lose_device", &game_debug_lose_device},
             luaL_Reg{"time", &game_time},
             luaL_Reg{nullptr, nullptr},
     };
