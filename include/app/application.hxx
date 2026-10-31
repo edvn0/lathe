@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "app/commands.hxx"
 #include "app/frame_graph_editor.hxx"
 #include "game/game.hxx"
 #include "app/game_packager.hxx"
@@ -121,6 +122,20 @@ struct Application : Runtime {
         return viewports[active_viewport].camera;
     }
     auto draw_viewport(std::size_t index, char const *title, std::uint32_t frame_index) -> void;
+
+    // The Add menu (add_menu.cxx): Shift+A over a viewport opens a popup at the cursor listing the "add" commands.
+    // New entities go where the cursor pointed when it opened, on the ground plane or in front of the camera.
+    editor::CommandRegistry commands;
+    bool add_menu_requested = false;
+    ImGuiTextFilter add_menu_filter;
+    glm::vec3 add_menu_position{0.0F};
+    auto register_commands() -> void;
+    auto register_editor_commands() -> void;
+    // The shortcut bound to a command, as menu text; empty if it has none.
+    [[nodiscard]] auto shortcut_label(std::string_view id) const -> std::string;
+    auto draw_add_menu() -> void;
+    [[nodiscard]] auto cursor_spawn_position(ViewportPane const &pane) const -> glm::vec3;
+
     auto dock_second_viewport(ImGuiID dockspace_id) -> void;
     auto update_views() -> void override;
 

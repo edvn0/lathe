@@ -135,23 +135,23 @@ auto Application::draw_main_menu_bar() -> void {
 
     if (ImGui::BeginMenu("File")) {
         ImGui::BeginDisabled(busy);
-        if (ImGui::MenuItem("New Scene", "Ctrl+N")) {
-            request_switch_game("empty");
+        if (ImGui::MenuItem("New Scene", shortcut_label("file.new").c_str())) {
+            commands.run("file.new");
         }
         ImGui::EndDisabled();
 
         ImGui::BeginDisabled(busy || scene_browser.is_open());
-        if (ImGui::MenuItem("Open Scene...", "Ctrl+O")) {
-            scene_browser.open("Open Scene", {{.label = "Lathe scenes (*.lbf)", .extensions = {".lbf"}}});
+        if (ImGui::MenuItem("Open Scene...", shortcut_label("file.open").c_str())) {
+            commands.run("file.open");
         }
         ImGui::EndDisabled();
 
         ImGui::BeginDisabled(busy);
-        if (ImGui::MenuItem("Save", "Ctrl+S")) {
-            start_save_scene(scene_path);
+        if (ImGui::MenuItem("Save", shortcut_label("file.save").c_str())) {
+            commands.run("file.save");
         }
-        if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S")) {
-            start_save_scene({});
+        if (ImGui::MenuItem("Save As...", shortcut_label("file.save_as").c_str())) {
+            commands.run("file.save_as");
         }
         ImGui::EndDisabled();
 
@@ -214,25 +214,30 @@ auto Application::draw_main_menu_bar() -> void {
 
     if (ImGui::BeginMenu("Edit")) {
         ImGui::BeginDisabled(is_playing);
-        if (ImGui::MenuItem("Translate", "1", gizmo_operation == ImGuizmo::TRANSLATE)) {
-            gizmo_operation = ImGuizmo::TRANSLATE;
+        if (ImGui::MenuItem("Translate", shortcut_label("gizmo.translate").c_str(),
+                            gizmo_operation == ImGuizmo::TRANSLATE)) {
+            commands.run("gizmo.translate");
         }
-        if (ImGui::MenuItem("Rotate", "2", gizmo_operation == ImGuizmo::ROTATE)) {
-            gizmo_operation = ImGuizmo::ROTATE;
+        if (ImGui::MenuItem("Rotate", shortcut_label("gizmo.rotate").c_str(), gizmo_operation == ImGuizmo::ROTATE)) {
+            commands.run("gizmo.rotate");
         }
-        if (ImGui::MenuItem("Scale", "3", gizmo_operation == ImGuizmo::SCALE)) {
-            gizmo_operation = ImGuizmo::SCALE;
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Local Space", "4", gizmo_mode == ImGuizmo::LOCAL)) {
-            gizmo_mode = gizmo_mode == ImGuizmo::WORLD ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
+        if (ImGui::MenuItem("Scale", shortcut_label("gizmo.scale").c_str(), gizmo_operation == ImGuizmo::SCALE)) {
+            commands.run("gizmo.scale");
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Place Text", "T", text_placement.active())) {
-            text_placement.set_active(!text_placement.active());
+        if (ImGui::MenuItem("Local Space", shortcut_label("gizmo.toggle_space").c_str(),
+                            gizmo_mode == ImGuizmo::LOCAL)) {
+            commands.run("gizmo.toggle_space");
         }
-        if (ImGui::MenuItem("Focus Selection", "F")) {
-            focus_selection();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Place Text", shortcut_label("tool.place_text").c_str(), text_placement.active())) {
+            commands.run("tool.place_text");
+        }
+        if (ImGui::MenuItem("Focus Selection", shortcut_label("edit.focus_selection").c_str())) {
+            commands.run("edit.focus_selection");
+        }
+        if (ImGui::MenuItem("Add...", shortcut_label("viewport.add_menu").c_str(), false, viewport_hovered)) {
+            commands.run("viewport.add_menu");
         }
         ImGui::EndDisabled();
         ImGui::Separator();

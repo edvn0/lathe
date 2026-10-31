@@ -497,6 +497,8 @@ Application::Application(VulkanContext &ctx) noexcept : Runtime(ctx) {
     stage_registry.bind_debug_renderer(debug_renderer.get());
     // The editor ray-casts against models' triangles to pick and to place things on surfaces.
     renderer->model_streamer().collect_pick_geometry(true);
+    register_commands();
+    register_editor_commands();
 }
 
 Application::~Application() = default;
@@ -598,6 +600,13 @@ auto Application::draw_viewport(std::size_t index, char const *title, std::uint3
         pane.screen_pos = ImGui::GetCursorScreenPos();
         pane.content_size = ImGui::GetContentRegionAvail();
         pane.seen_frame = ImGui::GetFrameCount();
+
+        if (add_menu_requested && pane.hovered && !is_playing) {
+            add_menu_requested = false;
+            add_menu_position = cursor_spawn_position(pane);
+            ImGui::OpenPopup("viewport_add_menu");
+        }
+        draw_add_menu();
 
         if (pane.hovered) {
             active_viewport = index;
@@ -1697,11 +1706,30 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                     return clone;
                 };
 
+                // A copy left exactly on its original draws the same pixels again (and z-fights); step it aside by
+                // one model width along X, or a unit when the size is not known.
+                auto const step_aside = [&](entt::entity clone) {
+                    auto *transform = registry.try_get<Components::Transform>(clone);
+                    if (transform == nullptr) {
+                        return;
+                    }
+
+                    auto step = 1.0F;
+                    if (auto const *model = registry.try_get<Components::Model>(clone)) {
+                        if (auto const bounds = renderer->model_bounds(model->model)) {
+                            step = std::max(0.01F, (bounds->second.x - bounds->first.x) * std::abs(transform->scale.x) * 1.1F);
+                        }
+                    }
+                    transform->position.x += step;
+                };
+
                 std::vector<entt::entity> clones;
                 for (auto const source: selected_roots()) {
                     auto const *source_parent = registry.try_get<Components::Parent>(source);
-                    clones.push_back(
-                            duplicate_subtree(source, source_parent != nullptr ? source_parent->entity : entt::null));
+                    auto const clone =
+                            duplicate_subtree(source, source_parent != nullptr ? source_parent->entity : entt::null);
+                    step_aside(clone);
+                    clones.push_back(clone);
                 }
                 selection.assign(clones);
                 break;
@@ -2907,59 +2935,23 @@ auto Application::handle_event(KeyPressedEvent ev) -> bool {
         return true;
     }
 
-    if (ev.key == GLFW_KEY_R && ev.modifiers == GLFW_MOD_CONTROL && !scene_load_job.has_value()) {
-        renderer->queue_render_thread_event([this] {
-            if (is_playing) {
-                stop();
+    // Shortcuts are commands (editor_commands.cxx); each says where it may fire.
+    auto const editing = !is_playing && !ImGui::GetIO().WantCaptureKeyboard;
+    if (commands.run_for_key(ev.key, ev.modifiers, [&](editor::CommandContext where) {
+            switch (where) {
+                case editor::CommandContext::always:
+                    return true;
+                case editor::CommandContext::editing:
+                    return editing;
+                case editor::CommandContext::viewport:
+                    return editing && viewport_hovered;
             }
-
-            game->on_populate(*source_scene, *renderer, engine_models);
-            scene_path.clear();
-            scene_pack.reset();
-            mark_source_scene_clean();
-        });
-    }
-    if (ev.key == GLFW_KEY_S && (ev.modifiers & GLFW_MOD_CONTROL) != 0) {
-        start_save_scene((ev.modifiers & GLFW_MOD_SHIFT) != 0 ? std::filesystem::path{} : scene_path);
-    }
-    if (ev.key == GLFW_KEY_N && ev.modifiers == GLFW_MOD_CONTROL) {
-        request_switch_game("empty");
-    }
-    if (ev.key == GLFW_KEY_O && ev.modifiers == GLFW_MOD_CONTROL && !scene_browser.is_open()) {
-        scene_browser.open("Open Scene", {{.label = "Lathe scenes (*.lbf)", .extensions = {".lbf"}}});
+            return false;
+        })) {
+        return true;
     }
 
     if (!is_playing) {
-        if (!ImGui::GetIO().WantCaptureKeyboard) {
-            switch (ev.key) {
-                case GLFW_KEY_1:
-                    gizmo_operation = ImGuizmo::TRANSLATE;
-                    break;
-                case GLFW_KEY_2:
-                    gizmo_operation = ImGuizmo::ROTATE;
-                    break;
-                case GLFW_KEY_3:
-                    gizmo_operation = ImGuizmo::SCALE;
-                    break;
-                case GLFW_KEY_4:
-                    gizmo_mode = gizmo_mode == ImGuizmo::WORLD ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
-                    break;
-                case GLFW_KEY_F:
-                    if (ev.modifiers == 0) {
-                        focus_selection();
-                    }
-                    break;
-                case GLFW_KEY_T:
-                    text_placement.set_active(!text_placement.active());
-                    break;
-                case GLFW_KEY_ESCAPE:
-                    text_placement.set_active(false);
-                    break;
-                default:
-                    break;
-            }
-        }
-
         // F1..F8 pick the view mode of the viewport the pointer is in.
         auto const function_key = ev.key - GLFW_KEY_F1;
         if (function_key >= 0 && std::cmp_less(function_key, view_mode_names.size()) &&
