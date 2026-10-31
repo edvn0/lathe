@@ -61,6 +61,14 @@ auto choose_queue_families(std::span<QueueFamilyInfo const> families, AsyncCompu
         result.compute_queue_index = 1;
         result.topology = QueueTopologyKind::same_family;
     }
+
+    // Queues of the compute family the frame itself takes: the graphics and compute queues when they share a family.
+    auto const frame_queues = result.topology == QueueTopologyKind::same_family ? 2U : 1U;
+
+    if (families[result.compute].queue_count > frame_queues) {
+        result.background_queue_index = frame_queues;
+    }
+
     return result;
 }
 
@@ -85,5 +93,14 @@ auto queue_requests(QueueFamilies const &families) -> std::vector<QueueRequest> 
             graphics->count = 2;
         }
     }
+
+    if (families.has_background_queue()) {
+        auto const compute =
+                std::ranges::find_if(requests, [&](QueueRequest const &r) { return r.family == families.compute; });
+        if (compute != requests.end()) {
+            compute->count = families.background_queue_index + 1;
+        }
+    }
+
     return requests;
 }

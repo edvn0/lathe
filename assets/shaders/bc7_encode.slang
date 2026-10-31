@@ -8,14 +8,16 @@ module bc7_encode;
 // refine them against the indices they imply, the endpoints are quantised with the better p-bit, and every texel takes
 // the closest of the 16 interpolated colours. Layout and tables are from the Khronos Data Format Specification, 20.1.
 
+// A batch is many images (and mip levels) in one dispatch. Each is a job: its first texel in `src`, its size, and the
+// number of the first block it owns. The blocks of all jobs are numbered one after another, so a thread's block number
+// says both which job it works on and where its output goes.
 struct Bc7PushConstants
 {
-    uint* src; // RGBA8, row major, one uint per texel
-    uint4* dst; // one uint4 per block
-    uint width;
-    uint height;
-    uint blocks_x;
-    uint blocks_y;
+    uint* src; // RGBA8, one uint per texel, every job's rows one after another
+    uint4* dst; // one uint4 per block, jobs in order
+    uint4* jobs; // two uint4 per job: (first texel, width, height, blocks_x), (first block, 0, 0, 0)
+    uint job_count;
+    uint total_blocks;
 };
 
 [vk::push_constant] Bc7PushConstants pc;
@@ -114,21 +116,40 @@ void main_cs(uint3 dispatch_id: SV_DispatchThreadID)
 {
     const uint block_id = dispatch_id.x;
 
-    if (block_id >= pc.blocks_x * pc.blocks_y) {
+    if (block_id >= pc.total_blocks) {
         return;
     }
 
-    const uint block_x = block_id % pc.blocks_x;
-    const uint block_y = block_id / pc.blocks_x;
+    // The last job that starts at or before this block.
+    uint low = 0;
+    uint high = pc.job_count - 1;
+
+    while (low < high) {
+        const uint middle = (low + high + 1) >> 1;
+
+        if (pc.jobs[middle * 2 + 1].x <= block_id) {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+
+    const uint4 job = pc.jobs[low * 2];
+    const uint first_texel = job.x;
+    const uint width = job.y;
+    const uint height = job.z;
+    const uint local_block = block_id - pc.jobs[low * 2 + 1].x;
+    const uint block_x = local_block % job.w;
+    const uint block_y = local_block / job.w;
 
     float4 texels[16];
     float4 mean = float4(0.0);
 
     for (uint i = 0; i < 16; ++i) {
-        const uint x = min(block_x * 4 + (i & 3), pc.width - 1);
-        const uint y = min(block_y * 4 + (i >> 2), pc.height - 1);
+        const uint x = min(block_x * 4 + (i & 3), width - 1);
+        const uint y = min(block_y * 4 + (i >> 2), height - 1);
 
-        texels[i] = unpack_texel(pc.src[y * pc.width + x]);
+        texels[i] = unpack_texel(pc.src[first_texel + y * width + x]);
         mean += texels[i];
     }
 

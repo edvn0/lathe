@@ -115,7 +115,7 @@ TEST_SUITE("unit") {
 
         auto const dedicated = choose_queue_families(
                 std::array{info(graphics_family, 1, 64, true), info(compute_family, 4)}, AsyncComputeMode::automatic);
-        CHECK(queue_requests(dedicated) == std::vector<QueueRequest>{{0, 1}, {1, 1}});
+        CHECK(queue_requests(dedicated) == std::vector<QueueRequest>{{0, 1}, {1, 2}});
 
         auto const shared_family = choose_queue_families(
                 std::array{info(graphics_family, 2), info(compute_family, 1, 64, true), info(compute_family, 4)},
@@ -130,7 +130,7 @@ TEST_SUITE("unit") {
         CHECK(three.graphics == 0);
         CHECK(three.present == 1);
         CHECK(three.compute == 2);
-        CHECK(queue_requests(three) == std::vector<QueueRequest>{{0, 1}, {1, 1}, {2, 1}});
+        CHECK(queue_requests(three) == std::vector<QueueRequest>{{0, 1}, {1, 1}, {2, 2}});
     }
 
     TEST_CASE("topology names") {
@@ -138,4 +138,30 @@ TEST_SUITE("unit") {
         CHECK(queue_topology_name(QueueTopologyKind::same_family) == "same-family");
         CHECK(queue_topology_name(QueueTopologyKind::dedicated) == "dedicated");
     }
+
+    TEST_CASE("a spare queue of the compute family is reserved for background work") {
+        auto const dedicated = choose_queue_families(
+                std::array{info(graphics_family, 1, 64, true), info(compute_family, 4)}, AsyncComputeMode::automatic);
+        CHECK(dedicated.has_background_queue());
+        CHECK(dedicated.background_queue_index == 1);
+
+        auto const one_queue = choose_queue_families(
+                std::array{info(graphics_family, 1, 64, true), info(compute_family, 1)}, AsyncComputeMode::automatic);
+        CHECK_FALSE(one_queue.has_background_queue());
+
+        auto const single = choose_queue_families(std::array{info(graphics_family, 1, 64, true)},
+                                                  AsyncComputeMode::automatic);
+        CHECK_FALSE(single.has_background_queue());
+
+        // Graphics and compute share a family: the frame takes two queues, the third is spare.
+        auto const same_two = choose_queue_families(std::array{info(graphics_family, 2, 64, true)},
+                                                    AsyncComputeMode::automatic);
+        CHECK_FALSE(same_two.has_background_queue());
+
+        auto const same_three = choose_queue_families(std::array{info(graphics_family, 3, 64, true)},
+                                                      AsyncComputeMode::automatic);
+        CHECK(same_three.background_queue_index == 2);
+        CHECK(queue_requests(same_three) == std::vector<QueueRequest>{{0, 3}});
+    }
+
 }

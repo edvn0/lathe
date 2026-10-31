@@ -59,6 +59,10 @@ struct VulkanContext {
 
     VkQueue compute_queue = VK_NULL_HANDLE;
 
+    // A queue of the compute family that nothing in a frame uses, so another thread may submit to it; null when the
+    // device has no spare (see QueueFamilies::background_queue_index).
+    VkQueue background_queue = VK_NULL_HANDLE;
+
     AsyncComputeMode async_compute_mode = AsyncComputeMode::automatic;
     // Load the Vulkan validation layer (Debug builds by default; --validation turns it on in any build).
     bool validation = false;
