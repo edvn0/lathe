@@ -1,12 +1,15 @@
 module texture_compress;
 
-// GPU texture block compressor: one thread per 4x4 block. BC7 is mode 6 only (one subset, 7-bit RGBA endpoints with a p-bit each, 16
-// four-bit indices). Mode 6 is the all-rounder: it handles gradients and alpha, and loses to the multi-subset modes
-// only where a block holds two unrelated colours.
+// GPU texture block compressor: one thread per 4x4 block.
 //
-// Per block: a principal axis from the 4x4 colour covariance picks the first endpoints, two rounds of least squares
-// refine them against the indices they imply, the endpoints are quantised with the better p-bit, and every texel takes
-// the closest of the 16 interpolated colours. Layout and tables are from the Khronos Data Format Specification, 20.1.
+// BC7 tries two modes per block and keeps the one with less error:
+//   mode 6  one subset, 7-bit RGBA endpoints with a p-bit each, 16 four-bit indices: the all-rounder, good for gradients;
+//   mode 5  7-bit RGB endpoints with two-bit indices and, separately, 8-bit alpha endpoints with their own two-bit
+//           indices: good where alpha changes independently of colour, such as the hard edge of a cut-out.
+// Each fits its endpoints the same way: a principal axis from the covariance of the texels picks the first pair, two
+// rounds of least squares refine them against the indices they imply, they are quantised, and every texel takes the
+// closest interpolated value. BC5 is two BC4 blocks. Layout and tables are from the Khronos Data Format Specification,
+// 20.1.
 
 // A batch is many images (and mip levels) in one dispatch. Each is a job: its first texel in `src`, its size, and the
 // number of the first block it owns. The blocks of all jobs are numbered one after another, so a thread's block number
@@ -158,66 +161,43 @@ void put_bc4(inout uint4 block, uint base, float values[16])
     }
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void main_cs(uint3 dispatch_id: SV_DispatchThreadID)
+static const uint bc7_weights2[4] = {0, 21, 43, 64};
+
+// One mode's encoding of a block, and the squared error it leaves (over all four channels).
+struct Candidate
 {
-    const uint block_id = dispatch_id.x;
+    uint4 block;
+    float error;
+};
 
-    if (block_id >= pc.total_blocks) {
-        return;
-    }
+// The 8-bit value a decoder reconstructs from a 7-bit endpoint with no p-bit: the top bit is replicated into the low one.
+float expand7(uint q)
+{
+    return float((q << 1) | (q >> 6));
+}
 
-    // The last job that starts at or before this block.
-    uint low = 0;
-    uint high = pc.job_count - 1;
+uint quantise7(float value)
+{
+    return uint(clamp(round(value * 127.0 / 255.0), 0.0, 127.0));
+}
 
-    while (low < high) {
-        const uint middle = (low + high + 1) >> 1;
+float interpolate_scalar(float e0, float e1, uint weight)
+{
+    return floor(((64.0 - float(weight)) * e0 + float(weight) * e1 + 32.0) / 64.0);
+}
 
-        if (pc.jobs[middle * 2 + 1].x <= block_id) {
-            low = middle;
-        } else {
-            high = middle - 1;
-        }
-    }
+float3 interpolate_rgb(float3 e0, float3 e1, uint weight)
+{
+    return floor(((64.0 - float(weight)) * e0 + float(weight) * e1 + 32.0) / 64.0);
+}
 
-    const uint4 job = pc.jobs[low * 2];
-    const uint first_texel = job.x;
-    const uint width = job.y;
-    const uint height = job.z;
-    const uint local_block = block_id - pc.jobs[low * 2 + 1].x;
-    const uint block_x = local_block % job.w;
-    const uint block_y = local_block / job.w;
-
-    float4 texels[16];
+// Mode 6: one subset of 7-bit RGBA endpoints with a p-bit each and sixteen four-bit indices.
+Candidate encode_mode6(float4 texels[16])
+{
     float4 mean = float4(0.0);
 
     for (uint i = 0; i < 16; ++i) {
-        const uint x = min(block_x * 4 + (i & 3), width - 1);
-        const uint y = min(block_y * 4 + (i >> 2), height - 1);
-
-        texels[i] = unpack_texel(pc.src[first_texel + y * width + x]);
         mean += texels[i];
-    }
-
-    if (pc.format == format_bc5) {
-        float red[16];
-        float green[16];
-
-        for (uint i = 0; i < 16; ++i) {
-            red[i] = texels[i].x;
-            green[i] = texels[i].y;
-        }
-
-        uint4 bc5 = uint4(0);
-
-        put_bc4(bc5, 0, red);
-        put_bc4(bc5, 64, green);
-
-        pc.dst[block_id] = bc5;
-
-        return;
     }
 
     mean *= 1.0 / 16.0;
@@ -296,11 +276,13 @@ void main_cs(uint3 dispatch_id: SV_DispatchThreadID)
     const float4 q1 = quantise_best(e1, stored1, pbit1);
 
     uint indices[16];
+    float error = 0.0;
 
     for (uint i = 0; i < 16; ++i) {
-        float unused_error;
+        float texel_error;
 
-        indices[i] = best_index(texels[i], q0, q1, unused_error);
+        indices[i] = best_index(texels[i], q0, q1, texel_error);
+        error += texel_error;
     }
 
     // The first texel's index is stored in three bits, so it must be below 8: swap the endpoints if it is not.
@@ -340,5 +322,292 @@ void main_cs(uint3 dispatch_id: SV_DispatchThreadID)
         put_bits(block, 68 + (i - 1) * 4, indices[i], 4);
     }
 
-    pc.dst[block_id] = block;
+    Candidate result;
+
+    result.block = block;
+    result.error = error;
+
+    return result;
+}
+
+// Mode 5: 7-bit RGB endpoints with two-bit indices, and 8-bit alpha endpoints with their own two-bit indices (no
+// rotation). Alpha is exact at its extremes, so a hard edge costs nothing in alpha however the colours vary.
+Candidate encode_mode5(float4 texels[16])
+{
+    // Colour: the principal axis of the RGB values, extremes along it, two rounds of least squares.
+    float3 mean = float3(0.0);
+
+    for (uint i = 0; i < 16; ++i) {
+        mean += texels[i].xyz;
+    }
+
+    mean *= 1.0 / 16.0;
+
+    float3x3 covariance = float3x3(0.0);
+
+    for (uint i = 0; i < 16; ++i) {
+        const float3 d = texels[i].xyz - mean;
+
+        covariance += float3x3(d.x * d, d.y * d, d.z * d);
+    }
+
+    float3 axis = float3(1.0, 1.0, 1.0);
+
+    for (uint i = 0; i < 4; ++i) {
+        axis = mul(covariance, axis);
+
+        const float length_axis = length(axis);
+
+        axis = length_axis > 1e-6 ? axis / length_axis : float3(0.577, 0.577, 0.577);
+    }
+
+    float t_min = 1e30;
+    float t_max = -1e30;
+    float3 c0 = mean;
+    float3 c1 = mean;
+
+    for (uint i = 0; i < 16; ++i) {
+        const float t = dot(texels[i].xyz - mean, axis);
+
+        if (t < t_min) {
+            t_min = t;
+            c0 = texels[i].xyz;
+        }
+
+        if (t > t_max) {
+            t_max = t;
+            c1 = texels[i].xyz;
+        }
+    }
+
+    for (uint round_index = 0; round_index < 2; ++round_index) {
+        const float3 line = c1 - c0;
+        const float length_squared = dot(line, line);
+        float a = 0.0;
+        float b = 0.0;
+        float c = 0.0;
+        float3 alpha_sum = float3(0.0);
+        float3 beta_sum = float3(0.0);
+
+        for (uint i = 0; i < 16; ++i) {
+            const float u = length_squared > 1e-4 ? dot(texels[i].xyz - c0, line) / length_squared : 0.0;
+            const float w = float(bc7_weights2[uint(clamp(round(u * 3.0), 0.0, 3.0))]) / 64.0;
+
+            a += (1.0 - w) * (1.0 - w);
+            b += w * (1.0 - w);
+            c += w * w;
+            alpha_sum += (1.0 - w) * texels[i].xyz;
+            beta_sum += w * texels[i].xyz;
+        }
+
+        const float determinant = a * c - b * b;
+
+        if (abs(determinant) > 1e-4) {
+            c0 = clamp((c * alpha_sum - b * beta_sum) / determinant, 0.0, 255.0);
+            c1 = clamp((a * beta_sum - b * alpha_sum) / determinant, 0.0, 255.0);
+        }
+    }
+
+    uint3 q0 = uint3(quantise7(c0.x), quantise7(c0.y), quantise7(c0.z));
+    uint3 q1 = uint3(quantise7(c1.x), quantise7(c1.y), quantise7(c1.z));
+    float3 v0 = float3(expand7(q0.x), expand7(q0.y), expand7(q0.z));
+    float3 v1 = float3(expand7(q1.x), expand7(q1.y), expand7(q1.z));
+
+    uint colour_index[16];
+    float error = 0.0;
+
+    for (uint i = 0; i < 16; ++i) {
+        uint best = 0;
+        float best_error = 1e30;
+
+        for (uint candidate = 0; candidate < 4; ++candidate) {
+            const float3 delta = texels[i].xyz - interpolate_rgb(v0, v1, bc7_weights2[candidate]);
+            const float candidate_error = dot(delta, delta);
+
+            if (candidate_error < best_error) {
+                best_error = candidate_error;
+                best = candidate;
+            }
+        }
+
+        colour_index[i] = best;
+        error += best_error;
+    }
+
+    // Alpha: the extremes, then one round of least squares.
+    float alpha_low = 255.0;
+    float alpha_high = 0.0;
+
+    for (uint i = 0; i < 16; ++i) {
+        alpha_low = min(alpha_low, texels[i].w);
+        alpha_high = max(alpha_high, texels[i].w);
+    }
+
+    float a0 = alpha_low;
+    float a1 = alpha_high;
+
+    if (alpha_high > alpha_low) {
+        float a = 0.0;
+        float b = 0.0;
+        float c = 0.0;
+        float alpha_sum = 0.0;
+        float beta_sum = 0.0;
+
+        for (uint i = 0; i < 16; ++i) {
+            const float u = (texels[i].w - alpha_low) / (alpha_high - alpha_low);
+            const float w = float(bc7_weights2[uint(clamp(round(u * 3.0), 0.0, 3.0))]) / 64.0;
+
+            a += (1.0 - w) * (1.0 - w);
+            b += w * (1.0 - w);
+            c += w * w;
+            alpha_sum += (1.0 - w) * texels[i].w;
+            beta_sum += w * texels[i].w;
+        }
+
+        const float determinant = a * c - b * b;
+
+        if (abs(determinant) > 1e-4) {
+            a0 = clamp(round((c * alpha_sum - b * beta_sum) / determinant), 0.0, 255.0);
+            a1 = clamp(round((a * beta_sum - b * alpha_sum) / determinant), 0.0, 255.0);
+        }
+    }
+
+    uint alpha_index[16];
+
+    for (uint i = 0; i < 16; ++i) {
+        uint best = 0;
+        float best_error = 1e30;
+
+        for (uint candidate = 0; candidate < 4; ++candidate) {
+            const float delta = texels[i].w - interpolate_scalar(a0, a1, bc7_weights2[candidate]);
+            const float candidate_error = delta * delta;
+
+            if (candidate_error < best_error) {
+                best_error = candidate_error;
+                best = candidate;
+            }
+        }
+
+        alpha_index[i] = best;
+        error += best_error;
+    }
+
+    // The first texel's index of each set is stored in one bit, so it must be below 2: swap that set's endpoints if not.
+    if (colour_index[0] >= 2) {
+        const uint3 swapped_q = q0;
+        q0 = q1;
+        q1 = swapped_q;
+
+        for (uint i = 0; i < 16; ++i) {
+            colour_index[i] = 3 - colour_index[i];
+        }
+    }
+
+    if (alpha_index[0] >= 2) {
+        const float swapped_a = a0;
+        a0 = a1;
+        a1 = swapped_a;
+
+        for (uint i = 0; i < 16; ++i) {
+            alpha_index[i] = 3 - alpha_index[i];
+        }
+    }
+
+    uint4 block = uint4(0);
+
+    put_bits(block, 0, 32, 6); // mode 5: five zero bits, then a one
+    put_bits(block, 6, 0, 2); // rotation: none
+    put_bits(block, 8, q0.x, 7);
+    put_bits(block, 15, q1.x, 7);
+    put_bits(block, 22, q0.y, 7);
+    put_bits(block, 29, q1.y, 7);
+    put_bits(block, 36, q0.z, 7);
+    put_bits(block, 43, q1.z, 7);
+    put_bits(block, 50, uint(a0), 8);
+    put_bits(block, 58, uint(a1), 8);
+
+    put_bits(block, 66, colour_index[0], 1);
+
+    for (uint i = 1; i < 16; ++i) {
+        put_bits(block, 67 + (i - 1) * 2, colour_index[i], 2);
+    }
+
+    put_bits(block, 97, alpha_index[0], 1);
+
+    for (uint i = 1; i < 16; ++i) {
+        put_bits(block, 98 + (i - 1) * 2, alpha_index[i], 2);
+    }
+
+    Candidate result;
+
+    result.block = block;
+    result.error = error;
+
+    return result;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void main_cs(uint3 dispatch_id: SV_DispatchThreadID)
+{
+    const uint block_id = dispatch_id.x;
+
+    if (block_id >= pc.total_blocks) {
+        return;
+    }
+
+    // The last job that starts at or before this block.
+    uint low = 0;
+    uint high = pc.job_count - 1;
+
+    while (low < high) {
+        const uint middle = (low + high + 1) >> 1;
+
+        if (pc.jobs[middle * 2 + 1].x <= block_id) {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+
+    const uint4 job = pc.jobs[low * 2];
+    const uint first_texel = job.x;
+    const uint width = job.y;
+    const uint height = job.z;
+    const uint local_block = block_id - pc.jobs[low * 2 + 1].x;
+    const uint block_x = local_block % job.w;
+    const uint block_y = local_block / job.w;
+
+    float4 texels[16];
+
+    for (uint i = 0; i < 16; ++i) {
+        const uint x = min(block_x * 4 + (i & 3), width - 1);
+        const uint y = min(block_y * 4 + (i >> 2), height - 1);
+
+        texels[i] = unpack_texel(pc.src[first_texel + y * width + x]);
+    }
+
+    if (pc.format == format_bc5) {
+        float red[16];
+        float green[16];
+
+        for (uint i = 0; i < 16; ++i) {
+            red[i] = texels[i].x;
+            green[i] = texels[i].y;
+        }
+
+        uint4 bc5 = uint4(0);
+
+        put_bc4(bc5, 0, red);
+        put_bc4(bc5, 64, green);
+
+        pc.dst[block_id] = bc5;
+
+        return;
+    }
+
+    const Candidate mode6 = encode_mode6(texels);
+    const Candidate mode5 = encode_mode5(texels);
+
+    pc.dst[block_id] = mode5.error < mode6.error ? mode5.block : mode6.block;
 }
