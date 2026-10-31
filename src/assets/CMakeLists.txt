@@ -2,6 +2,7 @@ set(
     engine_assets_sources
     assets_error_describe.cxx
     assimp_import.cxx
+    bc7_gpu_encoder.cxx
     geometry_allocator.cxx
     geometry_arena.cxx
     hdr_image.cxx
@@ -62,6 +63,15 @@ target_include_directories(
     engine_assets
     PRIVATE
         "${ktx_SOURCE_DIR}/external/basisu/zstd"
+        "${ktx_SOURCE_DIR}/external/basisu"
+)
+
+# The BC7 benchmark decodes with the encoder library libktx carries, which is built with these.
+target_compile_definitions(
+    engine_assets
+    PRIVATE
+        BASISU_SUPPORT_SSE=1
+        BASISD_SUPPORT_KTX2=1
 )
 
 target_precompile_headers(

@@ -67,6 +67,14 @@ namespace cvars {
                     "$XDG_CACHE_HOME/lathe that is filled automatically)",
             .hint = "FILE.lsp",
     }};
+    CVar<std::string> bc7_bench{{
+            .name = "bc7_bench",
+            .group = "Packaging",
+            .help = "Compress an 8-bit RGBA image to BC7 on the GPU and with the CPU path, print times and quality, then "
+                    "exit (prototype)",
+            .hint = "IMAGE",
+            .cli_only = true,
+    }};
     CVar<std::uint32_t> cache_max_size{{
             .name = "cache_max_size",
             .group = "Packaging",

@@ -53,6 +53,7 @@
 #include "game/game.hxx"
 #include "assets/file_change_watcher.hxx"
 #include "assets/shader_bake.hxx"
+#include "assets/bc7_gpu_encoder.hxx"
 #include "assets/shader_pack.hxx"
 #include "core/human_readable_bytes.hxx"
 #include "assets/shader_pack_cache.hxx"
@@ -1213,6 +1214,14 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         context.destroy();
 
         return EXIT_FAILURE;
+    }
+
+    if (!cvars::bc7_bench.get().empty()) {
+        auto const ok = run_bc7_benchmark(context, Renderer::compiler(), cvars::bc7_bench.get());
+
+        context.destroy();
+
+        return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
     if (!context.hdr) {
