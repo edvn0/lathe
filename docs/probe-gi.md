@@ -317,3 +317,27 @@ Exit criterion: the ray traced sun shadows match the shadow-map shadows on the B
 `sun_boxes` scene; the TLAS pass (steady state, 1591 instances, includes the barriers) costs 0.31 ms on an RTX 4070 Ti
 SUPER, at the 0.3 ms target. Known artefact: tracing the coarsest LOD makes a faceted terminator on spheres (a jagged
 crescent in the shadow mask); the GI will want a normal bias or a finer LOD for round things.
+
+### Phase 2 (done): probe volume and ray trace, no blend
+
+- `ProbeVolume` (`include/rendering/probe_volume.hxx`, `--gi`): game graph passes in `after_lighting`, graphics queue,
+  behind the scene TLAS build. A persistent `gi_probe_state` buffer (2 float4 per probe) and a transient `gi_ray_data`
+  buffer (8 bytes per ray: RGB16F radiance and a signed half distance, negative for a back face hit).
+- Grid `32x8x32`, spacing 1 m, 64 rays per probe (`--gi-probe-spacing`, `--gi-rays-per-probe`), centred on the camera
+  in whole probe steps. Toroidal addressing: slot = world index mod counts, so a probe keeps its slot while the grid
+  scrolls. Rays are Fibonacci directions rotated by a random rotation per frame.
+- `gi_probe_trace.slang`: one ray per thread, ray query against the scene TLAS. Hits are shaded with the sun (shadow
+  ray) plus sky irradiance from the prefiltered cube, with a flat albedo of 0.5 (textures and emissive come in phase 4);
+  misses return the sky. The sky term on a hit is not occluded, which is the phase 2 approximation until probes feed
+  back into the trace. Radiance is not multiplied by exposure.
+- `gi_probe_classify.slang`: one thread per probe writes the mean radiance, the back face fraction, and switches a probe
+  off when more than 25% of its rays hit a back face. Relocation is phase 3 (the offset is zero for now).
+- Debug: `--gi-view=radiance|state|back-faces` shows the nearest probe's value on every surface in the volume (state:
+  green active, red off).
+- Where the atlases live (decision a): renderer-owned imported images, as settled; none exist yet, the blend is phase 3.
+- Numbers (RTX 4070 Ti SUPER, Release, Bistro, 8192 probes x 64 rays = 524k rays): `gi_probe_trace` 0.67 ms,
+  `gi_probe_classify` 0.02 ms. The TLAS pass still costs 0.32 ms.
+- Checked: `sun_boxes` and Cornell (Debug, validation clean); Bistro street level (Release), where probes inside the
+  hedges and building shells come out red and the lit/shadowed ground comes out white/blue as expected. Cornell reads
+  black by design (no sun, no ambient), which is correct for sky-and-sun-only shading.
+- The volume is only 8 probes (8 m) tall, so a camera high above the ground sees no probes on it.

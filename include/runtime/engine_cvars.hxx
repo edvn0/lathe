@@ -75,6 +75,10 @@ namespace cvars {
     extern CVar<bool> validation;
     extern CVar<std::string> frame_graph_dot;
     extern CVar<bool> rt_poc;
+    extern CVar<bool> gi;
+    extern CVar<std::string> gi_view;
+    extern CVar<float> gi_probe_spacing;
+    extern CVar<std::uint32_t> gi_rays_per_probe;
     extern CVar<std::string> rt_poc_view;
 
     // Game and scene.

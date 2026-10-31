@@ -340,6 +340,33 @@ namespace cvars {
             .help = "Write the compiled frame graph as Graphviz whenever it changes (render with `dot -Tsvg`).",
             .hint = "FILE.dot",
     }};
+    CVar<bool> gi{{
+            .name = "gi",
+            .group = "Diagnostics",
+            .help = "Probe GI (docs/probe-gi.md), phase 2: build the ray tracing scene and trace a probe volume around "
+                    "the camera. Nothing is shaded from it yet; see --gi-view",
+    }};
+    CVar<std::string> gi_view{{
+            .name = "gi_view",
+            .group = "Diagnostics",
+            .help = "Debug view of the probe volume: off, radiance, state, back-faces",
+            .hint = "NAME",
+            .default_value = "off",
+    }};
+    CVar<float> gi_probe_spacing{{
+            .name = "gi_probe_spacing",
+            .group = "Diagnostics",
+            .help = "Distance between probes in metres",
+            .hint = "METRES",
+            .default_value = 1.0F,
+    }};
+    CVar<std::uint32_t> gi_rays_per_probe{{
+            .name = "gi_rays_per_probe",
+            .group = "Diagnostics",
+            .help = "Rays per probe per frame, rounded down to a multiple of 64",
+            .hint = "N",
+            .default_value = 64,
+    }};
     CVar<bool> rt_poc{{
             .name = "rt_poc",
             .group = "Diagnostics",

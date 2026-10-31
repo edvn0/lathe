@@ -41,6 +41,7 @@ add_library(
         particle_system.cxx
         planet_system.cxx
         pipeline_graph_repository.cxx
+        probe_volume.cxx
         ray_tracing_poc.cxx
         renderer.cxx
         renderer_frame_graph.cxx

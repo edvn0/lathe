@@ -333,6 +333,14 @@ auto Runtime::on_startup() -> void {
             }
         }
 
+        if (probe_volume_enabled) {
+            if (!context.ray_query_supported) {
+                warn("--gi needs VK_KHR_ray_query, which this device does not support");
+            } else if (auto const created = probe_volume.create(*renderer); !created) {
+                warn("Could not set up the probe volume: {}", describe(created.error()));
+            }
+        }
+
         particle_system.set_text_source(text_renderer.get());
 
         if (auto const created = text_renderer->create(*renderer, renderer->game_gpu()); !created) {
@@ -350,6 +358,7 @@ auto Runtime::on_startup() -> void {
                                       renderer->directional_light().direction,
                                       renderer->directional_light().intensity);
             }
+            probe_volume.declare(graph, frame_view, frame_projection);
             ray_tracing_poc.declare(graph, frame_view, frame_projection, renderer->directional_light().direction);
             if (game && game_hooks_enabled) {
                 effect_system.declare(graph);
