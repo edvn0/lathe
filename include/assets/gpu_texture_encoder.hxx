@@ -19,7 +19,8 @@ namespace renderer {
 
 // What the GPU writes. Both are 16 bytes per 4x4 block.
 enum class GpuBlockFormat : std::uint8_t {
-    // Mode 6, which suits colour: gradients and alpha at 7 bits per channel.
+    // Each block takes the better of mode 6 (RGBA together, 7 bits per channel: gradients) and mode 5 (alpha apart from
+    // colour, 8-bit alpha: the hard edges of cut-outs).
     bc7,
     // The red and green channels as two BC4 blocks, for tangent-space normal maps (the other channels are dropped).
     bc5,

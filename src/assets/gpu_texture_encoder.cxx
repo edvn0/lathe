@@ -304,6 +304,8 @@ auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, Gp
         return std::unexpected{"the batch is too large for 32-bit indexing; split it"};
     }
 
+    auto const layout_done = Clock::now();
+
     if (!ensure_capacity(context, impl.input, texels * 4, BufferMemory::upload, "gpu_texture_encoder.input") ||
         !ensure_capacity(context, impl.jobs, job_words.size() * sizeof(std::uint32_t), BufferMemory::upload,
                          "gpu_texture_encoder.jobs") ||
@@ -311,6 +313,7 @@ auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, Gp
         return std::unexpected{"could not allocate the encoder's buffers"};
     }
 
+    auto const allocated = Clock::now();
     auto *destination = impl.input.mapped_data();
 
     for (auto const &level: levels) {
@@ -332,6 +335,8 @@ auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, Gp
             .total_blocks = static_cast<std::uint32_t>(blocks),
             .format = static_cast<std::uint32_t>(format),
     };
+
+    auto const uploaded = Clock::now();
 
     vkResetCommandBuffer(impl.commands, 0);
 
@@ -390,6 +395,8 @@ auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, Gp
         return std::unexpected{std::format("waiting for the encoder failed (VkResult {})", static_cast<int>(waited))};
     }
 
+    auto const computed = Clock::now();
+
     if (!impl.output.invalidate()) {
         return std::unexpected{"could not read the blocks back"};
     }
@@ -412,6 +419,16 @@ auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, Gp
     }
 
     result.total_ms = milliseconds_since(start);
+
+    auto const ms_between = [](Clock::time_point from, Clock::time_point to) {
+        return std::chrono::duration<double, std::milli>(to - from).count();
+    };
+
+    debug("GpuTextureEncoder: {} levels, {:.0f} MB in: layout {:.1f} ms, buffers {:.1f} ms, upload {:.1f} ms, GPU "
+          "{:.1f} ms (queue and wait {:.1f}), read back {:.1f} ms",
+          levels.size(), static_cast<double>(texels) * 4e-6, ms_between(start, layout_done),
+          ms_between(layout_done, allocated), ms_between(allocated, uploaded), result.gpu_ms,
+          ms_between(uploaded, computed), ms_between(computed, Clock::now()));
 
     return result;
 }
