@@ -77,6 +77,13 @@ auto GpuTextureService::shutdown() -> void {
     }
 
     // The thread has ended; nothing else touches the queue or the backend now.
+    if (stats_.requests != 0) {
+        info("GPU texture service: {} textures in {} batches (largest {}), {:.0f} ms busy, {:.0f} ms of waiting in the "
+             "queue "
+             "in all",
+             stats_.requests, stats_.batches, stats_.largest_batch, stats_.busy_ms, stats_.queue_wait_ms);
+    }
+
     for (auto &request: queue_) {
         request.promise.set_value(std::unexpected{std::string{"the GPU encoder is shut down"}});
     }
@@ -126,6 +133,13 @@ auto GpuTextureService::run() -> void {
 
         lock.unlock();
 
+        auto const started = std::chrono::steady_clock::now();
+        auto waited_ms = 0.0;
+
+        for (auto const &request: batch) {
+            waited_ms += std::chrono::duration<double, std::milli>(started - request.queued_at).count();
+        }
+
         std::vector<GpuTextureLevel> levels;
 
         for (auto const &request: batch) {
@@ -133,6 +147,8 @@ auto GpuTextureService::run() -> void {
         }
 
         auto outcome = backend_(levels, format);
+        auto const busy_ms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 
         if (outcome && outcome->size() != levels.size()) {
             outcome = std::unexpected{std::string{"the GPU encoder returned the wrong number of levels"}};
@@ -144,6 +160,8 @@ auto GpuTextureService::run() -> void {
         stats_.requests += batch.size();
         stats_.levels += levels.size();
         stats_.largest_batch = std::max<std::uint64_t>(stats_.largest_batch, batch.size());
+        stats_.busy_ms += busy_ms;
+        stats_.queue_wait_ms += waited_ms;
 
         if (!outcome) {
             failed_ = true;
