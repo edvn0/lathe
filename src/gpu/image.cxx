@@ -880,7 +880,11 @@ namespace {
 
     // A whole file in memory, or nothing if it cannot be read.
     auto read_whole_file(std::string const &path) -> std::optional<std::vector<std::byte>> {
-        std::unique_ptr<std::FILE, decltype(&std::fclose)> file{std::fopen(path.c_str(), "rb"), &std::fclose};
+        struct FileCloser {
+            auto operator()(std::FILE *file) const noexcept -> void { std::fclose(file); }
+        };
+
+        std::unique_ptr<std::FILE, FileCloser> file{std::fopen(path.c_str(), "rb")};
 
         if (file == nullptr || std::fseek(file.get(), 0, SEEK_END) != 0) {
             return std::nullopt;

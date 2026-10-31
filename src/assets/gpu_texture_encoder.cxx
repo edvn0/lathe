@@ -304,8 +304,6 @@ auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, Gp
         return std::unexpected{"the batch is too large for 32-bit indexing; split it"};
     }
 
-    auto const allocation_start = Clock::now();
-
     auto const layout_done = Clock::now();
 
     if (!ensure_capacity(context, impl.input, texels * 4, BufferMemory::upload, "gpu_texture_encoder.input") ||

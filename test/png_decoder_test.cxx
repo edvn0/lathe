@@ -318,8 +318,8 @@ TEST_SUITE("unit") {
         std::mt19937 random{99};
 
         for (auto round = 0; round < 12; ++round) {
-            auto const width = 1U + random() % 70;
-            auto const height = 1U + random() % 40;
+            auto const width = static_cast<std::uint32_t>(1U + random() % 70);
+            auto const height = static_cast<std::uint32_t>(1U + random() % 40);
             auto const channels = 1 + static_cast<int>(random() % 4);
             Bytes pixels(static_cast<std::size_t>(width) * height * static_cast<std::size_t>(channels));
 
