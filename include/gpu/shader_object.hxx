@@ -14,7 +14,7 @@
 #include "core/forward.hxx"
 #include "gpu/shader_stage.hxx"
 
-struct ShaderBinaryCache;
+class ShaderBinaryCache;
 
 enum class ShaderObjectErrorType : std::uint8_t {
     invalid_argument,

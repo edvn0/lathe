@@ -82,7 +82,7 @@ auto PipelineGraphRepository::create(VulkanContext &context, PipelineGraphCreate
             context, ShaderObjectStorageCreateInfo{
                              .capacity = create_info.pipeline_capacity,
                              .global_descriptor_set_layout = create_info.global_descriptor_set_layout,
-                             .binary_cache_directory = create_info.shader_binary_cache_directory,
+                             .binary_cache_store = create_info.shader_binary_cache_store,
                              .debug_name = create_info.debug_name,
                      });
 
@@ -518,8 +518,6 @@ auto PipelineGraphRepository::register_pipelines_parallel(std::span<PipelineRegi
 
     return results;
 }
-
-auto PipelineGraphRepository::save_pipeline_cache() const -> void {}
 
 auto PipelineGraphRepository::resolve_shader_objects(PipelineNodeHandle handle) const noexcept
         -> ShaderObjectSet const * {

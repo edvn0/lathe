@@ -34,6 +34,7 @@
 #include "assets/slang_compiler.hxx"
 #include "core/logger.hxx"
 #include "assets/shader_pack.hxx"
+#include "storage/caches.hxx"
 #include "core/thread_pool.hxx"
 #include <atomic>
 #include <thread>
@@ -1240,8 +1241,7 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
                               .pipeline_capacity = create_info.pipeline_capacity,
                               .frames_in_flight = frames_in_flight,
                               .global_descriptor_set_layout = gpu_resource_table_.layout(),
-                              .cache_file_path = cache_path("pipeline_cache.bin").absolute(),
-                              .shader_binary_cache_directory = cache_path("shader_binaries").absolute(),
+                              .shader_binary_cache_store = caches::store(),
                               .debug_name = "renderer.pipelines",
                       });
 
@@ -2068,7 +2068,6 @@ auto Renderer::destroy() noexcept -> void {
 
     environment_.destroy();
 
-    pipeline_graph_.save_pipeline_cache();
     pipeline_graph_.destroy();
     gpu_resource_table_.destroy();
     sampler_storage_.destroy();

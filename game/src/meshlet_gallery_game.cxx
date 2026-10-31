@@ -16,6 +16,7 @@
 
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
+#include "storage/download_cache.hxx"
 #include "core/paths.hxx"
 #include "rendering/entity.hxx"
 #include "rendering/renderer.hxx"
@@ -187,10 +188,15 @@ auto MeshletGalleryGame::on_populate(Scene &scene, Renderer &renderer, EngineMod
     }
 
     for (auto const &item: downloads) {
-        auto const destination = cache_path(std::format("downloads/gallery/{}.glb", item.name)).absolute();
+        auto const legacy = cache_path(std::format("downloads/gallery/{}.glb", item.name)).absolute();
+        auto destination = DownloadCache::global().path(std::format("gallery/{}", item.name), item.name, ".glb", legacy);
 
-        std::error_code directory_error;
-        std::filesystem::create_directories(destination.parent_path(), directory_error);
+        if (destination.empty()) {
+            destination = legacy;
+
+            std::error_code directory_error;
+            std::filesystem::create_directories(destination.parent_path(), directory_error);
+        }
 
         // Plain glTF is right-handed with +Z as its front; the loader mirrors it into the engine's left-handed space, which
         // sends the front to -Z, so turn it round to face the camera at +Z.

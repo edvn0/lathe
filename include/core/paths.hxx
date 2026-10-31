@@ -116,6 +116,10 @@ public:
     // The user-wide state directory (not a project's), for things like the recent projects list.
     [[nodiscard]] static auto user_state_directory() -> std::filesystem::path;
 
+    // The user-wide cache directory (not a project's or the working directory's), shared by every checkout and project:
+    // $XDG_CACHE_HOME/lathe, else ~/.cache/lathe.
+    [[nodiscard]] static auto user_cache_directory() -> std::filesystem::path;
+
     static auto start_access_recording() -> void;
     [[nodiscard]] static auto finish_access_recording() -> std::vector<std::string>;
 

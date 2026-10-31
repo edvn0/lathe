@@ -57,7 +57,8 @@ struct ShaderObjectStorageCreateInfo {
     std::uint32_t capacity = 0;
 
     VkDescriptorSetLayout global_descriptor_set_layout = VK_NULL_HANDLE;
-    std::filesystem::path binary_cache_directory;
+    // Where compiled shader binaries are cached between runs; null for no caching.
+    std::shared_ptr<CacheStore> binary_cache_store;
 
     std::string_view debug_name = "shader_object_storage";
 };

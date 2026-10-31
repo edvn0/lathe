@@ -67,6 +67,26 @@ namespace cvars {
                     "$XDG_CACHE_HOME/lathe that is filled automatically)",
             .hint = "FILE.lsp",
     }};
+    CVar<std::uint32_t> cache_max_size{{
+            .name = "cache_max_size",
+            .group = "Packaging",
+            .help = "Size budget of the on-disk cache (textures, shader binaries and packs) in MiB; the least recently "
+                    "used entries beyond it are deleted at start-up (0: no limit)",
+            .hint = "MIB",
+            .default_value = 8192,
+    }};
+    CVar<bool> clear_cache{{
+            .name = "clear_cache",
+            .group = "Packaging",
+            .help = "Delete everything in the on-disk cache, and the caches of older versions, then exit",
+            .cli_only = true,
+    }};
+    CVar<bool> cache_stats{{
+            .name = "cache_stats",
+            .group = "Packaging",
+            .help = "Print what the on-disk cache holds, then exit",
+            .cli_only = true,
+    }};
     CVar<std::string> bake_shaders{{
             .name = "bake_shaders",
             .group = "Packaging",

@@ -19,8 +19,10 @@ set(
     file_change_watcher.cxx
     shader_bake.cxx
     shader_pack.cxx
+    shader_pack_cache.cxx
     slang_compiler.cxx
     stb.cxx
+    texture_cache.cxx
     texture_pipeline.cxx
     texture_streamer.cxx
 )
@@ -47,6 +49,7 @@ target_link_libraries(
         engine_deps
         engine_animation
         engine_gpu
+        engine_storage
         engine_core
     PRIVATE
         engine_options

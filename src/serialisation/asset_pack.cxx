@@ -370,10 +370,10 @@ auto cook_assets(AssetCookRequest const &request, SamplerStorage &sampler_storag
             continue;
         }
 
-        texture_tasks.push_back(pool.submit_task([job = std::move(job), directory = options.texture_cache_directory] {
+        texture_tasks.push_back(pool.submit_task([job = std::move(job), cache = options.texture_cache] {
             auto texture = !job.path ? load_compressed_texture_from_encoded_memory(job.encoded, job.role,
-                                                                                          job.cache_key, directory)
-                                            : load_compressed_texture(*job.path, job.role, directory);
+                                                                                          job.cache_key, cache)
+                                            : load_compressed_texture(*job.path, job.role, cache);
 
             if (!texture) {
                 return TextureResult{.id = job.id,

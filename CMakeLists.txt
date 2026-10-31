@@ -151,6 +151,51 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
 
+# SQLite backs the cache index (engine_storage). Built from the amalgamation so the build image needs no extra package.
+CPMAddPackage(
+    NAME sqlite3
+    URL "https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip"
+    URL_HASH SHA256=1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032
+    DOWNLOAD_ONLY YES
+)
+
+find_package(Threads REQUIRED)
+
+add_library(
+    sqlite3
+    STATIC
+        "${sqlite3_SOURCE_DIR}/sqlite3.c"
+)
+
+target_include_directories(
+    sqlite3
+    SYSTEM
+    PUBLIC
+        "${sqlite3_SOURCE_DIR}"
+)
+
+target_compile_definitions(
+    sqlite3
+    PRIVATE
+        SQLITE_THREADSAFE=1
+        SQLITE_OMIT_LOAD_EXTENSION
+        SQLITE_OMIT_DEPRECATED
+        SQLITE_DQS=0
+        SQLITE_DEFAULT_WAL_SYNCHRONOUS=1
+)
+
+target_link_libraries(
+    sqlite3
+    PUBLIC
+        Threads::Threads
+)
+
+set_target_properties(
+    sqlite3
+    PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+)
+
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/spirv-tools-opt.cmake")
 find_spirv_tools_opt()
 
@@ -960,11 +1005,12 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/renderdoc_config.cmake")
 
 # ------------------------------------------------------------------------------
 # Module libraries, in dependency order:
-# core < gpu < assets < net < gameserver < gameclient < physics < scene < terrain < rendering < serialisation < scripting
+# core < storage < gpu < assets < net < gameserver < gameclient < physics < scene < terrain < rendering < serialisation < scripting
 #      < game < luagame < runtime < app < benchmark
 # ------------------------------------------------------------------------------
 
 add_subdirectory(src/core)
+add_subdirectory(src/storage)
 add_subdirectory(src/gpu)
 add_subdirectory(src/assets)
 add_subdirectory(src/net)
@@ -1002,7 +1048,7 @@ add_library(
 target_link_libraries(
     lathe-core
     INTERFACE
-        "$<LINK_GROUP:RESCAN,engine_benchmark,engine_app,engine_runtime,engine_luagame,engine_game,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_gameserver,engine_gameclient,engine_assets,engine_gpu,engine_core>"
+        "$<LINK_GROUP:RESCAN,engine_benchmark,engine_app,engine_runtime,engine_luagame,engine_game,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_gameserver,engine_gameclient,engine_assets,engine_gpu,engine_storage,engine_core>"
 )
 
 add_library(
@@ -1021,7 +1067,7 @@ add_library(
 target_link_libraries(
     lathe-engine
     INTERFACE
-        "$<LINK_GROUP:RESCAN,engine_runtime,engine_luagame,engine_game,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_gameserver,engine_gameclient,engine_assets,engine_gpu,engine_core>"
+        "$<LINK_GROUP:RESCAN,engine_runtime,engine_luagame,engine_game,engine_scripting,engine_serialisation,engine_rendering,engine_terrain,engine_scene,engine_physics,engine_animation,engine_net,engine_gameserver,engine_gameclient,engine_assets,engine_gpu,engine_storage,engine_core>"
 )
 
 add_library(

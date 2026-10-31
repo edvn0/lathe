@@ -31,7 +31,7 @@ namespace {
     auto verify_cache_file_round_trips(std::filesystem::path const &cache_dir, VkFormat expected_format) -> void {
         std::vector<std::filesystem::path> ktx2_files;
 
-        for (auto const &entry: std::filesystem::directory_iterator{cache_dir}) {
+        for (auto const &entry: std::filesystem::recursive_directory_iterator{cache_dir}) {
             if (entry.path().extension() == ".ktx2") {
                 ktx2_files.push_back(entry.path());
             }
@@ -60,7 +60,7 @@ TEST_SUITE("unit") {
         auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.jpg";
         auto const cache_dir = make_temp_cache_dir("colour");
 
-        auto first = load_compressed_texture(AssetPath::external(source).value(), TextureRole::colour, cache_dir);
+        auto first = load_compressed_texture(AssetPath::external(source).value(), TextureRole::colour, TextureCache{cache_dir});
         REQUIRE(first.has_value());
 
         CHECK(first->format == VK_FORMAT_BC7_SRGB_BLOCK);
@@ -75,7 +75,7 @@ TEST_SUITE("unit") {
 
         verify_cache_file_round_trips(cache_dir, VK_FORMAT_BC7_SRGB_BLOCK);
 
-        auto second = load_compressed_texture(AssetPath::external(source).value(), TextureRole::colour, cache_dir);
+        auto second = load_compressed_texture(AssetPath::external(source).value(), TextureRole::colour, TextureCache{cache_dir});
         REQUIRE(second.has_value());
 
         CHECK(second->format == first->format);
@@ -90,11 +90,11 @@ TEST_SUITE("unit") {
         auto const cache_dir = make_temp_cache_dir("legacy");
         auto const path = AssetPath::external(source).value();
 
-        auto first = load_compressed_texture(path, TextureRole::colour, cache_dir);
+        auto first = load_compressed_texture(path, TextureRole::colour, TextureCache{cache_dir});
         REQUIRE(first.has_value());
 
         // libktx inflates on load, so writing the texture back leaves the plain layout older caches have.
-        for (auto const &entry: std::filesystem::directory_iterator{cache_dir}) {
+        for (auto const &entry: std::filesystem::recursive_directory_iterator{cache_dir}) {
             if (entry.path().extension() != ".ktx2") {
                 continue;
             }
@@ -107,7 +107,7 @@ TEST_SUITE("unit") {
             ktxTexture_Destroy(ktxTexture(raw));
         }
 
-        auto second = load_compressed_texture(path, TextureRole::colour, cache_dir);
+        auto second = load_compressed_texture(path, TextureRole::colour, TextureCache{cache_dir});
         REQUIRE(second.has_value());
         CHECK(second->data == first->data);
 
@@ -119,18 +119,18 @@ TEST_SUITE("unit") {
         auto const cache_dir = make_temp_cache_dir("max_extent");
         auto const path = AssetPath::external(source).value();
 
-        auto full = load_compressed_texture(path, TextureRole::colour, cache_dir);
+        auto full = load_compressed_texture(path, TextureRole::colour, TextureCache{cache_dir});
         REQUIRE(full.has_value());
         REQUIRE(std::max(full->width, full->height) > 128);
 
         set_texture_max_extent(128);
 
         // The cache already holds the full chain, so this is a hit that reads from a lower level.
-        auto hit = load_compressed_texture(path, TextureRole::colour, cache_dir);
+        auto hit = load_compressed_texture(path, TextureRole::colour, TextureCache{cache_dir});
 
         // A different cache directory forces a fresh encode, which is capped as it is returned.
         auto const miss_dir = make_temp_cache_dir("max_extent_miss");
-        auto miss = load_compressed_texture(path, TextureRole::colour, miss_dir);
+        auto miss = load_compressed_texture(path, TextureRole::colour, TextureCache{miss_dir});
 
         set_texture_max_extent(0);
 
@@ -152,18 +152,19 @@ TEST_SUITE("unit") {
         std::filesystem::remove_all(miss_dir);
     }
 
-    TEST_CASE("load_compressed_texture: cache hit publishes a preview that matches the full mip tail") {
+    TEST_CASE("load_compressed_texture: a miss and a hit both publish a preview that matches the full mip tail") {
         auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.jpg";
         auto const cache_dir = make_temp_cache_dir("preview");
 
         auto const path = AssetPath::external(source).value();
         auto const miss_preview = std::make_shared<TexturePreviewSlot>();
-        auto full = load_compressed_texture(path, TextureRole::colour, cache_dir, nullptr, miss_preview);
+        auto full = load_compressed_texture(path, TextureRole::colour, TextureCache{cache_dir}, nullptr, miss_preview);
         REQUIRE(full.has_value());
-        CHECK_FALSE(miss_preview->take().has_value());
+        auto const miss_tail = miss_preview->take();
+        CHECK(miss_tail.has_value() == (std::max(full->width, full->height) > 256));
 
         auto const hit_preview = std::make_shared<TexturePreviewSlot>();
-        auto cached = load_compressed_texture(path, TextureRole::colour, cache_dir, nullptr, hit_preview);
+        auto cached = load_compressed_texture(path, TextureRole::colour, TextureCache{cache_dir}, nullptr, hit_preview);
         REQUIRE(cached.has_value());
         CHECK(cached->data == full->data);
 
@@ -171,6 +172,9 @@ TEST_SUITE("unit") {
 
         if (std::max(full->width, full->height) > 256) {
             REQUIRE(preview.has_value());
+            REQUIRE(miss_tail.has_value());
+            // What the cold load showed while encoding is what the next load shows from the cache.
+            CHECK(miss_tail->data == preview->data);
             CHECK(std::max(preview->width, preview->height) <= 256);
             CHECK_FALSE(validate_compressed_texture(*preview).has_value());
 
@@ -193,7 +197,7 @@ TEST_SUITE("unit") {
         auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_normal.jpg";
         auto const cache_dir = make_temp_cache_dir("normal");
 
-        auto result = load_compressed_texture(AssetPath::external(source).value(), TextureRole::normal_map, cache_dir);
+        auto result = load_compressed_texture(AssetPath::external(source).value(), TextureRole::normal_map, TextureCache{cache_dir});
         REQUIRE(result.has_value());
 
         CHECK(result->format == VK_FORMAT_BC5_UNORM_BLOCK);
@@ -209,7 +213,7 @@ TEST_SUITE("unit") {
         auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_normal.jpg";
         auto const cache_dir = make_temp_cache_dir("generic");
 
-        auto result = load_compressed_texture(AssetPath::external(source).value(), TextureRole::generic, cache_dir);
+        auto result = load_compressed_texture(AssetPath::external(source).value(), TextureRole::generic, TextureCache{cache_dir});
         REQUIRE(result.has_value());
 
         CHECK(result->format == VK_FORMAT_BC7_UNORM_BLOCK);
@@ -222,7 +226,7 @@ TEST_SUITE("unit") {
     TEST_CASE("load_compressed_texture: missing source file fails cleanly") {
         auto const cache_dir = make_temp_cache_dir("missing");
 
-        auto result = load_compressed_texture(data_path("assets/textures/does_not_exist.png"), TextureRole::colour, cache_dir);
+        auto result = load_compressed_texture(data_path("assets/textures/does_not_exist.png"), TextureRole::colour, TextureCache{cache_dir});
 
         CHECK_FALSE(result.has_value());
         CHECK(result.error().type == TexturePipelineErrorType::source_not_found);

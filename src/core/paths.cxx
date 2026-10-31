@@ -240,6 +240,8 @@ auto Paths::screenshot(std::string_view relative) const -> std::optional<Screens
     return path ? std::optional{ScreenshotPath{screenshots_, *path}} : std::nullopt;
 }
 
+auto Paths::user_cache_directory() -> std::filesystem::path { return home_relative("XDG_CACHE_HOME", ".cache"); }
+
 auto Paths::user_state_directory() -> std::filesystem::path { return home_relative("XDG_STATE_HOME", ".local/state"); }
 
 auto Paths::set_current(Paths paths) -> void {
