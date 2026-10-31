@@ -90,12 +90,13 @@ namespace {
     }
 
     [[nodiscard]]
-    auto to_rgba8(DecodedImage const &decoded) -> std::vector<std::byte> {
-        auto const span = decoded.span();
-
+    auto to_rgba8(DecodedImage &&decoded) -> std::vector<std::byte> {
+        // 8-bit images already are RGBA8: take their pixels instead of copying tens of megabytes.
         if (decoded.format() != VK_FORMAT_R16G16B16A16_SFLOAT) {
-            return std::vector<std::byte>{span.begin(), span.end()};
+            return std::move(decoded).release_pixels();
         }
+
+        auto const span = decoded.span();
 
         auto const *halfs = reinterpret_cast<std::uint16_t const *>(span.data());
         auto const texel_count = span.size_bytes() / (4 * sizeof(std::uint16_t));
@@ -781,7 +782,7 @@ namespace {
     }
 
     [[nodiscard]]
-    auto compress_decoded_image(DecodedImage const &decoded, TextureRole role, CacheTarget const &target,
+    auto compress_decoded_image(DecodedImage &&decoded, TextureRole role, CacheTarget const &target,
                                 FlyString debug_name, ModelLoadProfile *profile,
                                 TexturePreviewSlot *preview) -> std::expected<CompressedTexture, TexturePipelineError> {
         // Decoding is done and encoding is the slow part: give up here rather than start it.
@@ -791,7 +792,7 @@ namespace {
 
         auto const width = decoded.width();
         auto const height = decoded.height();
-        auto rgba8 = to_rgba8(decoded);
+        auto rgba8 = to_rgba8(std::move(decoded));
 
         return encode_and_transcode(std::move(rgba8), width, height, role, target, debug_name, profile, preview);
     }
@@ -874,7 +875,7 @@ auto load_compressed_texture(AssetPath const &asset_path, TextureRole role,
                                           std::format("failed to decode '{}'", source_path.string())));
     }
 
-    return compress_decoded_image(*decoded, role, target, FlyString{stem}, profile_ptr, preview.get());
+    return compress_decoded_image(std::move(*decoded), role, target, FlyString{stem}, profile_ptr, preview.get());
 }
 
 auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> encoded_bytes, TextureRole role,
@@ -926,7 +927,7 @@ auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> enco
         return std::unexpected(make_error(TexturePipelineErrorType::decode_failed, "failed to decode embedded image"));
     }
 
-    return compress_decoded_image(*decoded, role, target, FlyString{cache_key}, profile_ptr, preview.get());
+    return compress_decoded_image(std::move(*decoded), role, target, FlyString{cache_key}, profile_ptr, preview.get());
 }
 
 auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels, std::uint32_t width,
@@ -1005,7 +1006,9 @@ auto prepare_texture_preview(AssetPath const &asset_path, TextureRole role, Text
         return;
     }
 
-    auto const mips = generate_mip_chain(to_rgba8(*decoded), decoded->width(), decoded->height(), role);
+    auto const width = decoded->width();
+    auto const height = decoded->height();
+    auto const mips = generate_mip_chain(to_rgba8(std::move(*decoded)), width, height, role);
 
     publish_cold_preview(mips, role, FlyString{stem}, *preview);
 }
@@ -1031,7 +1034,9 @@ auto prepare_texture_preview_from_encoded_memory(std::span<std::byte const> enco
         return;
     }
 
-    auto const mips = generate_mip_chain(to_rgba8(*decoded), decoded->width(), decoded->height(), role);
+    auto const width = decoded->width();
+    auto const height = decoded->height();
+    auto const mips = generate_mip_chain(to_rgba8(std::move(*decoded)), width, height, role);
 
     publish_cold_preview(mips, role, FlyString{cache_key}, *preview);
 }

@@ -1,13 +1,16 @@
 #include "gpu/image.hxx"
+#include "gpu/png_decoder.hxx"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <source_location>
 #include <string>
@@ -868,9 +871,51 @@ auto DecodedImage::decode_exr(std::string_view path) -> std::optional<DecodedIma
     };
 }
 
+namespace {
+
+    // The pixel format a decoded 8-bit RGBA image has.
+    auto rgba8_format(ImageColourSpace colour_space) -> VkFormat {
+        return colour_space == ImageColourSpace::srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    }
+
+    // A whole file in memory, or nothing if it cannot be read.
+    auto read_whole_file(std::string const &path) -> std::optional<std::vector<std::byte>> {
+        std::unique_ptr<std::FILE, decltype(&std::fclose)> file{std::fopen(path.c_str(), "rb"), &std::fclose};
+
+        if (file == nullptr || std::fseek(file.get(), 0, SEEK_END) != 0) {
+            return std::nullopt;
+        }
+
+        auto const size = std::ftell(file.get());
+
+        if (size < 0 || std::fseek(file.get(), 0, SEEK_SET) != 0) {
+            return std::nullopt;
+        }
+
+        std::vector<std::byte> bytes(static_cast<std::size_t>(size));
+
+        if (std::fread(bytes.data(), 1, bytes.size(), file.get()) != bytes.size()) {
+            return std::nullopt;
+        }
+
+        return bytes;
+    }
+
+}
+
 [[nodiscard]]
 auto DecodedImage::decode_stbi(std::string_view path, ImageColourSpace colour_space) -> std::optional<DecodedImage> {
     auto const path_string = std::string{path};
+
+    // Most textures are PNGs of a kind the fast decoder handles; it is several times quicker than stb_image and hands the
+    // pixels over without a copy. Anything it declines (or that is damaged) goes through stb_image below.
+    if (lowercase_extension(path) == ".png") {
+        if (auto const file = read_whole_file(path_string)) {
+            if (auto png = decode_png_fast(*file)) {
+                return DecodedImage{std::move(png->pixels), png->width, png->height, rgba8_format(colour_space)};
+            }
+        }
+    }
 
     int width = 0;
     int height = 0;
@@ -1277,6 +1322,12 @@ auto DecodedImage::load_from_memory(std::span<std::byte const> encoded, ImageCol
     if (encoded.empty()) {
         error("Could not decode image from empty memory buffer");
         return std::nullopt;
+    }
+
+    if (has_png_signature(encoded)) {
+        if (auto png = decode_png_fast(encoded)) {
+            return DecodedImage{std::move(png->pixels), png->width, png->height, rgba8_format(colour_space)};
+        }
     }
 
     if (encoded.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
