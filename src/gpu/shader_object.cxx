@@ -138,13 +138,27 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
     auto const build_create_infos = [&](bool force_spirv) {
         std::vector<VkShaderCreateInfoEXT> infos(create_info.shaders.size());
 
+        // The stages of a linked set must all be created from the same kind of code, so cached binaries are used only
+        // when every stage has one.
+        auto all_cached = !force_spirv && binary_cache != nullptr;
+
+        for (std::size_t index = 0; index < create_info.shaders.size(); ++index) {
+            auto const &shader = create_info.shaders[index];
+
+            if (all_cached && !shader.cache_key.empty()) {
+                binary_storage[index] = binary_cache->find(shader.cache_key, shader.spirv);
+            } else {
+                binary_storage[index].reset();
+            }
+
+            all_cached = all_cached && binary_storage[index].has_value();
+        }
+
         for (std::size_t index = 0; index < create_info.shaders.size(); ++index) {
             auto const &shader = create_info.shaders[index];
             auto const is_last = index + 1 == create_info.shaders.size();
 
-            if (!force_spirv && binary_cache != nullptr && !shader.cache_key.empty()) {
-                binary_storage[index] = binary_cache->find(shader.cache_key, shader.spirv);
-            } else {
+            if (!all_cached) {
                 binary_storage[index].reset();
             }
 
