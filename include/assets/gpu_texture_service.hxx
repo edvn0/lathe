@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -35,6 +36,9 @@ public:
         std::uint64_t batches = 0;
         std::uint64_t largest_batch = 0;
         std::uint64_t failed_requests = 0;
+        // Time the backend spent on batches, and the time requests waited in the queue before one started.
+        double busy_ms = 0.0;
+        double queue_wait_ms = 0.0;
     };
 
     static constexpr std::uint64_t default_max_batch_bytes = 256ULL * 1024 * 1024;
@@ -67,6 +71,7 @@ private:
         std::span<GpuTextureLevel const> levels;
         GpuBlockFormat format = GpuBlockFormat::bc7;
         std::promise<Outcome> promise;
+        std::chrono::steady_clock::time_point queued_at = std::chrono::steady_clock::now();
     };
 
     auto run() -> void;

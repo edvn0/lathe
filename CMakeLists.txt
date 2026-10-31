@@ -669,6 +669,20 @@ CPMAddPackage(
 
 mark_target_includes_system(ktx)
 
+# libdeflate inflates PNG data several times faster than stb_image's own decoder (engine_gpu's PNG fast path).
+CPMAddPackage(
+    NAME libdeflate
+    GITHUB_REPOSITORY ebiggers/libdeflate
+    GIT_TAG v1.23
+    OPTIONS
+        "LIBDEFLATE_BUILD_STATIC_LIB ON"
+        "LIBDEFLATE_BUILD_SHARED_LIB OFF"
+        "LIBDEFLATE_BUILD_GZIP OFF"
+        "LIBDEFLATE_COMPRESSION_SUPPORT OFF"
+        "LIBDEFLATE_GZIP_SUPPORT OFF"
+        "LIBDEFLATE_ZLIB_SUPPORT ON"
+)
+
 if(ImGui_SOURCE_DIR AND ImPlot_SOURCE_DIR AND ImGuizmo_SOURCE_DIR AND ImGuiNodeEditor_SOURCE_DIR)
   add_library(
       imgui

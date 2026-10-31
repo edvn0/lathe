@@ -13,6 +13,7 @@ add_library(
         image.cxx
         image_storage.cxx
         model_vertex.cxx
+        png_decoder.cxx
         queue_selection.cxx
         queue_set.cxx
         sampler_storage.cxx
@@ -40,6 +41,7 @@ target_link_libraries(
         engine_core
     PRIVATE
         engine_options
+        libdeflate::libdeflate_static
 )
 
 target_precompile_headers(
