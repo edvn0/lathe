@@ -414,11 +414,13 @@ struct Renderer final : public IMeshSink, public IModelSink {
 
     [[nodiscard]]
     auto submit_model(ModelHandle model, glm::mat4 const &transform, MaterialHandle material_override = {},
-                      std::span<MaterialSlotOverride const> slot_overrides = {}, bool outlined = false)
+                      std::span<MaterialSlotOverride const> slot_overrides = {}, bool outlined = false,
+                      MaterialHandle outline_source = {})
             -> std::expected<void, RendererError>;
     [[nodiscard]]
     auto submit_model(ModelHandle model, glm::mat4 &&, MaterialHandle material_override = {},
-                      std::span<MaterialSlotOverride const> slot_overrides = {}, bool outlined = false)
+                      std::span<MaterialSlotOverride const> slot_overrides = {}, bool outlined = false,
+                      MaterialHandle outline_source = {})
             -> std::expected<void, RendererError>;
 
     struct ModelSubmission {
@@ -430,6 +432,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
         std::uint32_t slot_override_count = 0;
 
         bool outlined = false;
+        // When valid (and `outlined` is not), only the submeshes whose model material is this one are outlined. A
+        // submission that sets it counts as outlined in end_model_submissions' `outlined`.
+        MaterialHandle outline_source{};
         // Left out when the submissions are closed (see begin_model_submissions).
         bool skip = false;
     };
@@ -474,6 +479,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto model_bounds(ModelHandle model) const -> std::optional<std::pair<glm::vec3, glm::vec3>>;
 
     [[nodiscard]]
+    // The model's material number `material_index` (what ModelPickHit::material indexes), the same handle a "Slot N" of
+    // model_materials is made of, or the default material for ModelPickHit::no_material.
+    [[nodiscard]] auto model_source_material(ModelHandle model, std::uint32_t material_index) const -> MaterialHandle;
     auto model_submesh_bounds(ModelHandle model) const -> std::optional<std::vector<std::pair<glm::vec3, glm::vec3>>>;
 
     // Normal cones of every meshlet of the model's first LOD, in the model's own space.

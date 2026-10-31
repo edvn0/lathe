@@ -747,10 +747,15 @@ auto Application::draw_viewport(std::size_t index, char const *title, std::uint3
                         selection.select(placed);
                     }
                 } else {
-                    auto const hit = pick_entity(*active_scene(), *renderer, camera.position(), direction);
+                    auto const surface = pick_surface(*active_scene(), *renderer, camera.position(), direction);
+                    auto const hit = surface ? surface->entity : entt::entity{entt::null};
 
                     if (hit != entt::null) {
-                        if (ImGui::GetIO().KeyCtrl) {
+                        if (ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyCtrl && surface->material.valid()) {
+                            // Shift+click singles out the material slot under the pointer ("Slot N" in the inspector).
+                            scrolled_to_submesh = {};
+                            selection.select_submesh(hit, surface->material);
+                        } else if (ImGui::GetIO().KeyCtrl) {
                             selection.toggle(hit);
                         } else {
                             selection.select(hit);
@@ -2010,6 +2015,17 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 auto const source = sources[index];
 
                 ImGui::PushID(static_cast<int>(index));
+
+                // The slot picked with Shift+click in the viewport is marked and scrolled to once.
+                auto const picked_slot = selection_context().submesh_highlight();
+                if (picked_slot.entity == entity && picked_slot.material == source) {
+                    ImGui::TextColored(ImVec4(1.0F, 0.75F, 0.2F, 1.0F), ">");
+                    ImGui::SameLine();
+                    if (scrolled_to_submesh != picked_slot) {
+                        ImGui::SetScrollHereY();
+                        scrolled_to_submesh = picked_slot;
+                    }
+                }
 
                 auto const replacement = edited.replacement_for(source);
                 if (auto const *shown =

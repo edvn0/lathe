@@ -32,6 +32,9 @@ struct ModelSlotData {
 
     std::shared_ptr<ModelAnimationData const> animation;
 
+    // The materials the model was created with, indexed like the parsed model's `material_index`.
+    std::vector<MaterialHandle> source_materials;
+
     // The model's triangles for ray queries, when the streamer was asked to collect them (the editor does).
     std::shared_ptr<ModelPickGeometry const> pick_geometry;
     float skin_inflate = 0.0F;

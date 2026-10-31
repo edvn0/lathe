@@ -16,7 +16,8 @@ namespace {
     constexpr int max_depth = 256;
 
     auto collect_node(ModelCpuData const &model, std::uint32_t index, glm::mat4 const &parent,
-                      std::vector<glm::vec3> &positions, std::vector<std::uint32_t> &indices, int depth) -> void {
+                      std::vector<glm::vec3> &positions, std::vector<std::uint32_t> &indices,
+                      std::vector<std::uint32_t> &materials, int depth) -> void {
         if (index >= model.nodes.size() || depth > max_depth) {
             return;
         }
@@ -36,7 +37,10 @@ namespace {
                     positions.emplace_back(world * glm::vec4{vertex.position, 1.0F});
                 }
 
+                auto const material = primitive.material_index.value_or(ModelPickHit::no_material);
+
                 for (std::size_t i = 0; i + 2 < primitive.indices.size(); i += 3) {
+                    materials.push_back(material);
                     indices.push_back(base + primitive.indices[i]);
                     indices.push_back(base + primitive.indices[i + 1]);
                     indices.push_back(base + primitive.indices[i + 2]);
@@ -45,7 +49,7 @@ namespace {
         }
 
         for (auto const child: node.children) {
-            collect_node(model, child, world, positions, indices, depth + 1);
+            collect_node(model, child, world, positions, indices, materials, depth + 1);
         }
     }
 
@@ -116,7 +120,7 @@ auto ModelPickGeometry::collect(ModelCpuData const &model) -> Triangles {
     Triangles triangles;
 
     for (auto const root: model.scene_roots) {
-        collect_node(model, root, glm::mat4{1.0F}, triangles.positions, triangles.indices, 0);
+        collect_node(model, root, glm::mat4{1.0F}, triangles.positions, triangles.indices, triangles.materials, 0);
     }
 
     return triangles;
@@ -124,18 +128,21 @@ auto ModelPickGeometry::collect(ModelCpuData const &model) -> Triangles {
 
 auto ModelPickGeometry::build(ModelCpuData const &model) -> std::shared_ptr<ModelPickGeometry const> {
     auto triangles = collect(model);
-    return build(std::move(triangles.positions), std::move(triangles.indices));
+    return build(std::move(triangles.positions), std::move(triangles.indices), std::move(triangles.materials));
 }
 
-auto ModelPickGeometry::build(std::vector<glm::vec3> positions, std::vector<std::uint32_t> indices)
-        -> std::shared_ptr<ModelPickGeometry const> {
+auto ModelPickGeometry::build(std::vector<glm::vec3> positions, std::vector<std::uint32_t> indices,
+                              std::vector<std::uint32_t> materials) -> std::shared_ptr<ModelPickGeometry const> {
     auto geometry = std::shared_ptr<ModelPickGeometry>{new ModelPickGeometry};
     geometry->positions_ = std::move(positions);
     geometry->indices_ = std::move(indices);
 
     // Drop a trailing partial triangle and any that index past the vertices.
     auto const vertex_count = static_cast<std::uint32_t>(geometry->positions_.size());
+    // Materials are per triangle; if they do not line up with the indices they are dropped rather than misread.
+    auto const has_materials = materials.size() == geometry->indices_.size() / 3;
     std::vector<std::uint32_t> valid;
+    std::vector<std::uint32_t> valid_materials;
     valid.reserve(geometry->indices_.size());
 
     for (std::size_t i = 0; i + 2 < geometry->indices_.size(); i += 3) {
@@ -143,10 +150,14 @@ auto ModelPickGeometry::build(std::vector<glm::vec3> positions, std::vector<std:
             geometry->indices_[i + 2] < vertex_count) {
             valid.insert(valid.end(), geometry->indices_.begin() + static_cast<std::ptrdiff_t>(i),
                          geometry->indices_.begin() + static_cast<std::ptrdiff_t>(i + 3));
+            if (has_materials) {
+                valid_materials.push_back(materials[i / 3]);
+            }
         }
     }
 
     geometry->indices_ = std::move(valid);
+    geometry->materials_ = std::move(valid_materials);
 
     auto const triangles = static_cast<std::uint32_t>(geometry->indices_.size() / 3);
 
@@ -178,6 +189,16 @@ auto ModelPickGeometry::build(std::vector<glm::vec3> positions, std::vector<std:
     }
 
     geometry->indices_ = std::move(sorted);
+
+    if (!geometry->materials_.empty()) {
+        std::vector<std::uint32_t> sorted_materials(triangles);
+
+        for (std::uint32_t t = 0; t < triangles; ++t) {
+            sorted_materials[t] = geometry->materials_[order[t]];
+        }
+
+        geometry->materials_ = std::move(sorted_materials);
+    }
 
     return geometry;
 }
@@ -280,6 +301,7 @@ auto ModelPickGeometry::raycast(glm::vec3 const &origin, glm::vec3 const &direct
     hit.distance = best;
     hit.position = origin + (direction * best);
     hit.triangle = triangle;
+    hit.material = triangle < materials_.size() ? materials_[triangle] : ModelPickHit::no_material;
     hit.corners = {positions_[indices_[(triangle * 3) + 0]], positions_[indices_[(triangle * 3) + 1]],
                    positions_[indices_[(triangle * 3) + 2]]};
 

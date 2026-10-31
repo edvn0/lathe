@@ -138,3 +138,37 @@ TEST_CASE("the hierarchy agrees with testing every triangle") {
         }
     }
 }
+
+TEST_CASE("a hit reports the material of its triangle, through the hierarchy's reordering") {
+    constexpr auto n = 16;
+    auto [positions, indices] = grid(n);
+
+    // Material = the quad's column, two triangles per quad, in the grid's index order.
+    std::vector<std::uint32_t> materials;
+    for (auto z = 0; z < n; ++z) {
+        for (auto x = 0; x < n; ++x) {
+            materials.insert(materials.end(), 2, static_cast<std::uint32_t>(x));
+        }
+    }
+
+    auto const geometry = ModelPickGeometry::build(std::move(positions), std::move(indices), std::move(materials));
+
+    for (auto x = 0; x < n; ++x) {
+        for (auto z = 0; z < n; z += 5) {
+            auto const hit = geometry->raycast({static_cast<float>(x) + 0.3F, 4.0F, static_cast<float>(z) + 0.2F},
+                                               {0.0F, -1.0F, 0.0F}, 100.0F);
+            REQUIRE(hit.has_value());
+            CHECK(hit->material == static_cast<std::uint32_t>(x));
+        }
+    }
+}
+
+TEST_CASE("a hit has no material when none were given") {
+    auto [positions, indices] = grid(2);
+    auto const geometry = ModelPickGeometry::build(std::move(positions), std::move(indices));
+
+    auto const hit = geometry->raycast({0.5F, 1.0F, 0.5F}, {0.0F, -1.0F, 0.0F}, 100.0F);
+
+    REQUIRE(hit.has_value());
+    CHECK(hit->material == ModelPickHit::no_material);
+}
