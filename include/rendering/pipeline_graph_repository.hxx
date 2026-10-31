@@ -96,8 +96,7 @@ struct PipelineGraphCreateInfo {
 
     VkDescriptorSetLayout global_descriptor_set_layout = VK_NULL_HANDLE;
 
-    std::filesystem::path cache_file_path;
-    std::filesystem::path shader_binary_cache_directory;
+    std::shared_ptr<CacheStore> shader_binary_cache_store;
 
     std::string_view debug_name = "pipeline_graph";
 };
@@ -148,7 +147,6 @@ public:
     auto register_pipelines_precompiled_parallel(std::span<PrecompiledPipelineRegisterInfo> register_infos)
             -> std::vector<std::expected<PipelineNodeHandle, PipelineGraphError>>;
 
-    auto save_pipeline_cache() const -> void;
 
     [[nodiscard]]
     auto resolve_shader_objects(PipelineNodeHandle handle) const noexcept -> ShaderObjectSet const *;

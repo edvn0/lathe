@@ -86,7 +86,7 @@ struct AssetCookReport {
 struct AssetCookOptions {
     std::vector<std::shared_ptr<AssetPack const>> source_packs;
 
-    std::filesystem::path texture_cache_directory = default_texture_cache_directory();
+    TextureCache texture_cache = TextureCache::global();
 };
 
 [[nodiscard]]

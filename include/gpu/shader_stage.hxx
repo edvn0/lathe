@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 inline constexpr VkPushConstantRange global_push_constant_range{
         .stageFlags = VK_SHADER_STAGE_ALL,
         .offset = 0,
@@ -13,5 +15,6 @@ struct ShaderStageInfo {
     VkPipelineShaderStageCreateFlags flags = 0;
     VkSpecializationInfo const *specialization_info = nullptr;
 
-    std::string_view cache_key{};
+    // Owned: callers build it on the spot, and a view would dangle.
+    std::string cache_key{};
 };

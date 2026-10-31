@@ -28,6 +28,9 @@ namespace cvars {
 
     // Packaging and automation.
     extern CVar<std::string> shader_pack;
+    extern CVar<std::uint32_t> cache_max_size;
+    extern CVar<bool> clear_cache;
+    extern CVar<bool> cache_stats;
     extern CVar<std::string> bake_shaders;
     extern CVar<std::string> record_shaders;
     extern CVar<std::string> record_resources;

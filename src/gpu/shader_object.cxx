@@ -143,7 +143,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
             auto const is_last = index + 1 == create_info.shaders.size();
 
             if (!force_spirv && binary_cache != nullptr && !shader.cache_key.empty()) {
-                binary_storage[index] = binary_cache->find(shader.cache_key);
+                binary_storage[index] = binary_cache->find(shader.cache_key, shader.spirv);
             } else {
                 binary_storage[index].reset();
             }
@@ -229,7 +229,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
                 if (vkGetShaderBinaryDataEXT(context.device, created_shaders[index], &size, blob.data()) ==
                     VK_SUCCESS) {
                     blob.resize(size);
-                    binary_cache->store(shader.cache_key, blob);
+                    binary_cache->store(shader.cache_key, shader.spirv, blob);
                 }
             }
         }
@@ -281,7 +281,7 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
 
     auto const build_create_info = [&](bool force_spirv) {
         if (!force_spirv && binary_cache != nullptr && !shader.cache_key.empty()) {
-            binary_storage = binary_cache->find(shader.cache_key);
+            binary_storage = binary_cache->find(shader.cache_key, shader.spirv);
         } else {
             binary_storage.reset();
         }
@@ -356,7 +356,7 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
 
             if (vkGetShaderBinaryDataEXT(context.device, created_shader, &size, blob.data()) == VK_SUCCESS) {
                 blob.resize(size);
-                binary_cache->store(shader.cache_key, blob);
+                binary_cache->store(shader.cache_key, shader.spirv, blob);
             }
         }
     }

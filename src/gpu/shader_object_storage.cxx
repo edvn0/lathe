@@ -25,6 +25,7 @@ ShaderObjectStorage::~ShaderObjectStorage() { destroy(); }
 
 ShaderObjectStorage::ShaderObjectStorage(ShaderObjectStorage &&other) noexcept :
     context_(std::exchange(other.context_, nullptr)), slots_(std::move(other.slots_)),
+    binary_cache_(std::move(other.binary_cache_)),
     global_descriptor_set_layout_(std::exchange(other.global_descriptor_set_layout_, nullptr)),
     debug_name_(other.debug_name_) {}
 
@@ -40,6 +41,8 @@ auto ShaderObjectStorage::operator=(ShaderObjectStorage &&other) noexcept -> Sha
     slots_ = std::move(other.slots_);
 
     global_descriptor_set_layout_ = std::exchange(other.global_descriptor_set_layout_, nullptr);
+
+    binary_cache_ = std::move(other.binary_cache_);
 
     debug_name_ = other.debug_name_;
 
@@ -62,7 +65,7 @@ auto ShaderObjectStorage::create(VulkanContext &context, ShaderObjectStorageCrea
     storage.slots_ = ObjectPool<ShaderObjectSet>::create(create_info.capacity);
     storage.global_descriptor_set_layout_ = create_info.global_descriptor_set_layout;
 
-    if (!create_info.binary_cache_directory.empty()) {
+    if (create_info.binary_cache_store != nullptr) {
         VkPhysicalDeviceShaderObjectPropertiesEXT shader_object_properties{
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT,
         };
@@ -75,13 +78,13 @@ auto ShaderObjectStorage::create(VulkanContext &context, ShaderObjectStorageCrea
         std::array<std::uint8_t, VK_UUID_SIZE> uuid{};
         std::ranges::copy(shader_object_properties.shaderBinaryUUID, uuid.begin());
 
-        auto cache = ShaderBinaryCache::create(create_info.binary_cache_directory, uuid,
+        auto cache = ShaderBinaryCache::create(create_info.binary_cache_store, uuid,
                                                shader_object_properties.shaderBinaryVersion);
 
         if (cache) {
             storage.binary_cache_ = std::move(*cache);
         } else {
-            warn("Failed to open shader binary cache at '{}'", create_info.binary_cache_directory.string());
+            warn("Shader binaries will not be cached: the binary cache could not be set up");
         }
     }
 

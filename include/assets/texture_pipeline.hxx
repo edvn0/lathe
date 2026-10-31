@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "assets/model_load_profile.hxx"
+#include "assets/texture_cache.hxx"
 #include "core/paths.hxx"
 #include "core/error_context.hxx"
 #include "gpu/compressed_texture.hxx"
@@ -56,9 +57,6 @@ private:
     std::optional<CompressedTexture> texture_;
 };
 
-[[nodiscard]]
-auto default_texture_cache_directory() -> std::filesystem::path;
-
 // Process-wide encoding knobs, set once at startup before any texture loads.
 //
 // RDO lambda: UASTC rate-distortion optimisation. 0 (the default) is off; larger values give smaller files and lower
@@ -71,7 +69,7 @@ auto set_texture_max_extent(std::uint32_t extent) noexcept -> void;
 
 [[nodiscard]]
 auto load_compressed_texture(AssetPath const &source_path, TextureRole role,
-                             std::filesystem::path const &cache_directory = default_texture_cache_directory(),
+                             TextureCache const &cache = TextureCache::global(),
                              std::shared_ptr<ModelLoadProfile> const &profile = nullptr,
                              std::shared_ptr<TexturePreviewSlot> const &preview = nullptr)
         -> std::expected<CompressedTexture, TexturePipelineError>;
@@ -79,14 +77,14 @@ auto load_compressed_texture(AssetPath const &source_path, TextureRole role,
 [[nodiscard]]
 auto load_compressed_texture_from_memory(
         std::span<std::byte const> rgba_pixels, std::uint32_t width, std::uint32_t height, TextureRole role,
-        std::string_view cache_key, std::filesystem::path const &cache_directory = default_texture_cache_directory(),
+        std::string_view cache_key, TextureCache const &cache = TextureCache::global(),
         std::shared_ptr<ModelLoadProfile> const &profile = nullptr)
         -> std::expected<CompressedTexture, TexturePipelineError>;
 
 [[nodiscard]]
 auto load_compressed_texture_from_encoded_memory(
         std::span<std::byte const> encoded_bytes, TextureRole role, std::string_view cache_key,
-        std::filesystem::path const &cache_directory = default_texture_cache_directory(),
+        TextureCache const &cache = TextureCache::global(),
         std::shared_ptr<ModelLoadProfile> const &profile = nullptr,
         std::shared_ptr<TexturePreviewSlot> const &preview = nullptr)
         -> std::expected<CompressedTexture, TexturePipelineError>;

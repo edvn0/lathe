@@ -36,7 +36,7 @@ auto TextureStreamer::request(ImageStorage &images, AssetPath source_path, Textu
     auto preview = std::make_shared<TexturePreviewSlot>();
 
     auto future = pool.submit_task([path = std::move(source_path), role, profile = std::move(profile), preview]() {
-        return load_compressed_texture(path, role, default_texture_cache_directory(), profile, preview);
+        return load_compressed_texture(path, role, TextureCache::global(), profile, preview);
     });
 
     path_requests_.insert_or_assign(path_key, *pending_handle);
@@ -74,7 +74,7 @@ auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std:
 
     auto future = pool.submit_task([encoded = std::move(encoded_bytes), role, cache_key = std::move(cache_key),
                                     profile = std::move(profile), preview]() {
-        return load_compressed_texture_from_encoded_memory(encoded, role, cache_key, default_texture_cache_directory(),
+        return load_compressed_texture_from_encoded_memory(encoded, role, cache_key, TextureCache::global(),
                                                            profile, preview);
     });
 

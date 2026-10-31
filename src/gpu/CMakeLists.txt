@@ -36,6 +36,7 @@ target_link_libraries(
     engine_gpu
     PUBLIC
         engine_deps
+        engine_storage
         engine_core
     PRIVATE
         engine_options

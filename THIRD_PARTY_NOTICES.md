@@ -24,6 +24,7 @@ them is part of the engine binary.
 | [EnTT](https://github.com/skypjack/entt) | `v3.15.0` | MIT |
 | [meshoptimizer](https://github.com/zeux/meshoptimizer) | `v0.24` | MIT |
 | [stb](https://github.com/nothings/stb) | `2c980bb5` | MIT OR Unlicense |
+| [SQLite](https://www.sqlite.org) | `3.50.4` | Public domain |
 | [efsw](https://github.com/SpartanJ/efsw) | `1.4.1` | MIT |
 | [FreeType](https://github.com/freetype/freetype) | `VER-2-14-3` | FTL (chosen from FTL OR GPL-2.0-or-later) |
 | [BS::thread_pool](https://github.com/bshoshany/thread-pool) | `5.1.0` | MIT |
@@ -411,6 +412,17 @@ SOFTWARE.
 ```
 
 ---
+
+## SQLite
+
+- Source: <https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip>
+- License: Public domain
+
+The author disclaims copyright to this source code. In place of a legal notice, here is a blessing:
+
+- May you do good and not evil.
+- May you find forgiveness for yourself and forgive others.
+- May you share freely, never taking more than you give.
 
 ## stb
 

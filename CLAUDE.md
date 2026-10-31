@@ -33,11 +33,11 @@ Each `engine_<module>` library is `src/<module>/` plus `include/<module>/`, and 
 (the order is the one in `CMakeLists.txt`):
 
 ```
-core < gpu < assets < animation < physics < scene < terrain < rendering < serialisation < scripting
+core < storage < gpu < assets < animation < physics < scene < terrain < rendering < serialisation < scripting
      < game < luagame < runtime < app < benchmark
 ```
 
-`net`, `gameserver` and `gameclient` depend on `core` alone (`luagame` uses `net` for the scripts' `http` library). `game` is the `IGame` interface; `luagame` is the Lua
+`storage` is the SQLite-backed cache store (`CacheStore`) that the engine's caches sit on through small services (the texture, shader binary, shader pack and download caches live next to their users); `net`, `gameserver` and `gameclient` depend on `core` alone (`luagame` uses `net` for the scripts' `http` library). `game` is the `IGame` interface; `luagame` is the Lua
 implementation of it and the Lua API; `runtime` is `Runtime` (everything a running game needs: renderer, scenes, the
 `IGame` lifecycle and input, scene loading) plus `run_engine`, the startup and frame loop both executables share; `app` is
 the editor, a `Runtime` subclass (`Application`) with panels, gizmos and scene files on top; `benchmark` runs the editor

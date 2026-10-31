@@ -1112,7 +1112,7 @@ TEST_SUITE("unit") {
         LbfWriter writer{LbfFileKind::asset_pack};
 
         auto const report = cook_assets(AssetCookRequest{.models = {AssetPath::external(source).value()}}, sampler_storage, writer,
-                                        AssetCookOptions{.texture_cache_directory = cache_dir});
+                                        AssetCookOptions{.texture_cache = TextureCache{cache_dir}});
 
         CHECK(report.failures.empty());
         CHECK(report.models_cooked == 1);
@@ -1149,7 +1149,7 @@ TEST_SUITE("unit") {
 
         LbfWriter second{LbfFileKind::asset_pack};
         auto const copied = cook_assets(AssetCookRequest{.models = {AssetPath::external(source).value()}}, sampler_storage, second,
-                                        AssetCookOptions{.source_packs = {pack}, .texture_cache_directory = cache_dir});
+                                        AssetCookOptions{.source_packs = {pack}, .texture_cache = TextureCache{cache_dir}});
 
         CHECK(copied.models_copied == 1);
         CHECK(copied.models_cooked == 0);

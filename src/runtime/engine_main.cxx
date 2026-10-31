@@ -54,6 +54,9 @@
 #include "assets/file_change_watcher.hxx"
 #include "assets/shader_bake.hxx"
 #include "assets/shader_pack.hxx"
+#include "core/human_readable_bytes.hxx"
+#include "assets/shader_pack_cache.hxx"
+#include "storage/caches.hxx"
 #include "core/allocator.hxx"
 #include "core/config.hxx"
 #include "core/command_line.hxx"
@@ -1069,6 +1072,20 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
     }
 
+    if (cvars::clear_cache.get()) {
+        auto const removed = caches::clear_all();
+
+        info("Cleared the cache: {} entries ({})", removed.entries, human_readable_bytes(removed.bytes));
+        return EXIT_SUCCESS;
+    }
+
+    if (cvars::cache_stats.get()) {
+        info("{}", caches::report());
+        return EXIT_SUCCESS;
+    }
+
+    caches::maintain(static_cast<std::uint64_t>(cvars::cache_max_size.get()) * 1024ULL * 1024ULL);
+
     if (!cvars::bake_shaders.get().empty()) {
         auto const baked = renderer::bake_shaders(Renderer::compiler(), cvars::bake_shaders.get());
 
@@ -1082,19 +1099,14 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         return EXIT_SUCCESS;
     }
 
-    // A packaged pack beside the data wins; otherwise dev runs cache under XDG_CACHE_HOME, keyed by data directory
-    // so separate checkouts don't evict each other.
+    // A packaged pack beside the data wins; otherwise dev runs cache a pack per checkout (keyed by its engine root, so
+    // separate checkouts don't evict each other) in the cache store.
+    auto const shader_pack_cache = ShaderPackCache::global();
+    auto const shader_pack_key = Paths::current().engine_root().string();
     auto const packaged_pack_path = Paths::current().engine_root() / "shaders.lsp";
-    auto const default_pack_path = std::filesystem::exists(packaged_pack_path) ? packaged_pack_path : [] {
-        auto const *xdg = std::getenv("XDG_CACHE_HOME");
-        auto const *home = std::getenv("HOME");
-        auto root = xdg != nullptr && *xdg != '\0' ? std::filesystem::path{xdg}
-                    : home != nullptr && *home != '\0' ? std::filesystem::path{home} / ".cache"
-                                                      : std::filesystem::path{"cache"};
-        auto const key = std::hash<std::string>{}(Paths::current().engine_root().string());
-
-        return root / "lathe" / std::format("shaders-{:016x}.lsp", key);
-    }();
+    auto const default_pack_path = std::filesystem::exists(packaged_pack_path)
+                                           ? packaged_pack_path
+                                           : shader_pack_cache.find(shader_pack_key).value_or(std::filesystem::path{});
     auto cache_shaders = false;
 
     if (!cvars::record_shaders.get().empty()) {
@@ -1601,10 +1613,14 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     }
 
     if (cache_shaders) {
-        if (auto const saved = renderer::finish_shader_recording(default_pack_path)) {
-            info("Cached {} compiled shaders to '{}'", *saved, default_pack_path.string());
-        } else {
-            warn("Could not cache compiled shaders: {}", saved.error());
+        if (auto pending = shader_pack_cache.begin(shader_pack_key)) {
+            if (auto const saved = renderer::finish_shader_recording(pending->path())) {
+                info("Cached {} compiled shaders", *saved);
+                static_cast<void>(shader_pack_cache.commit(
+                        std::move(*pending), (Paths::current().engine_root() / "assets" / "shaders").string()));
+            } else {
+                warn("Could not cache compiled shaders: {}", saved.error());
+            }
         }
     }
 
