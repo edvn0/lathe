@@ -818,7 +818,7 @@ namespace {
     }
 
     auto create_device(VulkanContext &context) noexcept -> bool {
-        constexpr std::array<float, 2> queue_priorities{1.0F, 1.0F};
+        constexpr std::array<float, 4> queue_priorities{1.0F, 1.0F, 1.0F, 1.0F};
 
         std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
         for (auto const &request: queue_requests(context.queue_families)) {
@@ -973,6 +973,11 @@ namespace {
         vkGetDeviceQueue(context.device, context.queue_families.present, 0, &context.present_queue);
         vkGetDeviceQueue(context.device, context.queue_families.compute, context.queue_families.compute_queue_index,
                          &context.compute_queue);
+
+        if (context.queue_families.has_background_queue()) {
+            vkGetDeviceQueue(context.device, context.queue_families.compute,
+                             context.queue_families.background_queue_index, &context.background_queue);
+        }
 
         if (context.graphics_queue == VK_NULL_HANDLE || context.present_queue == VK_NULL_HANDLE ||
             context.compute_queue == VK_NULL_HANDLE) {

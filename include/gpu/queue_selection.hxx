@@ -25,6 +25,15 @@ struct QueueFamilies {
     std::uint32_t compute_queue_index = 0;
     QueueTopologyKind topology = QueueTopologyKind::single;
 
+    // A spare queue of the compute family, past the ones a frame uses, for work that must not wait on the frame (texture
+    // encoding). `invalid` when the device has none to spare.
+    std::uint32_t background_queue_index = invalid;
+
+    [[nodiscard]]
+    auto has_background_queue() const noexcept -> bool {
+        return background_queue_index != invalid;
+    }
+
     [[nodiscard]]
     auto complete() const noexcept -> bool {
         return graphics != invalid && present != invalid && compute != invalid;
