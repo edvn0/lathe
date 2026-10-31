@@ -152,7 +152,7 @@ TEST_SUITE("unit") {
         std::filesystem::remove_all(miss_dir);
     }
 
-    TEST_CASE("load_compressed_texture: cache hit publishes a preview that matches the full mip tail") {
+    TEST_CASE("load_compressed_texture: a miss and a hit both publish a preview that matches the full mip tail") {
         auto const source = std::filesystem::path{TEST_ASSETS_DIR} / "assets/textures/terrain/terrain_albedo.jpg";
         auto const cache_dir = make_temp_cache_dir("preview");
 
@@ -160,7 +160,8 @@ TEST_SUITE("unit") {
         auto const miss_preview = std::make_shared<TexturePreviewSlot>();
         auto full = load_compressed_texture(path, TextureRole::colour, TextureCache{cache_dir}, nullptr, miss_preview);
         REQUIRE(full.has_value());
-        CHECK_FALSE(miss_preview->take().has_value());
+        auto const miss_tail = miss_preview->take();
+        CHECK(miss_tail.has_value() == (std::max(full->width, full->height) > 256));
 
         auto const hit_preview = std::make_shared<TexturePreviewSlot>();
         auto cached = load_compressed_texture(path, TextureRole::colour, TextureCache{cache_dir}, nullptr, hit_preview);
@@ -171,6 +172,9 @@ TEST_SUITE("unit") {
 
         if (std::max(full->width, full->height) > 256) {
             REQUIRE(preview.has_value());
+            REQUIRE(miss_tail.has_value());
+            // What the cold load showed while encoding is what the next load shows from the cache.
+            CHECK(miss_tail->data == preview->data);
             CHECK(std::max(preview->width, preview->height) <= 256);
             CHECK_FALSE(validate_compressed_texture(*preview).has_value());
 

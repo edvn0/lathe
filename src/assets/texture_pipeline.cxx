@@ -31,7 +31,7 @@ namespace {
 
     // Levels of new cache files are zstd-compressed. The pixels are the same as before, so the cache version (and so
     // every existing cache entry) stays as it is; both kinds are read.
-    constexpr std::uint32_t zstd_compression_level = 15;
+    constexpr std::uint32_t zstd_compression_level = 3;
 
     std::atomic<float> rdo_lambda{0.0F};
     std::atomic<std::uint32_t> max_extent{0};
@@ -194,7 +194,11 @@ namespace {
         params.uastc = KTX_TRUE;
         params.threadCount = 1;
         params.normalMap = role == TextureRole::normal_map ? KTX_TRUE : KTX_FALSE;
-        params.uastcFlags = static_cast<ktx_pack_uastc_flags>(KTX_PACK_UASTC_LEVEL_FASTEST);
+        // Textures are only ever transcoded to BC7 and BC5, never to ETC1, so the encoder is told not to spend its time
+        // on the hints that make an ETC1 transcode good; they were most of the encode and do not touch the BC7 output.
+        params.uastcFlags = static_cast<ktx_pack_uastc_flags>(
+                KTX_PACK_UASTC_LEVEL_FASTEST | KTX_PACK_UASTC_ETC1_FASTEST_HINTS |
+                KTX_PACK_UASTC__ETC1_DISABLE_FLIP_AND_INDIVIDUAL);
 
         if (auto const lambda = rdo_lambda.load(std::memory_order_relaxed); lambda > 0.0F) {
             params.uastcRDO = KTX_TRUE;
@@ -611,10 +615,39 @@ namespace {
         return texture;
     }
 
+    // The cache-hit path shows a small tail of the mip chain while the big levels load; a miss would show nothing until
+    // the whole texture is encoded. The tail is a few percent of the work, so encode it first and publish it.
+    auto publish_cold_preview(std::vector<RawMip> const &mips, TextureRole role, FlyString debug_name,
+                              TexturePreviewSlot &preview) -> void {
+        auto first = std::size_t{0};
+
+        while (first + 1 < mips.size() && std::max(mips[first].width, mips[first].height) > preview_max_extent) {
+            ++first;
+        }
+
+        if (first == 0) {
+            return;
+        }
+
+        auto const tail = std::vector<RawMip>(mips.begin() + static_cast<std::ptrdiff_t>(first), mips.end());
+        auto encoded = encode_uastc(tail, role);
+
+        if (!encoded || ktxTexture2_TranscodeBasis(encoded->get(), transcode_target(role), 0) != KTX_SUCCESS) {
+            return;
+        }
+
+        auto texture = extract_compressed_texture(encoded->get(), debug_name);
+
+        if (!validate_compressed_texture(texture).has_value()) {
+            preview.publish(std::move(texture));
+        }
+    }
+
     [[nodiscard]]
     auto encode_and_transcode(std::vector<std::byte> base_rgba8, std::uint32_t width, std::uint32_t height,
                               TextureRole role, CacheTarget const &target, FlyString debug_name,
-                              ModelLoadProfile *profile) -> std::expected<CompressedTexture, TexturePipelineError> {
+                              ModelLoadProfile *profile, TexturePreviewSlot *preview = nullptr)
+            -> std::expected<CompressedTexture, TexturePipelineError> {
         if (profile != nullptr) {
             profile->texture_cache_misses.fetch_add(1, std::memory_order_relaxed);
         }
@@ -624,6 +657,11 @@ namespace {
         auto mips = generate_mip_chain(std::move(base_rgba8), width, height, role);
 
         mip_sample.stop();
+
+        // Skipped when prepare_texture_preview() already got one out ahead of this load.
+        if (preview != nullptr && !preview->has_published()) {
+            publish_cold_preview(mips, role, debug_name, *preview);
+        }
 
         ScopedProfileSample encode_sample{profile != nullptr ? &profile->texture_encode_ns : nullptr};
 
@@ -663,8 +701,8 @@ namespace {
 
     [[nodiscard]]
     auto compress_decoded_image(DecodedImage const &decoded, TextureRole role, CacheTarget const &target,
-                                FlyString debug_name,
-                                ModelLoadProfile *profile) -> std::expected<CompressedTexture, TexturePipelineError> {
+                                FlyString debug_name, ModelLoadProfile *profile,
+                                TexturePreviewSlot *preview) -> std::expected<CompressedTexture, TexturePipelineError> {
         // Decoding is done and encoding is the slow part: give up here rather than start it.
         if (thread_pool_shutting_down()) {
             return std::unexpected(make_error(TexturePipelineErrorType::cancelled, "shutting down"));
@@ -674,7 +712,7 @@ namespace {
         auto const height = decoded.height();
         auto rgba8 = to_rgba8(decoded);
 
-        return encode_and_transcode(std::move(rgba8), width, height, role, target, debug_name, profile);
+        return encode_and_transcode(std::move(rgba8), width, height, role, target, debug_name, profile, preview);
     }
 
 }
@@ -755,7 +793,7 @@ auto load_compressed_texture(AssetPath const &asset_path, TextureRole role,
                                           std::format("failed to decode '{}'", source_path.string())));
     }
 
-    return compress_decoded_image(*decoded, role, target, FlyString{stem}, profile_ptr);
+    return compress_decoded_image(*decoded, role, target, FlyString{stem}, profile_ptr, preview.get());
 }
 
 auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> encoded_bytes, TextureRole role,
@@ -807,7 +845,7 @@ auto load_compressed_texture_from_encoded_memory(std::span<std::byte const> enco
         return std::unexpected(make_error(TexturePipelineErrorType::decode_failed, "failed to decode embedded image"));
     }
 
-    return compress_decoded_image(*decoded, role, target, FlyString{cache_key}, profile_ptr);
+    return compress_decoded_image(*decoded, role, target, FlyString{cache_key}, profile_ptr, preview.get());
 }
 
 auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels, std::uint32_t width,
@@ -847,4 +885,72 @@ auto load_compressed_texture_from_memory(std::span<std::byte const> rgba_pixels,
     std::vector<std::byte> base{rgba_pixels.begin(), rgba_pixels.end()};
 
     return encode_and_transcode(std::move(base), width, height, role, target, FlyString{cache_key}, profile_ptr);
+}
+
+auto prepare_texture_preview(AssetPath const &asset_path, TextureRole role, TextureCache const &cache,
+                             std::shared_ptr<TexturePreviewSlot> const &preview) -> void {
+    if (preview == nullptr || thread_pool_shutting_down()) {
+        return;
+    }
+
+    auto const &source_path = asset_path.absolute();
+    std::error_code ec;
+    auto const file_size = std::filesystem::file_size(source_path, ec);
+
+    if (ec) {
+        return;
+    }
+
+    auto const write_time = std::filesystem::last_write_time(source_path, ec);
+
+    if (ec) {
+        return;
+    }
+
+    auto const absolute_path = std::filesystem::absolute(source_path, ec);
+    auto const identity = std::format("{}|{}|{}", ec ? source_path.string() : absolute_path.string(), file_size,
+                                      write_time.time_since_epoch().count());
+    auto const stem = source_path.stem().string();
+    auto const target = make_cache_target(cache, identity, role, stem, source_path.string());
+
+    if (cache.find(target.key).has_value()) {
+        return;
+    }
+
+    auto decoded = DecodedImage::load_from_file(
+            source_path.string(), role == TextureRole::colour ? ImageColourSpace::srgb : ImageColourSpace::linear);
+
+    if (!decoded.has_value()) {
+        return;
+    }
+
+    auto const mips = generate_mip_chain(to_rgba8(*decoded), decoded->width(), decoded->height(), role);
+
+    publish_cold_preview(mips, role, FlyString{stem}, *preview);
+}
+
+auto prepare_texture_preview_from_encoded_memory(std::span<std::byte const> encoded_bytes, TextureRole role,
+                                                 std::string_view cache_key, TextureCache const &cache,
+                                                 std::shared_ptr<TexturePreviewSlot> const &preview) -> void {
+    if (preview == nullptr || encoded_bytes.empty() || thread_pool_shutting_down()) {
+        return;
+    }
+
+    auto const target = make_cache_target(cache, std::format("encoded-memory|{}", cache_key), role, "embedded",
+                                          model_of_embedded_key(cache_key));
+
+    if (cache.find(target.key).has_value()) {
+        return;
+    }
+
+    auto decoded = DecodedImage::load_from_memory(
+            encoded_bytes, role == TextureRole::colour ? ImageColourSpace::srgb : ImageColourSpace::linear);
+
+    if (!decoded.has_value()) {
+        return;
+    }
+
+    auto const mips = generate_mip_chain(to_rgba8(*decoded), decoded->width(), decoded->height(), role);
+
+    publish_cold_preview(mips, role, FlyString{cache_key}, *preview);
 }

@@ -35,6 +35,13 @@ auto TextureStreamer::request(ImageStorage &images, AssetPath source_path, Textu
 
     auto preview = std::make_shared<TexturePreviewSlot>();
 
+    // Every texture gets a first, blurry look before any of them starts its long encode.
+    pool.detach_task(
+            [path = source_path, role, preview] {
+                prepare_texture_preview(path, role, TextureCache::global(), preview);
+            },
+            BS::pr::high);
+
     auto future = pool.submit_task([path = std::move(source_path), role, profile = std::move(profile), preview]() {
         return load_compressed_texture(path, role, TextureCache::global(), profile, preview);
     });
@@ -72,10 +79,19 @@ auto TextureStreamer::request_from_memory(ImageStorage &images, std::vector<std:
 
     auto preview = std::make_shared<TexturePreviewSlot>();
 
-    auto future = pool.submit_task([encoded = std::move(encoded_bytes), role, cache_key = std::move(cache_key),
-                                    profile = std::move(profile), preview]() {
-        return load_compressed_texture_from_encoded_memory(encoded, role, cache_key, TextureCache::global(),
-                                                           profile, preview);
+    auto encoded = std::make_shared<std::vector<std::byte> const>(std::move(encoded_bytes));
+
+    // Every texture gets a first, blurry look before any of them starts its long encode.
+    pool.detach_task(
+            [encoded, role, cache_key, preview] {
+                prepare_texture_preview_from_encoded_memory(*encoded, role, cache_key, TextureCache::global(), preview);
+            },
+            BS::pr::high);
+
+    auto future = pool.submit_task([encoded, role, cache_key = std::move(cache_key), profile = std::move(profile),
+                                    preview]() {
+        return load_compressed_texture_from_encoded_memory(*encoded, role, cache_key, TextureCache::global(), profile,
+                                                           preview);
     });
 
     pending_.push_back(PendingRequest{

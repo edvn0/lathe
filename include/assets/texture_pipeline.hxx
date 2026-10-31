@@ -2,6 +2,7 @@
 
 #include <volk.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -44,6 +45,13 @@ public:
     auto publish(CompressedTexture texture) -> void {
         std::lock_guard const lock{mutex_};
         texture_ = std::move(texture);
+        published_.store(true, std::memory_order_release);
+    }
+
+    // Whether a preview was ever published, even if the streamer has taken it since.
+    [[nodiscard]]
+    auto has_published() const noexcept -> bool {
+        return published_.load(std::memory_order_acquire);
     }
 
     [[nodiscard]]
@@ -55,6 +63,7 @@ public:
 private:
     std::mutex mutex_;
     std::optional<CompressedTexture> texture_;
+    std::atomic<bool> published_{false};
 };
 
 // Process-wide encoding knobs, set once at startup before any texture loads.
@@ -66,6 +75,16 @@ auto set_texture_rdo_lambda(float lambda) noexcept -> void;
 // Largest side of a loaded texture, in texels: the top mips of anything larger are dropped as it loads (the cache keeps
 // the full chain). 0 is no limit.
 auto set_texture_max_extent(std::uint32_t extent) noexcept -> void;
+
+// For a texture that is not cached yet: publishes a low-resolution version to 'preview' without producing the texture
+// itself, which takes far longer. Run it ahead of the loads so every texture shows something early. Does nothing for a
+// texture the cache has (loading it publishes its own preview) or when a preview is already out.
+auto prepare_texture_preview(AssetPath const &source_path, TextureRole role, TextureCache const &cache,
+                             std::shared_ptr<TexturePreviewSlot> const &preview) -> void;
+
+auto prepare_texture_preview_from_encoded_memory(std::span<std::byte const> encoded_bytes, TextureRole role,
+                                                 std::string_view cache_key, TextureCache const &cache,
+                                                 std::shared_ptr<TexturePreviewSlot> const &preview) -> void;
 
 [[nodiscard]]
 auto load_compressed_texture(AssetPath const &source_path, TextureRole role,
