@@ -42,6 +42,10 @@ namespace frame_graph {
         host_read,
         token_write,
         token_read,
+        // The top level acceleration structure's storage buffer: written by vkCmdBuildAccelerationStructuresKHR, read by
+        // ray queries (and by the build of anything that references it).
+        acceleration_structure_build,
+        acceleration_structure_read,
     };
 
     enum class LoadOp : std::uint8_t { load, clear, dont_care };

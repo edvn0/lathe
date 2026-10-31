@@ -566,6 +566,31 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                               });
     }
 
+    // The ray tracing scene (docs/probe-gi.md): BLASes for new meshes and the TLAS of this frame's instances. It writes the
+    // TLAS storage buffer, which ray query passes read; the pass ends with a barrier for ray queries later on this queue.
+    if (!secondary && ray_tracing_scene_enabled_ && scene_rt_.active()) {
+        auto scene_tlas = frame_graph_.import_buffer({
+                .entry = buffer_idle,
+                .exit = buffer_idle,
+                .debug_name = "scene_tlas",
+                .buffer = physical_buffer(scene_rt_.tlas_buffer()),
+        });
+        frame_graph_.add_pass("scene_acceleration_structure", frame_graph::PassType::compute,
+                              {
+                                      .name_id = "scene_acceleration_structure",
+                                      .label = "Scene BLAS/TLAS build",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::DeepPink),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  scene_tlas = pass.write(scene_tlas, frame_graph::Use::acceleration_structure_build);
+                                  pass.side_effect();
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      scene_rt_.record_build(context.command_buffer);
+                                  }};
+                              });
+    }
+
     frame_graph_.add_pass("gpu_culling", frame_graph::PassType::compute,
                           {
                                   .name_id = "gpu_culling",

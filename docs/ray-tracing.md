@@ -1,5 +1,13 @@
 # Hardware ray tracing: the proof of concept and the road to the full version
 
+> **Update (probe GI phase 1).** The sphere PoC described below has been replaced. `--rt-poc` now turns on the renderer's
+> real ray tracing scene (`SceneAccelerationStructure`, `rendering/scene_acceleration_structure.cxx`): a BLAS per mesh
+> submesh built lazily from the geometry arena, and a TLAS rebuilt every frame from the batched instances (world matrix,
+> scale included). The `rt_poc` pass (`assets/shaders/rt_poc.slang`) traces the camera ray and a sun ray against it;
+> `--rt-poc-view` is one of `beauty, shadow-mask, split, depth-match, normals, instance, overlay`. See the "Scene
+> acceleration structure" section at the end. The text below is kept for the background; the sphere, its hardcoded
+> geometry and `Limits of the PoC` no longer apply.
+
 `lathe --rt-poc` traces one hardcoded sphere into the running scene with `VK_KHR_ray_query`. It exists to get
 acquainted with acceleration structures and traversal, not to be a renderer feature. This page says what it does, how
 it is built, and what the full version has to change.
@@ -176,3 +184,27 @@ alone, and keep everything else on shader objects. The work:
 
 The acceleration structure code (steps 1 to 4 above) does not change between ray query and the pipeline; only how
 traversal is started and where the hit code lives.
+
+## Scene acceleration structure (what exists now)
+
+- **BLAS**: one per (mesh, submesh), built from the coarsest LOD that has triangles, straight from the geometry arena
+  (`R16G16B16A16_SFLOAT` positions at stride 20, offset 8 into `CompressedModelVertex`; the fourth half is the texcoord,
+  which the builder ignores). The arena buffers carry `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY` when ray query is
+  supported. Geometry is flagged opaque, so alpha tested foliage is solid (design decision for the GI). Builds are
+  budgeted (512 per frame, 64 MiB scratch) and instances whose BLAS is not ready yet wait. Not compacted yet (83 MiB for
+  the Bistro). A BLAS is rebuilt when the mesh's arena offsets change, and freed after 600 unused frames (retired for
+  `frames_in_flight + 1` frames first). Skinned, terrain and blended geometry are not included yet.
+- **TLAS**: one per frame in flight, with capacity doubling. The CPU writes the `VkAccelerationStructureInstanceKHR`
+  records and a per-instance table (`SceneAccelerationStructure::InstanceData`: vertex and index device addresses,
+  material index; `instanceCustomIndex` indexes it) into per-frame host visible buffers. Binding 6 of that frame's bindless
+  set is rewritten only when the TLAS is recreated (`GpuResourceTable::set_acceleration_structure(frame, handle)`).
+- **Frame graph**: `Use::acceleration_structure_build` and `Use::acceleration_structure_read` (translated through
+  `use_info`). The engine pass `scene_acceleration_structure` writes the imported TLAS storage buffer; it ends with a
+  barrier that makes the TLAS visible to ray queries in compute and fragment shaders later on the same queue. A game pass
+  cannot declare a read of an engine buffer, so `rt_poc` is forced onto the graphics queue to stay behind that barrier.
+  Engine passes that trace should declare `Use::acceleration_structure_read` on the TLAS instead.
+- **Device loss**: recovery saves the scene and restarts the process, so the structures are simply rebuilt. Teardown
+  destroys them before the resource table.
+- **Verification**: `--rt-poc-view=depth-match` colours a pixel green when the primary ray's hit distance equals the depth
+  buffer's (red when not, yellow when RT hits where raster saw sky). The Cornell room and the Bistro agree everywhere,
+  which is what proves the instance transforms (scale and parent scale included) are right.

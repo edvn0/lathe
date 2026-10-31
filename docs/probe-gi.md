@@ -1,6 +1,6 @@
 # Probe GI (DDGI on ray query): plan and handoff
 
-Status: **plan, nothing implemented.** Written at the end of the session that added crisp editor icons, `ui_font_size`
+Status: **phase 0 and 1 done** (see "Progress" at the end); the rest is plan. Written at the end of the session that added crisp editor icons, `ui_font_size`
 and point lights synthesised from emissive meshes (commit `e59a6f1`, branch `feat/editor-ui-and-emissive-lights`). A new
 session should be able to start from this page alone. Read `docs/ray-tracing.md` and `docs/adding-a-pass.md` first;
 this page only repeats what it must.
@@ -293,3 +293,27 @@ by the time the probes arrive.
 2. Settle the two open design questions with the user before writing code: (a) atlases as renderer-owned imported
    images vs game-graph buffers, (b) whether foliage is opaque in the GI TLAS.
 3. Do Phase 0 and Phase 1; stop and show the ray-traced sun shadow comparison before starting Phase 2.
+
+## Progress
+
+### Phase 0 (done)
+
+- Test scenes live in `assets/scripts/gi_test/` and step through camera shots by frame count (key injection does not
+  reach Lua `on_key`): `cornell.lua` (closed room, red and green walls, emissive ceiling quad, thin divider),
+  `sun_boxes.lua` (sun lit boxes and a sphere on a floor, for shadow comparisons), `bistro_shots.lua` (the Bistro, 200
+  frames per shot; edit `MODEL`). Recipe: `.claude/skills/drive-engine/shoot.sh -b release -g lua -k 190:301,390:301 -n
+  420 -- --script=assets/scripts/gi_test/bistro_shots.lua --rt-poc --rt-poc-view=shadow-mask`.
+- Baseline in `docs/perf/results.md` ("Probe GI, phase 0/1").
+- Fixed on the way: `--inject-keys` split a temporary string, which ASan (Debug) rejected as stack-use-after-scope.
+
+### Phase 1 (done): the scene acceleration structure
+
+Implemented as described in `docs/ray-tracing.md` ("Scene acceleration structure"), with two deviations from the plan
+above, both agreed: instance records are written by the CPU (not a kernel) into per-frame host visible buffers, and BLASes
+are built lazily with a per-frame budget inside the engine pass instead of asynchronously on the compute queue at mesh
+upload. Compaction is not done (83 MiB of BLAS for the Bistro): a follow-up.
+
+Exit criterion: the ray traced sun shadows match the shadow-map shadows on the Bistro (aerial shot) and on the
+`sun_boxes` scene; the TLAS pass (steady state, 1591 instances, includes the barriers) costs 0.31 ms on an RTX 4070 Ti
+SUPER, at the 0.3 ms target. Known artefact: tracing the coarsest LOD makes a faceted terminator on spheres (a jagged
+crescent in the shadow mask); the GI will want a normal bias or a finer LOD for round things.

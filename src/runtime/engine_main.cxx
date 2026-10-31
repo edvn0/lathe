@@ -1484,7 +1484,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     };
     std::vector<InjectedKey> injected_keys;
 
-    for (auto const item: CommandLine::split(cvars::inject_keys.get(), ',')) {
+    // split() returns views into its argument, so the string has to outlive the loop.
+    auto const inject_keys_text = cvars::inject_keys.get();
+    for (auto const item: CommandLine::split(inject_keys_text, ',')) {
         auto const colon = item.find(':');
 
         if (colon == std::string_view::npos) {

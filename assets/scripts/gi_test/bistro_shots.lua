@@ -1,6 +1,6 @@
 -- Fixed camera shots of the Bistro exterior for GI / ray traced shadow comparisons (no player, no physics).
 --   lathe --game=lua --script=assets/scripts/gi_test/bistro_shots.lua --player
--- Keys 1-4: camera shot. Edit MODEL to where BistroExterior.glb lives (see assets/scripts/bistro/main.lua).
+-- Shots advance every SHOT_FRAMES (200) frames; screenshot at frames 190, 390, 590 for shots 1, 2, 3.
 
 local MODEL = "/home/edwin/Downloads/Bistro_v5_2/BistroExterior.glb"
 
@@ -8,10 +8,9 @@ local MODEL = "/home/edwin/Downloads/Bistro_v5_2/BistroExterior.glb"
 local M = {}
 
 local SHOTS = {
-    { eye = { 0, 1.7, 0 }, look = { 6, 1.5, 4 }, fov = 70 },
-    { eye = { -8, 1.7, 6 }, look = { 0, 1.5, 0 }, fov = 70 },
-    { eye = { 10, 6, -10 }, look = { 0, 0, 0 }, fov = 60 },
-    { eye = { 4, 1.7, -6 }, look = { -4, 2.5, 4 }, fov = 70 },
+    { eye = { -2.83, 2.4, 0 }, look = { -2.83, 1.2, 12 }, fov = 75 },
+    { eye = { -2.83, 45, -35 }, look = { -2.83, 0, 5 }, fov = 60 },
+    { eye = { -2.83, 2.4, 5 }, look = { -2.83, 1.2, -8 }, fov = 75 },
 }
 local shot = 1
 
@@ -21,12 +20,14 @@ function M.on_populate()
     city:set_model(assets.load_model(MODEL, { min_extent = 0.35, double_sided = true }))
 end
 
-function M.on_update(_) end
+-- Key injection does not reach Lua games, so a headless run steps through the shots by frame count: shot k is on screen
+-- from frame (k - 1) * SHOT_FRAMES, i.e. screenshot at frames 190, 390, 590 for shots 1, 2, 3 (the Bistro takes a while to stream in)
+local SHOT_FRAMES = 200
+local frames = 0
 
-function M.on_key(code)
-    if code >= key.NUM_1 and code <= key.NUM_4 then
-        shot = code - key.NUM_1 + 1
-    end
+function M.on_update(_)
+    frames = frames + 1
+    shot = math.min(#SHOTS, math.floor(frames / SHOT_FRAMES) + 1)
 end
 
 function M.camera(_)

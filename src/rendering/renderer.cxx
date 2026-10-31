@@ -1254,6 +1254,9 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     sampler_storage_ = std::move(*sampler_storage);
     geometry_arena_ = std::move(*geometry_arena);
     material_storage_ = std::move(*material_storage);
+    if (!scene_rt_.create(context_, gpu_resource_table_)) {
+        debug("[Renderer::initialize] no ray tracing scene (VK_KHR_ray_query unavailable)");
+    }
 
     auto pipeline_infos = make_pipeline_register_infos(create_info);
 
@@ -2069,6 +2072,7 @@ auto Renderer::destroy() noexcept -> void {
     environment_.destroy();
 
     pipeline_graph_.destroy();
+    scene_rt_.destroy();
     gpu_resource_table_.destroy();
     sampler_storage_.destroy();
 
@@ -4576,6 +4580,60 @@ auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::exp
     return {};
 }
 
+auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
+    if (!ray_tracing_scene_enabled_ || !scene_rt_.ready()) {
+        return;
+    }
+    ZoneScopedNC("RayTracingScene", tracy::Color::DeepPink);
+
+    scene_rt_.begin_frame(frame_index);
+
+    auto const add_batches = [this](std::vector<BatchEntry const *> const &batches) {
+        for (auto const *batch: batches) {
+            // Skinned geometry deforms, so a static BLAS would be wrong; it joins in a later phase.
+            if (batch->skinned || batch->transforms.empty()) {
+                continue;
+            }
+            auto const *mesh = mesh_slot(batch->mesh);
+            if (mesh == nullptr || batch->submesh_index >= mesh->submeshes.size()) {
+                continue;
+            }
+            auto const &submesh = mesh->submeshes[batch->submesh_index];
+
+            // Tracing does not need the raster detail: the coarsest LOD with triangles.
+            auto const *geometry = static_cast<MeshGeometry const *>(nullptr);
+            for (auto level = lod_count; level-- > 0;) {
+                if (submesh.lods[level].indices.index_count >= 3 && submesh.lods[level].vertices.vertex_count != 0) {
+                    geometry = &submesh.lods[level];
+                    break;
+                }
+            }
+            if (geometry == nullptr || geometry->vertices.vertex_stride != SceneAccelerationStructure::vertex_stride) {
+                continue;
+            }
+
+            scene_rt_.add(
+                    SceneAccelerationStructure::Geometry{
+                            .key = SceneAccelerationStructure::key_of(batch->mesh.index, batch->mesh.generation,
+                                                                      batch->submesh_index),
+                            .vertex_offset = geometry->vertices.bytes.offset,
+                            .index_offset = geometry->indices.bytes.offset,
+                            .vertex_address = geometry_arena_.vertex_address(geometry->vertices),
+                            .index_address = geometry_arena_.device_address(geometry->indices.bytes),
+                            .vertex_count = geometry->vertices.vertex_count,
+                            .index_count = geometry->indices.index_count,
+                            .index_type = geometry->indices.index_type,
+                    },
+                    material_storage_.gpu_index(batch->material), batch->transforms);
+        }
+    };
+    add_batches(opaque_batches_);
+    add_batches(double_sided_batches_);
+    add_batches(mask_batches_);
+
+    scene_rt_.end_frame();
+}
+
 auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices const &matrices,
                                   std::uint32_t frame_index, bool secondary) -> std::expected<void, RendererError> {
     // A secondary view takes the submissions the primary view already collected, and leaves everything that happens
@@ -4737,6 +4795,9 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
         return std::unexpected(classified.error());
     }
     plan_shadow_batches(frame, build_state);
+    if (!secondary) {
+        update_ray_tracing_scene(frame_index);
+    }
     if (auto emitted = emit_batches(frame, build_state); !emitted) {
         return std::unexpected(emitted.error());
     }

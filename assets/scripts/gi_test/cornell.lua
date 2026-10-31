@@ -1,6 +1,6 @@
 -- Closed "Cornell" room for probe GI checks: light leaks, colour bleeding and convergence.
 --   lathe --game=lua --script=assets/scripts/gi_test/cornell.lua --player
--- Keys 1-3: camera shot (1 whole room, 2 towards the thin divider, 3 the far side of the divider).
+-- Shots advance every 60 frames (see SHOT_FRAMES), so screenshots at frames 30, 90, 150 ... show shots 1, 2, 3 ...
 -- Red left wall, green right wall, white elsewhere, an emissive ceiling quad, no sun, and a thin divider wall that
 -- splits the back third off: irradiance behind it must stay ~0 for the leak test.
 
@@ -52,12 +52,14 @@ function M.on_populate()
     box("block", cube, white, { -1.2, 0.75, 3 }, { 0.75, 0.75, 0.75 })
 end
 
-function M.on_update(_) end
+-- Key injection does not reach Lua games, so a headless run steps through the shots by frame count: shot k is on screen
+-- from frame (k - 1) * SHOT_FRAMES, i.e. screenshot at frames 30, 90, 150 ... for shots 1, 2, 3 ...
+local SHOT_FRAMES = 60
+local frames = 0
 
-function M.on_key(code)
-    if code >= key.NUM_1 and code <= key.NUM_3 then
-        shot = code - key.NUM_1 + 1
-    end
+function M.on_update(_)
+    frames = frames + 1
+    shot = math.min(#SHOTS, math.floor(frames / SHOT_FRAMES) + 1)
 end
 
 function M.camera(_)

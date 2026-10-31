@@ -343,13 +343,13 @@ namespace cvars {
     CVar<bool> rt_poc{{
             .name = "rt_poc",
             .group = "Diagnostics",
-            .help = "Trace a sphere into the scene with VK_KHR_ray_query (docs/ray-tracing.md)",
+            .help = "Build the ray tracing scene (BLAS per mesh, TLAS per frame) and check it with VK_KHR_ray_query views "
+                    "(docs/ray-tracing.md)",
     }};
     CVar<std::string> rt_poc_view{{
             .name = "rt_poc_view",
             .group = "Diagnostics",
-            .help = "Debug view of --rt-poc: beauty, normals, distance, shadow-mask, triangle, barycentrics, "
-                    "depth-test",
+            .help = "Debug view of --rt-poc: beauty, shadow-mask, split, depth-match, normals, instance, overlay",
             .hint = "NAME",
             .default_value = "beauty",
     }};

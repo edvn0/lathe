@@ -50,6 +50,10 @@ namespace frame_graph {
                 return "token write";
             case Use::token_read:
                 return "token read";
+            case Use::acceleration_structure_build:
+                return "acceleration structure build";
+            case Use::acceleration_structure_read:
+                return "acceleration structure read";
         }
         return "unknown";
     }

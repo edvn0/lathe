@@ -4,33 +4,25 @@
 
 #include <array>
 #include <cstdint>
-#include <string_view>
 #include <expected>
+#include <string_view>
 
 #include <glm/mat4x4.hpp>
 
 #include "core/renderer_error.hxx"
-#include "gpu/buffer.hxx"
 #include "rendering/game_graph.hxx"
 
 struct Renderer;
 
-// Proof of concept for hardware ray tracing (docs/ray-tracing.md). It builds a bottom level acceleration structure of
-// one hardcoded sphere and a top level one holding a single instance of it, once, at startup. Every frame a compute
-// pass in GameSlot::after_lighting traces rays with VK_KHR_ray_query: a camera ray per pixel draws the sphere into the
-// scene colour, and a ray from every scene pixel towards the sun darkens what the sphere shadows.
-//
-// Built on the GameGraph like ParticleSystem. Nothing here is a VkPipeline: the shader is an ordinary compute shader
-// object, and the acceleration structure reaches it as a device address in the push constants.
+// Ray query checks of the scene acceleration structure (docs/ray-tracing.md, docs/probe-gi.md phase 1). It turns the
+// renderer's ray tracing scene on (a BLAS per submesh, a TLAS of the frame's instances: SceneAccelerationStructure) and
+// adds one compute pass in GameSlot::after_lighting that traces a camera ray per pixel and a sun ray from each hit with
+// VK_KHR_ray_query. Nothing here is a VkPipeline: the shader is an ordinary compute shader object.
 class RayTracingPoc {
 public:
     RayTracingPoc() = default;
-    ~RayTracingPoc();
 
-    RayTracingPoc(RayTracingPoc const &) = delete;
-    auto operator=(RayTracingPoc const &) -> RayTracingPoc & = delete;
-
-    // Builds the acceleration structures and registers the shader. Fails, harmlessly, on a device without ray query.
+    // Registers the shader and enables the renderer's ray tracing scene. Fails, harmlessly, without ray query.
     [[nodiscard]] auto create(Renderer &renderer) -> std::expected<void, RendererError>;
 
     // Declares this frame's pass. Does nothing outside GameSlot::after_lighting or before create succeeded.
@@ -40,31 +32,16 @@ public:
 
     [[nodiscard]] auto ready() const noexcept -> bool { return ready_; }
 
-    // Debug views, in the order of the `view_*` constants in rt_poc.slang. 0 is the normal picture.
+    // Debug views, in the order of the `view_*` constants in rt_poc.slang. 0 leaves the picture alone.
     static constexpr auto view_names = std::array<std::string_view, 7>{
-            "beauty", "normals", "distance", "shadow-mask", "triangle", "barycentrics", "depth-test"};
+            "beauty", "shadow-mask", "split", "depth-match", "normals", "instance", "overlay"};
     auto set_view(std::uint32_t view) noexcept -> void { view_ = view; }
 
-    // Waits for nothing: the caller has idled the device. Safe to call twice.
-    auto destroy() noexcept -> void;
-
-    // Where the sphere sits and how big it is, in world units.
-    static constexpr auto sphere_centre = glm::vec3{0.0F, 3.0F, 0.0F};
-    static constexpr auto sphere_radius = 1.5F;
+    // Nothing to free: the scene acceleration structure belongs to the renderer.
+    auto destroy() noexcept -> void { ready_ = false; }
 
 private:
-    struct AccelerationStructure {
-        VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
-        Buffer storage;
-        VkDeviceAddress address = 0;
-    };
-
-    VkDevice device_ = VK_NULL_HANDLE;
-    AccelerationStructure blas_;
-    AccelerationStructure tlas_;
-    Buffer vertices_;
-    Buffer indices_;
-    Buffer instances_;
+    Renderer *renderer_ = nullptr;
     GameComputeShader shader_{};
     std::uint32_t view_ = 0;
     bool ready_ = false;

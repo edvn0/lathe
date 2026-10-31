@@ -48,6 +48,7 @@ add_library(
         rendering_error_describe.cxx
         render_passes.cxx
         scene.cxx
+        scene_acceleration_structure.cxx
         static_model_cache.cxx
         sky_model.cxx
         screenshot.cxx

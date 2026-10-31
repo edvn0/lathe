@@ -53,6 +53,7 @@
 #include "rendering/blend_order.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "rendering/environment.hxx"
+#include "rendering/scene_acceleration_structure.hxx"
 #include "rendering/forward_target.hxx"
 #include "rendering/colour_lut.hxx"
 #include "rendering/frame_graph/compiler.hxx"
@@ -795,6 +796,12 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto model_streamer() noexcept -> ModelStreamer & { return model_streamer_; }
     [[nodiscard]] auto resource_table() noexcept -> GpuResourceTable & { return gpu_resource_table_; }
 
+    // The ray tracing view of the scene: a BLAS per submesh and a TLAS rebuilt every frame from the batched instances.
+    // Off until something asks for it (--rt-poc, later the probe GI), because it costs a build every frame.
+    auto set_ray_tracing_scene_enabled(bool enabled) noexcept -> void { ray_tracing_scene_enabled_ = enabled; }
+    [[nodiscard]] auto ray_tracing_scene_enabled() const noexcept -> bool { return ray_tracing_scene_enabled_; }
+    [[nodiscard]] auto scene_acceleration() noexcept -> SceneAccelerationStructure & { return scene_rt_; }
+
     [[nodiscard]] auto assets() noexcept -> AssetRegistry & { return assets_; }
     [[nodiscard]] auto assets() const noexcept -> AssetRegistry const & { return assets_; }
 
@@ -1495,6 +1502,8 @@ private:
             -> std::expected<void, RendererError>;
     [[nodiscard]] auto batch_max_shadow_cascade(BatchEntry const *batch) const noexcept -> std::int32_t;
     auto plan_shadow_batches(RendererFrame &frame, BatchBuild &build) -> void;
+    // Hands this frame's opaque, double sided and alpha masked instances to the ray tracing scene.
+    auto update_ray_tracing_scene(std::uint32_t frame_index) -> void;
     [[nodiscard]] auto emit_batches(RendererFrame &frame, BatchBuild &build) -> std::expected<void, RendererError>;
 
     auto clear_submissions() noexcept -> void;
@@ -1702,6 +1711,8 @@ private:
     std::vector<PendingPickGeometry> pending_pick_geometry_;
     AssetRegistry assets_{};
     GpuResourceTable gpu_resource_table_{};
+    SceneAccelerationStructure scene_rt_{};
+    bool ray_tracing_scene_enabled_ = false;
 
     std::vector<Buffer> ubos_;
 
