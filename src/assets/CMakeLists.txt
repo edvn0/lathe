@@ -64,6 +64,14 @@ target_include_directories(
     engine_assets
     PRIVATE
         "${ktx_SOURCE_DIR}/external/basisu/zstd"
+)
+
+# libktx's basisu headers are third-party code that does not build clean under -Werror -Wpedantic -Wconversion; as a system
+# include their warnings are not ours.
+target_include_directories(
+    engine_assets
+    SYSTEM
+    PRIVATE
         "${ktx_SOURCE_DIR}/external/basisu"
 )
 
