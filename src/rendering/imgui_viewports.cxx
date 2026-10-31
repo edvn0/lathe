@@ -309,7 +309,7 @@ namespace gui {
             auto const result = data->swapchain.present(*data->frame);
             data->frame.reset();
             if (result == SwapchainFrameResult::device_lost) {
-                self().renderer.context().device_lost.store(true, std::memory_order_release);
+                self().renderer.context().mark_device_lost();
             }
         }
     };

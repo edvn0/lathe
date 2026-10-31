@@ -1,5 +1,10 @@
 #include "assets/gpu_texture_encoder.hxx"
 
+#include <cstdlib>
+
+#include "gpu/device_checkpoints.hxx"
+#include "gpu/device_wait.hxx"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -336,6 +341,13 @@ auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, Gp
             .format = static_cast<std::uint32_t>(format),
     };
 
+    // LATHE_FAULT_TEST=encoder points the output at unmapped memory, to check that a device loss reports its checkpoints.
+    auto faulty = constants;
+
+    if (auto const *fault = std::getenv("LATHE_FAULT_TEST"); fault != nullptr && std::string_view{fault} == "encoder") {
+        faulty.dst = 0xDEAD0000ULL;
+    }
+
     auto const uploaded = Clock::now();
 
     vkResetCommandBuffer(impl.commands, 0);
@@ -346,14 +358,17 @@ auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, Gp
     };
     vkBeginCommandBuffer(impl.commands, &begin_info);
 
+    device_checkpoints::set(impl.commands, "texture_encode: start");
     vkCmdResetQueryPool(impl.commands, impl.timestamps, 0, 2);
     vkCmdWriteTimestamp2(impl.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, impl.timestamps, 0);
 
     auto const stage = VK_SHADER_STAGE_COMPUTE_BIT;
     vkCmdBindShadersEXT(impl.commands, 1, &stage, &impl.shader);
-    vkCmdPushConstants(impl.commands, impl.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), &constants);
+    vkCmdPushConstants(impl.commands, impl.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), &faulty);
     vkCmdDispatch(impl.commands, static_cast<std::uint32_t>((blocks + threads_per_group - 1) / threads_per_group), 1,
                   1);
+
+    device_checkpoints::set(impl.commands, "texture_encode: dispatched");
 
     VkMemoryBarrier2 const barrier{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -391,6 +406,10 @@ auto GpuTextureEncoder::encode_batch(std::span<GpuTextureLevel const> levels, Gp
 
     if (auto const waited = vkWaitForFences(context.device, 1, &impl.fence, VK_TRUE, submit_timeout_ns);
         waited != VK_SUCCESS) {
+        if (is_device_failure(waited)) {
+            context.mark_device_lost();
+        }
+
         // The GPU may still be using the buffers, so the encoder is not safe to use again.
         return std::unexpected{std::format("waiting for the encoder failed (VkResult {})", static_cast<int>(waited))};
     }

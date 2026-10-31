@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "app/cache_menu.hxx"
 #include "app/commands.hxx"
 #include "app/frame_graph_editor.hxx"
 #include "game/game.hxx"
@@ -82,6 +83,7 @@ struct Application : Runtime {
     auto remove_window_decorations() -> void;
     auto handle_window_resize() -> void;
     auto draw_main_menu_bar() -> void;
+    CacheMenu cache_menu;
     auto request_import_model() -> void;
 
     enum class ModelBrowseTarget : std::uint8_t { spawn_entity, inspector };
@@ -345,6 +347,7 @@ protected:
     auto on_play_stopping() -> void override;
     auto on_scene_opening() -> void override;
     auto on_shutdown() -> void override;
+    [[nodiscard]] auto recover_work() -> std::optional<std::filesystem::path> override;
     auto create_ui_resources() -> void override;
     auto on_source_scene_replaced() -> void override;
 };

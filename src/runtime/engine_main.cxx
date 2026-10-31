@@ -1,6 +1,9 @@
 #include <fstream>
 #include <charconv>
 #include <csignal>
+#include <cstring>
+#include <cerrno>
+#include <unistd.h>
 #include <map>
 #include <memory>
 #include <print>
@@ -597,7 +600,7 @@ namespace {
 
                 case SwapchainBeginFrameError::Kind::device_lost:
                     error("The Vulkan device was lost");
-                    context.device_lost.store(true, std::memory_order_release);
+                    context.mark_device_lost();
 
                     return false;
 
@@ -707,7 +710,7 @@ namespace {
 
             case SwapchainFrameResult::device_lost:
                 error("The Vulkan device was lost");
-                context.device_lost.store(true, std::memory_order_release);
+                context.mark_device_lost();
 
                 return false;
 
@@ -898,22 +901,77 @@ namespace {
         return result;
     }
 
-    auto report_device_lost(VulkanContext &context) noexcept -> void {
+    // A crash that repeats right after a relaunch must not loop: the restart is refused within this many seconds of the
+    // previous one (LATHE_RELAUNCHED holds its time).
+    constexpr std::int64_t relaunch_cooldown_seconds = 60;
+
+    auto now_seconds() -> std::int64_t {
+        return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+    }
+
+    auto relaunch_allowed() -> bool {
+        auto const *previous = std::getenv("LATHE_RELAUNCHED");
+
+        if (previous == nullptr) {
+            return true;
+        }
+
+        std::int64_t then = 0;
+        std::from_chars(previous, previous + std::string_view{previous}.size(), then);
+
+        return now_seconds() - then >= relaunch_cooldown_seconds;
+    }
+
+    // Replaces this process with a fresh one that opens 'scene'; only returns if that fails.
+    auto relaunch_with_scene(int argc, char **argv, std::filesystem::path const &scene) noexcept -> void {
+        setenv("LATHE_RELAUNCHED", std::to_string(now_seconds()).c_str(), 1);
+
+        auto arguments = std::vector<std::string>(argv, argv + argc);
+        arguments.push_back("--scene");
+        arguments.push_back(scene.string());
+
+        auto pointers = std::vector<char *>{};
+
+        for (auto &argument: arguments) {
+            pointers.push_back(argument.data());
+        }
+
+        pointers.push_back(nullptr);
+
+        execv("/proc/self/exe", pointers.data());
+        error("Could not restart: {}", std::strerror(errno));
+    }
+
+    // Returns where the unsaved work went, if it could be written.
+    auto report_device_lost(VulkanContext &context, Runtime &runtime) noexcept -> std::optional<std::filesystem::path> {
         error("The GPU device was lost or stopped responding; the application cannot continue.");
 
         if (context.window != nullptr) {
             glfwHideWindow(context.window);
         }
 
+        auto const recovered = runtime.recover_work();
+
+        auto const restarting = recovered && relaunch_allowed();
+        auto const outcome =
+                recovered ? std::format("Your unsaved work was written to:\n{}\n\n{}", recovered->string(),
+                                        restarting ? "The editor will restart and open it.\n\n"
+                                                   : "Please restart the editor and open it.\n\n")
+                          : std::string{"Work since the last save could not be recovered.\n\nPlease restart the runtime.\n\n"};
+
         auto const shown = show_fatal_dialog(
                 "Graphics device lost",
-                "The GPU stopped responding, so the renderer cannot continue.\n\n"
-                "Please restart the runtime. Work since the last save could not be recovered.\n\n"
-                "If this keeps happening, update your graphics driver and check the log for details.");
+                std::format("The GPU stopped responding, so the renderer cannot continue.\n\n"
+                            "{}"
+                            "If this keeps happening, update your graphics driver and check the log for details.",
+                            outcome));
 
         if (!shown) {
             error("No dialog tool is available to show the device-lost notice; see the log above.");
         }
+
+        return restarting ? recovered : std::nullopt;
     }
 
     auto destroy_runtime(VulkanContext &context, Runtime &runtime) noexcept -> void {
@@ -1120,36 +1178,55 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     auto const shader_pack_cache = ShaderPackCache::global();
     auto const shader_pack_key = Paths::current().engine_root().string();
     auto const packaged_pack_path = Paths::current().engine_root() / "shaders.lsp";
-    auto const default_pack_path = std::filesystem::exists(packaged_pack_path)
-                                           ? packaged_pack_path
-                                           : shader_pack_cache.find(shader_pack_key).value_or(std::filesystem::path{});
+    auto const shader_directory = Paths::current().engine_root() / "assets" / "shaders";
     auto cache_shaders = false;
 
     if (!cvars::record_shaders.get().empty()) {
         renderer::start_shader_recording();
     } else {
-        auto const pack_path = cvars::shader_pack.get().empty() ? default_pack_path
-                                                          : std::filesystem::path{cvars::shader_pack.get()};
-        auto pack_usable = false;
+        // An explicit --shader-pack is the only candidate. Otherwise a packaged pack is tried first and the cached one
+        // after it, so a stale packaged pack (say a leftover shaders.lsp) never hides a good cache entry.
+        auto candidates = std::vector<std::filesystem::path>{};
 
-        if (std::filesystem::exists(pack_path)) {
-            if (auto pack = renderer::ShaderPack::load(pack_path)) {
-                if (pack->matches_sources(Paths::current().engine_root() / "assets" / "shaders")) {
-                    info("Using {} precompiled shaders from '{}'", pack->size(), pack_path.string());
-                    renderer::install_shader_pack(std::make_shared<renderer::ShaderPack const>(std::move(*pack)));
-                    pack_usable = true;
-                } else {
-                    warn("Ignoring shader pack '{}': the shader sources changed since it was recorded; "
-                         "re-record it with --record-shaders",
-                         pack_path.string());
-                }
-            } else {
-                error("Ignoring shader pack: {}", pack.error());
+        if (!cvars::shader_pack.get().empty()) {
+            candidates.emplace_back(cvars::shader_pack.get());
+        } else {
+            candidates.push_back(packaged_pack_path);
+
+            if (auto cached = shader_pack_cache.find(shader_pack_key)) {
+                candidates.push_back(std::move(*cached));
             }
         }
 
-        // No usable pack (first run, or the sources changed): record what this run compiles into the default
-        // pack so the next run skips compilation. An explicit --shader-pack is never overwritten.
+        auto pack_usable = false;
+
+        for (auto const &pack_path: candidates) {
+            if (!std::filesystem::exists(pack_path)) {
+                continue;
+            }
+
+            auto pack = renderer::ShaderPack::load(pack_path);
+
+            if (!pack) {
+                error("Ignoring shader pack: {}", pack.error());
+                continue;
+            }
+
+            if (!pack->matches_sources(shader_directory)) {
+                warn("Ignoring shader pack '{}': the shader sources changed since it was recorded; "
+                     "re-record it with --record-shaders",
+                     pack_path.string());
+                continue;
+            }
+
+            info("Using {} precompiled shaders from '{}'", pack->size(), pack_path.string());
+            renderer::install_shader_pack(std::make_shared<renderer::ShaderPack const>(std::move(*pack)));
+            pack_usable = true;
+            break;
+        }
+
+        // No usable pack (first run, or the sources changed): record what this run compiles into the cache so the
+        // next run skips compilation. An explicit --shader-pack is never overwritten.
         if (!pack_usable && cvars::shader_pack.get().empty()) {
             renderer::start_shader_recording();
             cache_shaders = true;
@@ -1445,11 +1522,32 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     std::uint32_t bench_samples = 0;
     std::uint64_t bench_last_serial = ~std::uint64_t{0};
 
+    // Writes the recorded shaders to the cache once; early, so a run that never exits cleanly still leaves a pack.
+    auto const save_shader_cache = [&] {
+        if (!std::exchange(cache_shaders, false)) {
+            return;
+        }
+
+        if (auto pending = shader_pack_cache.begin(shader_pack_key)) {
+            if (auto const saved = renderer::finish_shader_recording(pending->path())) {
+                info("Cached {} compiled shaders", *saved);
+                static_cast<void>(shader_pack_cache.commit(std::move(*pending), shader_directory.string()));
+            } else {
+                warn("Could not cache compiled shaders: {}", saved.error());
+            }
+        }
+    };
+    constexpr std::uint32_t shader_cache_frame = 120;
+
     // A close request is handled right after polling, where the runtime may veto it (unsaved changes).
     while (g_running.load(std::memory_order_acquire) && context.running.load(std::memory_order_acquire)) {
         ZoneScopedNC("MainLoop", tracy::Color::Gray);
 
         auto const frame_number = frames_run++;
+
+        if (frame_number == shader_cache_frame) {
+            save_shader_cache();
+        }
 
         if (cvars::exit_after_frames.get() != 0 && frame_number >= cvars::exit_after_frames.get()) {
             break;
@@ -1647,17 +1745,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
     }
 
-    if (cache_shaders) {
-        if (auto pending = shader_pack_cache.begin(shader_pack_key)) {
-            if (auto const saved = renderer::finish_shader_recording(pending->path())) {
-                info("Cached {} compiled shaders", *saved);
-                static_cast<void>(shader_pack_cache.commit(
-                        std::move(*pending), (Paths::current().engine_root() / "assets" / "shaders").string()));
-            } else {
-                warn("Could not cache compiled shaders: {}", saved.error());
-            }
-        }
-    }
+    save_shader_cache();
 
     if (!cvars::record_resources.get().empty()) {
         auto resources = finish_resource_recording();
@@ -1687,9 +1775,11 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
     }
 
+    auto relaunch_scene = std::optional<std::filesystem::path>{};
+
     if (context.device_lost.load(std::memory_order_acquire)) {
         exit_code = EXIT_FAILURE;
-        report_device_lost(context);
+        relaunch_scene = report_device_lost(context, runtime);
     }
 
     if (profile.interrupted()) {
@@ -1697,6 +1787,11 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     }
 
     destroy_runtime(context, runtime);
+
+    if (relaunch_scene) {
+        info("Restarting with the recovered scene '{}'", relaunch_scene->string());
+        relaunch_with_scene(argc, argv, *relaunch_scene);
+    }
 
     if (exit_code == EXIT_SUCCESS) {
         info("Runtime exited successfully");

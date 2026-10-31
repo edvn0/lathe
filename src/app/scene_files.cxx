@@ -4,6 +4,10 @@
 #include <algorithm>
 #include <GLFW/glfw3.h>
 #include <cctype>
+#include <chrono>
+#include <filesystem>
+#include <memory>
+#include <thread>
 #include <format>
 #include <string>
 #include <utility>
@@ -11,6 +15,7 @@
 #include "assets/model_formats.hxx"
 #include "core/error_describe.hxx"
 #include "core/logger.hxx"
+#include "core/paths.hxx"
 #include "rendering/imgui_widget.hxx"
 #include "scene/selection_context.hxx"
 
@@ -105,6 +110,67 @@ auto Application::start_save_scene(std::filesystem::path path) -> void {
 
     scene_status = std::format("Saving '{}'...", gui::path_to_utf8(path.filename()));
     scene_save_job = SceneSaveJob::start(*source_scene, *renderer, engine_models, std::move(path), std::move(options));
+}
+
+auto Application::recover_work() -> std::optional<std::filesystem::path> {
+    if (!source_scene_dirty()) {
+        return std::nullopt;
+    }
+
+    auto path = std::filesystem::path{};
+
+    if (!scene_path.empty()) {
+        path = scene_path;
+        path.replace_filename(scene_path.stem().string() + ".recovered" + scene_path.extension().string());
+    } else {
+        auto const stamp = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        path = Paths::user_cache_directory() / "recovered" / std::format("untitled-{:%Y%m%d-%H%M%S}", stamp);
+        std::error_code error;
+        std::filesystem::create_directories(path.parent_path(), error);
+    }
+
+    path = with_scene_extension(std::move(path));
+
+    // A save that was already running owns the scene file; a second one would race it.
+    if (scene_save_job.has_value()) {
+        scene_save_job.reset();
+    }
+
+    // Reference the sources instead of cooking them into the file: cooking a big model and its textures takes minutes,
+    // and the GPU is gone, so a recovery save has to be quick and light.
+    SceneSaveOptions options;
+    options.embed_assets = false;
+
+    if (scene_pack != nullptr) {
+        options.source_packs.push_back(scene_pack);
+    }
+
+    auto job = std::make_unique<SceneSaveJob>(SceneSaveJob::start(*source_scene, *renderer, engine_models, path, std::move(options)));
+
+    // The save reads no GPU state, but give up rather than hang the exit if something it touches is stuck. The job is
+    // leaked then, since destroying a running one would block.
+    constexpr auto timeout = std::chrono::seconds{20};
+    auto const deadline = std::chrono::steady_clock::now() + timeout;
+
+    while (!job->ready()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            error("Recovery save of '{}' did not finish in {} s", gui::path_to_utf8(path), timeout.count());
+            static_cast<void>(job.release());
+            return std::nullopt;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    }
+
+    auto saved = job->take();
+
+    if (!saved) {
+        error("Recovery save of '{}' failed: {}", gui::path_to_utf8(path), describe(saved.error()));
+        return std::nullopt;
+    }
+
+    info("Recovered the unsaved scene to '{}'", gui::path_to_utf8(path));
+    return path;
 }
 
 auto Application::update_scene_save() -> void {

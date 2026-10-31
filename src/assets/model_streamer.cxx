@@ -256,6 +256,14 @@ auto ModelStreamer::state(ModelHandle handle) const -> ModelRequestState {
     return ModelRequestState::none;
 }
 
+auto ModelStreamer::pending_source(ModelHandle handle) const noexcept -> AssetPath const * {
+    auto const it = std::ranges::find_if(pending_, [handle](PendingRequest const &request) {
+        return request.handle == handle && !request.installed;
+    });
+
+    return it != pending_.end() ? &it->source_path : nullptr;
+}
+
 auto ModelStreamer::failure_reason(ModelHandle handle) const -> std::string_view {
     auto const it = std::ranges::find(failed_, handle, &FailedRequest::handle);
     return it != failed_.end() ? std::string_view{it->reason} : std::string_view{};

@@ -17,6 +17,7 @@ add_library(
         game_packager.cxx
         gpu_timings_view.cxx
         load_progress.cxx
+        cache_menu.cxx
         main_menu.cxx
         package_ui.cxx
         project_files.cxx

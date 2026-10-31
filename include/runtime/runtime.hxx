@@ -185,6 +185,10 @@ struct Runtime {
     // Called before the renderer is torn down: drop everything that holds GPU resources.
     virtual auto on_shutdown() -> void;
 
+    // The GPU device was lost and the run is ending. Write whatever unsaved work can still be written without the GPU
+    // and return where it went; nullopt when there was nothing to save or the save failed.
+    [[nodiscard]] virtual auto recover_work() -> std::optional<std::filesystem::path> { return std::nullopt; }
+
     // Asked whenever the window is closed or the game requests exit; false keeps the engine running (the editor asks what
     // to do with unsaved changes first, then closes again). The player has nothing to lose.
     [[nodiscard]] virtual auto confirm_exit() -> bool { return true; }

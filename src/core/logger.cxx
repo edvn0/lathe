@@ -1,5 +1,7 @@
 #include "core/logger.hxx"
 
+#include <cstdlib>
+
 #include <spdlog/details/log_msg.h>
 #include <spdlog/sinks/base_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -107,7 +109,17 @@ namespace logger {
 
                 app_logger->set_pattern("%^[%L] %v%$");
 
+                // The console panel keeps everything (it filters itself); stdout is info and up unless LATHE_LOG says
+                // otherwise (trace, debug, info, warn).
                 app_logger->set_level(spdlog::level::trace);
+
+                auto stdout_level = spdlog::level::info;
+
+                if (auto const *requested = std::getenv("LATHE_LOG"); requested != nullptr) {
+                    stdout_level = spdlog::level::from_str(requested);
+                }
+
+                app_logger->sinks().front()->set_level(stdout_level);
 
                 return LoggerState{
                         .terminal_sink = std::move(terminal_sink),

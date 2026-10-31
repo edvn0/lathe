@@ -1,5 +1,7 @@
 #include "rendering/frame_graph/executor.hxx"
 
+#include "gpu/device_checkpoints.hxx"
+
 #include <format>
 #include <optional>
 
@@ -126,6 +128,8 @@ namespace frame_graph {
                 };
                 vkCmdBeginDebugUtilsLabelEXT(command_buffer, &debug_label);
             }
+
+            device_checkpoints::set(command_buffer, label);
 
             info.profiler.write_begin(command_buffer, batch.queue, info.frame_index, compiled_pass.timestamp_slot,
                                       name_id, label);
