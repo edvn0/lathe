@@ -355,18 +355,16 @@ def tower(x, y, w, d, height, z):
                 c = (i + 0.5) * length / n
                 mat = "lit_window" if random.random() < lit_p else "dark_window"
                 s0, s1, z0, z1 = c - 0.8, c + 0.8, zz, zz + 1.6
-                e = 0.03
+                # A shallow box, not a quad a few centimetres off the wall: that z-fights at a distance.
+                dep = 0.12
                 if side == 0:
-                    quad(mat, (x + s0, y - e, z0), (x + s1, y - e, z0), (x + s1, y - e, z1), (x + s0, y - e, z1))
+                    box((x + s0, y - dep, z0), (x + s1, y, z1), mat)
                 elif side == 1:
-                    quad(mat, (x + w + e, y + s0, z0), (x + w + e, y + s1, z0), (x + w + e, y + s1, z1),
-                         (x + w + e, y + s0, z1))
+                    box((x + w, y + s0, z0), (x + w + dep, y + s1, z1), mat)
                 elif side == 2:
-                    quad(mat, (x + w - s0, y + d + e, z0), (x + w - s1, y + d + e, z0), (x + w - s1, y + d + e, z1),
-                         (x + w - s0, y + d + e, z1))
+                    box((x + w - s1, y + d, z0), (x + w - s0, y + d + dep, z1), mat)
                 else:
-                    quad(mat, (x - e, y + d - s0, z0), (x - e, y + d - s1, z0), (x - e, y + d - s1, z1),
-                         (x - e, y + d - s0, z1))
+                    box((x - dep, y + d - s1, z0), (x, y + d - s0, z1), mat)
     # A neon sign on the south face, a big emitter in a colour of its own.
     if random.random() < 0.6:
         neon = random.choice(["neon_pink", "neon_green", "neon_blue", "pillar_amber"])
@@ -381,7 +379,7 @@ def tunnel_tower(x, y, w, d, height, z):
     box((x, y, z - 3), (x + w, py0, z + height), outside)
     box((x, py1, z - 3), (x + w, y + d, z + height), outside)
     box((x, py0, z + 4.0), (x + w, py1, z + height), outside)
-    box((x, py0, z - 0.05), (x + w, py1, z + 0.02), "floor")
+    box((x, py0, z - 0.2), (x + w, py1, z + 0.06), "floor")
     for i in range(int(w // 3)):
         cx = x + 1.5 + i * 3.0
         box((cx - 0.6, py0 + 2.3, z + 3.9), (cx + 0.6, py0 + 2.7, z + 3.97), "strip")

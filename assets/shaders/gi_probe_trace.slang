@@ -35,6 +35,22 @@ struct GpuEmitter
     uint3 padding;
 };
 
+// Word offsets into the emitter buffer, mirroring ProbeVolume::grid_*_word.
+static const uint emitter_grid_header = 4096 * 8;
+static const uint emitter_grid_ranges = emitter_grid_header + 8;
+static const uint emitter_grid_indices = emitter_grid_ranges + 16384 * 2;
+
+GpuEmitter load_emitter(Ptr<uint> words, uint e)
+{
+    uint at = e * 8;
+    GpuEmitter emitter;
+    emitter.centre = float3(asfloat(words[at]), asfloat(words[at + 1]), asfloat(words[at + 2]));
+    emitter.radius = asfloat(words[at + 3]);
+    emitter.material_index = words[at + 4];
+    emitter.padding = uint3(0);
+    return emitter;
+}
+
 // Mirrors TracePush in probe_volume.cxx.
 struct PushConstants
 {
@@ -43,7 +59,7 @@ struct PushConstants
     Ptr<RtInstanceData> instances;
     Ptr<Material> materials;
     Ptr<UBO> ubo;
-    Ptr<GpuEmitter> emitters;
+    Ptr<uint> emitters; // the emitters and their grid, see ProbeVolume::grid_header_word
     Ptr<GpuLight> lights;
     int base_x;
     int base_y;
@@ -251,9 +267,28 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
         float total_weight = 0.0;
         float selected_weight = 0.0;
         uint pick_seed = seed * 2654435761u + 12345u;
-        for (uint e = 0; e < pc.emitter_count; ++e)
+        // Only the emitters of the hit's grid cell can reach it.
+        uint cell_first = 0;
+        uint cell_count = 0;
+        if (pc.emitter_count > 0)
         {
-            GpuEmitter emitter = pc.emitters[e];
+            Ptr<uint> words = pc.emitters;
+            float3 grid_origin = float3(asfloat(words[emitter_grid_header]), asfloat(words[emitter_grid_header + 1]),
+                                        asfloat(words[emitter_grid_header + 2]));
+            float grid_scale = asfloat(words[emitter_grid_header + 3]);
+            int3 grid_dims = int3(int(words[emitter_grid_header + 4]), int(words[emitter_grid_header + 5]),
+                                  int(words[emitter_grid_header + 6]));
+            int3 cell = int3(floor((point - grid_origin) * grid_scale));
+            if (words[emitter_grid_header + 7] != 0 && all(cell >= 0) && all(cell < grid_dims))
+            {
+                uint cell_index = uint(cell.x + grid_dims.x * (cell.y + grid_dims.y * cell.z));
+                cell_first = words[emitter_grid_ranges + cell_index * 2];
+                cell_count = words[emitter_grid_ranges + cell_index * 2 + 1];
+            }
+        }
+        for (uint k = 0; k < cell_count; ++k)
+        {
+            GpuEmitter emitter = load_emitter(pc.emitters, pc.emitters[emitter_grid_indices + cell_first + k]);
             float3 to_emitter = emitter.centre - point;
             float dist = length(to_emitter);
             float range = max(80.0 * emitter.radius, 1.0);

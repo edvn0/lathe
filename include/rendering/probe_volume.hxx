@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <expected>
 #include <string_view>
+#include <vector>
 
 #include <glm/vec3.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -86,6 +87,15 @@ public:
     // Emissive pieces at most this big (bounding radius, metres) are explicit emitters.
     static constexpr auto small_emitter_radius = 0.3F;
     static constexpr auto max_emitters = std::uint32_t{4096};
+    // The emitter buffer of a frame slot, in 32 bit words (mirrored in gi_probe_trace.slang): the emitters, then a header
+    // of the uniform grid over them (origin xyz, 1 / cell size, cell counts xyz, total cells), the cells' (first index,
+    // count) pairs, and the emitter indices of every cell. A hit looks at the emitters of its own cell only.
+    static constexpr auto emitter_words = std::uint32_t{8};
+    static constexpr auto max_grid_cells = std::uint32_t{16384};
+    static constexpr auto grid_header_word = max_emitters * emitter_words;
+    static constexpr auto grid_ranges_word = grid_header_word + 8;
+    static constexpr auto grid_indices_word = grid_ranges_word + max_grid_cells * 2;
+    static constexpr auto emitter_buffer_words = grid_indices_word + max_emitters * 8;
 
     static constexpr auto max_rays_per_probe = std::uint32_t{256};
     static constexpr auto irradiance_tile = std::uint32_t{10};
@@ -130,6 +140,8 @@ public:
     // The frame's emitters: begin_emitters clears the list of this frame slot, add_emitter appends (false when full).
     auto begin_emitters(std::uint32_t frame_index) -> void;
     auto add_emitter(Emitter const &emitter) -> bool;
+    // After the last add_emitter of the frame: builds the grid the trace looks emitters up in.
+    auto finish_emitters() -> void;
 
     // Pass recording. `instance_table` is SceneAccelerationStructure::instance_table_address(), `materials` the address of
     // the material table, `ubo` this frame's UBO and `lights` its GpuLight array.
@@ -164,6 +176,7 @@ private:
     Buffer rays_{};
     std::array<Buffer, frames_in_flight> emitter_buffers_{};
     std::array<std::uint32_t, frames_in_flight> emitter_counts_{};
+    std::vector<Emitter> emitters_this_frame_;
     std::uint32_t emitter_slot_ = 0;
     ImageHolder irradiance_{};
     ImageHolder distance_{};

@@ -4701,6 +4701,8 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
     add_batches(opaque_batches_);
     add_batches(double_sided_batches_);
     add_batches(mask_batches_);
+    probe_volume_.finish_emitters();
+    probe_volume_far_.finish_emitters();
 }
 
 auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices const &matrices,

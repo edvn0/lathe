@@ -247,6 +247,7 @@ auto ProbeVolume::begin_frame(glm::vec3 camera, glm::vec3 sun_direction, glm::ve
 auto ProbeVolume::begin_emitters(std::uint32_t frame_index) -> void {
     emitter_slot_ = frame_index % frames_in_flight;
     emitter_counts_[emitter_slot_] = 0;
+    emitters_this_frame_.clear();
 }
 
 auto ProbeVolume::add_emitter(Emitter const &emitter) -> bool {
@@ -256,7 +257,7 @@ auto ProbeVolume::add_emitter(Emitter const &emitter) -> bool {
     auto &buffer = emitter_buffers_[emitter_slot_];
     if (!buffer.valid()) {
         auto created = Buffer::create(renderer_->context(),
-                                      BufferCreateInfo{.size = VkDeviceSize{max_emitters} * sizeof(Emitter),
+                                      BufferCreateInfo{.size = VkDeviceSize{emitter_buffer_words} * sizeof(std::uint32_t),
                                                        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                                        .memory = BufferMemory::upload,
@@ -271,8 +272,92 @@ auto ProbeVolume::add_emitter(Emitter const &emitter) -> bool {
         return false;
     }
     std::memcpy(buffer.mapped_data() + VkDeviceSize{count} * sizeof(Emitter), &emitter, sizeof(Emitter));
+    emitters_this_frame_.push_back(emitter);
     ++count;
     return true;
+}
+
+auto ProbeVolume::finish_emitters() -> void {
+    auto &buffer = emitter_buffers_[emitter_slot_];
+    if (!ready() || !buffer.valid() || emitters_this_frame_.empty()) {
+        return;
+    }
+    // A bulb is a light that reaches max(80 radius, 1) m (the trace's falloff): the cell size is the largest reach, so
+    // an emitter touches at most two cells per axis, and a hit finds every emitter that can light it in its own cell.
+    auto reach = [](Emitter const &emitter) { return std::max(80.0F * emitter.radius, 1.0F); };
+    auto low = glm::vec3{std::numeric_limits<float>::max()};
+    auto high = glm::vec3{std::numeric_limits<float>::lowest()};
+    auto cell = 4.0F;
+    for (auto const &emitter: emitters_this_frame_) {
+        auto const r = reach(emitter);
+        low = glm::min(low, emitter.centre - glm::vec3{r});
+        high = glm::max(high, emitter.centre + glm::vec3{r});
+        cell = std::max(cell, r);
+    }
+    auto dims = glm::uvec3{1};
+    for (;;) {
+        dims = glm::max(glm::uvec3{glm::ceil((high - low) / cell)}, glm::uvec3{1});
+        if (std::uint64_t{dims.x} * dims.y * dims.z <= max_grid_cells) {
+            break;
+        }
+        cell *= 1.5F;
+    }
+    auto const cells = dims.x * dims.y * dims.z;
+    auto const cell_of = [&](glm::ivec3 const &c) { return static_cast<std::uint32_t>(c.x) + dims.x * (static_cast<std::uint32_t>(c.y) + dims.y * static_cast<std::uint32_t>(c.z)); };
+    auto const span_of = [&](Emitter const &emitter) {
+        auto const r = glm::vec3{reach(emitter)};
+        auto const first = glm::clamp(glm::ivec3{glm::floor((emitter.centre - r - low) / cell)}, glm::ivec3{0}, glm::ivec3{dims} - 1);
+        auto const last = glm::clamp(glm::ivec3{glm::floor((emitter.centre + r - low) / cell)}, glm::ivec3{0}, glm::ivec3{dims} - 1);
+        return std::pair{first, last};
+    };
+
+    std::vector<std::uint32_t> counts(cells, 0U);
+    for (auto const &emitter: emitters_this_frame_) {
+        auto const [first, last] = span_of(emitter);
+        for (auto z = first.z; z <= last.z; ++z) {
+            for (auto y = first.y; y <= last.y; ++y) {
+                for (auto x = first.x; x <= last.x; ++x) {
+                    ++counts[cell_of({x, y, z})];
+                }
+            }
+        }
+    }
+    std::vector<std::uint32_t> first_index(cells, 0U);
+    auto total = std::uint32_t{0};
+    for (auto i = std::uint32_t{0}; i < cells; ++i) {
+        first_index[i] = total;
+        total += counts[i];
+    }
+    if (total > max_emitters * 8U) {
+        return;
+    }
+
+    auto *words = reinterpret_cast<std::uint32_t *>(buffer.mapped_data());
+    auto const put_float = [&](std::uint32_t at, float value) { std::memcpy(&words[at], &value, sizeof(float)); };
+    put_float(grid_header_word + 0, low.x);
+    put_float(grid_header_word + 1, low.y);
+    put_float(grid_header_word + 2, low.z);
+    put_float(grid_header_word + 3, 1.0F / cell);
+    words[grid_header_word + 4] = dims.x;
+    words[grid_header_word + 5] = dims.y;
+    words[grid_header_word + 6] = dims.z;
+    words[grid_header_word + 7] = cells;
+    std::vector<std::uint32_t> fill(cells, 0U);
+    for (auto i = std::uint32_t{0}; i < cells; ++i) {
+        words[grid_ranges_word + i * 2] = first_index[i];
+        words[grid_ranges_word + i * 2 + 1] = counts[i];
+    }
+    for (auto e = std::uint32_t{0}; e < emitters_this_frame_.size(); ++e) {
+        auto const [first, last] = span_of(emitters_this_frame_[e]);
+        for (auto z = first.z; z <= last.z; ++z) {
+            for (auto y = first.y; y <= last.y; ++y) {
+                for (auto x = first.x; x <= last.x; ++x) {
+                    auto const index = cell_of({x, y, z});
+                    words[grid_indices_word + first_index[index] + fill[index]++] = e;
+                }
+            }
+        }
+    }
 }
 
 auto ProbeVolume::gpu_block() const noexcept -> GpuBlock {

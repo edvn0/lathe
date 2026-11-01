@@ -230,7 +230,8 @@ Conditions: RTX 4070 Ti SUPER, Release, `--gi --benchmark-suite --benchmark-scen
 | 16 | 2.18 | 0.14 | 0.01 | 0.17 | 0.06 |
 | 128 | 2.54 | 0.33 | 0.01 | 0.18 | 0.06 |
 | 1024 | 5.28 | 2.63 | 0.02 | 0.18 | 0.06 |
+| 1024, with the emitter grid | 2.13 | 0.35 | 0.01 | 0.17 | 0.06 |
 
 Pass times are the near cascade's medians. The blend pass went from about 1.3 ms to 0.17 ms by staging a probe's rays in
 groupshared memory (one workgroup per probe). The trace pass scales with the bulb count because every hit loops over all
-explicit emitters (docs/probe-gi.md, "what is left").
+explicit emitters; the emitter grid (docs/probe-gi.md) removes that: 0.13 / 0.15 / 0.35 ms at 16 / 128 / 1024.

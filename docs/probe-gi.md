@@ -480,9 +480,8 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
 - **Editor panel, benchmark scenario (`gi_emitters`, load = bulbs), unit tests** (`probe_addressing_test.cxx`: slot
   uniqueness on negative windows, `world_index` inverse, only one layer reassigned when the window scrolls).
 - **Numbers** (Release, RTX 4070 Ti SUPER, 1920x1080, `gi_emitters`, both cascades, 64 rays): GPU frame 2.2 ms at 16 bulbs,
-  2.5 ms at 128, 5.3 ms at 1024. Near cascade passes at 16 / 128 / 1024 bulbs: trace 0.14 / 0.33 / 2.7 ms, classify
-  0.01, blend 0.17, border 0.06. The trace cost is the per hit loop over all emitters, which is why it scales with the
-  bulbs; the Bistro has 47. Debug validation clean on `cornell`, `cornell_skylight`, `sun_boxes`, `dynamic`, `moving` and
+  2.2 ms at 128 and 1024 (it was 2.5 and 5.3 ms before the emitter grid below). Near cascade passes at 16 / 128 /
+  1024 bulbs: trace 0.13 / 0.15 / 0.35 ms (0.14 / 0.33 / 2.7 ms before), classify 0.01, blend 0.17, border 0.06. Debug validation clean on `cornell`, `cornell_skylight`, `sun_boxes`, `dynamic`, `moving` and
   `basic` (terrain) with both cascades. Tests: 898 of 898.
 
 ### Phase 6 (what is left)
@@ -490,8 +489,6 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
 - **Probe sleeping / update budgeting** was not built: with trace plus blend at about 0.4 ms on the Bistro-sized scenes the
   budget is met without it. It is the next step if the trace pass grows (many emitters, 256 rays): classify would flag a
   probe whose neighbourhood did not change and the trace would skip it (indirect dispatch).
-- **Per hit emitter loop**: select emitters per probe (or a spatial grid) instead of looping over all of them per ray;
-  needed beyond a few hundred emitters.
 - The far cascade is not measured on its own (the benchmark reports the median over frames, and it runs every other one).
 - Not run: `test/gpu/device_lost_recovery.sh` with GI on; the Bistro under Debug (streaming never finishes there).
 - Known gaps from earlier phases: the volume is only 8 m tall, an emitter's colour is its material's average, one shadow
@@ -500,3 +497,9 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
   because the fallback was the black default image (glTF means a texture of 1). The fallback is white now. The
   `gi_emitters` scenario had the same mistake (its bulbs were dark; the trace cost is the same either way, it is the
   loop over the emitters).
+- **Emitter grid.** Every hit used to loop over all emitters (a distance test each, then a material fetch and a texture
+  sample for those in range). `ProbeVolume::finish_emitters` now builds a uniform grid over the frame's emitters on the CPU
+  (cell size the largest emitter reach, so an emitter touches at most two cells per axis; at most 16384 cells, the cell
+  grows if more would be needed) into the tail of the same upload buffer: a header, per cell (first index, count), and the
+  emitter indices. A hit reads its own cell only, which holds every emitter that can reach it. Trace at 1024 bulbs: 2.7 to
+  0.35 ms. The grid is rebuilt every frame (about 1200 emitters in the town: negligible on the CPU) for both cascades.
