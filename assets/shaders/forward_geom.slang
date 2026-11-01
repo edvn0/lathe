@@ -651,7 +651,15 @@ var base_colour = base_sample.xyz *
             ambient = float3(so);
         }
     } else {
-        ambient = base_colour * ambient_occlusion * ubo.ambient_intensity;
+        float3 flat_irradiance = float3(ubo.ambient_intensity);
+        if ((ubo.gi.flags & gi_flag_enabled) != 0) {
+            // No environment lighting: the probe volume still lights the scene, in the units the IBL path outputs.
+            float gi_coverage;
+            const float3 gi_irradiance = gi_sample_irradiance(ubo, input.world_position, shading_normal,
+                                                              view_direction, gi_coverage) * ubo.environment_exposure;
+            flat_irradiance = lerp(flat_irradiance, gi_irradiance, gi_coverage);
+        }
+        ambient = base_colour * ambient_occlusion * flat_irradiance;
     }
 
     float3 emissive = emissive_texture.Sample(sampler, uv).xyz *

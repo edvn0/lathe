@@ -1,8 +1,17 @@
-// Probe GI, phase 2 (docs/probe-gi.md): one ray per thread from a probe of the camera following grid, against the scene
-// TLAS (binding 6, SceneAccelerationStructure), with VK_KHR_ray_query. Hits are shaded with the sun (a shadow ray) and the
-// sky only, with a flat albedo; misses return the sky. Output is (radiance, signed hit distance) per ray, packed to
-// 8 bytes; the distance is negative when the ray hit a back face, which is how gi_probe_classify finds probes inside
-// geometry. Workgroup x is a slice of 64 rays, group id x the probe slot, group id y the slice.
+// Probe GI (docs/probe-gi.md): one ray per thread from a probe of the camera following grid, against the scene TLAS
+// (binding 6, SceneAccelerationStructure), with VK_KHR_ray_query. Output is (radiance, signed hit distance) per ray,
+// packed to 8 bytes; the distance is negative when the ray hit a back face, which is how gi_probe_classify finds probes
+// inside geometry. Workgroup x is a slice of 64 rays, group id x the probe slot, group id y the slice.
+//
+// What a hit radiates (units: pixel radiance, so a diffuse surface lit by E has albedo * E / pi):
+//   - its own emission (emissive factor * strength * texture), unless the piece is an explicit emitter (below);
+//   - albedo times the incoming light: the sun (shadow ray), the sky through one cosine weighted visibility ray, the
+//     explicit emitters and the local lights through one stochastic shadow ray (a light picked in proportion to its
+//     unshadowed contribution), and the probe volume itself as last frame left it (every ray that hits something asks
+//     the atlases what lights that spot, which is what makes the volume multi-bounce);
+//   - misses return the sky.
+// Small emissive pieces (a bulb) are too small for random rays to find, so the renderer lists them as explicit emitters
+// (spheres), and lights them like point lights.
 import bindless;
 import scene_types;
 import gi_probes;
@@ -13,16 +22,29 @@ struct RtInstanceData
     Ptr<uint> indices;
     uint material_index;
     uint index_count;
-    uint2 reserved;
+    uint flags;
+    uint reserved;
 };
 
-// Mirrors TraceParams in probe_volume.cxx.
+// Mirrors ProbeVolume::Emitter.
+struct GpuEmitter
+{
+    float3 centre;
+    float radius;
+    uint material_index;
+    uint3 padding;
+};
+
+// Mirrors TracePush in probe_volume.cxx.
 struct PushConstants
 {
     Ptr<float4> probe_state;
     Ptr<uint2> ray_data;
     Ptr<RtInstanceData> instances;
     Ptr<Material> materials;
+    Ptr<UBO> ubo;
+    Ptr<GpuEmitter> emitters;
+    Ptr<GpuLight> lights;
     int base_x;
     int base_y;
     int base_z;
@@ -32,17 +54,10 @@ struct PushConstants
     float spacing;
     uint rays_per_probe;
     float4 rotation;
-    float sun_x;
-    float sun_y;
-    float sun_z;
-    float sun_r;
-    float sun_g;
-    float sun_b;
-    uint sky_cube;
-    uint sky_sampler;
-    float env_cos;
-    float env_sin;
-    float sky_intensity;
+    uint emitter_count;
+    uint light_count;
+    uint flags;
+    float emitter_intensity;
 };
 
 [vk::push_constant] PushConstants pc;
@@ -52,12 +67,19 @@ public [[vk::binding(6, 0)]] RaytracingAccelerationStructure scene_tlas;
 static const float gi_max_distance = 500.0;
 static const float gi_sky_mip = 1.0;
 static const float pi = 3.14159265358979;
+static const uint instance_flag_explicit_emitter = 1;
+
+float3 rotate_y_vector(float3 v, float2 cos_sin)
+{
+    return float3(cos_sin.x * v.x + cos_sin.y * v.z, v.y, -cos_sin.y * v.x + cos_sin.x * v.z);
+}
 
 float3 sky(float3 direction, float mip)
 {
-    float3 d = float3(pc.env_cos * direction.x + pc.env_sin * direction.z, direction.y,
-                      -pc.env_sin * direction.x + pc.env_cos * direction.z);
-    return sampled_cube[pc.sky_cube].SampleLevel(samplers[pc.sky_sampler], d, mip).rgb * pc.sky_intensity;
+    Ptr<UBO> ubo = pc.ubo;
+    float3 d = rotate_y_vector(direction, float2(ubo.environment_rotation.x, -ubo.environment_rotation.y));
+    return sampled_cube[ubo.prefilter_cube_texture].SampleLevel(samplers[ubo.environment_sampler], d, mip).rgb *
+           ubo.environment_intensity.y;
 }
 
 float3 vertex_position(Ptr<CompressedVertex> vertices, uint index)
@@ -110,6 +132,23 @@ float3 cosine_direction(float3 normal, float2 u)
     return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + normal * sqrt(max(0.0, 1.0 - u.x)));
 }
 
+float luminance(float3 c)
+{
+    return dot(c, float3(0.2126, 0.7152, 0.0722));
+}
+
+// The texture's average colour tints a material's emission (a coarse level of the texture).
+float3 emission_of(Material material, float2 uv, float lod)
+{
+    float3 factor = float3(material.emissive[0], material.emissive[1], material.emissive[2]) * material.emissive_strength;
+    if (factor.x + factor.y + factor.z <= 0.0)
+    {
+        return float3(0.0);
+    }
+    return factor * sampled_2d[NonUniformResourceIndex(material.emissive_texture)]
+                            .SampleLevel(samplers[NonUniformResourceIndex(material.sampler_index)], uv, lod).rgb;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
@@ -120,6 +159,8 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
     {
         return;
     }
+
+    Ptr<UBO> ubo = pc.ubo;
 
     // The probe in this slot is the one world index, inside the current window, that maps to it (toroidal addressing).
     uint3 counts = uint3(pc.count_x, pc.count_y, pc.count_z);
@@ -132,8 +173,8 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
     float3 origin = float3(world_index) * pc.spacing + offset;
 
     float3 direction = normalize(gi_rotate(pc.rotation, gi_fibonacci_direction(ray_index, pc.rays_per_probe)));
-    float3 sun = float3(pc.sun_x, pc.sun_y, pc.sun_z);
-    float3 sun_radiance = float3(pc.sun_r, pc.sun_g, pc.sun_b);
+    float3 sun = ubo.light_direction;
+    float3 sun_radiance = ubo.light_colour * ubo.light_intensity;
 
     RayDesc ray;
     ray.Origin = origin;
@@ -151,9 +192,12 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
     {
         RtInstanceData data = pc.instances[query.CommittedInstanceID()];
         uint triangle = query.CommittedPrimitiveIndex();
-        float3 a = vertex_position(data.vertices, data.indices[triangle * 3 + 0]);
-        float3 b = vertex_position(data.vertices, data.indices[triangle * 3 + 1]);
-        float3 c = vertex_position(data.vertices, data.indices[triangle * 3 + 2]);
+        uint i0 = data.indices[triangle * 3 + 0];
+        uint i1 = data.indices[triangle * 3 + 1];
+        uint i2 = data.indices[triangle * 3 + 2];
+        float3 a = vertex_position(data.vertices, i0);
+        float3 b = vertex_position(data.vertices, i1);
+        float3 c = vertex_position(data.vertices, i2);
 
         float3x4 world_to_object = query.CommittedWorldToObject3x4();
         float3x3 linear = float3x3(world_to_object[0].xyz, world_to_object[1].xyz, world_to_object[2].xyz);
@@ -170,31 +214,147 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
         float t = query.CommittedRayT();
         float3 point = origin + direction * t;
         float bias = 0.002 + 0.0005 * t;
-        float n_dot_l = max(dot(normal, sun), 0.0);
-        float visible = n_dot_l > 0.0 && !occluded(point + normal * bias, sun, 1.0e4) ? 1.0 : 0.0;
+        float3 shadow_origin = point + normal * bias;
 
-        // The surface's own colour, so light bounces off it tinted: the base colour factor times the texture, which is
-        // read at a coarser level the farther the hit is (the ray carries no footprint).
         Material material = pc.materials[data.material_index];
         float2 bary = query.CommittedTriangleBarycentrics();
-        uint i0 = data.indices[triangle * 3 + 0];
-        uint i1 = data.indices[triangle * 3 + 1];
-        uint i2 = data.indices[triangle * 3 + 2];
         float2 uv = vertex_uv(data.vertices, i0) * (1.0 - bary.x - bary.y) + vertex_uv(data.vertices, i1) * bary.x +
                     vertex_uv(data.vertices, i2) * bary.y;
+        // The ray carries no footprint: the farther the hit, the coarser the texture level.
         float lod = clamp(log2(max(t, 1.0)) + 2.0, 0.0, 12.0);
         float3 albedo = float3(material.colour[0], material.colour[1], material.colour[2]) *
                         sampled_2d[NonUniformResourceIndex(material.base_colour_texture)]
                                 .SampleLevel(samplers[NonUniformResourceIndex(material.sampler_index)], uv, lod).rgb;
 
-        // Sky light reaching the hit: one cosine weighted ray, so a hit under a roof or in a room gets none. The
-        // probes' hysteresis averages these over frames.
+        // Light reaching the hit, as the mean radiance over the cosine lobe (irradiance / pi).
+        float3 incoming = float3(0.0);
+
+        float n_dot_l = max(dot(normal, sun), 0.0);
+        if (n_dot_l > 0.0 && !occluded(shadow_origin, sun, 1.0e4))
+        {
+            incoming += sun_radiance * (n_dot_l / pi);
+        }
+
+        // Sky light: one cosine weighted ray, so a hit under a roof or in a room gets none. Hysteresis averages these.
         uint seed = slot * 977u + ray_index * 131u + asuint(pc.rotation.x);
         float3 sky_direction = cosine_direction(normal, float2(random_unit(seed), random_unit(seed ^ 0x9e3779b9u)));
-        float3 sky_light = occluded(point + normal * bias, sky_direction, 1.0e4) ? float3(0.0) : sky(sky_direction, gi_sky_mip);
+        if (!occluded(shadow_origin, sky_direction, 1.0e4))
+        {
+            incoming += sky(sky_direction, gi_sky_mip);
+        }
 
-        float3 irradiance = sun_radiance * (n_dot_l * visible) + sky_light;
-        radiance = albedo * irradiance;
+        // Explicit emitters (spheres) and local lights: pick one in proportion to its unshadowed contribution, trace a
+        // shadow ray to it, and weigh it by the sum over the picked one's share.
+        float3 selected_contribution = float3(0.0);
+        float3 selected_target = float3(0.0);
+        float selected_distance = 0.0;
+        float total_weight = 0.0;
+        float selected_weight = 0.0;
+        uint pick_seed = seed * 2654435761u + 12345u;
+        for (uint e = 0; e < pc.emitter_count; ++e)
+        {
+            GpuEmitter emitter = pc.emitters[e];
+            float3 to_emitter = emitter.centre - point;
+            float dist = length(to_emitter);
+            float range = max(80.0 * emitter.radius, 1.0);
+            if (dist >= range)
+            {
+                continue;
+            }
+            float3 l = to_emitter / max(dist, 1e-6);
+            float cos_theta = max(dot(normal, l), 0.0);
+            if (cos_theta <= 0.0)
+            {
+                continue;
+            }
+            // Treated as a point light (like the point lights the loader synthesises from emissive pieces): a bulb's
+            // physical emission is far too small to light anything, so its colour is the average emission colour and
+            // its strength a setting. Same falloff as the forward shader's point lights.
+            Material emitter_material = pc.materials[emitter.material_index];
+            float3 emitted = emission_of(emitter_material, float2(0.5), 12.0);
+            float peak = max(max(emitted.x, emitted.y), emitted.z);
+            if (peak <= 0.0)
+            {
+                continue;
+            }
+            float falloff = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
+            falloff = falloff * falloff / max(dist * dist, 1e-4);
+            float3 contribution = (emitted / peak) * pc.emitter_intensity * falloff * (cos_theta / pi);
+            float w = luminance(contribution);
+            if (w <= 1e-6)
+            {
+                continue;
+            }
+            total_weight += w;
+            pick_seed = pcg(pick_seed);
+            if (float(pick_seed & 0xFFFFFFu) / 16777216.0 * total_weight < w)
+            {
+                selected_contribution = contribution;
+                selected_target = emitter.centre;
+                selected_distance = sqrt(dot(to_emitter, to_emitter));
+                selected_weight = w;
+            }
+        }
+        for (uint li = 0; li < pc.light_count; ++li)
+        {
+            GpuLight light = pc.lights[li];
+            float3 to_light = light.position - point;
+            float dist = length(to_light);
+            if (dist >= light.range)
+            {
+                continue;
+            }
+            float3 l = to_light / max(dist, 1e-6);
+            float cos_theta = max(dot(normal, l), 0.0);
+            if (cos_theta <= 0.0)
+            {
+                continue;
+            }
+            float falloff = clamp(1.0 - pow(dist / max(light.range, 1e-4), 4.0), 0.0, 1.0);
+            falloff = falloff * falloff / max(dist * dist, 1e-4);
+            if (light.type == LightType.spot)
+            {
+                float cd = dot(normalize(light.direction), -l);
+                float cone = clamp(cd * light.spot_scale + light.spot_offset, 0.0, 1.0);
+                falloff *= cone * cone;
+            }
+            float3 contribution = light.colour * light.intensity * falloff * (cos_theta / pi);
+            float w = luminance(contribution);
+            if (w <= 1e-6)
+            {
+                continue;
+            }
+            total_weight += w;
+            pick_seed = pcg(pick_seed);
+            if (float(pick_seed & 0xFFFFFFu) / 16777216.0 * total_weight < w)
+            {
+                selected_contribution = contribution;
+                selected_target = light.position;
+                selected_distance = dist;
+                selected_weight = w;
+            }
+        }
+        if (selected_weight > 0.0)
+        {
+            float3 to_target = selected_target - shadow_origin;
+            float target_distance = length(to_target);
+            // Stop a little short of the emitter itself so its own geometry does not shadow it.
+            if (!occluded(shadow_origin, to_target / max(target_distance, 1e-6), max(target_distance - 0.15, 0.0)))
+            {
+                incoming += selected_contribution * (total_weight / selected_weight);
+            }
+        }
+
+        // Light that already bounced around: the probe volume as last frame left it.
+        if ((ubo.gi.flags & gi_flag_enabled) != 0)
+        {
+            float coverage;
+            float3 indirect = gi_sample_irradiance(ubo, point, normal, -direction, coverage);
+            incoming += indirect * coverage;
+        }
+
+        float3 emission = (data.flags & instance_flag_explicit_emitter) != 0 ? float3(0.0) : emission_of(material, uv, lod);
+        radiance = albedo * incoming + emission;
         distance = back_face ? -t : t;
     }
     else
@@ -203,6 +363,11 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
         distance = gi_max_distance;
     }
 
+    // A NaN here would poison the atlases for good (hysteresis keeps a share of the old value).
+    if (any(isnan(radiance)) || any(isinf(radiance)))
+    {
+        radiance = float3(0.0);
+    }
     uint index = slot * pc.rays_per_probe + ray_index;
     uint rg = f32tof16(radiance.r) | (f32tof16(radiance.g) << 16);
     uint bd = f32tof16(radiance.b) | (f32tof16(distance) << 16);

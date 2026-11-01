@@ -648,14 +648,25 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                                   [[maybe_unused]] auto const tlas =
                                           pass.read(scene_tlas, frame_graph::Use::acceleration_structure_read,
                                                     compute_stage);
+                                  // Last frame's atlases: a ray that hits a surface asks the volume what lights it.
+                                  [[maybe_unused]] auto const irradiance_read =
+                                          pass.read(gi_irradiance, frame_graph::Use::sampled, compute_stage);
+                                  [[maybe_unused]] auto const distance_read =
+                                          pass.read(gi_distance, frame_graph::Use::sampled, compute_stage);
                                   gi_state = pass.write(gi_state, frame_graph::Use::shader_read_write, compute_stage);
                                   gi_rays = pass.write(gi_rays, frame_graph::Use::shader_write, compute_stage);
                                   pass.side_effect();
 
                                   return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                      probe_volume_.record_trace(context.command_buffer, info.frame_index,
-                                                                 scene_rt_.instance_table_address(),
-                                                                 material_storage_.device_address());
+                                      probe_volume_.record_trace(
+                                              context.command_buffer, info.frame_index,
+                                              {.instance_table = scene_rt_.instance_table_address(),
+                                               .materials = material_storage_.device_address(),
+                                               .ubo = ubos_[info.frame_index].device_address,
+                                               .lights = frame.lights_buffer.valid()
+                                                                 ? frame.lights_buffer.device_address
+                                                                 : 0,
+                                               .light_count = frame.light_count});
                                   }};
                               });
 

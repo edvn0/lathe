@@ -1424,6 +1424,8 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
         runtime.renderer->probe_volume().settings().spacing = cvars::gi_probe_spacing.get();
         runtime.renderer->probe_volume().settings().rays_per_probe = cvars::gi_rays_per_probe.get();
+        runtime.renderer->probe_volume().settings().intensity = cvars::gi_intensity.get();
+        runtime.renderer->probe_volume().settings().emitter_intensity = cvars::gi_emitter_intensity.get();
     }
     runtime.ray_tracing_poc_enabled = cvars::rt_poc.get();
     {

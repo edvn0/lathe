@@ -37,8 +37,9 @@ public:
         VkDeviceAddress index_address = 0;
         std::uint32_t material_index = 0;
         std::uint32_t index_count = 0;
-        std::uint32_t reserved0 = 0;
-        std::uint32_t reserved1 = 0;
+        // InstanceFlags.
+        std::uint32_t flags = 0;
+        std::uint32_t reserved = 0;
     };
     static_assert(sizeof(InstanceData) == 32);
 
@@ -62,6 +63,11 @@ public:
         VkDeviceSize blas_bytes = 0;
         VkDeviceSize tlas_bytes = 0;
     };
+
+    // Bits of InstanceData::flags.
+    // The instance is lit by the probe volume's explicit emitter list, so a ray that hits it must not add its emission
+    // again.
+    static constexpr auto flag_explicit_emitter = std::uint32_t{1};
 
     static constexpr auto vertex_stride = std::uint32_t{20};
     static constexpr auto position_offset = std::uint32_t{8};
@@ -88,8 +94,8 @@ public:
 
     // One instance of `geometry` per transform. Skipped when the geometry is not usable or its BLAS has to wait for the
     // per frame build budget.
-    auto add(Geometry const &geometry, std::uint32_t material_index, std::span<glm::mat4 const *const> transforms)
-            -> void;
+    auto add(Geometry const &geometry, std::uint32_t material_index, std::span<glm::mat4 const *const> transforms,
+             std::uint32_t flags = 0) -> void;
 
     // Uploads the instances, sizes the per frame buffers and the TLAS, and rewrites the descriptor when the TLAS changed.
     // Call after the last add() and before the frame graph is built.

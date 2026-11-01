@@ -261,7 +261,7 @@ auto SceneAccelerationStructure::make_blas(Geometry const &geometry) -> Blas * {
 }
 
 auto SceneAccelerationStructure::add(Geometry const &geometry, std::uint32_t material_index,
-                                     std::span<glm::mat4 const *const> transforms) -> void {
+                                     std::span<glm::mat4 const *const> transforms, std::uint32_t flags) -> void {
     if (!ready() || transforms.empty()) {
         return;
     }
@@ -306,6 +306,7 @@ auto SceneAccelerationStructure::add(Geometry const &geometry, std::uint32_t mat
                 .index_address = geometry.index_address,
                 .material_index = material_index,
                 .index_count = geometry.index_count,
+                .flags = flags,
         });
     }
 }

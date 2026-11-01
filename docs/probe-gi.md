@@ -377,3 +377,34 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
   rays and recomputes the Fibonacci directions): cache the ray directions in groupshared memory, one workgroup per probe.
 - **Known gaps:** the volume is 8 m tall; no unit tests for the addressing maths yet; probes are traced every frame
   (budgeting is phase 6); the Bistro run under Debug validation is still not possible (streaming too slow).
+
+### Phase 4 (done): emissive, local lights and multi-bounce
+
+- **Hit shading** (`gi_probe_trace.slang`): own emission (factor x strength x emissive texture), plus albedo times the
+  incoming light: the sun (shadow ray), sky through one cosine weighted visibility ray, the explicit emitters and local
+  lights through **one stochastic shadow ray** (a light picked in proportion to its unshadowed contribution, weighted by
+  the sum), and **the probe volume itself** as last frame left it (every ray that hits a surface samples the atlases there,
+  which is the multi-bounce). The trace pass reads the atlases (`Use::sampled`), the lights buffer and the UBO by address.
+- **Units fix:** the sun and light terms were missing the `1/pi` of a Lambertian surface (the forward shader's
+  `albedo / pi * radiance * ndotl`), so phase 3's bounce was pi times too bright. Everything is now "mean radiance over the
+  cosine lobe" (E/pi), which is what the atlases and the SH term hold.
+- **Explicit emitters.** A bulb is far too small for random rays to find. `Renderer::update_ray_tracing_scene` lists each
+  instance of an emissive batch whose bounding radius is at most 0.3 m (`ProbeVolume::small_emitter_radius`) as an emitter
+  (centre, radius, material) in a per frame buffer, and flags the instance (`flag_explicit_emitter`) so a ray that does
+  hit it does not add its emission a second time. Larger emissive pieces light the volume only by being hit. Emitters
+  are lit like point lights (range `80 * radius`, the forward shader's falloff), colour from the material's average
+  emission texture colour, strength `gi_emitter_intensity` (default 200). A bulb's physical emission (about 1 to 10 nits
+  from a 5 cm sphere) lights nothing, so this is an art knob; the loader's synthesised lights use 25 but have no bounce
+  or probe smoothing. The Bistro at night with 200 to 500 shows the lanterns, string lights and street lamps lighting
+  cobbles and walls with warm and coloured pools.
+- **No environment lighting:** the forward shader's flat ambient branch (no IBL) now takes the probe volume too; before,
+  GI only applied when IBL was valid.
+- **cvars:** `gi_intensity`, `gi_emitter_intensity`. Test scene: `assets/scripts/gi_test/bistro_night.lua` (no sun, no
+  ambient, exposure +1).
+- **Numbers** (Release, Bistro daytime, 47 emitters): trace 1.33 ms (was 0.98 before multi-bounce and lights), blend 1.31 ms,
+  border 0.07 ms, classify 0.02 ms, TLAS 0.27 ms; full frame 5.2 ms.
+- **Known gaps:** one shadow ray for all local lights (noise on lamps near many others, converged by hysteresis); every
+  hit loops over all emitters and lights (fine for dozens, select per probe for thousands, phase 6); an emitter's colour is
+  its material's average, so a shared texture atlas of coloured bulbs tints them all alike; blend is still the slow pass.
+  The interim point lights (`synthesize_emissive_lights`, `spawn_model_lights`) are untouched, so the editor double
+  lights emissives until the phase 6 cvar.

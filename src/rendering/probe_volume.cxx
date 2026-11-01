@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include <glm/geometric.hpp>
 
@@ -25,20 +26,20 @@ namespace {
         VkDeviceAddress rays = 0;
         VkDeviceAddress instances = 0;
         VkDeviceAddress materials = 0;
+        VkDeviceAddress ubo = 0;
+        VkDeviceAddress emitters = 0;
+        VkDeviceAddress lights = 0;
         std::int32_t base[3]{};
         std::uint32_t counts[3]{};
         float spacing = 1.0F;
         std::uint32_t rays_per_probe = 64;
         float rotation[4]{};
-        float sun[3]{};
-        float sun_radiance[3]{};
-        std::uint32_t sky_cube = 0;
-        std::uint32_t sky_sampler = 0;
-        float env_cos = 1.0F;
-        float env_sin = 0.0F;
-        float sky_intensity = 1.0F;
+        std::uint32_t emitter_count = 0;
+        std::uint32_t light_count = 0;
+        std::uint32_t flags = 0;
+        float emitter_intensity = 200.0F;
     };
-    static_assert(sizeof(TracePush) == 128);
+    static_assert(sizeof(TracePush) == 120);
     static_assert(sizeof(TracePush) <= 128);
 
     // Mirrors Push in gi_probe_classify.slang.
@@ -205,6 +206,9 @@ auto ProbeVolume::destroy() noexcept -> void {
     distance_ = {};
     state_.destroy();
     rays_.destroy();
+    for (auto &buffer: emitter_buffers_) {
+        buffer.destroy();
+    }
     atlases_initialised_ = false;
     state_cleared_ = false;
     active_ = false;
@@ -232,6 +236,40 @@ auto ProbeVolume::begin_frame(glm::vec3 camera, glm::vec3 sun_direction, glm::ve
     environment_ = environment;
     rotation_ = random_rotation(frame_++);
     active_ = true;
+    if (frame_ % 300 == 1) {
+        info("Probe volume: {} explicit emitters", emitter_counts_[emitter_slot_]);
+    }
+}
+
+auto ProbeVolume::begin_emitters(std::uint32_t frame_index) -> void {
+    emitter_slot_ = frame_index % frames_in_flight;
+    emitter_counts_[emitter_slot_] = 0;
+}
+
+auto ProbeVolume::add_emitter(Emitter const &emitter) -> bool {
+    if (!ready()) {
+        return false;
+    }
+    auto &buffer = emitter_buffers_[emitter_slot_];
+    if (!buffer.valid()) {
+        auto created = Buffer::create(renderer_->context(),
+                                      BufferCreateInfo{.size = VkDeviceSize{max_emitters} * sizeof(Emitter),
+                                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                       .memory = BufferMemory::upload,
+                                                       .debug_name = "gi_emitters"});
+        if (!created) {
+            return false;
+        }
+        buffer = std::move(*created);
+    }
+    auto &count = emitter_counts_[emitter_slot_];
+    if (count >= max_emitters) {
+        return false;
+    }
+    std::memcpy(buffer.mapped_data() + VkDeviceSize{count} * sizeof(Emitter), &emitter, sizeof(Emitter));
+    ++count;
+    return true;
 }
 
 auto ProbeVolume::gpu_block() const noexcept -> GpuBlock {
@@ -268,7 +306,7 @@ auto ProbeVolume::bind(VkCommandBuffer command_buffer, std::uint32_t frame_index
 }
 
 auto ProbeVolume::record_trace(VkCommandBuffer command_buffer, std::uint32_t frame_index,
-                               VkDeviceAddress instance_table, VkDeviceAddress materials) -> void {
+                               TraceInputs const &inputs) -> void {
     ZoneScopedNC("Probe trace", tracy::Color::Gold);
 
     // The state buffer is created with undefined contents; zero means "slot not assigned yet" to every shader.
@@ -294,23 +332,24 @@ auto ProbeVolume::record_trace(VkCommandBuffer command_buffer, std::uint32_t fra
     if (layout == VK_NULL_HANDLE) {
         return;
     }
+    auto const &emitters = emitter_buffers_[frame_index % frames_in_flight];
     auto push = TracePush{
             .state = state_.device_address,
             .rays = rays_.device_address,
-            .instances = instance_table,
-            .materials = materials,
+            .instances = inputs.instance_table,
+            .materials = inputs.materials,
+            .ubo = inputs.ubo,
+            .emitters = emitters.valid() ? emitters.device_address : 0,
+            .lights = inputs.lights,
             .base = {base_[0], base_[1], base_[2]},
             .counts = {settings_.counts[0], settings_.counts[1], settings_.counts[2]},
             .spacing = settings_.spacing,
             .rays_per_probe = settings_.rays_per_probe,
             .rotation = {rotation_.x, rotation_.y, rotation_.z, rotation_.w},
-            .sun = {sun_direction_.x, sun_direction_.y, sun_direction_.z},
-            .sun_radiance = {sun_radiance_.x, sun_radiance_.y, sun_radiance_.z},
-            .sky_cube = environment_.prefilter_cube_texture,
-            .sky_sampler = environment_.sampler,
-            .env_cos = environment_.rotation.x,
-            .env_sin = -environment_.rotation.y,
-            .sky_intensity = environment_.intensity.y,
+            .emitter_count = emitter_counts_[frame_index % frames_in_flight],
+            .light_count = inputs.lights != 0 ? inputs.light_count : 0,
+            .flags = 0,
+            .emitter_intensity = settings_.emitter_intensity,
     };
     vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(push), &push);
     vkCmdDispatch(command_buffer, probe_count(), settings_.rays_per_probe / trace_slice, 1);

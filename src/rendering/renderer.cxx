@@ -4588,6 +4588,7 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
     ZoneScopedNC("RayTracingScene", tracy::Color::DeepPink);
 
     scene_rt_.begin_frame(frame_index);
+    probe_volume_.begin_emitters(frame_index);
 
     auto const add_batches = [this](std::vector<BatchEntry const *> const &batches) {
         for (auto const *batch: batches) {
@@ -4613,6 +4614,40 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
                 continue;
             }
 
+            // Small emissive pieces (a bulb, a lantern's glass) light the volume through the probe volume's emitter list:
+            // a ray hits them too rarely. Larger ones are lit only by the rays that reach them.
+            auto instance_flags = std::uint32_t{0};
+            if (probe_volume_.ready()) {
+                auto const *material_info = material_storage_.create_info(batch->material);
+                auto const emission =
+                        material_info != nullptr ? material_info->emissive_factor * material_info->emissive_strength
+                                                 : glm::vec3{0.0F};
+                if (std::max({emission.x, emission.y, emission.z}) > 0.0F) {
+                    auto const centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
+                    auto const half_extent = glm::length(submesh.bounds_max - submesh.bounds_min) * 0.5F;
+                    auto small = true;
+                    for (auto const *transform: batch->transforms) {
+                        auto const scale = std::max({glm::length(glm::vec3{(*transform)[0]}),
+                                                     glm::length(glm::vec3{(*transform)[1]}),
+                                                     glm::length(glm::vec3{(*transform)[2]})});
+                        small = small && half_extent * scale <= ProbeVolume::small_emitter_radius;
+                    }
+                    if (small) {
+                        instance_flags = SceneAccelerationStructure::flag_explicit_emitter;
+                        for (auto const *transform: batch->transforms) {
+                            auto const scale = std::max({glm::length(glm::vec3{(*transform)[0]}),
+                                                         glm::length(glm::vec3{(*transform)[1]}),
+                                                         glm::length(glm::vec3{(*transform)[2]})});
+                            probe_volume_.add_emitter(ProbeVolume::Emitter{
+                                    .centre = glm::vec3{*transform * glm::vec4{centre, 1.0F}},
+                                    .radius = std::max(half_extent * scale, 0.01F),
+                                    .material_index = material_storage_.gpu_index(batch->material),
+                            });
+                        }
+                    }
+                }
+            }
+
             scene_rt_.add(
                     SceneAccelerationStructure::Geometry{
                             .key = SceneAccelerationStructure::key_of(batch->mesh.index, batch->mesh.generation,
@@ -4625,7 +4660,7 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
                             .index_count = geometry->indices.index_count,
                             .index_type = geometry->indices.index_type,
                     },
-                    material_storage_.gpu_index(batch->material), batch->transforms);
+                    material_storage_.gpu_index(batch->material), batch->transforms, instance_flags);
         }
     };
     add_batches(opaque_batches_);

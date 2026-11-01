@@ -367,6 +367,21 @@ namespace cvars {
             .hint = "N",
             .default_value = 64,
     }};
+    CVar<float> gi_intensity{{
+            .name = "gi_intensity",
+            .group = "Diagnostics",
+            .help = "Scale of the probe volume's diffuse lighting",
+            .hint = "SCALE",
+            .default_value = 1.0F,
+    }};
+    CVar<float> gi_emitter_intensity{{
+            .name = "gi_emitter_intensity",
+            .group = "Diagnostics",
+            .help = "Strength of small emissive pieces (bulbs, lantern glass) as lights for the probe volume, like a point "
+                    "light's intensity",
+            .hint = "INTENSITY",
+            .default_value = 200.0F,
+    }};
     CVar<bool> rt_poc{{
             .name = "rt_poc",
             .group = "Diagnostics",

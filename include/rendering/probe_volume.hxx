@@ -10,6 +10,7 @@
 #include <glm/vec3.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/config.hxx"
 #include "core/renderer_error.hxx"
 #include "gpu/buffer.hxx"
 #include "gpu/image_storage.hxx"
@@ -40,6 +41,10 @@ public:
         float intensity = 1.0F;
         float normal_bias = 0.25F;
         float view_bias = 0.1F;
+        // Strength of a small emissive piece (a bulb) as a light, like a point light's intensity. A bulb's physical
+        // emission lights nothing, so this is an art setting; the loader's synthesised lights use 25 with no probe
+        // smoothing and no bounce.
+        float emitter_intensity = 200.0F;
         // 0 off, 1 irradiance only (the diffuse term on grey), 2 probe state (green active, red off).
         std::uint32_t debug_view = 0;
     };
@@ -63,6 +68,20 @@ public:
         float padding = 0.0F;
     };
     static_assert(sizeof(GpuBlock) == 64);
+
+    // An emissive piece lit through the explicit emitter list (a bulb): centre and bounding radius in world space, and the
+    // material its emission comes from. Mirrors GpuEmitter in gi_probe_trace.slang.
+    struct Emitter {
+        glm::vec3 centre{0.0F};
+        float radius = 0.1F;
+        std::uint32_t material_index = 0;
+        std::uint32_t padding[3]{};
+    };
+    static_assert(sizeof(Emitter) == 32);
+
+    // Emissive pieces at most this big (bounding radius, metres) are explicit emitters.
+    static constexpr auto small_emitter_radius = 0.3F;
+    static constexpr auto max_emitters = std::uint32_t{4096};
 
     static constexpr auto max_rays_per_probe = std::uint32_t{256};
     static constexpr auto irradiance_tile = std::uint32_t{10};
@@ -102,10 +121,20 @@ public:
     [[nodiscard]] auto atlases_initialised() const noexcept -> bool { return atlases_initialised_; }
     auto mark_atlases_initialised() noexcept -> void { atlases_initialised_ = true; }
 
+    // The frame's emitters: begin_emitters clears the list of this frame slot, add_emitter appends (false when full).
+    auto begin_emitters(std::uint32_t frame_index) -> void;
+    auto add_emitter(Emitter const &emitter) -> bool;
+
     // Pass recording. `instance_table` is SceneAccelerationStructure::instance_table_address(), `materials` the address of
-    // the material table.
-    auto record_trace(VkCommandBuffer command_buffer, std::uint32_t frame_index, VkDeviceAddress instance_table,
-                      VkDeviceAddress materials) -> void;
+    // the material table, `ubo` this frame's UBO and `lights` its GpuLight array.
+    struct TraceInputs {
+        VkDeviceAddress instance_table = 0;
+        VkDeviceAddress materials = 0;
+        VkDeviceAddress ubo = 0;
+        VkDeviceAddress lights = 0;
+        std::uint32_t light_count = 0;
+    };
+    auto record_trace(VkCommandBuffer command_buffer, std::uint32_t frame_index, TraceInputs const &inputs) -> void;
     auto record_classify(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void;
     auto record_blend(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void;
     auto record_border(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void;
@@ -127,6 +156,9 @@ private:
 
     Buffer state_{};
     Buffer rays_{};
+    std::array<Buffer, frames_in_flight> emitter_buffers_{};
+    std::array<std::uint32_t, frames_in_flight> emitter_counts_{};
+    std::uint32_t emitter_slot_ = 0;
     ImageHolder irradiance_{};
     ImageHolder distance_{};
     bool atlases_initialised_ = false;
