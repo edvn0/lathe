@@ -19,6 +19,15 @@ apart, the far one 4 m apart (updated every other frame), blended by coverage at
 | `--gi-far` | the coarse cascade (on by default) |
 | `--gi-synth-lights auto\|on\|off` | the point lights models get from emissive meshes; `auto` is off while GI is on |
 
+**The test town**: `tools/blender/gi_town.py` builds a 554 m hilly town (10 x 10 terraced blocks joined by sloped streets
+inside a ring of hills, hollow houses with skylights and coloured rooms, lit towers with neon signs, a covered passage,
+a raised plaza with stairs, emissive pillars and market stalls, a climbable watchtower, parked cars, street lamps and
+strings of bulbs; 1174 small emitters) with
+`~/dev/git/build_linux/bin/blender -b --python tools/blender/gi_town.py -- ~/Assets/Meshes/gi_town` (writes the `.blend` and
+the `.glb`, about 35 MB). `lathe --game=lua --script=assets/scripts/gi_test/town_walk.lua --player --gi` walks it: WASD,
+Shift, Space, mouse, F free flight (Q/E down/up), 1 noon, 2 dusk, 3 night. Lathe's world is the model with Blender's Y
+and Z swapped (Blender (x, y, z) is (x, z, y) here, not the usual glTF -Z); keep that in mind for spawn points.
+
 The editor's frame graph panel has a "Probe GI" stage with the same settings. `assets/scripts/gi_test/` has the test
 scenes (Cornell room, sun boxes, the dynamic scene, Bistro shots) and the `gi_emitters` benchmark scenario measures it.
 Code: `ProbeVolume` (`probe_volume.*`), shaders `gi_probes`, `gi_probe_trace`, `gi_probe_classify`, `gi_probe_blend`,
@@ -471,7 +480,7 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
 - **Editor panel, benchmark scenario (`gi_emitters`, load = bulbs), unit tests** (`probe_addressing_test.cxx`: slot
   uniqueness on negative windows, `world_index` inverse, only one layer reassigned when the window scrolls).
 - **Numbers** (Release, RTX 4070 Ti SUPER, 1920x1080, `gi_emitters`, both cascades, 64 rays): GPU frame 2.2 ms at 16 bulbs,
-  2.5 ms at 128, 5.3 ms at 1024. Near cascade passes at 16 / 128 / 1024 bulbs: trace 0.14 / 0.33 / 2.63 ms, classify
+  2.5 ms at 128, 5.3 ms at 1024. Near cascade passes at 16 / 128 / 1024 bulbs: trace 0.14 / 0.33 / 2.7 ms, classify
   0.01, blend 0.17, border 0.06. The trace cost is the per hit loop over all emitters, which is why it scales with the
   bulbs; the Bistro has 47. Debug validation clean on `cornell`, `cornell_skylight`, `sun_boxes`, `dynamic`, `moving` and
   `basic` (terrain) with both cascades. Tests: 898 of 898.
@@ -487,3 +496,7 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
 - Not run: `test/gpu/device_lost_recovery.sh` with GI on; the Bistro under Debug (streaming never finishes there).
 - Known gaps from earlier phases: the volume is only 8 m tall, an emitter's colour is its material's average, one shadow
   ray is shared by all local lights, merging a character's submeshes would cut the skinned BLAS cost.
+- **Loader fix found with the town**: a glTF material with an emissive factor and no emissive texture rendered black,
+  because the fallback was the black default image (glTF means a texture of 1). The fallback is white now. The
+  `gi_emitters` scenario had the same mistake (its bulbs were dark; the trace cost is the same either way, it is the
+  loop over the emitters).

@@ -1645,7 +1645,9 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
                     .metallic_roughness_texture =
                             resolve_image(cpu_material.metallic_roughness_image, image_storage.metallic_roughness()),
                     .occlusion_texture = resolve_image(cpu_material.occlusion_image, image_storage.occlusion()),
-                    .emissive_texture = resolve_image(cpu_material.emissive_image, image_storage.emissive()),
+                    // glTF: emission is the factor times the texture, and a material with no emissive texture means a
+                    // texture of 1 (the factor alone). The black default would zero it.
+                    .emissive_texture = resolve_image(cpu_material.emissive_image, image_storage.white()),
                     .sampler = cpu_material.sampler,
                     .alpha_mode = cpu_material.alpha_mode,
                     .double_sided = cpu_material.double_sided,

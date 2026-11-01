@@ -75,7 +75,8 @@ namespace {
                     .normal_texture = images.flat_normal(),
                     .metallic_roughness_texture = images.metallic_roughness(),
                     .occlusion_texture = images.occlusion(),
-                    .emissive_texture = images.emissive(),
+                    // The factor alone is the emission: a texture of 1 (the default emissive image is black).
+                    .emissive_texture = emissive == glm::vec3{0.0F} ? images.emissive() : images.white(),
                     .sampler = samplers.linear_repeat(),
                     .alpha_mode = alpha_mode,
                     .max_shadow_cascade = max_shadow_cascade,
