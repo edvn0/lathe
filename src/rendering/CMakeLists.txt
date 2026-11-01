@@ -42,6 +42,7 @@ add_library(
         planet_system.cxx
         pipeline_graph_repository.cxx
         probe_volume.cxx
+        emitter_grid.cxx
         ray_tracing_poc.cxx
         renderer.cxx
         renderer_frame_graph.cxx

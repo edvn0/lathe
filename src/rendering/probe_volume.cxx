@@ -1,4 +1,5 @@
 #include "rendering/probe_volume.hxx"
+#include "rendering/emitter_grid.hxx"
 
 #include <tracy/Tracy.hpp>
 
@@ -282,82 +283,34 @@ auto ProbeVolume::finish_emitters() -> void {
     if (!ready() || !buffer.valid() || emitters_this_frame_.empty()) {
         return;
     }
-    // A bulb is a light that reaches max(80 radius, 1) m (the trace's falloff): the cell size is the largest reach, so
-    // an emitter touches at most two cells per axis, and a hit finds every emitter that can light it in its own cell.
-    auto reach = [](Emitter const &emitter) { return std::max(80.0F * emitter.radius, 1.0F); };
-    auto low = glm::vec3{std::numeric_limits<float>::max()};
-    auto high = glm::vec3{std::numeric_limits<float>::lowest()};
-    auto cell = 4.0F;
+    std::vector<EmitterSphere> spheres;
+    spheres.reserve(emitters_this_frame_.size());
     for (auto const &emitter: emitters_this_frame_) {
-        auto const r = reach(emitter);
-        low = glm::min(low, emitter.centre - glm::vec3{r});
-        high = glm::max(high, emitter.centre + glm::vec3{r});
-        cell = std::max(cell, r);
+        spheres.push_back({emitter.centre, emitter.radius});
     }
-    auto dims = glm::uvec3{1};
-    for (;;) {
-        dims = glm::max(glm::uvec3{glm::ceil((high - low) / cell)}, glm::uvec3{1});
-        if (std::uint64_t{dims.x} * dims.y * dims.z <= max_grid_cells) {
-            break;
-        }
-        cell *= 1.5F;
-    }
-    auto const cells = dims.x * dims.y * dims.z;
-    auto const cell_of = [&](glm::ivec3 const &c) { return static_cast<std::uint32_t>(c.x) + dims.x * (static_cast<std::uint32_t>(c.y) + dims.y * static_cast<std::uint32_t>(c.z)); };
-    auto const span_of = [&](Emitter const &emitter) {
-        auto const r = glm::vec3{reach(emitter)};
-        auto const first = glm::clamp(glm::ivec3{glm::floor((emitter.centre - r - low) / cell)}, glm::ivec3{0}, glm::ivec3{dims} - 1);
-        auto const last = glm::clamp(glm::ivec3{glm::floor((emitter.centre + r - low) / cell)}, glm::ivec3{0}, glm::ivec3{dims} - 1);
-        return std::pair{first, last};
-    };
+    auto const grid = build_emitter_grid(spheres, max_grid_cells, max_emitters * 8U);
 
-    std::vector<std::uint32_t> counts(cells, 0U);
-    for (auto const &emitter: emitters_this_frame_) {
-        auto const [first, last] = span_of(emitter);
-        for (auto z = first.z; z <= last.z; ++z) {
-            for (auto y = first.y; y <= last.y; ++y) {
-                for (auto x = first.x; x <= last.x; ++x) {
-                    ++counts[cell_of({x, y, z})];
-                }
-            }
-        }
-    }
-    std::vector<std::uint32_t> first_index(cells, 0U);
-    auto total = std::uint32_t{0};
-    for (auto i = std::uint32_t{0}; i < cells; ++i) {
-        first_index[i] = total;
-        total += counts[i];
-    }
-    if (total > max_emitters * 8U) {
+    // The trace reads the header of every frame that has emitters: when no grid fits it still gets a valid one, with no
+    // cells (no emitter lights anything), never what an earlier frame or the allocation left there.
+    auto *words = reinterpret_cast<std::uint32_t *>(buffer.mapped_data());
+    if (!grid.valid) {
+        words[grid_header_word + 7] = 0;
         return;
     }
-
-    auto *words = reinterpret_cast<std::uint32_t *>(buffer.mapped_data());
     auto const put_float = [&](std::uint32_t at, float value) { std::memcpy(&words[at], &value, sizeof(float)); };
-    put_float(grid_header_word + 0, low.x);
-    put_float(grid_header_word + 1, low.y);
-    put_float(grid_header_word + 2, low.z);
-    put_float(grid_header_word + 3, 1.0F / cell);
-    words[grid_header_word + 4] = dims.x;
-    words[grid_header_word + 5] = dims.y;
-    words[grid_header_word + 6] = dims.z;
-    words[grid_header_word + 7] = cells;
-    std::vector<std::uint32_t> fill(cells, 0U);
-    for (auto i = std::uint32_t{0}; i < cells; ++i) {
-        words[grid_ranges_word + i * 2] = first_index[i];
-        words[grid_ranges_word + i * 2 + 1] = counts[i];
+    put_float(grid_header_word + 0, grid.origin.x);
+    put_float(grid_header_word + 1, grid.origin.y);
+    put_float(grid_header_word + 2, grid.origin.z);
+    put_float(grid_header_word + 3, 1.0F / grid.cell);
+    words[grid_header_word + 4] = grid.dims.x;
+    words[grid_header_word + 5] = grid.dims.y;
+    words[grid_header_word + 6] = grid.dims.z;
+    words[grid_header_word + 7] = static_cast<std::uint32_t>(grid.first.size());
+    for (auto i = std::size_t{0}; i < grid.first.size(); ++i) {
+        words[grid_ranges_word + i * 2] = grid.first[i];
+        words[grid_ranges_word + i * 2 + 1] = grid.count[i];
     }
-    for (auto e = std::uint32_t{0}; e < emitters_this_frame_.size(); ++e) {
-        auto const [first, last] = span_of(emitters_this_frame_[e]);
-        for (auto z = first.z; z <= last.z; ++z) {
-            for (auto y = first.y; y <= last.y; ++y) {
-                for (auto x = first.x; x <= last.x; ++x) {
-                    auto const index = cell_of({x, y, z});
-                    words[grid_indices_word + first_index[index] + fill[index]++] = e;
-                }
-            }
-        }
-    }
+    std::memcpy(&words[grid_indices_word], grid.indices.data(), grid.indices.size() * sizeof(std::uint32_t));
 }
 
 auto ProbeVolume::gpu_block() const noexcept -> GpuBlock {
