@@ -341,3 +341,39 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
   hedges and building shells come out red and the lit/shadowed ground comes out white/blue as expected. Cornell reads
   black by design (no sun, no ambient), which is correct for sky-and-sun-only shading.
 - The volume is only 8 probes (8 m) tall, so a camera high above the ground sees no probes on it.
+
+### Phase 3 (done): blend and shade
+
+- **Moved to the renderer.** The phase 2 game graph passes are now engine passes in `renderer_frame_graph.cxx`, because
+  the atlases are renderer-owned images (decision a) and a game pass cannot write an engine image. `Renderer` owns the
+  `ProbeVolume` (`renderer.probe_volume()`); the trace pass declares `Use::acceleration_structure_read` on the TLAS
+  instead of relying on the queue order. Passes: `gi_probe_trace`, `gi_probe_classify`, `gi_probe_blend`,
+  `gi_probe_border`. The phase 2 `--gi-view` overlay passes are gone; the views live in the forward shader.
+- **Atlases:** irradiance `10x10` tiles (8x8 octahedral plus a border), distance `18x18` (16x16 plus a border), both
+  `RGBA16F`, tiles `count.x * count.y` to a row (2560x320 and 4608x576 for 32x8x32). Linear storage, no perceptual
+  encoding (half floats have the range). Irradiance is the cosine weighted mean ray radiance (the SH term's units, so the
+  forward shader multiplies it by albedo as before); distance holds mean and mean square of the ray distance, capped at
+  5 cells, weight cos^64.
+- **Blend:** hysteresis 0.97, 0.85 for the first 8 frames of a probe, 0 on its first frame (a scrolled-in probe takes the
+  fresh value outright). Border texels are copied by a separate dispatch once the interior is final.
+- **Probe state:** three float4 per probe (offset and active flag; mean radiance and back face fraction; world index and
+  age). A slot whose world index changed (the grid scrolled) is reset. Classification and **relocation**: a probe with
+  more than 25% back face hits moves along its nearest back face ray, a probe closer than 10% of a cell to a surface is
+  nudged away, offsets are capped at 45% of a cell.
+- **Trace shading:** hits now use the surface's base colour (factor times texture, level from hit distance), the sun
+  with a shadow ray, and sky light through one cosine weighted visibility ray, so a hit inside a room or under a roof
+  gets no sky. Misses return the sky. Emissive and local lights are phase 4.
+- **Sampling:** `gi_probes.slang` (`gi_sample_irradiance`): trilinear over the 8 probes, backface weight, Chebyshev
+  visibility from the distance atlas, crushed tiny weights, normal and view bias, a fade over the outermost probe layer,
+  and a coverage factor the forward shader blends with the SH term by. Off probes get no weight. `forward_geom.slang`
+  replaces the SH diffuse term with it; `environment_intensity.x` now scales the SH term only (the probes carry
+  `Settings::intensity`).
+- **Debug:** `--gi-view=irradiance` (the sampled irradiance on grey), `--gi-view=state` (green active, red off).
+- **UBO:** grew by a 64 byte `GpuGiBlock` (1088 bytes).
+- **Test scene:** `assets/scripts/gi_test/cornell_skylight.lua` (a Cornell room open over the left front half, sun at 50
+  degrees, no emissive yet; the lamp comes back in phase 4).
+- **Numbers** (RTX 4070 Ti SUPER, Release, Bistro, 8192 probes x 64 rays): trace 0.98 ms, classify 0.02 ms, **blend
+  1.44 ms**, border 0.10 ms, TLAS 0.30 ms. Blend is the one to optimise (each of the 64 texels of a probe loops over all
+  rays and recomputes the Fibonacci directions): cache the ray directions in groupshared memory, one workgroup per probe.
+- **Known gaps:** the volume is 8 m tall; no unit tests for the addressing maths yet; probes are traced every frame
+  (budgeting is phase 6); the Bistro run under Debug validation is still not possible (streaming too slow).

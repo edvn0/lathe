@@ -1,66 +1,143 @@
 #pragma once
 
+#include <volk.h>
+
 #include <array>
 #include <cstdint>
 #include <expected>
 #include <string_view>
 
-#include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include "core/renderer_error.hxx"
-#include "rendering/game_graph.hxx"
+#include "gpu/buffer.hxx"
+#include "gpu/image_storage.hxx"
+#include "rendering/environment.hxx"
+#include "rendering/pipeline_graph_repository.hxx"
 
 struct Renderer;
 
-// The probe volume of the probe GI (docs/probe-gi.md, phase 2): a camera following grid of probes, addressed toroidally
-// (a probe keeps its slot while the grid scrolls), and per frame a ray query pass that shoots rays_per_probe rays from
-// every probe against the scene TLAS (SceneAccelerationStructure), then a pass that classifies the probes from those
-// rays. Hits are shaded with the sun and the sky only for now; there is no blend, no atlas and no shading from the
-// volume yet (phase 3).
+// The probe GI volume (docs/probe-gi.md): a camera following grid of probes, addressed toroidally (a probe keeps its
+// slot while the grid scrolls), lit by ray queries against the scene TLAS (SceneAccelerationStructure) and blended into
+// two octahedral atlases the forward shader samples (gi_probes.slang).
 //
-// Everything is game graph passes in GameSlot::after_lighting on the graphics queue, behind the scene acceleration
-// structure build, like RayTracingPoc. Resources: a persistent probe state buffer (two float4 per probe) and a
-// transient ray data buffer (8 bytes per ray).
+// The renderer owns it and declares its engine passes (renderer_frame_graph.cxx): trace (one ray per thread), classify
+// (per probe: relocation, inside geometry), blend (irradiance and distance atlases), border (seamless filtering). It
+// holds the resources: the probe state buffer, the ray data buffer and the atlases (renderer owned images imported
+// into the frame graph). Hits are shaded with the sun and the sky and the surface's base colour; emissive and local lights come in phase 4.
 class ProbeVolume {
 public:
     struct Settings {
+        // Fixed when the volume is created.
         std::array<std::uint32_t, 3> counts{32, 8, 32};
         float spacing = 1.0F;
-        // A multiple of 64.
+        // A multiple of 64 up to max_rays_per_probe.
         std::uint32_t rays_per_probe = 64;
-        // A probe seeing more back faces than this fraction of its rays is inside geometry and is switched off.
+        // A probe seeing more back faces than this fraction of its rays is inside geometry.
         float back_face_limit = 0.25F;
+        float hysteresis = 0.97F;
+        float intensity = 1.0F;
+        float normal_bias = 0.25F;
+        float view_bias = 0.1F;
+        // 0 off, 1 irradiance only (the diffuse term on grey), 2 probe state (green active, red off).
+        std::uint32_t debug_view = 0;
     };
 
+    // Mirrors GpuGiBlock in scene_types.slang: the end of the UBO.
+    struct GpuBlock {
+        VkDeviceAddress probe_state = 0;
+        std::uint32_t irradiance_texture = 0;
+        std::uint32_t distance_texture = 0;
+        std::int32_t base_x = 0;
+        std::int32_t base_y = 0;
+        std::int32_t base_z = 0;
+        std::uint32_t flags = 0;
+        std::uint32_t count_x = 0;
+        std::uint32_t count_y = 0;
+        std::uint32_t count_z = 0;
+        float spacing = 1.0F;
+        float intensity = 1.0F;
+        float normal_bias = 0.0F;
+        float view_bias = 0.0F;
+        float padding = 0.0F;
+    };
+    static_assert(sizeof(GpuBlock) == 64);
+
+    static constexpr auto max_rays_per_probe = std::uint32_t{256};
+    static constexpr auto irradiance_tile = std::uint32_t{10};
+    static constexpr auto distance_tile = std::uint32_t{18};
+    static constexpr auto debug_view_names = std::array<std::string_view, 3>{"off", "irradiance", "state"};
+
     ProbeVolume() = default;
+    ~ProbeVolume();
 
-    // Registers the shaders and turns the renderer's ray tracing scene on. Fails, harmlessly, without ray query.
+    ProbeVolume(ProbeVolume const &) = delete;
+    auto operator=(ProbeVolume const &) -> ProbeVolume & = delete;
+
+    // Registers the shaders and creates the buffers and atlases. Fails, harmlessly, without ray query.
     [[nodiscard]] auto create(Renderer &renderer) -> std::expected<void, RendererError>;
+    auto destroy() noexcept -> void;
 
-    // Declares this frame's passes. Does nothing outside GameSlot::after_lighting or before create succeeded.
-    auto declare(GameGraph &graph, glm::mat4 const &view, glm::mat4 const &projection) -> void;
-
-    [[nodiscard]] auto ready() const noexcept -> bool { return ready_; }
+    [[nodiscard]] auto ready() const noexcept -> bool { return renderer_ != nullptr; }
     [[nodiscard]] auto settings() noexcept -> Settings & { return settings_; }
-
+    [[nodiscard]] auto settings() const noexcept -> Settings const & { return settings_; }
     [[nodiscard]] auto probe_count() const noexcept -> std::uint32_t {
         return settings_.counts[0] * settings_.counts[1] * settings_.counts[2];
     }
 
-    // Debug views, in the order of the modes in gi_probe_debug.slang. 0 leaves the picture alone.
-    static constexpr auto view_names = std::array<std::string_view, 4>{"off", "radiance", "state", "back-faces"};
-    auto set_view(std::uint32_t view) noexcept -> void { view_ = view; }
+    // Per frame, before the UBO is written: places the volume around `camera` and picks this frame's ray rotation.
+    auto begin_frame(glm::vec3 camera, glm::vec3 sun_direction, glm::vec3 sun_radiance,
+                     EnvironmentUboBlock const &environment) -> void;
+    // True when the frame has a volume to trace and sample.
+    [[nodiscard]] auto active() const noexcept -> bool { return active_; }
+    [[nodiscard]] auto gpu_block() const noexcept -> GpuBlock;
 
-    auto destroy() noexcept -> void;
+    // The resources the frame graph imports.
+    [[nodiscard]] auto state_buffer() const noexcept -> Buffer const & { return state_; }
+    [[nodiscard]] auto ray_buffer() const noexcept -> Buffer const & { return rays_; }
+    [[nodiscard]] auto irradiance_image() const -> Image const &;
+    [[nodiscard]] auto distance_image() const -> Image const &;
+    // False until the atlases have been through one frame: their first use starts from an undefined layout.
+    [[nodiscard]] auto atlases_initialised() const noexcept -> bool { return atlases_initialised_; }
+    auto mark_atlases_initialised() noexcept -> void { atlases_initialised_ = true; }
+
+    // Pass recording. `instance_table` is SceneAccelerationStructure::instance_table_address(), `materials` the address of
+    // the material table.
+    auto record_trace(VkCommandBuffer command_buffer, std::uint32_t frame_index, VkDeviceAddress instance_table,
+                      VkDeviceAddress materials) -> void;
+    auto record_classify(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void;
+    auto record_blend(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void;
+    auto record_border(VkCommandBuffer command_buffer, std::uint32_t frame_index) -> void;
 
 private:
+    [[nodiscard]] auto bind(VkCommandBuffer command_buffer, std::uint32_t frame_index, PipelineNodeHandle node)
+            -> VkPipelineLayout;
+    [[nodiscard]] auto irradiance_extent() const noexcept -> VkExtent2D;
+    [[nodiscard]] auto distance_extent() const noexcept -> VkExtent2D;
+
     Renderer *renderer_ = nullptr;
-    GameComputeShader trace_{};
-    GameComputeShader classify_{};
-    GameComputeShader debug_{};
     Settings settings_{};
-    std::uint32_t view_ = 0;
+
+    PipelineNodeHandle trace_{};
+    PipelineNodeHandle classify_{};
+    PipelineNodeHandle blend_irradiance_{};
+    PipelineNodeHandle blend_distance_{};
+    PipelineNodeHandle border_{};
+
+    Buffer state_{};
+    Buffer rays_{};
+    ImageHolder irradiance_{};
+    ImageHolder distance_{};
+    bool atlases_initialised_ = false;
+    bool state_cleared_ = false;
+
+    // This frame.
+    bool active_ = false;
     std::uint32_t frame_ = 0;
-    bool ready_ = false;
+    std::array<std::int32_t, 3> base_{};
+    glm::quat rotation_{1.0F, 0.0F, 0.0F, 0.0F};
+    glm::vec3 sun_direction_{0.0F, 1.0F, 0.0F};
+    glm::vec3 sun_radiance_{0.0F};
+    EnvironmentUboBlock environment_{};
 };

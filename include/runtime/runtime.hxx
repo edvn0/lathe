@@ -27,7 +27,6 @@
 #include "rendering/particle_system.hxx"
 #include "rendering/planet_system.hxx"
 #include "rendering/water_system.hxx"
-#include "rendering/probe_volume.hxx"
 #include "rendering/ray_tracing_poc.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
@@ -130,7 +129,6 @@ struct Runtime {
 
     // The ray query proof of concept (docs/ray-tracing.md). Off unless run_engine was given --rt-poc.
     RayTracingPoc ray_tracing_poc;
-    ProbeVolume probe_volume;
     bool probe_volume_enabled = false;
     bool ray_tracing_poc_enabled = false;
     // The camera of the frame being recorded, for passes that need its matrices. Set by run_engine every frame.

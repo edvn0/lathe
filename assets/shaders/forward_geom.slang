@@ -6,6 +6,7 @@ import meshlet_task;
 import light_clusters;
 import environment;
 import local_shadows;
+import gi_probes;
 #ifdef BLEND_PASS
 import water;
 #endif
@@ -617,9 +618,16 @@ var base_colour = base_sample.xyz *
         float3 prefiltered = sampled_cube[ubo.prefilter_cube_texture].SampleLevel(
             samplers[ubo.environment_sampler], rotate_y(reflected, unrotate), roughness * ubo.environment_rotation.z).rgb;
 
+        // The diffuse intensity is the environment's own knob; the probe volume carries its own (gi_intensity).
+        irradiance *= ubo.environment_intensity.x;
         if (furnace) {
-            irradiance = float3(1.0);
+            irradiance = float3(ubo.environment_intensity.x);
             prefiltered = float3(1.0);
+        } else if ((ubo.gi.flags & gi_flag_enabled) != 0) {
+            float gi_coverage;
+            const float3 gi_irradiance = gi_sample_irradiance(ubo, input.world_position, shading_normal,
+                                                              view_direction, gi_coverage);
+            irradiance = lerp(irradiance, gi_irradiance, gi_coverage);
         }
 
         float so = 1.0;
@@ -630,7 +638,7 @@ var base_colour = base_sample.xyz *
         const float horizon = saturate(1.0 + dot(reflected, normal));
 
         const float3 diffuse_ibl = base_colour * (1.0 - metallic) * (1.0 - specular_albedo) * irradiance *
-                                   ambient_occlusion * ubo.environment_intensity.x;
+                                   ambient_occlusion;
         const float3 specular_ibl = prefiltered * specular_albedo * energy * so * horizon * horizon * ubo.environment_intensity.y;
 
         ambient = (diffuse_ibl + specular_ibl) * ubo.environment_exposure;
@@ -693,6 +701,17 @@ var base_colour = base_sample.xyz *
         const uint2 pixel = uint2(input.position.xy);
         const uint slot = pixel.y * ubo.overdraw_width + pixel.x;
         fogged_colour = overdraw_heatmap_colour(slot < ubo.overdraw_size ? ubo.overdraw_counts[slot] : 0u);
+    }
+
+    if ((ubo.gi.flags & gi_flag_enabled) != 0) {
+        const uint gi_debug = ubo.gi.flags >> gi_flag_debug_shift;
+        if (gi_debug == 1) {
+            float gi_coverage;
+            fogged_colour = gi_sample_irradiance(ubo, input.world_position, shading_normal, view_direction,
+                                                 gi_coverage) * 0.5 * ubo.environment_exposure;
+        } else if (gi_debug == 2) {
+            fogged_colour = lerp(fogged_colour, gi_debug_state_colour(ubo, input.world_position), 0.7);
+        }
     }
 
     OutputFS output;

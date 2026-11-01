@@ -996,7 +996,6 @@ namespace {
         runtime.imgui_renderer.reset();
         runtime.text_renderer.reset();
         runtime.ray_tracing_poc.destroy();
-        runtime.probe_volume.destroy();
         runtime.renderer->destroy();
 
         context.destroy();
@@ -1416,15 +1415,15 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     }
     runtime.probe_volume_enabled = cvars::gi.get();
     {
-        auto const names = ProbeVolume::view_names;
+        auto const names = ProbeVolume::debug_view_names;
         auto const found = std::ranges::find(names, std::string_view{cvars::gi_view.get()});
         if (found == names.end()) {
             warn("--gi-view '{}' is not a view; using off", cvars::gi_view.get());
         } else {
-            runtime.probe_volume.set_view(static_cast<std::uint32_t>(found - names.begin()));
+            runtime.renderer->probe_volume().settings().debug_view = static_cast<std::uint32_t>(found - names.begin());
         }
-        runtime.probe_volume.settings().spacing = cvars::gi_probe_spacing.get();
-        runtime.probe_volume.settings().rays_per_probe = cvars::gi_rays_per_probe.get();
+        runtime.renderer->probe_volume().settings().spacing = cvars::gi_probe_spacing.get();
+        runtime.renderer->probe_volume().settings().rays_per_probe = cvars::gi_rays_per_probe.get();
     }
     runtime.ray_tracing_poc_enabled = cvars::rt_poc.get();
     {

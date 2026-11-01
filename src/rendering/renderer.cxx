@@ -2072,6 +2072,7 @@ auto Renderer::destroy() noexcept -> void {
     environment_.destroy();
 
     pipeline_graph_.destroy();
+    probe_volume_.destroy();
     scene_rt_.destroy();
     gpu_resource_table_.destroy();
     sampler_storage_.destroy();
@@ -4797,6 +4798,8 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
     plan_shadow_batches(frame, build_state);
     if (!secondary) {
         update_ray_tracing_scene(frame_index);
+        probe_volume_.begin_frame(camera_position, light_.direction, light_.colour * light_.intensity,
+                                  environment_.ubo_block());
     }
     if (auto emitted = emit_batches(frame, build_state); !emitted) {
         return std::unexpected(emitted.error());
@@ -5594,6 +5597,7 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
             .overdraw_counts_address = overdraw_active ? frame.overdraw_buffer.device_address : 0,
             .overdraw_width = overdraw_active ? extent_.width : 0U,
             .overdraw_size = overdraw_active ? extent_.width * extent_.height : 0U,
+            .gi = probe_volume_.gpu_block(),
     };
 
     if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {

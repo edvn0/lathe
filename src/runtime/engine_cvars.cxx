@@ -343,13 +343,13 @@ namespace cvars {
     CVar<bool> gi{{
             .name = "gi",
             .group = "Diagnostics",
-            .help = "Probe GI (docs/probe-gi.md), phase 2: build the ray tracing scene and trace a probe volume around "
-                    "the camera. Nothing is shaded from it yet; see --gi-view",
+            .help = "Probe GI (docs/probe-gi.md): trace a probe volume around the camera and light surfaces from it "
+                    "(sun and sky only so far); see --gi-view",
     }};
     CVar<std::string> gi_view{{
             .name = "gi_view",
             .group = "Diagnostics",
-            .help = "Debug view of the probe volume: off, radiance, state, back-faces",
+            .help = "Debug view of the probe volume: off, irradiance, state",
             .hint = "NAME",
             .default_value = "off",
     }};

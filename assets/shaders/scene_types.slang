@@ -200,6 +200,25 @@ public struct GpuEnvironmentSh
     public float4 coefficients[9];
 };
 
+// The probe GI volume (probe_volume.hxx, gi_probes.slang). Mirrors ProbeVolume::GpuBlock.
+public struct GpuGiBlock {
+    public Ptr<float4> probe_state;
+    public uint irradiance_texture;
+    public uint distance_texture;
+    public int base_x;
+    public int base_y;
+    public int base_z;
+    public uint flags;
+    public uint count_x;
+    public uint count_y;
+    public uint count_z;
+    public float spacing;
+    public float intensity;
+    public float normal_bias;
+    public float view_bias;
+    public float padding;
+};
+
 public struct UBO {
     public float4x4 view_projection;
     public float4x4 view;
@@ -291,6 +310,8 @@ public struct UBO {
     public Ptr<uint> overdraw_counts;
     public uint overdraw_width;
     public uint overdraw_size;
+
+    public GpuGiBlock gi;
 };
 
 public struct PC

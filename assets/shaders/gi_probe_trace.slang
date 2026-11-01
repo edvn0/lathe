@@ -5,6 +5,7 @@
 // geometry. Workgroup x is a slice of 64 rays, group id x the probe slot, group id y the slice.
 import bindless;
 import scene_types;
+import gi_probes;
 
 struct RtInstanceData
 {
@@ -21,6 +22,7 @@ struct PushConstants
     Ptr<float4> probe_state;
     Ptr<uint2> ray_data;
     Ptr<RtInstanceData> instances;
+    Ptr<Material> materials;
     int base_x;
     int base_y;
     int base_z;
@@ -48,25 +50,8 @@ struct PushConstants
 public [[vk::binding(6, 0)]] RaytracingAccelerationStructure scene_tlas;
 
 static const float gi_max_distance = 500.0;
-static const float gi_albedo = 0.5;
 static const float gi_sky_mip = 1.0;
-static const float gi_sky_irradiance_mip = 4.0;
 static const float pi = 3.14159265358979;
-
-float3 rotate_by_quaternion(float4 q, float3 v)
-{
-    float3 t = 2.0 * cross(q.xyz, v);
-    return v + q.w * t + cross(q.xyz, t);
-}
-
-// Fibonacci sphere: evenly spread directions for any count.
-float3 fibonacci_direction(uint index, uint count)
-{
-    float z = 1.0 - (2.0 * float(index) + 1.0) / float(count);
-    float r = sqrt(max(0.0, 1.0 - z * z));
-    float phi = 2.399963229728653 * float(index);
-    return float3(r * cos(phi), r * sin(phi), z);
-}
 
 float3 sky(float3 direction, float mip)
 {
@@ -79,6 +64,12 @@ float3 vertex_position(Ptr<CompressedVertex> vertices, uint index)
 {
     CompressedVertex v = vertices[index];
     return float3(f16tof32(v.position_x), f16tof32(v.position_y), f16tof32(v.position_z));
+}
+
+float2 vertex_uv(Ptr<CompressedVertex> vertices, uint index)
+{
+    CompressedVertex v = vertices[index];
+    return float2(f16tof32(v.texcoord_u), f16tof32(v.texcoord_v));
 }
 
 bool occluded(float3 origin, float3 direction, float t_max)
@@ -96,6 +87,29 @@ bool occluded(float3 origin, float3 direction, float t_max)
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
+uint pcg(uint v)
+{
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float random_unit(uint seed)
+{
+    return float(pcg(seed) & 0xFFFFFFu) / 16777216.0;
+}
+
+// A direction over the hemisphere of `normal`, cosine weighted, so a radiance sample along it estimates the
+// irradiance (divided by pi) without any further weight.
+float3 cosine_direction(float3 normal, float2 u)
+{
+    float3 t = normalize(abs(normal.x) > 0.9 ? cross(normal, float3(0.0, 1.0, 0.0)) : cross(normal, float3(1.0, 0.0, 0.0)));
+    float3 b = cross(normal, t);
+    float r = sqrt(u.x);
+    float phi = 6.283185307179586 * u.y;
+    return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + normal * sqrt(max(0.0, 1.0 - u.x)));
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
@@ -109,13 +123,15 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
 
     // The probe in this slot is the one world index, inside the current window, that maps to it (toroidal addressing).
     uint3 counts = uint3(pc.count_x, pc.count_y, pc.count_z);
-    int3 slot3 = int3(slot % counts.x, (slot / counts.x) % counts.y, slot / (counts.x * counts.y));
     int3 base = int3(pc.base_x, pc.base_y, pc.base_z);
     int3 icounts = int3(counts);
-    int3 relative = ((slot3 - base) % icounts + icounts) % icounts;
-    float3 origin = float3(base + relative) * pc.spacing + pc.probe_state[slot * 2].xyz;
+    int3 world_index = gi_world_index(slot, base, icounts);
+    // A slot that was just given to another probe still holds the previous probe's offset until it is classified.
+    float4 stored_index = pc.probe_state[slot * gi_state_stride + 2];
+    float3 offset = all(int3(stored_index.xyz) == world_index) ? pc.probe_state[slot * gi_state_stride].xyz : float3(0.0);
+    float3 origin = float3(world_index) * pc.spacing + offset;
 
-    float3 direction = normalize(rotate_by_quaternion(pc.rotation, fibonacci_direction(ray_index, pc.rays_per_probe)));
+    float3 direction = normalize(gi_rotate(pc.rotation, gi_fibonacci_direction(ray_index, pc.rays_per_probe)));
     float3 sun = float3(pc.sun_x, pc.sun_y, pc.sun_z);
     float3 sun_radiance = float3(pc.sun_r, pc.sun_g, pc.sun_b);
 
@@ -157,8 +173,28 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
         float n_dot_l = max(dot(normal, sun), 0.0);
         float visible = n_dot_l > 0.0 && !occluded(point + normal * bias, sun, 1.0e4) ? 1.0 : 0.0;
 
-        float3 irradiance = sun_radiance * (n_dot_l * visible) + sky(normal, gi_sky_irradiance_mip);
-        radiance = gi_albedo * irradiance;
+        // The surface's own colour, so light bounces off it tinted: the base colour factor times the texture, which is
+        // read at a coarser level the farther the hit is (the ray carries no footprint).
+        Material material = pc.materials[data.material_index];
+        float2 bary = query.CommittedTriangleBarycentrics();
+        uint i0 = data.indices[triangle * 3 + 0];
+        uint i1 = data.indices[triangle * 3 + 1];
+        uint i2 = data.indices[triangle * 3 + 2];
+        float2 uv = vertex_uv(data.vertices, i0) * (1.0 - bary.x - bary.y) + vertex_uv(data.vertices, i1) * bary.x +
+                    vertex_uv(data.vertices, i2) * bary.y;
+        float lod = clamp(log2(max(t, 1.0)) + 2.0, 0.0, 12.0);
+        float3 albedo = float3(material.colour[0], material.colour[1], material.colour[2]) *
+                        sampled_2d[NonUniformResourceIndex(material.base_colour_texture)]
+                                .SampleLevel(samplers[NonUniformResourceIndex(material.sampler_index)], uv, lod).rgb;
+
+        // Sky light reaching the hit: one cosine weighted ray, so a hit under a roof or in a room gets none. The
+        // probes' hysteresis averages these over frames.
+        uint seed = slot * 977u + ray_index * 131u + asuint(pc.rotation.x);
+        float3 sky_direction = cosine_direction(normal, float2(random_unit(seed), random_unit(seed ^ 0x9e3779b9u)));
+        float3 sky_light = occluded(point + normal * bias, sky_direction, 1.0e4) ? float3(0.0) : sky(sky_direction, gi_sky_mip);
+
+        float3 irradiance = sun_radiance * (n_dot_l * visible) + sky_light;
+        radiance = albedo * irradiance;
         distance = back_face ? -t : t;
     }
     else
