@@ -6,25 +6,33 @@ and `docs/adding-a-pass.md` for the pieces it builds on.
 
 ## Using it
 
-`lathe --gi` (needs `VK_KHR_ray_query`; off otherwise). Emissive surfaces, the sun, the sky, local lights and bounce light
-all light the scene, dynamically, with no baking. Two cascades of 32x8x32 probes follow the camera: the near one 1 m
-apart, the far one 4 m apart (updated every other frame), blended by coverage at shade time.
+Probe GI is on by default wherever the device has `VK_KHR_ray_query` (it is left off, with an info line, where it does
+not). There are no command line flags for it: it is configured in the project, and in the editor.
 
-| cvar | meaning |
-|---|---|
-| `--gi` | create the volume (and the scene TLAS it needs) |
-| `--gi-view off\|irradiance\|state` | debug views |
-| `--gi-probe-spacing M`, `--gi-rays-per-probe N`, `--gi-intensity S` | near cascade settings (the far one is 4x the spacing) |
-| `--gi-emitter-intensity I` | strength of small emissive pieces (bulbs) as lights, default 200 |
-| `--gi-far` | the coarse cascade (on by default) |
-| `--gi-synth-lights auto\|on\|off` | the point lights models get from emissive meshes; `auto` is off while GI is on |
+The project's `lathe.project` (a packaged game's `game.toml`) takes a `[gi]` table; every key is optional:
+
+```toml
+[gi]
+enabled = true            # false leaves the scene on the environment's flat diffuse term
+rays_per_probe = 64       # 64, 128, 192 or 256
+probe_spacing = 1.0       # metres between probes of the near cascade; the coarse cascade is 4x
+intensity = 1.0           # scale of the probes' diffuse light
+emitter_intensity = 200   # how strongly small emissive pieces (bulbs) light their surroundings
+far_cascade = true        # the second, coarser cascade
+synthesize_lights = "auto"  # the point lights a model gets from emissive meshes: auto (none while GI is on), on, off
+```
+
+Edit > Project Settings > Global illumination edits the same keys (applied the next time the project opens). The frame
+graph panel's "Probe GI" stage changes the tunables of the running editor (rays, hysteresis, intensity, biases, emitter
+intensity, debug view) without saving them. A run with no project uses the defaults above (`GiSettings` in
+`include/core/game_manifest.hxx`).
 
 **The test town**: `tools/blender/gi_town.py` builds a 554 m hilly town (10 x 10 terraced blocks joined by sloped streets
 inside a ring of hills, hollow houses with skylights and coloured rooms, lit towers with neon signs, a covered passage,
 a raised plaza with stairs, emissive pillars and market stalls, a climbable watchtower, parked cars, street lamps and
 strings of bulbs; 1174 small emitters) with
 `~/dev/git/build_linux/bin/blender -b --python tools/blender/gi_town.py -- ~/Assets/Meshes/gi_town` (writes the `.blend` and
-the `.glb`, about 35 MB). `lathe --game=lua --script=assets/scripts/gi_test/town_walk.lua --player --gi` walks it: WASD,
+the `.glb`, about 35 MB). `lathe --game=lua --script=assets/scripts/gi_test/town_walk.lua --player` walks it: WASD,
 Shift, Space, mouse, F free flight (Q/E down/up), 1 noon, 2 dusk, 3 night. Lathe's world is the model with Blender's Y
 and Z swapped (Blender (x, y, z) is (x, z, y) here, not the usual glTF -Z); keep that in mind for spawn points.
 
@@ -348,7 +356,7 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
 
 ### Phase 2 (done): probe volume and ray trace, no blend
 
-- `ProbeVolume` (`include/rendering/probe_volume.hxx`, `--gi`): game graph passes in `after_lighting`, graphics queue,
+- `ProbeVolume` (`include/rendering/probe_volume.hxx`): game graph passes in `after_lighting`, graphics queue,
   behind the scene TLAS build. A persistent `gi_probe_state` buffer (2 float4 per probe) and a transient `gi_ray_data`
   buffer (8 bytes per ray: RGB16F radiance and a signed half distance, negative for a back face hit).
 - Grid `32x8x32`, spacing 1 m, 64 rays per probe (`--gi-probe-spacing`, `--gi-rays-per-probe`), centred on the camera

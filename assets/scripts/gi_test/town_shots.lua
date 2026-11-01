@@ -1,6 +1,6 @@
 -- The town seen from fixed poses, for screenshots (and for hunting z-fighting): a new pose every 150 frames after the
 -- model has streamed in.
---   lathe --game=lua --script=assets/scripts/gi_test/town_shots.lua --player --gi --exit-after-frames=1000 \
+--   lathe --game=lua --script=assets/scripts/gi_test/town_shots.lua --player --exit-after-frames=1000 \
 --         --inject-keys=330:301,480:301,630:301,780:301,930:301
 local town = require("gi_test.town_walk")
 

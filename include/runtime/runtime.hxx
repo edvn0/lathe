@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/game_manifest.hxx"
 #include "core/event_bus.hxx"
 #include "scene/input_events.hxx"
 
@@ -127,10 +128,11 @@ struct Runtime {
     PlanetSystem planet_system;
     EffectSystem effect_system;
 
-    // The ray query proof of concept (docs/ray-tracing.md). Off unless run_engine was given --rt-poc.
+    // The ray query proof of concept (docs/ray-tracing.md): not started any more, replaced by ray traced shadows.
     RayTracingPoc ray_tracing_poc;
-    bool probe_volume_enabled = false;
-    bool ray_tracing_poc_enabled = false;
+    // The probe GI settings (the project's [gi] table, or the defaults): the volume is created at startup unless the
+    // device lacks VK_KHR_ray_query or they turn it off.
+    GiSettings gi_config{};
     // The camera of the frame being recorded, for passes that need its matrices. Set by run_engine every frame.
     glm::mat4 frame_view{1.0F};
     glm::mat4 frame_projection{1.0F};

@@ -430,7 +430,7 @@ namespace {
         return orbit_path(glm::vec3{0.0F}, light_field_size * 0.35F, 3.0F, 30.0F, 8);
     }
 
-    // The probe GI's cost and look: a field of boxes lit only by small emissive cubes (bulbs). Run it with --gi; the
+    // The probe GI's cost and look: a field of boxes lit only by small emissive cubes (bulbs). It needs the probe GI (on by default); the
     // load is the number of bulbs. The camera orbits at street height so the volume follows it across the field.
     auto populate_gi_emitters(BenchmarkScenarioContext const &context) -> void {
         MaterialSet materials{context.renderer};
@@ -732,7 +732,7 @@ auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<Be
     });
     scenarios.push_back(BenchmarkScenario{
             .info = {.name = "gi_emitters", .load_axis = "bulbs", .default_loads = {16, 128, 1024}},
-            .description = "A field of boxes lit only by small emissive cubes through the probe GI (run with --gi): "
+            .description = "A field of boxes lit only by small emissive cubes through the probe GI: "
                            "probe trace, blend and TLAS cost, and the explicit emitter list, per bulb.",
             .populate = populate_gi_emitters,
             .camera_path = gi_emitters_path,

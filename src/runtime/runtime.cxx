@@ -325,17 +325,9 @@ auto Runtime::on_startup() -> void {
             warn("Could not set up planet atmospheres: {}", describe(created.error()));
         }
 
-        if (ray_tracing_poc_enabled) {
+        if (gi_config.enabled) {
             if (!context.ray_query_supported) {
-                warn("--rt-poc needs VK_KHR_ray_query, which this device does not support");
-            } else if (auto const created = ray_tracing_poc.create(*renderer); !created) {
-                warn("Could not set up the ray tracing PoC: {}", describe(created.error()));
-            }
-        }
-
-        if (probe_volume_enabled) {
-            if (!context.ray_query_supported) {
-                warn("--gi needs VK_KHR_ray_query, which this device does not support");
+                info("Probe GI off: this device does not support VK_KHR_ray_query");
             } else if (auto const created = renderer->probe_volume().create(*renderer); !created) {
                 warn("Could not set up the probe volume: {}", describe(created.error()));
             } else {
@@ -349,7 +341,7 @@ auto Runtime::on_startup() -> void {
                 far.settings().cascade = 1;
                 far.settings().update_interval = 2;
                 far.settings().debug_view = 0;
-                if (!cvars::gi_far.get()) {
+                if (!gi_config.far_cascade) {
                     // Left uncreated: the cascade is simply not there.
                 } else if (auto const far_created = far.create(*renderer); !far_created) {
                     warn("Could not set up the far probe cascade: {}", describe(far_created.error()));

@@ -58,6 +58,42 @@ TEST_SUITE("unit") {
         CHECK(loaded->game == "lua");
     }
 
+    TEST_CASE("GameManifest: the [gi] table round-trips, and defaults leave it out") {
+        TempDir dir;
+        GameManifest plain{.name = "demo", .game = "lua"};
+        CHECK(plain.to_text().find("[gi]") == std::string::npos);
+
+        GameManifest tuned = plain;
+        tuned.gi = GiSettings{.enabled = false, .rays_per_probe = 192, .probe_spacing = 0.5F, .intensity = 1.5F,
+                              .emitter_intensity = 80.0F, .far_cascade = false, .synthesize_lights = "on"};
+        write(dir.path / "game.toml", tuned.to_text());
+        auto const loaded = GameManifest::load(dir.path / "game.toml");
+
+        REQUIRE(loaded.has_value());
+        CHECK(loaded->gi == tuned.gi);
+        CHECK(loaded->name == "demo");
+    }
+
+    TEST_CASE("GameManifest: a [gi] table takes partial keys and refuses bad ones") {
+        TempDir dir;
+        write(dir.path / "a.toml", "game = \"lua\"\n[gi]\nrays_per_probe = 128\nfar_cascade = false\n");
+        auto const partial = GameManifest::load(dir.path / "a.toml");
+        REQUIRE(partial.has_value());
+        CHECK(partial->gi.rays_per_probe == 128);
+        CHECK_FALSE(partial->gi.far_cascade);
+        CHECK(partial->gi.enabled);
+        CHECK(partial->gi.probe_spacing == doctest::Approx(1.0F));
+
+        write(dir.path / "b.toml", "game = \"lua\"\n[gi]\nrays_per_probe = 9000\n");
+        CHECK_FALSE(GameManifest::load(dir.path / "b.toml").has_value());
+        write(dir.path / "c.toml", "game = \"lua\"\n[gi]\nsynthesize_lights = \"sometimes\"\n");
+        CHECK_FALSE(GameManifest::load(dir.path / "c.toml").has_value());
+        write(dir.path / "d.toml", "game = \"lua\"\n[gi]\nwarp = 9\n");
+        CHECK_FALSE(GameManifest::load(dir.path / "d.toml").has_value());
+        write(dir.path / "e.toml", "game = \"lua\"\n[render]\nx = 1\n");
+        CHECK_FALSE(GameManifest::load(dir.path / "e.toml").has_value());
+    }
+
     TEST_CASE("write_tar: emits ustar headers, content and padding") {
         TempDir dir;
         write(dir.path / "pkg" / "a.txt", "hello");

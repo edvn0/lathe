@@ -1413,29 +1413,13 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         info("--max-quality: MSAA up to 4x ({}x supported), fog, AO {}x{}, up to 64 shadowed local lights",
              static_cast<std::uint32_t>(renderer.max_samples()), ao.slice_count, ao.step_count);
     }
-    runtime.probe_volume_enabled = cvars::gi.get();
+    runtime.gi_config = launch ? launch->gi : GiSettings{};
     {
-        auto const names = ProbeVolume::debug_view_names;
-        auto const found = std::ranges::find(names, std::string_view{cvars::gi_view.get()});
-        if (found == names.end()) {
-            warn("--gi-view '{}' is not a view; using off", cvars::gi_view.get());
-        } else {
-            runtime.renderer->probe_volume().settings().debug_view = static_cast<std::uint32_t>(found - names.begin());
-        }
-        runtime.renderer->probe_volume().settings().spacing = cvars::gi_probe_spacing.get();
-        runtime.renderer->probe_volume().settings().rays_per_probe = cvars::gi_rays_per_probe.get();
-        runtime.renderer->probe_volume().settings().intensity = cvars::gi_intensity.get();
-        runtime.renderer->probe_volume().settings().emitter_intensity = cvars::gi_emitter_intensity.get();
-    }
-    runtime.ray_tracing_poc_enabled = cvars::rt_poc.get();
-    {
-        auto const names = RayTracingPoc::view_names;
-        auto const found = std::ranges::find(names, std::string_view{cvars::rt_poc_view.get()});
-        if (found == names.end()) {
-            warn("--rt-poc-view '{}' is not a view; using beauty", cvars::rt_poc_view.get());
-        } else {
-            runtime.ray_tracing_poc.set_view(static_cast<std::uint32_t>(found - names.begin()));
-        }
+        auto &gi = runtime.renderer->probe_volume().settings();
+        gi.spacing = runtime.gi_config.probe_spacing;
+        gi.rays_per_probe = runtime.gi_config.rays_per_probe;
+        gi.intensity = runtime.gi_config.intensity;
+        gi.emitter_intensity = runtime.gi_config.emitter_intensity;
     }
     runtime.renderer->set_frame_graph_dot(cvars::frame_graph_dot.get());
 

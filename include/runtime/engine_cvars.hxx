@@ -74,16 +74,6 @@ namespace cvars {
     extern CVar<bool> frame_graph_dump;
     extern CVar<bool> validation;
     extern CVar<std::string> frame_graph_dot;
-    extern CVar<bool> rt_poc;
-    extern CVar<bool> gi;
-    extern CVar<std::string> gi_view;
-    extern CVar<float> gi_probe_spacing;
-    extern CVar<std::uint32_t> gi_rays_per_probe;
-    extern CVar<float> gi_intensity;
-    extern CVar<float> gi_emitter_intensity;
-    extern CVar<std::string> gi_synth_lights;
-    extern CVar<bool> gi_far;
-    extern CVar<std::string> rt_poc_view;
 
     // Game and scene.
     extern CVar<std::string> script;

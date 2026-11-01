@@ -222,7 +222,7 @@ up to 512 per frame.
 
 ## Probe GI, phase 6: pass costs
 
-Conditions: RTX 4070 Ti SUPER, Release, `--gi --benchmark-suite --benchmark-scenarios gi_emitters --benchmark-repeats 1`
+Conditions: RTX 4070 Ti SUPER, Release, `--benchmark-suite --benchmark-scenarios gi_emitters --benchmark-repeats 1`
 (1920x1080, 300 frames, powersave governor), two cascades of 32x8x32 probes, 64 rays per probe.
 
 | bulbs | GPU frame (ms) | trace | classify | blend | border |

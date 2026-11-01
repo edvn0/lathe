@@ -430,7 +430,7 @@ namespace stages {
         auto draw_probe_gi(Context &context) -> void {
             auto &volume = context.renderer.probe_volume();
             if (!volume.ready()) {
-                ImGui::TextWrapped("The probe volume is off. Start with --gi (needs VK_KHR_ray_query).");
+                ImGui::TextWrapped("The probe volume is off: the device lacks VK_KHR_ray_query, or Project Settings turn it off.");
                 return;
             }
             auto &settings = volume.settings();

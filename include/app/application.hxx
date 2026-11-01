@@ -271,6 +271,7 @@ struct Application : Runtime {
         std::array<char, 128> game{};
         std::array<char, 256> entry{};
         std::array<char, 256> scene{};
+        GiSettings gi;
         std::string status;
     } project_form;
     std::filesystem::path package_form_project;
