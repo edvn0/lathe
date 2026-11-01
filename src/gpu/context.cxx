@@ -1,6 +1,7 @@
 #include "gpu/context.hxx"
 
 #include "gpu/device_checkpoints.hxx"
+#include "gpu/gpu_crash_dumps.hxx"
 
 #include <limits>
 
@@ -121,5 +122,6 @@ auto VulkanContext::one_time_submit(std::function<void(VkCommandBuffer)> &&func)
 auto VulkanContext::mark_device_lost() -> void {
     if (!device_lost.exchange(true, std::memory_order_acq_rel)) {
         device_checkpoints::report(*this);
+        gpu_crash_dumps::collect();
     }
 }

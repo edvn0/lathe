@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "gpu/context.hxx"
+#include "gpu/gpu_crash_dumps.hxx"
 #include "gpu/shader_binary_cache.hxx"
 #include "gpu/vk_object_name.hxx"
 
@@ -140,7 +141,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
 
         // The stages of a linked set must all be created from the same kind of code, so cached binaries are used only
         // when every stage has one.
-        auto all_cached = !force_spirv && binary_cache != nullptr;
+        auto all_cached = !force_spirv && binary_cache != nullptr && !gpu_crash_dumps::prefers_spirv();
 
         for (std::size_t index = 0; index < create_info.shaders.size(); ++index) {
             auto const &shader = create_info.shaders[index];
@@ -157,6 +158,7 @@ auto ShaderObjectSet::create_linked(VulkanContext &context, ShaderObjectCreateIn
         for (std::size_t index = 0; index < create_info.shaders.size(); ++index) {
             auto const &shader = create_info.shaders[index];
             auto const is_last = index + 1 == create_info.shaders.size();
+            gpu_crash_dumps::register_shader(shader.spirv.data(), shader.spirv.size_bytes(), create_info.debug_name);
 
             if (!all_cached) {
                 binary_storage[index].reset();
@@ -294,11 +296,13 @@ auto ShaderObjectSet::create_compute(VulkanContext &context, ComputeShaderCreate
     std::optional<std::vector<std::byte>> binary_storage;
 
     auto const build_create_info = [&](bool force_spirv) {
-        if (!force_spirv && binary_cache != nullptr && !shader.cache_key.empty()) {
+        if (!force_spirv && binary_cache != nullptr && !shader.cache_key.empty() && !gpu_crash_dumps::prefers_spirv()) {
             binary_storage = binary_cache->find(shader.cache_key, shader.spirv);
         } else {
             binary_storage.reset();
         }
+
+        gpu_crash_dumps::register_shader(shader.spirv.data(), shader.spirv.size_bytes(), create_info.debug_name);
 
         auto const use_binary = binary_storage.has_value();
 

@@ -37,7 +37,8 @@ auto Application::project_form_dirty() const -> bool {
 
     return text_of(form.name) != manifest.name || text_of(form.title) != manifest.title ||
            text_of(form.version) != manifest.version || text_of(form.game) != manifest.game ||
-           text_of(form.entry) != manifest.entry || text_of(form.scene) != manifest.scene || form.gi != manifest.gi;
+           text_of(form.entry) != manifest.entry || text_of(form.scene) != manifest.scene || form.gi != manifest.gi ||
+           form.diagnostics != manifest.diagnostics;
 }
 
 auto Application::save_project_form() -> bool {
@@ -56,6 +57,7 @@ auto Application::save_project_form() -> bool {
     updated.manifest.entry = text_of(form.entry);
     updated.manifest.scene = text_of(form.scene);
     updated.manifest.gi = form.gi;
+    updated.manifest.diagnostics = form.diagnostics;
 
     auto const saved = updated.save();
 
@@ -105,6 +107,7 @@ auto Application::draw_project_settings_page() -> void {
         fill_buffer(form.entry, manifest.entry);
         fill_buffer(form.scene, manifest.scene);
         form.gi = manifest.gi;
+        form.diagnostics = manifest.diagnostics;
     }
 
     ImGui::TextDisabled("%s", gui::path_to_utf8(project->root / ProjectFile::file_name).c_str());
@@ -177,6 +180,22 @@ auto Application::draw_project_settings_page() -> void {
         ImGui::SetItemTooltip("The point lights a model gets from its emissive meshes when it loads. auto: none while the "
                               "probes light them themselves.");
         ImGui::EndDisabled();
+    }
+
+    if (ImGui::CollapsingHeader("Diagnostics")) {
+        constexpr std::array<char const *, 4> choices{"auto", "standard", "full", "off"};
+        auto current = 0;
+        for (auto i = 0; i < 4; ++i) {
+            if (form.diagnostics.gpu_crash_dumps == choices[static_cast<std::size_t>(i)]) {
+                current = i;
+            }
+        }
+        if (ImGui::Combo("GPU crash dumps", &current, "auto\0standard\0full\0off\0")) {
+            form.diagnostics.gpu_crash_dumps = choices[static_cast<std::size_t>(current)];
+        }
+        ImGui::SetItemTooltip("When the GPU faults, the driver writes a crash dump (Nsight Aftermath, docs/gpu-crash-dumps.md). "
+                              "auto: the cheap collection, and everything after a device-lost restart. Applies the next time "
+                              "the project opens.");
     }
 
     ImGui::Spacing();

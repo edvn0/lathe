@@ -90,6 +90,7 @@
 #include "scene/components.hxx"
 #include "scene/selection_context.hxx"
 #include "scene/editor_camera.hxx"
+#include "gpu/gpu_crash_dumps.hxx"
 #include "runtime/vulkan_bootstrap.hxx"
 
 namespace {
@@ -1289,6 +1290,19 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     context.sync_validation = true;
 
     context.undecorated_window = profile.custom_title_bar() && screen_type == ScreenType::windowed;
+
+    {
+        // GPU crash dumps are collected from before the device exists; after a device-lost restart (LATHE_RELAUNCHED) the
+        // full diagnostics are on, so a crash that comes back leaves everything the driver can say about it.
+        auto const text = launch ? launch->diagnostics.gpu_crash_dumps : std::string{"auto"};
+        auto const mode = gpu_crash_dumps::mode_from(text, std::getenv("LATHE_RELAUNCHED") != nullptr);
+        gpu_crash_dumps::start({
+                .mode = mode.value_or(gpu_crash_dumps::Mode::standard),
+                .directory = Paths::user_state_directory() / "gpu_crashes",
+                .application = launch && !launch->name.empty() ? launch->name : std::string{"lathe"},
+                .version = launch ? launch->version : std::string{},
+        });
+    }
 
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");

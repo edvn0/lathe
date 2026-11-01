@@ -81,6 +81,23 @@ namespace {
         error = std::format("unknown key '{}' in [gi]", key);
         return false;
     }
+
+    auto set_diagnostics(DiagnosticsSettings &diagnostics, std::string_view key, std::string_view value,
+                         std::string &error) -> bool {
+        auto const bare = value.size() >= 2 && value.front() == '"' && value.back() == '"'
+                                  ? value.substr(1, value.size() - 2)
+                                  : value;
+        if (key == "gpu_crash_dumps") {
+            if (bare != "auto" && bare != "standard" && bare != "full" && bare != "off") {
+                error = "'gpu_crash_dumps' must be \"auto\", \"standard\", \"full\" or \"off\"";
+                return false;
+            }
+            diagnostics.gpu_crash_dumps = std::string{bare};
+            return true;
+        }
+        error = std::format("unknown key '{}' in [diagnostics]", key);
+        return false;
+    }
 }
 
 auto GameManifest::load(std::filesystem::path const &path, bool require_game) -> std::expected<GameManifest, std::string> {
@@ -93,7 +110,7 @@ auto GameManifest::load(std::filesystem::path const &path, bool require_game) ->
     GameManifest manifest;
     std::string line;
     std::size_t number = 0;
-    auto in_gi = false;
+    auto section = std::string_view{};
 
     while (std::getline(in, line)) {
         ++number;
@@ -105,10 +122,11 @@ auto GameManifest::load(std::filesystem::path const &path, bool require_game) ->
         }
 
         if (text.front() == '[') {
-            if (text != "[gi]") {
-                return std::unexpected{std::format("{}:{}: unknown table '{}' (only [gi])", path.string(), number, text)};
+            if (text != "[gi]" && text != "[diagnostics]") {
+                return std::unexpected{std::format("{}:{}: unknown table '{}' (only [gi] and [diagnostics])", path.string(),
+                                                   number, text)};
             }
-            in_gi = true;
+            section = text == "[gi]" ? "gi" : "diagnostics";
             continue;
         }
 
@@ -121,9 +139,10 @@ auto GameManifest::load(std::filesystem::path const &path, bool require_game) ->
         auto const key = trim(text.substr(0, equals));
         auto value = trim(text.substr(equals + 1));
 
-        if (in_gi) {
+        if (!section.empty()) {
             auto message = std::string{};
-            if (!set_gi(manifest.gi, key, value, message)) {
+            if (!(section == "gi" ? set_gi(manifest.gi, key, value, message)
+                                  : set_diagnostics(manifest.diagnostics, key, value, message))) {
                 return std::unexpected{std::format("{}:{}: {}", path.string(), number, message)};
             }
             continue;
@@ -174,6 +193,10 @@ auto GameManifest::to_text() const -> std::string {
                             "emitter_intensity = {}\nfar_cascade = {}\nsynthesize_lights = \"{}\"\n",
                             gi.enabled, gi.rays_per_probe, gi.probe_spacing, gi.intensity, gi.emitter_intensity,
                             gi.far_cascade, gi.synthesize_lights);
+    }
+
+    if (diagnostics != DiagnosticsSettings{}) {
+        text += std::format("\n[diagnostics]\ngpu_crash_dumps = \"{}\"\n", diagnostics.gpu_crash_dumps);
     }
 
     return text;

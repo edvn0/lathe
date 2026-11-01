@@ -86,6 +86,18 @@ namespace device_checkpoints {
         }
     }
 
+    auto resolve(void const *marker) -> std::optional<std::string_view> {
+        std::scoped_lock const lock{names_mutex};
+
+        for (auto const &name: names) {
+            if (static_cast<void const *>(name.c_str()) == marker) {
+                return std::string_view{name};
+            }
+        }
+
+        return std::nullopt;
+    }
+
     auto report(VulkanContext const &context) -> void {
         if (!enabled()) {
             info("Checkpoints are unavailable (VK_NV_device_diagnostic_checkpoints is not enabled)");

@@ -94,6 +94,26 @@ TEST_SUITE("unit") {
         CHECK_FALSE(GameManifest::load(dir.path / "e.toml").has_value());
     }
 
+    TEST_CASE("GameManifest: the [diagnostics] table round-trips and refuses unknown values") {
+        TempDir dir;
+        GameManifest plain{.name = "demo", .game = "lua"};
+        CHECK(plain.to_text().find("[diagnostics]") == std::string::npos);
+
+        GameManifest tuned = plain;
+        tuned.diagnostics.gpu_crash_dumps = "full";
+        tuned.gi.far_cascade = false;
+        write(dir.path / "game.toml", tuned.to_text());
+        auto const loaded = GameManifest::load(dir.path / "game.toml");
+        REQUIRE(loaded.has_value());
+        CHECK(loaded->diagnostics.gpu_crash_dumps == "full");
+        CHECK_FALSE(loaded->gi.far_cascade);
+
+        write(dir.path / "bad.toml", "game = \"lua\"\n[diagnostics]\ngpu_crash_dumps = \"loud\"\n");
+        CHECK_FALSE(GameManifest::load(dir.path / "bad.toml").has_value());
+        write(dir.path / "key.toml", "game = \"lua\"\n[diagnostics]\nverbosity = 3\n");
+        CHECK_FALSE(GameManifest::load(dir.path / "key.toml").has_value());
+    }
+
     TEST_CASE("write_tar: emits ustar headers, content and padding") {
         TempDir dir;
         write(dir.path / "pkg" / "a.txt", "hello");

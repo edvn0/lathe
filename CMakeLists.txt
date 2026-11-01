@@ -1016,6 +1016,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/engine_deps.cmake")
 
 # Defines configure_renderdoc() for src/gpu/CMakeLists.txt.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/renderdoc_config.cmake")
+# Defines configure_aftermath() for src/gpu/CMakeLists.txt.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/aftermath_config.cmake")
 
 # ------------------------------------------------------------------------------
 # Module libraries, in dependency order:

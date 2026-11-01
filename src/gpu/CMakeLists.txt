@@ -8,6 +8,7 @@ add_library(
         buffer.cxx
         context.cxx
         device_checkpoints.cxx
+        gpu_crash_dumps.cxx
         gpu_error_describe.cxx
         gpu_resource_table.cxx
         host_query_context.cxx
@@ -76,6 +77,15 @@ endif()
 # ------------------------------------------------------------------------------
 # RenderDoc: attaches renderdoc.cxx or stub.cxx.
 # ------------------------------------------------------------------------------
+
+# GPU crash dumps (Nsight Aftermath SDK): attaches aftermath.cxx or stub.cxx.
+configure_aftermath(
+    engine_gpu
+    REAL_SOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/aftermath/aftermath.cxx"
+    STUB_SOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/aftermath/stub.cxx"
+)
 
 configure_renderdoc(
     engine_gpu

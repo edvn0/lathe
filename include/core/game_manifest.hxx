@@ -27,6 +27,15 @@ struct GiSettings {
     auto operator==(GiSettings const &) const -> bool = default;
 };
 
+// The `[diagnostics]` table.
+struct DiagnosticsSettings {
+    // GPU crash dumps through the Nsight Aftermath SDK (docs/gpu-crash-dumps.md), where the build has it: "auto" (the cheap
+    // collection, and everything after a device-lost restart), "standard", "full" or "off".
+    std::string gpu_crash_dumps = "auto";
+
+    auto operator==(DiagnosticsSettings const &) const -> bool = default;
+};
+
 struct GameManifest {
     std::string name;
     std::string title;
@@ -36,6 +45,7 @@ struct GameManifest {
     // A cooked scene (.lbf) relative to the data directory, opened before play starts; empty to use the game's own.
     std::string scene;
     GiSettings gi;
+    DiagnosticsSettings diagnostics;
 
     [[nodiscard]] static auto load(std::filesystem::path const &path, bool require_game = true) -> std::expected<GameManifest, std::string>;
 
