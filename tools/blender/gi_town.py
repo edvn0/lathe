@@ -356,7 +356,7 @@ def tower(x, y, w, d, height, z):
                 mat = "lit_window" if random.random() < lit_p else "dark_window"
                 s0, s1, z0, z1 = c - 0.8, c + 0.8, zz, zz + 1.6
                 # A shallow box, not a quad a few centimetres off the wall: that z-fights at a distance.
-                dep = 0.12
+                dep = 0.25
                 if side == 0:
                     box((x + s0, y - dep, z0), (x + s1, y, z1), mat)
                 elif side == 1:

@@ -48,6 +48,8 @@ local function find_spawn()
 end
 
 function M.on_populate()
+    -- Without this the default scene stays: its ground plane (with the debug grid) at y = 0 fights the terrain.
+    scene.clear()
     scene.set_environment(LIGHTING[2])
     town = scene.spawn("town")
     town_model = assets.load_model(MODEL, { collider = true, double_sided = true })
@@ -75,12 +77,18 @@ function M.on_update(dt)
         return
     end
 
-    local mx, my = mouse.delta()
-    yaw = yaw + mx * 0.0025
-    pitch = math.max(-1.45, math.min(1.45, pitch - my * 0.0025))
-    local forward = (key.down(key.W) and 1 or 0) - (key.down(key.S) and 1 or 0)
-    local strafe = (key.down(key.D) and 1 or 0) - (key.down(key.A) and 1 or 0)
-    local run = key.down(key.LEFT_SHIFT)
+    local forward, strafe, run
+    if M.drive then
+        -- Tests and demos drive the player through this instead of the keyboard.
+        forward, strafe, run, _, yaw = M.drive(dt, player)
+    else
+        local mx, my = mouse.delta()
+        yaw = yaw + mx * 0.0025
+        pitch = math.max(-1.45, math.min(1.45, pitch - my * 0.0025))
+        forward = (key.down(key.W) and 1 or 0) - (key.down(key.S) and 1 or 0)
+        strafe = (key.down(key.D) and 1 or 0) - (key.down(key.A) and 1 or 0)
+        run = key.down(key.LEFT_SHIFT)
+    end
 
     if flying then
         local cp = math.cos(pitch)
@@ -94,7 +102,7 @@ function M.on_update(dt)
             eye[3] + (fz * forward + rz * strafe) * speed,
         }
     else
-        local jump = key.down(key.SPACE)
+        local jump = not M.drive and key.down(key.SPACE)
         local length = math.sqrt(forward * forward + strafe * strafe)
         local speed = run and RUN or WALK
         local vx, vz = 0.0, 0.0
@@ -136,10 +144,29 @@ function M.on_key(code)
 end
 
 function M.camera(_aspect)
-    return { eye = eye, target = look, fov = 70, near = 0.05, far = 2000 }
+    if M.pose then
+        -- Tests and demos place the camera through this instead of the player.
+        local pose = M.pose()
+        return { eye = pose.eye, target = pose.look, fov = pose.fov or 70, near = 0.2, far = 1200 }
+    end
+    -- The depth buffer is not reversed: a near plane of 5 cm leaves under 10 cm of depth resolution at 80 m, which
+    -- makes anything thin (windows on a wall) fight with what is behind it. 0.2 m keeps it under 2 cm there.
+    return { eye = eye, target = look, fov = 70, near = 0.2, far = 1200 }
 end
 
 function M.on_ui()
+    if spawned and not M.pose then
+        -- What the script sees, so a window that gets no input is easy to tell from a character that cannot move.
+        ui.window("##town_hud", { x = 16, y = 16, no_inputs = true, bg_alpha = 0.6 }, function()
+            ui.text_disabled("WASD move, Shift run, Space jump, F fly (Q/E down/up), 1/2/3 noon/dusk/night, Esc quit")
+            ui.text(string.format("pos %.1f %.1f %.1f%s", eye[1], eye[2] - EYE_HEIGHT, eye[3], flying and "  (flying)" or ""))
+            local held = ""
+            for _, name in ipairs({ "W", "A", "S", "D" }) do
+                held = held .. (key.down(key[name]) and name or "-")
+            end
+            ui.text("keys " .. held)
+        end)
+    end
     if not spawned then
         ui.window("loading", { centred = true }, function()
             ui.text("Loading the town" .. string.rep(".", math.floor(clock * 2) % 4), 1.5)
