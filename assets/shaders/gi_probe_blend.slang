@@ -95,6 +95,10 @@ uint2 tile_origin(uint slot, uint tile)
 void irradiance_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID, uint index : SV_GroupIndex)
 {
     uint slot = group.x;
+    if (pc.probe_state[slot * gi_state_stride + 4].y < 0.5)
+    {
+        return; // asleep this frame: no new rays
+    }
     stage_rays(slot, index, 64);
 
     float3 direction = gi_oct_decode((float2(local.xy) + 0.5) / float(gi_irradiance_interior) * 2.0 - 1.0);
@@ -120,6 +124,10 @@ void irradiance_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID, uin
 void distance_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID, uint index : SV_GroupIndex)
 {
     uint slot = group.x;
+    if (pc.probe_state[slot * gi_state_stride + 4].y < 0.5)
+    {
+        return;
+    }
     stage_rays(slot, index, 256);
 
     float3 direction = gi_oct_decode((float2(local.xy) + 0.5) / float(gi_distance_interior) * 2.0 - 1.0);

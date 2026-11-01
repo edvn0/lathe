@@ -1347,9 +1347,14 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
     // Ray traced sun shadows: a mask of the sun's visibility at every pixel's surface point, from the depth buffer and the
     // scene TLAS; the forward pass reads it where it used to look the point up in the cascades (docs/ray-traced-shadows.md).
     auto rt_shadow_image = frame_graph::ImageId{};
+    // Local lights with a shadow tile are traced too (the first three per pixel, in the cluster list's order).
+    auto const rt_local_lights_active = !secondary && ray_traced_shadows_.ready() &&
+                                        ray_traced_shadows_.settings().enabled &&
+                                        ray_traced_shadows_.settings().local_lights && frame.lights_have_shadow_tiles &&
+                                        frame.light_count != 0 && (!clustered || cluster_lights.valid());
     auto const rt_shadows_active = !secondary && ray_traced_shadows_.ready() && ray_traced_shadows_.settings().enabled &&
                                    scene_tlas.valid() && scene_rt_.instance_table_address() != 0 &&
-                                   light_.intensity > 0.0F;
+                                   (light_.intensity > 0.0F || rt_local_lights_active);
     if (rt_shadows_active) {
         frame_graph_.add_pass(
                 "rt_shadows", frame_graph::PassType::compute,
@@ -1363,6 +1368,10 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                             pass.read(scene_tlas, frame_graph::Use::acceleration_structure_read, compute_stage);
                     [[maybe_unused]] auto const depth =
                             pass.read(resolved_depth_image, frame_graph::Use::sampled, compute_stage);
+                    if (rt_local_lights_active && clustered) {
+                        [[maybe_unused]] auto const clusters =
+                                pass.read(cluster_lights, frame_graph::Use::shader_read, compute_stage);
+                    }
                     rt_shadow_image = pass.create(ao_description("rt_shadow_mask"));
                     rt_shadow_image = pass.write(rt_shadow_image, frame_graph::Use::storage_write, compute_stage,
                                                  frame_graph::ExitUse{frame_graph::Use::sampled});
@@ -1378,7 +1387,14 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                                  .mask_storage = transient_index(rt_shadow_image),
                                  .width = targets->extent.width,
                                  .height = targets->extent.height,
-                                 .sun = glm::normalize(light_.direction)});
+                                 .sun = glm::normalize(light_.direction),
+                                 .trace_sun = light_.intensity > 0.0F,
+                                 .trace_local = rt_local_lights_active,
+                                 .ubo = ubos_[info.frame_index].device_address,
+                                 .lights = frame.lights_buffer.device_address,
+                                 .cluster_lights = clustered ? frame.cluster_lights_buffer.device_address + cluster_stats_bytes
+                                                             : VkDeviceAddress{0},
+                                 .light_count = frame.light_count});
                     }};
                 });
     }
@@ -1513,7 +1529,8 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                                              : 0xFFFFFFFFU;
         auto const hdr = record_forward_pass(pass_context, frame, *targets, state.handoff.ao_texture_index,
                                              transient_index(output), render_pass::Callback::bind(scene_overlays),
-                                             phase, scene_copies.first, scene_copies.second, rt_shadow_index);
+                                             phase, scene_copies.first, scene_copies.second, rt_shadow_index,
+                                             rt_local_lights_active && phase != render_pass::ForwardPhase::blend);
         if (hdr) {
             state.handoff.hdr = *hdr;
         } else {
@@ -1922,12 +1939,15 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
         error("Could not compile the frame graph: {}", compiled.error());
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
+    auto const plan_switched = frame_plan_ != *compiled;
     frame_plan_ = *compiled;
 
     auto const plan_changed = plan_cache_->misses() != logged_plan_misses_;
     if (plan_changed) {
         perf_events::record(PerfEvent::frame_graph_compile);
         logged_plan_misses_ = plan_cache_->misses();
+    }
+    if (plan_changed || plan_switched) {
         if (!secondary) {
             frame_graph_view_ = frame_graph::FrameGraphView{
                     .graph = frame_graph_.description(),
@@ -1935,6 +1955,8 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                     .revision = frame_graph_view_.revision + 1,
             };
         }
+    }
+    if (plan_changed) {
         for (auto const &finding: frame_graph::lint(frame_graph_.description(), *frame_plan_)) {
             ::warn("Frame graph lint: {}", finding);
         }

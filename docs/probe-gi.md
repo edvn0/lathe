@@ -494,11 +494,13 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
 
 ### Phase 6 (what is left)
 
-- **Probe sleeping / update budgeting** was not built: with trace plus blend at about 0.4 ms on the Bistro-sized scenes the
-  budget is met without it. It is the next step if the trace pass grows (many emitters, 256 rays): classify would flag a
-  probe whose neighbourhood did not change and the trace would skip it (indirect dispatch).
-- The far cascade is not measured on its own (the benchmark reports the median over frames, and it runs every other one).
-- Not run: `test/gpu/device_lost_recovery.sh` with GI on; the Bistro under Debug (streaming never finishes there).
+- **Probe sleeping** (`Settings::sleep_after`, `sleep_refresh`): a probe whose lighting stayed quiet for `sleep_after` (24)
+  traced frames is skipped by trace, classify and blend except one frame in `sleep_refresh` (8, staggered by slot); a
+  refresh that sees a change wakes it. Per probe state `[4]` (stride 5) holds the quiet count and a traced-this-frame flag.
+  The trace dispatch is not indirect: sleeping workgroups exit at once. A change near a sleeping probe shows up at most
+  `sleep_refresh` frames late.
+- The benchmark summarises a stage that skips frames (the far cascade) over the frames it ran in.
+- `test/gpu/device_lost_recovery.sh` passes with GI on. Not run: the Bistro under Debug (streaming never finishes there).
 - Known gaps from earlier phases: the volume is only 8 m tall, an emitter's colour is its material's average, one shadow
   ray is shared by all local lights, merging a character's submeshes would cut the skinned BLAS cost.
 - **Loader fix found with the town**: a glTF material with an emissive factor and no emissive texture rendered black,

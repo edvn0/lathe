@@ -12,13 +12,34 @@ import scene_types;
 //   [0] relocation offset xyz, w: 1 active, 0 off (inside geometry)
 //   [1] mean ray radiance rgb, w: the fraction of rays that hit a back face
 //   [2] the world index the slot currently holds (exact in a float), w: frames since the slot was (re)assigned
+//   [4] x: frames of unchanged lighting (probe sleeping, below), y: 1 if traced this frame
 //   [3] slow average of the mean ray radiance rgb, w: 1 while the probe's lighting just changed a lot (a moving light or
 //       sun, a door): the blend then lets the new rays in faster
 public static const uint gi_irradiance_interior = 8;
 public static const uint gi_irradiance_tile = 10;
 public static const uint gi_distance_interior = 16;
 public static const uint gi_distance_tile = 18;
-public static const uint gi_state_stride = 4;
+public static const uint gi_state_stride = 5;
+
+// Probe sleeping. state[4].x counts the traced frames a probe's lighting stayed the same; once it reaches the sleep
+// threshold the probe is skipped by the trace, classify and blend except on its refresh frame (one in `period`, staggered
+// by slot). state[4].y is 1 when the probe was traced this frame (written by classify, read by blend). `sleep_params`:
+// threshold in the low 16 bits (0: never sleep), refresh period in the high 16.
+public bool gi_probe_skipped(Ptr<float4> probe_state, uint slot, int3 world_index, uint frame, uint sleep_params)
+{
+    uint after = sleep_params & 0xFFFF;
+    if (after == 0)
+    {
+        return false;
+    }
+    // A slot just given to another probe has no data: it is traced.
+    if (any(int3(probe_state[slot * gi_state_stride + 2].xyz) != world_index))
+    {
+        return false;
+    }
+    uint period = max(sleep_params >> 16, 1u);
+    return probe_state[slot * gi_state_stride + 4].x >= float(after) && ((frame + slot) % period) != 0;
+}
 
 // Bits of GpuGiBlock::flags.
 public static const uint gi_flag_enabled = 1;

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <list>
 #include <optional>
 
 #include "rendering/frame_graph/compiled_graph.hxx"
@@ -34,13 +35,16 @@ namespace frame_graph {
                                    CompileOptions const &options = {})
                 -> std::expected<CompiledGraph const *, FrameGraphError>;
 
-        auto invalidate() -> void { plan_.reset(); }
+        auto invalidate() -> void { plans_.clear(); }
 
         [[nodiscard]] auto hits() const noexcept -> std::uint64_t { return hits_; }
         [[nodiscard]] auto misses() const noexcept -> std::uint64_t { return misses_; }
 
     private:
-        std::optional<CompiledGraph> plan_;
+        // Graphs that alternate between a few shapes (a pass that runs every other frame) each keep their plan. A list so
+        // a plan's address stays valid while others move; the most recently used is first.
+        static constexpr std::size_t max_plans = 8;
+        std::list<CompiledGraph> plans_;
         std::uint64_t hits_ = 0;
         std::uint64_t misses_ = 0;
     };

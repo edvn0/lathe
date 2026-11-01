@@ -202,10 +202,12 @@ auto BenchmarkRun::attach_gpu(FrameTimings const &timings, std::size_t row) -> v
         auto found = std::ranges::find_if(stages_, [&](StageSamples const &stage) { return stage.id == pass.name_id; });
         if (found == stages_.end()) {
             stages_.push_back(StageSamples{
-                    .id = pass.name_id, .name = pass.label, .samples_ms = std::vector<float>(samples_.size(), 0.0F)});
+                    .id = pass.name_id, .name = pass.label, .samples_ms = std::vector<float>(samples_.size(), 0.0F),
+                    .ran = std::vector<char>(samples_.size(), 0)});
             found = std::prev(stages_.end());
         }
         found->samples_ms[row] = pass.milliseconds.value_or(0.0F);
+        found->ran[row] = 1;
     }
 }
 
@@ -327,7 +329,7 @@ auto BenchmarkRun::stages() const -> std::vector<BenchmarkStage> {
     for (auto const &stage: stages_) {
         values.clear();
         for (std::size_t row = 0; row < samples_.size(); ++row) {
-            if (samples_[row].gpu_valid) {
+            if (samples_[row].gpu_valid && stage.ran[row] != 0) {
                 values.push_back(stage.samples_ms[row]);
             }
         }

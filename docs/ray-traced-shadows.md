@@ -32,10 +32,22 @@ cascades (`ray_traced_sun_shadow` in `forward_geom.slang`), averaging the pixel 
 - **What is not traced.** The blended pass keeps the cascades (its surfaces are not in the depth buffer the mask comes from),
   as does the editor's second viewport (the TLAS is built for the main view only). Skinned meshes are in the TLAS only near the
   camera and within the frame's vertex budget (`docs/probe-gi.md`); beyond that they neither cast nor receive.
-- **Cascades still render.** The shadow pass is still recorded for the blended pass and the fallback; skipping it when the
-  mask covers everything is a saving left on the table (about 0.15 to 0.2 ms in the town).
+- **Cascades are skipped** on frames where the mask covers every surface (no blended draws, primary view, TLAS ready): the
+  shadow pass is not recorded and the cascade cache is dropped, so the first frame that needs them redraws all four
+  (`cascades_unused` in `Renderer::prepare_frame`'s shadow section).
 
 ## Known limits
 
-The sun is the only light traced; local lights keep their shadow atlas. The normal comes from the depth buffer, so very thin or
+## Local lights
+
+The same pass also traces the lights that have a shadow tile (the shadow atlas still decides which lights cast). For each
+pixel it walks the cluster's light list (the whole list without clustered lighting) and traces one ray to each shadow
+casting light, writing the first three into the mask's G, B and A. The forward pass counts the shadow casting lights of
+its own list the same way and reads that slot; a fourth and later light, the blended pass and the second viewport keep
+the atlas. One ray per light per pixel gives hard edges. The frame graph panel's "Local lights" checkbox switches it
+(`Settings::local_lights`). The pass now runs when the sun is off but a shadowed light exists.
+
+## Known limits
+
+The sun and up to three local lights per pixel are traced. The normal comes from the depth buffer, so very thin or
 very distant geometry can show a little acne or leaking near its silhouette; the normal offset trades one for the other.

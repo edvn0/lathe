@@ -256,6 +256,9 @@ private:
         std::string id;
         std::string name;
         std::vector<float> samples_ms;
+        // Whether the pass ran in that frame; a pass that skips frames (the far probe cascade) is summarised over the
+        // frames it ran in, not diluted by zeros.
+        std::vector<char> ran;
     };
     std::vector<StageSamples> stages_;
 };

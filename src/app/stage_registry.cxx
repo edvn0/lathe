@@ -435,6 +435,9 @@ namespace stages {
                 return;
             }
             ImGui::Checkbox("Enabled##rt_shadows", &shadows.settings().enabled);
+            ImGui::Checkbox("Local lights##rt_shadows", &shadows.settings().local_lights);
+            ImGui::SetItemTooltip("Trace the shadow of the lights that cast one: the first three per pixel. The rest keep "
+                                  "the shadow atlas.");
             ImGui::SliderFloat("Sun angular radius", &shadows.settings().sun_spread, 0.0F, 0.03F, "%.4f rad");
             ImGui::SetItemTooltip("Half the angle of the cone of the sun's rays: the wider, the softer the shadow edges. The "
                                   "real sun is about 0.0047 across; 0 gives hard shadows.");

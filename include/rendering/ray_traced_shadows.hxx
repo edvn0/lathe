@@ -23,6 +23,8 @@ public:
         // Half the angle of the cone of the sun's rays, in radians. The sun is about 0.0047 across; the default is wider
         // than that, so the penumbra shows (0 gives hard shadows).
         float sun_spread = 0.006F;
+        // Also trace the shadow of the lights that have a shadow tile (the first three per pixel); the rest keep the atlas.
+        bool local_lights = true;
     };
 
     RayTracedShadows() = default;
@@ -49,6 +51,14 @@ public:
         std::uint32_t height = 0;
         // Towards the sun.
         glm::vec3 sun{0.0F, 1.0F, 0.0F};
+        bool trace_sun = true;
+        // Local lights: the UBO, the light array and the cluster light lists the forward pass reads (cluster_lights is 0
+        // without clustered lighting). Ignored when trace_local is false.
+        bool trace_local = false;
+        VkDeviceAddress ubo = 0;
+        VkDeviceAddress lights = 0;
+        VkDeviceAddress cluster_lights = 0;
+        std::uint32_t light_count = 0;
     };
 
     auto record(VkCommandBuffer command_buffer, std::uint32_t frame_index, Inputs const &inputs) -> void;

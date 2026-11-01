@@ -25,6 +25,7 @@
 #include <utility>
 
 #include "assets/shader_pack.hxx"
+#include "gpu/gpu_crash_dumps.hxx"
 #include "assets/slang_library.hxx"
 #include "core/logger.hxx"
 
@@ -425,9 +426,18 @@ namespace renderer {
         return SessionLease{*impl_, std::move(session)};
     }
 
+    namespace {
+        // A baked pack is used unless crash dumps want debug information and Slang can produce it.
+        auto use_shader_pack_for(bool slang_valid) noexcept -> bool {
+            return !(slang_valid && gpu_crash_dumps::prefers_spirv());
+        }
+    }
+
     auto SlangCompiler::compile(ShaderCompileRequest const &request) const
             -> std::expected<CompiledShader, ShaderCompileError> {
-        if (auto const pack = installed_shader_pack()) {
+        // With full GPU crash dumps the shaders carry source line tables, which a baked pack does not; compile from source
+        // where Slang is available.
+        if (auto const pack = use_shader_pack_for(valid()) ? installed_shader_pack() : nullptr) {
             if (auto precompiled = pack->find(shader_request_key(request))) {
                 return std::move(*precompiled);
             }
@@ -476,7 +486,7 @@ namespace renderer {
             return;
         }
 
-        auto const pack = installed_shader_pack();
+        auto const pack = use_shader_pack_for(valid()) ? installed_shader_pack() : nullptr;
         auto wanted = std::vector<ShaderCompileRequest>{};
         auto promises = std::vector<std::promise<Impl::Result>>{};
 
@@ -609,8 +619,12 @@ namespace renderer {
             search_paths.push_back(search_path.c_str());
         }
 
+        // Line tables for the Aftermath crash dump to map a faulting address back to a source line (docs/gpu-crash-dumps.md).
+        auto const debug_level = gpu_crash_dumps::prefers_spirv() ? SLANG_DEBUG_INFO_LEVEL_STANDARD
+                                                                   : SLANG_DEBUG_INFO_LEVEL_NONE;
         auto options = std::array{make_integer_option(slang::CompilerOptionName::EmitSpirvDirectly, 1),
-                                  make_integer_option(slang::CompilerOptionName::VulkanUseEntryPointName, 1)};
+                                  make_integer_option(slang::CompilerOptionName::VulkanUseEntryPointName, 1),
+                                  make_integer_option(slang::CompilerOptionName::DebugInformation, debug_level)};
 
         auto target_description = slang::TargetDesc{
                 .structureSize = sizeof(slang::TargetDesc),

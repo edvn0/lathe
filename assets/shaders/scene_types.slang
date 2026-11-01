@@ -349,8 +349,12 @@ public struct PC
     // Bindless index (sampled_2d, R8) of the ray traced sun shadow mask of this frame, or rt_shadow_none for the cascaded
     // shadow map (no ray tracing, a secondary view, the blended pass: its surfaces are not in the depth buffer).
     public uint rt_shadow_texture;
-    public uint rt_shadow_padding;
+    // 1 when the mask's G, B and A hold the visibility of the first three shadow casting lights of the pixel's light list
+    // (rt_shadows.slang), 0 when the lights keep the shadow atlas.
+    public uint rt_local_shadows;
 };
+
+public static const uint rt_local_shadow_slots = 3u;
 
 public static const uint rt_shadow_none = 0xFFFFFFFFu;
 

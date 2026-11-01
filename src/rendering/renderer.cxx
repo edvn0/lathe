@@ -4974,6 +4974,15 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
     auto const shadow_scene_changed =
             !shadow_scene_signature_valid_ || current_shadow_scene_signature != shadow_scene_signature_;
     auto const shadow_casters_changed = cached_shadow_caster_revision_ != shadow_caster_revision_;
+    // Where the traced sun mask covers every surface the frame shades (no blended draws, which the mask does not hold), the
+    // cascades are not read at all: skip the pass and drop the cache, so the first frame that needs them redraws all.
+    auto const cascades_unused = !secondary && frame.blend_indirect_count == 0 && ray_tracing_scene_enabled_ &&
+                                 scene_rt_.active() && scene_rt_.instance_table_address() != 0 &&
+                                 ray_traced_shadows_.ready() && ray_traced_shadows_.settings().enabled &&
+                                 light_.intensity > 0.0F;
+    if (cascades_unused) {
+        shadow_global_state_valid_ = false;
+    }
     auto const force_all_cascades = !shadow_settings_.cache_enabled || !shadow_atlas_initialized_ ||
                                     shadow_global_state_changed || shadow_scene_changed || shadow_casters_changed ||
                                     projection_shape_changed;
@@ -4995,7 +5004,8 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
                 !cached.valid || !nearly_equal(candidate_cascades.view_projection[cascade], cached.view_projection);
 
         auto const dynamic_due = (dynamic_casters_dirty || has_animated_shadow_casters) && period_due;
-        auto const update = force_all_cascades || cascade == 0U || (matrix_changed && period_due) || dynamic_due;
+        auto const update =
+                !cascades_unused && (force_all_cascades || cascade == 0U || (matrix_changed && period_due) || dynamic_due);
 
         if (update) {
             frame.shadow_update_mask |= bit;
@@ -7077,7 +7087,8 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                                    FrameTargets const &targets, std::uint32_t ao_texture_index,
                                    std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays,
                                    render_pass::ForwardPhase phase, std::uint32_t scene_colour_index,
-                                   std::uint32_t scene_depth_index, std::uint32_t rt_shadow_texture_index)
+                                   std::uint32_t scene_depth_index, std::uint32_t rt_shadow_texture_index,
+                                   bool rt_local_shadows)
         -> std::expected<render_pass::HdrTextureIndex, RendererError> {
     auto const frame_index = pass_context.frame_index;
 
@@ -7119,6 +7130,7 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .ao_texture_index = ao_texture_index,
                     .ao_sampler_index = sampler_storage_.linear_clamp().index,
                     .rt_shadow_texture_index = rt_shadow_texture_index,
+                    .rt_local_shadows = rt_local_shadows,
                     .outline_mask = true,
             },
             scene_overlays);

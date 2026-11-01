@@ -22,8 +22,13 @@ namespace {
         float sun[3];
         float sun_spread;
         std::uint32_t frame;
+        std::uint32_t light_count;
+        VkDeviceAddress ubo;
+        VkDeviceAddress lights;
+        VkDeviceAddress cluster_lights;
+        std::uint32_t flags;
     };
-    static_assert(sizeof(Push) <= 128);
+    static_assert(sizeof(Push) <= 256);
 
     constexpr auto group = 8U;
 
@@ -72,6 +77,11 @@ auto RayTracedShadows::record(VkCommandBuffer command_buffer, std::uint32_t fram
             .sun = {inputs.sun.x, inputs.sun.y, inputs.sun.z},
             .sun_spread = settings_.sun_spread,
             .frame = frame_++,
+            .light_count = inputs.light_count,
+            .ubo = inputs.ubo,
+            .lights = inputs.lights,
+            .cluster_lights = inputs.cluster_lights,
+            .flags = (inputs.trace_sun ? 1U : 0U) | (inputs.trace_local ? 2U : 0U),
     };
     vkCmdPushConstants(command_buffer, set->layout(), VK_SHADER_STAGE_ALL, 0, sizeof(push), &push);
     vkCmdDispatch(command_buffer, (inputs.width + group - 1U) / group, (inputs.height + group - 1U) / group, 1);

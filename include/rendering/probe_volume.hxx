@@ -52,6 +52,11 @@ public:
         std::uint32_t cascade = 0;
         // The passes run every this many frames; in between the volume is still sampled, and does not scroll.
         std::uint32_t update_interval = 1;
+        // A probe whose lighting stayed the same for this many traced frames sleeps: the trace, classify and blend skip it
+        // except one frame in sleep_refresh (staggered by slot), and a refresh that finds the lighting changed wakes it.
+        // 0 keeps every probe awake.
+        std::uint32_t sleep_after = 24;
+        std::uint32_t sleep_refresh = 8;
     };
 
     // Mirrors GpuGiBlock in scene_types.slang: the end of the UBO.

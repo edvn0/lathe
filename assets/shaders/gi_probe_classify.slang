@@ -18,6 +18,8 @@ struct Push
     uint rays_per_probe;
     float back_face_limit;
     float4 rotation;
+    uint frame;
+    uint sleep_params;
 };
 
 [vk::push_constant] Push pc;
@@ -30,6 +32,14 @@ void main_cs(uint3 id : SV_DispatchThreadID)
     int3 counts = int3(pc.count_x, pc.count_y, pc.count_z);
     if (slot >= uint(counts.x * counts.y * counts.z))
     {
+        return;
+    }
+
+    int3 world_index = gi_world_index(slot, int3(pc.base_x, pc.base_y, pc.base_z), counts);
+    if (gi_probe_skipped(pc.probe_state, slot, world_index, pc.frame, pc.sleep_params))
+    {
+        // Asleep: no new rays, nothing to classify or blend this frame.
+        pc.probe_state[slot * gi_state_stride + 4].y = 0.0;
         return;
     }
 
@@ -67,7 +77,6 @@ void main_cs(uint3 id : SV_DispatchThreadID)
     float4 index_state = pc.probe_state[slot * gi_state_stride + 2];
     float3 offset = offset_state.xyz;
 
-    int3 world_index = gi_world_index(slot, int3(pc.base_x, pc.base_y, pc.base_z), counts);
     float age = min(index_state.w + 1.0, 1000.0);
     if (any(int3(index_state.xyz) != world_index))
     {
@@ -107,6 +116,12 @@ void main_cs(uint3 id : SV_DispatchThreadID)
         bool changed = abs(now - before) / (max(now, before) + 0.02) > 0.35;
         history = float4(lerp(history.rgb, mean, changed ? 0.5 : 0.05), changed ? 1.0 : 0.0);
     }
+
+    // Quiet traced frames count toward sleep; a change, a new probe or an offset that is still moving wakes it.
+    float quiet = pc.probe_state[slot * gi_state_stride + 4].x;
+    bool moving = any(abs(offset - offset_state.xyz) > 1.0e-4);
+    quiet = (age < 8.0 || history.w > 0.5 || moving) ? 0.0 : min(quiet + 1.0, 65535.0);
+    pc.probe_state[slot * gi_state_stride + 4] = float4(quiet, 1.0, 0.0, 0.0);
 
     pc.probe_state[slot * gi_state_stride] = float4(offset, inside ? 0.0 : 1.0);
     pc.probe_state[slot * gi_state_stride + 1] = float4(mean, fraction);

@@ -856,22 +856,29 @@ namespace frame_graph {
 
     auto PlanCache::compile(FrameGraph const &graph, QueueTopology const &topology, CompileOptions const &options)
             -> std::expected<CompiledGraph const *, FrameGraphError> {
-        if (graph.declaration_errors().empty() && plan_) {
-            if (declaration_hash(graph.description(), topology, options) == plan_->hash) {
-                ++hits_;
-                return &*plan_;
+        if (graph.declaration_errors().empty() && !plans_.empty()) {
+            auto const hash = declaration_hash(graph.description(), topology, options);
+            for (auto it = plans_.begin(); it != plans_.end(); ++it) {
+                if (it->hash == hash) {
+                    plans_.splice(plans_.begin(), plans_, it);
+                    ++hits_;
+                    return &plans_.front();
+                }
             }
         }
 
         auto compiled = frame_graph::compile(graph, topology, options);
         if (!compiled) {
-            plan_.reset();
+            plans_.clear();
             return std::unexpected(std::move(compiled.error()));
         }
 
         ++misses_;
-        plan_ = std::move(*compiled);
-        return &*plan_;
+        plans_.push_front(std::move(*compiled));
+        if (plans_.size() > max_plans) {
+            plans_.pop_back();
+        }
+        return &plans_.front();
     }
 
 }

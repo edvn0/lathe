@@ -44,6 +44,9 @@ NVIDIA's guidelines ask that the heavy options are only on in an application-con
 device loss is that mode here, so a crash that comes back leaves everything the driver can say. `NV_AFTERMATH_FORCE_OFF=1` in
 the environment switches the library off whatever the setting says.
 
+In `full` mode Slang compiles with standard debug information (line tables) and skips the baked shader pack where Slang is
+available, so a dump maps to shader source lines.
+
 ## Building with it
 
 The SDK is not in the repository (NVIDIA's licence does not allow vendoring it). Download the Linux package from

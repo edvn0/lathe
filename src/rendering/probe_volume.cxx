@@ -18,7 +18,7 @@
 namespace {
     constexpr auto trace_slice = std::uint32_t{64};
     constexpr auto bytes_per_ray = VkDeviceSize{8};
-    constexpr auto bytes_per_probe_state = VkDeviceSize{64};
+    constexpr auto bytes_per_probe_state = VkDeviceSize{80};
     constexpr auto group = std::uint32_t{8};
 
     // Mirrors PushConstants in gi_probe_trace.slang.
@@ -39,8 +39,10 @@ namespace {
         std::uint32_t light_count = 0;
         std::uint32_t flags = 0;
         float emitter_intensity = 200.0F;
+        std::uint32_t frame = 0;
+        std::uint32_t sleep_params = 0;
     };
-    static_assert(sizeof(TracePush) == 120);
+    static_assert(sizeof(TracePush) == 128);
     static_assert(sizeof(TracePush) <= 128);
 
     // Mirrors Push in gi_probe_classify.slang.
@@ -53,6 +55,8 @@ namespace {
         std::uint32_t rays_per_probe = 64;
         float back_face_limit = 0.25F;
         float rotation[4]{};
+        std::uint32_t frame = 0;
+        std::uint32_t sleep_params = 0;
     };
 
     // Mirrors Push in gi_probe_blend.slang.
@@ -67,6 +71,11 @@ namespace {
         std::uint32_t tile = 10;
         float rotation[4]{};
     };
+
+    // sleep_after in the low half, the refresh period in the high half (gi_probe_skipped in gi_probes.slang).
+    auto pack_sleep(std::uint32_t after, std::uint32_t refresh) -> std::uint32_t {
+        return std::min(after, 0xFFFFU) | (std::clamp(refresh, 1U, 0xFFFFU) << 16U);
+    }
 
     auto hash(std::uint32_t value) -> std::uint32_t {
         value = value * 747796405U + 2891336453U;
@@ -391,6 +400,8 @@ auto ProbeVolume::record_trace(VkCommandBuffer command_buffer, std::uint32_t fra
             .light_count = inputs.lights != 0 ? inputs.light_count : 0,
             .flags = settings_.cascade,
             .emitter_intensity = settings_.emitter_intensity,
+            .frame = frame_,
+            .sleep_params = pack_sleep(settings_.sleep_after, settings_.sleep_refresh),
     };
     vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(push), &push);
     vkCmdDispatch(command_buffer, probe_count(), settings_.rays_per_probe / trace_slice, 1);
@@ -411,6 +422,8 @@ auto ProbeVolume::record_classify(VkCommandBuffer command_buffer, std::uint32_t 
             .rays_per_probe = settings_.rays_per_probe,
             .back_face_limit = settings_.back_face_limit,
             .rotation = {rotation_.x, rotation_.y, rotation_.z, rotation_.w},
+            .frame = frame_,
+            .sleep_params = pack_sleep(settings_.sleep_after, settings_.sleep_refresh),
     };
     vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(push), &push);
     vkCmdDispatch(command_buffer, (probe_count() + 63U) / 64U, 1, 1);

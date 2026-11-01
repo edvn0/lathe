@@ -74,6 +74,8 @@ struct PushConstants
     uint light_count;
     uint flags;
     float emitter_intensity;
+    uint frame;
+    uint sleep_params;
 };
 
 [vk::push_constant] PushConstants pc;
@@ -185,6 +187,10 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
     int3 world_index = gi_world_index(slot, base, icounts);
     // A slot that was just given to another probe still holds the previous probe's offset until it is classified.
     float4 stored_index = pc.probe_state[slot * gi_state_stride + 2];
+    if (gi_probe_skipped(pc.probe_state, slot, world_index, pc.frame, pc.sleep_params))
+    {
+        return;
+    }
     float3 offset = all(int3(stored_index.xyz) == world_index) ? pc.probe_state[slot * gi_state_stride].xyz : float3(0.0);
     float3 origin = float3(world_index) * pc.spacing + offset;
 
