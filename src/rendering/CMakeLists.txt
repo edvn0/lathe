@@ -43,7 +43,7 @@ add_library(
         pipeline_graph_repository.cxx
         probe_volume.cxx
         emitter_grid.cxx
-        ray_tracing_poc.cxx
+        ray_traced_shadows.cxx
         renderer.cxx
         renderer_frame_graph.cxx
         renderer_views.cxx

@@ -38,7 +38,7 @@ auto Application::project_form_dirty() const -> bool {
     return text_of(form.name) != manifest.name || text_of(form.title) != manifest.title ||
            text_of(form.version) != manifest.version || text_of(form.game) != manifest.game ||
            text_of(form.entry) != manifest.entry || text_of(form.scene) != manifest.scene || form.gi != manifest.gi ||
-           form.diagnostics != manifest.diagnostics;
+           form.diagnostics != manifest.diagnostics || form.render != manifest.render;
 }
 
 auto Application::save_project_form() -> bool {
@@ -58,6 +58,7 @@ auto Application::save_project_form() -> bool {
     updated.manifest.scene = text_of(form.scene);
     updated.manifest.gi = form.gi;
     updated.manifest.diagnostics = form.diagnostics;
+    updated.manifest.render = form.render;
 
     auto const saved = updated.save();
 
@@ -108,6 +109,7 @@ auto Application::draw_project_settings_page() -> void {
         fill_buffer(form.scene, manifest.scene);
         form.gi = manifest.gi;
         form.diagnostics = manifest.diagnostics;
+        form.render = manifest.render;
     }
 
     ImGui::TextDisabled("%s", gui::path_to_utf8(project->root / ProjectFile::file_name).c_str());
@@ -180,6 +182,13 @@ auto Application::draw_project_settings_page() -> void {
         ImGui::SetItemTooltip("The point lights a model gets from its emissive meshes when it loads. auto: none while the "
                               "probes light them themselves.");
         ImGui::EndDisabled();
+    }
+
+    if (ImGui::CollapsingHeader("Rendering")) {
+        ImGui::Checkbox("Ray traced sun shadows", &form.render.ray_traced_shadows);
+        ImGui::SetItemTooltip("The sun's shadow is traced against the scene instead of read from the cascaded shadow map "
+                              "(needs VK_KHR_ray_query; the editor's Ray traced shadows stage switches it while running). "
+                              "Applies the next time the project opens.");
     }
 
     if (ImGui::CollapsingHeader("Diagnostics")) {

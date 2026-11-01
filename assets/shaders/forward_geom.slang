@@ -292,6 +292,21 @@ DecalLayers gather_decals(PC pc, float3 world_position, float3 geometric_normal,
     return layers;
 }
 
+// The ray traced sun visibility (rt_shadows.slang) at a pixel: the pixel and its four neighbours, the centre counting
+// double, which turns the pass's one noisy ray per pixel into a soft edge. Neighbours are clamped to the screen.
+float ray_traced_sun_shadow(PC pc, float2 pixel)
+{
+    const var mask = sampled_2d[pc.rt_shadow_texture];
+    int2 size = int2(pc.screen_size);
+    int2 centre = clamp(int2(pixel), int2(0), size - 1);
+    float sum = mask.Load(int3(centre, 0)).r * 4.0;
+    sum += mask.Load(int3(clamp(centre + int2(1, 0), int2(0), size - 1), 0)).r;
+    sum += mask.Load(int3(clamp(centre - int2(1, 0), int2(0), size - 1), 0)).r;
+    sum += mask.Load(int3(clamp(centre + int2(0, 1), int2(0), size - 1), 0)).r;
+    sum += mask.Load(int3(clamp(centre - int2(0, 1), int2(0), size - 1), 0)).r;
+    return sum * 0.125;
+}
+
 float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float reference)
 {
     const var atlas = sampled_2d_depth[NonUniformResourceIndex(ubo.shadow_atlas_texture)];
@@ -460,7 +475,10 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
 
     float shadow = 1.0;
 
-    if (ndotl > 0.0 && cascade < ubo.cascade_count) {
+    if (pc.rt_shadow_texture != rt_shadow_none) {
+        // Ray traced: the surface faces away from the sun where ndotl is 0, which the BRDF already handles.
+        shadow = ray_traced_sun_shadow(pc, input.position.xy);
+    } else if (ndotl > 0.0 && cascade < ubo.cascade_count) {
         float texel = ubo.cascade_texel_world[cascade];
         float3 biased = input.world_position + normal * (texel * ubo.shadow_normal_offset_texels * 1.41421356);
 

@@ -82,6 +82,22 @@ namespace {
         return false;
     }
 
+    auto set_render(RenderSettings &render, std::string_view key, std::string_view value, std::string &error) -> bool {
+        auto const bare = value.size() >= 2 && value.front() == '"' && value.back() == '"'
+                                  ? value.substr(1, value.size() - 2)
+                                  : value;
+        if (key == "ray_traced_shadows") {
+            if (bare != "true" && bare != "false") {
+                error = "'ray_traced_shadows' must be true or false";
+                return false;
+            }
+            render.ray_traced_shadows = bare == "true";
+            return true;
+        }
+        error = std::format("unknown key '{}' in [render]", key);
+        return false;
+    }
+
     auto set_diagnostics(DiagnosticsSettings &diagnostics, std::string_view key, std::string_view value,
                          std::string &error) -> bool {
         auto const bare = value.size() >= 2 && value.front() == '"' && value.back() == '"'
@@ -122,11 +138,11 @@ auto GameManifest::load(std::filesystem::path const &path, bool require_game) ->
         }
 
         if (text.front() == '[') {
-            if (text != "[gi]" && text != "[diagnostics]") {
-                return std::unexpected{std::format("{}:{}: unknown table '{}' (only [gi] and [diagnostics])", path.string(),
-                                                   number, text)};
+            if (text != "[gi]" && text != "[diagnostics]" && text != "[render]") {
+                return std::unexpected{std::format("{}:{}: unknown table '{}' (only [gi], [diagnostics] and [render])",
+                                                   path.string(), number, text)};
             }
-            section = text == "[gi]" ? "gi" : "diagnostics";
+            section = text == "[gi]" ? "gi" : text == "[render]" ? "render" : "diagnostics";
             continue;
         }
 
@@ -141,8 +157,9 @@ auto GameManifest::load(std::filesystem::path const &path, bool require_game) ->
 
         if (!section.empty()) {
             auto message = std::string{};
-            if (!(section == "gi" ? set_gi(manifest.gi, key, value, message)
-                                  : set_diagnostics(manifest.diagnostics, key, value, message))) {
+            if (!(section == "gi"       ? set_gi(manifest.gi, key, value, message)
+                  : section == "render" ? set_render(manifest.render, key, value, message)
+                                        : set_diagnostics(manifest.diagnostics, key, value, message))) {
                 return std::unexpected{std::format("{}:{}: {}", path.string(), number, message)};
             }
             continue;
@@ -193,6 +210,10 @@ auto GameManifest::to_text() const -> std::string {
                             "emitter_intensity = {}\nfar_cascade = {}\nsynthesize_lights = \"{}\"\n",
                             gi.enabled, gi.rays_per_probe, gi.probe_spacing, gi.intensity, gi.emitter_intensity,
                             gi.far_cascade, gi.synthesize_lights);
+    }
+
+    if (render != RenderSettings{}) {
+        text += std::format("\n[render]\nray_traced_shadows = {}\n", render.ray_traced_shadows);
     }
 
     if (diagnostics != DiagnosticsSettings{}) {

@@ -119,7 +119,7 @@ bool occluded(float3 origin, float3 direction, float t_max)
     ray.TMax = t_max;
 
     RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(scene_tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, ray);
+    query.TraceRayInline(scene_tlas, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, ray);
     query.Proceed();
 
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
@@ -199,7 +199,7 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
     ray.TMax = gi_max_distance;
 
     RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(scene_tlas, RAY_FLAG_NONE, 0xFF, ray);
+    query.TraceRayInline(scene_tlas, RAY_FLAG_FORCE_OPAQUE, 0xFF, ray);
     query.Proceed();
 
     float3 radiance;

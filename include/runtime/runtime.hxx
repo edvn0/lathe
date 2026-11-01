@@ -28,7 +28,6 @@
 #include "rendering/particle_system.hxx"
 #include "rendering/planet_system.hxx"
 #include "rendering/water_system.hxx"
-#include "rendering/ray_tracing_poc.hxx"
 #include "rendering/renderer.hxx"
 #include "rendering/scene.hxx"
 #include "rendering/static_model_cache.hxx"
@@ -128,11 +127,10 @@ struct Runtime {
     PlanetSystem planet_system;
     EffectSystem effect_system;
 
-    // The ray query proof of concept (docs/ray-tracing.md): not started any more, replaced by ray traced shadows.
-    RayTracingPoc ray_tracing_poc;
     // The probe GI settings (the project's [gi] table, or the defaults): the volume is created at startup unless the
     // device lacks VK_KHR_ray_query or they turn it off.
     GiSettings gi_config{};
+    RenderSettings render_config{};
     // The camera of the frame being recorded, for passes that need its matrices. Set by run_engine every frame.
     glm::mat4 frame_view{1.0F};
     glm::mat4 frame_projection{1.0F};

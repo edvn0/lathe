@@ -1,5 +1,6 @@
--- Sun-lit boxes on a floor: shadow map vs ray traced shadow comparison on a small scene.
---   lathe --game=lua --script=assets/scripts/gi_test/sun_boxes.lua --player --rt-poc --rt-poc-view=split
+-- Sun-lit boxes on a floor: a small scene for the ray traced sun shadows (a project with [render] ray_traced_shadows =
+-- false shows the cascaded shadow map for comparison).
+--   lathe --game=lua --script=assets/scripts/gi_test/sun_boxes.lua --player
 -- Shots advance every 60 frames (see SHOT_FRAMES), so screenshots at frames 30, 90, 150 ... show shots 1, 2, 3 ...
 
 ---@type GameScript

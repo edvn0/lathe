@@ -314,7 +314,10 @@ auto SceneAccelerationStructure::add(Geometry const &geometry, std::uint32_t mat
         instance.instanceCustomIndex = index & 0xFFFFFFU;
         instance.mask = 0xFF;
         instance.instanceShaderBindingTableRecordOffset = 0;
-        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        // (An 8 bit field: the instance flags are small.)
+        instance.flags = static_cast<std::uint8_t>(
+                VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR |
+                ((flags & flag_alpha_tested) != 0 ? VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR : 0));
         instance.accelerationStructureReference = blas->structure.address;
         staged_instances_.push_back(instance);
         staged_table_.push_back(InstanceData{

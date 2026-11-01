@@ -325,6 +325,12 @@ auto Runtime::on_startup() -> void {
             warn("Could not set up planet atmospheres: {}", describe(created.error()));
         }
 
+        if (render_config.ray_traced_shadows && context.ray_query_supported) {
+            if (auto const created = renderer->ray_traced_shadows().create(*renderer); !created) {
+                warn("Could not set up ray traced shadows: {}", describe(created.error()));
+            }
+        }
+
         if (gi_config.enabled) {
             if (!context.ray_query_supported) {
                 info("Probe GI off: this device does not support VK_KHR_ray_query");
@@ -366,7 +372,6 @@ auto Runtime::on_startup() -> void {
                                       renderer->directional_light().direction,
                                       renderer->directional_light().intensity);
             }
-            ray_tracing_poc.declare(graph, frame_view, frame_projection, renderer->directional_light().direction);
             if (game && game_hooks_enabled) {
                 effect_system.declare(graph);
                 game->on_frame_graph(graph, last_delta_time);

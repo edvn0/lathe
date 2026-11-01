@@ -27,6 +27,15 @@ struct GiSettings {
     auto operator==(GiSettings const &) const -> bool = default;
 };
 
+// The `[render]` table: renderer features that are on wherever the device can do them.
+struct RenderSettings {
+    // The sun's shadow is ray traced against the scene (docs/ray-traced-shadows.md) instead of coming from the cascaded
+    // shadow map, where the device has VK_KHR_ray_query.
+    bool ray_traced_shadows = true;
+
+    auto operator==(RenderSettings const &) const -> bool = default;
+};
+
 // The `[diagnostics]` table.
 struct DiagnosticsSettings {
     // GPU crash dumps through the Nsight Aftermath SDK (docs/gpu-crash-dumps.md), where the build has it: "auto" (the cheap
@@ -46,6 +55,7 @@ struct GameManifest {
     std::string scene;
     GiSettings gi;
     DiagnosticsSettings diagnostics;
+    RenderSettings render;
 
     [[nodiscard]] static auto load(std::filesystem::path const &path, bool require_game = true) -> std::expected<GameManifest, std::string>;
 

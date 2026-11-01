@@ -2077,6 +2077,7 @@ auto Renderer::destroy() noexcept -> void {
     environment_.destroy();
 
     pipeline_graph_.destroy();
+    ray_traced_shadows_.destroy();
     probe_volume_far_.destroy();
     probe_volume_.destroy();
     scene_rt_.destroy();
@@ -4622,7 +4623,7 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
     probe_volume_.begin_emitters(frame_index);
     probe_volume_far_.begin_emitters(frame_index);
 
-    auto const add_batches = [this](std::vector<BatchEntry const *> const &batches) {
+    auto const add_batches = [this](std::vector<BatchEntry const *> const &batches, std::uint32_t base_flags) {
         for (auto const *batch: batches) {
             // Skinned geometry deforms, so a static BLAS would be wrong; it joins in a later phase.
             if (batch->skinned || batch->transforms.empty()) {
@@ -4648,7 +4649,7 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
 
             // Small emissive pieces (a bulb, a lantern's glass) light the volume through the probe volume's emitter list:
             // a ray hits them too rarely. Larger ones are lit only by the rays that reach them.
-            auto instance_flags = std::uint32_t{0};
+            auto instance_flags = base_flags;
             if (probe_volume_.ready()) {
                 auto const *material_info = material_storage_.create_info(batch->material);
                 auto const emission =
@@ -4665,7 +4666,7 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
                         small = small && half_extent * scale <= ProbeVolume::small_emitter_radius;
                     }
                     if (small) {
-                        instance_flags = SceneAccelerationStructure::flag_explicit_emitter;
+                        instance_flags |= SceneAccelerationStructure::flag_explicit_emitter;
                         for (auto const *transform: batch->transforms) {
                             auto const scale = std::max({glm::length(glm::vec3{(*transform)[0]}),
                                                          glm::length(glm::vec3{(*transform)[1]}),
@@ -4698,9 +4699,9 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
                     material_storage_.gpu_index(batch->material), batch->transforms, instance_flags);
         }
     };
-    add_batches(opaque_batches_);
-    add_batches(double_sided_batches_);
-    add_batches(mask_batches_);
+    add_batches(opaque_batches_, 0U);
+    add_batches(double_sided_batches_, 0U);
+    add_batches(mask_batches_, SceneAccelerationStructure::flag_alpha_tested);
     probe_volume_.finish_emitters();
     probe_volume_far_.finish_emitters();
 }
@@ -7076,7 +7077,7 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                                    FrameTargets const &targets, std::uint32_t ao_texture_index,
                                    std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays,
                                    render_pass::ForwardPhase phase, std::uint32_t scene_colour_index,
-                                   std::uint32_t scene_depth_index)
+                                   std::uint32_t scene_depth_index, std::uint32_t rt_shadow_texture_index)
         -> std::expected<render_pass::HdrTextureIndex, RendererError> {
     auto const frame_index = pass_context.frame_index;
 
@@ -7117,6 +7118,7 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .draw_grid = editor_grid_,
                     .ao_texture_index = ao_texture_index,
                     .ao_sampler_index = sampler_storage_.linear_clamp().index,
+                    .rt_shadow_texture_index = rt_shadow_texture_index,
                     .outline_mask = true,
             },
             scene_overlays);

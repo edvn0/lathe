@@ -1344,6 +1344,45 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                 });
     }
 
+    // Ray traced sun shadows: a mask of the sun's visibility at every pixel's surface point, from the depth buffer and the
+    // scene TLAS; the forward pass reads it where it used to look the point up in the cascades (docs/ray-traced-shadows.md).
+    auto rt_shadow_image = frame_graph::ImageId{};
+    auto const rt_shadows_active = !secondary && ray_traced_shadows_.ready() && ray_traced_shadows_.settings().enabled &&
+                                   scene_tlas.valid() && scene_rt_.instance_table_address() != 0 &&
+                                   light_.intensity > 0.0F;
+    if (rt_shadows_active) {
+        frame_graph_.add_pass(
+                "rt_shadows", frame_graph::PassType::compute,
+                {
+                        .name_id = "rt_shadows",
+                        .label = "Ray traced shadows",
+                        .color = static_cast<std::uint32_t>(tracy::Color::DeepPink),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    [[maybe_unused]] auto const tlas =
+                            pass.read(scene_tlas, frame_graph::Use::acceleration_structure_read, compute_stage);
+                    [[maybe_unused]] auto const depth =
+                            pass.read(resolved_depth_image, frame_graph::Use::sampled, compute_stage);
+                    rt_shadow_image = pass.create(ao_description("rt_shadow_mask"));
+                    rt_shadow_image = pass.write(rt_shadow_image, frame_graph::Use::storage_write, compute_stage,
+                                                 frame_graph::ExitUse{frame_graph::Use::sampled});
+                    pass.side_effect();
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        ray_traced_shadows_.record(
+                                context.command_buffer, info.frame_index,
+                                {.inverse_view_projection = glm::inverse(frame.view_projection),
+                                 .instance_table = scene_rt_.instance_table_address(),
+                                 .materials = material_storage_.device_address(),
+                                 .depth_texture = transient_index(resolved_depth_image),
+                                 .mask_storage = transient_index(rt_shadow_image),
+                                 .width = targets->extent.width,
+                                 .height = targets->extent.height,
+                                 .sun = glm::normalize(light_.direction)});
+                    }};
+                });
+    }
+
     // With water on screen the forward pass is split in two around a copy of the scene colour and depth: the opaque
     // and masked draws (and the sky), then the blended draws, which sample the copy to refract (docs/water.md).
     // Without water it stays one pass and nothing is copied.
@@ -1355,6 +1394,9 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
 
     auto const declare_forward_reads = [&](frame_graph::PassBuilder &pass, bool with_overlays) {
         [[maybe_unused]] auto const shadows = pass.read(shadow_image, frame_graph::Use::sampled, fragment_stage);
+        if (rt_shadows_active) {
+            [[maybe_unused]] auto const rt_shadows = pass.read(rt_shadow_image, frame_graph::Use::sampled, fragment_stage);
+        }
         if (gi_active) {
             [[maybe_unused]] auto const gi_irradiance_read =
                     pass.read(gi_irradiance, frame_graph::Use::sampled, fragment_stage);
@@ -1465,9 +1507,13 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
         // The split opaque phase writes no HDR image of its own when multisampled (its resolve is the colour copy);
         // the blended phase hands on the real one.
         auto const output = phase == render_pass::ForwardPhase::opaque && multisampled ? scene_colour_copy : hdr_image;
+        // The blended draws are not in the depth buffer the mask was made from: they keep the cascaded shadow map.
+        auto const rt_shadow_index = rt_shadows_active && phase != render_pass::ForwardPhase::blend
+                                             ? transient_index(rt_shadow_image)
+                                             : 0xFFFFFFFFU;
         auto const hdr = record_forward_pass(pass_context, frame, *targets, state.handoff.ao_texture_index,
                                              transient_index(output), render_pass::Callback::bind(scene_overlays),
-                                             phase, scene_copies.first, scene_copies.second);
+                                             phase, scene_copies.first, scene_copies.second, rt_shadow_index);
         if (hdr) {
             state.handoff.hdr = *hdr;
         } else {

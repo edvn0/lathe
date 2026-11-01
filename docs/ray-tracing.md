@@ -1,12 +1,12 @@
 # Hardware ray tracing: the proof of concept and the road to the full version
 
-> **Update (probe GI phase 1).** The sphere PoC described below has been replaced. `--rt-poc` now turns on the renderer's
-> real ray tracing scene (`SceneAccelerationStructure`, `rendering/scene_acceleration_structure.cxx`): a BLAS per mesh
-> submesh built lazily from the geometry arena, and a TLAS rebuilt every frame from the batched instances (world matrix,
-> scale included). The `rt_poc` pass (`assets/shaders/rt_poc.slang`) traces the camera ray and a sun ray against it;
-> `--rt-poc-view` is one of `beauty, shadow-mask, split, depth-match, normals, instance, overlay`. See the "Scene
-> acceleration structure" section at the end. The text below is kept for the background; the sphere, its hardcoded
-> geometry and `Limits of the PoC` no longer apply.
+> **Update.** The sphere PoC described below no longer exists, and neither does `--rt-poc`. The renderer has a real ray tracing
+> scene (`SceneAccelerationStructure`, `rendering/scene_acceleration_structure.cxx`): a BLAS per mesh submesh built lazily
+> from the geometry arena, and a TLAS rebuilt every frame from the batched instances (world matrix, scale included). Two
+> features use it, both on by default where the device has `VK_KHR_ray_query`: the probe global illumination
+> (`docs/probe-gi.md`) and the ray traced sun shadows (`docs/ray-traced-shadows.md`). See the "Scene acceleration structure"
+> section at the end. The text below is kept for the background; the sphere, its hardcoded geometry and `Limits of the PoC`
+> no longer apply.
 
 `lathe --rt-poc` traces one hardcoded sphere into the running scene with `VK_KHR_ray_query`. It exists to get
 acquainted with acceleration structures and traversal, not to be a renderer feature. This page says what it does, how

@@ -345,7 +345,14 @@ public struct PC
     // opaque and masked draws, for the blended draws that refract (water). 0 when no copy was taken this frame.
     public uint scene_colour_index;
     public uint scene_depth_index;
+
+    // Bindless index (sampled_2d, R8) of the ray traced sun shadow mask of this frame, or rt_shadow_none for the cascaded
+    // shadow map (no ray tracing, a secondary view, the blended pass: its surfaces are not in the depth buffer).
+    public uint rt_shadow_texture;
+    public uint rt_shadow_padding;
 };
+
+public static const uint rt_shadow_none = 0xFFFFFFFFu;
 
 public static const uint shadow_flag_tiles = 1u;
 public static const uint shadow_flag_remap = 2u;

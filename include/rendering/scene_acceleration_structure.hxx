@@ -69,6 +69,9 @@ public:
     // The instance is lit by the probe volume's explicit emitter list, so a ray that hits it must not add its emission
     // again.
     static constexpr auto flag_explicit_emitter = std::uint32_t{1};
+    // Alpha tested geometry: not opaque in the TLAS, so a ray query that wants to honour the alpha test sees it as a
+    // candidate; a trace that does not (the probe GI) passes RAY_FLAG_FORCE_OPAQUE.
+    static constexpr auto flag_alpha_tested = std::uint32_t{2};
 
     static constexpr auto vertex_stride = std::uint32_t{20};
     static constexpr auto position_offset = std::uint32_t{8};

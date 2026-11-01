@@ -996,7 +996,6 @@ namespace {
         runtime.debug_renderer.reset();
         runtime.imgui_renderer.reset();
         runtime.text_renderer.reset();
-        runtime.ray_tracing_poc.destroy();
         runtime.renderer->destroy();
 
         context.destroy();
@@ -1428,6 +1427,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
              static_cast<std::uint32_t>(renderer.max_samples()), ao.slice_count, ao.step_count);
     }
     runtime.gi_config = launch ? launch->gi : GiSettings{};
+    runtime.render_config = launch ? launch->render : RenderSettings{};
     {
         auto &gi = runtime.renderer->probe_volume().settings();
         gi.spacing = runtime.gi_config.probe_spacing;

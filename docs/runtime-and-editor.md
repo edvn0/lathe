@@ -46,8 +46,9 @@ Games are looked up through `game_names()` / `create_game()`, which the executab
 ## Projects
 
 A project is a directory with a `lathe.project` at its root (the keys of `game.toml`: `name`, `title`, `version`,
-`game`, `entry`, `scene`; `game` may be left out) plus optional `[gi]` (probe global illumination, `docs/probe-gi.md`)
-and `[diagnostics]` (GPU crash dumps, `docs/gpu-crash-dumps.md`) tables. `lathe --project PATH` opens one, as does running from inside one.
+`game`, `entry`, `scene`; `game` may be left out) plus optional `[gi]` (probe global illumination, `docs/probe-gi.md`),
+`[render]` (ray traced sun shadows, `docs/ray-traced-shadows.md`) and `[diagnostics]` (GPU crash dumps,
+`docs/gpu-crash-dumps.md`) tables. `lathe --project PATH` opens one, as does running from inside one.
 File > New Project, Open Project and Recent Projects switch in process; Edit > Project Settings edits the manifest.
 
 `Paths` has two content roots. The project's is the data root. The engine's (shaders, fonts, built-in textures and

@@ -273,6 +273,7 @@ struct Application : Runtime {
         std::array<char, 256> scene{};
         GiSettings gi;
         DiagnosticsSettings diagnostics;
+        RenderSettings render;
         std::string status;
     } project_form;
     std::filesystem::path package_form_project;

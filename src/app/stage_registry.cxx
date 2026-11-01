@@ -427,6 +427,19 @@ namespace stages {
             }
         }
 
+        auto draw_ray_traced_shadows(Context &context) -> void {
+            auto &shadows = context.renderer.ray_traced_shadows();
+            if (!shadows.ready()) {
+                ImGui::TextWrapped("Ray traced shadows are off: the device lacks VK_KHR_ray_query, or Project Settings turn "
+                                   "them off. The sun's shadow comes from the cascaded shadow map.");
+                return;
+            }
+            ImGui::Checkbox("Enabled##rt_shadows", &shadows.settings().enabled);
+            ImGui::SliderFloat("Sun angular radius", &shadows.settings().sun_spread, 0.0F, 0.03F, "%.4f rad");
+            ImGui::SetItemTooltip("Half the angle of the cone of the sun's rays: the wider, the softer the shadow edges. The "
+                                  "real sun is about 0.0047 across; 0 gives hard shadows.");
+        }
+
         auto draw_probe_gi(Context &context) -> void {
             auto &volume = context.renderer.probe_volume();
             if (!volume.ready()) {
@@ -620,6 +633,20 @@ namespace stages {
                             renderer.set_bloom_settings(bloom);
                         },
                 .draw_settings = draw_bloom,
+        });
+
+        add(Stage{
+                .id = FlyString{"ray_traced_shadows"},
+                .title = "Ray traced shadows",
+                .passes = passes_of({"rt_shadows"}),
+                .state = [](Renderer const &renderer) {
+                    return State{.enabled = renderer.ray_traced_shadows().ready() &&
+                                            renderer.ray_traced_shadows().settings().enabled};
+                },
+                .set_enabled = [](Renderer &renderer, bool enabled) {
+                    renderer.ray_traced_shadows().settings().enabled = enabled;
+                },
+                .draw_settings = draw_ray_traced_shadows,
         });
 
         add(Stage{
