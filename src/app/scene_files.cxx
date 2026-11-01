@@ -113,7 +113,10 @@ auto Application::start_save_scene(std::filesystem::path path) -> void {
 }
 
 auto Application::recover_work() -> std::optional<std::filesystem::path> {
-    if (!source_scene_dirty()) {
+    // A scene with a file is only worth saving again if it changed. One without a file (new, or built by a game) exists
+    // nowhere else, so it counts as unsaved even though nothing changed since it was made.
+    if (!scene_path.empty() && !source_scene_dirty()) {
+        info("Nothing to recover: the scene has no unsaved changes");
         return std::nullopt;
     }
 
