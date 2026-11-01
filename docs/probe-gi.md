@@ -1,9 +1,28 @@
 # Probe GI (DDGI on ray query): plan and handoff
 
-Status: **phase 0 and 1 done** (see "Progress" at the end); the rest is plan. Written at the end of the session that added crisp editor icons, `ui_font_size`
-and point lights synthesised from emissive meshes (commit `e59a6f1`, branch `feat/editor-ui-and-emissive-lights`). A new
-session should be able to start from this page alone. Read `docs/ray-tracing.md` and `docs/adding-a-pass.md` first;
-this page only repeats what it must.
+Status: **phases 0 to 6 done** except the items under "Phase 6 (what is left)" at the end. The sections up to "Progress" are
+the original plan and design notes, kept for the reasoning; "Using it" below is what exists. Read `docs/ray-tracing.md`
+and `docs/adding-a-pass.md` for the pieces it builds on.
+
+## Using it
+
+`lathe --gi` (needs `VK_KHR_ray_query`; off otherwise). Emissive surfaces, the sun, the sky, local lights and bounce light
+all light the scene, dynamically, with no baking. Two cascades of 32x8x32 probes follow the camera: the near one 1 m
+apart, the far one 4 m apart (updated every other frame), blended by coverage at shade time.
+
+| cvar | meaning |
+|---|---|
+| `--gi` | create the volume (and the scene TLAS it needs) |
+| `--gi-view off\|irradiance\|state` | debug views |
+| `--gi-probe-spacing M`, `--gi-rays-per-probe N`, `--gi-intensity S` | near cascade settings (the far one is 4x the spacing) |
+| `--gi-emitter-intensity I` | strength of small emissive pieces (bulbs) as lights, default 200 |
+| `--gi-far` | the coarse cascade (on by default) |
+| `--gi-synth-lights auto\|on\|off` | the point lights models get from emissive meshes; `auto` is off while GI is on |
+
+The editor's frame graph panel has a "Probe GI" stage with the same settings. `assets/scripts/gi_test/` has the test
+scenes (Cornell room, sun boxes, the dynamic scene, Bistro shots) and the `gi_emitters` benchmark scenario measures it.
+Code: `ProbeVolume` (`probe_volume.*`), shaders `gi_probes`, `gi_probe_trace`, `gi_probe_classify`, `gi_probe_blend`,
+the TLAS in `scene_acceleration_structure.*`, the CPU copy of the addressing maths in `probe_addressing.hxx` (tested).
 
 ## Goal
 
@@ -428,9 +447,43 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
   (1.67 M vertices, 2891 tiny structures) cost 7.2 ms in the TLAS pass; with it 1.7 ms. The per structure overhead
   dominates, not the vertices, so merging a character's submeshes into one structure would be the next saving.
   Instances beyond the budget are not in the scene (they neither occlude nor bounce).
-- **Open: terrain.** Not in the TLAS, so a ray that would hit it sees sky: the ground is a hole in the probes' world and
-  the sky leaks in below it. Options for the owner: (a) a BLAS per terrain chunk from the chunk meshes (needs the chunk
-  vertex format and a streaming hook; frees with the chunk), (b) a coarse proxy (a few large height tiles) for tracing
-  only, (c) leave it out and add a ground plane in the scene. Waiting on a decision.
+- **Terrain** (decided: a BLAS per chunk). The terrain chunks are ordinary meshes in the geometry arena submitted through
+  `submit_mesh`, so they already reach the TLAS through the batches (the earlier "not in the TLAS" was wrong). What was
+  broken: a recycled chunk slot keeps its offsets and counts while its vertices are rewritten in place, so a cached BLAS
+  went stale. `Submesh::revision` (bumped by `update_submesh_geometry`) is now part of the BLAS cache check. Checked in
+  Debug on `--game=basic`: BLASes appear as chunks stream in, no validation errors. (Planet chunks, `PlanetSystem`, were
+  not looked at.)
 - **Numbers** (Release): `moving` with 49 characters and `--gi`: TLAS pass 1.73 ms (7.2 ms without the budget), skin
   0.13 ms. Debug validation clean on `moving` and `dynamic`.
+
+### Phase 6 (done, see what is left below): polish
+
+- **Second cascade.** A second `ProbeVolume` (`Renderer::probe_volume_far`), same counts at 4x spacing and 4x the biases,
+  `update_interval = 2`: its passes (`gi_far_probe_*`) are added only on the frames it updates, and it does not scroll on
+  the frames it skips, so a probe that scrolls in is never read with another probe's data. `gi_sample_irradiance` takes the
+  near cascade first and the far one where near coverage is below 1 (including the near cascade's fade layer); each
+  cascade's multi-bounce samples its own atlases (`trace` push `flags` bit 0), so the far cascade needs nothing from the
+  near one. Both get the same emitter list. UBO is 1152 bytes (`gi_far` block).
+- **Blend pass** is one workgroup per probe with the probe's rays (direction, radiance, distance) staged once in groupshared
+  memory: 0.17 ms, from about 1.3 ms.
+- **Interim lights.** `--gi-synth-lights auto|on|off`; `auto` skips `spawn_model_lights` while GI is on. The loader still
+  synthesises the lights (`synthesize_emissive_lights`), the editor just does not spawn them.
+- **Editor panel, benchmark scenario (`gi_emitters`, load = bulbs), unit tests** (`probe_addressing_test.cxx`: slot
+  uniqueness on negative windows, `world_index` inverse, only one layer reassigned when the window scrolls).
+- **Numbers** (Release, RTX 4070 Ti SUPER, 1920x1080, `gi_emitters`, both cascades, 64 rays): GPU frame 2.2 ms at 16 bulbs,
+  2.5 ms at 128, 5.3 ms at 1024. Near cascade passes at 16 / 128 / 1024 bulbs: trace 0.14 / 0.33 / 2.63 ms, classify
+  0.01, blend 0.17, border 0.06. The trace cost is the per hit loop over all emitters, which is why it scales with the
+  bulbs; the Bistro has 47. Debug validation clean on `cornell`, `cornell_skylight`, `sun_boxes`, `dynamic`, `moving` and
+  `basic` (terrain) with both cascades. Tests: 898 of 898.
+
+### Phase 6 (what is left)
+
+- **Probe sleeping / update budgeting** was not built: with trace plus blend at about 0.4 ms on the Bistro-sized scenes the
+  budget is met without it. It is the next step if the trace pass grows (many emitters, 256 rays): classify would flag a
+  probe whose neighbourhood did not change and the trace would skip it (indirect dispatch).
+- **Per hit emitter loop**: select emitters per probe (or a spatial grid) instead of looping over all of them per ray;
+  needed beyond a few hundred emitters.
+- The far cascade is not measured on its own (the benchmark reports the median over frames, and it runs every other one).
+- Not run: `test/gpu/device_lost_recovery.sh` with GI on; the Bistro under Debug (streaming never finishes there).
+- Known gaps from earlier phases: the volume is only 8 m tall, an emitter's colour is its material's average, one shadow
+  ray is shared by all local lights, merging a character's submeshes would cut the skinned BLAS cost.

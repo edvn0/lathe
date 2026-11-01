@@ -219,3 +219,18 @@ Per-pass times are `vkCmdWriteTimestamp2` pairs per pass.
 Scene acceleration structure on the Bistro: 1591 instances, 1592 BLASes (83 MiB, not compacted yet), TLAS 0.3 MiB.
 The TLAS pass is steady state (no BLAS builds pending); the initial 1592 BLASes are built over the first few frames at
 up to 512 per frame.
+
+## Probe GI, phase 6: pass costs
+
+Conditions: RTX 4070 Ti SUPER, Release, `--gi --benchmark-suite --benchmark-scenarios gi_emitters --benchmark-repeats 1`
+(1920x1080, 300 frames, powersave governor), two cascades of 32x8x32 probes, 64 rays per probe.
+
+| bulbs | GPU frame (ms) | trace | classify | blend | border |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 2.18 | 0.14 | 0.01 | 0.17 | 0.06 |
+| 128 | 2.54 | 0.33 | 0.01 | 0.18 | 0.06 |
+| 1024 | 5.28 | 2.63 | 0.02 | 0.18 | 0.06 |
+
+Pass times are the near cascade's medians. The blend pass went from about 1.3 ms to 0.17 ms by staging a probe's rays in
+groupshared memory (one workgroup per probe). The trace pass scales with the bulb count because every hit loops over all
+explicit emitters (docs/probe-gi.md, "what is left").
